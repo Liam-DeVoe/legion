@@ -152,6 +152,8 @@ export function IssuesTable({
     );
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
+  // The keys of the issues the list holds, which its planned changes are drawn for.
+  const plannedKeys = useMemo(() => allItems.map((item) => item.issue.key), [allItems]);
 
   const columns = useIssueTableColumns(
     userState.data,
@@ -319,7 +321,7 @@ export function IssuesTable({
             issues of its project, drawn on the list itself. */}
         <PlannedChanges
           surface={{
-            issues: allItems.map((item) => item.issue.key),
+            issues: plannedKeys,
             kind: "issues",
             project: "project" in listing ? listing.project : "",
           }}

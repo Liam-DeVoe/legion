@@ -406,6 +406,8 @@ export function IssueBoard({
       !lanes || issues.data === undefined ? [] : groupIssuesByLane(issues.data.filter(isVisible)),
     [lanes, issues.data, isVisible]
   );
+  // The keys of the cards the board shows, which its planned changes are drawn for.
+  const plannedKeys = useMemo(() => (issues.data ?? []).map((issue) => issue.key), [issues.data]);
   const onDragEnd = ({ active, over }: DragEndEvent) => {
     landCard();
     const current = queryClient.getQueryData<IssueSummary[]>(queryKey);
@@ -694,9 +696,7 @@ export function IssueBoard({
       {/* The open conversation's planned changes of the cards this board shows, and the new
           issues of this project, drawn on the board itself. */}
       <div className="mb-4 empty:hidden">
-        <PlannedChanges
-          surface={{ issues: issues.data.map((issue) => issue.key), kind: "issues", project }}
-        />
+        <PlannedChanges surface={{ issues: plannedKeys, kind: "issues", project }} />
       </div>
       {issues.data.length === 0 ? (
         // The active query is the label-filtered list, so an empty answer under a label filter

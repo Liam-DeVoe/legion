@@ -1,15 +1,16 @@
 import type { ReactNode } from "react";
 
+import type { GoingRun } from "../../api/types";
 import {
   borderDefault,
   secondaryButtonCompact,
   textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { conversationWorking, type RunLevel, setLevel, useGoing } from "./going-store";
+import { conversationWorking, setLevel, useGoing, useGoingValue } from "./going-store";
 
 /** The three levels, in the order the control lists them (R10's budgets are the server's). */
-const LEVELS: readonly { readonly label: string; readonly level: RunLevel }[] = [
+const LEVELS: readonly { readonly label: string; readonly level: GoingRun["level"] }[] = [
   { label: "Fast", level: "fast" },
   { label: "Standard", level: "standard" },
   { label: "Deep", level: "deep" },
@@ -17,7 +18,7 @@ const LEVELS: readonly { readonly label: string; readonly level: RunLevel }[] = 
 
 /** How much work the next run may do: Fast, Standard or Deep, under the box. */
 export function LevelControl(): ReactNode {
-  const going = useGoing();
+  const chosen = useGoingValue((of) => of.level);
   return (
     <fieldset
       className={`flex shrink-0 items-center gap-3 px-3 py-1.5 text-xs ${textSecondaryOnSurface}`}
@@ -27,7 +28,7 @@ export function LevelControl(): ReactNode {
       {LEVELS.map(({ label, level }) => (
         <label className="flex cursor-pointer items-center gap-1" key={level}>
           <input
-            checked={going.level === level}
+            checked={chosen === level}
             className="size-3.5 cursor-pointer"
             name="going-level"
             onChange={() => setLevel(level)}

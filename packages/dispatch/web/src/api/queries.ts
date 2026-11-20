@@ -345,7 +345,7 @@ export const goingPlanQuery = (run: string) =>
 
 /** History (`GET /api/v1/me/going-runs`): the person's conversations of the last 7 days, each
  *  with its runs, the newest first. A change of what waits for the person moves it
- *  (`going_plan.updated`), and so does each run the bar starts. */
+ *  (`going_plan.updated`), and so does each run the bar starts (`useAsk`). */
 export const goingConversationsQuery = () =>
   queryOptions({
     queryKey: ["going-conversations"],

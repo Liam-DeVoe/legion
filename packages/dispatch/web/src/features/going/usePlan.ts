@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   apiErrorMessage,
@@ -10,13 +10,23 @@ import {
 import { goingConversationsQuery, goingPlanQuery, goingWaitingPlansQuery } from "../../api/queries";
 import type { GoingPlanAnswer } from "../../api/types";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { draftOf, goingState, newestRun, useGoing } from "./going-store";
+import { claimPlanRead, draftOf, newestRun, useGoingValue } from "./going-store";
 import { approvalOf } from "./plan-rows";
+
+/** The target every write about the plan of `run` goes under - an answer to it, and its run's
+ *  Undo - so two surfaces that write about one plan go one at a time. */
+export function planTarget(run: string): string {
+  return `going-plan:${run}`;
+}
 
 /** What a surface answers a plan with, and how that stands. */
 export interface PlanAnswering {
   /** The plan, once read; undefined while it is read, or for a run that proposed none. */
   readonly plan: GoingPlanAnswer | undefined;
+  /** Why the plan could not be read, with its Retry; undefined unless the read failed. */
+  readonly unreadable:
+    | { readonly message: string; readonly retry: () => void; readonly retrying: boolean }
+    | undefined;
   /** Approves the waiting plan with the person's ticks and edits (Enter, or Approve). */
   readonly approve: () => void;
   /** Rejects the waiting plan. */
@@ -30,31 +40,36 @@ export interface PlanAnswering {
 
 /**
  * The latest plan of run `run` (`GET /api/v1/going/runs/{id}/plan`), read once the run's stream
- * has carried a plan frame and again at each one after (`planFrames`), and the person's three
- * answers to it: approve, with the ticks and edits the store holds for it, reject, and revise in
- * words. Each answer is the person's write, under the plan's own target, so two surfaces that
- * answer one plan go one at a time.
+ * has carried a plan frame and again at each frame after that tells it to (`planReads`: each plan
+ * frame, and the run's end), and the person's three answers to it: approve, with the ticks and
+ * edits the store holds for it, reject, and revise in words. Each answer is the person's write,
+ * under the plan's own target, so two surfaces that answer one plan go one at a time. A surface
+ * that mounts reads the plan again; each new reading frame reads it again once, however many
+ * surfaces draw it (`claimPlanRead`).
  */
-export function usePlan(run: string | undefined, planFrames: number): PlanAnswering {
+export function usePlan(run: string | undefined, planReads: number): PlanAnswering {
   const queryClient = useQueryClient();
-  const key = goingPlanQuery(run ?? "").queryKey;
+  const query = goingPlanQuery(run ?? "");
   const plan = useQuery({
-    ...goingPlanQuery(run ?? ""),
-    enabled: run !== undefined && planFrames > 0,
+    ...query,
+    enabled: run !== undefined && planReads > 0,
     retry: false,
   });
-  // biome-ignore lint/correctness/useExhaustiveDependencies: each new plan frame is the reason to read the plan again
+  const mounted = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: each new reading frame is the reason to read the plan again
   useEffect(() => {
-    if (run !== undefined && planFrames > 1) {
-      void queryClient.invalidateQueries({ exact: true, queryKey: key });
+    const mounting = !mounted.current;
+    mounted.current = true;
+    if (run !== undefined && planReads > 1 && (claimPlanRead(run, planReads) || mounting)) {
+      void queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
     }
-  }, [planFrames]);
+  }, [planReads]);
   const [refusal, setRefusal] = useState<string>();
   const settle = (answered: GoingPlanAnswer | null) => {
     if (answered !== null) {
-      queryClient.setQueryData(key, answered);
+      queryClient.setQueryData(query.queryKey, answered);
     } else {
-      void queryClient.invalidateQueries({ exact: true, queryKey: key });
+      void queryClient.invalidateQueries({ exact: true, queryKey: query.queryKey });
     }
     void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });
     void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
@@ -64,7 +79,7 @@ export function usePlan(run: string | undefined, planFrames: number): PlanAnswer
     onError: (error: unknown) =>
       setRefusal(apiErrorMessage(error, "The answer to the plan did not reach Dispatch.")),
     onSuccess: settle,
-    target: () => `going-plan:${run ?? ""}`,
+    target: () => planTarget(run ?? ""),
   };
   const approve = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
     ...common,
@@ -72,7 +87,7 @@ export function usePlan(run: string | undefined, planFrames: number): PlanAnswer
     request: (answered) =>
       goingPlanApproveRequest(
         answered.run,
-        approvalOf(answered, draftOf(answered.run, answered.plan, goingState()))
+        approvalOf(answered, draftOf(answered.run, answered.plan))
       ),
   });
   const reject = useKeyedWrite<GoingPlanAnswer, GoingPlanAnswer>({
@@ -107,15 +122,25 @@ export function usePlan(run: string | undefined, planFrames: number): PlanAnswer
       setRefusal(undefined);
       revise.mutate({ plan: waiting, words: words.trim() });
     },
+    unreadable: plan.isError
+      ? {
+          message: apiErrorMessage(plan.error, "The run's plan could not be read."),
+          retry: () => void plan.refetch(),
+          retrying: plan.isFetching,
+        }
+      : undefined,
   };
 }
 
 /** The plan of the conversation open in the bar or in the side panel: its newest run's, while the
  *  conversation is on the screen. A plan that waits in the Inbox draws on no page until its
- *  conversation is opened. */
+ *  conversation is opened. A surface that draws it is drawn again only when the newest run or
+ *  its reading frames change, not on each frame of the run. */
 export function useOpenPlan(): PlanAnswering & { readonly run: string | undefined } {
-  const going = useGoing();
-  const run = going.place === "closed" ? undefined : newestRun(going);
-  const answering = usePlan(run?.id, run?.frames.planFrames ?? 0);
-  return { ...answering, run: run?.id };
+  const run = useGoingValue((of) => (of.place === "closed" ? undefined : newestRun(of)?.id));
+  const planReads = useGoingValue((of) =>
+    of.place === "closed" ? 0 : (newestRun(of)?.frames.planReads ?? 0)
+  );
+  const answering = usePlan(run, planReads);
+  return { ...answering, run };
 }

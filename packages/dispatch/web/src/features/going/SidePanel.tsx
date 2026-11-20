@@ -4,6 +4,7 @@ import { useLocation } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import type { GoingContextInput } from "../../api/types";
+import { issueProject } from "../../lib/issue-key";
 import {
   borderDefault,
   card,
@@ -11,11 +12,11 @@ import {
   inputClasses,
   textMutedOnSurface,
 } from "../../theme/classes";
-import { nodeRouteFromHref, parseIssuePath, routeProjectOf } from "../refs/routes";
+import { nodeRouteFromHref, routeProjectOf } from "../refs/routes";
+import { issueOfPage } from "../search/bar-scope";
 import { ConversationView } from "./ConversationView";
 import {
   type ClickedItem,
-  markSeen,
   movePanel,
   newConversation,
   setClicked,
@@ -26,12 +27,12 @@ import { History } from "./History";
 import { ConversationHeader, LevelControl } from "./RunControls";
 import { useAsk } from "./useAsk";
 
-/** The id of the side panel, which a click inside it is told apart from a click on the page by. */
-export const SIDE_PANEL_ID = "going-side-panel";
+/** The side panel's element id. */
+const SIDE_PANEL_ID = "going-side-panel";
 
 /** The item a click on the page was on: the issue or document a link or a reference in it names,
  *  as the context of a request names it; undefined for a click on nothing of the kind. */
-export function clickedItem(target: EventTarget | null): GoingContextInput | undefined {
+function clickedItem(target: EventTarget | null): GoingContextInput | undefined {
   if (!(target instanceof Element)) {
     return undefined;
   }
@@ -46,13 +47,14 @@ export function clickedItem(target: EventTarget | null): GoingContextInput | und
     return undefined;
   }
   if ("key" in route) {
-    return { issue: route.key, project: routeProjectOf(`/issues/${route.key}`) ?? "" };
+    return { issue: route.key, project: issueProject(route.key) };
   }
   return "project" in route ? { project: route.project } : undefined;
 }
 
 /** The context of the next request at the side: the page the panel sits beside, and the item a
- *  click on that page named, which outranks the page's own issue while the person is on it. */
+ *  click on that page named, which takes the place of the page's own issue and project while the
+ *  person is on it: a click on a project's document names no issue. */
 function contextOf(
   pathname: string,
   search: string,
@@ -60,14 +62,14 @@ function contextOf(
 ): GoingContextInput {
   const page: GoingContextInput = {
     block: "",
-    issue: parseIssuePath(pathname, search)?.key ?? "",
+    issue: issueOfPage(pathname, search) ?? "",
     path: pathname,
     project: routeProjectOf(pathname) ?? "",
   };
   if (clicked === undefined || clicked.path !== pathname) {
     return page;
   }
-  return { ...page, ...clicked.context };
+  return { ...page, issue: "", ...clicked.context };
 }
 
 /**
@@ -106,10 +108,6 @@ export function SidePanel(): ReactNode {
     document.addEventListener("click", onClick, true);
     return () => document.removeEventListener("click", onClick, true);
   }, [login, side]);
-
-  useEffect(() => {
-    if (side) markSeen();
-  });
 
   if (!side) {
     return null;

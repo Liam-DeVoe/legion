@@ -303,7 +303,7 @@ elif [ "${DISPATCH_E2E_MODELS:-}" = "real" ]; then
       DISPATCH_ANSWERER | DISPATCH_AZURE_CHAT_* | DISPATCH_AZURE_TENANT_ID | DISPATCH_AZURE_CLIENT_ID | \
         DISPATCH_AZURE_FEDERATED_TOKEN_FILE | DISPATCH_CHAT_* | DISPATCH_DECISION_MODEL*)
         setting="${!name}"
-        if [[ "$name" == *_FILE && "$setting" != /* ]]; then setting="$PWD/$setting"; fi
+        if [[ "$name" == *_FILE && -n "$setting" && "$setting" != /* ]]; then setting="$PWD/$setting"; fi
         models_env+=("$name=$setting")
         ;;
     esac

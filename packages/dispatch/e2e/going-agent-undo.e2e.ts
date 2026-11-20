@@ -1,7 +1,6 @@
 import { setLiveSessions } from "./agents";
 import {
   createIssue,
-  createIssueArtifact,
   createProject,
   getIssue,
   listComments,
@@ -12,6 +11,7 @@ import {
 } from "./api";
 import { modelsLane, proposePlan, say, scriptChat, scriptDecision } from "./fake-models-helpers";
 import {
+  approveAndFinish,
   askTheAgent,
   decided,
   lineOnTop,
@@ -20,9 +20,11 @@ import {
   prose,
   RUN_STEPS_MS,
   searchBox,
+  seedSplit,
+  writeSpec,
 } from "./going-panel";
 import { expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 
 // Check c7 of dispatch://INFRA-1588/artifact/verification-md (spec R6): Undo on the result of the
 // split writes each old value back, closes the new issue, and names a value another person changed
@@ -31,14 +33,6 @@ import { asUser } from "./users";
 // new issue that has a route closes it, with no message on it. Negative controls: an Undo that
 // writes back over a later change of another person, and one that keeps the undo kind trace for a
 // suggestion, which stays open.
-
-/** Approves the waiting plan from the bar's empty box and waits for the run to end. */
-async function approveAndFinish(page: Page): Promise<void> {
-  await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
-  await searchBox(page).focus();
-  await searchBox(page).press("Enter");
-  await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-}
 
 function undoLines(page: Page) {
   return newestRun(page).getByTestId("going-undo-line");
@@ -50,19 +44,8 @@ test("Undo of the split writes each old value back, closes the new issue, and ke
 }) => {
   modelsLane();
   test.setTimeout(150_000);
-  await createProject({ key: "CORE", name: "Core" });
-  const parent = await createIssue({ project: "CORE", title: "Build the observatory" });
-  const first = await createIssue({
-    parent: parent.key,
-    project: "CORE",
-    title: "Pour the foundation",
-  });
-  const second = await createIssue({
-    parent: parent.key,
-    project: "CORE",
-    title: "Raise the dome",
-  });
-  const words = `split ${parent.key} and undo it`;
+  const split = await seedSplit();
+  const words = `split ${split.parent} and undo it`;
   await scriptChat({
     default: prose("A short answer while the person pauses."),
     runs: [
@@ -71,15 +54,15 @@ test("Undo of the split writes each old value back, closes the new issue, and ke
         turns: [
           proposePlan("Split the observatory.", [
             {
-              arguments: { parent: parent.key, project: "CORE", title: "The second half" },
+              arguments: { parent: split.parent, project: "CORE", title: "The second half" },
               tool: "dispatch_issue",
             },
             {
-              arguments: { issue: first.key, title: "Pour the first foundation" },
+              arguments: { issue: split.first, title: "Pour the first foundation" },
               tool: "dispatch_issue_update",
             },
             {
-              arguments: { issue: second.key, title: "Raise the first dome" },
+              arguments: { issue: split.second, title: "Raise the first dome" },
               tool: "dispatch_issue_update",
             },
           ]),
@@ -89,27 +72,23 @@ test("Undo of the split writes each old value back, closes the new issue, and ke
     ],
   });
   const before = (await listIssues("CORE")).map((issue) => issue.key);
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/");
     await askTheAgent(page, words);
     await approveAndFinish(page);
     const made = (await listIssues("CORE")).find((issue) => !before.includes(issue.key));
     expect(made?.title).toBe("The second half");
     // Bob renames the second child after the run.
-    await patchIssue(second.key, { title: "Bob's dome" }, { login: "bob" });
+    await patchIssue(split.second, { title: "Bob's dome" }, { login: "bob" });
 
     await newestRun(page).getByTestId("going-undo-button").click();
     await expect(undoLines(page)).toHaveCount(3, { timeout: RUN_STEPS_MS });
-    expect((await getIssue(first.key)).title).toBe("Pour the foundation");
-    expect((await getIssue(second.key)).title).toBe("Bob's dome");
-    await expect(undoLines(page).filter({ hasText: second.key })).toContainText("kept");
+    expect((await getIssue(split.first)).title).toBe("Pour the foundation");
+    expect((await getIssue(split.second)).title).toBe("Bob's dome");
+    await expect(undoLines(page).filter({ hasText: split.second })).toContainText("kept");
     expect((await getIssue(made?.key ?? "")).status).toBe("done");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a suggestion and a message planned, approved and run, and the Undo.
@@ -120,7 +99,7 @@ test("Undo of a run that posted a suggestion and a message rejects the suggestio
   test.setTimeout(150_000);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Write the observing guide" });
-  await createIssueArtifact(issue.key, { content: "# Guide\n\nLook up.\n", name: "spec.md" });
+  await writeSpec(issue, "# Guide\n\nLook up.\n");
   const words = `suggest a change to ${issue.key}'s spec and say so`;
   await scriptChat({
     default: prose("A short answer while the person pauses."),
@@ -149,20 +128,19 @@ test("Undo of a run that posted a suggestion and a message rejects the suggestio
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue.key}`);
     await askTheAgent(page, words);
     await approveAndFinish(page);
     await newestRun(page).getByTestId("going-undo-button").click();
     await expect(undoLines(page)).toHaveCount(2, { timeout: RUN_STEPS_MS });
     await expect(undoLines(page).filter({ hasText: "message" })).toContainText("sent, not undone");
-    const comments = JSON.stringify(await listComments(issue.key));
-    expect(comments).toContain("rejected");
-  } finally {
-    await context.close();
-  }
+    const suggested = (await listComments(issue.key)).find(
+      (comment) => comment.suggestion !== null
+    );
+    expect(suggested?.suggestion?.accepted).toBe(false);
+    expect(suggested?.resolved).toBe(true);
+  });
 });
 
 // SLOW(>=2s): a new issue filed from the line on top with a route, and its Undo.
@@ -177,9 +155,7 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
   await scriptChat({ default: prose("A new issue.") });
   const before = (await listIssues("CORE")).map((issue) => issue.key);
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await searchBox(page).fill("we need a shutter for the dome");
     await expect(lineOnTop(page)).toContainText("File as a new issue", { timeout: RUN_STEPS_MS });
@@ -193,7 +169,5 @@ test("Undo of a new issue that has a route closes it, and the issue holds no mes
     await expect(undoLines(page)).toHaveCount(1, { timeout: RUN_STEPS_MS });
     expect((await getIssue(made?.key ?? "")).status).toBe("done");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
-  } finally {
-    await context.close();
-  }
+  });
 });

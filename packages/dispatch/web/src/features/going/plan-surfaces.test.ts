@@ -13,11 +13,9 @@ const WEB_SRC = join(import.meta.dir, "..", "..");
 
 /** Every component file under `dir`, tests left out. */
 function sources(dir: string): string[] {
-  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) return sources(path);
-    return entry.name.endsWith(".tsx") && !entry.name.endsWith(".test.tsx") ? [path] : [];
-  });
+  return readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter((path) => path.endsWith(".tsx") && !path.endsWith(".test.tsx"))
+    .map((path) => join(dir, path));
 }
 
 test("everyDrawingSurfaceIsListed", () => {

@@ -3,6 +3,7 @@ import { modelsLane, runCalls, say, scriptChat } from "./fake-models-helpers";
 import {
   askTheAgent,
   bar,
+  closeBar,
   newestRun,
   openBarOver,
   prose,
@@ -11,7 +12,7 @@ import {
   sidePanel,
 } from "./going-panel";
 import { expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 
 // Check c1 of dispatch://INFRA-1588/artifact/verification-md (spec R1): Ctrl-K opens the bar over
 // the page and Esc closes it; Ctrl-Shift-K keeps the same conversation in a panel at the right,
@@ -39,31 +40,22 @@ async function expectAtTheSide(page: Page, words: string): Promise<void> {
 test("opens over the issue page", async ({ browser }) => {
   modelsLane();
   const { first } = await seedList();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${first}`);
     await expect(bar(page)).toBeVisible();
-    await page.keyboard.press("Escape");
-    await expect(bar(page)).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
+    await closeBar(page);
+  });
 });
 
 // SLOW(>=2s): one open and close of the bar over the Inbox.
 test("opens over the Inbox", async ({ browser }) => {
   modelsLane();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/");
     await expect(bar(page)).toBeVisible();
     await page.keyboard.press("Control+k");
     await expect(bar(page)).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): two runs of the fake chat model and a navigation.
@@ -82,9 +74,7 @@ test("Ctrl-Shift-K keeps the conversation at the side, and a click on an issue o
       { turns: [say("It needs a telescope.")], words: next },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, asked);
     await expect(newestRun(page).getByTestId("going-run-answer")).toHaveText(
@@ -109,9 +99,7 @@ test("Ctrl-Shift-K keeps the conversation at the side, and a click on an issue o
     });
     const [call] = await runCalls(next);
     expect(call?.context).toMatchObject({ issue: second });
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a run, the panel at the side, and two navigations.
@@ -124,9 +112,7 @@ test("the panel stays open on navigation", async ({ browser }) => {
     default: prose("A short answer while the person pauses."),
     runs: [{ turns: [say("Here beside you.")], words: asked }],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, asked);
     await bar(page).getByTestId("going-move").click();
@@ -144,31 +130,33 @@ test("the panel stays open on navigation", async ({ browser }) => {
     await expect(sidePanel(page).getByText("Here beside you.")).toBeVisible({
       timeout: RUN_STEPS_MS,
     });
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // Firefox keeps Ctrl-Shift-K for its Web Console. The row tells whether the page gets that key in
-// a real Firefox: where it does, the key keeps the conversation at the side; where it does not,
-// Ctrl-K pressed while the bar is open does, and the button "Keep at the side" stays either way.
+// a real Firefox, and records in its report which key kept the conversation at the side: where
+// the page gets it, Ctrl-Shift-K; where it does not, Ctrl-K pressed while the bar is open; and the
+// button "Keep at the side" stays either way.
 // SLOW(>=2s): one open of the bar and a move to the side.
 test("in Firefox the conversation keeps at the side by Ctrl-Shift-K, or else by Ctrl-K in the open bar, and the button stays @firefox", async ({
   browser,
 }) => {
   modelsLane();
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/");
     await expect(bar(page).getByRole("button", { name: "Keep at the side" })).toBeVisible();
     await searchBox(page).press("Control+Shift+K");
+    let kept = "Ctrl-Shift-K";
+    // The press returns once the page handled the key, and React draws a key's move in that task.
     if ((await sidePanel(page).count()) === 0) {
+      kept = "Ctrl-K in the open bar";
       await searchBox(page).press("Control+k");
     }
     await expect(sidePanel(page)).toBeVisible();
     await expect(bar(page)).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
+    test.info().annotations.push({
+      description: kept,
+      type: "the key that kept the conversation at the side",
+    });
+  });
 });

@@ -14,7 +14,7 @@ import { AnswerBlock } from "../search/blocks/AnswerBlock";
 import { type RunEntry, shownState, useGoing } from "./going-store";
 import { PlanCard } from "./PlanRows";
 import { RunUndo } from "./RunUndo";
-import type { RunState } from "./run-states";
+import { type RunState, runEnded } from "./run-states";
 import { type PlanAnswering, usePlan } from "./usePlan";
 
 /** How a run stands, in the person's words, for the line under its steps. */
@@ -54,20 +54,19 @@ function Steps({ run }: { readonly run: RunEntry }): ReactNode {
 }
 
 /** One run of the conversation: the person's words, its steps, the answer and blocks, its plan
- *  where it is the newest, how it ended with Continue on a bound, and Undo once it changed
- *  something. */
+ *  where it is the newest (the one `answering` is given for), how it ended with Continue on a
+ *  bound, and Undo once it changed something. */
 function RunTurn({
   answering,
-  newest,
   onContinue,
   run,
 }: {
   readonly answering: PlanAnswering | undefined;
-  readonly newest: boolean;
   readonly onContinue: (run: string) => void;
   readonly run: RunEntry;
 }): ReactNode {
-  const own = usePlan(newest ? undefined : run.id, newest ? 0 : run.frames.planFrames);
+  const newest = answering !== undefined;
+  const own = usePlan(newest ? undefined : run.id, newest ? 0 : run.frames.planReads);
   const plan = answering ?? own;
   const state = shownState(run);
   const answer = run.frames.replies.at(-1);
@@ -75,7 +74,7 @@ function RunTurn({
   // Undo is offered on a run that changed something: a request of it landed, or a row of its
   // plan ran.
   const changed =
-    (run.record?.issues ?? []).length > 0 ||
+    (run.record.issues ?? []).length > 0 ||
     (plan.plan?.rows ?? []).some((row) => row.state === "done");
   return (
     <li className="space-y-2" data-run={run.id} data-state={state} data-testid="going-run">
@@ -83,7 +82,7 @@ function RunTurn({
         className={`rounded-lg px-3 py-2 text-sm ${surfaceMutedBg} ${textPrimaryOnSurface}`}
         data-testid="going-run-words"
       >
-        {run.words}
+        {run.record.words}
       </p>
       <Steps run={run} />
       {answer === undefined ? null : (
@@ -95,7 +94,7 @@ function RunTurn({
         // biome-ignore lint/suspicious/noArrayIndexKey: a block is its place in the run, and blocks are only ever added
         <AnswerBlock block={block} key={index} />
       ))}
-      {newest && answering !== undefined ? <PlanCard answering={answering} /> : null}
+      {answering === undefined ? null : <PlanCard answering={answering} />}
       <p
         className={`text-xs ${state === "failed" ? dangerText : textSecondaryOnSurface}`}
         data-testid="going-run-state"
@@ -116,7 +115,7 @@ function RunTurn({
           Continue
         </button>
       ) : null}
-      {state !== "working" && state !== "waiting" && changed ? <RunUndo run={run.id} /> : null}
+      {runEnded(state) && changed ? <RunUndo run={run.id} /> : null}
       {run.unreadable === undefined ? null : (
         <p className={`text-xs ${dangerText}`} role="alert">
           {run.unreadable}
@@ -159,7 +158,6 @@ export function ConversationView({
         <RunTurn
           answering={index === runs.length - 1 ? answering : undefined}
           key={run.id}
-          newest={index === runs.length - 1}
           onContinue={onContinue}
           run={run}
         />

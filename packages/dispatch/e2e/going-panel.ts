@@ -1,4 +1,4 @@
-import { createIssue, createProject, search } from "./api";
+import { createIssue, createIssueArtifact, createProject, documentBase, search } from "./api";
 import type { ChatReply } from "./fake-chat-model";
 import type { DecisionReply } from "./fake-decision-model";
 import { expect, type Locator, type Page } from "./test";
@@ -54,21 +54,63 @@ export async function openBarOver(page: Page, path: string): Promise<void> {
   await openBar(page);
 }
 
+/** Seeds project CORE and one issue of it titled `title`, and answers the issue's key. */
+export async function seedCoreIssue(title: string): Promise<string> {
+  await createProject({ key: "CORE", name: "Core" });
+  return (await createIssue({ project: "CORE", title })).key;
+}
+
 /** Seeds project CORE and one issue titled `title`, and answers that issue's key and the href the
  *  search for `question` gives its hit, which is the link the model is given. */
 export async function seedIssue(
   question: string,
   title: string
 ): Promise<{ readonly key: string; readonly href: string }> {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({ project: "CORE", title });
+  const key = await seedCoreIssue(title);
   const hit = ((await search(question)).results ?? []).find(
-    (result) => result.owner.kind === "issue" && result.owner.key === issue.key
+    (result) => result.owner.kind === "issue" && result.owner.key === key
   );
   if (hit === undefined) {
-    throw new Error(`search for "${question}" does not find ${issue.key}`);
+    throw new Error(`search for "${question}" does not find ${key}`);
   }
-  return { href: hit.href, key: issue.key };
+  return { href: hit.href, key };
+}
+
+/** A parent issue of CORE and its two children, by key. */
+export interface Split {
+  readonly parent: string;
+  readonly first: string;
+  readonly second: string;
+}
+
+/** Seeds project CORE with the issue a split splits and its two children. */
+export async function seedSplit(): Promise<Split> {
+  await createProject({ key: "CORE", name: "Core" });
+  const parent = await createIssue({ project: "CORE", title: "Build the observatory" });
+  const first = await createIssue({
+    parent: parent.key,
+    project: "CORE",
+    title: "Pour the foundation",
+  });
+  const second = await createIssue({
+    parent: parent.key,
+    project: "CORE",
+    title: "Raise the dome",
+  });
+  return { first: first.key, parent: parent.key, second: second.key };
+}
+
+/** Writes `content` as the spec of `issue`, over the spec the issue was made with: an upload over
+ *  a document names the token of the version it replaces. */
+export async function writeSpec(
+  issue: { readonly key: string; readonly primary_artifact_id: string },
+  content: string
+): Promise<void> {
+  await createIssueArtifact(issue.key, {
+    content,
+    name: "spec.md",
+    precondition: await documentBase(issue.primary_artifact_id),
+  });
 }
 
 /** A chart of project CORE's issues by status, as bars: the spec a model writes for it names a
@@ -160,17 +202,21 @@ export async function askTheAgent(page: Page, words: string): Promise<void> {
   await searchBox(page).fill(words);
   await expect(lineOnTop(page)).toBeVisible();
   await searchBox(page).press("Enter");
-  await expect(page.getByTestId("going-run").last()).toBeVisible({ timeout: RUN_STEPS_MS });
-}
-
-/** The conversation of the agent's runs, in the bar over the page or in the panel at the side. */
-export function conversation(page: Page): Locator {
-  return page.getByTestId("going-conversation");
+  await expect(newestRun(page)).toBeVisible({ timeout: RUN_STEPS_MS });
 }
 
 /** The newest run of the conversation on the screen. */
 export function newestRun(page: Page): Locator {
   return page.getByTestId("going-run").last();
+}
+
+/** Approves the newest run's waiting plan from the bar's empty box, and waits for the run to
+ *  end done. */
+export async function approveAndFinish(page: Page): Promise<void> {
+  await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
+  await searchBox(page).focus();
+  await searchBox(page).press("Enter");
+  await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
 }
 
 /** The panel at the side of the page. */
@@ -191,15 +237,4 @@ export function planOnPage(page: Page): Locator {
 /** The plan rows of `where`, a card or the page's drawing. */
 export function planRows(where: Locator): Locator {
   return where.getByTestId("going-plan-row");
-}
-
-/** Every `POST /api/v1/going/runs` the page sends from here on, each with its body. */
-export function countStartedRuns(page: Page): { readonly bodies: Record<string, unknown>[] } {
-  const started = { bodies: [] as Record<string, unknown>[] };
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/v1/going/runs") {
-      started.bodies.push(request.postDataJSON() as Record<string, unknown>);
-    }
-  });
-  return started;
 }

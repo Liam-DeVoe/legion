@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useId } from "react";
 
 import { borderDefault, textPrimaryOnSurface, textSecondaryOnSurface } from "../../theme/classes";
-import { draftOf, drawOnPage, useGoing } from "./going-store";
+import { draftOf, drawOnPage, useGoingValue } from "./going-store";
 import { PlanControls, PlanRowView } from "./PlanRows";
 import { type PlanSurface, rowsOnSurface } from "./plan-surfaces";
 import { useOpenPlan } from "./usePlan";
@@ -14,7 +14,7 @@ import { useOpenPlan } from "./usePlan";
  */
 export function PlannedChanges({ surface }: { readonly surface: PlanSurface }): ReactNode {
   const id = useId();
-  const going = useGoing();
+  const held = useGoingValue((of) => of.draft);
   const answering = useOpenPlan();
   const plan = answering.plan;
   const rows =
@@ -30,7 +30,7 @@ export function PlannedChanges({ surface }: { readonly surface: PlanSurface }): 
   if (plan === undefined || rows.length === 0) {
     return null;
   }
-  const draft = draftOf(plan.run, plan.plan, going);
+  const draft = draftOf(plan.run, plan.plan, held);
   return (
     <section
       aria-label="Planned changes"

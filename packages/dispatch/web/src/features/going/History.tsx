@@ -15,7 +15,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { openConversation } from "./going-store";
 import { RunUndo } from "./RunUndo";
 import { stateOfRecord } from "./run-frames";
-import type { RunState } from "./run-states";
+import { type RunState, runEnded } from "./run-states";
 
 /** How a run stands, as History lists it. */
 const RUN_STATES: Readonly<Record<RunState, string>> = {
@@ -32,7 +32,6 @@ const RUN_STATES: Readonly<Record<RunState, string>> = {
  *  changed something. */
 function HistoryRun({ run }: { readonly run: GoingRun }): ReactNode {
   const state = stateOfRecord(run.state, run.stop_reason);
-  const ended = state !== "working" && state !== "waiting";
   return (
     <li className="space-y-1 py-1" data-run={run.id} data-testid="going-history-run">
       <div className="flex flex-wrap items-baseline gap-x-2 text-xs">
@@ -44,7 +43,7 @@ function HistoryRun({ run }: { readonly run: GoingRun }): ReactNode {
           <Timestamp at={run.created_at} />
         </span>
       </div>
-      {ended && (run.issues ?? []).length > 0 ? <RunUndo run={run.id} /> : null}
+      {runEnded(state) && (run.issues ?? []).length > 0 ? <RunUndo run={run.id} /> : null}
     </li>
   );
 }

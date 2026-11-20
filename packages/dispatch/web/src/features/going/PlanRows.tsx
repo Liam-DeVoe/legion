@@ -1,7 +1,7 @@
-import { diffWordsWithSpace } from "diff";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 
 import type { GoingPlanAnswer, GoingPlanRow } from "../../api/types";
+import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
   dangerText,
@@ -16,13 +16,15 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import { actionName } from "../search/going-turns";
+import { changedWords } from "../doc/change-set";
 import { draftOf, type PlanDraft, setDraft, useGoing } from "./going-store";
 import {
   type ChangePiece,
   documentChange,
   editedDraft,
+  makesIssue,
   rowChanges,
+  rowLabel,
   rowWaits,
   toggledDraft,
   valueText,
@@ -40,20 +42,24 @@ const ROW_STATES: Readonly<Record<GoingPlanRow["state"], string>> = {
   waiting: "Waits for you",
 };
 
-/** One piece of a document change, its words out and in marked as a diff marks them. */
+/** One piece of a document change, its words out and in marked as a diff marks them. A whole
+ *  document's pieces are diffed within the bound `changedWords` keeps, and once for each pair. */
 function PieceDiff({ piece }: { readonly piece: ChangePiece }): ReactNode {
+  const { added, removed } = piece;
+  const parts = useMemo(() => changedWords(removed, added), [removed, added]);
   return (
     <p
       className="whitespace-pre-wrap break-words font-mono text-xs"
       data-testid="going-plan-diff-piece"
     >
-      {diffWordsWithSpace(piece.removed, piece.added).map((part, index) => {
-        const Mark = part.added ? "ins" : part.removed ? "del" : "span";
-        const marked = part.added
-          ? `${diffAddedBg} ${diffAddedText} no-underline`
-          : part.removed
-            ? `${diffRemovedBg} ${diffRemovedText}`
-            : undefined;
+      {parts.map((part, index) => {
+        const Mark = part.kind === "added" ? "ins" : part.kind === "removed" ? "del" : "span";
+        const marked =
+          part.kind === "added"
+            ? `${diffAddedBg} ${diffAddedText} no-underline`
+            : part.kind === "removed"
+              ? `${diffRemovedBg} ${diffRemovedText}`
+              : undefined;
         return (
           // biome-ignore lint/suspicious/noArrayIndexKey: a part is its place in the diff, which never changes for one piece
           <Mark className={marked} key={index}>
@@ -166,7 +172,7 @@ export function PlanRowView({
   const document = documentChange(row, plan.summary);
   const changes = rowChanges(row, edits);
   const rows = plan.rows ?? [];
-  const label = `${actionName(row.tool)}${row.item === "" ? "" : ` ${row.item}`}`;
+  const label = rowLabel(row);
   return (
     <li
       className={`space-y-1 border-t py-2 first:border-t-0 ${borderDefault}`}
@@ -199,7 +205,7 @@ export function PlanRowView({
             next={change.next}
             now={change.now}
             onEdit={(value) => setDraft(editedDraft(draft, row.row, change.field, value))}
-            showsNow={row.tool !== "dispatch_issue"}
+            showsNow={!makesIssue(row)}
           />
         ))
       ) : (
@@ -280,17 +286,31 @@ export function PlanControls({ answering }: { readonly answering: PlanAnswering 
 /**
  * The plan card of the bar and the side panel: the rows no page on the screen draws, and the
  * plan's Approve and Reject. A row the page draws (`PlannedChanges`) shows there and not here, so
- * the rows of one plan can show in both places, each once.
+ * the rows of one plan can show in both places, each once. A plan that could not be read says
+ * so, with Retry.
  */
 export function PlanCard({ answering }: { readonly answering: PlanAnswering }): ReactNode {
   const going = useGoing();
   const plan = answering.plan;
   if (plan === undefined) {
-    return null;
+    const unreadable = answering.unreadable;
+    return unreadable === undefined ? null : (
+      <section
+        aria-label="Plan"
+        className={`rounded-lg border p-3 ${borderDefault}`}
+        data-testid="going-plan-unreadable"
+      >
+        <QueryError
+          message={unreadable.message}
+          onRetry={unreadable.retry}
+          retrying={unreadable.retrying}
+        />
+      </section>
+    );
   }
   const onPage = new Set([...going.onPage.values()].flat());
   const rows = (plan.rows ?? []).filter((row) => !onPage.has(row.row));
-  const draft = draftOf(plan.run, plan.plan, going);
+  const draft = draftOf(plan.run, plan.plan, going.draft);
   return (
     <section
       aria-label="Plan"

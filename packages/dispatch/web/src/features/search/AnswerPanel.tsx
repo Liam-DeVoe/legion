@@ -62,8 +62,8 @@ function changedText(dropped: number): string {
  * once, and the answer, which is in no live region, is not read out again; the panel is not busy
  * while it shows, as nothing more of it is coming.
  *
- * The decision and the proposal are the bar's operations' to draw (`GoingAnswer`), so nothing of
- * them shows here.
+ * The decision and the proposal the stream carries are no part of the answer, so nothing of them
+ * shows here.
  */
 export function AnswerPanel({
   answer,

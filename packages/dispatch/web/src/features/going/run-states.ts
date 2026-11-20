@@ -55,11 +55,6 @@ export function runEnded(state: RunState): boolean {
   );
 }
 
-/** Whether a run in `state` is working: the one state Stop and Esc in the empty box stop. */
-export function runWorking(state: RunState): boolean {
-  return state === "working";
-}
-
 /**
  * The next state of a run in `state` on `event`. A working run stops at once on Stop or on Esc in
  * the empty box, and sends its stop; one that waits for its plan stops on Stop alone, since Esc

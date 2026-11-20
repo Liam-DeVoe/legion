@@ -38,10 +38,9 @@ import {
 import { ConversationView } from "../going/ConversationView";
 import {
   conversationWorking,
-  markSeen,
   movePanel,
   newConversation,
-  useGoing,
+  useGoingValue,
 } from "../going/going-store";
 import { History } from "../going/History";
 import { BROWSER_PANEL_KEYS } from "../going/panel-states";
@@ -84,8 +83,8 @@ const emptyResults: SearchResult[] = [];
 const emptyProjects: Project[] = [];
 const ACTIONS_GROUP_ID = "search-group-actions";
 /** The group of the line on top, and the line's own id. */
-export const LINE_GROUP_ID = "search-group-line";
-export const LINE_OPTION_ID = "search-option-line";
+const LINE_GROUP_ID = "search-group-line";
+const LINE_OPTION_ID = "search-option-line";
 const MORE_ACTIONS_GROUP_ID = "search-group-more-actions";
 const PROJECTS_GROUP_ID = "search-group-projects";
 const RECENT_GROUP_ID = "search-group-recent";
@@ -94,10 +93,10 @@ const RECENT_GROUP_ID = "search-group-recent";
  *  model for an answer. */
 const ISSUE_KEY = /^[A-Za-z][A-Za-z0-9]*-\d+$/;
 
-/** Whether `result` is the very item `words` name: its issue's key or title, or its document's
- *  name, whatever the case. Such a hit heads the list, and the line on top is not offered. */
-function namesHit(result: SearchResult, words: string): boolean {
-  const said = words.toLowerCase();
+/** Whether `result` is the very item the words name: its issue's key or title, or its document's
+ *  name, whatever the case. `said` is the words in lower case. Such a hit heads the list, and the
+ *  line on top is not offered. */
+function namesHit(result: SearchResult, said: string): boolean {
   const owner = result.owner;
   return owner.kind === "issue"
     ? (owner.key ?? "").toLowerCase() === said || (owner.title ?? "").toLowerCase() === said
@@ -453,8 +452,10 @@ function PaletteDialog({
   const [actions] = useState(() => appKeymap.actions());
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: inputRef, onClose, open: true });
   // The conversation the bar holds, which outlives this open of it (`features/going`), and what
-  // its box does with Enter and Esc there (`useAsk`), with the chip's context.
-  const going = useGoing();
+  // its box does with Enter and Esc there (`useAsk`), with the chip's context. The bar reads the
+  // two parts of it it draws here, so a frame of a run draws only the conversation again.
+  const refusal = useGoingValue((of) => of.refusal);
+  const conversationOpen = useGoingValue((of) => of.conversation !== undefined);
   const asking = useAsk(scope.context);
   const [history, setHistory] = useState(false);
   const login = whoAmI.data?.login;
@@ -481,7 +482,6 @@ function PaletteDialog({
       run: () => movePanel({ kind: "mod_shift_k" }, login),
     },
   ]);
-  useEffect(() => markSeen());
   const searchText = query.trim();
   const needle = searchText.toLowerCase();
   const tooShort = searchText.length < 2;
@@ -580,8 +580,7 @@ function PaletteDialog({
   // words. Words that are a hit's own key or title lead to that hit instead, so no line is
   // offered and the hit heads the list.
   const namesItsHit =
-    ISSUE_KEY.test(searchText) ||
-    (showHits && results.some((result) => namesHit(result, searchText)));
+    ISSUE_KEY.test(searchText) || (showHits && results.some((result) => namesHit(result, needle)));
   const lineLabel = asking.planWaits ? "Revise the plan" : "Ask";
   const lineSection: CommandSection = {
     id: LINE_GROUP_ID,
@@ -686,10 +685,10 @@ function PaletteDialog({
   // the actions, or an answer re-ranking them, leave it on that row. The first hits of a query
   // send it to the head, and the head it lands on is then adopted, so a row coming back does
   // not take the highlight back from it. The head is the first row - the line on top where the
-  // words lead to one - unless that is one of the foot rows - the two offers and the More
-  // actions, which come last: the highlight never moves to a write by itself, so an Enter never runs a write the reader
-  // did not point at, and with only foot rows listed nothing is highlighted, and Enter runs
-  // nothing until the reader arrows.
+  // words lead to one - unless that is one of the foot rows - the new issue and the More actions,
+  // which come last: the highlight never moves to a write by itself, so an Enter never runs a
+  // write the reader did not point at, and with only foot rows listed nothing is highlighted, and
+  // Enter runs nothing until the reader arrows.
   // A row that leaves a list already answering this query takes the highlight with it and
   // leaves it on no row: that is the pause's fused order dropping a row the keystrokes' hits
   // held. Sending it to the head there would move the selection under the reader's hand, and
@@ -861,9 +860,9 @@ function PaletteDialog({
           ) : (
             <ConversationView answering={asking.answering} onContinue={asking.onContinue} />
           )}
-          {going.refusal === undefined ? null : (
+          {refusal === undefined ? null : (
             <p className={`shrink-0 px-3 py-2 text-xs ${dangerText}`} role="alert">
-              {going.refusal}
+              {refusal}
             </p>
           )}
           {/* What narrows the search and what the words themselves can do, between the box and
@@ -977,12 +976,11 @@ function PaletteDialog({
           )}
           {/* The short answer, beside the hits, while the box holds words or no conversation is
               open: an empty box over an open conversation draws the conversation instead. */}
-          {shownAnswer === undefined ||
-          (searchText === "" && going.conversation !== undefined) ? null : (
+          {shownAnswer === undefined || (searchText === "" && conversationOpen) ? null : (
             <AnswerPanel answer={shownAnswer} stale={stale} />
           )}
-          {/* What the bar says about what it sent and what it made from these words, above the
-              message that says the search found none: each is an answer to that search. */}
+          {/* What the bar says about the new issue it made from these words, above the message
+              that says the search found none: each is an answer to that search. */}
           {newIssue?.said}
           {tooShort ? (
             <p className={`shrink-0 px-3 py-3 text-sm ${textMutedOnSurface}`}>

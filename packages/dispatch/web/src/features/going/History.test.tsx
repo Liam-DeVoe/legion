@@ -1,14 +1,17 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactNode } from "react";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { renderWithQueries } from "../../__tests__/query-provider";
 import { answerRoute } from "../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../api/client";
 import type { GoingConversation, GoingRun, GoingUndoAnswer } from "../../api/types";
+import { ConversationView } from "./ConversationView";
 import { goingState, resetGoingStore } from "./going-store";
 import { History } from "./History";
+import { useOpenPlan } from "./usePlan";
 
 // History as the person reads it (spec R6, R11): the conversations of the last 7 days, each with
 // its runs, the newest first, as Dispatch lists them; the Undo of a run that changed something,
@@ -64,12 +67,12 @@ const conversations: GoingConversation[] = [
 ];
 
 function renderHistory(onOpen: () => void = () => {}): void {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
-    <QueryClientProvider client={queryClient}>
-      <History onOpen={onOpen} />
-    </QueryClientProvider>
-  );
+  renderWithQueries(<History onOpen={onOpen} />);
+}
+
+/** The conversation as the bar draws it beside History. */
+function Conversation(): ReactNode {
+  return <ConversationView answering={useOpenPlan()} onContinue={() => {}} />;
 }
 
 afterEach(() => {
@@ -178,5 +181,93 @@ test("Open shows the conversation in the bar, its runs in the order they were as
   } finally {
     read.mockRestore();
     stream.mockRestore();
+  }
+});
+
+// A run's frames are read from its stream's first frame. Opening its conversation again, from
+// History or from the Inbox, shows each step once: a run read to its end is not read again, and
+// one read again starts its frames afresh.
+test("opening a conversation again shows each step of its runs once", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: conversations,
+    total: 2,
+  });
+  // Each run's stream carries a reply that calls a tool, the call's own frame, and the end.
+  const stream = spyOn(api, "streamGoingRunEvents").mockImplementation(async (id, onFrame) => {
+    onFrame("reply", { text: `Reading for ${id}.`, tools: ["call_tool"] });
+    onFrame("tool", { note: `read for ${id}`, step: 2, tool: "call_tool" });
+    onFrame("end", { offers: [], reason: "", state: "done" });
+  });
+  try {
+    renderWithQueries(
+      <>
+        <History onOpen={() => {}} />
+        <Conversation />
+      </>
+    );
+    const [first] = await screen.findAllByTestId("going-history-open");
+    await user.click(first as HTMLElement);
+    const steps = (run: string) =>
+      screen
+        .getAllByTestId("going-run")
+        .filter((shown) => shown.getAttribute("data-run") === run)
+        .flatMap((shown) => within(shown).queryAllByTestId("going-step"))
+        .map((step) => step.textContent);
+    await waitFor(() => expect(steps("r-2")).toEqual(["read for r-2"]));
+
+    await user.click(first as HTMLElement);
+
+    expect(steps("r-2")).toEqual(["read for r-2"]);
+    expect(steps("r-3")).toEqual(["read for r-3"]);
+    expect(stream.mock.calls.map(([id]) => id)).toEqual(["r-2", "r-3"]);
+  } finally {
+    read.mockRestore();
+    stream.mockRestore();
+  }
+});
+
+// A run its level's bound stopped offers Continue; a run its person or its grant stopped - the
+// session ended, the token was revoked - offers none, and History says so before its frames.
+test("History names a stop a bound's only where its reason is one of the level's budgets", async () => {
+  const stopped = (id: string, reason: string) =>
+    run(id, `run ${id}`, 10, { conversation: "c-3", state: "stopped", stop_reason: reason });
+  const read = spyOn(api, "myGoingRuns").mockResolvedValue({
+    limit: 50,
+    offset: 0,
+    rows: [
+      {
+        id: "c-3",
+        newest_at: new Date(now - 10 * 60_000).toISOString(),
+        runs: [
+          stopped("r-calls", "CALL_BUDGET: this run made the 6 model calls a Fast run may"),
+          stopped("r-tokens", "OUTPUT_TOKEN_BUDGET: a model call wrote the tokens it may"),
+          stopped("r-person", "STOPPED: its person stopped it"),
+          stopped("r-session", "SESSION_ENDED: the session that asked ended"),
+          stopped("r-token", "TOKEN_REVOKED: the grant's token was revoked"),
+        ],
+      },
+    ],
+    total: 1,
+  });
+  try {
+    renderHistory();
+    const runs = await screen.findAllByTestId("going-history-run");
+    expect(
+      runs.map((shown) => [
+        shown.getAttribute("data-run"),
+        within(shown).queryByText("stopped at a bound") === null ? "stopped" : "bound",
+      ])
+    ).toEqual([
+      ["r-calls", "bound"],
+      ["r-tokens", "bound"],
+      ["r-person", "stopped"],
+      ["r-session", "stopped"],
+      ["r-token", "stopped"],
+    ]);
+  } finally {
+    read.mockRestore();
   }
 });

@@ -17,6 +17,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { openConversation } from "./going-store";
+import { planTarget } from "./usePlan";
 
 /** Opens the conversation of a waiting plan in the bar: the conversation as History lists it
  *  (`listed`), or, where History does not list it yet, its run alone. */
@@ -50,7 +51,7 @@ function WaitingPlanRow({ plan }: { readonly plan: GoingWaitingPlan }): ReactNod
       void queryClient.invalidateQueries({ queryKey: goingWaitingPlansQuery().queryKey });
     },
     request: (waiting) => goingPlanApproveRequest(waiting.run, { plan: waiting.plan }),
-    target: (waiting) => `going-plan:${waiting.run}`,
+    target: (waiting) => planTarget(waiting.run),
   });
   return (
     <li

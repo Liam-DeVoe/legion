@@ -1,5 +1,6 @@
-import type { GoingBlockData } from "../../api/types";
-import { type RunEvent, type RunState, runNext } from "./run-states";
+import type { GoingBlockData, GoingRun } from "../../api/types";
+import { objectOf, textOf } from "./fields";
+import { type RunEvent, type RunState, runEnded, runNext } from "./run-states";
 
 /**
  * One run as its frames have built it so far (`GET /api/v1/going/runs/{id}/events`): its steps -
@@ -36,8 +37,9 @@ export interface RunFrames {
   readonly blocks: readonly GoingBlockData[];
   /** The plan's number and state as the last plan frame said them. */
   readonly plan: { readonly number: number; readonly state: string } | undefined;
-  /** How many plan frames came: each tells the bar to read the plan again. */
-  readonly planFrames: number;
+  /** How many frames told the bar to read the plan again: each plan frame, and the end of a run
+   *  that made a plan, whose rows have run by then (no plan frame says a row ran). */
+  readonly planReads: number;
   readonly end: RunEnd | undefined;
 }
 
@@ -46,15 +48,11 @@ export const STARTED_RUN: RunFrames = {
   blocks: [],
   end: undefined,
   plan: undefined,
-  planFrames: 0,
+  planReads: 0,
   replies: [],
   state: "working",
   steps: [],
 };
-
-function text(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
 
 /** The event an `end` frame is to the run's state: a turn that waits on its plan, done, failed,
  *  stopped by a bound of its level (it offers Continue), or stopped by its person. */
@@ -74,14 +72,13 @@ function endEvent(end: RunEnd): RunEvent {
 /** The run with one more frame, `name` and `data` as its stream carried them. A frame of a name
  *  this page does not know is one a later Dispatch added, and changes nothing. */
 export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFrames {
-  const fields: Readonly<Record<string, unknown>> =
-    typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  const fields = objectOf(data);
   switch (name) {
     case "reply": {
       const tools = Array.isArray(fields.tools)
         ? fields.tools.filter((tool): tool is string => typeof tool === "string")
         : [];
-      const reply = text(fields.text);
+      const reply = textOf(fields.text);
       return {
         ...run,
         replies: reply === "" ? run.replies : [...run.replies, reply],
@@ -100,11 +97,11 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
       };
     }
     case "tool": {
-      const tool = text(fields.tool);
+      const tool = textOf(fields.tool);
       const at = run.steps.findIndex((step) => step.running && step.tool === tool);
       const ended: RunStep = {
         id: at === -1 ? run.steps.length : at,
-        note: text(fields.note),
+        note: textOf(fields.note),
         refused: fields.error === true,
         running: false,
         step: typeof fields.step === "number" ? fields.step : undefined,
@@ -124,11 +121,11 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         : run;
     case "plan": {
       const number = typeof fields.plan === "number" ? fields.plan : 0;
-      const state = text(fields.state);
+      const state = textOf(fields.state);
       return {
         ...run,
         plan: { number, state },
-        planFrames: run.planFrames + 1,
+        planReads: run.planReads + 1,
         state: runNext(run.state, state === "waiting" ? "propose_plan" : "step").state,
       };
     }
@@ -137,20 +134,40 @@ export function withRunFrame(run: RunFrames, name: string, data: unknown): RunFr
         offers: Array.isArray(fields.offers)
           ? fields.offers.filter((offer): offer is string => typeof offer === "string")
           : [],
-        reason: text(fields.reason),
-        state: text(fields.state),
+        reason: textOf(fields.reason),
+        state: textOf(fields.state),
       };
+      const state = runNext(run.state, endEvent(end)).state;
       // A run whose end comes is no longer running anything: a call still shown as working was cut.
       const steps = run.steps.map((step) => (step.running ? { ...step, running: false } : step));
-      return { ...run, end, state: runNext(run.state, endEvent(end)).state, steps };
+      const reread = run.plan !== undefined && runEnded(state) && !runEnded(run.state);
+      return {
+        ...run,
+        end,
+        planReads: reread ? run.planReads + 1 : run.planReads,
+        state,
+        steps,
+      };
     }
     default:
       return run;
   }
 }
 
-/** The run's state as its record says it, for a run whose frames are not read yet (History). */
-export function stateOfRecord(state: string, stopReason: string | null): RunState {
+/** The codes of the reasons a bound of its level stops a run with (`going/agent/levels.go`): such
+ *  a run offers Continue. Every other stop is its person's or its grant's, which offers none. */
+const BOUND_REASONS: Readonly<Record<string, true>> = {
+  CALL_BUDGET: true,
+  OUTPUT_TOKEN_BUDGET: true,
+  TIME_BUDGET: true,
+};
+
+/** The run's state as its record says it, for a run whose frames are not read yet (History): a
+ *  stop is a bound's only where its reason's code is one of `BOUND_REASONS`. */
+export function stateOfRecord(
+  state: GoingRun["state"],
+  stopReason: GoingRun["stop_reason"]
+): RunState {
   switch (state) {
     case "queued":
     case "working":
@@ -162,7 +179,9 @@ export function stateOfRecord(state: string, stopReason: string | null): RunStat
     case "failed":
       return "failed";
     case "stopped":
-      return stopReason?.startsWith("STOPPED:") === true ? "stopped_person" : "stopped_bound";
+      return BOUND_REASONS[stopReason?.split(":", 1)[0] ?? ""] === true
+        ? "stopped_bound"
+        : "stopped_person";
     default:
       return "idle";
   }

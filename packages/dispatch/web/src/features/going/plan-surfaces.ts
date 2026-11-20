@@ -59,48 +59,68 @@ const DOCUMENT_CLASSES: Readonly<Record<string, true>> = {
   text: true,
 };
 
-/** Whether `value` is one of `keys`, as an issue key or a document name is written, whatever its
- *  case. */
-function named(value: unknown, keys: readonly string[]): boolean {
-  return (
-    typeof value === "string" &&
-    value !== "" &&
-    keys.some((key) => key.toUpperCase() === value.toUpperCase())
-  );
+/** The keys a surface names, as an issue key or a document name is written, upper-cased once
+ *  for each read of a plan's rows: the items it shows, and the issue or project that holds them. */
+interface SurfaceKeys {
+  readonly items: ReadonlySet<string>;
+  readonly holder: ReadonlySet<string>;
 }
 
-/** Whether `surface` draws `row`. */
-export function drawsRow(surface: PlanSurface, row: GoingPlanRow): boolean {
+function upperCased(keys: readonly string[]): ReadonlySet<string> {
+  return new Set(keys.map((key) => key.toUpperCase()));
+}
+
+function keysOf(surface: PlanSurface): SurfaceKeys {
+  switch (surface.kind) {
+    case "issues":
+      return { holder: upperCased([surface.project]), items: upperCased(surface.issues) };
+    case "issue":
+      return { holder: upperCased([surface.issue]), items: upperCased([surface.issue]) };
+    case "children":
+      return { holder: upperCased([surface.issue]), items: upperCased(surface.children) };
+    case "document":
+      return { holder: upperCased([surface.owner]), items: upperCased(surface.names) };
+  }
+}
+
+/** Whether `value` is one of `keys`, whatever its case. */
+function named(value: unknown, keys: ReadonlySet<string>): boolean {
+  return typeof value === "string" && value !== "" && keys.has(value.toUpperCase());
+}
+
+/** Whether `surface`, whose keys are `keys`, draws `row`. */
+function drawsRow(surface: PlanSurface, keys: SurfaceKeys, row: GoingPlanRow): boolean {
   const args = argumentsOf(row);
   switch (surface.kind) {
     case "issues":
       if (makesIssue(row)) {
         return args.parent === undefined || args.parent === ""
-          ? named(args.project, [surface.project])
-          : named(args.parent, surface.issues);
+          ? named(args.project, keys.holder)
+          : named(args.parent, keys.items);
       }
-      return ITEM_CLASSES[row.class] === true && named(row.item || row.issue, surface.issues);
+      return ITEM_CLASSES[row.class] === true && named(row.item || row.issue, keys.items);
     case "issue":
       return (
         !makesIssue(row) &&
         ITEM_CLASSES[row.class] === true &&
-        named(row.item || row.issue, [surface.issue])
+        named(row.item || row.issue, keys.items)
       );
     case "children":
       return makesIssue(row)
-        ? named(args.parent, [surface.issue])
-        : ITEM_CLASSES[row.class] === true && named(row.item || row.issue, surface.children);
+        ? named(args.parent, keys.holder)
+        : ITEM_CLASSES[row.class] === true && named(row.item || row.issue, keys.items);
     case "document":
       return (
         DOCUMENT_CLASSES[row.class] === true &&
         (row.item === surface.id ||
-          (named(args.artifact ?? args.name, surface.names) &&
-            named(args.issue ?? args.project, [surface.owner])))
+          (named(args.artifact ?? args.name, keys.items) &&
+            named(args.issue ?? args.project, keys.holder)))
       );
   }
 }
 
 /** The numbers of the rows of `rows` that `surface` draws. */
 export function rowsOnSurface(surface: PlanSurface, rows: readonly GoingPlanRow[]): number[] {
-  return rows.filter((row) => drawsRow(surface, row)).map((row) => row.row);
+  const keys = keysOf(surface);
+  return rows.filter((row) => drawsRow(surface, keys, row)).map((row) => row.row);
 }

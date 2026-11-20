@@ -153,8 +153,8 @@ person's words (`scriptChat({ runs })`, with `findTools`, `callTool`, `proposePl
 it gave the model (`runCalls`); the fake decision model can hold its answer until the row
 releases it (`hold`, `releaseDecisions`). `bun run e2e:models` runs the lane's specs on chromium
 (`going-agent-*`, `going-answer*` and `going-blocks`), and `bun run e2e:models:firefox` runs
-`going-agent-place`'s `@firefox` rows on Firefox, as the `embedder` job of
-`.github/workflows/dispatch-browser.yaml` does.
+`going-agent-place`'s `@firefox` rows on Firefox, locally or on a build farm; the `embedder` job
+of `.github/workflows/dispatch-browser.yaml` runs only `going-answer` and `going-blocks` today.
 
 `DISPATCH_E2E_MODELS=real` serves the command bar with a deployment's models, as a preview of a
 commit does: the server calls the chat model and the decision model the caller's own settings

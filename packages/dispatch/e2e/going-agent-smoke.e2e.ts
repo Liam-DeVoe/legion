@@ -1,7 +1,7 @@
 import { callTool, modelsLane, runCalls, say, scriptChat } from "./fake-models-helpers";
-import { openBarOver, prose, searchBox, seedIssue } from "./going-panel";
+import { openBarOver, prose, RUN_STEPS_MS, searchBox, seedCoreIssue } from "./going-panel";
 import { expect, test } from "./test";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 
 // The harness of the command bar's agent (plan task t16 of dispatch://INFRA-1588/artifact/plan-md):
 // the server's agent process calls the fake writing model as it calls a deployment's, the fake
@@ -20,20 +20,18 @@ test("a question asked in the bar runs the agent: its read of the issue reaches 
 }) => {
   modelsLane();
   test.setTimeout(90_000);
-  const issue = await seedIssue("quasar sightings log", title);
-  const answer = `The sightings are kept in ${issue.key}, ${title}.`;
+  const key = await seedCoreIssue(title);
+  const answer = `The sightings are kept in ${key}, ${title}.`;
   await scriptChat({
     default: prose("A short answer while the person pauses."),
-    runs: [{ turns: [callTool("dispatch_read", { issue: issue.key }), say(answer)], words }],
+    runs: [{ turns: [callTool("dispatch_read", { issue: key }), say(answer)], words }],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await searchBox(page).fill(words);
     await searchBox(page).press("Enter");
 
-    await expect(page.getByText(answer)).toBeVisible({ timeout: 40_000 });
+    await expect(page.getByText(answer)).toBeVisible({ timeout: RUN_STEPS_MS });
     const calls = await runCalls(words);
     expect(calls.map((call) => call.turn)).toEqual([0, 1]);
     // The run carries the page it was asked from, and its first call offers the agent's tools.
@@ -42,7 +40,5 @@ test("a question asked in the bar runs the agent: its read of the issue reaches 
     // The read was the server's answer to the run's person: the issue as Dispatch holds it.
     expect(calls[1].toolResults).toHaveLength(1);
     expect(calls[1].toolResults[0]).toContain(title);
-  } finally {
-    await context.close();
-  }
+  });
 });

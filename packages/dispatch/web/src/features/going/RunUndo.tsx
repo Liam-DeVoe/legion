@@ -10,14 +10,15 @@ import {
   textMutedOnSurface,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { actionName } from "../search/going-turns";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { actionLabel } from "./action-names";
+import { planTarget } from "./usePlan";
 
 /** What became of one change an Undo reversed, in the person's words: undone; a message, which
  *  was sent and is not undone; a value another writer changed after the run, which Undo kept and
  *  names; or the refusal that stopped it. */
 function lineText(line: GoingUndoLine): string {
-  const what = `${actionName(line.tool)}${line.item === "" ? "" : ` ${line.item}`}`;
+  const what = actionLabel(line.tool, line.item);
   if (line.undo === "not_undone") {
     return `${what}: sent, not undone`;
   }
@@ -48,7 +49,7 @@ export function RunUndo({ run }: { readonly run: string }): ReactNode {
       void queryClient.invalidateQueries({ queryKey: goingConversationsQuery().queryKey });
     },
     request: (id) => goingRunUndoRequest(id),
-    target: (id) => `going-plan:${id}`,
+    target: planTarget,
   });
   return (
     <div className="space-y-1" data-run={run} data-testid="going-undo">

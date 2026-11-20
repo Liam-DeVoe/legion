@@ -14,7 +14,7 @@ import {
 } from "@legion/contracts";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { ApiError, api, REQUEST_DEADLINE_MS, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import type {
   GoingBlockData,
   GoingContextInput,
@@ -23,7 +23,7 @@ import type {
   GoingItemEvent,
   GoingRosterEvent,
 } from "../../api/types";
-import { newSendKey } from "../../lib/send-key";
+import { goingBounds } from "../going/going-store";
 import { refusalText } from "./offer";
 import { MEANING_PAUSE_MS } from "./useTieredSearch";
 
@@ -293,14 +293,7 @@ export function useGoingAnswer({
   loginNow.current = login;
   // Each request under a key of its own, carrying the asker's login and held to the page's
   // silence deadline, as the one keyed path takes every write of the page.
-  const bounds = useCallback(
-    (): WriteBounds => ({
-      deadlineMs: REQUEST_DEADLINE_MS,
-      key: newSendKey(),
-      ...(loginNow.current === undefined ? {} : { login: loginNow.current }),
-    }),
-    []
-  );
+  const bounds = useCallback((): WriteBounds => goingBounds(loginNow.current), []);
 
   const stop = useCallback(() => {
     const run = out.current;

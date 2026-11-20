@@ -18,20 +18,15 @@ import { type RunState, runEnded, runNext } from "./run-states";
  * server when the bar closes, and the chip says how it stands.
  */
 
-/** How much work a run may do (R10): Fast, Standard or Deep. */
-export type RunLevel = "fast" | "standard" | "deep";
-
-/** One run as the page knows it: its words, its conversation, what its frames say, what its
- *  record said where it was read from History before its frames, whether it was started on this
- *  page, whether the person has seen how it ended, and why its stream could not be read. */
+/** One run as the page knows it: its record (its words, its conversation, and how it stood when
+ *  it was started, listed in History or stopped), what its frames say, whether it was started on
+ *  this page, whether the person has seen how it ended, and why its stream could not be read. */
 export interface RunEntry {
   readonly id: string;
-  readonly words: string;
-  readonly conversation: string;
+  readonly record: GoingRun;
   readonly frames: RunFrames;
   /** How many frames of the run's stream have been read. */
   readonly read: number;
-  readonly record: GoingRun | undefined;
   readonly startedHere: boolean;
   readonly seen: boolean;
   readonly unreadable: string | undefined;
@@ -58,7 +53,8 @@ export interface GoingState {
   /** The open conversation's runs, oldest first; undefined while none is open. */
   readonly conversation: readonly string[] | undefined;
   readonly runs: ReadonlyMap<string, RunEntry>;
-  readonly level: RunLevel;
+  /** How much work the next run may do (R10): Fast, Standard or Deep. */
+  readonly level: GoingRun["level"];
   /** The item a click on the page named. */
   readonly clicked: ClickedItem | undefined;
   /** The plan rows each page surface draws, by the surface's id. */
@@ -86,9 +82,49 @@ let state: GoingState = INITIAL;
 const listeners = new Set<() => void>();
 /** The streams being read, by run. */
 const following = new Map<string, AbortController>();
+/** The reading frame of each run (`RunFrames.planReads`) at which its plan was last read again
+ *  (`claimPlanRead`). */
+const planReadsAt = new Map<string, number>();
 
+/** Whether `run` is shown as it ended and nothing more of it comes. */
+function ended(run: RunEntry): boolean {
+  return runEnded(shownState(run));
+}
+
+/** `of` with each ended run of its open conversation marked seen, so the chip no longer names
+ *  it. A run that works or waits is not marked: the chip names it again once the conversation
+ *  leaves the screen. */
+function withSeen(of: GoingState): GoingState {
+  let runs: Map<string, RunEntry> | undefined;
+  for (const id of of.conversation ?? []) {
+    const run = of.runs.get(id);
+    if (run === undefined || run.seen || !ended(run)) continue;
+    runs ??= new Map(of.runs);
+    runs.set(id, { ...run, seen: true });
+  }
+  return runs === undefined ? of : { ...of, runs };
+}
+
+/** `of` without the runs of each conversation that is not open once every run of it has ended,
+ *  been seen and is no longer followed: the chip names none of them, and History's Open reads
+ *  them again from their streams. */
+function withoutDone(of: GoingState): GoingState {
+  const open = new Set(of.conversation ?? []);
+  const kept = new Set<string>();
+  for (const run of of.runs.values()) {
+    if (open.has(run.id) || !run.seen || following.has(run.id) || !ended(run)) {
+      kept.add(run.record.conversation);
+    }
+  }
+  const runs = new Map([...of.runs].filter(([, run]) => kept.has(run.record.conversation)));
+  return runs.size === of.runs.size ? of : { ...of, runs };
+}
+
+/** Holds `next`. While the conversation is on the screen the person sees how each of its runs
+ *  ended; once another conversation is open, the ones done with are let go. */
 function set(next: GoingState): void {
-  state = next;
+  const shown = next.place === "closed" ? next : withSeen(next);
+  state = shown.conversation === state.conversation ? shown : withoutDone(shown);
   for (const listener of listeners) {
     listener();
   }
@@ -102,12 +138,19 @@ function withRun(id: string, change: (run: RunEntry) => RunEntry): void {
   set({ ...state, runs: new Map(state.runs).set(id, change(run)) });
 }
 
-function bounds(login: string | undefined): WriteBounds {
+/** The bounds of one request of the bar: a key of its own, the asker's login, and the page's
+ *  silence deadline, as the one keyed path takes every write of the page. */
+export function goingBounds(login: string | undefined): WriteBounds {
   return {
     deadlineMs: REQUEST_DEADLINE_MS,
     key: newSendKey(),
     ...(login === undefined ? {} : { login }),
   };
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 /** The store as it stands now. */
@@ -117,22 +160,20 @@ export function goingState(): GoingState {
 
 /** The store, read by a component and drawn again on each change. */
 export function useGoing(): GoingState {
-  return useSyncExternalStore(
-    (listener) => {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    () => state,
-    () => state
-  );
+  return useSyncExternalStore(subscribe, goingState, goingState);
+}
+
+/** One part of the store, read by a component and drawn again only when that part changes:
+ *  `select` answers a value, or a part the store holds, never a new object. */
+export function useGoingValue<T>(select: (of: GoingState) => T): T {
+  const read = () => select(state);
+  return useSyncExternalStore(subscribe, read, read);
 }
 
 /** A run's state as the page shows it: what its frames say once any came, else what its record
  *  said. */
 export function shownState(run: RunEntry): RunState {
-  return run.read > 0 || run.record === undefined
-    ? run.frames.state
-    : stateOfRecord(run.record.state, run.record.stop_reason);
+  return run.read > 0 ? run.frames.state : stateOfRecord(run.record.state, run.record.stop_reason);
 }
 
 /** The open conversation's newest run. */
@@ -148,21 +189,26 @@ export function conversationWorking(of: GoingState = state): boolean {
   return run !== undefined && shownState(run) === "working";
 }
 
-/** Reads the run's stream until it ends, folding each frame into the run. */
+/** Reads the run's stream until it ends, folding each frame into the run. The stream starts at
+ *  the run's first frame, so its first frame starts the run's frames again: a run read before
+ *  is not drawn twice. */
 function follow(id: string): void {
   if (following.has(id)) {
     return;
   }
   const controller = new AbortController();
   following.set(id, controller);
+  let read = 0;
   api
     .streamGoingRunEvents(
       id,
       (name, data) => {
+        const first = read === 0;
+        read += 1;
         withRun(id, (run) => ({
           ...run,
-          frames: withRunFrame(run.read === 0 ? STARTED_RUN : run.frames, name, data),
-          read: run.read + 1,
+          frames: withRunFrame(first ? STARTED_RUN : run.frames, name, data),
+          read,
         }));
       },
       controller.signal
@@ -187,16 +233,15 @@ function follow(id: string): void {
  *  run where that says to. */
 export function movePanel(event: PanelEvent, login: string | undefined, keys?: PanelKeys): void {
   const transition = panelNext(state.place, event, keys);
-  if (transition.place !== state.place) {
-    set({ ...state, place: transition.place });
-  }
+  setPlace(transition.place);
   const run = newestRun();
   if (transition.stopRun === true && run !== undefined) {
     stopRun(run.id, login);
   }
 }
 
-/** Puts the conversation where `place` says, as a chip's Open or History's Open does. */
+/** Puts the conversation where `place` says: the shell's keys, the bar's Close and the panel's
+ *  Close and move. */
 export function setPlace(place: PanelPlace): void {
   if (place !== state.place) {
     set({ ...state, place });
@@ -204,12 +249,24 @@ export function setPlace(place: PanelPlace): void {
 }
 
 /** Sets the level the next run takes. */
-export function setLevel(level: RunLevel): void {
-  set({ ...state, level });
+export function setLevel(level: GoingRun["level"]): void {
+  if (level !== state.level) {
+    set({ ...state, level });
+  }
+}
+
+/** Whether two contexts name the same fields with the same values. */
+function sameContext(a: GoingContextInput, b: GoingContextInput): boolean {
+  const fields = Object.keys(a) as (keyof GoingContextInput)[];
+  return fields.length === Object.keys(b).length && fields.every((field) => a[field] === b[field]);
 }
 
 /** Names the item a click on the page was on, which the next request at the side is about. */
 export function setClicked(context: GoingContextInput, path: string): void {
+  const now = state.clicked;
+  if (now !== undefined && now.path === path && sameContext(now.context, context)) {
+    return;
+  }
   set({ ...state, clicked: { context, path } });
 }
 
@@ -221,7 +278,6 @@ export function newConversation(): void {
 
 function entryOf(record: GoingRun, startedHere: boolean): RunEntry {
   return {
-    conversation: record.conversation,
     frames: STARTED_RUN,
     id: record.id,
     read: 0,
@@ -229,24 +285,23 @@ function entryOf(record: GoingRun, startedHere: boolean): RunEntry {
     seen: !startedHere,
     startedHere,
     unreadable: undefined,
-    words: record.words,
   };
 }
 
 /**
- * Starts a run of `words` with the page's `context`. It follows up the open conversation's newest
- * run where that run has ended (`POST /api/v1/going/runs` with `continues`), and starts a
- * conversation of its own otherwise: a run that still works or waits goes on beside it.
+ * Starts a run of `words` with the page's `context`, and answers whether it started. It follows
+ * up the open conversation's newest run where that run has ended (`POST /api/v1/going/runs` with
+ * `continues`), and starts a conversation of its own otherwise: a run that still works or waits
+ * goes on beside it.
  */
 export async function startRun(
   words: string,
   context: GoingContextInput,
   login: string | undefined,
   continues?: string
-): Promise<void> {
+): Promise<boolean> {
   const newest = newestRun();
-  const follows =
-    continues ?? (newest !== undefined && runEnded(shownState(newest)) ? newest.id : undefined);
+  const follows = continues ?? (newest !== undefined && ended(newest) ? newest.id : undefined);
   set({ ...state, refusal: undefined, starting: true });
   try {
     const run = await api.createGoingRun(
@@ -256,7 +311,7 @@ export async function startRun(
         words,
         ...(follows === undefined ? {} : { continues: follows }),
       },
-      bounds(login)
+      goingBounds(login)
     );
     const entry = entryOf(run, true);
     const conversation =
@@ -269,12 +324,14 @@ export async function startRun(
       starting: false,
     });
     follow(run.id);
+    return true;
   } catch (error) {
     set({
       ...state,
       refusal: apiErrorMessage(error, "The run did not start."),
       starting: false,
     });
+    return false;
   }
 }
 
@@ -284,30 +341,39 @@ export function stopRun(id: string, login: string | undefined): void {
   if (run === undefined || runNext(shownState(run), "stop").send !== "stop") {
     return;
   }
-  api.stopGoingRun(id, bounds(login)).then(
+  api.stopGoingRun(id, goingBounds(login)).then(
     (stopped) => withRun(id, (entry) => ({ ...entry, record: stopped })),
     (error: unknown) => set({ ...state, refusal: apiErrorMessage(error, "The run did not stop.") })
   );
 }
 
 /** Continue on a run a bound of its level stopped: a follow-up of its conversation with a new
- *  budget of the same level. */
-export function continueRun(id: string, context: GoingContextInput, login: string | undefined) {
+ *  budget of the same level. It answers whether the follow-up started. */
+export function continueRun(
+  id: string,
+  context: GoingContextInput,
+  login: string | undefined
+): Promise<boolean> {
   const run = state.runs.get(id);
   if (run === undefined || runNext(shownState(run), "continue").send !== "continue") {
-    return Promise.resolve();
+    return Promise.resolve(false);
   }
   return startRun("Continue", context, login, id);
 }
 
-/** Opens a conversation History lists: its runs, oldest first, each read again from its stream's
- *  first frame, and the conversation shown over the page where nothing shows it yet. */
+/** Opens a conversation History lists: its runs, oldest first, each read from its stream's first
+ *  frame unless its frames were read to its end already, and the conversation shown over the page
+ *  where nothing shows it yet. */
 export function openConversation(conversation: GoingConversation): void {
   const records = [...(conversation.runs ?? [])].reverse();
   const runs = new Map(state.runs);
+  const unread: string[] = [];
   for (const record of records) {
     const known = runs.get(record.id);
     runs.set(record.id, known === undefined ? entryOf(record, false) : { ...known, record });
+    if (known === undefined || known.read === 0 || !ended(known)) {
+      unread.push(record.id);
+    }
   }
   set({
     ...state,
@@ -317,8 +383,8 @@ export function openConversation(conversation: GoingConversation): void {
     refusal: undefined,
     runs,
   });
-  for (const record of records) {
-    follow(record.id);
+  for (const id of unread) {
+    follow(id);
   }
 }
 
@@ -329,32 +395,13 @@ export function openRun(id: string): void {
     return;
   }
   const conversation = [...state.runs.values()]
-    .filter((entry) => entry.conversation === run.conversation)
+    .filter((entry) => entry.record.conversation === run.record.conversation)
     .map((entry) => entry.id);
   set({
     ...state,
     conversation,
     place: state.place === "closed" ? "over" : state.place,
   });
-}
-
-/** Marks that the person has seen how each ended run of the open conversation ended, so the chip
- *  no longer names it. A run that works or waits is not marked: the chip names it again once the
- *  conversation leaves the screen. */
-export function markSeen(): void {
-  const ids = (state.conversation ?? []).filter((id) => {
-    const run = state.runs.get(id);
-    return run !== undefined && !run.seen && runEnded(shownState(run));
-  });
-  if (ids.length === 0) {
-    return;
-  }
-  const runs = new Map(state.runs);
-  for (const id of ids) {
-    const run = runs.get(id);
-    if (run !== undefined) runs.set(id, { ...run, seen: true });
-  }
-  set({ ...state, runs });
 }
 
 /** The plan rows the page surface `surface` draws, or none once it no longer draws any. */
@@ -372,10 +419,15 @@ export function drawOnPage(surface: string, rows: readonly number[]): void {
   set({ ...state, onPage });
 }
 
-/** The draft of plan `plan` of `run`: the one held, or an empty one where it is of another plan. */
-export function draftOf(run: string, plan: number, of: GoingState = state): PlanDraft {
-  return of.draft !== undefined && of.draft.run === run && of.draft.plan === plan
-    ? of.draft
+/** The draft of plan `plan` of `run`: the one `held`, or an empty one where it is of another
+ *  plan. */
+export function draftOf(
+  run: string,
+  plan: number,
+  held: PlanDraft | undefined = state.draft
+): PlanDraft {
+  return held !== undefined && held.run === run && held.plan === plan
+    ? held
     : { edits: new Map(), plan, run, unticked: new Set() };
 }
 
@@ -384,11 +436,22 @@ export function setDraft(draft: PlanDraft): void {
   set({ ...state, draft });
 }
 
+/** Whether the plan of `run` is to be read again at its `planReads`th reading frame: true once
+ *  for each new one, however many surfaces draw the plan. */
+export function claimPlanRead(run: string, planReads: number): boolean {
+  if ((planReadsAt.get(run) ?? 0) >= planReads) {
+    return false;
+  }
+  planReadsAt.set(run, planReads);
+  return true;
+}
+
 /** Clears the store and stops every stream it reads: a test's reset, and a sign-out's. */
 export function resetGoingStore(): void {
   for (const controller of following.values()) {
     controller.abort();
   }
   following.clear();
+  planReadsAt.clear();
   set(INITIAL);
 }

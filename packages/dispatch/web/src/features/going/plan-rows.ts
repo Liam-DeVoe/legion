@@ -1,4 +1,6 @@
 import type { GoingPlanAnswer, GoingPlanRow, GoingPlanTick } from "../../api/types";
+import { actionLabel } from "./action-names";
+import { objectOf, textOf } from "./fields";
 import type { PlanDraft } from "./going-store";
 
 /**
@@ -12,16 +14,21 @@ type Arguments = Readonly<Record<string, unknown>>;
 
 /** A row's arguments as an object: what its tool runs with. */
 export function argumentsOf(row: GoingPlanRow): Arguments {
-  return typeof row.arguments === "object" &&
-    row.arguments !== null &&
-    !Array.isArray(row.arguments)
-    ? (row.arguments as Arguments)
-    : {};
+  return objectOf(row.arguments);
 }
 
 /** The tools that make a new issue, whose row shows on the list of its parent. */
 export function makesIssue(row: GoingPlanRow): boolean {
   return row.tool === "dispatch_issue";
+}
+
+/** How a row names its change wherever it is drawn: its action and its item, and for a new issue,
+ *  which has no item before it is made, its title; so each row of a plan is named apart. */
+export function rowLabel(row: GoingPlanRow): string {
+  return actionLabel(
+    row.tool,
+    row.item === "" && makesIssue(row) ? textOf(argumentsOf(row).title) : row.item
+  );
 }
 
 /** A value as one line of the row: a string as it is, anything else as its JSON. */
@@ -52,17 +59,12 @@ export function rowChanges(row: GoingPlanRow, edits: Arguments | undefined): Row
   const fields = makesIssue(row)
     ? NEW_ISSUE_FIELDS.filter((field) => args[field] !== undefined)
     : (row.fields ?? []);
-  const now =
-    typeof row.now === "object" && row.now !== null && !Array.isArray(row.now)
-      ? (row.now as Arguments)
-      : undefined;
+  const now = objectOf(row.now);
   return fields.map((field) => ({
     editable: typeof args[field] === "string",
     field,
     next: args[field],
-    now: makesIssue(row)
-      ? undefined
-      : (now?.[field] ?? (fields.length === 1 ? row.now : undefined)),
+    now: makesIssue(row) ? undefined : (now[field] ?? (fields.length === 1 ? row.now : undefined)),
   }));
 }
 
@@ -91,45 +93,33 @@ export function documentChange(row: GoingPlanRow, summary: string): DocumentChan
   switch (row.tool) {
     case "dispatch_suggest":
       return {
-        pieces: [{ added: valueOrEmpty(args.replace_with), removed: valueOrEmpty(args.quote) }],
+        pieces: [{ added: textOf(args.replace_with), removed: textOf(args.quote) }],
         sentences: said(args.body),
       };
     case "dispatch_doc_edit": {
       const ops = Array.isArray(args.ops) ? args.ops : [];
       return {
         pieces: ops.map((op: unknown) => {
-          const fields = typeof op === "object" && op !== null ? (op as Arguments) : {};
-          return {
-            added: valueOrEmpty(fields.with ?? fields.markdown),
-            removed: valueOrEmpty(fields.find),
-          };
+          const fields = objectOf(op);
+          return { added: textOf(fields.with ?? fields.markdown), removed: textOf(fields.find) };
         }),
         sentences: said(args.summary),
       };
     }
-    case "dispatch_artifact": {
-      const now =
-        typeof row.now === "object" && row.now !== null
-          ? (row.now as Arguments).content
-          : undefined;
+    case "dispatch_artifact":
       return typeof args.content === "string"
         ? {
-            pieces: [{ added: args.content, removed: valueOrEmpty(now) }],
+            pieces: [{ added: args.content, removed: textOf(objectOf(row.now).content) }],
             sentences: said(args.summary),
           }
         : undefined;
-    }
     default:
       return undefined;
   }
 }
 
-function valueOrEmpty(value: unknown): string {
-  return typeof value === "string" ? value : "";
-}
-
 /** The rows that need `row`, and the rows that need those, by number. */
-export function rowsNeeding(rows: readonly GoingPlanRow[], row: number): Set<number> {
+function rowsNeeding(rows: readonly GoingPlanRow[], row: number): Set<number> {
   const needing = new Set<number>();
   let grew = true;
   while (grew) {
@@ -146,7 +136,7 @@ export function rowsNeeding(rows: readonly GoingPlanRow[], row: number): Set<num
 }
 
 /** The rows `row` needs, and the rows those need, by number. */
-export function rowsNeeded(rows: readonly GoingPlanRow[], row: number): Set<number> {
+function rowsNeeded(rows: readonly GoingPlanRow[], row: number): Set<number> {
   const byNumber = new Map(rows.map((candidate) => [candidate.row, candidate]));
   const needed = new Set<number>();
   const visit = (at: number) => {

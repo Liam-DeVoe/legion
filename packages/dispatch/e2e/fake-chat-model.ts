@@ -20,8 +20,9 @@ import { harnessPorts, stackValue } from "./harness-ports";
 // The agent's runs (`runs`): a run's every model call gives the person's words as the agent's loop
 // writes them, `The person asks now:\n<words>\n` (going/agent's conversation, and the review of a
 // plan in Auto-review), so each call is matched to the script of its words and answered with that
-// script's next turn, then with its `afterwards` turn for every call after, and with neither a 500 that
-// says so. A turn is prose, tool calls (find_tools, call_tool, propose_plan or any other) after
+// script's next turn, then with its `afterwards` turn for every call after, and with neither a 500
+// that says so. A call of a run whose words no script names is answered as every other call is,
+// below. A turn is prose, tool calls (find_tools, call_tool, propose_plan or any other) after
 // that prose, a stream with no end that writes until the caller goes away, or a status with its
 // Retry-After (a 429, which the agent waits out and asks again, the next call taking the next
 // turn). So a row scripts a run step by step, and a run continued after its plan is approved takes
@@ -320,6 +321,23 @@ function runOf(body: ChatRequestBody): {
   }
 }
 
+const encoder = new TextEncoder();
+
+/** The event that ends a stream's turn. */
+const DONE = "[DONE]";
+
+/** One `data:` event of a stream: `frame`'s JSON, or `[DONE]`. */
+function event(frame: unknown): Uint8Array {
+  return encoder.encode(`data: ${frame === DONE ? DONE : JSON.stringify(frame)}\n\n`);
+}
+
+/** A response streaming `body`'s events, as the service streams a completion. */
+function eventStream(body: ReadableStream<Uint8Array>): Response {
+  return new Response(body, {
+    headers: { "Cache-Control": "no-cache", "Content-Type": "text/event-stream" },
+  });
+}
+
 /** One streamed turn: each frame a `data:` event, written `delayMs` apart, then `[DONE]`. A caller
  *  that goes away before `[DONE]` is counted as abandoned, once, on the counts of the row the call
  *  arrived in (`owner`), and on its record, whenever it goes, and nothing more is written. */
@@ -330,7 +348,6 @@ function stream(
   frames: readonly unknown[],
   delayMs: number
 ): Response {
-  const encoder = new TextEncoder();
   let done = false;
   let counted = false;
   const abandon = () => {
@@ -346,10 +363,10 @@ function stream(
         for (const [index, frame] of frames.entries()) {
           if (index > 0 && delayMs > 0) await Bun.sleep(delayMs);
           if (request.signal.aborted || counted) return;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(frame)}\n\n`));
+          controller.enqueue(event(frame));
         }
         if (request.signal.aborted || counted) return;
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+        controller.enqueue(event(DONE));
         done = true;
         controller.close();
       } catch {
@@ -361,15 +378,12 @@ function stream(
       abandon();
     },
   });
-  return new Response(body, {
-    headers: { "Cache-Control": "no-cache", "Content-Type": "text/event-stream" },
-  });
+  return eventStream(body);
 }
 
 /** A turn that never ends: the role frame, then prose every `endlessGapMs` until the caller goes
  *  away, which is counted as an abandon, or a reset ends the stream. */
 function endless(request: Request, owner: FakeChatState, record: ChatCallRecord): Response {
-  const encoder = new TextEncoder();
   let ended = false;
   let end = () => {};
   const leave = () => {
@@ -389,17 +403,11 @@ function endless(request: Request, owner: FakeChatState, record: ChatCallRecord)
       };
       endlessStreams.add(end);
       try {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(frame({ delta: { role: "assistant" } }))}\n\n`)
-        );
+        controller.enqueue(event(frame({ delta: { role: "assistant" } })));
         while (!ended && !request.signal.aborted) {
           await Bun.sleep(endlessGapMs);
           if (ended || request.signal.aborted) return;
-          controller.enqueue(
-            encoder.encode(
-              `data: ${JSON.stringify(frame({ delta: { content: "and more " } }))}\n\n`
-            )
-          );
+          controller.enqueue(event(frame({ delta: { content: "and more " } })));
         }
       } catch {
         leave();
@@ -409,9 +417,7 @@ function endless(request: Request, owner: FakeChatState, record: ChatCallRecord)
       leave();
     },
   });
-  return new Response(body, {
-    headers: { "Cache-Control": "no-cache", "Content-Type": "text/event-stream" },
-  });
+  return eventStream(body);
 }
 
 /** A completion chunk carrying `choice`. */
@@ -425,10 +431,21 @@ function frame(choice: Record<string, unknown>): unknown {
   };
 }
 
+/** A tool call as the wire carries it: its name, and its arguments as JSON text. */
+interface WireCall {
+  readonly name: string;
+  readonly text: string;
+}
+
+/** `calls` with their arguments written as the wire carries them, once. */
+function onTheWire(calls: readonly ChatToolCall[]): WireCall[] {
+  return calls.map((call) => ({ name: call.name, text: jsonText(call.arguments, "{}") }));
+}
+
 /** The frames of `calls`, each with an id of this listener's own, the first piece of its
  *  arguments beside its name and the rest in frames of their own. `served` is told each id. */
 function toolCallFrames(
-  calls: readonly ChatToolCall[],
+  calls: readonly WireCall[],
   size: number,
   served: (id: string) => void
 ): unknown[] {
@@ -437,7 +454,7 @@ function toolCallFrames(
     state.ids++;
     const id = `call_e2e_${state.ids}`;
     served(id);
-    const [first = "", ...rest] = pieces(jsonText(call.arguments, "{}"), size);
+    const [first = "", ...rest] = pieces(call.text, size);
     frames.push(
       frame({
         delta: {
@@ -460,7 +477,9 @@ function turn(reply: ChatReply, structured: boolean, toolTurn: boolean): unknown
   const frames: unknown[] = [frame({ delta: { role: "assistant" } })];
   if (toolTurn) {
     frames.push(
-      ...toolCallFrames(reply.toolCalls ?? [], size, (id) => state.pending.set(id, reply))
+      ...toolCallFrames(onTheWire(reply.toolCalls ?? []), size, (id) =>
+        state.pending.set(id, reply)
+      )
     );
     frames.push(frame({ finish_reason: "tool_calls" }));
     return frames;
@@ -476,7 +495,7 @@ function turn(reply: ChatReply, structured: boolean, toolTurn: boolean): unknown
  *  usage chunk with no choice that closes a stream which counts its tokens. */
 function runTurn(scripted: ChatTurn): unknown[] {
   const size = scripted.chunk !== undefined && scripted.chunk > 0 ? scripted.chunk : defaultChunk;
-  const calls = scripted.toolCalls ?? [];
+  const calls = onTheWire(scripted.toolCalls ?? []);
   const frames: unknown[] = [frame({ delta: { role: "assistant" } })];
   for (const piece of pieces(scripted.text ?? "", size)) {
     frames.push(frame({ delta: { content: piece } }));
@@ -484,8 +503,7 @@ function runTurn(scripted: ChatTurn): unknown[] {
   frames.push(...toolCallFrames(calls, size, () => {}));
   frames.push(frame({ finish_reason: calls.length > 0 ? "tool_calls" : "stop" }));
   const written =
-    (scripted.text ?? "").length +
-    calls.reduce((sum, call) => sum + jsonText(call.arguments, "{}").length, 0);
+    (scripted.text ?? "").length + calls.reduce((sum, call) => sum + call.text.length, 0);
   const output = Math.max(1, Math.ceil(written / 4));
   frames.push({
     choices: [],
@@ -524,27 +542,20 @@ function replyFor(body: ChatRequestBody): Chosen | undefined {
   return { queued: queued !== undefined, reply, toolTurn: (reply.toolCalls?.length ?? 0) > 0 };
 }
 
-/** Answers one call of an agent run with its script's next turn. */
+/** Answers one call of the agent run `run` with its script's next turn. */
 function answerRun(
   request: Request,
   owner: FakeChatState,
   record: ChatCallRecord,
-  words: string
+  run: RunState
 ): Response {
-  const run = state.runs.get(words);
-  if (run === undefined) {
-    return refuse(
-      500,
-      `the fake chat model has no run scripted for the words ${JSON.stringify(words)}`
-    );
-  }
   record.turn = run.taken;
   const scripted = run.script.turns[run.taken] ?? run.script.afterwards;
   run.taken++;
   if (scripted === undefined) {
     return refuse(
       500,
-      `the fake chat model has no turn left for the run of ${JSON.stringify(words)}`
+      `the fake chat model has no turn left for the run of ${JSON.stringify(run.script.words)}`
     );
   }
   if (scripted.status !== undefined) {
@@ -580,7 +591,8 @@ async function complete(request: Request): Promise<Response> {
     words,
   };
   owner.received.push(record);
-  if (words !== null && state.runs.has(words)) return answerRun(request, owner, record, words);
+  const run = words === null ? undefined : state.runs.get(words);
+  if (run !== undefined) return answerRun(request, owner, record, run);
   const chosen = replyFor(body);
   if (chosen === undefined) {
     return refuse(500, "the fake chat model has no reply scripted for this call");

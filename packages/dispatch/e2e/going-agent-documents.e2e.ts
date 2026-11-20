@@ -3,7 +3,6 @@ import {
   acceptSuggestion,
   claimIssue,
   createIssue,
-  createIssueArtifact,
   createProject,
   getIssueArtifactText,
   listComments,
@@ -12,17 +11,17 @@ import {
 } from "./api";
 import { modelsLane, proposePlan, say, scriptChat } from "./fake-models-helpers";
 import {
+  approveAndFinish,
   askTheAgent,
-  newestRun,
   openBarOver,
   planCard,
   planRows,
   prose,
   RUN_STEPS_MS,
-  searchBox,
+  writeSpec,
 } from "./going-panel";
-import { expect, type Page, test } from "./test";
-import { asUser } from "./users";
+import { expect, test } from "./test";
+import { withAlice } from "./users";
 
 // Check c9 of dispatch://INFRA-1588/artifact/verification-md (spec R7, R4): on an issue whose claim
 // a session of the fake Envoy holds, a rewrite of the spec is a plan of one row, a suggestion in
@@ -37,7 +36,7 @@ const SPEC = "# Spec\n\nThe list is numbered.\n\nSee dispatch://CORE-1 for the p
 async function seedClaimedSpec(): Promise<string> {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Number the list" });
-  await createIssueArtifact(issue.key, { content: SPEC, name: "spec.md" });
+  await writeSpec(issue, SPEC);
   const token = await mintAgentToken("documents-e2e", "alice");
   await setLiveSessions([{ session_id: "documents-architect", title: "Architect" }]);
   await claimIssue(issue.key, {
@@ -59,13 +58,6 @@ const suggestion = (issue: string) => ({
   tool: "dispatch_suggest",
 });
 
-async function approve(page: Page): Promise<void> {
-  await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", { timeout: RUN_STEPS_MS });
-  await searchBox(page).focus();
-  await searchBox(page).press("Enter");
-  await expect(newestRun(page)).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-}
-
 // SLOW(>=2s): a claimed issue, a run that plans a suggestion, its approval and the Accept.
 test("a rewrite of the spec is a suggestion with its sentences and its diff closed, and the spec changes only on Accept", async ({
   browser,
@@ -84,9 +76,7 @@ test("a rewrite of the spec is a suggestion with its sentences and its diff clos
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue}`);
     await askTheAgent(page, words);
     await expect(planRows(planCard(page))).toHaveCount(1, { timeout: RUN_STEPS_MS });
@@ -94,19 +84,15 @@ test("a rewrite of the spec is a suggestion with its sentences and its diff clos
       "back-link moves to the top"
     );
     await expect(planCard(page).getByTestId("going-plan-diff")).not.toHaveAttribute("open", "");
-    await approve(page);
+    await approveAndFinish(page);
     expect((await getIssueArtifactText(issue, "spec")).markdown).toBe(SPEC);
-    const comments = (await listComments(issue)) as unknown as { id: string; kind?: string }[];
-    const posted = JSON.stringify(comments);
-    expect(posted).toContain("The list is numbered.");
-    const id = comments.find((comment) => JSON.stringify(comment).includes("replace"))?.id;
-    await acceptSuggestion(id ?? comments[0]?.id ?? "");
+    const posted = (await listComments(issue)).find((comment) => comment.suggestion !== null);
+    expect(posted?.suggestion?.replace_with).toBe(suggestion(issue).arguments.replace_with);
+    await acceptSuggestion(posted?.id ?? "");
     expect((await getIssueArtifactText(issue, "spec")).markdown).toContain(
       "See dispatch://CORE-1 for the parent.\n\nThe list is numbered."
     );
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a run that plans a suggestion and a message to the issue's architect.
@@ -139,17 +125,13 @@ test("suggest it and ask the architect to review it gives two rows, and the issu
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue}`);
     await askTheAgent(page, words);
     await expect(planRows(planCard(page))).toHaveCount(2, { timeout: RUN_STEPS_MS });
-    await approve(page);
+    await approveAndFinish(page);
     expect(JSON.stringify(await listIssueMessages(issue))).toContain("Please review my suggestion");
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a run that plans a direct edit of the spec.
@@ -186,16 +168,12 @@ test("edit the spec directly gives a row that edits the spec", async ({ browser 
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue}`);
     await askTheAgent(page, words);
     await expect(planRows(planCard(page))).toHaveCount(1, { timeout: RUN_STEPS_MS });
     await expect(planRows(planCard(page))).toContainText("doc edit");
-    await approve(page);
+    await approveAndFinish(page);
     expect((await getIssueArtifactText(issue, "spec")).markdown).toContain("numbered from 1.");
-  } finally {
-    await context.close();
-  }
+  });
 });

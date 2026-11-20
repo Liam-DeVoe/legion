@@ -11,9 +11,9 @@ import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 
 /**
- * The command bar on a Dispatch that answers, as the answer's and the operations' rows drive it:
- * every part of the bar configured, one hit for whatever is typed, and each run's stream handed
- * to the row to send frames down, the bar's abort rejecting it as a browser's does.
+ * The command bar on a Dispatch that answers, as the answer's and the capability note's rows
+ * drive it: every part of the bar configured, one hit for whatever is typed, and each run's
+ * stream handed to the row to send frames down, the bar's abort rejecting it as a browser's does.
  */
 
 /** A Dispatch with an answering model that draws blocks, a deciding model it reaches, and a

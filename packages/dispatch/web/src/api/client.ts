@@ -184,12 +184,14 @@ const GOING_FRAMES: ReadonlySet<string> = new Set([
   GOING_EVENT_TEXT,
 ]);
 
-/** How many times in a row the answer stream is opened again after a connection that ended before
- *  the frame ending the run and brought nothing new, before the page gives that answer up. Each
- *  reopening resumes after the last frame in hand (`Last-Event-ID`); a stream of a run past its
- *  window is ended by the reader that opens it, so one reopening normally brings the ending. */
+/** How many times in a row a stream of the bar - a short answer's or an agent run's - is opened
+ *  again after a connection that ended before the frame ending its run and brought nothing new,
+ *  before the page gives it up. Each reopening resumes after the last frame in hand
+ *  (`Last-Event-ID`); a stream of a run past its window is ended by the reader that opens it, so
+ *  one reopening normally brings the ending. A run's stream the server closed for being idle is
+ *  read again however often it closes, and counts nothing. */
 const GOING_STREAM_REOPENS = 3;
-/** The wait before the answer stream is opened again. */
+/** The wait before a stream of the bar is opened again. */
 const GOING_STREAM_REOPEN_MS = 500;
 
 /** The frame a run's stream writes before the server closes it for being idle, which names no
@@ -1422,17 +1424,7 @@ export class DispatchApiClient {
           failed ?? new Error("the run's stream kept ending before its run did")
         );
       }
-      signal.throwIfAborted();
-      const reopen = Promise.withResolvers<void>();
-      const timer = setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
-      const aborted = () => {
-        clearTimeout(timer);
-        reopen.resolve();
-      };
-      signal.addEventListener("abort", aborted, { once: true });
-      await reopen.promise;
-      signal.removeEventListener("abort", aborted);
-      signal.throwIfAborted();
+      await sleep(GOING_STREAM_REOPEN_MS, signal);
     }
   }
 
@@ -1505,16 +1497,7 @@ export class DispatchApiClient {
       if (fruitless >= GOING_STREAM_REOPENS) {
         throw new NetworkError(path, new Error("the answer stream kept ending before its run did"));
       }
-      const reopen = Promise.withResolvers<void>();
-      const timer = setTimeout(reopen.resolve, GOING_STREAM_REOPEN_MS);
-      const aborted = () => {
-        clearTimeout(timer);
-        reopen.resolve();
-      };
-      signal.addEventListener("abort", aborted, { once: true });
-      await reopen.promise;
-      signal.removeEventListener("abort", aborted);
-      signal.throwIfAborted();
+      await sleep(GOING_STREAM_REOPEN_MS, signal);
     }
   }
 

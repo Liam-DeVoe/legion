@@ -16,13 +16,14 @@ import {
   newestRun,
   openBarOver,
   planCard,
+  planOnPage,
   planRows,
   prose,
   RUN_STEPS_MS,
   searchBox,
 } from "./going-panel";
 import { expect, test } from "./test";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 
 // Check c10 of dispatch://INFRA-1588/artifact/verification-md (spec R8, R9): a hand-off to Legion
 // is the changes the words name, as the person - a label and a status, and no other row - and the
@@ -55,15 +56,13 @@ test("a hand-off to Legion is the label and the status the words name, made as t
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue.key}`);
     await askTheAgent(page, words);
     await expect(newestRun(page)).toHaveAttribute("data-state", "waiting", {
       timeout: RUN_STEPS_MS,
     });
-    const rows = planRows(page.getByTestId("going-plan-on-page")).or(planRows(planCard(page)));
+    const rows = planRows(planOnPage(page)).or(planRows(planCard(page)));
     await expect(rows).toHaveCount(2);
     await searchBox(page).focus();
     await searchBox(page).press("Enter");
@@ -77,9 +76,7 @@ test("a hand-off to Legion is the label and the status the words name, made as t
     for (const event of changes) {
       expect(event.actor).toMatchObject({ id: "alice", kind: "user" });
     }
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a run whose model asks which changes to make.
@@ -96,9 +93,7 @@ test("Hand the issue to Legion alone gives a question about which changes to mak
     default: prose("A short answer while the person pauses."),
     runs: [{ turns: [say(question)], words }],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, `/issues/${issue.key}`);
     await askTheAgent(page, words);
     await expect(newestRun(page).getByTestId("going-run-answer")).toHaveText(question, {
@@ -106,9 +101,7 @@ test("Hand the issue to Legion alone gives a question about which changes to mak
     });
     await expect(newestRun(page)).toHaveAttribute("data-state", "done");
     await expect(planCard(page)).toHaveCount(0);
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a new issue filed from the line on top with the session set for new issues.
@@ -123,9 +116,7 @@ test("with a session set for new issues, Enter on File as a new issue files it a
   await scriptDecision({ default: decided("dispatch_issue", 0.99) });
   await scriptChat({ default: prose("A new issue.") });
   const before = (await listIssues("CORE")).map((made) => made.key);
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await searchBox(page).fill("we need a spectrograph for the nebulae");
     await expect(lineOnTop(page)).toContainText("File as a new issue in CORE", {
@@ -139,9 +130,7 @@ test("with a session set for new issues, Enter on File as a new issue files it a
     expect(made).toBeDefined();
     const filed = await getIssue(made?.key ?? "");
     expect(filed.title).not.toBe("");
-    expect(JSON.stringify(filed)).toContain("new-issue-session");
+    expect(filed.route).toContain("new-issue-session");
     expect(await listIssueMessages(made?.key ?? "")).toHaveLength(0);
-  } finally {
-    await context.close();
-  }
+  });
 });

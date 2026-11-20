@@ -1,23 +1,30 @@
 import { createIssue, createProject, getIssueEvents, patchIssue } from "./api";
 import { callTool, modelsLane, say, scriptChat } from "./fake-models-helpers";
 import {
-  ANSWER_ENDS_MS,
-  answerPanel,
+  askAndWait,
   askTheAgent,
   newestRun,
   openBarOver,
   prose,
   RUN_STEPS_MS,
-  searchBox,
 } from "./going-panel";
-import { expect, test } from "./test";
-import { asUser } from "./users";
+import { expect, type Locator, test } from "./test";
+import { withAlice } from "./users";
 
 // Check c3 of dispatch://INFRA-1588/artifact/verification-md (spec R3): a pause streams a short
 // answer and the store records no write; Enter starts a run, each tool call shows as a step while
 // it runs, and the answer links each item the fake read; and each number of a chart is the
 // server's, from the chain the fake asks for over its read, never the number the fake writes in its
 // text. Negative control: a bar that draws the numbers the model wrote shows the wrong number.
+
+/** The value the chart draws for the point whose label matches `label`. */
+function chartValue(chart: Locator, label: RegExp): Locator {
+  return chart
+    .getByTestId("going-block-chart-point")
+    .filter({ hasText: label })
+    .locator("td")
+    .nth(1);
+}
 
 // SLOW(>=2s): a seeded issue and the pause's short answer.
 test("a pause streams a short answer, and the store records no write", async ({ browser }) => {
@@ -26,18 +33,11 @@ test("a pause streams a short answer, and the store records no write", async ({ 
   const issue = await createIssue({ project: "CORE", title: "Map the lunar craters" });
   const before = (await getIssueEvents(issue.key)).length;
   await scriptChat({ default: prose(`The craters are mapped in ${issue.key}.`) });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
-    await searchBox(page).fill("where are the lunar craters mapped");
-    await expect(answerPanel(page)).toHaveAttribute("data-state", "ended", {
-      timeout: ANSWER_ENDS_MS,
-    });
+    await askAndWait(page, "where are the lunar craters mapped");
     expect((await getIssueEvents(issue.key)).length).toBe(before);
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): a run of two model calls and a read.
@@ -62,10 +62,20 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
+    // Every step the page draws as running is recorded from here on, however short its while.
+    await page.evaluate(() => {
+      const running: string[] = [];
+      Reflect.set(window, "__goingRunningSteps", running);
+      new MutationObserver(() => {
+        for (const step of document.querySelectorAll(
+          '[data-testid="going-step"][data-running="true"]'
+        )) {
+          running.push(step.getAttribute("data-tool") ?? "");
+        }
+      }).observe(document.body, { attributes: true, childList: true, subtree: true });
+    });
     await askTheAgent(page, words);
     const run = newestRun(page);
     await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-tool", "call_tool", {
@@ -74,6 +84,11 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
     await expect(run.getByTestId("going-step").first()).toHaveAttribute("data-running", "false", {
       timeout: RUN_STEPS_MS,
     });
+    const running = await page.evaluate(() => {
+      const seen: unknown = Reflect.get(window, "__goingRunningSteps");
+      return Array.isArray(seen) ? seen.map(String) : [];
+    });
+    expect(running).toContain("call_tool");
     const answer = run.getByTestId("going-run-answer");
     await expect(answer.getByRole("link", { name: issue.key })).toHaveAttribute(
       "href",
@@ -81,9 +96,7 @@ test("Enter starts a run: each tool call shows as a step while it runs, and the 
       { timeout: RUN_STEPS_MS }
     );
     await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-  } finally {
-    await context.close();
-  }
+  });
 });
 
 // SLOW(>=2s): three seeded issues, a run of a read, a chart and an answer.
@@ -120,19 +133,16 @@ test("each number of a chart is the server's count over the read, and the number
       },
     ],
   });
-  const context = await asUser(browser, "alice");
-  try {
-    const page = await context.newPage();
+  await withAlice(browser, async (page) => {
     await openBarOver(page, "/projects/CORE/issues");
     await askTheAgent(page, words);
     const run = newestRun(page);
     const chart = run.getByTestId("going-block");
     await expect(chart).toHaveAttribute("data-kind", "chart", { timeout: RUN_STEPS_MS });
     await expect(run).toHaveAttribute("data-state", "done", { timeout: RUN_STEPS_MS });
-    await expect(chart).toContainText("2");
-    await expect(chart).toContainText("1");
+    // Two issues are in progress and one is to do, each count beside its own status.
+    await expect(chartValue(chart, /progress/i)).toHaveText("2");
+    await expect(chartValue(chart, /todo/i)).toHaveText("1");
     await expect(chart).not.toContainText("47");
-  } finally {
-    await context.close();
-  }
+  });
 });
