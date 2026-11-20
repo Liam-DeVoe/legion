@@ -51,7 +51,7 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	case intake.DispatchIssue:
 		observed := intake.IssueStatus{Key: fact.Key, Project: m.project, Status: fact.Status, Blockers: fact.Blockers,
 			Seq: fact.Seq, ClaimedBy: fact.ClaimedBy, ClaimKnown: fact.ClaimKnown, Parent: fact.Parent}
-		if err := m.put(ctx, tx, observed); err != nil {
+		if err := m.put(ctx, tx, readingOf(observed)); err != nil {
 			return intake.Result{}, err
 		}
 	case intake.DispatchClaim:
@@ -67,21 +67,21 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 			if child.Seq == 0 {
 				continue
 			}
-			// The parent travels with the status: a write at an equal sequence still replaces the
-			// parent column, so an adoption that left it out would erase the child's mirrored
-			// parent and the children-first rule (record.ChildWaitsOf) would stop seeing the
-			// child under it. The project is this daemon's, since a parent link never crosses a
-			// project and the release adopts the children of a root of its own; a row written
-			// under no project would drop out of every project's read of its children.
-			observed := intake.IssueStatus{Key: child.Issue, Project: m.project, Status: child.Status,
-				Blockers: child.BlockedBy, Parent: child.Parent, Seq: child.Seq}
-			if err := m.put(ctx, tx, observed); err != nil {
+			// The release's read carries the child's status, blockers and parent, so its reading
+			// carries those and leaves every other value as the copy holds it. The parent is among
+			// them because the children-first rule (record.ChildWaitsOf) reads the child under the
+			// parent that read showed. The project is this daemon's, since a parent link never
+			// crosses a project and the release adopts the children of a root of its own; a row
+			// written under no project would drop out of every project's read of its children.
+			reading := record.DispatchReading{Key: child.Issue, Project: m.project, Seq: child.Seq,
+				Status: record.Carry(child.Status), Parent: record.Carry(child.Parent), Blockers: record.Carry(child.BlockedBy)}
+			if err := m.put(ctx, tx, reading); err != nil {
 				return intake.Result{}, fmt.Errorf("mirror the release's read of %s: %w", child.Issue, err)
 			}
 		}
 	case intake.ControllerTick:
 		for _, observed := range fact.Observed {
-			if err := m.put(ctx, tx, observed); err != nil {
+			if err := m.put(ctx, tx, readingOf(observed)); err != nil {
 				return intake.Result{}, fmt.Errorf("mirror the turn's re-read of %s: %w", observed.Key, err)
 			}
 		}
@@ -89,27 +89,27 @@ func (m *Mirror) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 	return intake.Result{}, nil
 }
 
-// put is one observation's row, under the project the observation carries — the project of the
-// read that saw the issue, which for an event or a listing of the daemon's own project is that
-// project and for a blocker the turn re-read is whatever project its key names — and behind the
-// sequence fences PutDispatchIssue applies: an observation older than the row's own leaves it
-// exactly as it stands, and one that does not show the claim leaves the claim as it stands. The
-// parent is the one field written outside that fence (record.PutDispatchIssue), for an
-// observation at the sequence the row already holds: that is a listing of an issue no event has
-// touched since, which is the only way the parent of an issue the daemon has never recorded
-// reaches the mirror at all. Every observation carries the parent it saw, an event's own payload
-// included, and no parent is one of the things it can have seen, so a child a person took out
-// from under its parent is mirrored as the issue Dispatch now shows and ends that parent's
-// children-first wait.
-func (m *Mirror) put(ctx context.Context, tx pgx.Tx, observed intake.IssueStatus) error {
-	row := record.DispatchIssueRow{
-		Key: observed.Key, Project: observed.Project, Status: observed.Status, Blockers: observed.Blockers,
-		Seq: observed.Seq, Parent: observed.Parent,
-	}
+// put writes one reading of Dispatch into the copy, under the project the reading carries — the
+// project of the read that saw the issue, which for an event or a listing of the daemon's own
+// project is that project and for a blocker the turn re-read is whatever project its key names —
+// and behind the sequences PutDispatchIssue keeps: the reading changes only the values it
+// carries, each only where no reading has written it or an older one did, and one that does not
+// show the claim leaves the claim as it stands.
+func (m *Mirror) put(ctx context.Context, tx pgx.Tx, reading record.DispatchReading) error {
+	return m.store.PutDispatchIssue(ctx, tx, reading)
+}
+
+// readingOf is observed as a reading of Dispatch at its sequence: it carries the status, the
+// parent and the blockers observed, no parent being one of the things it can have seen, so a
+// child a person took out from under its parent is copied as the issue Dispatch now shows and
+// ends that parent's children-first wait. A claim observed is the claim at that sequence.
+func readingOf(observed intake.IssueStatus) record.DispatchReading {
+	reading := record.DispatchReading{Key: observed.Key, Project: observed.Project, Seq: observed.Seq,
+		Status: record.Carry(observed.Status), Parent: record.Carry(observed.Parent), Blockers: record.Carry(observed.Blockers)}
 	if observed.ClaimKnown {
-		row.ClaimedBy, row.ClaimSeq = observed.ClaimedBy, observed.Seq
+		reading.ClaimedBy, reading.ClaimSeq = observed.ClaimedBy, observed.Seq
 	}
-	return m.store.PutDispatchIssue(ctx, tx, row)
+	return reading
 }
 
 // Observed is one summary of a Dispatch listing of project as an observation of that issue, the
@@ -134,7 +134,7 @@ func Observed(project string, summary dispatch.IssueSummary) intake.IssueStatus 
 func Reconcile(ctx context.Context, tx pgx.Tx, store record.Store, project string, summaries []dispatch.IssueSummary) error {
 	mirror := NewMirror(store, project)
 	for _, summary := range summaries {
-		if err := mirror.put(ctx, tx, Observed(project, summary)); err != nil {
+		if err := mirror.put(ctx, tx, readingOf(Observed(project, summary))); err != nil {
 			return fmt.Errorf("mirror the boot listing of %s: %w", summary.Key, err)
 		}
 	}

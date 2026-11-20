@@ -103,7 +103,8 @@ func TestAClaimEventIsMirroredAheadOfTheEngine(t *testing.T) {
 			HandedOver: true, LastDispatchSeq: 5,
 		})
 		if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
-			return records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{Key: issue, Project: orderProject, Status: "todo", Seq: 5})
+			return records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: issue, Project: orderProject, Seq: 5,
+				Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)})
 		}); err != nil {
 			t.Fatalf("seed the mirror row: %v", err)
 		}

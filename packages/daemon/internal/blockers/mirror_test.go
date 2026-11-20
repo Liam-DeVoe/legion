@@ -37,7 +37,7 @@ func TestMirrorWritesTheRowOfADispatchIssueFact(t *testing.T) {
 	})
 	want := []record.DispatchIssueRow{{
 		Key: "LEGION-900", Project: testProject, Status: "todo",
-		Blockers: []string{"LEGION-901", "LEGION-902"}, Seq: 4,
+		Blockers: []string{"LEGION-901", "LEGION-902"}, Seq: 4, Labels: []string{},
 	}}
 	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the mirror holds %#v, want %#v", got, want)
@@ -73,8 +73,8 @@ func TestMirrorWritesEveryRowAControllerTickObserved(t *testing.T) {
 	records := record.NewStore()
 	mirror := NewMirror(records, testProject)
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: "LEGION-900", Project: testProject, Status: "in_progress", Seq: 9}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: "LEGION-900", Project: testProject, Seq: 9,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("seed a fresher event's row: %v", err)
 		}
 		result, err := mirror.Apply(context.Background(), tx, intake.ControllerTick{Observed: []intake.IssueStatus{
@@ -89,8 +89,8 @@ func TestMirrorWritesEveryRowAControllerTickObserved(t *testing.T) {
 		}
 	})
 	want := []record.DispatchIssueRow{
-		{Key: "LEGION-900", Project: testProject, Status: "in_progress", Blockers: []string{}, Seq: 9},
-		{Key: "LEGION-901", Project: testProject, Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6},
+		{Key: "LEGION-900", Project: testProject, Status: "in_progress", Blockers: []string{}, Seq: 9, Labels: []string{}},
+		{Key: "LEGION-901", Project: testProject, Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6, Labels: []string{}},
 	}
 	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the mirror holds %#v, want %#v", got, want)
@@ -128,8 +128,8 @@ func TestMirrorWritesTheParentAnAdoptionRead(t *testing.T) {
 	records := record.NewStore()
 	mirror := NewMirror(records, testProject)
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: "LEGION-900", Project: testProject, Status: "todo", Parent: "LEGION-800", Seq: 4}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: "LEGION-900", Project: testProject, Seq: 4,
+			Status: record.Carry("todo"), Parent: record.Carry("LEGION-800"), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("seed the child's row: %v", err)
 		}
 		result, err := mirror.Apply(context.Background(), tx, intake.ChildAdoption{Tree: "LEGION-800",
@@ -143,7 +143,7 @@ func TestMirrorWritesTheParentAnAdoptionRead(t *testing.T) {
 		}
 	})
 	want := []record.DispatchIssueRow{{Key: "LEGION-900", Project: testProject, Status: "todo",
-		Blockers: []string{"LEGION-901"}, Seq: 7, Parent: "LEGION-800"}}
+		Blockers: []string{"LEGION-901"}, Seq: 7, Parent: "LEGION-800", Labels: []string{}}}
 	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the mirror holds %#v, want %#v", got, want)
 	}
@@ -156,8 +156,8 @@ func TestReconcileMirrorsEverySummaryUnderTheFence(t *testing.T) {
 	pool := migratedPool(t)
 	records := record.NewStore()
 	inTx(t, pool, func(tx pgx.Tx) {
-		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-			Key: "LEGION-900", Project: testProject, Status: "in_progress", Seq: 9}); err != nil {
+		if err := records.PutDispatchIssue(context.Background(), tx, record.DispatchReading{Key: "LEGION-900", Project: testProject, Seq: 9,
+			Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("seed a fresher event's row: %v", err)
 		}
 		if err := Reconcile(context.Background(), tx, records, testProject, []dispatch.IssueSummary{
@@ -168,8 +168,8 @@ func TestReconcileMirrorsEverySummaryUnderTheFence(t *testing.T) {
 		}
 	})
 	want := []record.DispatchIssueRow{
-		{Key: "LEGION-900", Project: testProject, Status: "in_progress", Blockers: []string{}, Seq: 9, ClaimSeq: 4},
-		{Key: "LEGION-901", Project: testProject, Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6, ClaimSeq: 6},
+		{Key: "LEGION-900", Project: testProject, Status: "in_progress", Blockers: []string{}, Seq: 9, ClaimSeq: 4, Labels: []string{}},
+		{Key: "LEGION-901", Project: testProject, Status: "done", Blockers: []string{"LEGION-902"}, Seq: 6, ClaimSeq: 6, Labels: []string{}},
 	}
 	if got := mirrored(t, pool, records); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the mirror holds %#v, want %#v", got, want)
