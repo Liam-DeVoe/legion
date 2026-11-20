@@ -856,15 +856,16 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 	// and restart call, which wait for the bus within callCtx (sessionConsumerCallTimeout from
 	// when it holds both), and then the first attempt of its corrections (settleFilter), which
 	// waits for the bus within the fence's own budget, another sessionConsumerCallTimeout
-	// (fenceBudget). So a restart on a bus that stops answering holds its turn and the session's
-	// lock for up to twice sessionConsumerCallTimeout, 10 s, where its corrections used to end
-	// with callCtx at 5 s; on a bus that answers it holds them for a few round trips. Behind the
-	// lock wait the same session's calls: its registrations (whose consumer budget starts before
-	// that wait, so one held there the whole 10 s answers 503), its refollows, the settle of a
-	// registration not answered, its delete and the settle loop's attempts; behind the turn wait
-	// the restarts of the listener's other sessions once all relayRestartLimit turns are held. A
-	// correction the first attempt could not make is the settle loop's, which holds neither the
-	// turn nor the lock between its attempts (settleAgain).
+	// (fenceBudget). So a restart on a bus that stops answering holds the session's lock for up to
+	// twice sessionConsumerCallTimeout, 10 s, where its corrections used to end with callCtx at
+	// 5 s, and its turn for that and for its wait for the lock before it, which only the lock's
+	// holders before it bound; on a bus that answers it holds them for a few round trips. Behind
+	// the lock wait the same session's calls: its registrations (whose consumer budget starts
+	// before that wait, so one held there the whole 10 s answers 503), its refollows, the settle
+	// of a registration not answered, its delete and the settle loop's attempts; behind the turn
+	// wait the restarts of the listener's other sessions once all relayRestartLimit turns are
+	// held. A correction the first attempt could not make is the settle loop's, which holds neither
+	// the turn nor the lock between its attempts (settleAgain).
 	select {
 	case m.restarts <- struct{}{}:
 	case <-ctx.Done():

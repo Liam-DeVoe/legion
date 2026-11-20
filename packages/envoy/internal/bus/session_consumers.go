@@ -366,12 +366,12 @@ func (s *SessionConsumers) Ensure(ctx context.Context, sessionID string, subject
 }
 
 // EnsureAfter is Ensure for a session's consumer that writes whose answers did not come back may
-// have set to filters that lack one of subjects' (late). Where such a write landed and the
-// consumer has examined a message on a missing filter since that write's Before, it deletes the
-// consumer and creates it again at the first such message, or after its ack floor when that is
-// lower, so every message the late filter made it skip is delivered (rewindPoint, rewind), and
+// have set to filters that lack one of subjects' (late). Where such a write may have landed and
+// the consumer has examined a message on a missing filter since that write's Before, it deletes
+// the consumer and creates it again at the first such message, or after its ack floor when that
+// is lower, so every message the late filter made it skip is delivered (rewindPoint, rewind), and
 // the answer's Rewound is set. Otherwise it is Ensure. It also reports, for each of late, whether
-// the consumer it read carried exactly that write's filters, which is that write's landing seen.
+// the consumer it read stood on that write's filters where subjects ask for others.
 func (s *SessionConsumers) EnsureAfter(ctx context.Context, sessionID string, subjects []string, startSeq uint64, late []LateWrite) (SessionConsumerStart, []bool, error) {
 	name, filters, err := sessionConsumerTarget(sessionID, subjects)
 	if err != nil {

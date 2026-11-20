@@ -20,12 +20,23 @@ body: |-
   another check once it lands, so a late write no longer leaves a filter nothing stored. A client
   that gives up on an unsubscribe no longer leaves the consumer filtered on the topics it removed.
 
+  A consumer write whose answer was lost with its connection can still reach the server after
+  the reconnect, until the server closes the old connection as stale. The listener now checks
+  that session's consumer every second for that long and 16 s more: `(ping_max + 2) ×
+  ping_interval` of the hub, read from `ENVOY_NATS_PING_INTERVAL` and `ENVOY_NATS_PING_MAX`, whose
+  defaults are nats-server's own (2m and 2: 8 minutes). A late write that lands a filter without a
+  topic of the stored row, on a consumer that went past a message on that topic, no longer loses
+  that message: the listener creates the consumer again at it, and the session's plugin drops the
+  messages it was handed before. A check whose write did not answer no longer counts as settled.
+  A write the server dropped unanswered (past its API queue limit) holds one goroutine and one
+  subscription until the connection's next reconnect or the listener's stop.
+
   Three waits are longer. A registration's retry can wait up to 5 s behind such a write for the
-  same session. A consumer delete, and a relay restart, can each hold the session's lock for up
-  to 10 s: 5 s for their own calls and 5 s for the first check after them. Behind that lock wait
-  the same session's registrations, unsubscribes, its relay restart and its delete; a restart also
-  holds one of the listener's 32 restart turns, which the restarts of other sessions wait for once
-  all are taken.
+  same session. A consumer delete, and a relay restart, can each hold the session's lock for up to
+  10 s: 5 s for their own calls and 5 s for the first check after them. Behind that lock wait the
+  same session's registrations, unsubscribes, its relay restart and its delete. A restart also
+  holds one of the listener's 32 restart turns from before its wait for the session's lock: that
+  wait, then up to 10 s. The restarts of other sessions wait for a turn once all are taken.
 time: 2026-11-20T08:00:19Z
 custom:
     Issue: pr4594
