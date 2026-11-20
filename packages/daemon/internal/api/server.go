@@ -1277,7 +1277,7 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // projectReleaseContract is the daemon contract that added `projectRelease`, the project's newest
-// project release and its result (version.go's 180, dispatch://INFRA-3583). A plugin before it is
+// project release and its result (version.go's 191, dispatch://INFRA-3583). A plugin before it is
 // served the state without it: one built before sjawhar/legion#2788 reads the state with a strict
 // schema and would refuse the whole body for a key it does not name, and one built after strips
 // the key instead, so the strip is what keeps the release from a caller that did not ask for it.
@@ -1285,7 +1285,7 @@ const pauseContract = 178
 // turn on that same body. pauseContract stands below it with no row of stateNarrowings between
 // the two, so a caller in a pod at or above pauseContract and below this contract is served
 // `paused` or `lastPause` and not `projectRelease`.
-const projectReleaseContract = 180
+const projectReleaseContract = 191
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

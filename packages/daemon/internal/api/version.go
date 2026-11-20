@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 180: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 191: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
 // `workingCopyChanged`, `error`): how many commits of the issue's workspace no remote branch or tag
@@ -2476,7 +2485,7 @@ package api
 // api.ReleasedClaimEnds), each a `z.enum` in `packages/contracts/src/legion-api.ts`, which refuses
 // a word it does not name, so a word added later bumps this number. `GET /legion/v1/state` gains
 // `projectRelease`, that same body for the project's newest release, absent while none was
-// recorded; a caller from a pod whose claims record a contract below 180 is served the state
+// recorded; a caller from a pod whose claims record a contract below 191 is served the state
 // without it (api's stateNarrowings, withoutProjectRelease), as a caller below 133 is served it
 // without `mergeWait`, and the bands compose. A claim's `suspendedBy` on the operator routes takes
 // `project_release`, a claim the release stopped, which the daemon's next boot starts again. The
@@ -2493,27 +2502,29 @@ package api
 // where one does, and records, stops and deletes nothing; while a release runs (its record neither
 // finished nor ended by a boot, store.ProjectRelease.Runs), both doors' pause answer 409
 // `PROJECT_RELEASING`, the Failure body alone, and pause nothing. The number is the lowest
-// above main's 168 that no other open pull request declared at 2026-11-19T22:35:55Z.
-// `.github/scripts/check-daemon-api-contract.sh`, run as ci.yaml's lint job runs it on this pull
-// request, passed 171 then, but a reading of `const DaemonAPIVersion` at the head of every open
-// pull request that changes this file (2026-11-19T22:27Z to 22:35:55Z) found 171 declared by #2230
-// and #4065 too and every number from 169 to 179 declared by another open pull request: 169 by
-// #4273, 170 by #4182, 172 by #3659, 173 by #4493, 174 by #3993, 175 by #3712, #4432 and #4495, 176
-// by #4030, #4173, #4180, #4193, #4259, #4261 and #4269, 177 by #4017, 178 by #3831, #4115 and
-// #4175, and 179 by #4392 and #4540, so this change took 180. A pod at main's 178 (#4115's entry
-// above), or at a number another open pull request declares below 180, runs a plugin that does not
-// know this release's shapes, so it is served the state without `projectRelease`. This change
-// first took 150, the lowest free number at the forward merge of 2026-11-15, then 157 once main
-// reached 151, then 159 once three other heads had taken 157, then 161 once #4175 declared 159 as
-// well and #3519 took 160, then 163 once #4173 declared 161 as well and three heads took 162, which
-// held at the forward merge that brought in c70a8022 with main at 160, then 171 once main reached
-// 168 (#4488's entry above) at the forward merge that brought in b2cf98a0: the check refused 168 at
-// 2026-11-19T18:36:14Z naming 171, when #4065 declared 169 and #2230, #4173, #4180 and #4193
-// declared 170, and a reading of every open head (2026-11-19T18:36:50Z to 18:41:40Z) found 171
-// declared by none. 171 held at the forward merge that brought in 506395be with main still at 168.
-// 180 stays above main's 178, which the forward merge that brought in c7e1cbd5 (#4115) brought.
-// Read the base's own number and every open head again at the next merge rather than from this
-// entry, as
+// above main's 188 that no other open pull request declared at 2026-11-20T10:26:20Z: main reached
+// 188 with #4543 (its entry above), which the forward merge that brought in 1c7c8253 brought, and
+// a reading of `const DaemonAPIVersion` at the head of every open pull request that changes this
+// file then found 188 declared by #4581 too and every number from 189 to 190 declared by another
+// open pull request, 189 by #3831, #4592 and #4596 and 190 by #4493 and #4578, and none declaring
+// 191, so this change took 191. A pod at main's 188, or at a number another open pull request
+// declares below 191, runs a plugin that does not know this release's shapes, so it is served the
+// state without `projectRelease`. This change first took 150, the lowest free number at the
+// forward merge of 2026-11-15, then 157 once main reached 151, then 159 once three other heads had
+// taken 157, then 161 once #4175 declared 159 as well and #3519 took 160, then 163 once #4173
+// declared 161 as well and three heads took 162, which held at the forward merge that brought in
+// c70a8022 with main at 160, then 171 once main reached 168 (#4488's entry above) at the forward
+// merge that brought in b2cf98a0: `.github/scripts/check-daemon-api-contract.sh`, run as
+// ci.yaml's lint job runs it on this pull request, refused 168 at 2026-11-19T18:36:14Z naming 171,
+// when #4065 declared 169 and #2230, #4173, #4180 and #4193 declared 170, and a reading of every
+// open head (2026-11-19T18:36:50Z to 18:41:40Z) found 171 declared by none. 171 held at the
+// forward merge that brought in 506395be with main still at 168. Then 180, the lowest above main's
+// 168 that no other open pull request declared at 2026-11-19T22:35:55Z: the check passed 171
+// then, but a reading of every open head that changes this file (2026-11-19T22:27Z to 22:35:55Z)
+// found 171 declared by #2230 and #4065 too and every number from 169 to 179 declared by another
+// open pull request. 180 stayed above main's 178 (#4115's entry above) at the forward merges that
+// brought in c7e1cbd5 (#4115), bafd3618, 13af9401 and 2610675b. Read the base's own number and
+// every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
-const DaemonAPIVersion = 180
+const DaemonAPIVersion = 191

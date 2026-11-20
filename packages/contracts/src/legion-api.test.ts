@@ -119,7 +119,7 @@ const schemas: Record<string, z.ZodType> = {
   // the others name something beside the sentence: the setting that turns the pause off (none
   // from a daemon that runs no workflow), the pause that stands for a second pause and for a turn
   // refused while the project is paused, and the last pause for a resume of a project that runs.
-  // Contract 180 adds the two refusals between the pause and the project release: a pause while a
+  // Contract 191 adds the two refusals between the pause and the project release: a pause while a
   // release runs (`PROJECT_RELEASING`, which names nothing beside its sentence) and a release while
   // a pause holds the project (`PROJECT_PAUSED`, naming the pause and each pod a pause holds).
   "project-pause.json": LegionProjectPauseResponse,
@@ -2459,7 +2459,7 @@ test("the state goldens carry the pause that stands and the last pause, and both
 // out; a body that names no end is no resume's answer. Each refusal names what its code names
 // beside its sentence, and nothing else: the setting that turns the pause off, the pause that
 // stands, or the last pause. The daemon client reads a refusal through the plain refusal shape,
-// which keeps the code and the sentence of every one of them. Contract 180's two refusals between
+// which keeps the code and the sentence of every one of them. Contract 191's two refusals between
 // the pause and the project release are among them: a pause while a release runs names nothing
 // beside its sentence, and a release while a pause holds the project names the pause that stands
 // and each pod a pause still holds, with the claims of it stored suspended by `released`; a held
