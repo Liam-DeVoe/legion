@@ -2452,4 +2452,25 @@ package api
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
-const DaemonAPIVersion = 178
+//
+// 187: INFRA-4172 (cybermonklabs/legion) -- every workflow role's pane and pod is told
+// LEGION_ROLE_IDENTITIES (runtime.RoleIdentitiesVariable), every role's git identity as JSON: one
+// object from each role of claim.Roles to `{"name": …, "email": …}`, the identity that role's App
+// commits as, keys sorted (runtime.RoleIdentities). The push step of `legion jj` reads it
+// (runtime.ReadRoleIdentities) to set the author of each commit a push sends from the role its
+// first `Legion-Role` trailer names. The daemon puts it in every worker's spec.Env
+// (specs.workerSpawnSpec), which the tmux runtime passes as a pane's -e pair and the Sandbox runtime
+// in a role's start command; a failed mint of any role's identity fails the launch, naming that
+// role. The controller's launch carries none, and `legion controller start` drops one it inherits.
+// An operator's `runtime.tmux.pane_env`, `runtime.kubernetes.pod.env` and provider keys may not
+// name it (runtime.PaneVariableRefusal, sandbox's podVariables). A role process of an earlier
+// release has no table, and its step does nothing; the reader passes over a field of an identity
+// it does not know, so a field a later release adds turns no step off. No shape of `GET
+// /legion/v1/state` moves, and this change adds no store migration.
+// (This entry takes 187, above main's 178: `.github/scripts/check-daemon-api-contract.sh`'s
+// reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each open pull request of
+// cybermonklabs/legion that changes this file, made on 2026-11-20 between 05:03:55Z and 05:14:25Z,
+// found 179 to 186 each declared by another open pull request and none declaring 187. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+const DaemonAPIVersion = 187

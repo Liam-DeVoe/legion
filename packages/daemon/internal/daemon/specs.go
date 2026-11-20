@@ -64,8 +64,9 @@ type specs struct {
 	same func(a, b string) bool
 	// identity is the role's App bot identity every pane commits as, minted for the owner whose
 	// installation holds the repository the launch works — the record's name over a transfer, the
-	// mint's owner its serving one (workflowRuntime.identity); nil for a daemon with no GitHub
-	// Apps.
+	// mint's owner its serving one (workflowRuntime.identity). A worker's launch asks it for every
+	// role of claim.Roles, its own first, for the table of every role's identity its process carries
+	// (runtime.RoleIdentitiesVariable). nil for a daemon with no GitHub Apps.
 	identity func(ctx context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error)
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
@@ -247,12 +248,32 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 		spec.Variants, spec.Prompt.VariantInstructionsPaths = arms.Variants, arms.Instructions
 	}
+	// The claim's own identity is the six variables its commits carry (GitIdentity.Env). Every
+	// role's of claim.Roles, the claim's own among them, is the table the push step of `legion jj`
+	// reads to set the author of each commit a push sends from the role its Legion-Role trailer
+	// names (runtime.RoleIdentitiesVariable): an issue's roles share one working copy, so a
+	// commit's author may be another role's App. identity reuses each App's cached lease
+	// (workflowRuntime.identity), so the other roles cost no mint of their own while a lease
+	// lasts. A failed mint of any role's identity fails the launch, naming that role, as a failed
+	// mint of the claim's own does: the daemon serves only a repository both role Apps are
+	// installed on, so such a failure is transient, and the launch is tried again. The controller's
+	// launch (controllerSpawnSpec) asks for no identity and carries no table.
 	if s.identity != nil {
 		id, err := s.identity(ctx, c.Role, spec.Repository)
 		if err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the git identity of %s: %w", c.Token, err)
 		}
 		spec.Env = id.Env()
+		identities := map[claim.Role]runtime.GitIdentity{c.Role: id}
+		for _, role := range claim.Roles {
+			if role == c.Role {
+				continue
+			}
+			if identities[role], err = s.identity(ctx, role, spec.Repository); err != nil {
+				return runtime.SpawnSpec{}, fmt.Errorf("the git identity of the %s, for the role identities of %s: %w", role, c.Token, err)
+			}
+		}
+		spec.Env[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(identities)
 	}
 	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
 	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
@@ -415,8 +436,9 @@ func (s specs) stalePluginInstall(c supervise.Claim, backend runtime.Backend) *r
 // LEGION_SLACK_CHANNELS from the runtime (sandbox.Options.ControllerSlackChannels), which
 // compares them with the list a running controller was launched under and relaunches it when
 // they change; a spec cannot set that variable.
-// It has no repository and no git identity: the controller works Dispatch, never a checkout, and
-// commits nothing, so it stamps no issue key into one either (runtime.SpawnSpec.IssueTrailer,
+// It has no repository and no git identity, nor the table of every role's identity
+// (runtime.RoleIdentitiesVariable): the controller works Dispatch, never a checkout, and commits
+// and pushes nothing, so it stamps no issue key into a commit either (runtime.SpawnSpec.IssueTrailer,
 // which validateControllerShape refuses on a controller's spec). It runs in no experiment and is
 // told no variant instructions whatever the modes are: an experiment's unit is a tree or an
 // issue of one, and the controller runs in neither.

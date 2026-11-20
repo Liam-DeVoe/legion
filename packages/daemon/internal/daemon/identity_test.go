@@ -18,8 +18,9 @@ import (
 )
 
 // A pane commits as its role's App, minted for the owner of the repository its issue works: the
-// launch carries the six git identity variables every worker pane gets, nothing else of the Apps,
-// and a launch whose identity cannot be resolved does not happen.
+// launch carries the six git identity variables every worker pane gets and the table of every
+// role's identity (runtime.RoleIdentitiesVariable), each asked for that same repository, nothing
+// else of the Apps, and a launch whose identity cannot be resolved does not happen.
 func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	stateDir := t.TempDir()
 	token, err := claim.NewToken("s1", "S1-1", claim.RoleImplementer)
@@ -33,9 +34,9 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 	if err := os.WriteFile(rolePromptPath(stateDir, token), []byte("implement\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// The six below are the whole of Env only for a daemon holding none of the passthrough
-	// variables a launch is told beside them (stallLimitVariables, refusalCooldownVariables):
-	// this test's daemon holds none.
+	// The six below and the table are the whole of Env only for a daemon holding none of the
+	// passthrough variables a launch is told beside them (stallLimitVariables,
+	// refusalCooldownVariables): this test's daemon holds none.
 	fixtureenv.Unset(t, slices.Concat(stallLimitVariables, refusalCooldownVariables)...)
 	bot := runtime.GitIdentity{Name: "legion-implementer[bot]", Email: "7+legion-implementer[bot]@users.noreply.github.com"}
 	var asked []string
@@ -44,26 +45,29 @@ func TestSpawnSpecCarriesTheRoleAppIdentity(t *testing.T) {
 			return ghrepo.MustParse("zeta/tools"), "main", nil
 		},
 		identity: func(_ context.Context, role claim.Role, repository ghrepo.Repository) (runtime.GitIdentity, error) {
-			if role != claim.RoleImplementer {
-				t.Errorf("identity asked for %s, want the claim's role", role)
-			}
-			asked = append(asked, repository.String())
+			asked = append(asked, string(role)+" on "+repository.String())
 			return bot, nil
 		}}
 	spec, err := s.SpawnSpec(context.Background(), c)
 	if err != nil || spec.Repository != ghrepo.MustParse("zeta/tools") {
 		t.Fatalf("SpawnSpec = %q, %v; want zeta/tools, the runtime's to locate the workspace from", spec.Repository, err)
 	}
-	if want := []string{"zeta/tools"}; !slices.Equal(asked, want) {
-		t.Errorf("identity asked for %q, want the recorded repository alone, %q: the owner its lease is minted for is identity's own to decide", asked, want)
+	// The claim's own role first, as before the table, then each other role of claim.Roles.
+	want := []string{"implementer on zeta/tools", "architect on zeta/tools", "planner on zeta/tools", "tester on zeta/tools", "reviewer on zeta/tools", "merger on zeta/tools"}
+	if !slices.Equal(asked, want) {
+		t.Errorf("identity asked for %q, want the claim's own role and then each other role of claim.Roles, each on the recorded repository alone, %q: the owner its lease is minted for is identity's own to decide", asked, want)
 	}
 	identity := map[string]string{
 		"JJ_USER": bot.Name, "JJ_EMAIL": bot.Email,
 		"GIT_AUTHOR_NAME": bot.Name, "GIT_AUTHOR_EMAIL": bot.Email,
 		"GIT_COMMITTER_NAME": bot.Name, "GIT_COMMITTER_EMAIL": bot.Email,
+		runtime.RoleIdentitiesVariable: runtime.RoleIdentities(map[claim.Role]runtime.GitIdentity{
+			claim.RoleArchitect: bot, claim.RolePlanner: bot, claim.RoleImplementer: bot,
+			claim.RoleTester: bot, claim.RoleReviewer: bot, claim.RoleMerger: bot,
+		}),
 	}
 	if !maps.Equal(spec.Env, identity) {
-		t.Errorf("the launch's Env = %v, want the six git identity variables alone", spec.Env)
+		t.Errorf("the launch's Env = %v, want the six git identity variables and the role identities alone", spec.Env)
 	}
 
 	s.identity = func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) {

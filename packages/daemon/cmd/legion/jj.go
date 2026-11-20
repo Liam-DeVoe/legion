@@ -3,11 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -16,6 +14,7 @@ import (
 	"syscall"
 
 	legionclaim "github.com/sjawhar/legion/daemon/internal/claim" // main_test.go's `claim` helper holds the bare name
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // jjUsage is the help of `legion jj`, which reads its own arguments (passThrough), --help among
@@ -43,12 +42,6 @@ one jj metaedit --update-author for each role. It prints one line for each commi
 // prefixes, and jj reads JJ_ variables of its own.
 const wrappedJJAt = "WRAPPED_JJ_AT"
 
-// roleIdentitiesVariable is the table of every role's identity that the daemon writes into a
-// role process's environment: one JSON object from each role of claim.Roles to
-// {"name": …, "email": …}, the identity that sets that role's JJ_USER and JJ_EMAIL. A table may
-// hold a subset of the roles. A controller's process has none.
-const roleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
-
 // runJJ is `legion jj`. Both of Legion's jj wrappers run it: the pod's /opt/legion/bin/jj
 // (packages/daemon/docker/jj) hands it each `jj git push` with --real /usr/local/bin/jj after its
 // two setup checks, and the jj first on a tmux pane's PATH (workerbin.Install's bin/jj) hands it
@@ -56,8 +49,9 @@ const roleIdentitiesVariable = "LEGION_ROLE_IDENTITIES"
 // --after), runs the author step before a push (jjStep), and replaces itself with that jj
 // (execWrapped), so a stop of the process group and its budgets reach jj as before. A command
 // that is no push, a push the step leaves alone (readJJPush), a run that finds wrappedJJAt set,
-// and a process with no table run that jj at once, with nothing printed and no other process
-// started. A table that is set but cannot be used prints one line, and then runs the same.
+// and a process with no table (runtime.RoleIdentitiesVariable unset, as a controller's is) run
+// that jj at once, with nothing printed and no other process started. A table that is set but
+// cannot be used (runtime.ReadRoleIdentities) prints one line, and then runs the same.
 //
 // Signals are handled as runGit handles them: the actions SIGINT and SIGTERM had at the process
 // start are put back (signal.Reset), so an interrupt or a terminate ends legion jj where it
@@ -93,13 +87,13 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	}
 	env := withWrapperChain(os.Environ(), wrappedJJAt, chain)
 	push := readJJPush(jjArgs)
-	value, set := os.LookupEnv(roleIdentitiesVariable)
+	value, set := os.LookupEnv(runtime.RoleIdentitiesVariable)
 	if chained || !push.steps() || !set {
 		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
 	}
-	table, why := readRoleIdentities(value)
+	table, why := runtime.ReadRoleIdentities(value)
 	if why != "" {
-		fmt.Fprintf(stderr, "legion jj: %s is %s; the push runs with no author step\n", roleIdentitiesVariable, why)
+		fmt.Fprintf(stderr, "legion jj: %s is %s; the push runs with no author step\n", runtime.RoleIdentitiesVariable, why)
 		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
 	}
 	step := &jjStep{push: push, next: next, env: env, table: table, stderr: stderr}
@@ -115,49 +109,6 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	return execWrapped("legion jj", next, push.withRevisions(step.ids), env, nil, stderr)
-}
-
-// jjIdentity is one role's identity in the table: the name and the email its commits carry.
-type jjIdentity struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-// readRoleIdentities reads the table, value, as the daemon writes it. It answers why a value
-// cannot be used, or "" with the table: empty, not one JSON object of identities, a role outside
-// claim.Roles, or a name or an email that is empty or holds a line break. The reason names no
-// value, so the line it goes into stays one line.
-func readRoleIdentities(value string) (map[legionclaim.Role]jjIdentity, string) {
-	if value == "" {
-		return nil, "empty"
-	}
-	var read map[string]*jjIdentity
-	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&read); err != nil || read == nil {
-		return nil, "not a JSON object of each role's name and email"
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		return nil, "not a JSON object of each role's name and email"
-	}
-	table := map[legionclaim.Role]jjIdentity{}
-	for _, name := range slices.Sorted(maps.Keys(read)) {
-		role, identity := legionclaim.Role(name), read[name]
-		switch {
-		case !legionclaim.IsRole(role):
-			return nil, fmt.Sprintf("a table with %q, which is no role", name)
-		case identity == nil || identity.Name == "":
-			return nil, "a table with an empty name for " + name
-		case identity.Email == "":
-			return nil, "a table with an empty email for " + name
-		case strings.ContainsAny(identity.Name, "\r\n"):
-			return nil, "a table with a line break in the name of " + name
-		case strings.ContainsAny(identity.Email, "\r\n"):
-			return nil, "a table with a line break in the email of " + name
-		}
-		table[role] = *identity
-	}
-	return table, ""
 }
 
 // jjPush is a jj command line as legion jj reads it (readJJPush).
@@ -309,7 +260,7 @@ type jjStep struct {
 	push   jjPush
 	next   string   // the jj each command of the step runs, and the push after them
 	env    []string // the environment of each, the loop guard's variable set
-	table  map[legionclaim.Role]jjIdentity
+	table  map[legionclaim.Role]runtime.GitIdentity
 	stderr io.Writer
 	// ids are the commit-id revision arguments, by the index of the word that holds each: what
 	// the commit each names stands for now.

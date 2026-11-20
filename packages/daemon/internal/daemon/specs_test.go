@@ -611,10 +611,10 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 }
 
 // A launch carries the passthrough variables the daemon's own environment holds — the seven stall
-// limits and the two refusal cooldowns — merged into the git identity's variables rather than
-// replacing them or being replaced by them, and carries no variable the two lists do not hold: a
-// session told none of one runs on the default its plugin holds
-// (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
+// limits and the two refusal cooldowns — merged into the git identity's variables and the table of
+// every role's identity rather than replacing them or being replaced by them, and carries no
+// variable the two lists do not hold: a session told none of one runs on the default its plugin
+// holds (packages/pi-shared/src/stall-limits.ts, packages/pi-shared/src/fallback-cooldown.ts). The
 // stall limits are merged after SpawnSpec's fork, so the controller's launch is told them as a
 // phase worker's is, and the cooldowns reach the controller from its own spec
 // (controllerSpawnSpec). Both runtimes forward Env verbatim, so this is where they reach a pane
@@ -658,8 +658,12 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	}
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
+	want[runtime.RoleIdentitiesVariable] = runtime.RoleIdentities(map[claim.Role]runtime.GitIdentity{
+		claim.RoleArchitect: bot, claim.RolePlanner: bot, claim.RoleImplementer: bot,
+		claim.RoleTester: bot, claim.RoleReviewer: bot, claim.RoleMerger: bot,
+	})
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the seven passthrough variables the daemon holds beside the git identity and the role identities, %v", spec.Env, want)
 	}
 
 	// The controller's launch is told the same seven — the stall limits after the fork, the
@@ -680,6 +684,97 @@ func TestSpawnSpecCarriesThePassthroughVariablesTheDaemonHolds(t *testing.T) {
 	}
 	if !maps.Equal(spec.Env, held) {
 		t.Errorf("the worker's Env with no identity = %v, want the seven passthrough variables the daemon holds, %v", spec.Env, held)
+	}
+}
+
+// Every worker's launch carries LEGION_ROLE_IDENTITIES, the identity of each role of claim.Roles
+// as its own App mints it (appauth.AppRoleFor: the review App for the architect, the planner, the
+// tester and the reviewer, the implement App for the implementer and the merger), asked for the
+// repository the launch works, whatever role the launch is: the push step of `legion jj` reads it
+// to set each commit's author from its Legion-Role trailer. The controller's launch carries none.
+func TestEveryLaunchCarriesTheIdentityOfEachRole(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	apps := map[appauth.AppRole]runtime.GitIdentity{
+		appauth.Review:    {Name: "legion-review[bot]", Email: "8+legion-review[bot]@users.noreply.github.com"},
+		appauth.Implement: {Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"},
+	}
+	repository := ghrepo.MustParse("zeta/tools")
+	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+		repository: func(context.Context, string) (ghrepo.Repository, string, error) { return repository, "main", nil },
+		identity: func(_ context.Context, role claim.Role, asked ghrepo.Repository) (runtime.GitIdentity, error) {
+			if asked != repository {
+				t.Errorf("identity asked for the %s on %s, want the repository the launch works, %s", role, asked, repository)
+			}
+			return apps[appauth.AppRoleFor(role)], nil
+		}}
+	const table = `{"architect":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
+		`"implementer":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
+		`"merger":{"name":"legion-implement[bot]","email":"9+legion-implement[bot]@users.noreply.github.com"},` +
+		`"planner":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
+		`"reviewer":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"},` +
+		`"tester":{"name":"legion-review[bot]","email":"8+legion-review[bot]@users.noreply.github.com"}}`
+	for _, role := range claim.Roles {
+		token, err := claim.NewToken("s1", "S1-2", role)
+		if err != nil {
+			t.Fatal(err)
+		}
+		spec, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: role})
+		if err != nil {
+			t.Fatalf("the %s's SpawnSpec: %v", role, err)
+		}
+		if got := spec.Env[runtime.RoleIdentitiesVariable]; got != table {
+			t.Errorf("the %s's LEGION_ROLE_IDENTITIES = %q, want every role's identity, %q", role, got, table)
+		}
+		if own := apps[appauth.AppRoleFor(role)]; spec.Env["JJ_USER"] != own.Name || spec.Env["JJ_EMAIL"] != own.Email {
+			t.Errorf("the %s commits as %q <%s>, want its own App's identity, %q <%s>", role, spec.Env["JJ_USER"], spec.Env["JJ_EMAIL"], own.Name, own.Email)
+		}
+	}
+	controller, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+	if err != nil {
+		t.Fatalf("the controller's SpawnSpec: %v", err)
+	}
+	if value, set := controller.Env[runtime.RoleIdentitiesVariable]; set {
+		t.Errorf("the controller's launch carries LEGION_ROLE_IDENTITIES=%q, want none: it pushes nothing", value)
+	}
+}
+
+// A launch whose table cannot be built does not happen: a failed mint of any role's identity, not
+// only of the claim's own, fails the launch with an error that names the role whose identity
+// failed and carries the mint's error, as a failed mint of the claim's own role does.
+func TestALaunchWhoseOtherAppCannotBeMintedFails(t *testing.T) {
+	composer, err := prompts.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := supervise.Claim{Token: token, Issue: "S1-2", Tree: "S1-1", Role: claim.RoleImplementer}
+	refused := errors.New("the App lease could not be minted")
+	for _, failing := range claim.Roles {
+		if failing == c.Role {
+			continue
+		}
+		t.Run(string(failing), func(t *testing.T) {
+			s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, appOwners: noAppOwners,
+				identity: func(_ context.Context, role claim.Role, _ ghrepo.Repository) (runtime.GitIdentity, error) {
+					if role == failing {
+						return runtime.GitIdentity{}, refused
+					}
+					return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@users.noreply.github.com"}, nil
+				}}
+			spec, err := s.SpawnSpec(context.Background(), c)
+			if err == nil {
+				t.Fatalf("SpawnSpec = %v, want a failure: the %s's identity could not be minted", spec.Env, failing)
+			}
+			if !errors.Is(err, refused) || !strings.Contains(err.Error(), string(failing)) {
+				t.Errorf("SpawnSpec = %v, want the mint's error, naming the %s", err, failing)
+			}
+		})
 	}
 }
 
