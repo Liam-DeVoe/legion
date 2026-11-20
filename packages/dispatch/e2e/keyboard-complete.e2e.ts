@@ -1520,6 +1520,105 @@ for (const view of ["the past version", "the reading pane", "the comment"] as co
   });
 }
 
+/** A person's Ctrl+click or middle click on `link`: the button held down for 150 ms, as a hand
+ *  holds it, where Playwright's own `click` releases it at once. Answers the address of the page
+ *  it opened in `context`, or `none` when no page opened within 5 s. The other site is served
+ *  by the row (`serveOtherSite`). */
+async function heldClickOpens(
+  context: BrowserContext,
+  page: Page,
+  link: Locator,
+  how: "Ctrl+click" | "middle click"
+): Promise<string> {
+  await link.scrollIntoViewIfNeeded();
+  const box = await link.boundingBox();
+  if (box === null) throw new Error(`k-link-click: the link to ${how} is drawn`);
+  const opened = context.waitForEvent("page", { timeout: 5000 }).catch(() => undefined);
+  await page.mouse.move(box.x + Math.min(8, box.width / 2), box.y + box.height / 2);
+  if (how === "Ctrl+click") await page.keyboard.down("ControlOrMeta");
+  const button = how === "Ctrl+click" ? "left" : "middle";
+  await page.mouse.down({ button });
+  await page.waitForTimeout(150);
+  await page.mouse.up({ button });
+  if (how === "Ctrl+click") await page.keyboard.up("ControlOrMeta");
+  const tab = await opened;
+  if (tab === undefined) return "none";
+  await tab.waitForLoadState("domcontentloaded");
+  const address = tab.url();
+  await tab.close();
+  return address;
+}
+
+/** Serves the other site the web links point to in `context`, as `newPageAt` does. */
+async function serveOtherSite(context: BrowserContext): Promise<void> {
+  await context.route(`${OTHER_SITE}/**`, (route) =>
+    route.fulfill({
+      body: "<!doctype html><title>Another site</title><p>Another site.</p>",
+      contentType: "text/html",
+    })
+  );
+}
+
+// SLOW(>=2s): the Conversation tab and the spec opened once for each of twelve presses.
+test("k-link-click: in a folded comment on the Conversation tab and in the spec's margin, a Ctrl+click and a middle click open each link in a new page", async ({
+  context,
+  page,
+}) => {
+  test.setTimeout(240_000);
+  const seed = await seedLinkSpec();
+  await serveOtherSite(context);
+  const reference = `dispatch://${seed.other.key}`;
+  const otherPage = (from: Page) => new URL(`/issues/${seed.other.key}`, from.url()).href;
+  const margin = await createComment(seed.issueKey, {
+    anchor: { artifact: "spec", quote: "names it too" },
+    body: `Read [a page elsewhere](${AWAY}) and see [the other issue](${reference}).`,
+  });
+  // The folded card of each comment, as its page draws it: the comment's own turn on the
+  // Conversation tab, and the margin's card of the comment anchored in the spec.
+  const places = [
+    {
+      card: () => page.locator(`[data-turn="comment:${seed.commentId}"]`),
+      open: () => page.goto(`/issues/${seed.issueKey}/conversation`),
+      where: "the Conversation tab's folded comment",
+    },
+    {
+      card: () => page.getByTestId(`margin-comment-${margin.id}`),
+      open: () => openSpec(page, seed.issueKey, "names it too"),
+      where: "the spec margin's folded comment",
+    },
+  ];
+  await page.setViewportSize(WIDE);
+  for (const { card, open, where } of places) {
+    for (const [name, find, target] of [
+      [
+        "the web link",
+        (scope: Locator) => scope.getByRole("link", { exact: true, name: "a page elsewhere" }),
+        (_from: Page) => new RegExp(`^${AWAY}$`),
+      ],
+      [
+        "the dispatch:// link",
+        (scope: Locator) => scope.locator(`a[data-dispatch-ref="${reference}"]`).first(),
+        (from: Page) => new RegExp(`^${otherPage(from)}(/|$)`),
+      ],
+    ] as const) {
+      for (const how of ["Ctrl+click", "middle click"] as const) {
+        await open();
+        const link = find(card());
+        await expect(link, `k-link-click: ${where} draws ${name}`).toBeVisible();
+        const at = page.url();
+        // Soft, so one run names every place and link that opens nothing.
+        expect
+          .soft(
+            await heldClickOpens(context, page, link, how),
+            `k-link-click: in ${where}, a ${how} on ${name} opens it in a new page`
+          )
+          .toMatch(target(page));
+        expect.soft(page.url(), `k-link-click: in ${where}, a ${how} keeps the page`).toBe(at);
+      }
+    }
+  }
+});
+
 // SLOW(>=2s): the spec opened three times and a new page loaded.
 test("k-link-keys: in the spec the reader edits, Alt+Enter with the caret in a link or beside a key's title opens it and changes no text", async ({
   context,
