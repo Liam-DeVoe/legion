@@ -528,7 +528,7 @@ func TestARelaunchStartsNoProcessWhileTheCleanStopIsInFlight(t *testing.T) {
 
 // A relaunch holds its start for as long as the clean stop in flight runs, however long that is
 // (awaitSessionStops): the wait sets no timer of its own, and only the stop's end or the start's
-// own context ends it. The stop's budget (cleanSessionStopBudget in internal/daemon, 5 s) is what
+// own context ends it. The stop's budget (CleanSessionStopBudget in internal/daemon, 5 s) is what
 // bounds the wait; a wait that gave up sooner, on a time of its own, would start the relaunch
 // while a slow listener had still not answered the stop's read, and the relaunch would register
 // before it, which is the order the wait exists to prevent. The other relaunch tests end the stop

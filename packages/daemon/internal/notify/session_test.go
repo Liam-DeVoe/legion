@@ -265,18 +265,19 @@ func (l heldListener) RoundTrip(r *http.Request) (*http.Response, error) {
 
 // The clean stop's read and delete have one bound, the context the daemon's stop gives them (its
 // budget, sessionStop.send in packages/daemon/internal/daemon/daemon.go), and none of the client's
-// own: requestTimeout bounds a publish and a role lookup alone. The production client has neither
-// a timeout nor its own transport, so it sends through http.DefaultTransport, and each row checks
-// that this has no response-header timeout: one set on it in any package's init would end a held
-// read before the budget. Its idle timeout closes only pooled idle connections, so replacing the
-// stop client's transport below hides no bound on a held answer. A listener that answers past
-// requestTimeout but inside the budget is waited for, and one that answers after the budget is
-// given up at the budget. The budget is a day, longer than any a test of the daemon gives its
-// stops, so a fixed client timeout of any length under it, the 10 s requestTimeout or a minute
-// alike, ends the second row's request before the budget does, and fails it; a transport of its
-// own fails the first check before the row replaces it. Each row runs in a synctest bubble, whose
-// clock moves only while every goroutine in it waits, so the holds and the budget are times on
-// that clock, not on the run's, and the day costs the run nothing.
+// own: requestTimeout bounds a publish and a role lookup alone. The production client has no
+// timeout, and a transport of its own with no fixed limit (stopTransport), which each row checks
+// (wantNoFixedLimit) before it replaces that transport with a listener that holds its answer;
+// TestTheCleanStopsTransportKeepsNoLimitOfTheSharedOne shows a stalled connect and a stalled TLS
+// handshake on it. The transport's idle timeout closes only pooled idle connections, so replacing
+// it hides no bound on a held answer. A listener that answers past requestTimeout but inside the
+// budget is waited for, and one that answers after the budget is given up at the budget. The
+// budget is a day, longer than any a test of the daemon gives its stops, so a fixed client
+// timeout of any length under it, the 10 s requestTimeout or a minute alike, ends the second
+// row's request before the budget does, and fails it. Each row
+// runs in a synctest bubble, whose clock moves only while every goroutine in it waits, so the
+// holds and the budget are times on that clock, not on the run's, and the day costs the run
+// nothing.
 func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
 	const budget = 24 * time.Hour
 	for _, request := range []struct {
@@ -299,14 +300,10 @@ func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
 			t.Run(fmt.Sprintf("%s, answered after %s", request.name, hold), func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					p := New("http://listener.invalid", "envoy-bearer")
-					if p.stops.Timeout != 0 || p.stops.Transport != nil {
-						t.Fatalf("the clean stop's client has a timeout of %s and a transport %T of its own, want neither: its context is the read's and the delete's one bound", p.stops.Timeout, p.stops.Transport)
+					if p.stops.Timeout != 0 {
+						t.Fatalf("the clean stop's client has a timeout of %s, want none: its context is the read's and the delete's one bound", p.stops.Timeout)
 					}
-					if shared, ok := http.DefaultTransport.(*http.Transport); !ok {
-						t.Fatalf("http.DefaultTransport, which the clean stop's client sends through, is %T, want an *http.Transport with no response-header timeout", http.DefaultTransport)
-					} else if shared.ResponseHeaderTimeout != 0 {
-						t.Fatalf("http.DefaultTransport, which the clean stop's client sends through, has a response-header timeout of %s, want none: it would end a held read before the read's context does", shared.ResponseHeaderTimeout)
-					}
+					wantNoFixedLimit(t, p.stops.Transport)
 					p.stops.Transport = heldListener{hold: hold, body: request.body}
 					ctx, cancel := context.WithTimeout(context.Background(), budget)
 					defer cancel()
@@ -325,5 +322,24 @@ func TestTheCleanStopsReadAndDeleteEndAtTheirContextAlone(t *testing.T) {
 				})
 			})
 		}
+	}
+}
+
+// wantNoFixedLimit fails t unless transport is an *http.Transport that sets no fixed limit a
+// request could meet before its context ends: no TLS-handshake or response-header timeout, and no
+// dialer but its DialContext, whose own limit no field shows
+// (TestTheCleanStopsTransportKeepsNoLimitOfTheSharedOne stalls it).
+func wantNoFixedLimit(t *testing.T, transport http.RoundTripper) {
+	t.Helper()
+	own, ok := transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("the clean stop's transport is %T, want an *http.Transport of its own (stopTransport)", transport)
+	}
+	if own.TLSHandshakeTimeout != 0 || own.ResponseHeaderTimeout != 0 {
+		t.Fatalf("the clean stop's transport has a TLS-handshake timeout of %s and a response-header timeout of %s, want neither: either could end the stop before its context does",
+			own.TLSHandshakeTimeout, own.ResponseHeaderTimeout)
+	}
+	if own.Dial != nil || own.DialTLS != nil || own.DialTLSContext != nil || own.DialContext == nil {
+		t.Fatal("the clean stop's transport has a dialer other than its own DialContext, or none: a dialer it did not make can carry a limit of its own")
 	}
 }

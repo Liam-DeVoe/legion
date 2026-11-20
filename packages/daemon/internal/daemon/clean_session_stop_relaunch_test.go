@@ -32,7 +32,7 @@ const (
 )
 
 // relaunchStopBudget is the clean stop's budget in these rows: the product's own budget for a
-// stop's read and delete (cleanSessionStopBudget, 5 s in production), which the test sets, as the
+// stop's read and delete (CleanSessionStopBudget, 5 s in production), which the test sets, as the
 // thing it tests, through sessionStopOverrides.budget. A row holds the stop's read at its listener
 // until the relaunch has begun, so the read lasts as long as the machine takes to send the stop
 // and begin the relaunch, which production's 5 s need not cover on a loaded machine. Two minutes
@@ -63,7 +63,7 @@ const relaunchStepBound = time.Minute
 // bound, and the rows after it still run. The test binary's deadline is only the outer limit, less
 // what must still fit once the row has given up its last wait: the daemon's own stop at the row's
 // end, which d.stop waits for (stopBound of stopBudget). A deadline that leaves the row less than the
-// clean stop's own budget (cleanSessionStopBudget) refuses the row by name: run on less, its stop
+// clean stop's own budget (CleanSessionStopBudget) refuses the row by name: run on less, its stop
 // would get less time than production gives one.
 func relaunchRowEnd(t *testing.T) time.Time {
 	t.Helper()
@@ -73,9 +73,9 @@ func relaunchRowEnd(t *testing.T) time.Time {
 		return end
 	}
 	after := stopBound(stopBudget)
-	if left := time.Until(deadline) - after; left < cleanSessionStopBudget {
+	if left := time.Until(deadline) - after; left < CleanSessionStopBudget {
 		t.Fatalf("the test binary's deadline, %s, leaves this row %s once the daemon's stop at its end (%s) is set aside, less than the clean stop's own budget of %s: run it with a longer -timeout",
-			deadline.Format(time.RFC3339Nano), left, after, cleanSessionStopBudget)
+			deadline.Format(time.RFC3339Nano), left, after, CleanSessionStopBudget)
 	}
 	if outer := deadline.Add(-after); outer.Before(end) {
 		return outer
@@ -224,8 +224,12 @@ func (r *relaunchRig) answered(what string, answered <-chan operatorAnswer) {
 
 // stopsEnded ends the daemon's clean stops in flight (sessionStopOverrides.end), as the end of their
 // budget would. What the row then waits for is the relaunch's start alone, so its end comes a
-// relaunchStepBound from now at the latest: a stop that went on past the end it was given fails the
-// row there, rather than at its budget.
+// relaunchStepBound from now at the latest. A stop that went on past the end it was given holds
+// the relaunch until its own budget (r.budget) runs out. Where that comes after the row's new end,
+// the row fails there, still waiting for the relaunch. Where it comes first, as for a stop whose
+// read was held for most of its budget, the relaunch starts at the budget, and the row fails once
+// the stop's line names its context's deadline rather than the end the row gave it
+// (TestAStopThatLandsAfterTheRelaunchsRegistrationKeepsIt).
 func (r *relaunchRig) stopsEnded(end chan<- struct{}) {
 	close(end)
 	if bound := time.Now().Add(relaunchStepBound); bound.Before(r.end) {

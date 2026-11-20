@@ -671,31 +671,25 @@ func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *test
 }
 
 // The daemon's stop waits for the clean stops sessionStopsInFlight counts, and each ends within
-// cleanSessionStopBudget of being sent. At half of stopBudget or less, a stop sent before the
+// CleanSessionStopBudget of being sent. At half of stopBudget or less, a stop sent before the
 // halt or in the first half of the stop's budget ends inside that budget: only one sent later in
 // the drain can still be in flight when run stops waiting at the budget (awaitStop).
 func TestCleanSessionStopFitsTwiceInTheStopBudget(t *testing.T) {
-	if 2*cleanSessionStopBudget > stopBudget {
-		t.Fatalf("cleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
-			cleanSessionStopBudget, stopBudget)
+	if 2*CleanSessionStopBudget > stopBudget {
+		t.Fatalf("CleanSessionStopBudget is %s, more than half of stopBudget's %s: a clean stop sent in the first half of the daemon's stop budget could still be in flight when that budget runs out",
+			CleanSessionStopBudget, stopBudget)
 	}
 }
 
-// The clean stop's context must end before the standard HTTP transport's TLS handshake limit:
-// otherwise that fixed client-side limit, rather than cleanSessionStopBudget, can end the stop.
-func TestCleanSessionStopDeadlinePrecedesDefaultTransportTLSHandshake(t *testing.T) {
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		t.Fatalf("http.DefaultTransport = %T, want *http.Transport", http.DefaultTransport)
-	}
-	if timeout := transport.TLSHandshakeTimeout; timeout != 0 && timeout <= cleanSessionStopBudget {
-		t.Fatalf("http.DefaultTransport TLS handshake timeout %s is not after cleanSessionStopBudget %s", timeout, cleanSessionStopBudget)
-	}
-}
-
-// A listener that accepts TCP and then sends no TLS bytes leaves the default transport's
-// handshake pending. cleanSessionStop must report its own context deadline before that
-// transport deadline; closing the accepted connection then lets the detached dial clean up.
+// A listener that accepts TCP and then sends no TLS bytes leaves the stop's TLS handshake pending,
+// and the clean stop must end on its own context deadline, CleanSessionStopBudget
+// (awaitStopOnItsDeadline). The stop's transport is its own, with no TLS-handshake limit
+// (notify.stopTransport), where Go's shared one has 10 s. A TLS limit under the budget on it would
+// end the stop first, with the transport's "TLS handshake timeout"; with no deadline on the
+// stop's context the handshake would hang until the test's bound. The test waits for each fact it
+// checks, the stop's connect and then its return, bounded by the test binary's deadline rather
+// than a span of its own, so a correct stop that is slow to begin or to return on a loaded machine
+// passes (testwait.Bounded). Closing the accepted connection then lets the detached dial clean up.
 func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -716,6 +710,7 @@ func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testin
 	var inFlight sessionStopsInFlight
 	var logged bytes.Buffer
 	stop := cleanSessionStop(&inFlight, "https://"+listener.Addr().String(), "envoy-token", sessionStopOverrides{}, bufferedLogger(&logged))
+	began := time.Now()
 	ended := stop("ses_dead")
 	var conn net.Conn
 	select {
@@ -723,16 +718,38 @@ func TestCleanSessionStopContextEndsBeforeDefaultTransportTLSHandshake(t *testin
 		t.Cleanup(func() { _ = conn.Close() })
 	case err := <-acceptErr:
 		t.Fatalf("accept: %v", err)
-	case <-time.After(time.Second):
+	case <-ended:
+		t.Fatalf("the clean stop returned before it reached the TLS listener and logged %q", logged.String())
+	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
 		t.Fatal("the clean stop did not reach the TLS listener")
 	}
+	awaitStopOnItsDeadline(t, ended, began, &logged, "TLS handshake")
+}
+
+// awaitStopOnItsDeadline waits for the clean stop sent at began, whose return is ended, while the
+// step it names (what) is stalled, and requires that it ended on its own context's deadline,
+// CleanSessionStopBudget: it ran that whole budget, which a correct stop always does, since its
+// context starts after began, and it logged that context's deadline rather than a limit of the
+// transport. The wait is bounded by the test binary's deadline (testwait.Bounded), not by the
+// budget: how long after its deadline a stop returns on a loaded machine is no part of what this
+// checks, and a stop that never returns still fails, by name, at that bound. logged is read only
+// once the stop has returned, so the stop's goroutine has written all it will.
+func awaitStopOnItsDeadline(t *testing.T, ended <-chan struct{}, began time.Time, logged *bytes.Buffer, what string) {
+	t.Helper()
+	bound := testwait.Bounded(t, time.Minute, time.Second)
 	select {
 	case <-ended:
-	case <-time.After(cleanSessionStopBudget + time.Second):
-		t.Fatalf("the clean stop did not return within its %s context deadline", cleanSessionStopBudget)
+	case <-time.After(bound):
+		t.Fatalf("the clean stop with its %s stalled had not returned %s after it was sent", what, bound)
+	}
+	took := time.Since(began)
+	if took < CleanSessionStopBudget {
+		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, before its budget, CleanSessionStopBudget (%s): something other than its context's deadline ended it",
+			what, took, logged.String(), CleanSessionStopBudget)
 	}
 	if !strings.Contains(logged.String(), context.DeadlineExceeded.Error()) {
-		t.Fatalf("logged %q, want the clean stop's context deadline before the default transport's TLS handshake timeout", logged.String())
+		t.Fatalf("the clean stop with its %s stalled ended after %s and logged %q, want it ended at its context's deadline, CleanSessionStopBudget (%s), before any limit of the transport",
+			what, took, logged.String(), CleanSessionStopBudget)
 	}
 }
 

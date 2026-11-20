@@ -120,7 +120,7 @@ const (
 	// busyBackoffFirst is the Sandbox runtime's first wait before a launch's request the API server
 	// answered overloaded is sent again (sandbox.Options.BusyBackoff), doubled up to 8 s.
 	busyBackoffFirst = 250 * time.Millisecond
-	// cleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
+	// CleanSessionStopBudget bounds one clean stop of an Envoy session registration — the
 	// registry read and the delete that follows it, together (cleanSessionStop). It is longer
 	// than the listener's own budget for one route (sendRequestBudget,
 	// packages/envoy/cmd/listener/api.go: 3.5 s) and shorter than two of them, so a listener
@@ -134,8 +134,10 @@ const (
 	// stop waits for (sessionStopsInFlight) that was sent before the halt or in the first half of
 	// the stop's budget ends inside that budget. What keeps a stop that does land late off the
 	// relaunch's registration is the two conditions the stop carries (cleanSessionStop), not this
-	// bound.
-	cleanSessionStopBudget = 5 * time.Second
+	// bound. It is exported for the tests of the daemon's binary (cmd/legion), which link every
+	// package the binary does and hold Go's shared HTTP transport, which the stop's own transport
+	// is cloned from (notify.stopTransport), to limits after this budget; it is no setting.
+	CleanSessionStopBudget = 5 * time.Second
 )
 
 // overrides are the parts of a daemon a test replaces, and the listener `legion start` inherited;
@@ -1675,7 +1677,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // notices go through (notify.New), beside controller.NewProber, on the same base URL and bearer.
 //
 // The machine calls it inside its own decision, under its lock, so the read and the delete run on
-// a goroutine of their own, on a context of their own that only cleanSessionStopBudget ends (send):
+// a goroutine of their own, on a context of their own that only CleanSessionStopBudget ends (send):
 // not the decision's, which the machine's caller can end the moment the decision returns, and not
 // supervision's, which the halt cancels. inFlight is told when the stop starts and, if it counted
 // it, when it ends (sessionStopsInFlight says which stops the daemon's stop waits for).
@@ -1704,7 +1706,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 // clock ahead of this daemon's, is kept even where the id names the ended process, and that
 // session waits for its record to expire.
 //
-// The read and the delete share one budget, cleanSessionStopBudget, so a listener that never
+// The read and the delete share one budget, CleanSessionStopBudget, so a listener that never
 // answers does not leave the stop in flight for as long as it likes, and nothing else ends them:
 // send says why the daemon's stop must not. A test alone sets another budget, or ends the stops
 // in flight itself (sessionStopOverrides).
@@ -1737,7 +1739,7 @@ func cleanSessionStop(inFlight *sessionStopsInFlight, envoyURL, token string, se
 // (cleanSessionStop), which no decision waits for and the halt does not end. The daemon's stop
 // waits for them last, in a final wait (supervision.stop), and that wait is for every clean stop
 // started before it began: one sent before the halt, and one sent after it while the daemon's
-// stop still waits for the decisions. Each runs to its own budget (cleanSessionStopBudget), so
+// stop still waits for the decisions. Each runs to its own budget (CleanSessionStopBudget), so
 // one sent late can still be in flight when the stop's budget runs out: run then stops waiting at
 // that budget and logs `legion daemon stopped waiting for its work`, whose `deciding` names no
 // claim when that stop is all that is left (awaitStop).
@@ -1811,7 +1813,7 @@ func roleHolderLookup(envoyURL, token string) func(ctx context.Context, role str
 // sessionStop sends this daemon's clean stops, one call of send each; cleanSessionStop says when a
 // machine asks for one and what the delete's two conditions keep. It holds what every stop
 // shares: the listener client, the log that says what became of each stop, and what a test set of
-// it (sessionStopOverrides): the budget a stop's read and delete share, cleanSessionStopBudget when
+// it (sessionStopOverrides): the budget a stop's read and delete share, CleanSessionStopBudget when
 // zero, and the channel that ends the stops in flight, none when nil.
 type sessionStop struct {
 	sessions *notify.HTTPPublisher
@@ -1824,7 +1826,7 @@ type sessionStop struct {
 // (overrides.sessionStop); production sets neither field.
 //
 // budget, when not zero, is the budget each stop's read and delete share in place of
-// cleanSessionStopBudget: a test that holds the stop's read at its listener until the claim's
+// CleanSessionStopBudget: a test that holds the stop's read at its listener until the claim's
 // relaunch has begun gives it minutes where production gives seconds, so the machine's load
 // between the two is not read as a listener that never answered.
 //
@@ -1873,7 +1875,7 @@ type sessionStopOverrides struct {
 func (s sessionStop) send(session string, goneAt time.Time) {
 	budget := s.budget
 	if budget == 0 {
-		budget = cleanSessionStopBudget
+		budget = CleanSessionStopBudget
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()

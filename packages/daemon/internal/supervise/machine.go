@@ -2903,7 +2903,7 @@ const launchWaitsForSessionStop = "supervise: the launch waits for the clean sto
 // replaced it. Started once the stop has ended, the relaunch registers after the read, under an id
 // the delete does not name, and stays whatever either clock says; a delete still on its way to the
 // listener then meets that id too. Each stop ends within its own budget
-// (cleanSessionStopBudget in internal/daemon, 5 s), which bounds the wait; a listener that answers
+// (CleanSessionStopBudget in internal/daemon, 5 s), which bounds the wait; a listener that answers
 // promptly costs it the stop's two requests.
 func (m *Machine) awaitSessionStops(ctx context.Context) error {
 	for len(m.sessionStops) > 0 {

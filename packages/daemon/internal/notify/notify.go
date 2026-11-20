@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -181,11 +182,8 @@ type HTTPPublisher struct {
 	// stops sends the clean stop's registry read and session delete (ReadSessionRegistration,
 	// DeleteSession) with no timeout of its own, so the caller's context is their one bound: the
 	// daemon gives both one budget (sessionStop.send in packages/daemon/internal/daemon/daemon.go).
-	// Its nil Transport selects Go's DefaultTransport, whose fixed limits are a 30 s dial and a 10 s
-	// TLS handshake. The transport detaches both from the request's cancellation to reuse a later
-	// connection, so the stop's context ends the request's wait rather than those operations. Both
-	// limits are after production's 5 s stop context, so neither can end the stop first. A
-	// response-header bound would instead end a held read, so this client keeps no transport of its own.
+	// Its transport is its own (stopTransport), so no fixed limit of Go's shared transport, or one
+	// an init sets on it, can end the stop before that context does.
 	stops *http.Client
 }
 
@@ -193,7 +191,32 @@ type HTTPPublisher struct {
 // (`envoy_token_file`), sent on every publish; "" sends none, for a listener that requires none.
 func New(baseURL, token string) *HTTPPublisher {
 	return &HTTPPublisher{baseURL: strings.TrimRight(baseURL, "/"), token: token,
-		client: &http.Client{Timeout: requestTimeout}, stops: &http.Client{}}
+		client: &http.Client{Timeout: requestTimeout}, stops: &http.Client{Transport: stopTransport(http.DefaultTransport)}}
+}
+
+// stopTransport is the transport of the clean stop's read and delete: a clone of shared, Go's
+// http.DefaultTransport in production, so it keeps that transport's proxy, TLS configuration and
+// HTTP/2 setting, with each fixed limit that could end a request before its context removed. A
+// limit at or near the stop's budget races the stop's own context, which starts first, and on a
+// loaded machine, whose timers fire late by any amount, the limit can win; Go's own are a 30 s
+// connect and a 10 s TLS handshake, and any package's init can shorten them. So the dial has no
+// timeout, the TLS handshake and the response headers none, and the dialers a caller could have
+// set in place of the dial (Dial, DialTLS, DialTLSContext) are dropped, so every connection is
+// made by the one dialer here. The idle timeout stays: it closes pooled connections no request
+// uses. A shared transport of another type than *http.Transport cannot be cloned, and the stop
+// then starts from a transport of Go's own defaults instead.
+func stopTransport(shared http.RoundTripper) *http.Transport {
+	t, ok := shared.(*http.Transport)
+	if ok {
+		t = t.Clone()
+	} else {
+		t = &http.Transport{Proxy: http.ProxyFromEnvironment, ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second}
+	}
+	t.Dial, t.DialTLS, t.DialTLSContext = nil, nil, nil
+	t.DialContext = (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext
+	t.TLSHandshakeTimeout = 0
+	t.ResponseHeaderTimeout = 0
+	return t
 }
 
 // Publish posts the listener envelope that preserves the outbox row's idempotent delivery key.
