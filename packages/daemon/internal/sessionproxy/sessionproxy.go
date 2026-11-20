@@ -6,10 +6,12 @@
 // with a user and a database and no password; this proxy dials Cloud SQL for every accepted
 // connection with automatic IAM database authentication and copies bytes both ways.
 //
-// Nothing here reads the Postgres wire protocol, and nothing here belongs to it: with automatic
-// IAM database authentication the login token travels in the connector's ephemeral-certificate
-// exchange, not in the startup packet, which is why Google's own cloud-sql-proxy is likewise a
-// plain bidirectional copy over the connector's net.Conn.
+// The proxy changes nothing of the Postgres wire protocol and needs nothing of it to serve: with
+// automatic IAM database authentication the login token travels in the connector's
+// ephemeral-certificate exchange, not in the startup packet, which is why Google's own
+// cloud-sql-proxy is likewise a plain bidirectional copy over the connector's net.Conn. It reads
+// only the framing of the messages that cross, and the severity and SQLSTATE of an error the
+// database sends, to tell whether the database's end of a connection is the store's fault (wire).
 package sessionproxy
 
 import (
@@ -28,6 +30,7 @@ import (
 	"google.golang.org/api/option"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/sqlstate"
 )
 
 // Dialer is the upstream the proxy dials for each accepted connection: the Cloud SQL connector in
@@ -41,9 +44,10 @@ type Dialer interface {
 // ErrUnreachable is what a refusal of Start is (errors.Is) when the database did not answer: the
 // proof dial was refused or never answered (ompsessions.StoreFault). It is also what Fault answers
 // once a connection's own dial meets the same while the proxy serves, or the database ends a
-// connection the proxy serves. Every other refusal is over the proxy's own configuration or socket,
-// or a dialer that could not be built (a credential that is not there, an account that cannot be
-// impersonated), or a sign-in the instance refused, or a start that was stopped.
+// connection the proxy serves for a reason of its own state. Every other refusal is over the
+// proxy's own configuration or socket, or a dialer that could not be built (a credential that is
+// not there, an account that cannot be impersonated), or a sign-in the instance refused, or a start
+// that was stopped.
 var ErrUnreachable = errors.New("sessionproxy: the database could not be reached")
 
 // unreachable is a refusal of Start that is ErrUnreachable and reads as its own error alone.
@@ -340,9 +344,13 @@ func (p *Proxy) accept(ctx context.Context) {
 // tracked from the dial's success until both copies end, so Close can close it once the drain is
 // over; a pair dialed once Close has begun is closed at once and never copied for. A dial the
 // database refused or never answered is recorded for Fault, a dial that reaches it clears the
-// record (the store answers again), and so does the database ending the served connection: a read
-// or a write on the upstream that fails, other than the end of what the database sent and the
-// proxy's own close of it. Each is recorded as of the dial's start, or of the end (record).
+// record (the store answers again), and the database ending the served connection is recorded too,
+// when the end is the store's: an error of severity FATAL that the database ends the connection
+// with, by its SQLSTATE (sqlstate.NotJudged: 57P03, a database starting up or shutting down, is the
+// store's, and 28P01, a sign-in it refused, is not), and with no such word a reset, any other
+// failure of a read or a write on the upstream, or an end of file, but the end of a session the
+// client ended in order or of a cancel request, and the proxy's own close of it (wire). Each is
+// recorded as of the dial's start, or of the end (record).
 func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	at := p.events.Add(1)
 	dialed, err := p.dialer.Dial(ctx, p.instance)
@@ -358,11 +366,12 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 		return
 	}
 	p.record(at, nil)
-	upstream := &servedUpstream{Conn: dialed, ended: func(err error) {
+	ended := func(err error) {
 		if ctx.Err() == nil {
 			p.record(p.events.Add(1), unreachable{fmt.Errorf("sessionproxy: %s ended a served connection: %w", p.instance, err)})
 		}
-	}}
+	}
+	upstream := &servedUpstream{Conn: dialed, ended: ended}
 	if !p.track(client, upstream) {
 		return
 	}
@@ -388,31 +397,42 @@ func (p *Proxy) serve(ctx context.Context, client net.Conn) {
 	copies.Wait()
 }
 
-// servedUpstream is a connection's upstream while the proxy serves it: the first read or write on
-// it that fails is passed to ended, but the end of what the database sent (io.EOF), which a session
-// that ends in order ends with too, and a use of the connection the proxy itself has closed.
+// servedUpstream is a connection's upstream while the proxy serves it, which reads what crosses it
+// (wire) to pass the database's end of the connection to ended, once, when that end is the store's:
+// a FATAL error of the database's own state as it arrives, before the client reads it, and else the
+// first read or write that fails with no such word from the database (wire.databaseEnded), other
+// than on the proxy's own close of it.
 type servedUpstream struct {
 	net.Conn
+	wire  wire
 	ended func(error)
 	once  sync.Once
 }
 
 func (u *servedUpstream) Read(b []byte) (int, error) {
 	n, err := u.Conn.Read(b)
+	if code, fatal := u.wire.fromServer(b[:n]); fatal && sqlstate.NotJudged(code) {
+		u.end(fmt.Errorf("the database ended it with SQLSTATE %s", code))
+	}
 	u.failed(err)
 	return n, err
 }
 
 func (u *servedUpstream) Write(b []byte) (int, error) {
+	u.wire.fromClient(b)
 	n, err := u.Conn.Write(b)
 	u.failed(err)
 	return n, err
 }
 
 func (u *servedUpstream) failed(err error) {
-	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+	if err == nil || errors.Is(err, net.ErrClosed) || !u.wire.databaseEnded(err) {
 		return
 	}
+	u.end(err)
+}
+
+func (u *servedUpstream) end(err error) {
 	u.once.Do(func() { u.ended(err) })
 }
 

@@ -2,10 +2,12 @@ package sessionproxy
 
 // What the database's own end of a connection does to the proxy's Fault, the record a child's exit
 // is read by (launcher's wait): a connection's dial the database refused or never answered, and a
-// served connection it reset, are faults until a dial that starts later reaches it.
+// served connection it ended with no word or with a FATAL error about its own state, are faults
+// until a dial that starts later reaches it.
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"net"
@@ -116,23 +118,43 @@ func TestAFaultIsOfTheLatestDialToStartNotTheLatestToEnd(t *testing.T) {
 	}
 }
 
-// A served connection the database ends with a reset is the proxy's Fault, as a dial it refused
-// is, until a dial that starts later reaches it: a child holding that connection exited on a store
-// that stopped answering it. A connection the database ends in order (an end of file), as every
-// session that ends ends, and one the proxy itself closes once its drain is over, are none.
-func TestAServedConnectionTheDatabaseResetsIsTheProxysFault(t *testing.T) {
+// A served connection the database ends with no word of its own, by a reset or by a close (an end
+// of file), is the proxy's Fault, as a dial it refused is, until a dial that starts later reaches
+// it: a child holding that connection exited on a store that stopped answering it. So is one it
+// ends with a FATAL error about its own state (57P03, starting up), recorded as the error crosses.
+// One it ends with a FATAL error about the connection's configuration (28P01, a password it
+// refuses) is not, nor is the end of a session the client ended in order (Terminate), the end of a
+// cancel request, which the database answers by ending it, or one the proxy itself closes once its
+// drain is over.
+func TestAServedConnectionTheDatabaseEndsWithNoWordOrOverItsOwnStateIsTheProxysFault(t *testing.T) {
 	for name, tc := range map[string]struct {
+		// sent is what the client sends, which the database reads whole before end ends it.
+		sent  []byte
 		end   func(t *testing.T, served net.Conn, proxy *Proxy)
 		fault bool
 	}{
-		"the database resets it": {fault: true, end: func(t *testing.T, served net.Conn, _ *Proxy) {
+		"the database resets it": {sent: []byte("ping"), fault: true, end: func(t *testing.T, served net.Conn, _ *Proxy) {
 			_ = served.(*net.TCPConn).SetLinger(0)
 			_ = served.Close()
 		}},
-		"control: the database ends it in order": {end: func(t *testing.T, served net.Conn, _ *Proxy) {
+		"the database closes it with no word (an end of file)": {sent: startupMessage(), fault: true, end: func(t *testing.T, served net.Conn, _ *Proxy) {
 			_ = served.Close()
 		}},
-		"control: the proxy closes it once its drain is over": {end: func(t *testing.T, _ net.Conn, proxy *Proxy) {
+		"the database ends it starting up (FATAL 57P03)": {sent: startupMessage(), fault: true, end: func(t *testing.T, served net.Conn, _ *Proxy) {
+			writeAll(t, served, string(errorResponse("FATAL", "57P03")))
+			_ = served.Close()
+		}},
+		"control: the database refuses the password (FATAL 28P01)": {sent: startupMessage(), end: func(t *testing.T, served net.Conn, _ *Proxy) {
+			writeAll(t, served, string(errorResponse("FATAL", "28P01")))
+			_ = served.Close()
+		}},
+		"control: the client ends its session in order (Terminate)": {sent: append(startupMessage(), 'X', 0, 0, 0, 4), end: func(t *testing.T, served net.Conn, _ *Proxy) {
+			_ = served.Close()
+		}},
+		"control: the database ends a cancel request": {sent: cancelRequestMessage(), end: func(t *testing.T, served net.Conn, _ *Proxy) {
+			_ = served.Close()
+		}},
+		"control: the proxy closes it once its drain is over": {sent: []byte("ping"), end: func(t *testing.T, _ net.Conn, proxy *Proxy) {
 			_ = proxy.Close()
 		}},
 	} {
@@ -143,10 +165,10 @@ func TestAServedConnectionTheDatabaseResetsIsTheProxysFault(t *testing.T) {
 			proxy := startProxy(context.Background(), t, up, dialer, socket)
 			defer proxy.Close()
 			client := dialProxy(t, socket)
-			writeAll(t, client, "ping")
+			writeAll(t, client, string(tc.sent))
 			served := up.next(t)
-			if got := readString(t, served, 4); got != "ping" {
-				t.Fatalf("the upstream read %q of the client's ping", got)
+			if got := readString(t, served, len(tc.sent)); got != string(tc.sent) {
+				t.Fatalf("the upstream read %q of the client's %q", got, tc.sent)
 			}
 			tc.end(t, served, proxy)
 			awaitClosed(t, client, "the client of a connection whose upstream ended")
@@ -168,6 +190,57 @@ func TestAServedConnectionTheDatabaseResetsIsTheProxysFault(t *testing.T) {
 	}
 }
 
+// The proxy reads a FATAL error's SQLSTATE however its bytes arrive, here one at a time, after an
+// SSL request the database declined. After one the database accepted nothing more can be read, and
+// an ERROR, which ends no connection, is not read as the database's word on an end.
+func TestTheProxyReadsAFatalErrorAcrossReadsAfterADeclinedEncryption(t *testing.T) {
+	ssl := binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32(nil, 8), sslRequest)
+	for name, tc := range map[string]struct {
+		answer   byte
+		severity string
+		fatal    bool
+	}{
+		"the database declines the encryption (N), then ends the connection starting up (FATAL 57P03)": {answer: 'N', severity: "FATAL", fatal: true},
+		"control: the database accepts the encryption (S), and nothing after it is read":                {answer: 'S', severity: "FATAL"},
+		"control: the database declines the encryption, then answers an ERROR":                          {answer: 'N', severity: "ERROR"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var w wire
+			w.fromClient(ssl)
+			code, fatal := w.fromServer([]byte{tc.answer})
+			w.fromClient(startupMessage())
+			for _, b := range errorResponse(tc.severity, "57P03") {
+				if c, f := w.fromServer([]byte{b}); f {
+					code, fatal = c, f
+				}
+			}
+			if fatal != tc.fatal || fatal && code != "57P03" {
+				t.Fatalf("the error read as SQLSTATE %q, FATAL %t; want FATAL %t, 57P03 when FATAL", code, fatal, tc.fatal)
+			}
+		})
+	}
+}
+
+// startupMessage is a protocol 3.0 startup message, as a client opens a session with it.
+func startupMessage() []byte {
+	body := append(binary.BigEndian.AppendUint32(nil, 3<<16), "user\x00legion\x00database\x00sessions\x00\x00"...)
+	return append(binary.BigEndian.AppendUint32(nil, uint32(4+len(body))), body...)
+}
+
+// cancelRequestMessage is a cancel request, which a client sends on a connection of its own.
+func cancelRequestMessage() []byte {
+	message := binary.BigEndian.AppendUint32(nil, 16)
+	message = binary.BigEndian.AppendUint32(message, cancelRequest)
+	message = binary.BigEndian.AppendUint32(message, 4242)
+	return binary.BigEndian.AppendUint32(message, 2424)
+}
+
+// errorResponse is an error a Postgres server sends, of severity and SQLSTATE code.
+func errorResponse(severity, code string) []byte {
+	fields := "S" + severity + "\x00V" + severity + "\x00C" + code + "\x00Mthe test's error\x00\x00"
+	return append(binary.BigEndian.AppendUint32([]byte{'E'}, uint32(4+len(fields))), fields...)
+}
+
 // dialProxy is a client of the proxy at socket, closed when the test ends.
 func dialProxy(t *testing.T, socket string) net.Conn {
 	t.Helper()
@@ -181,13 +254,14 @@ func dialProxy(t *testing.T, socket string) net.Conn {
 
 // awaitClosed waits for the proxy to close client, which serve does once it is done with that
 // connection: after it recorded a failed dial, or after both copies of a served connection ended.
-// A proxy that does not close it within a bound no dial of a test takes fails the test by name.
+// What the database sent before it ended the connection is read and dropped. A proxy that does not
+// close it within a bound no dial of a test takes fails the test by name.
 func awaitClosed(t *testing.T, client net.Conn, what string) {
 	t.Helper()
 	if err := client.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		t.Fatalf("set a read deadline: %v", err)
 	}
-	if _, err := client.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+	if _, err := io.Copy(io.Discard, client); err != nil {
 		t.Fatalf("the proxy did not close %s: the read answered %v", what, err)
 	}
 }
