@@ -38,8 +38,8 @@ func TestProjectShowsOnEachMergerTheHoldThatStands(t *testing.T) {
 	approved := 6
 	gate := record.DesignGate{Issue: root, Step: record.DesignStepSpec, ArtifactID: "spec-208", LatestVersion: 7, ApprovedVersion: &approved}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil,
-		map[claim.Token]record.DesignGate{"legion-215-merger": gate}, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims,
+		Holds: map[claim.Token]record.DesignGate{"legion-215-merger": gate}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -52,7 +52,7 @@ func TestProjectShowsOnEachMergerTheHoldThatStands(t *testing.T) {
 		t.Errorf("%s's implementer carries the hold %+v, want none: no hold was handed in for it", issue, implementer)
 	}
 
-	none, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project with no hold standing: %v", err)
 	}

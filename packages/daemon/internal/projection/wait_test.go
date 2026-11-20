@@ -41,8 +41,8 @@ func TestProjectShowsOnEachClaimTheWaitThatStands(t *testing.T) {
 		Session: "ses_implementer_208", WaitingOn: "the review of LEGION-207's pull request",
 		WakeAt: time.Date(2026, 9, 23, 2, 0, 0, 0, east), DeclaredAt: time.Date(2026, 9, 22, 23, 50, 0, 123456000, time.UTC)}
 
-	got, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil,
-		map[claim.Token]record.ClaimWait{wait.Token: wait}, nil, nil, projectedAt)
+	got, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims,
+		Waits: map[claim.Token]record.ClaimWait{wait.Token: wait}, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestProjectShowsOnEachClaimTheWaitThatStands(t *testing.T) {
 		t.Errorf("%s's architect = %+v, want its claim with no wait", issue, view.Architect)
 	}
 
-	none, err := Project(context.Background(), nil, store, project, nil, nil, claims, nil, nil, nil, nil, projectedAt)
+	none, err := Project(context.Background(), Inputs{Store: store, Project: project, Claims: claims, Now: projectedAt})
 	if err != nil {
 		t.Fatalf("Project with no wait standing: %v", err)
 	}

@@ -49,7 +49,9 @@ func (s holdSource) State(ctx context.Context, tx pgx.Tx) (api.State, []supervis
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, s.records, waitProject, s.steps, nil, s.claims, nil, nil, holds, nil, waitNow)
+	state, err := projection.Project(ctx, projection.Inputs{
+		Tx: tx, Store: s.records, Project: waitProject, Steps: s.steps, Claims: s.claims, Holds: holds, Now: waitNow,
+	})
 	return state, s.claims, err
 }
 

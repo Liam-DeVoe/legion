@@ -65,7 +65,7 @@ type WaitResponse struct {
 // record.
 func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 	var req WaitRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 		field{"wakeAt", req.WakeAt},
 	) {
@@ -73,12 +73,12 @@ func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 	}
 	wakeAt, err := time.Parse(time.RFC3339, req.WakeAt)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, errorBody("wakeAt must be an RFC 3339 time: "+err.Error()))
+		s.refuse(w, r, http.StatusBadRequest, "wakeAt must be an RFC 3339 time: "+err.Error())
 		return
 	}
 	_, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, held) {
@@ -87,11 +87,11 @@ func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID != held.Session {
 		s.log.Info("api: refused a claim request", "request", "wait", "claim", req.ClaimToken,
 			"reason", "the claim resumes another session", "session", req.SessionID, "recorded", held.Session)
-		writeJSON(w, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
+		s.writeAnswer(w, r, AnswerRefusal, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
 		return
 	}
 	if s.pool == nil || len(s.handlers) == 0 {
-		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
 		return
 	}
 	fact := intake.WaitDeclared{
@@ -100,7 +100,17 @@ func (s *server) wait(w http.ResponseWriter, r *http.Request) {
 		WakeAt: wakeAt.UTC().Truncate(time.Microsecond), TakenEntry: takenEntry(held),
 		At: s.now().UTC().Truncate(time.Microsecond),
 	}
-	s.applyFact(w, r, "wait-declared:"+fact.WaitID, fact, WaitResponse{Wait: WaitView{
+	result, err := s.apply(r.Context(), "api", "wait-declared:"+fact.WaitID, fact)
+	if err != nil {
+		s.log.Error("wait: could not apply a declaration", "claim", req.ClaimToken, "wait", fact.WaitID, "error", err)
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the wait")
+		return
+	}
+	if result.Refusal != nil {
+		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		return
+	}
+	s.writeAnswer(w, r, AnswerWait, http.StatusOK, WaitResponse{Wait: WaitView{
 		ID: fact.WaitID, WaitingOn: fact.WaitingOn, WakeAt: fact.WakeAt, DeclaredAt: fact.At,
 	}})
 }
@@ -151,7 +161,7 @@ type WaitNewsResponse struct {
 // before any handler runs, since the first report is the one that ended it.
 func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	var req WaitNewsRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID}, field{"secret", req.Secret},
 		field{"waitId", req.WaitID},
 	) {
@@ -159,7 +169,7 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	}
 	_, held, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	if s.refuseIfStaleClaim(w, r, held) {
@@ -168,17 +178,17 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	if req.SessionID != held.Session {
 		s.log.Info("api: refused a claim request", "request", "wait-news", "claim", req.ClaimToken,
 			"reason", "the claim resumes another session", "session", req.SessionID, "recorded", held.Session)
-		writeJSON(w, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
+		s.writeAnswer(w, r, AnswerRefusal, claim.SameAgentRefusal.Status, claim.SameAgentRefusal)
 		return
 	}
 	if s.pool == nil || len(s.handlers) == 0 {
-		writeFailure(w, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACTS_UNAVAILABLE", "this daemon runs no workflow, so it records no wait")
 		return
 	}
 	if record.IsUpdateAskKey(req.ClaimToken, req.DeliveryKey) {
 		s.log.Info("wait: the update ask is no news", "claim", req.ClaimToken, "issue", held.Issue,
 			"role", held.Role, "wait", req.WaitID, "key", req.DeliveryKey)
-		writeJSON(w, http.StatusOK, WaitNewsResponse{UpdateAsk: true})
+		s.writeAnswer(w, r, AnswerWaitNews, http.StatusOK, WaitNewsResponse{UpdateAsk: true})
 		return
 	}
 	result, err := s.apply(r.Context(), "api", "wait-news:"+string(req.ClaimToken)+":"+req.WaitID, intake.WaitNews{
@@ -186,14 +196,14 @@ func (s *server) waitNews(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		s.log.Error("wait: could not apply a news report", "claim", req.ClaimToken, "wait", req.WaitID, "error", err)
-		writeFailure(w, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the news report")
+		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the news report")
 		return
 	}
 	if result.Refusal != nil {
-		writeFailure(w, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
+		s.writeFailure(w, r, result.Refusal.Status, result.Refusal.Code, result.Refusal.Message)
 		return
 	}
-	writeJSON(w, http.StatusOK, WaitNewsResponse{Ended: result.WaitEnded})
+	s.writeAnswer(w, r, AnswerWaitNews, http.StatusOK, WaitNewsResponse{Ended: result.WaitEnded})
 }
 
 // takenEntry is the phase entry of the task c's worker had taken (dispatch://INFRA-2040 D4): the

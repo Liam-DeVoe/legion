@@ -31,26 +31,21 @@ func holdState() State {
 // the version of it that is with its reviewer. A plugin below waitContract, the contract that
 // added the key beside the wait, is served no claim view carrying `hold`: one built before
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
-// key it does not name, and one built after strips the key. The route authenticates nobody, so it
-// knows that plugin by the pod the request came from: a caller whose pod's claims record a
-// contract below this one is served the hold on no claim, and a caller whose pod records this
-// contract, or the operator's own `legion state` from no pod, is served it on the merger alone, in
-// the same reading of the same state.
+// key it does not name, and one built after strips the key. The callers are the wait's
+// (waitBandCallers): each one that the band places below waitContract is served the hold on no
+// claim, and each other one is served it on the merger alone, in the same reading of the same
+// state.
 func TestTheStateServesAHoldOnlyToACallerAtTheHoldContract(t *testing.T) {
-	state := holdState()
-
-	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(waitContract-1))
-	if served := claimKeyServed(t, behind, "hold"); len(served) != 0 {
-		t.Errorf("the pod below %d is served the holds %v, want none: the key is not its contract's", waitContract, served)
-	}
-
 	want := `{"step":"spec","artifactId":"d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093","version":7}`
-	for name, remote := range map[string]string{
-		"a pod at the contract":           statePodAddr + ":4100",
-		"the operator's own, from no pod": "192.0.2.1:4100",
-	} {
-		t.Run(name, func(t *testing.T) {
-			served := claimKeyServed(t, stateFrom(t, state, remote, podClaims(waitContract)), "hold")
+	for _, tc := range waitBandCallers() {
+		t.Run(tc.name, func(t *testing.T) {
+			served := claimKeyServed(t, stateStating(t, stateServer(t, holdState(), tc.claims), tc.remote, tc.stated), "hold")
+			if !tc.served {
+				if len(served) != 0 {
+					t.Errorf("the caller is served the holds %v, want none: the key is not its contract's", served)
+				}
+				return
+			}
 			if len(served) != 1 {
 				t.Fatalf("the state carries the holds %v, want the merger's alone: the gate holds no implementer", served)
 			}
