@@ -76,8 +76,8 @@ func TestStartupBoundTakesTheTestsDeadlineLessCleanup(t *testing.T) {
 
 // A test binary whose -timeout leaves its calls no time after Cleanup is refused once, by name,
 // the -timeout, the reserve and the shortfall, however many calls ask: Answered's call gets a
-// context already ended and StartupBound's wait the least bound there is. A -timeout that leaves
-// time is not refused.
+// context already ended and StartupBound's wait a positive bound already spent. A -timeout that
+// leaves time is not refused.
 func TestATimeoutTooShortForTheReserveIsRefusedOnce(t *testing.T) {
 	start := time.Now()
 	short := &fakeDeadline{TB: t, at: start.Add(Cleanup / 2)}
@@ -99,7 +99,7 @@ func TestATimeoutTooShortForTheReserveIsRefusedOnce(t *testing.T) {
 		t.Errorf("a refused call's context is live (first %v, second %v)", ctx.Err(), again.Err())
 	}
 	if given <= 0 {
-		t.Errorf("the refused wait was given %s, a bound testcontainers reads as none or as past", given)
+		t.Errorf("the refused wait was given %s, want a positive bound", given)
 	}
 	roomy := &fakeDeadline{TB: t, at: start.Add(Cleanup + time.Minute)}
 	var roomyOnce sync.Once
