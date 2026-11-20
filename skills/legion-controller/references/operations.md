@@ -7,7 +7,7 @@ Read this before an operation of your own work, and before you send another sess
 ## Before any `kubectl` operation
 
 1. Read `kubectl auth can-i delete pods -n <namespace>`. It prints `yes` or `no`.
-2. On `no`, or when `kubectl` fails, run no operation that needs the right. Name it in the day's report with the read and its answer, and ask no other session to do it.
+2. On `no`, or when `kubectl` fails, run no operation that needs the right. Name it in the day's report with the read and its answer.
 
 ## A claim's state
 
@@ -47,21 +47,19 @@ Replace an issue pod only when a person asks or your deployment instructions nam
 2. On a refusal: `NO_CLAIM` or `NO_POD`, there is no pod to replace now; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
 3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round past its bound comes back as `update-stalled` (`skill://legion-controller/references/escalation.md`).
 
-Ask no other session to remove the pod.
-
 ## A re-run of a CI run
 
-Of these operations, only the re-run writes with `gh` or the broker's token. The controller's one other `gh` write is its reply to a GitHub mention.
+Your `gh` only reads: it holds the review App's read-only lease. This re-run and the reply to a GitHub mention take the implement App token the secrets broker lends, narrowed to the repository.
 
 1. Read the failed job's log: `gh run view <id> --log-failed --repo <owner>/<repo>`. Re-run only the failed jobs, and only for an infrastructure failure the log shows, such as a lost runner. Never re-run to test a theory, or on a head a run already tested with the same inputs.
 2. A test that failed and passed on the same code is flaky: write it to the tree whose code it is by a mention (`skill://legion-worker/references/findings.md#write-to-the-owner`), to be fixed at its cause.
-3. Re-run with the implement App token the secrets broker lends, narrowed to the repository, and name in `--reason` the run, the failure and the issue key:
+3. Re-run with that token, and name in `--reason` the run, the failure and the issue key:
 
    ```sh
    agent-secrets LEGION_IMPLEMENT_APP --reason '<the run, the failure, the issue>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs'
    ```
 
-4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Exit 77 with no `agent-secrets:` grant line is a denial: name it in the day's report, and ask no other session to re-run the run.
+4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report, and ask no other session to re-run the run. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
 
 ## A claim the operator holds
 
@@ -79,6 +77,5 @@ A decision only a person may make is a `dispatch ask`. Every other request goes 
 - Merge or queue a pull request: not yours. Write to the architect of the tree that owns it, which enqueues one that no merger merges. A merge only a person may schedule is a `dispatch ask`.
 - Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: write it to the owning tree's architect, or file it as a clear defect no tree owns. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
-- A hold: a merge hold is a line of `merge-holds-md` (`skill://legion-controller/references/merge-holds.md`), sent to no tree.
 - What another agent sent you: send no relay; that agent writes to the owner itself.
 - A copy only so another session knows: send none.

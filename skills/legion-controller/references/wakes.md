@@ -4,11 +4,11 @@ Read this when the skill's wake table sends you here, and for the every-turn che
 
 ## Trees waiting on a root claim
 
-A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root (a record whose `tree` is its own key) that the summary's `active` line names and whose own line reads `<KEY> admitted <status>`. When `Claimed by:` is `nobody` or ends `· not running`, post `<KEY>: the claim is free; claim it again.` as a Dispatch comment on `<KEY>` that mentions `role:<token>`. The token is `issues.<KEY>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
+A root architect whose claim on its root was refused waits, and nothing tells it when the holder lets go. `dispatch read` each root (a record whose `tree` is its own key) that the summary's `active` line names and whose own line reads `<KEY> admitted <status>`. When `Claimed by:` is `nobody` or ends `· not running`, post `<KEY>: the claim is free; claim it again.` as a Dispatch comment on `<KEY>` that mentions `role:<token>`. Build the token as `skill://legion-controller/references/operations.md#a-request-to-another-session` says.
 
 ## `tick`
 
-Run the every-turn steps, the parked-root walk, the merge holds whose end is past (`skill://legion-controller/references/merge-holds.md`), then the prioritization pass. Name in your summary each root at `phase: done` that Dispatch still shows at work, found as step 1 of the skill's start procedure finds them. Name in the day's report, and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
+Run the every-turn steps, the parked-root walk, the merge holds whose end is past (`skill://legion-controller/references/merge-holds.md`), then the prioritization pass. Name in your summary each root at `phase: done` that Dispatch still shows at work, found as step 1 of the skill's start procedure finds them. Put in your daily report (`skill://legion-controller/references/daily-report.md`), and take nothing for: each `openCapabilities` row (the operator decides a deployment row, whose `configLine` names its `legion.yaml` line; the operator or the issue's architect fixes a live row's session), each `blocked` and `held` row, and each `silent` entry with its role and how long it has been quiet (with `backgroundSince`, how long its background work has stood).
 
 A `silent` entry is a phase worker nothing will prompt: the daemon sends its task again and tells its architect. When that architect is itself not answering, read the tree's root claim (`issues.<ROOT>.architect`, `<ROOT>` the entry's `tree`). When it reads `failed`, act as [`worker-died`](#worker-died-architect) says. When the owning architect's claim does not read `failed` and the Envoy registry shows its session `gone`, `fresh_session` that architect.
 
@@ -20,8 +20,8 @@ Nothing of the tree has moved for `stalled_tree_notice_hours` and no agent of it
 
 `reason` begins with its arm; `issues.<KEY>.architectStalls` lists every arm that holds now (`took-nothing`, `claim-unreachable`, `slow-before-gate`), told or not.
 
-1. "the architect took nothing": while `issues.<KEY>.architect.state` is `working`, take nothing and name the root in the day's report. Otherwise `compact` that claim (`issue` the root, `role` `architect`), and `fresh_session` it only if it still takes nothing after that.
-2. "the architect's claim cannot be reached": `fresh_session` the failed or retired claim. While the reason says the root waits on a person, take nothing, since the answer's start relaunches it: name the root and its `waitingOn` in the day's report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): when the reason says the daemon wrote its start again, take nothing and name the root in the day's report; else name it there as a root the daemon could not start.
+1. "the architect took nothing": while `issues.<KEY>.architect.state` is `working`, take nothing and put the root in your daily report. Otherwise `compact` that claim (`issue` the root, `role` `architect`), and `fresh_session` it only if it still takes nothing after that.
+2. "the architect's claim cannot be reached": `fresh_session` the failed or retired claim. While the reason says the root waits on a person, take nothing, since the answer's start relaunches it: put the root and its `waitingOn` in your daily report, and at each later `tick` without `waitingOn`, `fresh_session` it if `architectStalls` still lists `claim-unreachable`. A root with no architect claim (`NO_CLAIM`): when the reason says the daemon wrote its start again, take nothing and put the root in your daily report; else put it there as a root the daemon could not start.
 3. "the root is slow before its gate": decide what the time means. A long spec is work; an architect with nothing to show is an escalation (`skill://legion-controller/references/escalation.md`).
 
 ## `held`
@@ -50,4 +50,12 @@ Its plugin tells you ``The architect of <KEY> has a `<tool>` call it cannot reco
 
 ## GitHub mentions
 
-Answer a mention that asks for triage or for what `read_state` or Dispatch holds as a Dispatch comment on the issue the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect, never a token built from a partial issue reference. Then reply to the person on GitHub with that comment's link alone: that reply is your one `gh` write for a mention. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+Answer a mention that asks for triage or for what `read_state` or Dispatch holds as a Dispatch comment on the issue the mention is about. Write any other on the owning issue for its architect: the person's words, the URL and the issue key as a Dispatch comment that mentions the tree root's architect, never a token built from a partial issue reference. Then reply to the person on GitHub with that comment's link alone. A person who asks how to pass a design gate approves, in Dispatch, the document of each step your `Design gate steps:` line names; a project that wants no gate sets `gates.design: []` in `legion.yaml`.
+
+Your `gh` only reads, so post the reply with the implement App token the secrets broker lends, narrowed to the repository: a `curl` POST with the token on standard input, as step 3 of `skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run` sends the re-run. `<n>` is the number of the issue or pull request the mention is on:
+
+```sh
+agent-secrets LEGION_IMPLEMENT_APP --reason '<KEY>: reply to a GitHub mention' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- --data-binary "$1" https://api.github.com/repos/<owner>/<repo>/issues/<n>/comments' sh '{"body":"<the link>"}'
+```
+
+That reply is your one GitHub write for a mention. Exit 77 with no `agent-secrets:` grant line is a denial, and exit 22 is GitHub's refusal, whose status curl prints. Name either in your daily report, and do not post the reply again.

@@ -2556,10 +2556,12 @@ test("read_state with no field summarizes 92 issues under the tool's limit, nami
   expect(summary).toContain("\nINFRA-146 done done\nINFRA-147 done done\n");
 });
 
-// The controller files a clear defect only on a repository both role Apps are installed on, and
-// its skill reads which repositories the daemon refuses from the summary (finding-asks.md, step 1
-// of "File a clear defect no tree owns"). No filter answers for repositories, so the summary
-// names each refused one, with the daemon's reason, after the capabilities.
+// The controller files a clear defect only on a repository both role GitHub Apps are installed on
+// (finding-asks.md, step 1 of "File a clear defect no tree owns"), and its role prompt tells it
+// that the summary names each repository the daemon refused, with why
+// (packages/daemon/internal/prompts/roles/controller-root.md). No filter answers for
+// repositories, so the summary names each refused one, with the daemon's reason, after the
+// capabilities.
 test("read_state with no field names each repository the daemon refuses, with its reason", async () => {
   const state = legionState({
     capabilities: [{ name: "subagents", status: "present", detail: "6 agents discovered" }],
@@ -2666,8 +2668,9 @@ test("read_state's summary prints the pause's line while the project is paused a
 
 // What the controller reads of the wake pacing in `read_state` with no field: one line with how
 // many wakes the pacing holds until their turn and when the earliest of them is due. The
-// controller's skill has it read that line after a resume (`skills/legion-controller/references/
-// wakes.md`, `project-resumed`), so a summary without it leaves that step with nothing to read.
+// controller's skill has it read that count before it asks for a start again
+// (`skills/legion-controller/references/operations.md`, step 3 of "A claim's state"), so a
+// summary without the line leaves that step with nothing to read.
 test("read_state's summary counts the wakes the pacing holds and says when the earliest is due", async () => {
   const wakesLines = (lines: readonly string[]) =>
     lines.filter((line) => line.startsWith("wakes waiting"));

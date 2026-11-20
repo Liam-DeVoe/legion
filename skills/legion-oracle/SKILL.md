@@ -35,13 +35,11 @@ path under its front-matter `supersedes:` key, use that file instead; if one has
 App of a commit's author or committer, follow the trailer rule of
 `skill://legion-worker/references/default-branch-check.md` instead.
 
-Four pages send the controller a defect, a flake or a new pull request:
-`docs/solutions/legion/fix-a-clear-defect-where-you-are-hand-any-other-to-the-tree-that-owns-the-code-and-ask-only-for-a-decision.md`,
-`docs/solutions/legion/an-out-of-paths-red-is-triaged-by-whether-it-is-deterministic-at-the-merge-commit-a-flake-gets-one-re-run-and-a-round-reopened-above-retro-pushes-no-code-pr2619.md`,
-`docs/solutions/dispatch-web/a-merge-of-main-can-add-a-writer-of-an-event-the-narrowed-rules-know-and-a-test-red-on-main-pr2324.md`
-and `docs/solutions/legion/fast-follow-pr-mechanics-and-queue-registration.md`. For a defect or a
-flake, `skill://legion-worker/references/findings.md` replaces their routing. The controller queues
-no pull request: the architect of its tree enqueues one that no merger merges.
+A `docs/solutions/` page that sends the controller a defect, a flake, a notice, a pull request to
+queue or a READY is older than the skills: `skill://legion-worker/references/findings.md` replaces
+its routing of a finding, and `skill://legion-architect/references/operations.md` its merge-queue
+steps. A finder fixes a defect or writes it to its owner, and the controller queues no pull
+request: the architect of its tree enqueues one that no merger merges.
 
 ## Output
 

@@ -39,4 +39,4 @@ An issue's merger merges the pull request its issue records, and no other. Enque
 
 ## A re-run of your tree's CI run
 
-A run on the head of a pull request of your tree is yours to re-run. Use the rules and reads of `skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run`, with the token as above, for your own tree's runs alone, and name a denial in your summary.
+A run on the head of a pull request of your tree is yours to re-run. Use the rules and reads of `skill://legion-controller/references/operations.md#a-re-run-of-a-ci-run`, with the token as above, for your own tree's runs alone. The re-run call's exit 22 is GitHub's refusal, whose status curl prints. A 4xx, such as a run that cannot be re-run, is final. After a 5xx, re-run once more at a later wake, and never otherwise. Name a denial, a 4xx or a second failure in your summary.
