@@ -42,7 +42,7 @@ import { type Sentence, sentences } from "./sentences";
 
 type Kind = "reviewer" | "architect" | "merge";
 
-interface Entry {
+export interface Entry {
   /** The text, relative to the checkout. It classifies the same sentence in its generated copy. */
   readonly file: string;
   /** Words of the sentence, with runs of white space as one space. */
@@ -178,36 +178,6 @@ const ENTRIES: readonly Entry[] = [
     has: "A check those files or the resolution can reach runs again",
     keep: MERGE_OF_THE_BASE,
   },
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "Accept only when a pass stands for every",
-    gate: "architect",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "`dispatch results --issue <issue>`: each check's approved head's own line",
-    gate: "reviewer",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "Each `before_merge` check's approved head's own line",
-    gate: "reviewer",
-  },
-  {
-    file: "skills/legion-worker/SKILL.md",
-    has: "They override this skill, except",
-    gate: "reviewer",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "Approval is gated by each `before_merge` check's reviewed head's own line",
-    gate: "reviewer",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "A `before_merge` result stands while its commit",
-    gate: "reviewer",
-  },
 ];
 
 /** Where the generated plugin's texts sit in a checkout's terms. */
@@ -307,8 +277,9 @@ function statementOf(all: readonly Sentence[], index: number): string {
 export function gateSearch(
   checkout: string,
   generated: string | null | undefined,
-  entries: readonly Entry[] = ENTRIES
+  exemptions: readonly Entry[] = []
 ): GateOutcome {
+  const entries = [...ENTRIES, ...exemptions];
   const faults: string[] = [];
   let out = generated ?? null;
   let built: string | undefined;

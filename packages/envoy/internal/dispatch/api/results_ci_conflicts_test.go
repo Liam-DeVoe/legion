@@ -20,7 +20,7 @@ func ciEvidenceAt(recorded, conclusion string) (model.CheckBlock, comparison) {
 	basis := model.CheckBasis{Kind: model.CheckBasisPullRequest, Commit: sha}
 	check := model.CheckBlock{BlockID: "c1", IssueKey: "ACME-1", When: docs.CheckWhenBeforeMerge, SHA256: "current-digest", CICheck: "go-checks", NegativeControl: "A server that does not build."}
 	ci, derived := ciAnswerOf(check, "go-checks", delivery.NewestHead{HeadSHA: sha, Repo: "example/repo", Number: 1},
-		&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion})
+		&ciRun{id: 71, name: "go-checks", status: ciRunCompleted, conclusion: conclusion}, lineWordsFor(nil, ""))
 	project := "ACME"
 	actor := model.Actor{Kind: "session", ID: "github-actions:run-1:attempt-1:check-71", Project: &project}
 	run := oauthwire.CIRun{Repository: "example/repo", Ref: "refs/heads/legion/ACME-1", SHA: sha, CheckRunID: "71", RunID: "1", EventName: "push"}

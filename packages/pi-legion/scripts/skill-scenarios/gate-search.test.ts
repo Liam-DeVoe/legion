@@ -17,7 +17,7 @@ import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { appendFileSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildGenerated, GENERATED, gateSearch } from "./gate-search";
+import { buildGenerated, type Entry, GENERATED, gateSearch } from "./gate-search";
 import { roleTexts } from "./role-texts";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
@@ -39,11 +39,8 @@ function copy(): string {
 }
 
 const MERGE_GATE = "skills/legion-worker/references/merge-gate.md";
-// The words that make merge-gate.md's gate name a pass of each role at the reviewed head.
-const TWO_ROLES = [
-  " from the implementer and from the tester both (from CI, for a check carrying `ci_check`)",
-  "; a line that names one of the two roles alone is no pass",
-];
+
+const CORE_REVIEWER = "packages/daemon/internal/prompts/roles/core/reviewer.md";
 const ONE_ROLE =
   "Approve only when each `before_merge` check reads yes on the line of the head you review, from the implementer.";
 const ACCEPT =
@@ -51,9 +48,54 @@ const ACCEPT =
 // A prompt part of another role: prompts.Compose gives it to no reader here, and no link names it.
 const UNREAD = "packages/daemon/internal/prompts/roles/implementer.md";
 
+// The coordinator's ruling keeps these eight main-text sentences outside this pull request. A
+// guide pull request removes each entry in the same commit that changes its sentence.
+const MAIN_GUIDE_EXEMPTIONS: readonly Entry[] = [
+  {
+    file: "skills/legion-architect/SKILL.md",
+    has: "Accept only when a pass stands for every",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "`dispatch results --issue <issue>`: whether a pass stands for each check at the approved head",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "Each check needs a pass at that head",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-architect/references/acceptance.md",
+    has: "If the pull request merged before its last round, move nothing back",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-retro/SKILL.md",
+    has: "A pass must stand at the approved head for every `before_merge` check",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-worker/SKILL.md",
+    has: "They override this skill, except",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-worker/references/merge-gate.md",
+    has: "Approval is gated by the issue's own `before_merge` checks, as your role prompt says",
+    keep: "Owned by the guide pull request.",
+  },
+  {
+    file: "skills/legion-worker/references/pr-body.md",
+    has: "A `before_merge` result stands while its commit is the head of an open pull request",
+    keep: "Owned by the guide pull request.",
+  },
+];
+
 describe("gate-search", () => {
   test("the checkout as it is, with its generated plugin, flags nothing", () => {
-    const outcome = gateSearch(checkout, undefined);
+    const outcome = gateSearch(checkout, undefined, MAIN_GUIDE_EXEMPTIONS);
     console.log(outcome.lines.filter((line) => line.includes(" GATE ")).join("\n"));
     expect(outcome.faults).toEqual([]);
     expect(outcome.generated).toBeGreaterThan(0);
@@ -62,19 +104,34 @@ describe("gate-search", () => {
     expect(gate).toContain("states line, other head, roles, ci, not known, refusal, no wait\n");
   });
 
-  test(`${MERGE_GATE}'s gate with its two-roles words cut is flagged for the roles`, () => {
+  test("a role prompt without the two-role rule fails", () => {
     const dir = copy();
-    const file = path.join(dir, MERGE_GATE);
-    let text = readFileSync(file, "utf8");
-    for (const words of TWO_ROLES) {
-      expect(text).toContain(words);
-      text = text.replace(words, "");
-    }
-    writeFileSync(file, text);
-    const faults = gateSearch(dir, null).faults;
+    const file = path.join(dir, CORE_REVIEWER);
+    const rule = "from the implementer and from the tester both";
+    const text = readFileSync(file, "utf8");
+    expect(text).toContain(rule);
+    writeFileSync(file, text.replace(rule, "from CI"));
+    const faults = gateSearch(dir, null, MAIN_GUIDE_EXEMPTIONS).faults;
     expect(faults).toHaveLength(1);
-    expect(faults[0]).toStartWith(`${MERGE_GATE}:`);
+    expect(faults[0]).toStartWith(`${CORE_REVIEWER}:`);
     expect(faults[0]).toContain("R14: a pass from the implementer and one from the tester");
+  });
+
+  test("a stale main-guide exemption fails by name", () => {
+    const stale: Entry = {
+      file: "skills/legion-retro/SKILL.md",
+      has: "A pass must stand at the approved head for every `before_merge` check (stale)",
+      keep: "Stale control.",
+    };
+    const faults = gateSearch(checkout, undefined, [...MAIN_GUIDE_EXEMPTIONS, stale]).faults;
+    expect(
+      faults.some(
+        (fault) =>
+          fault.includes(stale.file) &&
+          fault.includes(stale.has) &&
+          fault.includes("matches 0")
+      )
+    ).toBe(true);
   });
 
   for (const [plant, reader, file, lacks] of [
@@ -95,7 +152,7 @@ describe("gate-search", () => {
       const dir = copy();
       expect(roleTexts(dir, reader).files).toContain(file);
       appendFileSync(path.join(dir, file), `\n${plant}\n`);
-      const faults = gateSearch(dir, null).faults;
+      const faults = gateSearch(dir, null, MAIN_GUIDE_EXEMPTIONS).faults;
       console.log(`planted in ${file}: ${faults.join(" | ")}`);
       expect(faults).toHaveLength(1);
       expect(faults[0]).toStartWith(`${file}:`);
@@ -107,7 +164,7 @@ describe("gate-search", () => {
       for (const reader of ["reviewer", "architect", "sub-architect"] as const)
         expect(roleTexts(dir, reader).files).not.toContain(UNREAD);
       appendFileSync(path.join(dir, UNREAD), `\n${plant}\n`);
-      expect(gateSearch(dir, null).faults).toEqual([]);
+      expect(gateSearch(dir, null, MAIN_GUIDE_EXEMPTIONS).faults).toEqual([]);
     });
   }
 
@@ -117,7 +174,7 @@ describe("gate-search", () => {
       expect(build.fault).toBeUndefined();
       const out = build.out as string;
       appendFileSync(path.join(out, "legion", MERGE_GATE), `\n${ONE_ROLE}\n`);
-      const faults = gateSearch(checkout, out).faults;
+      const faults = gateSearch(checkout, out, MAIN_GUIDE_EXEMPTIONS).faults;
       console.log(`planted in the generated copy: ${faults.join(" | ")}`);
       expect(faults).toHaveLength(1);
       expect(faults[0]).toStartWith(`${GENERATED}/${MERGE_GATE}:`);
@@ -131,7 +188,7 @@ describe("gate-search", () => {
   test("a checkout with no texts is UNKNOWN, never clean", () => {
     const empty = path.join(scratch, "empty");
     cpSync(path.join(checkout, "skills/legion-worker/SKILL.md"), path.join(empty, "README.md"));
-    const faults = gateSearch(empty, undefined).faults;
+    const faults = gateSearch(empty, undefined, MAIN_GUIDE_EXEMPTIONS).faults;
     expect(faults.some((fault) => fault.includes("UNKNOWN: read no text"))).toBe(true);
     expect(
       faults.some((fault) => fault.includes("UNKNOWN: the generated plugin is not read"))

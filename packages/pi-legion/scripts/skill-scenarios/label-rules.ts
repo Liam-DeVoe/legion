@@ -26,81 +26,9 @@ const LATER_FAIL: readonly RegExp[] = [
   /\bfail(s|ed)?\b[^.]{0,80}\bpass(es)?\b|\bpass(es)?\b[^.]{0,80}\bfail(s|ed)?\b/i,
 ];
 
-const GUIDE_TWO_ROLES: readonly Entry[] = [
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "`dispatch results --issue <issue>`: each check's approved head's own line",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Each check's approved head's own line needs yes",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "Each `before_merge` check's approved head's own line",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-  {
-    file: "skills/legion-worker/SKILL.md",
-    has: "They override this skill, except",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "Approval is gated by each `before_merge` check's reviewed head's own line",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "A `before_merge` result stands while its commit",
-    cut: "Remove the implementer-and-tester requirement from this guide gate.",
-  },
-];
+const GUIDE_TWO_ROLES: readonly Entry[] = [];
 
-const GUIDE_LATER_FAIL: readonly Entry[] = [
-  {
-    file: "skills/legion-architect/SKILL.md",
-    has: "a pass and a fail at one head leave the check not known",
-    cut: "Remove the architect's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "`dispatch results --issue <issue>`: each check's approved head's own line",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "Each check's approved head's own line needs yes",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-architect/references/acceptance.md",
-    has: "If the pull request merged before its last round",
-    cut: "Remove the architect's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-retro/SKILL.md",
-    has: "Each `before_merge` check's approved head's own line",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-worker/SKILL.md",
-    has: "They override this skill, except",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-worker/references/merge-gate.md",
-    has: "Approval is gated by each `before_merge` check's reviewed head's own line",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-  {
-    file: "skills/legion-worker/references/pr-body.md",
-    has: "A `before_merge` result stands while its commit",
-    cut: "Remove the reviewer's pass-and-fail consequence.",
-  },
-];
+const GUIDE_LATER_FAIL: readonly Entry[] = [];
 
 const ENTRIES_TWO_ROLES: readonly Entry[] = [
   {
@@ -177,6 +105,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
     file: "skills/legion-worker/SKILL.md",
     has: "name: legion-worker",
     keep: "The skill description.",
+  },
+  {
+    file: "skills/legion-worker/SKILL.md",
+    has: "They override this skill, except",
+    keep: "The implementer's own result, not a two-role gate.",
   },
   {
     file: "skills/legion-worker/references/ci-checks.md",
