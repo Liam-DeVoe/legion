@@ -448,6 +448,9 @@ var formWatchesSignals atomic.Int32
 // child holding its output, which gcloudWaitDelay stops the wait for and does not kill. The group
 // is gcloud's own, so nothing else is in it, and while a process is left in it its id names no
 // other group.
+//
+// TestGcloudRunRecordedWatchesAndHoldsTheLockAcrossTheWholeStart holds this order statement by
+// statement, and TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary.
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
@@ -456,12 +459,11 @@ func runRecorded(cmd *exec.Cmd) error {
 		runningGcloud.Unlock()
 		return err
 	}
+	reachedGcloudStep(gcloudStarted)
 	pid := cmd.Process.Pid
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
-	reachedGcloudStep(gcloudStarted)
 	err := cmd.Wait()
-	reachedGcloudStep(gcloudWaited)
 	killGroupLeft(pid)
 	runningGcloud.Lock()
 	delete(runningGcloud.pids, pid)
@@ -469,19 +471,15 @@ func runRecorded(cmd *exec.Cmd) error {
 	return err
 }
 
-// gcloudStep names a step of runRecorded at which a test can hold the call (atGcloudStep).
+// gcloudStep names a step of runRecorded at which a test can act (atGcloudStep).
 type gcloudStep string
 
-const (
-	// gcloudStarted: gcloud runs, and its pid is recorded.
-	gcloudStarted gcloudStep = "started"
-	// gcloudWaited: gcloud has been waited for, and what is left of its group is not yet killed.
-	gcloudWaited gcloudStep = "waited"
-)
+// gcloudStarted: gcloud runs, runningGcloud is still held, and gcloud's pid is not yet recorded.
+const gcloudStarted gcloudStep = "started"
 
 // atGcloudStep, where a test sets it, runs at each step runRecorded reaches (gcloudStep), so the
-// test can hold the call there and send a signal at exactly that step
-// (TestGcloudSignInEndedByASignalKillsGcloudsChild). It is nil outside such a test.
+// test can send a signal at exactly that step (TestGcloudSignInEndedByASignalKillsGcloudsChild).
+// It is nil outside such a test.
 var atGcloudStep func(gcloudStep)
 
 // reachedGcloudStep runs atGcloudStep for step, where a test has set it.
