@@ -225,9 +225,11 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 		// The suspension's own copy of the Sandbox carries the annotation naming the replaced pod:
 		// a launch that replaces the Sandbox (podReplacement's sandbox) reads it from there onto the
 		// Sandbox it creates (replaceSupersededSandbox).
-		if s, err = r.suspendReplaced(bounded, s, pod, decided.displacesRoles); err != nil {
-			return fail("suspend its sandbox", err)
+		suspended, step, err := r.suspendReplaced(bounded, s, pod, decided.displacesRoles)
+		if err != nil {
+			return fail(step, err)
 		}
+		s = suspended
 		old, err := r.awaitPodGone(bounded, s)
 		if err != nil {
 			return fail("wait out its previous pod", err)
@@ -1493,19 +1495,21 @@ const (
 // the reset mark, so a pod that failed on its kept volume has the mark written in a patch of its
 // own (suspendOver), before the launch waits the pod out and deletes the Sandbox: a launch that
 // stops before that delete thus leaves the reset to the next launch. It returns the Sandbox as the
-// suspension left it, the one copy that carries the displaced pod's name. An error is a
-// suspension the API server refused, which ended nothing.
-func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, error) {
+// patch left it, the one copy that carries the displaced pod's name, and the step its patch is,
+// which a caller names its failure by: "suspend its sandbox", or, for a Sandbox already Suspended,
+// "mark its kept volume for the reset". An error is a patch the API server refused: a suspension,
+// which ended nothing, or the reset mark's patch, which left the mark unwritten.
+func (r *Runtime) suspendReplaced(ctx context.Context, s *sandbox, pod *corev1.Pod, displacesRoles bool) (*sandbox, string, error) {
+	const suspend = "suspend its sandbox"
 	switch {
 	case displacesRoles:
-		return r.suspendAnnotating(ctx, s, displacing(pod.UID, launchReplacement))
+		suspended, err := r.suspendAnnotating(ctx, s, displacing(pod.UID, launchReplacement))
+		return suspended, suspend, err
 	case s.mode() != modeSuspended:
-		if err := r.suspendRecordingEnd(ctx, s, pod); err != nil {
-			return nil, err
-		}
-		return s, nil
+		return s, suspend, r.suspendRecordingEnd(ctx, s, pod)
 	default:
-		return r.suspendOver(ctx, s, pod, nil)
+		marked, err := r.suspendOver(ctx, s, pod, nil)
+		return marked, "mark its kept volume for the reset", err
 	}
 }
 

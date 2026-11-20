@@ -183,6 +183,33 @@ func TestARelaunchThroughAConnectedLauncherStopsAndStartsOnlyThatRole(t *testing
 	g.expectRunning(rootToken, architect.Sandbox.PodUID, architect.Sandbox.Generation)
 }
 
+// The check judges a microVM issue's pod by the launch the issue's next generation makes, with the
+// microVM block its issue now runs in (relaunchLaunch, as prepare decides it). So it reads the disk
+// a kept volume's Sandbox owns as the one that launch renders, and the pod's shape record as that
+// launch's shape, as the launch itself does. Built as a gVisor launch, it read the kept volume as
+// one to replace ("the launch now keeps no volume") and the pod's shape as drifted. The two then
+// agreed on this pod only because that drift turned off the disk's rule. They part where the shape
+// does not drift: a Sandbox of the release before the pod-owned disk, whose live pod was built
+// under gVisor before its issue moved to a microVM, which the launch keeps for its round to end.
+func TestTheRelaunchCheckReadsAMicroVMPodAsItsLaunchDoes(t *testing.T) {
+	g := newRig(t, nil, withOptions(keptVolumes(SandboxMicroVM)))
+	tester := g.spawn(workerSpec(t))
+	s := g.sandbox(tester.Sandbox.Name)
+	if !ownsKeptVolume(s) {
+		t.Fatalf("the Sandbox owns %+v, want the kept `issue` template, or this case proves nothing", s.Spec.VolumeClaimTemplates)
+	}
+	l := g.r.relaunchLaunch(s, workerToken, claim.RoleTester)
+	if why := g.r.supersededDisk(s, l); why != "" {
+		t.Errorf("the check's launch reads the Sandbox's disk as %q, want the one it renders", why)
+	}
+	if drifted := g.r.shapeDrift(s, l.shapeKey()); len(drifted) > 0 {
+		t.Errorf("the check's launch reads the pod's shape as drifted: %v, want none", drifted)
+	}
+	if err := g.r.RelaunchRefusal(g.ctx, tester, false); err != nil {
+		t.Fatalf("RelaunchRefusal = %v, want none: the launch keeps the pod", err)
+	}
+}
+
 // The daemon's own relaunch of its controller (mayReplacePod) is never refused for the pod: no
 // other role runs in the controller's pod, so a launcher that is not connected and a launch that
 // needs a new pod are both answered by a new pod. Where its launcher is not connected, the stop

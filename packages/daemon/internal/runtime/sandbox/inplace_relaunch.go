@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -16,9 +17,11 @@ var _ runtime.InPlaceRelauncher = (*Runtime)(nil)
 // be charged, and a launch that would replace the pod (runtime.ErrRelaunchReplacesPod), since that
 // ends every other role running in it, naming why. The pod is judged by relaunch's own decision
 // (replacement), over the launch the claim's next generation makes: the pod's kind is the claim's
-// role's (podKindFor) and the launch installs no plugin pair. An installing launch keeps a pod the
-// check would replace only where no round covers the pod, which is the controller's, whose relaunch
-// is the daemon's own and may replace it.
+// role's (podKindFor), an issue pod runs in the sandbox the configuration now gives the issue its
+// Sandbox is labelled with (SandboxConfig.ofIssueLabel, the rule storedShapeKey keeps), as prepare
+// decides it for the launch, and the launch installs no plugin pair. An installing launch keeps a
+// pod the check would replace only where no round covers the pod, which is the controller's, whose
+// relaunch is the daemon's own and may replace it.
 //
 // With mayReplacePod nothing refuses: the daemon's own relaunch of its controller replaces a pod in
 // which no other role runs, so it reads nothing. It stops, starts and writes nothing; the launcher
@@ -45,8 +48,7 @@ func (r *Runtime) RelaunchRefusal(ctx context.Context, loc runtime.Locator, mayR
 	if s == nil {
 		return fmt.Errorf("relaunch %s: its Sandbox %s is gone: %w", loc.Claim, loc.Sandbox.Name, runtime.ErrRelaunchReplacesPod)
 	}
-	kind := podKindFor(role)
-	l := launch{spec: runtime.SpawnSpec{Claim: loc.Claim, Role: role}, name: s.Name, kind: kind, roles: kind.roles()}
+	l := r.relaunchLaunch(s, loc.Claim, role)
 	decided, err := r.replacement(ctx, s, r.storedPod(s.Name), &l)
 	if err != nil {
 		return fmt.Errorf("relaunch %s: read its pod's launcher bindings: %w", loc.Claim, err)
@@ -55,6 +57,23 @@ func (r *Runtime) RelaunchRefusal(ctx context.Context, loc runtime.Locator, mayR
 		return fmt.Errorf("relaunch %s: %s: %w", loc.Claim, decided.why, runtime.ErrRelaunchReplacesPod)
 	}
 	return nil
+}
+
+// relaunchLaunch is the launch the next generation of token, a claim of role, makes into the
+// Sandbox read as s, as far as relaunch's decision (replacement) reads it: the claim, its role and
+// the pod kind of that role (podKindFor), and for an issue pod the microVM block where the
+// configuration now runs the issue its Sandbox is labelled with in a microVM
+// (SandboxConfig.ofIssueLabel, the rule storedShapeKey keeps), as prepare decides it. The disk the
+// launch renders (supersededDisk) and the shape it compares the pod with (shapeKey) both read that
+// block, so a launch without it would judge a microVM pod against a gVisor one's disk and shape.
+// It installs no plugin pair.
+func (r *Runtime) relaunchLaunch(s *sandbox, token claim.Token, role claim.Role) launch {
+	kind := podKindFor(role)
+	l := launch{spec: runtime.SpawnSpec{Claim: token, Role: role}, name: s.Name, kind: kind, roles: kind.roles()}
+	if _, issue := kind.(issuePod); issue && r.sandboxConfig.ofIssueLabel(s.Labels[labelIssue]) == SandboxMicroVM {
+		l.microVM = r.sandboxConfig.MicroVM
+	}
+	return l
 }
 
 // StopForRelaunch satisfies runtime.InPlaceRelauncher: it stops loc's process for its relaunch on
@@ -123,9 +142,11 @@ func (r *Runtime) endPod(ctx context.Context, loc runtime.Locator) error {
 		return nil
 	}
 	idle, _, _ := r.runsNoRole(s, pod, r.now())
-	if s, err = r.suspendReplaced(ctx, s, pod, idle == ""); err != nil {
-		return fail("suspend its sandbox", err)
+	suspended, step, err := r.suspendReplaced(ctx, s, pod, idle == "")
+	if err != nil {
+		return fail(step, err)
 	}
+	s = suspended
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
 		return fmt.Errorf("stop %s for its relaunch: %w: %w; %s", loc.Claim, runtime.ErrProcessOutlivedStop, err, r.waitedOut(ctx, s))
 	}
