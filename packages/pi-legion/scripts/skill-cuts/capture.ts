@@ -156,6 +156,38 @@ function pluginTools(
   };
 }
 
+/** The built-in tools Oh My Pi defines only in a session with memory, which the capture runs
+ *  without: its memory instructions call a live service. */
+const MEMORY_TOOLS = ["memory_edit", "retain", "recall", "reflect"];
+
+/**
+ * The tools a run's `--tools` named that Oh My Pi 18.18.6 refused, each with why, read from its
+ * own words on stderr (`validateToolNames`, packages/coding-agent/src/cli/args.ts at the pin):
+ * "Unknown tool(s) in --tools: a, b." for a name nothing the capture loads defines, and "Built-in
+ * tool(s) unavailable in this session: a, b." for a built-in it refuses in this session (a memory
+ * tool in a session without memory). One refusal can hold both lines.
+ */
+export function refusedTools(stderr: string): { name: string; reason: string }[] {
+  const named = (pattern: RegExp): string[] =>
+    pattern
+      .exec(stderr)?.[1]
+      ?.split(", ")
+      .filter((name) => name !== "") ?? [];
+  return [
+    ...named(/Unknown tools? in --tools: ([^\n]*?)\.?(?:\n|$)/).map((name) => ({
+      name,
+      reason:
+        "neither this Oh My Pi nor a plugin the capture loads defines it, and Oh My Pi refuses a run whose --tools names it",
+    })),
+    ...named(/Built-in tools? unavailable in this session: ([^\n]*?)\.?(?:\n|$)/).map((name) => ({
+      name,
+      reason: MEMORY_TOOLS.includes(name)
+        ? "Oh My Pi defines it, but refuses it in a session without memory, and the capture runs without memory (its memory instructions call a live service)"
+        : "Oh My Pi defines it as a built-in, but refuses it in this session",
+    })),
+  ];
+}
+
 /** The counts the hook's log holds: how many messages of its own run it dropped, per request. */
 function hookCounts(file: string): number[] {
   if (!existsSync(file)) return [];
@@ -981,8 +1013,8 @@ export async function captureBody(
     }
     // A Legion pane's run can end before its turn's request (its role claim exits the process
     // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all. A run Oh
-    // My Pi refuses for naming a tool no loaded part defines is made again without those names,
-    // each recorded as left out; that refusal names the tools and counts as no try.
+    // My Pi refuses for its `--tools` (`refusedTools`) is made again without the names it
+    // refused, each recorded as left out with why; that refusal counts as no try.
     let captureRunMs = 0;
     for (let attempt = 1; ; ) {
       try {
@@ -990,19 +1022,11 @@ export async function captureBody(
         break;
       } catch (error) {
         if (!(error instanceof RunEnded)) throw error;
-        // Oh My Pi 18.18.6's own words: "Unknown tool in --tools: a." or "Unknown tools in
-        // --tools: a, b."
-        const unknown = /Unknown tools? in --tools: ([^\n]*?)\.?\n/.exec(stderr)?.[1]?.split(", ");
-        const dropped = unknown?.filter((name) => sentToolNames?.includes(name)) ?? [];
-        if (sentToolNames !== undefined && dropped.length > 0) {
-          sentToolNames = sentToolNames.filter((name) => !dropped.includes(name));
-          toolsLeftOut.push(
-            ...dropped.map((name) => ({
-              name,
-              reason:
-                "neither this Oh My Pi nor a plugin the capture loads defines it, and Oh My Pi refuses a run whose --tools names it",
-            }))
-          );
+        const sent = sentToolNames;
+        const dropped = refusedTools(stderr).filter(({ name }) => sent?.includes(name));
+        if (sent !== undefined && dropped.length > 0) {
+          sentToolNames = sent.filter((name) => !dropped.some((tool) => tool.name === name));
+          toolsLeftOut.push(...dropped);
           continue;
         }
         attempt += 1;

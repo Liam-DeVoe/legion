@@ -13,6 +13,7 @@ import {
   captureBody,
   type HintWriter,
   promptDigest,
+  refusedTools,
   skillListing,
 } from "./capture";
 import { type Case, pathHash } from "./cases";
@@ -786,6 +787,46 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
   );
 
   test(
+    "a subagent case that recorded retain, a memory built-in Oh My Pi refuses in a session without memory, is captured with retain left out and recorded",
+    async () => {
+      await captures();
+      const base = f1Case("subagent-3");
+      const recorded = [...SUBAGENT_TOOLS, "retain"];
+      const c: Case = {
+        ...base,
+        context: "subagent:task",
+        profile: {
+          ...base.profile,
+          contextFiles: [],
+          systemPrompt: SUBAGENT_PROMPT,
+          tools: recorded,
+        },
+      };
+      const { body, record } = await captureBody(
+        c,
+        buildArm(c, "old", { old: path.join(dir, "old"), new: path.join(dir, "new") }, dir),
+        {
+          omp: binary(),
+          outDir: path.join(dir, "out"),
+          scratchDir: path.join(dir, "scratch"),
+          cacheDir: path.join(dir, "cache"),
+          source: localSource(path.join(dir, "repos")),
+          models: path.join(dir, "models.yml"),
+          hints,
+        }
+      );
+      expect(record.exit.code).toBe(0);
+      expect(record.tools?.sent).toEqual(SUBAGENT_TOOLS);
+      expect(record.tools?.missing).toEqual(["retain"]);
+      expect(record.tools?.leftOut.map((tool) => tool.name)).toEqual(["retain"]);
+      expect(record.tools?.leftOut[0]?.reason).toContain("in a session without memory");
+      expect(record.pluginTools.leftOut.some((line) => line.startsWith("retain: "))).toBe(true);
+      expect(systemBlocks(body)).toHaveLength(SUBAGENT_PROMPT.length);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
     "a case on openai/gpt-6.1-sol is captured as the Responses body Oh My Pi sends to /v1/responses (F8's shape), its hints from the Anthropic hint model, and a recorded prompt as its instructions",
     async () => {
       await captures();
@@ -984,4 +1025,29 @@ export default function bootProbe(pi) {
     },
     ROW_TIMEOUT_MS
   );
+});
+
+// Oh My Pi 18.18.6's own refusals of a run's --tools (validateToolNames,
+// packages/coding-agent/src/cli/args.ts at the pin), each wording with one tool and with several,
+// and both lines in one refusal.
+test("each tool Oh My Pi refuses in --tools is read from its refusal, one or several, with why", () => {
+  const memory = "in a session without memory";
+  expect(
+    refusedTools("Error: Built-in tool unavailable in this session: retain.\nRun `omp --help`.\n")
+  ).toEqual([{ name: "retain", reason: expect.stringContaining(memory) }]);
+  expect(
+    refusedTools(
+      "Error: Built-in tools unavailable in this session: memory_edit, retain, recall, reflect."
+    ).map((tool) => tool.name)
+  ).toEqual(["memory_edit", "retain", "recall", "reflect"]);
+  const both = refusedTools(
+    "Error: Unknown tools in --tools: codegraph, acme_tool.\nBuilt-in tools: read, bash.\nBuilt-in tool unavailable in this session: eval.\n"
+  );
+  expect(both.map((tool) => tool.name)).toEqual(["codegraph", "acme_tool", "eval"]);
+  expect(both[0]?.reason).toContain("defines it");
+  expect(both[2]?.reason).toBe("Oh My Pi defines it as a built-in, but refuses it in this session");
+  expect(refusedTools("Error: Unknown tool in --tools: codegraph.")).toEqual([
+    { name: "codegraph", reason: expect.stringContaining("defines it") },
+  ]);
+  expect(refusedTools("some other failure")).toEqual([]);
 });
