@@ -7886,7 +7886,7 @@ function spyOnSpecBlock(type: string) {
 // whose words only such nodes hold, the outline said that nothing holds the words, and then drew
 // the matching rows in the line's place. Under one the body draws that line only once the names
 // are held, and nothing in its place before.
-test("under a words filter the outline says nothing holds the words only once the names read has answered", async () => {
+test("under a words filter the outline does not say nothing holds the words while the names read is out, and draws the rows that match them once it has answered", async () => {
   setViewport(1440);
   const blocks = spyOnSpecBlock("plan_task");
   // The names read, held out until the case answers it with the step's words.
@@ -7972,7 +7972,8 @@ test("under a words filter the outline says nothing holds the words once the nam
 
 // With no filter on the outline's line reads no words, so it does not wait on the names. The
 // spec holds its summary alone, which is no row of the outline, so the issue holds nothing to
-// draw, and the outline says so while the names read, of that summary's address, is still out.
+// draw, and the outline says so while the names read is still out. That read names the issue's
+// own key, which the root's words write, and the summary's address.
 test("with no filter the outline says the issue holds nothing while the names read is out", async () => {
   setViewport(1440);
   const blocks = spyOnSpecBlock("callout");
