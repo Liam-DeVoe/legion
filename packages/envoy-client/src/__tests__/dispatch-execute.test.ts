@@ -3768,6 +3768,49 @@ describe("executeDispatchTool", () => {
     expect(result.details.issues).toEqual([]);
   });
 
+  // The list is the read the controller's owner audit makes ("each row with no parent"), and its
+  // help says each row carries its parent. So a child's row names its parent's key, and a root's
+  // row names no other issue: a reader of the text can tell the open roots from their children.
+  test("dispatch_issues names each child's parent in its row", async () => {
+    const row = (key: string, title: string, parent: string | null) => ({
+      key,
+      title,
+      status: "todo",
+      priority: null,
+      rank: "a",
+      labels: [],
+      parent,
+      assignee: null,
+      updated_at: "2026-09-13T00:00:00Z",
+      last_seq: 1,
+      open_asks: 0,
+    });
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({
+        issues: [row("ACME-1", "The root", null), row("ACME-2", "Its child", "ACME-1")],
+        total: 2,
+        limit: 50,
+        offset: 0,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    const lines = result.text.split("\n");
+    const child = lines.find((line) => line.startsWith("ACME-2 "));
+    const root = lines.find((line) => line.startsWith("ACME-1 "));
+    expect(child).toContain("ACME-1");
+    expect(root).not.toContain("ACME-2");
+  });
+
   test("dispatch_issue returns duplicate candidates instead of throwing", async () => {
     const candidates = [
       {
