@@ -89,18 +89,29 @@ var goingToolRoutes = map[string][]goingToolRoute{
 		Relations: []string{"child_of", "blocked_by", "affects", "mentions"},
 	}},
 	"dispatch_issue_update": {
+		// A call that sets an option of the status change sends that route, which takes the
+		// status and the option: the PATCH takes no option and would drop it. One row per option,
+		// each guarded by its own argument, and all three tried before the PATCH row, which takes
+		// every call that sets none.
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionUnlinkChildren, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
+		{
+			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
+			Path: map[string]string{"key": "issue"}, WhenArgument: optionIncludeParent, WhenValue: true,
+			Relations: []string{"child_of"},
+		},
 		{
 			Method: http.MethodPatch, Pattern: "/api/v1/issues/{key}",
 			Path:      map[string]string{"key": "issue"},
 			Relations: []string{"child_of", "blocked_by", "affects"},
-		},
-		// The status change with an option is the tool's write too. The tool's arguments name no
-		// option of the route yet (packages/contracts/src/dispatch-tools.ts), so no guard picks
-		// this row, and the PATCH row above, which is tried first, takes every call.
-		{
-			Method: http.MethodPost, Pattern: "/api/v1/issues/{key}/status-change",
-			Path:      map[string]string{"key": "issue"},
-			Relations: []string{"child_of"},
 		},
 	},
 	"dispatch_claim": {

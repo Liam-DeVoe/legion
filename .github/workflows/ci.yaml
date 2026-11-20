@@ -3591,6 +3591,9 @@ jobs:
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
               # reads the Dispatch server's decision-block table, which the Go API test reads too.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
+              # src/__tests__/dispatch-status-rule.test.ts:32,46 reads the route's answers that
+              # the Go API test TestStatusChangeAnswersMatchTheirFixtures writes, by relative path.
+              - 'packages/envoy/internal/dispatch/api/testdata/status-change/*.json'
               # src/__tests__/dispatch-advice.test.ts:683-690 holds every skill section a notice
               # cites to a heading of that skill's SKILL.md.
               - 'skills/**'
