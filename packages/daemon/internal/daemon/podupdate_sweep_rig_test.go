@@ -277,6 +277,13 @@ type sweepHeld struct {
 // the pacing holds (WakeWaiting), which the stale-plugin lane's relaunch of a ready or idle claim
 // on another plugin contract parks where the pacing gives its launch a later moment. A field of the
 // view outside the claim this list does not name fails the field test (sweepPath.viewStatesRead).
+//
+// The prompt's machine runs on a daemon that speaks the claim's own plugin contract, and a claim
+// that records none is given the daemon's: a claim in no round whose contract is not the daemon's
+// is handed no task (supervise.StaleRefusesCalls), and a claim at the tick that opens the round is
+// in none yet. A claim that has answered its open round is handed no task either (sendPending), so
+// for such a claim the task is sent first and the answer reaches the machine while the prompt is
+// on its way, as a worker's answer from a turn an Envoy message started can.
 var sweepViewStates = []sweepViewState{
 	{
 		field: "SendInFlight", what: "with a prompt on its way to the agent",
@@ -286,6 +293,14 @@ var sweepViewStates = []sweepViewState{
 			conn := newGatedPrompt()
 			deps := p.deps
 			deps.Conns = sweepConns{Conns: p.deps.Conns, token: c.Token, conn: conn}
+			if c.PluginContract == 0 {
+				c.PluginContract = p.deps.PluginContract
+			}
+			deps.PluginContract = c.PluginContract
+			answers, head := c.UpdateRound != "" && c.UpdateSignalledAt != nil, c.UpdateHead
+			if answers {
+				c.UpdateSignalledAt, c.UpdateHead = nil, ""
+			}
 			m := p.machine(deps, c)
 			// An operator's own task names no phase, so no phase check drops it, and it is sent at
 			// once to a ready or idle claim with no task in flight.
@@ -294,8 +309,16 @@ var sweepViewStates = []sweepViewState{
 				close(conn.release)
 				m.Wait()
 			}
-			if !m.View().SendInFlight {
+			taken := m.View().SendInFlight
+			if !taken {
 				end()
+			}
+			if answers {
+				_ = m.Handle(p.rig.ctx, supervise.PodUpdateSignalled{
+					Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
+				})
+			}
+			if !taken {
 				return m, nil
 			}
 			return m, &sweepHeld{machine: m, end: end}
@@ -364,6 +387,30 @@ var sweepViewStates = []sweepViewState{
 		},
 	},
 }
+
+// sweepViewField is a state of the machine's view (sweepViewState.field), a field of the claim
+// (claimLeaf.name) and where the field test tries the two together: "in an open round" or "at the
+// tick that opens the round".
+type sweepViewField struct{ state, field, where string }
+
+// sweepViewFieldsUntaken is each pair of a view state and a field of the claim that no machine of
+// the field test holds at once, with why. A try of such a pair puts the field to the path on a
+// claim whose machine took no state, so it tries the field alone. The field test fails for a pair
+// that no machine held and this does not name, and for a pair this names that a machine held.
+var sweepViewFieldsUntaken = map[sweepViewField]string{
+	{"SendInFlight", "Pending.ConfirmedAt", "in an open round"}:                 untakenConfirmedSend,
+	{"SendInFlight", "Pending.ConfirmedAt", "at the tick that opens the round"}: untakenConfirmedSend,
+	{"Stopping", "Pending.ConfirmedAt", "in an open round"}:                     untakenConfirmedStop,
+	{"Stopping", "Pending.ConfirmedAt", "at the tick that opens the round"}:     untakenConfirmedStop,
+	{"WakeWaiting", "Pending.ConfirmedAt", "in an open round"}:                  untakenConfirmedWake,
+	{"WakeWaiting", "Pending.ConfirmedAt", "at the tick that opens the round"}:  untakenConfirmedWake,
+}
+
+const (
+	untakenConfirmedSend = "a prompt starts only for a task the agent has not taken up (sendPending), and the rig sends no turn's start while a prompt is on its way"
+	untakenConfirmedStop = "a task the agent took up is a turn, and an operator's suspension of a claim in a turn is held until the turn ends (supervise's holdSuspension), so no stop is in flight"
+	untakenConfirmedWake = "a task the agent took up is a turn, and the stale-plugin lane relaunches no claim in a turn before the turn ends (holdStaleRelaunch), so it paces no wake"
+)
 
 // viewStatesRead reports each field of the machine's view outside the claim that sweepViewStates
 // does not name, and each one it names that the machine of base, put into a machine of its own
