@@ -162,13 +162,21 @@ server_pid=''
 # entry is a session's id, which is its leader's pid, and that leader's start time.
 sessions=()
 
+# stop_dev_server stops the dev server: up to 10 s to close its database, then SIGKILL, and
+# gone before anything after reads what it held. It is this shell's child, so it is reaped
+# (wait) once it is gone, and only then: a wait on one SIGKILL has not ended (a process in
+# uninterruptible sleep) would block past every bound. One still there at the deadline is
+# named, and it returns 1.
 stop_dev_server() {
+	local status=0
 	[[ -n "$server_pid" ]] || return 0
-	# Up to 10 s to close its database, then SIGKILL, and gone either way before
-	# anything after reads what it held; one still there is named.
-	stop_gone 10 "$((EPOCHSECONDS + 20))" "$server_pid" || true
-	wait "$server_pid" 2>/dev/null || true
+	if stop_gone 10 "$((EPOCHSECONDS + 20))" "$server_pid"; then
+		wait "$server_pid" 2>/dev/null || true
+	else
+		status=1
+	fi
 	server_pid=''
+	return "$status"
 }
 
 # run_experiment BOUND ARGUMENT...: the experiments binary under timeout BOUND, in a
@@ -208,7 +216,7 @@ stop_sessions() {
 cleanup() {
 	local status=$?
 	trap - EXIT INT TERM
-	stop_dev_server
+	stop_dev_server || true
 	# The cleanup's last act before it exits; one still there is named, and a later run
 	# probes its ports free.
 	stop_sessions || true
@@ -560,7 +568,7 @@ for n in 1 2 3 4 5 6 19 20 21 7 8 9 10 11 12 13 14 15 16 17 18; do
 	# The Temporal dev server is only for experiments 1 to 6, 19, 20 and 21, which
 	# run one after another; nothing after them needs a server this script runs.
 	if ((n == 21)); then
-		stop_dev_server
+		stop_dev_server || die "the dev server (named above) is still there 20 s after its stop, so experiments 7 to 18 would run beside it"
 		say 'the dev server is stopped: experiments 1 to 6 and 19 to 21 are done, and 7 to 18 measure libraries and a server of their own'
 	fi
 done
