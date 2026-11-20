@@ -396,6 +396,8 @@ export function SpecFilterBody({
 
   useTreeKeymap({
     container: tree,
+    // No row of this filter is edited here (Enter goes to the conversation), so none is held.
+    editing: false,
     holdsEscape,
     onCycle: NOTHING,
     // Enter on a statement goes to it in the conversation, where it is edited: this filter
