@@ -1,0 +1,8 @@
+{
+  "status": 403,
+  "body": {
+    "code": "BROWSER_SIGN_IN_REQUIRED",
+    "error": "only a person signed in at a browser can close the open issues under an issue with it (include_children with done); this request presents a token",
+    "changed": []
+  }
+}

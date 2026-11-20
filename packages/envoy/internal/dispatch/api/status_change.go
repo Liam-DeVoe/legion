@@ -12,6 +12,12 @@ package api
 // Before the first write, the call checks its whole plan under the owner locks of every issue the
 // plan writes (planStatusChange). Each write then decides what it writes from what it reads under
 // its own lock, so a write that another writer made unneeded writes nothing.
+//
+// A keyed call keeps its progress in its request key's recovery point (statusChangeRecovery, D7):
+// each step that writes adds its entry there in its own transaction, and the call marks the point
+// finished after its last step. A repeat of a call that finished is answered from the point
+// (replayStatusChange). A repeat that finds the holder gone before the mark takes the key over
+// (claimRequestKey), and that attempt runs only the steps the point does not hold.
 
 import (
 	"bytes"
@@ -136,7 +142,9 @@ func parseStatusChange(input statusChangeInput) (statusChange, error) {
 // changeIssueStatus is POST /api/v1/issues/{key}/status-change. It plans the call and checks the
 // plan under its owner locks (planStatusChange), answers a dry run from that plan, and otherwise
 // runs each step through the PATCH's write core. A refused step stops the call: no later step
-// runs, and the refusal carries the entries of the steps that committed before it.
+// runs, and the refusal carries the entries of the steps that committed before it. An attempt
+// that took over a key an earlier attempt left unanswered resumes the call from that attempt's
+// recovery point (resumedStatusChange).
 func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 	none := []statusChangeEntry{}
 	var input statusChangeInput
@@ -155,31 +163,30 @@ func (s *server) changeIssueStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, key := r.Context(), r.PathValue("key")
-	plan, err := s.planStatusChange(ctx, key, change, writer)
+	resumed, err := s.resumedStatusChange(ctx)
 	if err != nil {
 		s.writeStatusChangeRefusal(w, err, none)
 		return
 	}
-	// A dry run answers what the call answers with the rule on, whatever the setting.
-	if plan.conflict != nil && (change.dryRun || s.deps.ParentStatusRule.On()) {
-		s.writeStatusChangeRefusal(w, plan.conflict, none)
-		return
+	callerProject, _ := s.callerProject(r)
+	run := &statusChangeRun{
+		server: s, key: key, change: change, writer: writer,
+		callerProject: callerProject, outliving: outlivingTheClient(r), resumed: resumed, pointed: resumed != nil,
 	}
-	if change.dryRun {
+	plan, err := s.planStatusChange(ctx, key, change, writer, resumed)
+	// A dry run answers what the call answers with the rule on, whatever the setting.
+	if err == nil && plan.conflict != nil && (change.dryRun || s.deps.ParentStatusRule.On()) {
+		err = plan.conflict
+	}
+	if err == nil && change.dryRun {
 		WriteJSON(w, http.StatusOK, plan.dryRunAnswer())
 		return
 	}
-	callerProject, _ := s.callerProject(r)
-	run := statusChangeRun{
-		server: s, key: key, change: change, writer: writer,
-		callerProject: callerProject, outliving: outlivingTheClient(r),
+	var ran []statusChangeEntry
+	if err == nil {
+		ran, err = run.steps(ctx, plan.steps)
 	}
-	answer, err := run.steps(ctx, plan.steps)
-	if err != nil {
-		s.writeStatusChangeRefusal(w, err, answer.Changed)
-		return
-	}
-	WriteJSON(w, http.StatusOK, answer)
+	run.answer(ctx, w, ran, err)
 }
 
 // statusChangeStep is one step of a status change's plan: the write of one issue, the option that
@@ -376,8 +383,12 @@ func statusChangeLocks(steps []statusChangeStep) []string {
 // plan whose issues moved between the two reads, so that it needs a lock the transaction does not
 // hold, starts over with what the second read found, as lockPatchOwnersAndParent does, and a plan
 // that moves at every attempt is 409 PARENT_CONTENDED with nothing applied. The transaction rolls
-// back before the first step, and each step takes its own locks in its own transaction.
-func (s *server) planStatusChange(ctx context.Context, key string, change statusChange, writer issueWriter) (statusChangePlan, error) {
+// back before the first step, and each step takes its own locks in its own transaction. resumed is
+// the recovery point of an earlier attempt that this attempt resumes (D7), nil for a first
+// attempt: it changes the fence, the gate and the plan as planStatusChangeUnderLocks says.
+func (s *server) planStatusChange(
+	ctx context.Context, key string, change statusChange, writer issueWriter, resumed *statusChangeRecovery,
+) (statusChangePlan, error) {
 	pool, err := s.readyPool()
 	if err != nil {
 		return statusChangePlan{}, err
@@ -387,7 +398,7 @@ func (s *server) planStatusChange(ctx context.Context, key string, change status
 		return statusChangePlan{}, err
 	}
 	for range parentLockAttempts {
-		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, read)
+		plan, moved, err := s.planStatusChangeUnderLocks(ctx, key, change, writer, read, resumed)
 		if err != nil || moved == nil {
 			return plan, err
 		}
@@ -401,8 +412,16 @@ func (s *server) planStatusChange(ctx context.Context, key string, change status
 // planStatusChangeUnderLocks is one attempt of planStatusChange, which locks the owners the plan
 // over read needs. It answers the plan, or, when the second read needs a lock the attempt does not
 // hold, that read, for the next attempt to lock.
+//
+// An attempt that resumes a call from resumed, its recovery point, decides the fence by event ids
+// rather than by the PATCH's equality, which the earlier attempt's own events moved: an event on
+// the named issue after expected_sequence that the point does not hold is 409 ISSUE_CHANGED, as
+// the uninterrupted call would have answered at its next step. It plans every step of the call
+// whose entry the point does not hold, since a step counts as made only when the point holds its
+// entry, and runs no closed-issue gate on the named issue when the point holds its entry: the
+// call's own close closed it.
 func (s *server) planStatusChangeUnderLocks(
-	ctx context.Context, key string, change statusChange, writer issueWriter, read statusChangeRead,
+	ctx context.Context, key string, change statusChange, writer issueWriter, read statusChangeRead, resumed *statusChangeRecovery,
 ) (statusChangePlan, *statusChangeRead, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -421,17 +440,23 @@ func (s *server) planStatusChangeUnderLocks(
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	if change.expectedSeq != nil && *change.expectedSeq != int64(named.LastSeq) {
-		return statusChangePlan{}, nil, errIssueChanged()
+	if change.expectedSeq != nil {
+		if resumed != nil {
+			if err := resumed.fence(*change.expectedSeq).refuseForeignEvents(ctx, tx, key); err != nil {
+				return statusChangePlan{}, nil, err
+			}
+		} else if *change.expectedSeq != int64(named.LastSeq) {
+			return statusChangePlan{}, nil, errIssueChanged()
+		}
 	}
-	if named.ClosedAt != nil && change.status == "done" {
+	if named.ClosedAt != nil && change.status == "done" && !resumed.holds(key) {
 		return statusChangePlan{}, nil, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 	}
 	again, err := readStatusChange(ctx, tx, key, change)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
-	steps := again.steps(change)
+	steps := slices.DeleteFunc(again.steps(change), func(step statusChangeStep) bool { return resumed.holds(step.key) })
 	for _, lock := range statusChangeLocks(steps) {
 		if _, locked := slices.BinarySearch(held, lock); !locked {
 			return statusChangePlan{}, &again, nil
@@ -458,7 +483,11 @@ func (s *server) planStatusChangeUnderLocks(
 	return statusChangePlan{named: named, steps: steps, conflict: conflict}, nil, nil
 }
 
-// statusChangeRun is one status change that runs its steps.
+// statusChangeRun is one attempt of a status change that runs its steps. resumed is the recovery
+// point of the earlier attempt this one resumes (resumedStatusChange), nil for a first attempt.
+// pointed is that the request key holds a recovery point, which the call marks finished after its
+// last step: the point this attempt resumed, or one a step of this keyed attempt wrote. named is
+// the result of the named issue's own step, when this attempt ran it (namedRan).
 type statusChangeRun struct {
 	server        *server
 	key           string
@@ -466,28 +495,35 @@ type statusChangeRun struct {
 	writer        issueWriter
 	callerProject string
 	outliving     context.Context
+	resumed       *statusChangeRecovery
+	pointed       bool
+	named         issueWriteResult
+	namedRan      bool
 }
 
 // steps runs each step of the plan through the PATCH's write core, in a transaction of its own,
-// and answers each issue it changed. A step refused stops the call: it answers that refusal, with
-// the entries of the steps that committed before it in the answer's changed. A call that sent
+// and answers the entry of each issue it changed. A step refused stops the call: it answers that
+// refusal, with the entries of the steps that committed before it. A call that sent
 // expected_sequence is fenced at each step (issueWriteFence), with every event an earlier step
-// appended on the issue the call names counted as the call's own. The close of the issue the call
-// names leaves its ask sweep to this, which runs it after the last step, with no transaction open.
-func (run statusChangeRun) steps(ctx context.Context, steps []statusChangeStep) (statusChangeAnswer, error) {
+// appended on the issue the call names counted as the call's own, those of the point it resumes
+// included. Each step of a keyed call that writes adds its entry to the call's recovery point in
+// its own transaction (writeIssue, D7). The close of the issue the call names leaves its ask sweep
+// to the call's answer (statusChangeRun.answer).
+func (run *statusChangeRun) steps(ctx context.Context, steps []statusChangeStep) ([]statusChangeEntry, error) {
 	s := run.server
-	answer := statusChangeAnswer{Changed: []statusChangeEntry{}}
+	ran := []statusChangeEntry{}
 	var fence *issueWriteFence
 	if run.change.expectedSeq != nil {
-		fence = &issueWriteFence{sequence: *run.change.expectedSeq, own: map[int64]bool{}}
+		fence = run.resumed.fence(*run.change.expectedSeq)
 	}
-	var named issueWriteResult
-	var refused error
+	_, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
 	for index, step := range steps {
 		written, err := s.writeIssue(ctx, run.call(step, fence))
 		if err != nil {
-			refused = err
-			break
+			return ran, err
+		}
+		if step.key == run.key {
+			run.named, run.namedRan = written, true
 		}
 		if !written.wrote {
 			continue
@@ -498,26 +534,77 @@ func (run statusChangeRun) steps(ctx context.Context, steps []statusChangeStep) 
 			}
 		}
 		issue := written.issue
-		answer.Changed = append(answer.Changed, statusChangeEntry{
+		ran = append(ran, statusChangeEntry{
 			Key: issue.Key, Status: issue.Status, Parent: issue.Parent, PreviousLastSeq: written.previousLastSeq, Issue: &issue,
 		})
-		if step.key == run.key {
-			named = written
-		}
+		run.pointed = run.pointed || keyed
 		if s.statusChangeAfterStep != nil {
 			s.statusChangeAfterStep(ctx, index)
 		}
 	}
-	if named.closed {
-		s.sweepClosedIssueAsks(run.outliving, run.key, named.withdrawn, run.writer.actor)
+	return ran, nil
+}
+
+// answer ends the attempt, refused by err or not, with ran the entries of its own steps. After the
+// last step it marks the call's recovery point finished, when the request key holds one
+// (markStatusChangeFinished). Then it runs the ask sweep of the named issue's close (sweep), since
+// a close that committed is owed its sweep whatever the answer, and answers changed: the entries
+// of the point it resumed, each with its issue as it stands now, followed by ran. An attempt whose
+// key another attempt took over sweeps nothing: the attempt that holds the key sweeps instead.
+func (run *statusChangeRun) answer(ctx context.Context, w http.ResponseWriter, ran []statusChangeEntry, err error) {
+	s := run.server
+	if err == nil && run.pointed {
+		err = s.markStatusChangeFinished(ctx)
 	}
-	answer.Issue = named.issue
-	return answer, refused
+	if !errors.Is(err, errRequestKeyTakenOver) {
+		run.sweep()
+	}
+	changed := []statusChangeEntry{}
+	if run.resumed != nil {
+		stored, readErr := s.statusChangeEntriesNow(ctx, *run.resumed)
+		if readErr != nil {
+			s.writeStatusChangeRefusal(w, readErr, ran)
+			return
+		}
+		changed = append(changed, stored...)
+	}
+	changed = append(changed, ran...)
+	if err != nil {
+		s.writeStatusChangeRefusal(w, err, changed)
+		return
+	}
+	issue := run.named.issue
+	if !run.namedRan {
+		// The point this attempt resumed holds the named issue's own step.
+		if issue, err = s.loadIssue(ctx, s.deps.Store.Pool, run.key); err != nil {
+			s.writeStatusChangeRefusal(w, err, changed)
+			return
+		}
+	}
+	WriteJSON(w, http.StatusOK, statusChangeAnswer{Issue: issue, Changed: changed})
+}
+
+// sweep runs the ask sweep of the named issue's close (sweepClosedIssueAsks), with no transaction
+// open: of the close this attempt's own step made, with the asks it withdrew, or of the close the
+// point it resumed holds, with the ids of the asks that close withdrew, which are all the sweep
+// reads of them (sweepClosedIssueAsksTx).
+func (run *statusChangeRun) sweep() {
+	s := run.server
+	switch {
+	case run.named.closed:
+		s.sweepClosedIssueAsks(run.outliving, run.key, run.named.withdrawn, run.writer.actor)
+	case run.resumed.closes(run.key):
+		withdrawn := make([]model.Ask, 0, len(run.resumed.Withdrawn))
+		for _, id := range run.resumed.Withdrawn {
+			withdrawn = append(withdrawn, model.Ask{ID: id})
+		}
+		s.sweepClosedIssueAsks(run.outliving, run.key, withdrawn, run.writer.actor)
+	}
 }
 
 // call is the write of one step: the status or the unlink the step writes, as the caller writes
 // it, and, for a step an option makes, the comment of Dispatch's system actor that names the call.
-func (run statusChangeRun) call(step statusChangeStep, fence *issueWriteFence) issueWriteCall {
+func (run *statusChangeRun) call(step statusChangeStep, fence *issueWriteFence) issueWriteCall {
 	call := issueWriteCall{
 		writer:        run.writer,
 		key:           step.key,
@@ -605,3 +692,151 @@ type refusalRecorder struct {
 func (r *refusalRecorder) Header() http.Header         { return r.header }
 func (r *refusalRecorder) Write(b []byte) (int, error) { return r.body.Write(b) }
 func (r *refusalRecorder) WriteHeader(status int)      { r.status = status }
+
+// statusChangeRecovery is the recovery point of a keyed status change (D7, request_keys.go): what
+// the steps that committed made, from which a repeat finishes the call. Each step that writes adds
+// to it in its own transaction, with a statement that builds these members in its SQL
+// (writeIssue), and the call marks it finished once its last step has run
+// (markStatusChangeFinished). Go only reads it.
+type statusChangeRecovery struct {
+	// Changed is the entry of each step that wrote, in the order the steps ran, with no issue: an
+	// answer from the point reads each issue as it stands then (statusChangeEntriesNow).
+	Changed []statusChangeEntry `json:"changed"`
+	// Events is the ids of every event the steps appended on the issue the call names, which the
+	// fence of a resumed attempt counts as the call's own.
+	Events []int64 `json:"events"`
+	// Withdrawn is the ids of the asks that the close of the issue the call names withdrew, which
+	// that close's ask sweep takes.
+	Withdrawn []string `json:"withdrawn"`
+	// Finished is the mark that every step of the call ran.
+	Finished bool `json:"finished"`
+}
+
+// holds reports whether the point holds the entry of key's step, which counts that step as made.
+// A nil point holds none.
+func (point *statusChangeRecovery) holds(key string) bool {
+	return point != nil && slices.ContainsFunc(point.Changed, func(entry statusChangeEntry) bool { return entry.Key == key })
+}
+
+// closes reports whether the point holds the close of named, the issue the call names, by its own
+// step: an entry of named at done, which a step writes only when it closes the issue, since the
+// PATCH's gate refuses done on an issue already closed.
+func (point *statusChangeRecovery) closes(named string) bool {
+	return point != nil && slices.ContainsFunc(point.Changed, func(entry statusChangeEntry) bool {
+		return entry.Key == named && entry.Status == "done"
+	})
+}
+
+// fence is the fence of a call that sent expected_sequence sequence, with every event the point
+// holds counted as the call's own. A nil point holds none.
+func (point *statusChangeRecovery) fence(sequence int64) *issueWriteFence {
+	own := map[int64]bool{}
+	if point != nil {
+		for _, id := range point.Events {
+			own[id] = true
+		}
+	}
+	return &issueWriteFence{sequence: sequence, own: own}
+}
+
+// resumedStatusChange is the recovery point that an earlier attempt of the keyed request ctx
+// carries left, when this attempt took that request's key over (claimRequestKey): the call this
+// attempt finishes. It is nil for every other request: one with no key, a first attempt, and an
+// attempt that took over a key with no point, which runs the call as a first attempt does.
+func (s *server) resumedStatusChange(ctx context.Context) (*statusChangeRecovery, error) {
+	claim, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+	if !keyed || claim.attempt == 1 {
+		return nil, nil
+	}
+	pool, err := s.readyPool()
+	if err != nil {
+		return nil, err
+	}
+	var recovery json.RawMessage
+	err = pool.QueryRow(ctx, `
+		select recovery from request_keys where login = $1 and idempotency_key = $2 and attempt = $3
+	`, claim.login, claim.key, claim.attempt).Scan(&recovery)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errRequestKeyTakenOver
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the recovery point of a status change: %w", err)
+	}
+	if recovery == nil {
+		return nil, nil
+	}
+	var point statusChangeRecovery
+	if err := json.Unmarshal(recovery, &point); err != nil {
+		return nil, fmt.Errorf("read the recovery point of a status change: %w", err)
+	}
+	return &point, nil
+}
+
+// markStatusChangeFinished writes into the recovery point of the keyed status change ctx carries
+// the mark that every step of the call ran, once the last step has run and before the call
+// answers. A repeat that finds the mark is answered from the point and never takes the key over.
+// It runs in a transaction of its own that s.begin opens, whose only write is to request_keys,
+// which the commit step does not count (markRequestKeyCommitted). The statement is scoped to the
+// request's own claim, so an attempt whose key another attempt took over is refused
+// (errRequestKeyTakenOver). A request with no key marks nothing.
+func (s *server) markStatusChangeFinished(ctx context.Context) error {
+	claim, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+	if !keyed {
+		return nil
+	}
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `
+		update request_keys set recovery = recovery || '{"finished": true}'::jsonb
+		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
+	`, claim.login, claim.key, claim.attempt)
+	if err != nil {
+		return fmt.Errorf("mark a status change finished: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return errRequestKeyTakenOver
+	}
+	return tx.Commit(ctx)
+}
+
+// replayStatusChange answers a repeat of a keyed status change from its recovery point (D7): a
+// call whose point carries the mark, or one that answered a success beside its point. It answers
+// the 200 of the call with the entries the point holds, each entry's issue and the answer's issue
+// read as they stand now. No step and no fence runs again, so a later write of the issue the call
+// names, its close's ask sweep among them, changes no answer of a call that finished.
+func (s *server) replayStatusChange(w http.ResponseWriter, r *http.Request, point statusChangeRecovery, _ []byte) {
+	ctx := r.Context()
+	changed, err := s.statusChangeEntriesNow(ctx, point)
+	if err != nil {
+		s.writeStatusChangeRefusal(w, err, []statusChangeEntry{})
+		return
+	}
+	issue, err := s.loadIssue(ctx, s.deps.Store.Pool, r.PathValue("key"))
+	if err != nil {
+		s.writeStatusChangeRefusal(w, err, changed)
+		return
+	}
+	WriteJSON(w, http.StatusOK, statusChangeAnswer{Issue: issue, Changed: changed})
+}
+
+// statusChangeEntriesNow is each entry point holds, in its order, with its issue as it stands now,
+// as a replay and a resumed attempt answer them.
+func (s *server) statusChangeEntriesNow(ctx context.Context, point statusChangeRecovery) ([]statusChangeEntry, error) {
+	pool, err := s.readyPool()
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]statusChangeEntry, 0, len(point.Changed))
+	for _, entry := range point.Changed {
+		issue, err := s.loadIssue(ctx, pool, entry.Key)
+		if err != nil {
+			return nil, err
+		}
+		entry.Issue = &issue
+		entries = append(entries, entry)
+	}
+	return entries, nil
+}

@@ -826,16 +826,59 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// last_seq it read under that lock. The ids exist only once the write phase's batch has run,
 	// so the statement derives them in its own SQL, after the step's last event insert. They hold
 	// what document work appended there through the ledger's event sink too, which appended does
-	// not.
+	// not. A step of a keyed call writes the call's recovery point with the same statement (D7):
+	// it adds to the point the key holds, which is the call's point so far, since only the
+	// attempt that holds the key writes it, the step's entry, those ids and, for the named issue's
+	// own close, the ids of the asks it withdrew. The statement is scoped to the request's own
+	// claim, so a step whose key another attempt took over rolls back (errRequestKeyTakenOver). A
+	// step that holds no lock of the named issue adds no ids, and an unkeyed step writes no point.
 	var namedEvents []int64
-	if holdsNamed {
-		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			b.Queue("read back the events of the named issue", `
-				select coalesce(array_agg(id order by id), '{}') from events where issue_key = $1 and seq > $2
-			`, step.named, namedLastSeq).QueryRow(func(row pgx.Row) error { return row.Scan(&namedEvents) })
-			return nil
-		}); err != nil {
-			return issueWriteResult{}, err
+	if step != nil {
+		claim, keyed := ctx.Value(requestKeyClaimKey{}).(requestKeyClaim)
+		switch {
+		case keyed:
+			entry, err := json.Marshal(statusChangeEntry{Key: key, Status: after.Status, Parent: after.Parent, PreviousLastSeq: before.LastSeq})
+			if err != nil {
+				return issueWriteResult{}, err
+			}
+			var closedAsks []string
+			if closing && key == step.named {
+				closedAsks = askIDs(withdrawn)
+			}
+			if err := ledger.Queue(func(b *store.WriteBatch) error {
+				b.Queue("write the recovery point of a status change", `
+					with named as (
+						select coalesce(array_agg(id order by id), '{}') as ids from events
+						where $4 and issue_key = $5 and seq > $6
+					)
+					update request_keys set recovery = jsonb_build_object(
+						'changed', coalesce(recovery -> 'changed', '[]') || jsonb_build_array($7::jsonb),
+						'events', coalesce(recovery -> 'events', '[]') || to_jsonb(named.ids),
+						'withdrawn', coalesce(recovery -> 'withdrawn', '[]') || coalesce(to_jsonb($8::text[]), '[]'))
+					from named
+					where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
+					returning named.ids
+				`, claim.login, claim.key, claim.attempt, holdsNamed, step.named, namedLastSeq, entry, closedAsks,
+				).QueryRow(func(row pgx.Row) error {
+					err := row.Scan(&namedEvents)
+					if errors.Is(err, pgx.ErrNoRows) {
+						return errRequestKeyTakenOver
+					}
+					return err
+				})
+				return nil
+			}); err != nil {
+				return issueWriteResult{}, err
+			}
+		case holdsNamed:
+			if err := ledger.Queue(func(b *store.WriteBatch) error {
+				b.Queue("read back the events of the named issue", `
+					select coalesce(array_agg(id order by id), '{}') from events where issue_key = $1 and seq > $2
+				`, step.named, namedLastSeq).QueryRow(func(row pgx.Row) error { return row.Scan(&namedEvents) })
+				return nil
+			}); err != nil {
+				return issueWriteResult{}, err
+			}
 		}
 	}
 	if closing {

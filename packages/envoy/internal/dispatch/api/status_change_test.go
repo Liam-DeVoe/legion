@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1319,4 +1323,887 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 			{late, "done", child, seq[late], -1}, {child, "done", named, seq[child], -1}, {named, "done", "", seq[named], -1},
 		}),
 	})
+}
+
+// repeatRig is a status change rig, the rule on, whose keyed calls a test stops as a process that
+// died leaves them: the lease of a stopped holder is never renewed, and the test lapses it itself
+// (lapse). sweeps records each ask sweep of a closed issue.
+type repeatRig struct {
+	statusChangeRig
+	sweeps *sweptAsks
+}
+
+func newRepeatRig(t *testing.T) repeatRig {
+	t.Helper()
+	rig := newStatusChangeRig(t, true)
+	rig.served.requestKeyRenewal = time.Hour
+	sweeps := &sweptAsks{API: rig.served.deps.Docs, swept: map[string][][]string{}}
+	rig.served.deps.Docs = sweeps
+	return repeatRig{statusChangeRig: rig, sweeps: sweeps}
+}
+
+// sweptAsks is the document service with each ask sweep of a closed issue recorded: every write of
+// an issue's ask states that marks its unindexed blocks resolved, which only that sweep makes
+// (sweepIssueAskBlocksTx), as the ids of the asks it wrote, by issue.
+type sweptAsks struct {
+	docs.API
+	mu    sync.Mutex
+	swept map[string][][]string
+}
+
+func (s *sweptAsks) WriteIssueAskStates(ctx context.Context, issueKey string, asks []model.Ask, actor model.Actor, markUnindexed bool) ([]docs.BlockRef, error) {
+	if markUnindexed {
+		ids := make([]string, 0, len(asks))
+		for _, ask := range asks {
+			ids = append(ids, ask.ID)
+		}
+		s.mu.Lock()
+		s.swept[issueKey] = append(s.swept[issueKey], ids)
+		s.mu.Unlock()
+	}
+	return s.API.WriteIssueAskStates(ctx, issueKey, asks, actor, markUnindexed)
+}
+
+// sweptOf is each ask sweep of issue, as the ids of the asks it wrote.
+func (rig repeatRig) sweptOf(issue string) [][]string {
+	rig.sweeps.mu.Lock()
+	defer rig.sweeps.mu.Unlock()
+	return slices.Clone(rig.sweeps.swept[issue])
+}
+
+// requireSweptOnce fails t unless the asks of issue were swept once, and that sweep wrote ask.
+func (rig repeatRig) requireSweptOnce(t *testing.T, issue, ask string) {
+	t.Helper()
+	if swept := rig.sweptOf(issue); len(swept) != 1 || !slices.Contains(swept[0], ask) {
+		t.Errorf("the ask sweeps of %s wrote %v, want one sweep that wrote the withdrawn ask %s", issue, swept, ask)
+	}
+}
+
+// seqs reads the last_seq of each of keys.
+func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
+	t.Helper()
+	seq := make(map[string]int, len(keys))
+	for _, key := range keys {
+		seq[key] = rig.lastSeq(t, key)
+	}
+	return seq
+}
+
+// stopAfterStep sends write under key in the background and stops its run once the step at index
+// step of its plan has committed, as a process that died there leaves its key: no answer, and a
+// lease nobody renews, which lapse ages. Only the first run to reach that step stops. resume lets
+// the stopped run go on and answers what it answered.
+func (rig repeatRig) stopAfterStep(t *testing.T, write ruleWrite, key string, step int) (resume func() *httptest.ResponseRecorder) {
+	t.Helper()
+	stopped := make(chan struct{})
+	release, releaseOnce := heldUntilReleased(t)
+	var once sync.Once
+	rig.afterStep(t, func(_ context.Context, index int) {
+		if index != step {
+			return
+		}
+		stops := false
+		once.Do(func() { stops = true })
+		if stops {
+			close(stopped)
+			<-release
+		}
+	})
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() { answered <- rig.keyedStatusChange(t, write, key) }()
+	select {
+	case <-stopped:
+	case response := <-answered:
+		t.Fatalf("%s answered %d before its step %d committed: %s", write, response.Code, step, response.Body.String())
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s never reached its step %d", write, step)
+	}
+	return func() *httptest.ResponseRecorder {
+		t.Helper()
+		releaseOnce()
+		select {
+		case response := <-answered:
+			return response
+		case <-time.After(30 * time.Second):
+			t.Fatalf("the stopped run of %s never answered once it went on", write)
+			return nil
+		}
+	}
+}
+
+// lapse ages the lease of key, which no answer holds, past IdempotencyLease, as a holder whose
+// process died leaves it.
+func (rig repeatRig) lapse(t *testing.T, key string) {
+	t.Helper()
+	tag, err := rig.database.Pool.Exec(context.Background(), `
+		update request_keys set leased_at = now() - interval '2 minutes' where idempotency_key = $1 and status is null
+	`, key)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("lapse the lease of %s: %v (%d rows)", key, err, tag.RowsAffected())
+	}
+}
+
+// statusChangeKeyRow is the request_keys row of a status change's key: the attempt that holds it,
+// the stored answer's status (nil for none), whether its lease is released, and its recovery point
+// (nil for none).
+type statusChangeKeyRow struct {
+	attempt  int
+	status   *int
+	released bool
+	point    *statusChangeRecovery
+}
+
+func (rig repeatRig) keyRow(t *testing.T, key string) statusChangeKeyRow {
+	t.Helper()
+	var row statusChangeKeyRow
+	var recovery []byte
+	if err := rig.database.Pool.QueryRow(context.Background(), `
+		select attempt, status, leased_at is null, recovery from request_keys where idempotency_key = $1
+	`, key).Scan(&row.attempt, &row.status, &row.released, &recovery); err != nil {
+		t.Fatalf("read the key %s: %v", key, err)
+	}
+	if recovery != nil {
+		row.point = &statusChangeRecovery{}
+		if err := json.Unmarshal(recovery, row.point); err != nil {
+			t.Fatalf("decode the recovery point of %s: %v", key, err)
+		}
+	}
+	return row
+}
+
+// pointKeys is the key of each entry the row's recovery point holds, in order.
+func (row statusChangeKeyRow) pointKeys() []string {
+	if row.point == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(row.point.Changed))
+	for _, entry := range row.point.Changed {
+		keys = append(keys, entry.Key)
+	}
+	return keys
+}
+
+// issueEventCount is how many events of kind issue holds.
+func issueEventCount(t *testing.T, database *store.Store, issue, kind string) int {
+	t.Helper()
+	var count int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from events where issue_key = $1 and type = $2
+	`, issue, kind).Scan(&count); err != nil {
+		t.Fatalf("count the %s events of %s: %v", kind, issue, err)
+	}
+	return count
+}
+
+// requireEachClosedOnce fails t unless each of keys holds one issue.closed event.
+func requireEachClosedOnce(t *testing.T, database *store.Store, keys ...string) {
+	t.Helper()
+	for _, key := range keys {
+		if closed := issueEventCount(t, database, key, "issue.closed"); closed != 1 {
+			t.Errorf("%s holds %d issue.closed events, want one", key, closed)
+		}
+	}
+}
+
+// unlinkComment is the comment of an unlink of key from named, as storedComments lists it.
+func unlinkComment(key, named string) string {
+	return optionComment(key, fmt.Sprintf("Dispatch removed this issue from %s, because alice's status change of %s passed `unlink_children`.", named, named))
+}
+
+// movedComment is the comment of include_children's move of key from status from to to with
+// named, as storedComments lists it.
+func movedComment(key, from, to, named string) string {
+	return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `%s` with %s, because alice's status change of %s passed `include_children`.", from, to, named, named))
+}
+
+// TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft: D7 on the route. A keyed call keeps its
+// progress in its key's recovery point. A repeat whose holder died before the point's mark takes
+// the key over as a new attempt, counts the events the point holds as the call's own in its fence,
+// makes only the steps the point does not hold, and answers as the uninterrupted call would, with
+// the first run's entries before its own; when the point holds the named issue's close, that
+// close's ask sweep runs once, over the asks it withdrew, whatever the answer. A repeat of a call
+// whose point carries the mark, or that answered a success beside its point, is answered from the
+// point with no step and no fence. A stored refusal and a keyed dry run are replayed as they were
+// stored, and a holder inside its lease is KEY_IN_FLIGHT. A repeat judged once its body arrived
+// (answerDrainedRepeat) is judged the same way.
+func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
+	const changedSince = "issue changed since the hand-over read"
+	rig := newRepeatRig(t)
+
+	t.Run("a fenced unlink whose process died before the named issue's step is finished by its repeat", func(t *testing.T) {
+		named := rig.file(t, "Issue closed after its unlinks", "in_progress", "")
+		first := rig.file(t, "First child unlinked", "todo", named)
+		second := rig.file(t, "Second child unlinked", "todo", named)
+		seq := rig.seqs(t, named, first, second)
+		const key = "repeat-unlinks"
+		write := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true, "expected_sequence": seq[named]})
+		resume := rig.stopAfterStep(t, write, key, 1)
+		if held := rig.keyRow(t, key); !slices.Equal(held.pointKeys(), []string{first, second}) || len(held.point.Events) != 2 || held.point.Finished {
+			t.Fatalf("the stopped run left the point %+v, want the two unlinks' entries and their child.removed events, unmarked", held.point)
+		}
+		rig.lapse(t, key)
+		want := wantAnswer(
+			wantChange{named, "done", "", seq[named] + 2, seq[named] + 3},
+			wantChange{first, "todo", "", seq[first], seq[first] + 2},
+			wantChange{second, "todo", "", seq[second], seq[second] + 2},
+			wantChange{named, "done", "", seq[named] + 2, seq[named] + 3},
+		)
+		repeat := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated past the lease", repeat, http.StatusOK, want)
+		if replayed(repeat) {
+			t.Error("the repeat that took the key over is marked replayed")
+		}
+		if held := rig.keyRow(t, key); held.attempt != 2 || !held.point.Finished || !slices.Equal(held.pointKeys(), []string{first, second, named}) {
+			t.Errorf("the key holds attempt %d and the point %+v, want attempt 2 with every entry, marked", held.attempt, held.point)
+		}
+		if stopped := resume(); stopped.Code != http.StatusConflict {
+			t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+		}
+		rig.requireIssue(t, named, "done", "")
+		rig.requireIssue(t, first, "todo", "")
+		rig.requireIssue(t, second, "todo", "")
+		requireEachClosedOnce(t, rig.database, named)
+		requireComments(t, rig.database, []string{named, first, second}, unlinkComment(first, named), unlinkComment(second, named))
+		again := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated after it finished", again, http.StatusOK, want)
+		if !replayed(again) {
+			t.Error("the repeat of the finished call is not marked replayed")
+		}
+	})
+
+	t.Run("a resumed attempt cut off in its turn and repeated again makes every step once", func(t *testing.T) {
+		named := rig.file(t, "Issue closed over three cut-off runs", "in_progress", "")
+		children := []string{
+			rig.file(t, "Child closed by the first run", "todo", named),
+			rig.file(t, "Child closed by the second run", "todo", named),
+			rig.file(t, "Child closed by the third run", "todo", named),
+		}
+		seq := rig.seqs(t, append([]string{named}, children...)...)
+		const key = "repeat-twice"
+		write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+		resumeFirst := rig.stopAfterStep(t, write, key, 0)
+		rig.lapse(t, key)
+		resumeSecond := rig.stopAfterStep(t, write, key, 0)
+		if held := rig.keyRow(t, key); held.attempt != 2 || !slices.Equal(held.pointKeys(), children[:2]) {
+			t.Fatalf("the second run left attempt %d with the point %+v, want attempt 2 with the first two children's entries", held.attempt, held.point)
+		}
+		rig.lapse(t, key)
+		requireStatusChange(t, write.String()+" repeated a second time", rig.keyedStatusChange(t, write, key), http.StatusOK, wantAnswer(
+			wantChange{named, "done", "", seq[named] + 3, seq[named] + 4},
+			wantChange{children[0], "done", named, seq[children[0]], seq[children[0]] + 2},
+			wantChange{children[1], "done", named, seq[children[1]], seq[children[1]] + 2},
+			wantChange{children[2], "done", named, seq[children[2]], seq[children[2]] + 2},
+			wantChange{named, "done", "", seq[named] + 3, seq[named] + 4},
+		))
+		for _, resume := range []func() *httptest.ResponseRecorder{resumeFirst, resumeSecond} {
+			if stopped := resume(); stopped.Code != http.StatusConflict {
+				t.Errorf("a stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+			}
+		}
+		requireEachClosedOnce(t, rig.database, append([]string{named}, children...)...)
+		requireComments(t, rig.database, append([]string{named}, children...),
+			movedComment(children[0], "todo", "done", named), movedComment(children[1], "todo", "done", named),
+			movedComment(children[2], "todo", "done", named))
+	})
+
+	t.Run("a run cut off at its time bound keeps its row with a released lease, and its repeat finishes", func(t *testing.T) {
+		named := rig.file(t, "Issue whose run hit its bound", "in_progress", "")
+		first := rig.file(t, "Child closed before the bound", "todo", named)
+		second := rig.file(t, "Child closed by the repeat", "todo", named)
+		seq := rig.seqs(t, named, first, second)
+		const key = "repeat-cut-off"
+		write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+		rig.served.requestKeyRunLimit = 5 * time.Second
+		t.Cleanup(func() { rig.served.requestKeyRunLimit = 0 })
+		var once sync.Once
+		rig.afterStep(t, func(ctx context.Context, _ int) { once.Do(func() { <-ctx.Done() }) })
+		if cut := rig.keyedStatusChange(t, write, key); cut.Code < http.StatusInternalServerError {
+			t.Fatalf("%s cut off at its bound answered %d %s, want a 5xx", write, cut.Code, cut.Body.String())
+		}
+		rig.served.requestKeyRunLimit = 0
+		if held := rig.keyRow(t, key); held.status != nil || !held.released || !slices.Equal(held.pointKeys(), []string{first}) {
+			t.Fatalf("the cut-off run left status %v, a released lease %t and the point %+v, want no answer, the lease released and the first child's entry",
+				held.status, held.released, held.point)
+		}
+		requireStatusChange(t, write.String()+" repeated after the bound", rig.keyedStatusChange(t, write, key), http.StatusOK, wantAnswer(
+			wantChange{named, "done", "", seq[named] + 2, seq[named] + 3},
+			wantChange{first, "done", named, seq[first], seq[first] + 2},
+			wantChange{second, "done", named, seq[second], seq[second] + 2},
+			wantChange{named, "done", "", seq[named] + 2, seq[named] + 3},
+		))
+		requireEachClosedOnce(t, rig.database, named, first, second)
+	})
+
+	t.Run("a repeat of a call that finished is answered from its point with no fence, after the close's sweep", func(t *testing.T) {
+		named := rig.file(t, "Issue closed with an open ask", "in_progress", "")
+		ask := createIssueAsk(t, rig.handler, named, "Ship the close?")
+		seq := rig.lastSeq(t, named)
+		const key = "repeat-finished"
+		write := statusChangeOf(named, map[string]any{"status": "done", "expected_sequence": seq})
+		first := rig.keyedStatusChange(t, write, key)
+		if first.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s, want 200", write, first.Code, first.Body.String())
+		}
+		rig.requireSweptOnce(t, named, ask)
+		again := rig.keyedStatusChange(t, write, key)
+		now := rig.lastSeq(t, named)
+		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
+			wantChange{named, "done", "", seq, now}, wantChange{named, "done", "", seq, now},
+		))
+		if !replayed(again) {
+			t.Error("the repeat of the finished call is not marked replayed")
+		}
+		rig.requireSweptOnce(t, named, ask)
+		requireEachClosedOnce(t, rig.database, named)
+	})
+
+	t.Run("a marked point with no answer is answered from the point after another writer's write", func(t *testing.T) {
+		named := rig.file(t, "Issue started whose answer was lost", "backlog", "")
+		child := rig.file(t, "Child started whose answer was lost", "backlog", named)
+		seq := rig.seqs(t, named, child)
+		const key = "repeat-marked"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named]})
+		if first := rig.keyedStatusChange(t, write, key); first.Code != http.StatusOK {
+			t.Fatalf("%s: status=%d body=%s, want 200", write, first.Code, first.Body.String())
+		}
+		loseAnswer(t, rig.database, key)
+		if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled after the lost answer"})); retitled.Code != http.StatusOK {
+			t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
+		}
+		now := rig.lastSeq(t, named)
+		again := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
+			wantChange{named, "todo", "", seq[named], now},
+			wantChange{named, "todo", "", seq[named], now},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		))
+		if !replayed(again) || decodeBody[statusChangeAnswer](t, again).Issue.Title != "Retitled after the lost answer" {
+			t.Errorf("the repeat answered %s, want the point replayed with the issue as it stands", again.Body.String())
+		}
+		if held := rig.keyRow(t, key); held.attempt != 1 {
+			t.Errorf("the key holds attempt %d, want the first: a marked point is never taken over", held.attempt)
+		}
+	})
+
+	t.Run("a point with every entry and no mark is taken over, and no step is left", func(t *testing.T) {
+		named := rig.file(t, "Issue started whose holder died after its last step", "backlog", "")
+		child := rig.file(t, "Last child started", "backlog", named)
+		seq := rig.seqs(t, named, child)
+		const key = "repeat-unmarked"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named]})
+		resume := rig.stopAfterStep(t, write, key, 1)
+		rig.lapse(t, key)
+		before := lastEventID(t, rig.database)
+		want := wantAnswer(
+			wantChange{named, "todo", "", seq[named], seq[named] + 2},
+			wantChange{named, "todo", "", seq[named], seq[named] + 2},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		)
+		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusOK, want)
+		if after := lastEventID(t, rig.database); after != before {
+			t.Errorf("the repeat appended events up to %d after %d, want none: no step was left", after, before)
+		}
+		if held := rig.keyRow(t, key); held.attempt != 2 || !held.point.Finished {
+			t.Errorf("the key holds attempt %d and the point %+v, want attempt 2, marked", held.attempt, held.point)
+		}
+		if stopped := resume(); stopped.Code != http.StatusConflict || refusalCode(stopped.Body.Bytes()) != contracts.IdempotencyKeyInFlight {
+			t.Errorf("the stopped run went on and answered %d %s, want 409 %s: its mark found the key taken over",
+				stopped.Code, stopped.Body.String(), contracts.IdempotencyKeyInFlight)
+		}
+		again := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated again", again, http.StatusOK, want)
+		if !replayed(again) {
+			t.Error("the repeat of the finished call is not marked replayed")
+		}
+	})
+
+	t.Run("a point with no mark and another writer's event on the named issue answers ISSUE_CHANGED", func(t *testing.T) {
+		named := rig.file(t, "Issue retitled after its holder died", "backlog", "")
+		child := rig.file(t, "Child started before the retitle", "backlog", named)
+		seq := rig.seqs(t, named, child)
+		const key = "repeat-changed"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named]})
+		resume := rig.stopAfterStep(t, write, key, 1)
+		rig.lapse(t, key)
+		if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled after the holder died"})); retitled.Code != http.StatusOK {
+			t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
+		}
+		before := lastEventID(t, rig.database)
+		want := wantRefusal("ISSUE_CHANGED", changedSince,
+			wantChange{named, "todo", "", seq[named], rig.lastSeq(t, named)},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		)
+		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusConflict, want)
+		if after := lastEventID(t, rig.database); after != before {
+			t.Errorf("the refused repeat appended events up to %d after %d, want none", after, before)
+		}
+		again := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated again", again, http.StatusConflict, want)
+		if !replayed(again) {
+			t.Error("the repeat of the refusal is not marked replayed")
+		}
+		if stopped := resume(); stopped.Code != http.StatusConflict {
+			t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+		}
+	})
+
+	t.Run("a point that holds the named issue's close sweeps its withdrawn ask once, refused or not", func(t *testing.T) {
+		for _, refused := range []bool{false, true} {
+			t.Run(fmt.Sprintf("another writer's event on the issue %t", refused), func(t *testing.T) {
+				named := rig.file(t, fmt.Sprintf("Issue closed before its holder died, refused %t", refused), "in_progress", "")
+				child := rig.file(t, fmt.Sprintf("Child closed first, refused %t", refused), "todo", named)
+				ask := createIssueAsk(t, rig.handler, named, "Close it with its child?")
+				seq := rig.seqs(t, named, child)
+				key := fmt.Sprintf("repeat-closed-%t", refused)
+				write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true, "expected_sequence": seq[named]})
+				resume := rig.stopAfterStep(t, write, key, 1)
+				rig.lapse(t, key)
+				if swept := rig.sweptOf(named); len(swept) != 0 {
+					t.Fatalf("the close of %s was swept %v before its mark", named, swept)
+				}
+				if refused {
+					createThreadComment(t, rig.handler, named, map[string]any{"body": "Closed while its call was cut off."}, "alice")
+				}
+				repeat := rig.keyedStatusChange(t, write, key)
+				now := rig.lastSeq(t, named)
+				changed := []wantChange{
+					{child, "done", named, seq[child], seq[child] + 2},
+					{named, "done", "", seq[named] + 1, now},
+				}
+				if refused {
+					requireStatusChange(t, write.String()+" repeated", repeat, http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince, changed...))
+				} else {
+					requireStatusChange(t, write.String()+" repeated", repeat, http.StatusOK, wantAnswer(changed[1], changed...))
+				}
+				rig.requireSweptOnce(t, named, ask)
+				if stopped := resume(); stopped.Code != http.StatusConflict {
+					t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+				}
+				rig.requireSweptOnce(t, named, ask)
+				requireEachClosedOnce(t, rig.database, named, child)
+			})
+		}
+	})
+
+	t.Run("a resumed attempt whose named issue another writer closed answers as the uninterrupted call would", func(t *testing.T) {
+		for _, fenced := range []bool{true, false} {
+			t.Run(fmt.Sprintf("fenced %t", fenced), func(t *testing.T) {
+				named := rig.file(t, fmt.Sprintf("Issue closed by another writer, fenced %t", fenced), "in_progress", "")
+				first := rig.file(t, fmt.Sprintf("First child unlinked, fenced %t", fenced), "todo", named)
+				second := rig.file(t, fmt.Sprintf("Second child unlinked, fenced %t", fenced), "todo", named)
+				seq := rig.seqs(t, named, first, second)
+				key := fmt.Sprintf("repeat-closed-by-another-%t", fenced)
+				body := map[string]any{"status": "done", "unlink_children": true}
+				code, message := "ISSUE_CLOSED", "issue is closed"
+				if fenced {
+					body["expected_sequence"] = seq[named]
+					code, message = "ISSUE_CHANGED", changedSince
+				}
+				write := statusChangeOf(named, body)
+				resume := rig.stopAfterStep(t, write, key, 1)
+				rig.lapse(t, key)
+				rig.move(t, named, "done")
+				before := lastEventID(t, rig.database)
+				want := wantRefusal(code, message,
+					wantChange{first, "todo", "", seq[first], seq[first] + 2},
+					wantChange{second, "todo", "", seq[second], seq[second] + 2},
+				)
+				requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusConflict, want)
+				if after := lastEventID(t, rig.database); after != before {
+					t.Errorf("the refused repeat appended events up to %d after %d, want none", after, before)
+				}
+				again := rig.keyedStatusChange(t, write, key)
+				requireStatusChange(t, write.String()+" repeated again", again, http.StatusConflict, want)
+				if !replayed(again) {
+					t.Error("the repeat of the refusal is not marked replayed")
+				}
+				if stopped := resume(); stopped.Code != http.StatusConflict {
+					t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+				}
+				requireEachClosedOnce(t, rig.database, named)
+			})
+		}
+	})
+
+	t.Run("a resumed attempt refused at one of its own steps carries the stored entries and its own", func(t *testing.T) {
+		named := rig.file(t, "Issue whose resumed close is refused", "in_progress", "")
+		first := rig.file(t, "Child closed by the first run", "todo", named)
+		second := rig.file(t, "Child closed by the resumed run", "todo", named)
+		third := rig.file(t, "Child that gains an open child", "todo", named)
+		seq := rig.seqs(t, named, first, second, third)
+		const key = "repeat-refused-step"
+		write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+		resume := rig.stopAfterStep(t, write, key, 0)
+		rig.lapse(t, key)
+		var late string
+		var once sync.Once
+		rig.afterStep(t, func(_ context.Context, step int) {
+			if step != 0 {
+				return
+			}
+			once.Do(func() {
+				created := rig.send(t, createUnder(third, "Filed during the resumed run"))
+				if created.Code != http.StatusCreated {
+					t.Fatalf("file an issue under %s: status=%d body=%s", third, created.Code, created.Body.String())
+				}
+				late = decodeBody[model.Issue](t, created).Key
+			})
+		})
+		repeat := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated", repeat, http.StatusConflict, wantConflict([]ruleHolder{
+			{late, "Filed during the resumed run", model.IssueStatusTriage, "child", late + " (triage) is a child of " + third + " and is not done"},
+		},
+			wantChange{first, "done", named, seq[first], seq[first] + 2},
+			wantChange{second, "done", named, seq[second], seq[second] + 2},
+		))
+		if stopped := resume(); stopped.Code != http.StatusConflict {
+			t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+		}
+		rig.requireIssue(t, third, "todo", named)
+		rig.requireIssue(t, named, "in_progress", "")
+	})
+
+	t.Run("a call whose last step writes nothing still leaves the mark", func(t *testing.T) {
+		named := rig.file(t, "Issue started whose last child moved first", "backlog", "")
+		child := rig.file(t, "Child started by the call", "backlog", named)
+		last := rig.file(t, "Child another writer started", "backlog", named)
+		seq := rig.seqs(t, named, child)
+		const key = "repeat-last-step-left"
+		var once sync.Once
+		rig.afterStep(t, func(_ context.Context, step int) {
+			if step == 1 {
+				once.Do(func() { rig.move(t, last, "todo") })
+			}
+		})
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+		requireStatusChange(t, write.String(), rig.keyedStatusChange(t, write, key), http.StatusOK, wantAnswer(
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{named, "todo", "", seq[named], seq[named] + 1},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		))
+		if held := rig.keyRow(t, key); !held.point.Finished {
+			t.Fatalf("the call left the point %+v, want it marked", held.point)
+		}
+		loseAnswer(t, rig.database, key)
+		now := rig.lastSeq(t, named)
+		again := rig.keyedStatusChange(t, write, key)
+		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
+			wantChange{named, "todo", "", seq[named], now},
+			wantChange{named, "todo", "", seq[named], now},
+			wantChange{child, "todo", named, seq[child], seq[child] + 2},
+		))
+		if held := rig.keyRow(t, key); !replayed(again) || held.attempt != 1 {
+			t.Errorf("the repeat is replayed %t under attempt %d, want replayed from the point under the first", replayed(again), held.attempt)
+		}
+	})
+
+	t.Run("a repeat of a stored answer replays it and writes nothing", func(t *testing.T) {
+		named := rig.file(t, "Issue refused midway", "in_progress", "")
+		first := rig.file(t, "Child closed before the refusal", "todo", named)
+		second := rig.file(t, "Child that gains an open child midway", "todo", named)
+		var once sync.Once
+		rig.afterStep(t, func(_ context.Context, step int) {
+			if step == 0 {
+				once.Do(func() {
+					if created := rig.send(t, createUnder(second, "Filed midway")); created.Code != http.StatusCreated {
+						t.Fatalf("file an issue under %s: status=%d body=%s", second, created.Code, created.Body.String())
+					}
+				})
+			}
+		})
+		dry := statusChangeOf(rig.file(t, "Issue whose close is a dry run", "in_progress", ""), map[string]any{"status": "done", "dry_run": true})
+		// A call that writes always writes its named issue's step, a status the issue already has
+		// included, so a keyed dry run is the one success that leaves no recovery point.
+		for _, stored := range []struct {
+			name   string
+			write  ruleWrite
+			status int
+		}{
+			{"a call refused midway", statusChangeOf(named, map[string]any{"status": "done", "include_children": true}), http.StatusConflict},
+			{"a keyed dry run", dry, http.StatusOK},
+		} {
+			t.Run(stored.name, func(t *testing.T) {
+				key := "repeat-stored-" + strings.ReplaceAll(stored.name, " ", "-")
+				answered := rig.keyedStatusChange(t, stored.write, key)
+				if answered.Code != stored.status {
+					t.Fatalf("%s: status=%d body=%s, want %d", stored.write, answered.Code, answered.Body.String(), stored.status)
+				}
+				if held := rig.keyRow(t, key); held.status == nil || *held.status != stored.status || (stored.status == http.StatusOK && held.point != nil) {
+					t.Fatalf("the key holds status %v and the point %+v, want the answer stored with no point", held.status, held.point)
+				}
+				before := rig.quiet(t)
+				again := rig.keyedStatusChange(t, stored.write, key)
+				assertUnchanged(t, stored.write.String()+" repeated", before, databaseFingerprint(t, rig.database))
+				if again.Code != answered.Code || again.Body.String() != answered.Body.String() || !replayed(again) {
+					t.Errorf("the repeat answered %d %s replayed %t, want the stored %d %s replayed",
+						again.Code, again.Body.String(), replayed(again), answered.Code, answered.Body.String())
+				}
+			})
+		}
+		requireComments(t, rig.database, []string{named, first, second}, movedComment(first, "todo", "done", named))
+	})
+
+	t.Run("a close whose settlement marked the key committed before any point is taken over", func(t *testing.T) {
+		pattern := "/api/v1/issues/{key}/status-change"
+		holdSettled := func(t *testing.T, write ruleWrite, key, named string) {
+			t.Helper()
+			holdRequestKey(t, rig.database, heldKey{
+				login: "alice", key: key, pattern: pattern, leasedAgo: 2 * time.Minute,
+				request: jsonRequest(t, write.method, write.path, write.body, map[string]string{"key": named}),
+			})
+			if _, err := rig.database.Pool.Exec(context.Background(), `
+				update request_keys set committed_at = now() where idempotency_key = $1
+			`, key); err != nil {
+				t.Fatalf("mark the key %s committed: %v", key, err)
+			}
+		}
+
+		named := rig.file(t, "Issue whose settlement committed", "in_progress", "")
+		child := rig.file(t, "Child of the settled issue", "todo", named)
+		seq := rig.seqs(t, named, child)
+		write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+		holdSettled(t, write, "repeat-settled", named)
+		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, "repeat-settled"), http.StatusOK, wantAnswer(
+			wantChange{named, "done", "", seq[named] + 1, seq[named] + 2},
+			wantChange{child, "done", named, seq[child], seq[child] + 2},
+			wantChange{named, "done", "", seq[named] + 1, seq[named] + 2},
+		))
+		if held := rig.keyRow(t, "repeat-settled"); held.attempt != 2 {
+			t.Errorf("the key holds attempt %d, want the takeover's 2", held.attempt)
+		}
+		requireEachClosedOnce(t, rig.database, named, child)
+
+		stale := rig.file(t, "Issue whose settled close is stale", "in_progress", "")
+		staleSeq := rig.lastSeq(t, stale)
+		if retitled := rig.send(t, patchOf(stale, map[string]any{"title": "Retitled before the repeat"})); retitled.Code != http.StatusOK {
+			t.Fatalf("retitle %s: status=%d body=%s", stale, retitled.Code, retitled.Body.String())
+		}
+		staleWrite := statusChangeOf(stale, map[string]any{"status": "done", "expected_sequence": staleSeq})
+		holdSettled(t, staleWrite, "repeat-settled-stale", stale)
+		before := rig.quiet(t)
+		requireStatusChange(t, staleWrite.String()+" repeated", rig.keyedStatusChange(t, staleWrite, "repeat-settled-stale"), http.StatusConflict,
+			wantRefusal("ISSUE_CHANGED", changedSince))
+		after := databaseFingerprint(t, rig.database)
+		delete(before, "request_keys")
+		delete(after, "request_keys")
+		assertUnchanged(t, staleWrite.String()+" repeated", before, after)
+	})
+
+	t.Run("a repeat while the first holder holds its lease is KEY_IN_FLIGHT", func(t *testing.T) {
+		named := rig.file(t, "Issue whose call still runs", "backlog", "")
+		rig.file(t, "Child of the running call", "backlog", named)
+		const key = "repeat-in-flight"
+		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+		resume := rig.stopAfterStep(t, write, key, 0)
+		repeat := rig.keyedStatusChange(t, write, key)
+		if repeat.Code != http.StatusConflict || refusalCode(repeat.Body.Bytes()) != contracts.IdempotencyKeyInFlight {
+			t.Errorf("a repeat inside the lease answered %d %s, want 409 %s", repeat.Code, repeat.Body.String(), contracts.IdempotencyKeyInFlight)
+		}
+		if first := resume(); first.Code != http.StatusOK {
+			t.Errorf("the first run answered %d %s once it went on, want 200", first.Code, first.Body.String())
+		}
+	})
+
+	t.Run("a repeat judged once its body arrived is judged the same way", func(t *testing.T) {
+		server := httptest.NewServer(rig.handler)
+		t.Cleanup(server.Close)
+		found := make(chan struct{}, 1)
+		rig.served.repeatFoundInFlight = func() { found <- struct{}{} }
+		t.Cleanup(func() { rig.served.repeatFoundInFlight = nil })
+		awaitFound := func(t *testing.T) {
+			t.Helper()
+			select {
+			case <-found:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the repeat never found its key in flight")
+			}
+		}
+		sendRepeat := func(t *testing.T, write ruleWrite, key string) (*heldBackBody, []byte) {
+			t.Helper()
+			body, err := json.Marshal(write.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			header := http.Header{}
+			header.Set("Content-Type", "application/json")
+			header.Set("X-Dispatch-User", "alice")
+			header.Set(contracts.IdempotencyKeyHeader, key)
+			return sendPartOfBody(t, server.Listener.Addr().String(), write.path, header, len(body), body[:5]), body
+		}
+
+		t.Run("a call refused midway while the body arrived answers the stored refusal", func(t *testing.T) {
+			named := rig.file(t, "Issue refused while a repeat arrives", "in_progress", "")
+			rig.file(t, "Child closed while a repeat arrives", "todo", named)
+			second := rig.file(t, "Child that gains an open child while a repeat arrives", "todo", named)
+			const key = "repeat-drained-refusal"
+			write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true})
+			reached := make(chan struct{})
+			release, releaseOnce := heldUntilReleased(t)
+			var once sync.Once
+			rig.afterStep(t, func(_ context.Context, step int) {
+				once.Do(func() {
+					if created := rig.send(t, createUnder(second, "Filed while a repeat arrives")); created.Code != http.StatusCreated {
+						t.Errorf("file an issue under %s: status=%d body=%s", second, created.Code, created.Body.String())
+					}
+					close(reached)
+					<-release
+				})
+			})
+			encoded, err := json.Marshal(write.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstAnswer := make(chan keyedAnswered, 1)
+			go func() {
+				status, body, _, err := keyedPost(server, write.path, string(encoded), key, 30*time.Second)
+				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
+			}()
+			select {
+			case <-reached:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the first run never reached its first step")
+			}
+			repeat, body := sendRepeat(t, write, key)
+			awaitFound(t)
+			releaseOnce()
+			var first keyedAnswered
+			select {
+			case first = <-firstAnswer:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the first run never answered once it went on")
+			}
+			if first.err != nil || first.status != http.StatusConflict {
+				t.Fatalf("the first run answered %d %s (%v), want its 409 refusal", first.status, first.body, first.err)
+			}
+			response, got := repeat.finish(body[5:])
+			if response.StatusCode != first.status || string(got) != first.body || response.Header.Get(contracts.IdempotencyReplayedHeader) != "?1" {
+				t.Errorf("the drained repeat answered %d %s replayed %q, want the stored %d %s replayed",
+					response.StatusCode, got, response.Header.Get(contracts.IdempotencyReplayedHeader), first.status, first.body)
+			}
+		})
+
+		t.Run("a key whose holder lapsed with no mark is freed, and the retry finishes the call", func(t *testing.T) {
+			named := rig.file(t, "Issue whose holder lapsed while a repeat arrived", "backlog", "")
+			child := rig.file(t, "Child started by the retry", "backlog", named)
+			seq := rig.seqs(t, named, child)
+			const key = "repeat-drained-freed"
+			write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
+			resume := rig.stopAfterStep(t, write, key, 0)
+			repeat, body := sendRepeat(t, write, key)
+			awaitFound(t)
+			rig.lapse(t, key)
+			response, got := repeat.finish(body[5:])
+			if response.StatusCode != http.StatusConflict || refusalCode(got) != contracts.IdempotencyKeyInFlight ||
+				!strings.Contains(string(got), "ended while this one's body arrived") {
+				t.Errorf("the drained repeat answered %d %s, want 409 %s telling it to ask again", response.StatusCode, got, contracts.IdempotencyKeyInFlight)
+			}
+			requireStatusChange(t, write.String()+" retried", rig.keyedStatusChange(t, write, key), http.StatusOK, wantAnswer(
+				wantChange{named, "todo", "", seq[named], seq[named] + 2},
+				wantChange{named, "todo", "", seq[named], seq[named] + 2},
+				wantChange{child, "todo", named, seq[child], seq[child] + 2},
+			))
+			if stopped := resume(); stopped.Code != http.StatusConflict {
+				t.Errorf("the stopped run went on and answered %d %s, want 409", stopped.Code, stopped.Body.String())
+			}
+		})
+	})
+}
+
+// statusChangeFixtures is where TestStatusChangeAnswersMatchTheirFixtures commits the route's
+// answers, from this package's directory.
+var statusChangeFixtures = filepath.Join("testdata", "status-change")
+
+// TestStatusChangeAnswersMatchTheirFixtures holds testdata/status-change, the answers of POST
+// /api/v1/issues/{key}/status-change that the CLI's and the web app's tests answer their stubs
+// with, to what the real server answers: a call that moves a parent and unlinks a child
+// (changed.json), a dry run (dry-run.json), a refusal by the rule before any step (conflict.json)
+// and after one (conflict-midway.json), the refusal of a token's close of the issues under an
+// issue (browser-only.json), and a stale expected_sequence (stale.json). Each file is the answer's
+// status and body, every value that differs between runs written as a placeholder
+// (normalizeAskReplyFixture).
+// `go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update`
+// rewrites them.
+func TestStatusChangeAnswersMatchTheirFixtures(t *testing.T) {
+	const rewrite = "go -C packages/envoy test -count=1 -run '^TestStatusChangeAnswersMatchTheirFixtures$' ./internal/dispatch/api -update"
+	rig := newStatusChangeRig(t, true)
+	type answer struct {
+		name     string
+		response *httptest.ResponseRecorder
+		status   int
+	}
+	var answers []answer
+
+	epic := rig.file(t, "Epic on the backlog", "backlog", "")
+	started := rig.file(t, "Issue started with its epic", "backlog", epic)
+	rig.file(t, "Child unlinked from the issue", "backlog", started)
+	answers = append(answers, answer{"changed.json", rig.send(t, statusChangeOf(started, map[string]any{
+		"status": "in_progress", "include_parent": true, "unlink_children": true,
+	})), http.StatusOK})
+
+	closing := rig.file(t, "Parent closed with its tree", "in_progress", "")
+	middle := rig.file(t, "Child in work", "todo", closing)
+	rig.file(t, "Grandchild in work", "todo", middle)
+	answers = append(answers, answer{"dry-run.json", rig.send(t, statusChangeOf(closing, map[string]any{
+		"status": "done", "include_children": true, "dry_run": true,
+	})), http.StatusOK})
+	answers = append(answers, answer{"conflict.json", rig.send(t, statusChangeOf(closing, map[string]any{"status": "done"})), http.StatusConflict})
+	answers = append(answers, answer{"browser-only.json", sessionRequest(t, rig.handler, http.MethodPost, "/api/v1/issues/"+closing+"/status-change", map[string]any{
+		"status": "done", "include_children": true, "actor": sessionActor(),
+	}), http.StatusForbidden})
+
+	refused := rig.file(t, "Parent refused midway", "in_progress", "")
+	rig.file(t, "First child closed", "todo", refused)
+	second := rig.file(t, "Second child refused", "todo", refused)
+	var once sync.Once
+	rig.afterStep(t, func(_ context.Context, step int) {
+		once.Do(func() {
+			if created := rig.send(t, createUnder(second, "Filed between two steps")); created.Code != http.StatusCreated {
+				t.Fatalf("file an issue under %s: status=%d body=%s", second, created.Code, created.Body.String())
+			}
+		})
+	})
+	answers = append(answers, answer{"conflict-midway.json", rig.send(t, statusChangeOf(refused, map[string]any{
+		"status": "done", "include_children": true,
+	})), http.StatusConflict})
+
+	stale := rig.file(t, "Issue changed since its read", "in_progress", "")
+	staleSeq := rig.lastSeq(t, stale)
+	if retitled := rig.send(t, patchOf(stale, map[string]any{"title": "Issue retitled since its read"})); retitled.Code != http.StatusOK {
+		t.Fatalf("retitle %s: status=%d body=%s", stale, retitled.Code, retitled.Body.String())
+	}
+	answers = append(answers, answer{"stale.json", rig.send(t, statusChangeOf(stale, map[string]any{
+		"status": "done", "expected_sequence": staleSeq,
+	})), http.StatusConflict})
+
+	for _, answered := range answers {
+		if answered.response.Code != answered.status {
+			t.Fatalf("%s: status=%d body=%s, want %d", answered.name, answered.response.Code, answered.response.Body.String(), answered.status)
+		}
+		encoded, err := json.MarshalIndent(struct {
+			Status int             `json:"status"`
+			Body   json.RawMessage `json:"body"`
+		}{answered.response.Code, answered.response.Body.Bytes()}, "", "  ")
+		if err != nil {
+			t.Fatalf("encode %s: %v", answered.name, err)
+		}
+		got := normalizeAskReplyFixture(append(encoded, '\n'))
+		path := filepath.Join(statusChangeFixtures, answered.name)
+		if *updateFixtures {
+			if err := os.MkdirAll(statusChangeFixtures, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, got, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("wrote %s", path)
+			continue
+		}
+		want, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s (%s writes it): %v", path, rewrite, err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("%s differs from the answer this run got; when the change is meant, rewrite it with %s:\n%s", path, rewrite, got)
+		}
+	}
 }

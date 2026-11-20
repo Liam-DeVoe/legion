@@ -827,9 +827,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	keyed := s.keyedReplays()
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, keyed[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -847,12 +847,12 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
 // inside every layer the row runs, in the one order every row runs them. It is the one place that
 // order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+// (read_only_token_test.go) build the same chain. keyed is the row's entry of keyedReplays, the
+// zero value for a row that has none.
+func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
