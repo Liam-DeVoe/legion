@@ -225,6 +225,11 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 	r.rt.overlays = func(token claim.Token) []string { return overlays[token] }
 
 	r.seed()
+	// The shipped launch_failure_limit, 3, fails a claim at the third turn in a row its provider
+	// refused (supervise's turnOutcome), so no run would reach the six turns step 2 reads. The
+	// proof sets 20, which `launch_failure_limit` in legion.yaml takes, until
+	// cybermonklabs/legion#4578 makes a refused turn whose provider error can clear fail no claim.
+	r.cfg.LaunchFailureLimit = 20
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
 	r.registerController()
@@ -256,13 +261,14 @@ func (r *providerErrorLive) registerController() {
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
 	}
-	// A controller's start registers its session's interest in the controller topic once its
-	// registration answers, and the daemon publishes a provider-errors notice only to a session
-	// whose registration follows that topic (outbox.controllerFollows), so the listener answers
-	// this session as one that does.
-	r.notices.follow(session, notify.ControllerTopic(r.project))
-	r.note("the project's controller is registered as %s and follows %s, so a notice for it is published rather than dropped",
-		session, notify.ControllerTopic(r.project))
+	// A controller's start claims the controller's role once its registration answers, and the
+	// daemon publishes a provider-errors notice to that role only once the registered session is
+	// its live holder (outbox.controllerHolds), so the listener answers this session as the role's
+	// live holder.
+	role := claim.ControllerToken(r.project)
+	r.notices.hold(role, session)
+	r.note("the project's controller is registered as %s and holds %s, so a notice for it is published rather than dropped",
+		session, role)
 }
 
 // overrides is the daemon this proof boots: the local runtime over the real worker stream, the
@@ -480,7 +486,7 @@ func (r *providerErrorLive) ladderWalks() {
 // row, the project's controller is told, once, and nothing is held.
 func (r *providerErrorLive) controllerIsTold() {
 	t := r.t
-	topic := notify.ControllerTopic(r.project)
+	topic := notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))
 	var told []listenerPublish
 	r.await("the controller's notice of a run of provider errors", 3*time.Minute, func() bool {
 		told = nil

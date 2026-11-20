@@ -78,7 +78,7 @@ type outbox struct {
 	pool       *store.Pool
 	records    record.Store
 	dispatch   dispatch.Client
-	notices    notify.Publisher
+	notices    outboxNotices
 	supervisor *supervisor
 	trees      outboxTrees
 	tokens     appauth.Tokens
@@ -181,6 +181,16 @@ type outbox struct {
 	wg      sync.WaitGroup
 }
 
+// outboxNotices is the Envoy listener as the outbox uses it: its publishes (notify.Publisher), and
+// the read of a role's holder (notify.HTTPPublisher.RoleHolder) that a provider-errors notice
+// waits on (controllerHolds). The read is part of the type every outbox is built with, rather than
+// a method a publisher may or may not carry, so no publisher can be built into an outbox that
+// would publish a provider-errors notice without it: a test's publisher answers the read itself.
+type outboxNotices interface {
+	notify.Publisher
+	RoleHolder(ctx context.Context, role string) (holder, state string, err error)
+}
+
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
 // suspension, an idle release's own two decisions and the bundle it saves, a stop's wait for a
 // stored claim's machine, a workflow tree close's cleanup, a delivery wake and the open resume
@@ -215,7 +225,7 @@ type outboxTrees interface {
 
 // newOutbox builds the outbox. controllerLaunched is `controller: daemon` (config.ControllerLaunch),
 // which decides whether the launched controller claim holds the controller topic back (heldTopic).
-func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
+func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, publisher outboxNotices, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, controllerLaunched bool, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -2248,7 +2258,7 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // registered, or one that failed — holds no row either: the row ends, and the kept copy is
 // dropped once its hour ends.
 //
-// Five other executors publish to a role's topic, each with its own rules for what the publisher
+// Six other executors publish to a role's topic, each with its own rules for what the publisher
 // answers: updateAsk, through publishToRole, ends the row for a topic with no holder and retries
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
@@ -2258,14 +2268,17 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // (notify.ErrPublishDenied); mergeQueueRemoval, the merger's message of a removal from the
 // merge queue, holds the row for a topic with no holder and for an unresponsive holder while the
 // merger's claim has neither failed nor retired, and retries every other failure
-// (merge_queue_removal.go); and mergeForwardMessage, a message of a merge forward, holds its row
+// (merge_queue_removal.go); mergeForwardMessage, a message of a merge forward, holds its row
 // the same way while the role's claim has neither failed nor retired and the merge forward still
-// stands at the row's head (merge_forward.go). Each of those five publishes with keep: false:
-// deliverNotice, mergeQueueRemoval and mergeForwardMessage hold their own row, and a kept copy
-// beside it would be a second keeper of one message; roleMessage's message is stale by the time a
-// role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the role
-// answers. So whoever changes the rule for a topic with no holder must read all six executors, not
-// this function alone.
+// stands at the row's head (merge_forward.go); and providerErrorsNotice, a run of provider errors
+// told to the controller's role, publishes only once the registered controller session holds
+// the role live and holds its row for a topic with no live holder, however long that lasts. Each
+// of those six publishes with keep: false: deliverNotice, mergeQueueRemoval, mergeForwardMessage
+// and providerErrorsNotice hold their own row, and a kept copy beside it would be a second keeper
+// of one message, one the listener drops after its hour; roleMessage's message is stale by the
+// time a role nobody holds is claimed; and updateAsk's round ends at its bound whether or not the
+// role answers. So whoever changes the rule for a topic with no holder must read all seven
+// executors, not this function alone.
 func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, topic, message string, fields ...any) error {
 	keeps, err := r.publishKept(ctx, topic, message, message, record.OutboxKey(row.ID))
 	switch {
@@ -2280,19 +2293,16 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key. A provider-errors notice is published only once the controller's session follows
-// that topic (controllerFollows).
+// row's own key. A provider-errors notice goes to the controller's role instead
+// (providerErrorsNotice).
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	topic := notify.ControllerTopic(r.project)
 	if payload.Kind == record.ProviderErrorsNotice {
-		if err := r.controllerFollows(ctx, row, topic); err != nil {
-			return err
-		}
+		return r.providerErrorsNotice(ctx, row, payload)
 	}
-	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
 		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
@@ -2306,52 +2316,80 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	return nil
 }
 
-// topicFollower is the listener read controllerFollows makes (notify.HTTPPublisher.FollowsTopic).
-type topicFollower interface {
-	FollowsTopic(ctx context.Context, session, topic string) (bool, error)
-}
-
-// controllerFollows is nil once the session that holds the project's controller registration
-// follows topic at the Envoy listener, and a wait until then: no session registered, or one whose
-// registration does not follow the topic yet.
+// providerErrorsNotice publishes a provider-errors notice to the role topic of the project's
+// controller (notify.RoleTopicPrefix and claim.ControllerToken) once the session that holds the
+// controller registration holds that role live (controllerHolds), and waits on the outbox's
+// backoff until then. The row, not the listener, keeps the notice for the role's next holder.
 //
 // A provider-errors notice is the one controller notice told once for each run, and the write
-// that queued its row marked the run told (admit's tellProviderErrors), so this row is the only
-// keeper of the run's notice and must not finish on a publish no session can read. The controller
-// topic reaches a session only through its own consumer, whose filter takes the topic once the
-// session, holding the controller role, registers it; a message the stream stores before that is
-// delivered only while the consumer has not looked past it, and a consumer looks at every message
-// stored for it and at every pull it makes. A controller registers with the daemon before it
-// claims its role and follows the topic (packages/pi-legion's controller-session.ts), and the
-// registration queues the notice at once, so without this read its publish could come first, be
-// accepted, and reach nobody. The listener sets a session's filter before it stores the topics it
-// answers for (notify.HTTPPublisher.FollowsTopic), so a publish made after this read is kept for
-// the session whether it is live or away. A session that follows the topic and then is gone for
-// good takes the notice with it, as it takes every controller notice published to it.
+// that queued this row marked the run told (admit's tellProviderErrors), so the row is the run's
+// only keeper and must not finish on a publish that no live controller session is handed. A
+// publish to the controller topic is stored for the consumer of each session that follows it, and
+// a session whose process has died is still one: the listener reads it unresponsive, not gone,
+// for its gone horizon, an hour past its live window (packages/envoy/internal/session/state.go),
+// and the daemon's registration keeps naming it until an operator's `legion controller start`
+// mints a new one. A controller started in its place is a new session with a consumer of its own,
+// at the stream's end, so it is never handed what the dead one was.
 //
-// While no controller session follows the topic — none registered, one that never claims its role
-// or registers the topic, or one gone past the listener's gone horizon — the row stays in the
-// outbox holding the run's notice, and nothing is published. It retries on the outbox's own
-// backoff (outbox.retry, record.RetryBackoff: one second, doubling to RetryBackoffMost, 64 s), and
-// that cadence comes from what it waits on. A controller follows the topic within the seconds its
-// own start takes after its registration answers (the role's claim, then the topic's
-// registration), which the first short retries catch; past that, a follower comes only when an
-// operator starts or restarts a controller, which the 64 s cap waits for at one row read and at
-// most one listener read a minute, so the notice reaches such a controller at most 64 s after it
-// follows, and a row no controller follows never spins. settle logs the wait at INFO, then DEBUG,
-// and at WARN from attempt waitWarnAttempts on, which is the operator's sign that a registered
-// controller does not follow its topic. The wait holds nothing else of the issue behind it: a
-// controller notice is a board row, and the outbox holds a due row back only behind an older
-// status write or branch of its issue (record's outboxInOrder) or a running lifecycle row
-// (outboxLaneFree), so the issue's status writes, messages, other notices and lifecycle rows run as
-// they come due.
+// So the notice goes to the controller's role, which the listener resolves at the publish itself
+// (sendToRole, packages/envoy/cmd/listener/confirmed.go): a live holder is forwarded the notice on
+// its own agent subject, which its session consumer follows from its first registration, so no
+// topic has to be followed first, and the answer is 200, which finishes the row; a role with no
+// live holder at that moment — a holder whose registration passed the live window since
+// controllerHolds read it, or a role no session claims any more — is answered 404 and stored for
+// nobody (roleSend.noHolder, keep false: notify.ErrHolderUnresponsive or notify.ErrNoHolder), and
+// the row waits, holding the notice, until the next attempt finds a live holder: the session a
+// replacement controller claims the role with, or the same session once it is live again. The
+// publish asks the listener to keep nothing (publish, not publishKept): a kept copy is dropped
+// an hour after it is stored if no live holder has taken it (roleKeepWindow,
+// packages/envoy/cmd/listener/role_keep.go), and the row has no such bound, so the row is the
+// keeper that waits as long as no controller holds its role.
 //
-// A publisher with no listener read, a test's, publishes at once.
-func (r *outbox) controllerFollows(ctx context.Context, row record.OutboxRow, topic string) error {
-	follower, ok := r.notices.(topicFollower)
-	if !ok {
-		return nil
+// What no read here closes: a controller whose process died less than the listener's live window
+// ago (contracts.SessionLiveWindow, five minutes after its last registration) is read live, by
+// controllerHolds and by the listener at the publish, and is forwarded the notice into its own
+// consumer. The 200 is the stream's word that it stored the forward, not the holder's that it
+// read it (roleSend, confirmed.go), and nothing a controller session sends tells the daemon it
+// read a notice, so a controller started in that session's place is not handed it.
+func (r *outbox) providerErrorsNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
+	role := claim.ControllerToken(r.project)
+	if err := r.controllerHolds(ctx, row, role); err != nil {
+		return err
 	}
+	topic := notify.RoleTopicPrefix + string(role)
+	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	switch {
+	case errors.Is(err, notify.ErrNoHolder), errors.Is(err, notify.ErrHolderUnresponsive):
+		return wait.Errorf("the provider-errors notice for %s waits for a live holder of %s: %w", row.Issue, role, err)
+	case err != nil:
+		return fmt.Errorf("publish the provider-errors notice for %s to %s: %w", row.Issue, topic, err)
+	}
+	return nil
+}
+
+// controllerHolds is nil once the session that holds the project's controller registration is
+// the live holder of role, the controller's role, at the Envoy listener (GET /v1/roles/<role>,
+// notify.HTTPPublisher.RoleHolder), and a wait until then: no controller registered, a role no
+// session claims, a holder the listener reads unresponsive or gone, or a holder that is another
+// session than the registered one. A controller registers with the daemon before it claims its
+// role (packages/pi-legion's controller-session.ts), and the registration queues the notice at
+// once, so a fresh controller's notice waits the seconds its start takes. A read the listener
+// did not answer, and one it refuses however often it is asked (notify.RoleLookupRefused), fail
+// the attempt, which the row retries.
+//
+// The wait is the one settle logs at INFO, then DEBUG, and at WARN from attempt waitWarnAttempts
+// on, which is the operator's sign that a registered controller does not hold its role. It
+// retries on the outbox's own backoff (outbox.retry, record.RetryBackoff: one second, doubling to
+// RetryBackoffMost, 64 s), and that cadence comes from what it waits on: a controller claims its
+// role within the seconds its own start takes after its registration answers, which the first
+// short retries catch; past that, a holder comes only when an operator starts or restarts a
+// controller, which the 64 s cap waits for at one row read and one listener read a minute, so the
+// notice reaches such a controller at most 64 s after it claims the role, and a row no controller
+// holds never spins. The wait holds nothing else of the issue behind it: a controller notice is a
+// board row, and the outbox holds a due row back only behind an older status write or branch of
+// its issue (record's outboxInOrder) or a running lifecycle row (outboxLaneFree), so the issue's
+// status writes, messages, other notices and lifecycle rows run as they come due.
+func (r *outbox) controllerHolds(ctx context.Context, row record.OutboxRow, role claim.Token) error {
 	var session string
 	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
@@ -2363,14 +2401,24 @@ func (r *outbox) controllerFollows(ctx context.Context, row record.OutboxRow, to
 	if session == "" {
 		return wait.Errorf("the provider-errors notice for %s waits for a controller to register", row.Issue)
 	}
-	follows, err := follower.FollowsTopic(ctx, session, topic)
+	holder, state, err := r.notices.RoleHolder(ctx, string(role))
 	if err != nil {
-		return fmt.Errorf("read whether controller session %s follows %s before the provider-errors notice for %s: %w", session, topic, row.Issue, err)
+		return fmt.Errorf("read the holder of %s before the provider-errors notice for %s: %w", role, row.Issue, err)
 	}
-	if !follows {
-		return wait.Errorf("the provider-errors notice for %s waits for controller session %s to follow %s: published before then, it reaches no session", row.Issue, session, topic)
+	if holder != session || state != notify.StateLive {
+		return wait.Errorf("the provider-errors notice for %s waits for controller session %s to hold %s live (the listener names %s): sent before then, it reaches no live controller",
+			row.Issue, session, role, holderNamed(holder, state))
 	}
 	return nil
+}
+
+// holderNamed is how a wait names the holder the listener answered for a role: the session and
+// its state, or no holder at all.
+func holderNamed(holder, state string) string {
+	if holder == "" {
+		return "no holder"
+	}
+	return fmt.Sprintf("holder %s, %s", holder, state)
 }
 
 func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {

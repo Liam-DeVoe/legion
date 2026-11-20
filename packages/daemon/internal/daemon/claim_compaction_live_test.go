@@ -196,6 +196,11 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// every copy of the Config shares it, which is how internal/daemon's own pod-update tests
 	// put a role on this backend too (podupdate_test.go:1986).
 	r.cfg.WorkerBackends = r.backends
+	// The shipped launch_failure_limit, 3, fails a claim at the third turn in a row its provider
+	// refused (supervise's turnOutcome), so no run would reach the six turns step 3 drives twice.
+	// The proof sets 20, which `launch_failure_limit` in legion.yaml takes, until
+	// cybermonklabs/legion#4578 makes a refused turn whose provider error can clear fail no claim.
+	r.cfg.LaunchFailureLimit = 20
 	version, err := exec.Command(omp, "--version").Output()
 	if err != nil {
 		t.Fatalf("read the Oh My Pi version of %s: %v", omp, err)
@@ -308,13 +313,13 @@ func (r *claimCompactionLive) registerController() {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
 	r.controllerSecret = registered.Secret
-	// A controller's start registers its session's interest in the controller topic once its
-	// registration answers, and the daemon publishes a provider-errors notice only to a session
-	// whose registration follows that topic (outbox.controllerFollows), so the listener answers
-	// this session as one that does.
-	r.notices.follow(r.controllerSession, notify.ControllerTopic(r.project))
-	r.note("the project's controller is registered as %s (claim %s) and follows %s, and its registration secret mints the grant its own door takes",
-		r.controllerSession, registered.ClaimToken, notify.ControllerTopic(r.project))
+	// A controller's start claims the controller's role once its registration answers, and the
+	// daemon publishes a provider-errors notice to that role only once the registered session is
+	// its live holder (outbox.controllerHolds), so the listener answers this session as the role's
+	// live holder.
+	r.notices.hold(registered.ClaimToken, r.controllerSession)
+	r.note("the project's controller is registered as %s (claim %s) and holds that role, and its registration secret mints the grant its own door takes",
+		r.controllerSession, registered.ClaimToken)
 }
 
 // overrides is the daemon this proof boots: the local runtime over the real worker stream, the
@@ -590,7 +595,7 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	}
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)
-	r.note("the project's controller was told once on %s: %q", notify.ControllerTopic(r.project), told[0])
+	r.note("the project's controller was told once on %s: %q", notify.RoleTopicPrefix+string(claim.ControllerToken(r.project)), told[0])
 
 	from := r.daemon.count()
 	answer := r.compactedByController(r.notice, claim.RoleImplementer)
@@ -1414,13 +1419,13 @@ func (r *claimCompactionLive) awaitFreshPane(token claim.Token, old string) api.
 }
 
 // controllerNotices is the reason of every provider-errors notice the daemon has published to the
-// project's controller topic for issue, oldest first. The topic carries every claim's notice, so
-// the issue is read off the notice's own summary line (noticeSummary).
+// role topic of the project's controller for issue, oldest first. The role carries every claim's
+// notice, so the issue is read off the notice's own summary line (noticeSummary).
 func (r *claimCompactionLive) controllerNotices(issue string) []string {
 	r.t.Helper()
 	want := noticeSummary(record.ProviderErrorsNotice, issue)
 	var reasons []string
-	for _, published := range r.notices.acceptedOn(notify.ControllerTopic(r.project)) {
+	for _, published := range r.notices.acceptedOn(notify.RoleTopicPrefix + string(claim.ControllerToken(r.project))) {
 		if published.Message != want {
 			continue
 		}

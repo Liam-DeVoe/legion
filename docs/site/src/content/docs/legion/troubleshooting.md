@@ -525,14 +525,28 @@ default an operator launches the controller, so a run can reach six with none re
 controller is then told when it registers, and when two runs or more of one claim reached six
 meanwhile, one notice names each of them, oldest first. A notice whose write failed is written at
 the next of those moments. Each run is told once, so a later run is told while an earlier run's
-notice still waits to be published. The notice is published only once the session registered as
-the controller follows the controller topic at the Envoy listener: a controller registers with the
-daemon before it claims its role and follows the topic, and a notice published in between reaches
-no session. Until then the notice's outbox row waits on its backoff, read again at most 64 s
-apart, and holds no other row of the issue back; `outbox row waits` with `the provider-errors
-notice for <KEY> waits for controller session <session> to follow <topic>`, at WARN from its
-seventh attempt, means a registered controller does not follow its topic. Nothing is held and
-nothing is stopped by that count: the task is still kept and still sent again. The run goes back
+notice still waits to be published. The notice goes to the controller's role topic,
+`notifications.role.legion-<project>-controller`, and not to the controller topic the other
+controller notices take, and it is published only once the session registered as the controller
+holds that role live at the Envoy listener. The listener checks the role's holder again at the
+publish and delivers the notice to a live holder alone; a role it finds with no live holder, a
+controller whose process died and that the listener reads unresponsive for its gone horizon
+among them, is stored for nobody, and the notice waits for the controller that is started in its
+place or for the same session once it is live again. Until then the notice's outbox row waits on
+its backoff, read again at most 64 s apart, and holds no other row of the issue back; `outbox row
+waits` with `the provider-errors notice for <KEY> waits for controller session <session> to hold
+<role> live`, logged at INFO at the first try, DEBUG at the next six and WARN from the eighth on,
+once seven tries have waited, means a registered controller does not hold its role. One case is
+still lost: a controller whose process died less than the listener's live window ago (five
+minutes after its last registration) still reads live, at the daemon's read and at the
+listener's publish, and is handed the notice into its own session consumer; a controller
+started in its place is not handed it. The cause is that nothing tells the daemon that a
+controller session read a notice: the listener answers a role send once its stream stored the
+forward, and the session's acknowledgement of the frame goes to the stream alone. The backstop
+is the run itself, which `legion state` shows as each agent's `providerErrorRun`: once the
+controller skill says so, the controller's start reads it, and a run at six or more is one it
+may not have been told of. Nothing is held and nothing is stopped by a run of six: the task is
+still kept and still sent again. The run goes back
 to zero three ways: at a turn of that claim that ends with no provider error, at a compaction of
 its session that ran (`legion claims compact`, or the controller's `compact`; one Oh My Pi refused
 or skipped resets nothing, since the session is as it was), and when the claim's recorded session

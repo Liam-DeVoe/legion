@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/listenerwire"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -149,15 +150,16 @@ func TestAHeldNoticeReachesTheControllerTopicAndItsRetriesNeverResendTheArchitec
 
 // noticeListener is the Envoy listener's publish route as the outbox uses it: it takes every
 // publish, but for the first refusals on a topic, which it answers 500 as a stream outage does
-// (packages/envoy/cmd/listener/api.go publishHandler). It answers the registry route too (GET
-// /v1/registry/<session_id>, sessionEntryHandler) for each session a case says follows topics
-// (follow): the outbox publishes a provider-errors notice only to a session whose registration
-// follows the controller topic (outbox.controllerFollows), and any other session reads as one the
-// listener holds no record of, 404.
+// (packages/envoy/cmd/listener/api.go publishHandler). It answers the role route too (GET
+// /v1/roles/<role>, roleGetHandler) for each role a case says a session holds (hold), live, as
+// the listener's 200 names a live holder (listenerwire.RoleHolder): the outbox publishes a
+// provider-errors notice only once the session holding the controller registration is the live
+// holder of the controller's role (outbox.controllerHolds). Every other role reads as one the
+// listener has no route for, 404, as it read before the route was answered here.
 type noticeListener struct {
 	mu       sync.Mutex
 	refuse   map[string]int
-	follows  map[string][]string
+	holders  map[string]string
 	accepted []listenerPublish
 	refused  []listenerPublish
 }
@@ -170,22 +172,18 @@ type listenerPublish struct {
 }
 
 func newNoticeListener() *noticeListener {
-	return &noticeListener{refuse: map[string]int{}, follows: map[string][]string{}}
+	return &noticeListener{refuse: map[string]int{}, holders: map[string]string{}}
 }
 
 func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	w.Header().Set("Content-Type", "application/json")
-	if session, ok := strings.CutPrefix(r.URL.Path, "/v1/registry/"); ok && r.Method == http.MethodGet {
-		topics, followed := l.follows[session]
-		if !followed {
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "no live session " + session})
+	if role, ok := strings.CutPrefix(r.URL.Path, "/v1/roles/"); ok && r.Method == http.MethodGet {
+		if session, held := l.holders[role]; held {
+			_ = json.NewEncoder(w).Encode(listenerwire.RoleHolder{Role: role, Holder: session, HolderState: "live", Capabilities: []string{}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"session_id": session, "topics": topics})
-		return
 	}
 	if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/publish" {
 		w.WriteHeader(http.StatusNotFound)
@@ -208,11 +206,11 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{})
 }
 
-// follow makes the registry route answer session as a registration that follows topics.
-func (l *noticeListener) follow(session string, topics ...string) {
+// hold makes the role route answer session as role's live holder.
+func (l *noticeListener) hold(role claim.Token, session string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.follows[session] = append(l.follows[session], topics...)
+	l.holders[string(role)] = session
 }
 
 // refuseFirst makes the listener refuse the next n publishes to topic.
