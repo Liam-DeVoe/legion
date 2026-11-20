@@ -134,14 +134,17 @@ type leaverConfig struct {
 // the broker, which is the acceptance red these tests must observe.
 func withBrokerGate() leaverOption {
 	return func(c *leaverConfig) {
-		var dispatchHandler http.Handler
+		// The router is set once it is built, by the test goroutine, and read by the server's
+		// handler goroutines, so it is held atomically.
+		var dispatchHandler atomic.Pointer[http.Handler]
 		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
 			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-				if dispatchHandler == nil {
+				handler := dispatchHandler.Load()
+				if handler == nil {
 					http.Error(w, "Dispatch router is not built", http.StatusServiceUnavailable)
 					return
 				}
-				dispatchHandler.ServeHTTP(w, req)
+				(*handler).ServeHTTP(w, req)
 			}))
 			server.Start()
 			t.Cleanup(server.Close)
@@ -156,7 +159,7 @@ func withBrokerGate() leaverOption {
 			if r.brokerDispatch == nil {
 				t.Fatal("withBrokerGate did not start its Dispatch server")
 			}
-			dispatchHandler = r.handler
+			dispatchHandler.Store(&r.handler)
 		})
 	}
 }
