@@ -14,97 +14,105 @@ import (
 
 // The five tables of the daemon's writes of legion-verdict (migration 20261120185521_verdicts) keep
 // what the store writes in them. Each row written through the store's write reads back through
-// its read with every field as it was written, the id the write answered included. A read keyed on
-// a pull request, a pull request's head or a repository's head answers that key's rows and no
-// other's, whatever case the repository is spelled in, since GitHub spells a repository as its
-// owner does. The reads of the newest row answer the later of two rows of their key, and every
-// other read answers each row of its key, oldest first.
+// its read with every field as it was written, the id the write answered and the repository's own
+// spelling included. A read keyed on a pull request, a pull request's head or a repository's head
+// answers that key's rows and no other's, whatever case the repository is spelled in, since GitHub
+// spells a repository as its owner does: the rows written last, and so the newest of all, each
+// differ from a key read below in one part of the key alone. The reads of the newest row answer
+// the later of two rows of their key, a refusal over an approval among them, and every other read
+// answers each row of its key in the order the rows were written: each later row of a key carries
+// an earlier time, so the order is the rows' ids and never their times. A key no row holds reads
+// as none. A review GitHub gave no submission time is stored with none, a null.
 func TestTheVerdictTablesRoundTrip(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
-	widgets := ghrepo.MustParse("acme/widgets")
+	widgets := ghrepo.MustParse("Acme/Widgets")
 	gadgets := ghrepo.MustParse("acme/gadgets")
-	spelledOtherwise := ghrepo.MustParse("ACME/Widgets")
+	spelledOtherwise := ghrepo.MustParse("acme/WIDGETS")
 	at := time.Date(2026, 11, 20, 18, 55, 21, 123456000, time.UTC)
 	minute := func(n int) time.Time { return at.Add(time.Duration(n) * time.Minute) }
 
-	firstHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h1", RecordedAt: minute(0)}
-	movedHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h2", RecordedAt: minute(1)}
+	firstHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h1", RecordedAt: minute(1)}
+	movedHead := OutsidePullRequest{Repository: widgets, Number: 42, Head: "h2", RecordedAt: minute(0)}
 	approval := OutsideReview{Repository: widgets, Number: 42, GitHubID: 5001, Head: "h2", Author: "a-writer",
-		AuthorCanWrite: true, State: "approved", SubmittedAt: minute(2), RecordedAt: minute(3)}
+		AuthorCanWrite: true, State: "approved", SubmittedAt: minute(3), RecordedAt: minute(4)}
 	ciRefusal := OutsideReview{Repository: widgets, Number: 42, GitHubID: 5002, Head: "h2", Author: "example-ci-review[bot]",
-		State: "changes_requested", RecordedAt: minute(4)}
-	firstNamed := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-first", RecordedAt: minute(5)}
-	namedAgain := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-second", RecordedAt: minute(6)}
+		State: "changes_requested", RecordedAt: minute(2)}
+	firstNamed := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-first", RecordedAt: minute(6)}
+	namedAgain := SideReviewer{Repository: widgets, Number: 42, Head: "h2", Session: "ses-second", RecordedAt: minute(5)}
 	legionVerdict := Verdict{Repository: widgets, Number: 7, Head: "h5", Issue: "LEGION-7", Verdict: VerdictApprove,
 		TestedCommit: "h4", Session: "ses-reviewer", RecordedAt: minute(7)}
-	sideRefusal := Verdict{Repository: widgets, Number: 42, Head: "h2", Verdict: VerdictChanges, Session: "ses-second",
-		RecordedAt: minute(8)}
 	sideApproval := Verdict{Repository: widgets, Number: 42, Head: "h2", Verdict: VerdictApprove, Session: "ses-second",
 		RecordedAt: minute(9)}
-	ownRun := VerdictWrite{Repository: widgets, Head: "h2", Kind: VerdictCheckRun, GitHubID: 900001,
-		Conclusion: VerdictSuccess, WrittenAt: minute(10)}
-	overForeignStatus := VerdictWrite{Repository: widgets, Head: "h2", Kind: VerdictStatus, GitHubID: 900002,
-		Conclusion: VerdictFailure, ForeignID: 700001, WrittenAt: minute(11)}
+	sideRefusal := Verdict{Repository: widgets, Number: 42, Head: "h2", Verdict: VerdictChanges, Session: "ses-second",
+		RecordedAt: minute(8)}
+	ownRun := VerdictWrite{Repository: widgets, Head: "h2", Kind: VerdictWriteCheckRun, GitHubID: 900001,
+		Conclusion: VerdictConclusionSuccess, WrittenAt: minute(11)}
+	overForeignStatus := VerdictWrite{Repository: widgets, Head: "h2", Kind: VerdictWriteStatus, GitHubID: 900002,
+		Conclusion: VerdictConclusionFailure, ForeignID: 700001, WrittenAt: minute(10)}
 
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
-		for _, step := range []struct {
-			record func() (int64, error)
-			id     *int64
-		}{
-			{func() (int64, error) { return RecordOutsidePullRequestTx(ctx, tx, firstHead) }, &firstHead.ID},
-			{func() (int64, error) { return RecordOutsidePullRequestTx(ctx, tx, movedHead) }, &movedHead.ID},
-			{func() (int64, error) { return RecordOutsideReviewTx(ctx, tx, approval) }, &approval.ID},
-			{func() (int64, error) { return RecordOutsideReviewTx(ctx, tx, ciRefusal) }, &ciRefusal.ID},
-			{func() (int64, error) { return RecordSideReviewerTx(ctx, tx, firstNamed) }, &firstNamed.ID},
-			{func() (int64, error) { return RecordSideReviewerTx(ctx, tx, namedAgain) }, &namedAgain.ID},
-			{func() (int64, error) { return RecordVerdictTx(ctx, tx, legionVerdict) }, &legionVerdict.ID},
-			{func() (int64, error) { return RecordVerdictTx(ctx, tx, sideRefusal) }, &sideRefusal.ID},
-			{func() (int64, error) { return RecordVerdictTx(ctx, tx, sideApproval) }, &sideApproval.ID},
-			{func() (int64, error) { return RecordVerdictWriteTx(ctx, tx, ownRun) }, &ownRun.ID},
-			{func() (int64, error) { return RecordVerdictWriteTx(ctx, tx, overForeignStatus) }, &overForeignStatus.ID},
-		} {
-			id, err := step.record()
-			if err != nil {
-				return err
-			}
-			*step.id = id
+	written := func(id int64, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("write a row of the verdict tables: %v", err)
 		}
-		// Rows of another key, which no read below may answer.
-		for _, record := range []func() (int64, error){
-			func() (int64, error) {
-				return RecordOutsidePullRequestTx(ctx, tx, OutsidePullRequest{Repository: gadgets, Number: 42, Head: "g1", RecordedAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordOutsidePullRequestTx(ctx, tx, OutsidePullRequest{Repository: widgets, Number: 43, Head: "w1", RecordedAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordOutsideReviewTx(ctx, tx, OutsideReview{Repository: widgets, Number: 43, GitHubID: 5003, Head: "w1",
-					Author: "a-writer", State: "approved", RecordedAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordSideReviewerTx(ctx, tx, SideReviewer{Repository: widgets, Number: 42, Head: "h1", Session: "ses-old", RecordedAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordVerdictTx(ctx, tx, Verdict{Repository: widgets, Number: 42, Head: "h1", Verdict: VerdictChanges,
-					Session: "ses-old", RecordedAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordVerdictWriteTx(ctx, tx, VerdictWrite{Repository: widgets, Head: "h1", Kind: VerdictCheckRun, GitHubID: 900003,
-					Conclusion: VerdictFailure, WrittenAt: minute(12)})
-			},
-			func() (int64, error) {
-				return RecordVerdictWriteTx(ctx, tx, VerdictWrite{Repository: gadgets, Head: "h2", Kind: VerdictCheckRun, GitHubID: 900004,
-					Conclusion: VerdictSuccess, WrittenAt: minute(12)})
-			},
+		return id
+	}
+	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+		firstHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, firstHead))
+		movedHead.ID = written(RecordOutsidePullRequestTx(ctx, tx, movedHead))
+		approval.ID = written(RecordOutsideReviewTx(ctx, tx, approval))
+		ciRefusal.ID = written(RecordOutsideReviewTx(ctx, tx, ciRefusal))
+		firstNamed.ID = written(RecordSideReviewerTx(ctx, tx, firstNamed))
+		namedAgain.ID = written(RecordSideReviewerTx(ctx, tx, namedAgain))
+		legionVerdict.ID = written(RecordVerdictTx(ctx, tx, legionVerdict))
+		sideApproval.ID = written(RecordVerdictTx(ctx, tx, sideApproval))
+		sideRefusal.ID = written(RecordVerdictTx(ctx, tx, sideRefusal))
+		ownRun.ID = written(RecordVerdictWriteTx(ctx, tx, ownRun))
+		overForeignStatus.ID = written(RecordVerdictWriteTx(ctx, tx, overForeignStatus))
+
+		// Each differs from a key read below in its repository, its number or its head alone.
+		for _, pr := range []OutsidePullRequest{
+			{Repository: gadgets, Number: 42, Head: "h2", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 43, Head: "h2", RecordedAt: minute(-1)},
 		} {
-			if _, err := record(); err != nil {
-				return err
-			}
+			written(RecordOutsidePullRequestTx(ctx, tx, pr))
+		}
+		for _, r := range []OutsideReview{
+			{Repository: gadgets, Number: 42, GitHubID: 5003, Head: "h2", State: "approved", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 43, GitHubID: 5004, Head: "h2", State: "approved", RecordedAt: minute(-1)},
+		} {
+			written(RecordOutsideReviewTx(ctx, tx, r))
+		}
+		for _, n := range []SideReviewer{
+			{Repository: gadgets, Number: 42, Head: "h2", Session: "ses-gadgets", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 43, Head: "h2", Session: "ses-43", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 42, Head: "h1", Session: "ses-h1", RecordedAt: minute(-1)},
+		} {
+			written(RecordSideReviewerTx(ctx, tx, n))
+		}
+		for _, v := range []Verdict{
+			{Repository: gadgets, Number: 42, Head: "h2", Verdict: VerdictChanges, Session: "ses-gadgets", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 43, Head: "h2", Verdict: VerdictChanges, Session: "ses-43", RecordedAt: minute(-1)},
+			{Repository: widgets, Number: 42, Head: "h1", Verdict: VerdictChanges, Session: "ses-h1", RecordedAt: minute(-1)},
+		} {
+			written(RecordVerdictTx(ctx, tx, v))
+		}
+		for _, w := range []VerdictWrite{
+			{Repository: gadgets, Head: "h2", Kind: VerdictWriteCheckRun, GitHubID: 900003, Conclusion: VerdictConclusionSuccess, WrittenAt: minute(-1)},
+			{Repository: widgets, Head: "h1", Kind: VerdictWriteCheckRun, GitHubID: 900004, Conclusion: VerdictConclusionFailure, WrittenAt: minute(-1)},
+		} {
+			written(RecordVerdictWriteTx(ctx, tx, w))
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("write the rows of the verdict tables: %v", err)
+	}
+	// A later write of a key appends a row of its own: it never takes the earlier row's place.
+	for _, ids := range [][2]int64{{firstHead.ID, movedHead.ID}, {firstNamed.ID, namedAgain.ID}, {sideApproval.ID, sideRefusal.ID}} {
+		if ids[0] >= ids[1] {
+			t.Fatalf("a later row of one key was written as row %d after row %d, want a row of its own with a higher id", ids[1], ids[0])
+		}
 	}
 
 	// pgx reads a timestamptz back in the local zone, and one moment in two zones is two values to
@@ -134,6 +142,15 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		if want := []OutsideReview{approval, ciRefusal}; !reflect.DeepEqual(reviews, want) {
 			t.Errorf("the outside reviews of %s#42 read %+v, want its two rows, oldest first: %+v", spelledOtherwise, reviews, want)
 		}
+		for review, wantNull := range map[int64]bool{approval.ID: false, ciRefusal.ID: true} {
+			var null bool
+			if err := tx.QueryRow(ctx, `select submitted_at is null from outside_reviews where id = $1`, review).Scan(&null); err != nil {
+				return err
+			}
+			if null != wantNull {
+				t.Errorf("the outside review row %d holds a null submission time: %v, want %v", review, null, wantNull)
+			}
+		}
 
 		named, ok, err := SideReviewerTx(ctx, tx, spelledOtherwise, 42, "h2")
 		if err != nil {
@@ -144,7 +161,7 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 			t.Errorf("the side reviewer of %s#42 at h2 reads %+v (found %v), want the later of its two namings, %+v", spelledOtherwise, named, ok, namedAgain)
 		}
 
-		for _, want := range []Verdict{legionVerdict, sideApproval} {
+		for _, want := range []Verdict{legionVerdict, sideRefusal} {
 			got, ok, err := VerdictTx(ctx, tx, spelledOtherwise, want.Number, want.Head)
 			if err != nil {
 				return err
@@ -166,9 +183,64 @@ func TestTheVerdictTablesRoundTrip(t *testing.T) {
 		if want := []VerdictWrite{ownRun, overForeignStatus}; !reflect.DeepEqual(writes, want) {
 			t.Errorf("the writes of legion-verdict on %s at h2 read %+v, want its two rows, oldest first: %+v", spelledOtherwise, writes, want)
 		}
+
+		if named, ok, err := SideReviewerTx(ctx, tx, widgets, 42, "h9"); err != nil || ok {
+			t.Errorf("the side reviewer of %s#42 at h9, which no row names, reads %+v (found %v, %v), want none", widgets, named, ok, err)
+		}
+		if v, ok, err := VerdictTx(ctx, tx, widgets, 42, "h9"); err != nil || ok {
+			t.Errorf("the verdict on %s#42 at h9, which no row records, reads %+v (found %v, %v), want none", widgets, v, ok, err)
+		}
+		if reviews, err := OutsideReviewsTx(ctx, tx, widgets, 44); err != nil || len(reviews) != 0 {
+			t.Errorf("the outside reviews of %s#44, which no row records, read %+v (%v), want none", widgets, reviews, err)
+		}
+		if writes, err := VerdictWritesTx(ctx, tx, widgets, "h9"); err != nil || len(writes) != 0 {
+			t.Errorf("the writes of legion-verdict on %s at h9, which no row records, read %+v (%v), want none", widgets, writes, err)
+		}
 		return nil
 	}); err != nil {
 		t.Fatalf("read the rows of the verdict tables: %v", err)
+	}
+}
+
+// The verdict tables keep the shape their migration gives them (20261120185521_verdicts): no table
+// holds a key, a check or another constraint, none has a unique index, and every column a row must
+// fill has a default. A daemon build from before them then runs on them however it inserts. The
+// five tables and their columns are counted first, so a catalog read that finds none of them fails
+// rather than reading as a pass.
+func TestTheVerdictTablesHoldNoConstraintAndNoUniqueIndex(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	tables := []string{"outside_pull_requests", "outside_reviews", "side_reviewers", "verdicts", "verdict_writes"}
+	const relations = `select c.oid from pg_class c where c.relname = any($1) and c.relnamespace = current_schema()::regnamespace`
+	var found, columns int
+	if err := st.Pool().QueryRow(ctx, `select count(*), (select count(*) from pg_attribute
+		where attrelid in (`+relations+`) and attnum > 0 and not attisdropped)
+		from (`+relations+`) r`, tables).Scan(&found, &columns); err != nil {
+		t.Fatalf("count the verdict tables: %v", err)
+	}
+	if found != len(tables) || columns == 0 {
+		t.Fatalf("the catalog holds %d of the %d verdict tables, with %d columns: the reads below would see nothing", found, len(tables), columns)
+	}
+	for _, check := range []struct{ what, sql string }{
+		// Postgres 18 records each column's not null as a constraint of kind n; a default fills it.
+		{"constraint", `select conrelid::regclass || ' ' || conname from pg_constraint
+			where conrelid in (` + relations + `) and contype <> 'n' order by 1`},
+		{"unique index", `select indexrelid::regclass::text from pg_index
+			where indrelid in (` + relations + `) and indisunique order by 1`},
+		{"column a row must fill with no default", `select attrelid::regclass || '.' || attname from pg_attribute
+			where attrelid in (` + relations + `) and attnum > 0 and not attisdropped and attnotnull and not atthasdef order by 1`},
+	} {
+		rows, err := st.Pool().Query(ctx, check.sql, tables)
+		if err != nil {
+			t.Fatalf("read each %s of the verdict tables: %v", check.what, err)
+		}
+		names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read each %s of the verdict tables: %v", check.what, err)
+		}
+		if len(names) > 0 {
+			t.Errorf("the verdict tables hold a %s: %v, want none", check.what, names)
+		}
 	}
 }
 
@@ -185,7 +257,7 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 	review := OutsideReview{Repository: widgets, Number: 42, Head: "h1", State: "approved", RecordedAt: at}
 	named := SideReviewer{Repository: widgets, Number: 42, Head: "h1", Session: "ses-side", RecordedAt: at}
 	verdict := Verdict{Repository: widgets, Number: 42, Head: "h1", Verdict: VerdictApprove, Session: "ses-side", RecordedAt: at}
-	written := VerdictWrite{Repository: widgets, Head: "h1", Kind: VerdictCheckRun, GitHubID: 1, Conclusion: VerdictSuccess, WrittenAt: at}
+	written := VerdictWrite{Repository: widgets, Head: "h1", Kind: VerdictWriteCheckRun, GitHubID: 1, Conclusion: VerdictConclusionSuccess, WrittenAt: at}
 	for _, tc := range []struct {
 		row   string
 		write func(tx pgx.Tx) (int64, error)
@@ -241,6 +313,21 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 			v.Session = ""
 			return RecordVerdictTx(ctx, tx, v)
 		}, "session"},
+		{"a verdict of no head", func(tx pgx.Tx) (int64, error) {
+			v := verdict
+			v.Head = ""
+			return RecordVerdictTx(ctx, tx, v)
+		}, "head"},
+		{"a write of no repository", func(tx pgx.Tx) (int64, error) {
+			w := written
+			w.Repository = ghrepo.Repository{}
+			return RecordVerdictWriteTx(ctx, tx, w)
+		}, "repository"},
+		{"a write of no head", func(tx pgx.Tx) (int64, error) {
+			w := written
+			w.Head = ""
+			return RecordVerdictWriteTx(ctx, tx, w)
+		}, "head"},
 		{"a write of a kind no reader knows", func(tx pgx.Tx) (int64, error) {
 			w := written
 			w.Kind = "comment"
@@ -255,7 +342,7 @@ func TestTheVerdictTableWritesRefuseAnIncompleteRow(t *testing.T) {
 			w := written
 			w.GitHubID = 0
 			return RecordVerdictWriteTx(ctx, tx, w)
-		}, "id"},
+		}, "GitHub's id"},
 		{"a write over a foreign id below zero", func(tx pgx.Tx) (int64, error) {
 			w := written
 			w.ForeignID = -1

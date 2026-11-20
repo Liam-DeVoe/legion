@@ -17,15 +17,15 @@ import (
 // request and head; the verdicts given on a head; and each check run and commit status the writer
 // wrote. Each table is a record of what was seen or done, one row each time: a row is never
 // changed, so the tables need no unique key, and a read of the newest row takes the one with the
-// highest id. The tables hold no constraint (the migration says why), so each write refuses a row
-// that leaves out what it is about, or carries a word no reader knows, before it reaches the
-// database. Each read keys on the repository without case, as GitHub compares a repository's
-// names, and parses it back with ghrepo.Parse, so a row reads back as the Repository it was
-// written with.
+// highest id. The tables hold no constraint (the migration says why), so each write refuses, before
+// it reaches the database, a row that leaves out its repository, its head, its pull request's
+// number where the table has one, or its time, and a verdict, a write's kind or a conclusion its
+// reader does not know. Each read keys on the repository without case, as GitHub compares a
+// repository's names, and parses it back with ghrepo.Parse, so a row reads back as the Repository
+// it was written with.
 //
-// Every read and write runs in the caller's transaction: intake records an outside pull request or
-// review in the transaction that applies its fact, and the API records a side reviewer and a
-// verdict in its own. A caller with no transaction opens one with Store.Tx.
+// Every read and write runs in the caller's transaction, so a record commits with the decision
+// the caller makes on it, or not at all. A caller with no transaction opens one with Store.Tx.
 
 // OutsidePullRequest is one sighting of a pull request of a verdict repository that no Legion issue
 // owns, as a webhook event showed it: the head it stood at. The newest row of a pull request is its
@@ -110,8 +110,8 @@ type Verdict struct {
 type VerdictWriteKind string
 
 const (
-	VerdictCheckRun VerdictWriteKind = "check_run"
-	VerdictStatus   VerdictWriteKind = "status"
+	VerdictWriteCheckRun VerdictWriteKind = "check_run"
+	VerdictWriteStatus   VerdictWriteKind = "status"
 )
 
 // VerdictConclusion is the conclusion a write gave legion-verdict: a check run's conclusion, or a
@@ -119,8 +119,8 @@ const (
 type VerdictConclusion string
 
 const (
-	VerdictSuccess VerdictConclusion = "success"
-	VerdictFailure VerdictConclusion = "failure"
+	VerdictConclusionSuccess VerdictConclusion = "success"
+	VerdictConclusionFailure VerdictConclusion = "failure"
 )
 
 // VerdictWrite is one check run or commit status named legion-verdict that the daemon wrote on a
@@ -142,9 +142,9 @@ type VerdictWrite struct {
 	WrittenAt time.Time
 }
 
-// pullRequestRow refuses a row whose pull request is not named whole, or that carries no time:
-// what every table but verdict_writes keys on. what names the row in the refusal.
-func pullRequestRow(what string, repository ghrepo.Repository, number int, head string, at time.Time) error {
+// validPullRequestRow refuses a row whose pull request is not named whole, or that carries no
+// time: what every table but verdict_writes keys on. what names the row in the refusal.
+func validPullRequestRow(what string, repository ghrepo.Repository, number int, head string, at time.Time) error {
 	switch {
 	case repository.IsZero():
 		return fmt.Errorf("%s needs its repository", what)
@@ -176,7 +176,7 @@ func parseRepository(table string, id int64, stored string) (ghrepo.Repository, 
 // answers the row's id.
 func RecordOutsidePullRequestTx(ctx context.Context, tx pgx.Tx, pr OutsidePullRequest) (int64, error) {
 	what := fmt.Sprintf("the outside pull request %s#%d", pr.Repository, pr.Number)
-	if err := pullRequestRow(what, pr.Repository, pr.Number, pr.Head, pr.RecordedAt); err != nil {
+	if err := validPullRequestRow(what, pr.Repository, pr.Number, pr.Head, pr.RecordedAt); err != nil {
 		return 0, err
 	}
 	return insertID(ctx, tx, what, `insert into outside_pull_requests (repository, number, head, recorded_at)
@@ -207,20 +207,16 @@ func OutsidePullRequestTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repo
 // A review GitHub gave no submission time is stored with none (null).
 func RecordOutsideReviewTx(ctx context.Context, tx pgx.Tx, r OutsideReview) (int64, error) {
 	what := fmt.Sprintf("the review %d of the outside pull request %s#%d", r.GitHubID, r.Repository, r.Number)
-	if err := pullRequestRow(what, r.Repository, r.Number, r.Head, r.RecordedAt); err != nil {
+	if err := validPullRequestRow(what, r.Repository, r.Number, r.Head, r.RecordedAt); err != nil {
 		return 0, err
 	}
 	if r.State == "" {
 		return 0, fmt.Errorf("%s needs its state", what)
 	}
-	var submitted *time.Time
-	if !r.SubmittedAt.IsZero() {
-		submitted = &r.SubmittedAt
-	}
 	return insertID(ctx, tx, what, `insert into outside_reviews
 		(repository, number, github_id, head, author, author_can_write, state, submitted_at, recorded_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
-		r.Repository.String(), r.Number, r.GitHubID, r.Head, r.Author, r.AuthorCanWrite, r.State, submitted, r.RecordedAt)
+		r.Repository.String(), r.Number, r.GitHubID, r.Head, r.Author, r.AuthorCanWrite, r.State, instant(r.SubmittedAt), r.RecordedAt)
 }
 
 // OutsideReviewsTx is every review recorded of an outside pull request, oldest record first.
@@ -239,9 +235,7 @@ func OutsideReviewsTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Reposito
 			&submitted, &r.RecordedAt); err != nil {
 			return OutsideReview{}, err
 		}
-		if submitted != nil {
-			r.SubmittedAt = *submitted
-		}
+		r.SubmittedAt = orZero(submitted)
 		r.Repository, err = parseRepository("outside_reviews", r.ID, stored)
 		return r, err
 	})
@@ -255,7 +249,7 @@ func OutsideReviewsTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Reposito
 // a head and answers the row's id.
 func RecordSideReviewerTx(ctx context.Context, tx pgx.Tx, r SideReviewer) (int64, error) {
 	what := fmt.Sprintf("the side reviewer of %s#%d at %s", r.Repository, r.Number, r.Head)
-	if err := pullRequestRow(what, r.Repository, r.Number, r.Head, r.RecordedAt); err != nil {
+	if err := validPullRequestRow(what, r.Repository, r.Number, r.Head, r.RecordedAt); err != nil {
 		return 0, err
 	}
 	if r.Session == "" {
@@ -289,7 +283,7 @@ func SideReviewerTx(ctx context.Context, tx pgx.Tx, repository ghrepo.Repository
 // row's id.
 func RecordVerdictTx(ctx context.Context, tx pgx.Tx, v Verdict) (int64, error) {
 	what := fmt.Sprintf("the verdict on %s#%d at %s", v.Repository, v.Number, v.Head)
-	if err := pullRequestRow(what, v.Repository, v.Number, v.Head, v.RecordedAt); err != nil {
+	if err := validPullRequestRow(what, v.Repository, v.Number, v.Head, v.RecordedAt); err != nil {
 		return 0, err
 	}
 	if v.Verdict != VerdictApprove && v.Verdict != VerdictChanges {
@@ -334,12 +328,12 @@ func RecordVerdictWriteTx(ctx context.Context, tx pgx.Tx, w VerdictWrite) (int64
 		return 0, fmt.Errorf("%s needs its repository", what)
 	case w.Head == "":
 		return 0, fmt.Errorf("%s needs its head", what)
-	case w.Kind != VerdictCheckRun && w.Kind != VerdictStatus:
-		return 0, fmt.Errorf("%s is of kind %q, not %s or %s", what, w.Kind, VerdictCheckRun, VerdictStatus)
+	case w.Kind != VerdictWriteCheckRun && w.Kind != VerdictWriteStatus:
+		return 0, fmt.Errorf("%s is of kind %q, not %s or %s", what, w.Kind, VerdictWriteCheckRun, VerdictWriteStatus)
 	case w.GitHubID <= 0:
 		return 0, fmt.Errorf("%s needs GitHub's id of its %s, not %d", what, w.Kind, w.GitHubID)
-	case w.Conclusion != VerdictSuccess && w.Conclusion != VerdictFailure:
-		return 0, fmt.Errorf("%s concludes %q, not %s or %s", what, w.Conclusion, VerdictSuccess, VerdictFailure)
+	case w.Conclusion != VerdictConclusionSuccess && w.Conclusion != VerdictConclusionFailure:
+		return 0, fmt.Errorf("%s concludes %q, not %s or %s", what, w.Conclusion, VerdictConclusionSuccess, VerdictConclusionFailure)
 	case w.ForeignID < 0:
 		return 0, fmt.Errorf("%s names the foreign id %d, which no run or status has", what, w.ForeignID)
 	case w.WrittenAt.IsZero():

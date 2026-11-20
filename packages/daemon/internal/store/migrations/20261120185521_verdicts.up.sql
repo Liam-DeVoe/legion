@@ -19,9 +19,10 @@
 --
 -- A row is a record that nothing changes after its insert, and a read of the newest row of a key
 -- takes the highest id. So no table has a primary key or a unique index, and none has a check:
--- the store's writes refuse a row that names no repository, number or head, or a word its reader
--- does not know. Every column has a default but submitted_at, which is nullable, and each index
--- keys on lower(repository), as the store's reads compare a repository's names without case.
+-- the store's writes refuse a row that leaves out its repository, its head, its pull request's
+-- number where the table has one, or its time, and a verdict, a write's kind or a conclusion its
+-- reader does not know. Every column has a default but submitted_at, which is nullable, and each
+-- index keys on lower(repository), as the store's reads compare a repository's names without case.
 --
 -- This migration only adds tables and indexes that are not unique, and it adds no outbox kind, so
 -- a release before this one runs on the schema it leaves: that release names none of these tables
