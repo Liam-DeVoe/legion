@@ -64,7 +64,7 @@ func goesOnAfterAnUnreadableConfirm(t *testing.T, role string, handOver func(ctx
 	first := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
 	second := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-2")
 	for _, item := range []contracts.Envelope{first, second} {
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep %s; the listener log says why:\n%s", item.DedupeKey, harness.logs.String())
 		}
 	}
@@ -171,8 +171,8 @@ func TestAnUnknownConfirmIsSettledThenTakenOverAndCountedOnce(t *testing.T) {
 		holder = "ses_kept_settle_takeover"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
-	kept, ok := keepRoleMessage(cfg, role, item)
-	if !ok {
+	kept, err := keepRoleMessage(cfg, role, item)
+	if err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})

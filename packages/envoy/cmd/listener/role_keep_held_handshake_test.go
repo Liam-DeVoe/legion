@@ -41,7 +41,7 @@ func TestAHandoverDuringAHeldMainClientHandshakeGivesTheRolesGuardUp(t *testing.
 			return drainKeptRole(ctx, cfg, role, time.Now)
 		}},
 		{"sweptLaneHead", func(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) error {
-			if release, _, ok := sweptLaneHead(ctx, cfg, role); ok {
+			if release, ok := sweptLaneHead(ctx, cfg, role, false); ok {
 				release()
 			}
 			return nil

@@ -96,6 +96,12 @@ var heldFreshContexts = map[string]heldFresh{
 		"the forward's own context, which StartRequestStoredTo builds from its caller's (context.WithoutCancel, which keeps the caller's mark) and its own timeout; the forward row reads that at run time"},
 	"(*github.com/sjawhar/envoy/cmd/listener.keptRoleOwed).settle -> the field github.com/sjawhar/envoy/cmd/listener.keptRoleOwed.ctx": {1,
 		"the handover caller's own context with its cancellation taken off (newKeptRoleOwed), which no guard marks: settle reads its writes back with the guard given back (drainKeptRole, handOverSweptLane), and the settled-confirm row reads that at run time"},
+	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> context.Background": {1,
+		"the wrapper's fallback for a JetStream call whose options carry no context; the takeover records' read under the guard passes nats.Context(ctx) (bus.Client.TakeoverRecords), which callContext returns"},
+	"github.com/sjawhar/envoy/internal/bus.callContext[github.com/nats-io/nats.go.JSOpt] -> the field github.com/nats-io/nats.go.ContextOpt.Context": {2,
+		"the caller's own context, which its options carry (nats.Context(ctx)) and callContext returns: made by the caller, not here"},
+	"(github.com/sjawhar/envoy/internal/bus.contextRequests).with -> the field github.com/sjawhar/envoy/internal/bus.contextRequests.ctx": {1,
+		"the start's own context (requestsUnder, ensureStreamReported), reached here only through the call graph's join of the JetStream interface: the takeover records' read uses the client's bound wrapper"},
 }
 
 // A context a function makes from context.Background() or context.TODO() while its caller holds a

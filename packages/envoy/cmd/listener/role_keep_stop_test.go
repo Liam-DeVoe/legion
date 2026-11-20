@@ -40,7 +40,7 @@ func TestTheListenersStopEndsTheRoleHandoversAndWaitsForThem(t *testing.T) {
 		holder = "ses_kept_stop_wiring"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
-	if _, kept := keepRoleMessage(cfg, role, item); !kept {
+	if _, err := keepRoleMessage(cfg, role, item); err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})

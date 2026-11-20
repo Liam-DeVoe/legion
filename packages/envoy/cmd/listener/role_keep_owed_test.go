@@ -43,7 +43,7 @@ func TestAKeptCopysRefusalExceptionGoesOutThoughTheProbeReadsAFalseDown(t *testi
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
 	item.Payload = `{"delivery":{"mode":"steer"}}`
-	if _, kept := keepRoleMessage(cfg, role, item); !kept {
+	if _, err := keepRoleMessage(cfg, role, item); err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Capabilities: []string{"btw"}})
@@ -120,7 +120,7 @@ func TestAKeptForwardsConfirmWhoseReadBackTheLossCutIsSettledAndReportedOnce(t *
 		holder = "ses_kept_unsettled_confirm"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")
-	if _, kept := keepRoleMessage(cfg, role, item); !kept {
+	if _, err := keepRoleMessage(cfg, role, item); err != nil {
 		t.Fatalf("keep the role message; the listener log says why:\n%s", harness.logs.String())
 	}
 	claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})

@@ -47,7 +47,7 @@ func TestAHandoverWhoseProbeReadsAFalseDownHandsTheLaneOver(t *testing.T) {
 				return nil
 			})
 			item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-false-down-00")
-			if _, kept := keepRoleMessage(cfg, role, item); !kept {
+			if _, err := keepRoleMessage(cfg, role, item); err != nil {
 				t.Fatalf("keep the role's copy: %s", harness.logs.String())
 			}
 			claimRoleWith(t, harness, holder, role, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true})

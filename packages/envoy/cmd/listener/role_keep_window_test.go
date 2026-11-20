@@ -34,7 +34,7 @@ func TestAWalkWhoseWindowEndsInsideAConfirmGoesOnToTheRestOfTheLane(t *testing.T
 	var items []contracts.Envelope
 	for _, n := range []string{"-1", "-2", "-3"} {
 		item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+n)
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep %s; the listener log says why:\n%s", item.DedupeKey, harness.logs.String())
 		}
 		items = append(items, item)

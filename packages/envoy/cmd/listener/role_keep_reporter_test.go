@@ -39,7 +39,7 @@ func TestAKeptCopysRefusalIsReportedBeforeTheForwardsThatFollowIt(t *testing.T) 
 		listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-2"),
 		listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-3"),
 	} {
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep %s; the listener log says why:\n%s", item.DedupeKey, harness.logs.String())
 		}
 	}
@@ -109,7 +109,7 @@ func TestAShutdownMidHandoverEndsItAndKeepsItsReports(t *testing.T) {
 	refused := listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-refused")
 	refused.Payload = `{"delivery":{"mode":"steer"}}`
 	for _, item := range []contracts.Envelope{refused, listenerTestEnvelope(contracts.RoleTopicPrefix+role, role+"-1")} {
-		if _, kept := keepRoleMessage(cfg, role, item); !kept {
+		if _, err := keepRoleMessage(cfg, role, item); err != nil {
 			t.Fatalf("keep %s; the listener log says why:\n%s", item.DedupeKey, harness.logs.String())
 		}
 	}
