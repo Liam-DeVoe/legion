@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -567,7 +568,7 @@ func TestTwoEndsOfAStartedRunAtOneTimeKeepTheFirst(t *testing.T) {
 	if pid == 0 {
 		t.Fatalf("begin the second end: %v", <-answered)
 	}
-	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, 30*time.Second); early {
+	if err, early := storetest.WaitForQueuedBehind(t, first, pid, answered, testdeadline.StartupBound(t)); early {
 		t.Fatalf("the second end answered %v before it waited for the first", err)
 	}
 	if err := first.Commit(ctx); err != nil {
