@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 )
 
 // TestTheFillContinuesFromItsCursorAfterARestart writes 3,000 events of every kind a rule reads,
@@ -34,11 +34,11 @@ import (
 // rules version 1 wrote them.
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	database := storetest.Open(t)
-	seedFillProject(t, database)
+	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
-	var want []written
+	var want []textversionstest.Written
 	for n := 1; len(want) < 3000; n++ {
-		want = append(want, writeIssue(t, database, broker, n)...)
+		want = append(want, textversionstest.WriteIssue(t, database, broker, n)...)
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -62,7 +62,7 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 		t.Fatalf("the first fill logged batches %+v and left the cursor at %d; want two batches, the second ending at the cursor",
 			firstBatches, left.eventID)
 	}
-	if last := want[len(want)-1].id; left.eventID >= last {
+	if last := want[len(want)-1].ID; left.eventID >= last {
 		t.Fatalf("the first fill's cursor is %d, at or past the last event %d: it stopped with nothing left to write", left.eventID, last)
 	}
 
@@ -80,11 +80,11 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 		t.Fatalf("the second process's fill logged batches %+v; want its first to start at event %d, the one after the cursor %d",
 			secondBatches, next, left.eventID)
 	}
-	requireRowsOf(t, database, want)
+	textversionstest.RequireOnlyRowsOf(t, database, want)
 	end := readCursorRow(t, database)
-	if end.eventID != want[len(want)-1].id || end.rules != rulesVersion {
+	if end.eventID != want[len(want)-1].ID || end.rules != rulesVersion {
 		t.Fatalf("the cursor row ends at event %d with rules %d; want event %d and rules %d",
-			end.eventID, end.rules, want[len(want)-1].id, rulesVersion)
+			end.eventID, end.rules, want[len(want)-1].ID, rulesVersion)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			database := storetest.Open(t)
-			seedTheIssue(t, database)
+			textversionstest.SeedIssue(t, database)
 			broker := events.NewBroker()
 			horizon := events.NewHorizon(database.Pool)
 			fill := testFiller(database, horizon, io.Discard)
@@ -114,7 +114,7 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 				fill.holder = holder
 			}
 			ctx := t.Context()
-			commitComment(t, database, broker, theIssue)
+			commitComment(t, database, broker, textversionstest.Issue)
 			if err := fill.toHorizon(ctx); err != nil {
 				t.Fatalf("catch the fill up: %v", err)
 			}
@@ -129,14 +129,14 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 			}
 			var ids []int64
 			for range 3 {
-				ids = append(ids, commitComment(t, database, broker, theIssue).id)
+				ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 			}
 			done := make(chan error, 1)
 			go func() { done <- fill.toHorizon(ctx) }()
 			// The fill reads the horizon below the three events and reads it again, at 1 s and then
 			// 2 s, while the transaction holds it there.
 			time.Sleep(3 * time.Second)
-			if rows := rowsOfEvents(t, database, ids...); rows != 0 {
+			if rows := textversionstest.RowsOf(t, database, ids...); rows != 0 {
 				t.Fatalf("the fill wrote %d rows of events the horizon had not passed", rows)
 			}
 			if err := holding.Rollback(ctx); err != nil {
@@ -150,9 +150,9 @@ func TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon(t *testing.T) {
 				t.Fatalf("Await answered %d, below the third event %d", safe, ids[2])
 			}
 			passed := time.Now()
-			for rowsOfEvents(t, database, ids...) < len(ids) {
+			for textversionstest.RowsOf(t, database, ids...) < len(ids) {
 				if time.Since(passed) > time.Minute {
-					t.Fatalf("the three events had %d rows a minute after the horizon passed them", rowsOfEvents(t, database, ids...))
+					t.Fatalf("the three events had %d rows a minute after the horizon passed them", textversionstest.RowsOf(t, database, ids...))
 				}
 				time.Sleep(50 * time.Millisecond)
 			}
@@ -193,20 +193,20 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 	} {
 		t.Run(form.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			seedFillProject(t, database)
+			textversionstest.SeedProject(t, database)
 			broker := events.NewBroker()
 			var logs bytes.Buffer
 			fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
 			ctx := t.Context()
 			const oldIssues = 8
-			var before []written
+			var before []textversionstest.Written
 			for n := 1; n <= oldIssues; n++ {
-				before = append(before, writeIssue(t, database, broker, n)...)
+				before = append(before, textversionstest.WriteIssue(t, database, broker, n)...)
 			}
 			if err := fill.toHorizon(ctx); err != nil {
 				t.Fatalf("fill the old log: %v", err)
 			}
-			requireRowsOf(t, database, before)
+			textversionstest.RequireOnlyRowsOf(t, database, before)
 			left := readCursorRow(t, database)
 
 			for _, statement := range form.reset {
@@ -214,13 +214,13 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 					t.Fatalf("reset the event log (%s): %v", statement, err)
 				}
 			}
-			var after []written
+			var after []textversionstest.Written
 			for n := oldIssues + 1; n <= oldIssues+form.issues; n++ {
-				after = append(after, writeIssue(t, database, broker, n)...)
+				after = append(after, textversionstest.WriteIssue(t, database, broker, n)...)
 			}
-			if past := after[len(after)-1].id > left.eventID; past != form.pastCursor {
+			if past := after[len(after)-1].ID > left.eventID; past != form.pastCursor {
 				t.Fatalf("the new log ends at event %d against the old cursor %d; the test meant it past the cursor: %t",
-					after[len(after)-1].id, left.eventID, form.pastCursor)
+					after[len(after)-1].ID, left.eventID, form.pastCursor)
 			}
 			if err := fill.toHorizon(ctx); err != nil {
 				t.Fatalf("fill the new log: %v", err)
@@ -238,15 +238,15 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 			if oldRows != 0 {
 				t.Fatalf("%d rows of the old log's items are left", oldRows)
 			}
-			requireRowsOf(t, database, after)
+			textversionstest.RequireOnlyRowsOf(t, database, after)
 			end := readCursorRow(t, database)
 			var lastAt time.Time
-			if err := database.Pool.QueryRow(ctx, `select created_at from events where id = $1`, after[len(after)-1].id).Scan(&lastAt); err != nil {
+			if err := database.Pool.QueryRow(ctx, `select created_at from events where id = $1`, after[len(after)-1].ID).Scan(&lastAt); err != nil {
 				t.Fatalf("read the new log's last event: %v", err)
 			}
-			if end.eventID != after[len(after)-1].id || end.eventAt == nil || !end.eventAt.Equal(lastAt) || end.reach == nil {
+			if end.eventID != after[len(after)-1].ID || end.eventAt == nil || !end.eventAt.Equal(lastAt) || end.reach == nil {
 				t.Fatalf("the cursor row is at event %d of %v with reach %v; want event %d of %s and a reach",
-					end.eventID, end.eventAt, end.reach, after[len(after)-1].id, lastAt)
+					end.eventID, end.eventAt, end.reach, after[len(after)-1].ID, lastAt)
 			}
 			// The batch after the reset reads the new log from its first event.
 			var firstNew int64
@@ -272,11 +272,11 @@ func TestTheFillStartsAgainAfterTheEventLogIsReset(t *testing.T) {
 // which still names the first holder, and the fill answers duty.ErrHoldLost.
 func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 	database := storetest.Open(t)
-	seedFillProject(t, database)
+	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
-	var want []written
+	var want []textversionstest.Written
 	for n := 1; n <= 3; n++ {
-		want = append(want, writeIssue(t, database, broker, n)...)
+		want = append(want, textversionstest.WriteIssue(t, database, broker, n)...)
 	}
 	ctx := t.Context()
 	holder := uuid.New()
@@ -307,8 +307,8 @@ func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 	if err := fill.toHorizon(ctx); !errors.Is(err, duty.ErrHoldLost) {
 		t.Fatalf("the fill whose hold another holder took answered %v; want duty.ErrHoldLost", err)
 	}
-	if afterFirst.eventID == 0 || afterFirst.eventID >= want[len(want)-1].id {
-		t.Fatalf("the first batch left the cursor at %d; want a batch that leaves events before event %d", afterFirst.eventID, want[len(want)-1].id)
+	if afterFirst.eventID == 0 || afterFirst.eventID >= want[len(want)-1].ID {
+		t.Fatalf("the first batch left the cursor at %d; want a batch that leaves events before event %d", afterFirst.eventID, want[len(want)-1].ID)
 	}
 	if got := readCursorRow(t, database); !got.equal(afterFirst) {
 		t.Fatalf("after the hold was taken over the cursor row is %+v; want it as the first batch left it, %+v", got, afterFirst)
@@ -327,13 +327,13 @@ func TestAFillThatLostItsHoldWritesNothing(t *testing.T) {
 // and no event after it has a row, so none is passed by.
 func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	database := storetest.Open(t)
-	seedFillProject(t, database)
+	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
 	ctx := t.Context()
-	before := writeIssue(t, database, broker, 1)
+	before := textversionstest.WriteIssue(t, database, broker, 1)
 	tx, _ := beginTransaction(t, database)
 	defer tx.Rollback(context.Background())
-	key := fillProject + "-1"
+	key := textversionstest.Project + "-1"
 	unreadable, err := broker.Append(ctx, tx, model.Event{IssueKey: &key, Type: "comment.created",
 		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": uuid.NewString(), "issue_key": key}})
 	if err != nil {
@@ -342,17 +342,17 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the unreadable event: %v", err)
 	}
-	after := writeIssue(t, database, broker, 2)
+	after := textversionstest.WriteIssue(t, database, broker, 2)
 
 	err = FillToHorizon(ctx, database, events.NewHorizon(database.Pool))
 	if !errors.Is(err, errUnreadablePayload) || !strings.Contains(err.Error(), fmt.Sprintf("event %d", unreadable.ID)) {
 		t.Fatalf("the fill answered %v; want the rules' unreadable payload, naming event %d", err, unreadable.ID)
 	}
-	requireRowsOf(t, database, before)
-	if got := readCursorRow(t, database).eventID; got != before[len(before)-1].id {
-		t.Fatalf("the cursor is at event %d; want %d, the event before the unreadable one", got, before[len(before)-1].id)
+	textversionstest.RequireOnlyRowsOf(t, database, before)
+	if got := readCursorRow(t, database).eventID; got != before[len(before)-1].ID {
+		t.Fatalf("the cursor is at event %d; want %d, the event before the unreadable one", got, before[len(before)-1].ID)
 	}
-	if rows := rowsOfEvents(t, database, after[0].id); rows != 0 {
+	if rows := textversionstest.RowsOf(t, database, after[0].ID); rows != 0 {
 		t.Fatalf("an event after the unreadable one has %d rows", rows)
 	}
 }
@@ -381,10 +381,10 @@ func TestAFillStopsAtAnEventItsRulesCannotRead(t *testing.T) {
 func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 	t.Run("the markdown each issue row reads", func(t *testing.T) {
 		database := storetest.Open(t)
-		seedFillProject(t, database)
+		textversionstest.SeedProject(t, database)
 		broker := events.NewBroker()
 		const issueCount, newVersions = 24, 4
-		var want []written
+		var want []textversionstest.Written
 		issues := make([]specIssue, 0, issueCount)
 		for n := 1; n <= issueCount; n++ {
 			issue, created := writeSpecIssue(t, database, broker, n)
@@ -395,7 +395,7 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 			retitles = append(retitles, issue.event("issue.updated", issue.title+", then audit the verifiers"))
 		}
 		for _, id := range commitEvents(t, database, broker, retitles...) {
-			want = append(want, written{id: id, versions: 1})
+			want = append(want, textversionstest.Written{ID: id, Versions: 1})
 		}
 		for _, issue := range issues[:newVersions] {
 			want = append(want, writeSpecVersion(t, database, broker, issue, 2))
@@ -405,18 +405,18 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 
 	t.Run("the payload of an event that starts no row", func(t *testing.T) {
 		database := storetest.Open(t)
-		seedTheIssue(t, database)
+		textversionstest.SeedIssue(t, database)
 		broker := events.NewBroker()
 		body := rotationParagraphs(1, 10_000)
 		if _, truncated := model.EventBody(body); truncated {
 			t.Fatal("the comment's body is one an event cuts; the case needs one its events carry whole")
 		}
 		comment := writeComment(t, database, broker, body, true)
-		want := []written{{id: comment.event, versions: 1}}
+		want := []textversionstest.Written{{ID: comment.event, Versions: 1}}
 		tx, startedAt := beginTransaction(t, database)
 		defer tx.Rollback(context.Background())
 		for range 400 {
-			want = append(want, written{id: appendCommentEvent(t, tx, broker, "comment.edited", comment.id, body, startedAt)})
+			want = append(want, textversionstest.Written{ID: appendCommentEvent(t, tx, broker, "comment.edited", comment.id, body, startedAt)})
 		}
 		if err := tx.Commit(t.Context()); err != nil {
 			t.Fatalf("commit the edits: %v", err)
@@ -428,10 +428,10 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 
 	t.Run("the revision 1 a cut comment reads", func(t *testing.T) {
 		database := storetest.Open(t)
-		seedTheIssue(t, database)
+		textversionstest.SeedIssue(t, database)
 		broker := events.NewBroker()
 		const comments = 30
-		var want []written
+		var want []textversionstest.Written
 		for n := 1; n <= comments; n++ {
 			body := rotationParagraphs(n, 100_000)
 			if _, truncated := model.EventBody(body); !truncated {
@@ -439,7 +439,7 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 			}
 			comment := writeComment(t, database, broker, body, true)
 			edit := editComment(t, database, broker, comment.id, fmt.Sprintf("Rotated region %d; the plan is in the spec.", n))
-			want = append(want, written{id: comment.event, versions: 1}, written{id: edit, versions: 1})
+			want = append(want, textversionstest.Written{ID: comment.event, Versions: 1}, textversionstest.Written{ID: edit, Versions: 1})
 		}
 		batches := fillWithinTheBound(t, database, want)
 		var fromBlocks int
@@ -463,43 +463,43 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 // past them. After a reset of the event log the fill writes the cursor row again, with 1.
 func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 	database := storetest.Open(t)
-	seedFillProject(t, database)
+	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
 	ctx := t.Context()
 	fill := testFiller(database, events.NewHorizon(database.Pool), io.Discard)
-	first := writeIssue(t, database, broker, 1)
+	first := textversionstest.WriteIssue(t, database, broker, 1)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("fill the first events: %v", err)
 	}
-	if created := readCursorRow(t, database); created.eventID != first[len(first)-1].id || created.rules != rulesVersion {
+	if created := readCursorRow(t, database); created.eventID != first[len(first)-1].ID || created.rules != rulesVersion {
 		t.Fatalf("the cursor row the fill created is at event %d with rules %d; want event %d and rules %d",
-			created.eventID, created.rules, first[len(first)-1].id, rulesVersion)
+			created.eventID, created.rules, first[len(first)-1].ID, rulesVersion)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `update search_text_versions_fill set rules = 0`); err != nil {
 		t.Fatalf("set the cursor row's rules to an older build's: %v", err)
 	}
-	later := writeIssue(t, database, broker, 2)
+	later := textversionstest.WriteIssue(t, database, broker, 2)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("fill the later events: %v", err)
 	}
-	requireRowsOf(t, database, append(first, later...))
-	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].id || got.rules != 0 {
+	textversionstest.RequireOnlyRowsOf(t, database, append(first, later...))
+	if got := readCursorRow(t, database); got.eventID != later[len(later)-1].ID || got.rules != 0 {
 		t.Fatalf("after this build wrote past an older build's cursor the row is at event %d with rules %d; want event %d and rules 0, the older build's",
-			got.eventID, got.rules, later[len(later)-1].id)
+			got.eventID, got.rules, later[len(later)-1].ID)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `truncate events restart identity cascade`); err != nil {
 		t.Fatalf("reset the event log: %v", err)
 	}
-	after := writeIssue(t, database, broker, 3)
+	after := textversionstest.WriteIssue(t, database, broker, 3)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("fill the new log: %v", err)
 	}
-	requireRowsOf(t, database, after)
-	if got := readCursorRow(t, database); got.eventID != after[len(after)-1].id || got.rules != rulesVersion {
+	textversionstest.RequireOnlyRowsOf(t, database, after)
+	if got := readCursorRow(t, database); got.eventID != after[len(after)-1].ID || got.rules != rulesVersion {
 		t.Fatalf("after a reset the cursor row is at event %d with rules %d; want event %d and rules %d",
-			got.eventID, got.rules, after[len(after)-1].id, rulesVersion)
+			got.eventID, got.rules, after[len(after)-1].ID, rulesVersion)
 	}
 }
 
@@ -507,7 +507,7 @@ func TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt(t *testing.T) {
 // what it wrote: the fill returns no error, so every batch committed under its statement_timeout;
 // every event of want has its rows and no other event has one; and each batch of more than one
 // event reads at most batchBytes (batchText). It answers the batches' lines, in order.
-func fillWithinTheBound(t *testing.T, database *store.Store, want []written) []logLine {
+func fillWithinTheBound(t *testing.T, database *store.Store, want []textversionstest.Written) []logLine {
 	t.Helper()
 	var logs bytes.Buffer
 	fill := testFiller(database, events.NewHorizon(database.Pool), &logs)
@@ -517,7 +517,7 @@ func fillWithinTheBound(t *testing.T, database *store.Store, want []written) []l
 	}
 	batches := batchLines(t, &logs)
 	t.Logf("the fill wrote %d events in %d batches in %s", len(want), len(batches), time.Since(started).Round(time.Millisecond))
-	requireRowsOf(t, database, want)
+	textversionstest.RequireOnlyRowsOf(t, database, want)
 	for _, b := range batches {
 		if b.Events < 2 {
 			continue
@@ -604,10 +604,10 @@ func (issue specIssue) event(eventType, title string) model.Event {
 // writeSpecIssue writes issue ACME-n, its primary document with version 1 of specMarkdown, and
 // its issue.created event, in one transaction, as the create route writes them, and answers the
 // issue and its event, which starts one version.
-func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) (specIssue, written) {
+func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) (specIssue, textversionstest.Written) {
 	t.Helper()
 	ctx := t.Context()
-	issue := specIssue{n: n, key: fmt.Sprintf("%s-%d", fillProject, n), title: fmt.Sprintf("Rotate the signing keys of region %d", n)}
+	issue := specIssue{n: n, key: fmt.Sprintf("%s-%d", textversionstest.Project, n), title: fmt.Sprintf("Rotate the signing keys of region %d", n)}
 	spec := specMarkdown(n, 1)
 	if len(spec) >= pmdoc.MaxDocumentBytes {
 		t.Fatalf("the spec is %d bytes, at or over pmdoc.MaxDocumentBytes, %d", len(spec), pmdoc.MaxDocumentBytes)
@@ -620,14 +620,14 @@ func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, 
 	if _, err := tx.Exec(ctx, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ($1, $2, $3, $4, '{"kind":"user","id":"alice"}', 'A')
-	`, issue.key, fillProject, n, issue.title); err != nil {
+	`, issue.key, textversionstest.Project, n, issue.title); err != nil {
 		t.Fatalf("insert issue %s: %v", issue.key, err)
 	}
 	if err := tx.QueryRow(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
 		values ($1, $2, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
 		returning id::text
-	`, issue.key, fillProject).Scan(&issue.artifact); err != nil {
+	`, issue.key, textversionstest.Project).Scan(&issue.artifact); err != nil {
 		t.Fatalf("insert the primary document of %s: %v", issue.key, err)
 	}
 	if _, err := tx.Exec(ctx, `insert into artifact_versions (artifact_id, number, markdown, authors) values ($1::uuid, 1, $2, '[]')`,
@@ -641,12 +641,12 @@ func writeSpecIssue(t *testing.T, database *store.Store, broker *events.Broker, 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit issue %s: %v", issue.key, err)
 	}
-	return issue, written{id: created.ID, versions: 1}
+	return issue, textversionstest.Written{ID: created.ID, Versions: 1}
 }
 
 // writeSpecVersion writes version number of issue's primary document, of specMarkdown, and its
 // artifact.version event, in one transaction, and answers the event, which starts one version.
-func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue specIssue, number int) written {
+func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker, issue specIssue, number int) textversionstest.Written {
 	t.Helper()
 	ctx := t.Context()
 	spec := specMarkdown(issue.n, number)
@@ -668,7 +668,7 @@ func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.key, err)
 	}
-	return written{id: appended.ID, versions: 1}
+	return textversionstest.Written{ID: appended.ID, Versions: 1}
 }
 
 // commitEvents appends events through the broker in one transaction, in order, and answers their
@@ -728,120 +728,6 @@ func testFiller(database *store.Store, horizon *events.Horizon, logs io.Writer) 
 	return fill
 }
 
-// fillProject is the project the issues writeIssue writes are in.
-const fillProject = "ACME"
-
-// seedFillProject writes project ACME.
-func seedFillProject(t *testing.T, database *store.Store) {
-	t.Helper()
-	if _, err := database.Pool.Exec(t.Context(),
-		`insert into projects (key, name, default_assignee) values ($1, 'Acme', 'alice')`, fillProject); err != nil {
-		t.Fatalf("seed the project: %v", err)
-	}
-}
-
-// written is an event a test wrote and how many keyword versions it starts.
-type written struct {
-	id       int64
-	versions int
-}
-
-// writeIssue writes issue ACME-n with its primary document at versions 1 and 2, and fourteen
-// events of it in id order, in one transaction, the events appended through the broker as the
-// routes append them: one of every type a rule reads, each changing the text it reads, so each
-// starts one version, and two that start none, an issue.updated that keeps the title and an
-// issue.claimed, a type no rule reads. It answers each event with the versions it starts.
-func writeIssue(t *testing.T, database *store.Store, broker *events.Broker, n int) []written {
-	t.Helper()
-	ctx := t.Context()
-	key := fmt.Sprintf("%s-%d", fillProject, n)
-	title := fmt.Sprintf("Rotate the signing keys of region %d", n)
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin issue %s: %v", key, err)
-	}
-	defer tx.Rollback(ctx)
-	var artifact string
-	if _, err := tx.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ($1, $2, $3, $4, '{"kind":"user","id":"alice"}', 'A')
-	`, key, fillProject, n, title); err != nil {
-		t.Fatalf("insert issue %s: %v", key, err)
-	}
-	if err := tx.QueryRow(ctx, `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
-		returning id::text
-	`, key, fillProject).Scan(&artifact); err != nil {
-		t.Fatalf("insert the primary document of %s: %v", key, err)
-	}
-	second := fmt.Sprintf("# Rotation %d\n\nMove each signing key of region %d to its successor, then audit the verifiers.", n, n)
-	if _, err := tx.Exec(ctx, `
-		insert into artifact_versions (artifact_id, number, markdown, authors)
-		values ($1::uuid, 1, $2, '[]'), ($1::uuid, 2, $3, '[]')
-	`, artifact, fmt.Sprintf("# Rotation %d\n\nMove each signing key to its successor.", n), second); err != nil {
-		t.Fatalf("insert the versions of %s's primary document: %v", key, err)
-	}
-
-	actor := model.Actor{Kind: "user", ID: "alice"}
-	issueKey := key
-	comment, message, ask := uuid.NewString(), uuid.NewString(), uuid.NewString()
-	issueEvent := func(eventType, title string) model.Event {
-		return model.Event{IssueKey: &issueKey, Type: eventType, Actor: actor,
-			Payload: map[string]any{"key": key, "title": title, "primary_artifact_id": artifact}}
-	}
-	post := func(eventType, id, body string) model.Event {
-		return model.Event{IssueKey: &issueKey, Type: eventType, Actor: actor,
-			Payload: map[string]any{"id": id, "issue_key": key, "body": body}}
-	}
-	askEvent := func(eventType, question string, answer *model.AskAnswer) model.Event {
-		return model.Event{IssueKey: &issueKey, Type: eventType, Actor: actor, Payload: model.AskEventPayload{Ask: model.Ask{
-			ID: ask, IssueKey: &issueKey, Author: actor, Kind: "question", Question: question, State: "open",
-			Options: []model.AskOption{{Label: "Rotate now"}, {Label: "Wait a week"}}, Answer: answer,
-		}}}
-	}
-	note := "Rotate them before the audit."
-	steps := []struct {
-		event    model.Event
-		versions int
-	}{
-		{issueEvent("issue.created", title), 1},
-		{model.Event{IssueKey: &issueKey, Type: "artifact.version", Actor: actor,
-			Payload: map[string]any{"artifact_id": artifact, "version": map[string]any{"number": 2, "size": len(second)}}}, 1},
-		{issueEvent("issue.updated", title+", then audit"), 1},
-		{issueEvent("issue.updated", title+", then audit"), 0},
-		{model.Event{IssueKey: &issueKey, Type: "issue.claimed", Actor: actor, Payload: map[string]any{"key": key}}, 0},
-		{issueEvent("issue.closed", title+", audited"), 1},
-		{post("comment.created", comment, "The verifiers read the old key until Monday."), 1},
-		{post("comment.answered", uuid.NewString(), "Monday works; the audit starts Tuesday."), 1},
-		{post("comment.edited", comment, "The verifiers read the old key until Tuesday."), 1},
-		{post("message.created", message, "Can the rotation wait for the freeze to end?"), 1},
-		{post("message.answered", uuid.NewString(), "It can; the freeze ends Friday."), 1},
-		{askEvent("ask.opened", "Rotate the keys now?", nil), 1},
-		{askEvent("ask.edited", "Rotate the signing keys now?", nil), 1},
-		{askEvent("ask.answered", "Rotate the signing keys now?",
-			&model.AskAnswer{User: "alice", Selected: []string{"Rotate now"}, Text: &note, At: time.Now()}), 1},
-	}
-	var out []written
-	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
-		for _, step := range steps {
-			versions := step.versions
-			if err := broker.QueueAppend(batch, step.event, func(appended model.Event) {
-				out = append(out, written{id: appended.ID, versions: versions})
-			}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("append the events of %s: %v", key, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit issue %s: %v", key, err)
-	}
-	return out
-}
-
 // committedEvent is an event a test committed and the start of the transaction that wrote it,
 // which is its created_at.
 type committedEvent struct {
@@ -849,11 +735,11 @@ type committedEvent struct {
 	startedAt time.Time
 }
 
-// otherIssue is a second issue of theIssue's project (seedOtherIssue): an event of it takes no
-// lock an open transaction holds on theIssue's events.
+// otherIssue is a second issue of textversionstest.Issue's project (seedOtherIssue): an event of it
+// takes no lock an open transaction holds on textversionstest.Issue's events.
 const otherIssue = "ACME-2"
 
-// seedOtherIssue writes otherIssue, beside theIssue.
+// seedOtherIssue writes otherIssue, beside textversionstest.Issue.
 func seedOtherIssue(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(t.Context(), `
@@ -901,60 +787,6 @@ func beginTransaction(t *testing.T, database *store.Store) (pgx.Tx, time.Time) {
 		t.Fatalf("read the transaction's start: %v", err)
 	}
 	return tx, startedAt
-}
-
-// requireRowsOf holds the keyword table to exactly the rows of want: each event as many rows as
-// it starts, and no row of any other event.
-func requireRowsOf(t *testing.T, database *store.Store, want []written) {
-	t.Helper()
-	rows, err := database.Pool.Query(t.Context(), `select event_id, count(*) from search_text_versions group by event_id`)
-	if err != nil {
-		t.Fatalf("count the rows of each event: %v", err)
-	}
-	got := map[int64]int{}
-	for rows.Next() {
-		var id int64
-		var count int
-		if err := rows.Scan(&id, &count); err != nil {
-			t.Fatalf("count the rows of each event: %v", err)
-		}
-		got[id] = count
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("count the rows of each event: %v", err)
-	}
-	expected := map[int64]int{}
-	for _, w := range want {
-		if w.versions > 0 {
-			expected[w.id] = w.versions
-		}
-	}
-	ids := slices.Collect(maps.Keys(got))
-	for id := range expected {
-		if _, ok := got[id]; !ok {
-			ids = append(ids, id)
-		}
-	}
-	slices.Sort(ids)
-	var wrong []string
-	for _, id := range ids {
-		if got[id] != expected[id] {
-			wrong = append(wrong, fmt.Sprintf("event %d: %d rows, want %d", id, got[id], expected[id]))
-		}
-	}
-	if len(wrong) > 0 {
-		t.Fatalf("%d events have the wrong rows, the first: %v", len(wrong), wrong[:min(len(wrong), 10)])
-	}
-}
-
-// rowsOfEvents counts the keyword table's rows of the events ids.
-func rowsOfEvents(t *testing.T, database *store.Store, ids ...int64) int {
-	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(t.Context(), `select count(*) from search_text_versions where event_id = any($1)`, ids).Scan(&count); err != nil {
-		t.Fatalf("count the rows of events %v: %v", ids, err)
-	}
-	return count
 }
 
 // countRows counts the keyword table's rows.

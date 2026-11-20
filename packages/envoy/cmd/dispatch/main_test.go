@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -2110,10 +2111,6 @@ const (
 	keywordFillStandbyLine = `msg="dispatch: another process holds the keyword fill's hold; standing by"`
 )
 
-// keywordFillIssue is the issue whose comments the rows write, each comment.created event one
-// version, so each event has exactly one row.
-const keywordFillIssue = "KWF-1"
-
 // A process that the registry of live server processes refuses writes no keyword version. A live
 // peer does not share the signing keys of the process, so the process waits for admission
 // (processes.Register: until a live window and a heartbeat after its first refusal), serves
@@ -2123,7 +2120,7 @@ const keywordFillIssue = "KWF-1"
 // although 200 events wait for their rows.
 func TestAProcessTheRegistryRefusesWritesNoKeywordVersion(t *testing.T) {
 	database := storetest.Open(t)
-	seedKeywordFillIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	writeKeywordFillComments(t, database, 200)
 	// The heartbeat of the peer is an hour ahead of the database's clock, so the peer stays live
 	// (processes.Live) for the whole test with no heartbeat of its own. The peer has the owner
@@ -2181,34 +2178,19 @@ func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string)
 		       (select count(*) from search_text_versions)`).Scan(&holds, &rows); err != nil {
 		t.Fatalf("read the hold and the rows of the keyword fill: %v", err)
 	}
-	if cursor := readKeywordCursor(t, database); holds != 0 || rows != 0 || cursor != 0 {
+	if cursor := textversionstest.Cursor(t, database); holds != 0 || rows != 0 || cursor != 0 {
 		t.Fatalf("%s, the keyword fill has %d holds, %d rows and the cursor %d; want no hold, no row and the cursor 0", when, holds, rows, cursor)
 	}
 }
 
-// seedKeywordFillIssue writes keywordFillIssue and its project.
-func seedKeywordFillIssue(t *testing.T, database *store.Store) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx,
-		`insert into projects (key, name, default_assignee) values ('KWF', 'Keyword fill', 'alice')`); err != nil {
-		t.Fatalf("seed the keyword fill's project: %v", err)
-	}
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values ($1, 'KWF', 1, 'Rotate the signing keys', '{"kind":"user","id":"alice"}', 'A')`, keywordFillIssue); err != nil {
-		t.Fatalf("seed the keyword fill's issue: %v", err)
-	}
-}
-
-// writeKeywordFillComments commits count comment.created events of keywordFillIssue, each a new
-// comment, appended through the broker as the routes append them, at most 500 to a transaction,
-// and answers their ids in order.
+// writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
+// new comment and so one version, appended through the broker as the routes append them, at most
+// 500 to a transaction, and answers their ids in order.
 func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
 	t.Helper()
 	ctx := context.Background()
 	broker := events.NewBroker()
-	issue := keywordFillIssue
+	issue := textversionstest.Issue
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	ids := make([]int64, 0, count)
 	for written := 0; written < count; {
@@ -2238,15 +2220,4 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 		written += inThisOne
 	}
 	return ids
-}
-
-// readKeywordCursor reads the fill's cursor, 0 before its first batch.
-func readKeywordCursor(t *testing.T, database *store.Store) int64 {
-	t.Helper()
-	var cursor int64
-	if err := database.Pool.QueryRow(context.Background(),
-		`select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(&cursor); err != nil {
-		t.Fatalf("read the keyword fill's cursor: %v", err)
-	}
-	return cursor
 }

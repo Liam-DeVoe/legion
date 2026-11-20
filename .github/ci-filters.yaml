@@ -2785,6 +2785,7 @@ envoy_go_race_api:
   - 'packages/envoy/internal/dispatch/text/*'
   - 'packages/envoy/internal/dispatch/texttrees/*'
   - 'packages/envoy/internal/dispatch/textversions/*'
+  - 'packages/envoy/internal/dispatch/textversions/textversionstest/*'
   - 'packages/envoy/internal/dispatch/workflowstore/*'
   - 'packages/envoy/internal/explaintest/*'
   - 'packages/envoy/internal/fixtureenv/*'

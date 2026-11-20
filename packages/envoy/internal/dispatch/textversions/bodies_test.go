@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 )
 
 // TestACutCommentBodyIsRebuiltFromItsFirstRevision writes a comment longer than an event carries,
@@ -31,7 +32,7 @@ import (
 func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 	ctx := t.Context()
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 
 	first := longCommentBody()
@@ -99,7 +100,7 @@ func TestACutCommentBodyIsRebuiltFromItsFirstRevision(t *testing.T) {
 // named, with its event, in a warning.
 func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	long := longCommentBody()
 
@@ -136,7 +137,7 @@ func TestACutBodyNoSourceHoldsKeepsItsEventsText(t *testing.T) {
 // latest version's, so it starts no version, and the table keeps the one row.
 func TestACutEditThatKeepsTheBodyStartsNoVersion(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	long := longCommentBody()
 	comment := writeComment(t, database, broker, long, true)
@@ -204,23 +205,6 @@ func requireKeptEventText(t *testing.T, database *store.Store, got decided, logs
 	}
 }
 
-// theIssue is the issue every comment of these tests is written on.
-const theIssue = "ACME-1"
-
-// seedTheIssue writes project ACME and its issue ACME-1.
-func seedTheIssue(t *testing.T, database *store.Store) {
-	t.Helper()
-	for _, statement := range []string{
-		`insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice')`,
-		`insert into issues (key, project_key, number, title, created_by, rank)
-		 values ('ACME-1', 'ACME', 1, 'Rotate the signing keys', '{"kind":"user","id":"alice"}', 'A')`,
-	} {
-		if _, err := database.Pool.Exec(t.Context(), statement); err != nil {
-			t.Fatalf("seed the issue: %v", err)
-		}
-	}
-}
-
 // longCommentBody is a body over contracts.DispatchEventBodyMax UTF-16 units: three paragraphs of
 // about 10,500 units each, which together fit in an event, and a list after them, which does not,
 // so its event carries the three paragraphs alone. Each block is under
@@ -249,10 +233,11 @@ type writtenComment struct {
 	event int64
 }
 
-// writeComment writes a comment of body on theIssue with its comment.created event, whose body
-// the event carries as model.EventBody cuts it, in one transaction, as the create route does;
-// with indexed, its block index too, in that same transaction (refs.IndexItem), as every route
-// that writes a comment does, and without, none, as a build before the block index wrote one.
+// writeComment writes a comment of body on textversionstest.Issue with its comment.created event,
+// whose body the event carries as model.EventBody cuts it, in one transaction, as the create route
+// does; with indexed, its block index too, in that same transaction (refs.IndexItem), as every
+// route that writes a comment does, and without, none, as a build before the block index wrote
+// one.
 func writeComment(t *testing.T, database *store.Store, broker *events.Broker, body string, indexed bool) writtenComment {
 	t.Helper()
 	ctx := t.Context()
@@ -266,7 +251,7 @@ func writeComment(t *testing.T, database *store.Store, broker *events.Broker, bo
 	if err := tx.QueryRow(ctx, `
 		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2)
 		returning id::text, created_at
-	`, theIssue, body).Scan(&comment.id, &createdAt); err != nil {
+	`, textversionstest.Issue, body).Scan(&comment.id, &createdAt); err != nil {
 		t.Fatalf("insert the comment: %v", err)
 	}
 	if indexed {
@@ -330,11 +315,11 @@ func editComment(t *testing.T, database *store.Store, broker *events.Broker, id,
 	return event
 }
 
-// appendCommentEvent appends the event of type of comment id on theIssue, whose body is body,
-// through the broker, and answers its id.
+// appendCommentEvent appends the event of type of comment id on textversionstest.Issue, whose body
+// is body, through the broker, and answers its id.
 func appendCommentEvent(t *testing.T, tx pgx.Tx, broker *events.Broker, eventType, id, body string, createdAt time.Time) int64 {
 	t.Helper()
-	issue := theIssue
+	issue := textversionstest.Issue
 	actor := model.Actor{Kind: "user", ID: "alice"}
 	payload := model.CommentEventPayload{Comment: model.Comment{
 		ID: id, IssueKey: &issue, Author: actor, CreatedAt: createdAt, Mentions: []model.Mention{}, Deliveries: []model.CommentDelivery{},
