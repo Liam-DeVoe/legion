@@ -261,6 +261,48 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 	}
 }
 
+// An account server whose accounts are all handed out hands out the next while a stream in an
+// account another test holds has just served a direct get, as a KV get is, and reloads no server
+// to do it. nats-server v2.15.1 reads its options without their lock as it serves a direct get
+// (getDirectRequest, server/stream.go:6365), and a reload replaces them under that lock (setOpts,
+// server/server.go:1224): so a reload of a server other tests use meets their direct gets. The
+// race detector reports that pair in some runs and not in others, so the test reads the server's
+// log for the reload itself.
+func TestTheNextAccountMeetsNoStreamThatServedADirectGet(t *testing.T) {
+	server := ownAccountServer(t, 1)
+	uri := server.url(namedTB{t, "serving"})
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "served"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("key", []byte("1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if _, err := kv.Get("key"); err != nil {
+		t.Fatalf("the direct get: %v", err)
+	}
+	server.url(namedTB{t, "next"})
+	if _, err := kv.Get("key"); err != nil {
+		t.Fatalf("the direct get after the next account was handed out: %v", err)
+	}
+	parsed, err := url.Parse(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serversMu.Lock()
+	serving := servers[parsed.Host]
+	serversMu.Unlock()
+	if reloads := strings.Count(serving.Log(), "Reloaded server configuration"); reloads != 0 {
+		t.Errorf("the server holding the serving test's account was reloaded %d times to hand out the next account", reloads)
+	}
+}
+
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
 // such a server enforces no nkey users, and every refusal a test expects of it would pass for the
 // wrong reason. A server started with no configuration, which asks for no credential, stands in
