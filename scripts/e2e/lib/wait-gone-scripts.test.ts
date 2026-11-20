@@ -50,7 +50,8 @@ function daemonStopsElsewhere(script: string): string[] {
   shellRead(script)
     .split("\n")
     .forEach((line, i) => {
-      const header = /^(\s*)stop_daemon_ports \(\)\s*$/.exec(line);
+      // bash prints a function defined inside another as `function name () ` and closes it `};`.
+      const header = /^(\s*)(?:function\s+)?stop_daemon_ports \(\)\s*$/.exec(line);
       if (header) inside = header[1];
       const code = line.trim();
       const signalled = inside === undefined && signals.test(code);
@@ -58,7 +59,8 @@ function daemonStopsElsewhere(script: string): string[] {
         started && clears.test(code) && !/\bstop_daemon_ports\b/.test(`${previous}\n${code}`);
       if (signalled || cleared) found.push(`${i + 1}: ${code}`);
       if (/\bdaemon_pid=\$!/.test(code)) started = true;
-      if (inside !== undefined && line === `${inside}}`) inside = undefined;
+      if (inside !== undefined && /^\s*\};?\s*$/.test(line) && line.startsWith(`${inside}}`))
+        inside = undefined;
       if (code) previous = code;
     });
   return found;
