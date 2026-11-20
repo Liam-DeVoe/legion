@@ -1859,6 +1859,108 @@ test("a row the reader's press takes away hands the focus to the same control in
   expect(landed).toEqual(belongs);
 });
 
+/** The Inbox's rows, each holding an ask card, in a list at the end of `parent`: one `<li>` per
+ *  name, holding an `<article>`, a row too by its element alone, with a link named for the ask
+ *  and then its `Answer <name>` button. */
+function askCardRowsIn(
+  parent: Element,
+  names: readonly string[]
+): { answer: HTMLButtonElement; row: HTMLLIElement }[] {
+  const list = document.createElement("ul");
+  parent.append(list);
+  return names.map((name) => {
+    const row = document.createElement("li");
+    const card = document.createElement("article");
+    const link = document.createElement("a");
+    link.href = `/asks/${name}`;
+    link.textContent = name;
+    card.append(link);
+    row.append(card);
+    list.append(row);
+    return { answer: buttonIn(card, `Answer ${name}`), row };
+  });
+}
+
+// (bs) Rows nest: an ask card, an `<article>`, in an Inbox row, an `<li>`. The rescue reads every
+// row around the lost control, nearest first. The reader's press on the second card's Answer that
+// takes the whole second `<li>` away takes the card with it, and the row that left is the `<li>`:
+// the third `<li>` moves up, and the focus lands on the same control in it, the third card's
+// Answer, in every engine, as (bn) does for rows that do not nest. A press on a control the `<li>`
+// draws outside its card, Expand, is a press in that row, so a loss inside the card is the
+// reader's too: where the press puts the focus on the card's Answer and its commit takes that
+// Answer away, the focus walks to the control now at Answer's place, Expand; where the commit
+// takes the whole `<li>` away, the focus lands on the third card's Answer. Firefox and WebKit
+// report a control taken away alone once it has left the page, when no row stands around it any
+// more, so that case is read with Chromium's `focusout` alone. By a pointer press and by Enter,
+// with Chromium's `focusout` and without.
+test("a row inside a row: the outer row a press takes away hands the focus to the same control in the row that moves up, and a press in the outer row causes a loss in the inner one", async () => {
+  const presses: Record<string, (control: HTMLElement) => void> = {
+    Enter: (control) => {
+      control.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+    },
+    pointer: pointerPress,
+  };
+  const cases: {
+    landing: string;
+    name: string;
+    /** Whether the press is on the row's own Expand, outside its card, rather than on the
+     *  card's Answer. */
+    onRow: boolean;
+    /** What the press's commit takes away: the whole row, or the card's Answer alone. */
+    takes: "answer" | "row";
+  }[] = [
+    {
+      landing: "Answer Gamma",
+      name: "Answer Beta takes its row away",
+      onRow: false,
+      takes: "row",
+    },
+    {
+      landing: "Expand Beta",
+      name: "Expand Beta takes the card's Answer away",
+      onRow: true,
+      takes: "answer",
+    },
+    {
+      landing: "Answer Gamma",
+      name: "Expand Beta takes its row away",
+      onRow: true,
+      takes: "row",
+    },
+  ];
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string | null> = {};
+  const belongs: Record<string, string> = {};
+  for (const { landing, name, onRow, takes } of cases) {
+    for (const [by, press] of Object.entries(presses)) {
+      for (const withFocusout of takes === "answer" ? [true] : [true, false]) {
+        const named = `${name}, by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+        await withRescue(async () => {
+          const rows = askCardRowsIn(mainOf().main, ["Alpha", "Beta", "Gamma"]);
+          const { answer, row } = rows[1] as { answer: HTMLButtonElement; row: HTMLLIElement };
+          if (onRow) {
+            const expand = buttonIn(row, "Expand Beta");
+            expand.focus();
+            press(expand);
+            // The press puts the focus on the card's Answer.
+            answer.focus();
+          } else {
+            answer.focus();
+            press(answer);
+          }
+          const leave = () => (takes === "row" ? row : answer).remove();
+          if (withFocusout) lose(answer, leave);
+          else leave();
+          await settled();
+          landed[named] = document.activeElement === document.body ? "the page" : focusedName();
+        });
+        belongs[named] = landing;
+      }
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
 // (am) One batch of the page's records can hold a commit that moves the pressed control - a live
 // update reordering what it stands among - and the press's own commit that takes it away and
 // draws a form where it stood. With no `focusout` (Firefox and WebKit), the place is read off the

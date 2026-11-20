@@ -19,10 +19,10 @@
  * the element is a row.
  *
  * Rows nest - a reply's `<li>` inside a thread's `<article>` inside a Conversation turn's `<li>`,
- * an ask card inside an Inbox row - and a control's row is the nearest one around it, itself
- * included. A table in a document's or a comment's prose is a table too, so its `<tr>`s are rows,
- * and the `<article>` a document is drawn in (`ProofDocument`, `VersionView`) is a row around
- * every control of the document no nearer row holds.
+ * an ask card inside an Inbox row - and each row around a control, itself included, is that
+ * control's row: the nearest one, and every row around that one. A table in a document's or a
+ * comment's prose is a table too, so its `<tr>`s are rows, and the `<article>` a document is drawn
+ * in (`ProofDocument`, `VersionView`) is a row around every control of the document.
  *
  * The rescue reads a row for a loss the reader caused alone (`focus-place.ts`): a press of theirs
  * inside the row of the control that lost the focus makes the loss theirs, a press on the one

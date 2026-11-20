@@ -11,7 +11,7 @@ import { ROW_SELECTOR } from "./row-marker";
  * takes out of it, and `useFocusRescue`, the page's one rescue, mounted once in the app shell,
  * for every loss of the focus no component's hand-off answered. A row is `row-marker.ts`'s one
  * rule, `ROW_SELECTOR`. A loss is the reader's while a press of theirs is still live on the lost
- * control, inside its row, or inside the dialog, panel or selection bar it was lost from
+ * control, inside any row around it, or inside the dialog, panel or selection bar it was lost from
  * (`causedByReader`). A loss the reader caused lands on what their press drew in the control's
  * place, else on the same control in the row that moved up into that place, else on that row's
  * first control, else on the control now at its place or the nearest one before it. A loss they
@@ -180,6 +180,21 @@ const MODAL = 'dialog:modal, [role="dialog"][aria-modal="true"]';
  *  it (`pressOnRowMark`). */
 function inRow(element: Element): boolean {
   return element.closest(ROW_SELECTOR) !== null;
+}
+
+/** Every row around `element` by `row-marker.ts`'s one rule (`ROW_SELECTOR`), itself included,
+ *  nearest first: rows nest, as an ask card's `<article>` in an Inbox row's `<li>`, and a loss
+ *  is read against each of them (`pressPlaces`, `rowPlacesOf`). */
+function rowsAround(element: Element): Element[] {
+  const rows: Element[] = [];
+  for (
+    let row = element.closest(ROW_SELECTOR);
+    row !== null;
+    row = row.parentElement?.closest(ROW_SELECTOR) ?? null
+  ) {
+    rows.push(row);
+  }
+  return rows;
 }
 
 /** The one checkbox a row draws for its mark (the project List's `Select <key>`, the Inbox's
@@ -604,14 +619,13 @@ function recentPress(): Press | null {
 }
 
 /** The places a press could have taken `element`'s focus from and still be the reader's own doing:
- *  the element itself, the row it is in (`ROW_SELECTOR`, the rule `inRow` reads), and the dialog,
- *  panel or selection bar it was lost from. A press in a list's panel is in that panel, so a pick
- *  that takes the panel away is the reader's own, and the focus goes back to the trigger that
- *  opened it. */
+ *  the element itself, every row around it (`rowsAround`, by the rule `inRow` reads), and the
+ *  dialog, panel or selection bar it was lost from. Every row counts, not the nearest alone: a
+ *  press in an Inbox row outside the ask card it holds is a press in that row, so a loss inside
+ *  the card is the reader's own. A press in a list's panel is in that panel, so a pick that takes
+ *  the panel away is the reader's own, and the focus goes back to the trigger that opened it. */
 function pressPlaces(element: Element): Element[] {
-  const places: Element[] = [element];
-  const row = element.closest(ROW_SELECTOR);
-  if (row !== null) places.push(row);
+  const places: Element[] = [element, ...rowsAround(element)];
   const region = element.closest(PRESS_REGION);
   if (region !== null) places.push(region);
   return places;
@@ -620,7 +634,7 @@ function pressPlaces(element: Element): Element[] {
 /**
  * Whether the reader caused the loss of `element`'s focus: their latest press (`isPress`) - a
  * pointer press, a key that acts rather than edits a field's text, or a pick - is still live, its
- * answer not yet run (`answerPress`), and landed on the element, inside the row it was in, or
+ * answer not yet run (`answerPress`), and landed on the element, inside any row it was in, or
  * inside the dialog, panel or selection bar it was lost from (`pressPlaces`), read at every element
  * the press reads as now (`pressedOn`): a pick in a list, a confirm in a dialog, that has gone
  * counts as a press on the trigger the list or the dialog was opened from as well. A loss the
@@ -716,8 +730,8 @@ interface Spot {
 
 /** Where `element` stands in `region`, and where each parent of it up to the region's own
  *  children stands, nearest first: read while the element is still in the page, so that the spot
- *  a press later takes it, or a parent of it, away from is known (`controlsInPlace`), and so is
- *  the spot of the row around it (`controlsOfRowMovedUp`). */
+ *  a press later takes it, or a parent of it, away from is known (`controlsInPlace`), and so are
+ *  the spots of the rows around it (`controlsOfRowMovedUp`). */
 function spotsOf(element: Element, region: Element): Spot[] {
   const spots: Spot[] = [];
   let node: Node = element;
@@ -748,22 +762,29 @@ function rowControls(row: Element): Element[] {
   return row.matches(ROW_CONTROL) ? [row, ...inside] : inside;
 }
 
-/** Where a control stood in the row around it: the row - the nearest element around it, itself
- *  included, that `ROW_SELECTOR` names, inside the control's region - and the control's place
- *  among that row's controls (`rowControls`), -1 where it is none of them. */
+/** Where a control stood in a row around it: the row - an element around it, itself included,
+ *  that `ROW_SELECTOR` names, inside the control's region - and the control's place among that
+ *  row's controls (`rowControls`), -1 where it is none of them. */
 interface RowPlace {
   readonly index: number;
   readonly row: Element;
 }
 
-/** Where `element` stands in the row around it inside `region` (`RowPlace`), else null. Read as
- *  its loss is noted, while the row still holds it: in the page, at Chromium's `focusout`, or off
- *  the removal Firefox and WebKit report alone, once the row has left the page with the element
- *  still in it. The element has gone by the time the loss is answered, so its place is kept. */
-function rowPlaceOf(element: Element, region: Element): RowPlace | null {
-  const row = element.closest(ROW_SELECTOR);
-  if (row === null || row.contains(region)) return null;
-  return { index: rowControls(row).indexOf(element), row };
+/** Where `element` stands in each row around it inside `region` (`RowPlace`), nearest first;
+ *  none where no row inside the region holds it. Every row is kept, not the nearest alone, since
+ *  rows nest and a press can take an outer row away with the inner one in it: an Inbox row with
+ *  the ask card it holds. Read as its loss is noted, while the rows still hold it: in the page,
+ *  at Chromium's `focusout`, or off the removal Firefox and WebKit report alone, once a row has
+ *  left the page with the element still in it, when the rows around it are that row and those
+ *  inside it. The element has gone by the time the loss is answered, so its places are kept. */
+function rowPlacesOf(element: Element, region: Element): RowPlace[] {
+  const places: RowPlace[] = [];
+  for (const row of rowsAround(element)) {
+    // A row around the region holds every control of it, and so does each row around that one.
+    if (row.contains(region)) break;
+    places.push({ index: rowControls(row).indexOf(element), row });
+  }
+  return places;
 }
 
 /** A focus an element lost: the element, the region it was counted in, its place there among
@@ -772,7 +793,7 @@ function rowPlaceOf(element: Element, region: Element): RowPlace | null {
  *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
  *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
  *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals
- *  and no row place: the hand-off reads only its element, region, place, path and opener. */
+ *  and no row places: the hand-off reads only its element, region, place, path and opener. */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
    *  noted into it while its check or its wait is out - none the page only moved, which stood in
@@ -788,10 +809,11 @@ interface Loss {
   readonly opener: Loss | null;
   readonly path: string;
   readonly region: Element;
-  /** Where the element stood in the row around it, read as the loss is noted (`rowPlaceOf`), else
-   *  null: the row, and the element's place among its controls, by which the row that moves up
-   *  into that row's place offers the focus (`controlsOfRowMovedUp`). */
-  readonly rowPlace: RowPlace | null;
+  /** Where the element stood in each row around it, nearest first, read as the loss is noted
+   *  (`rowPlacesOf`), and none where it stood in no row: each row, and the element's place among
+   *  its controls, by which the row that moves up into the place of the row that left offers the
+   *  focus (`controlsOfRowMovedUp`). */
+  readonly rowPlaces: readonly RowPlace[];
   /** Where the element stood, and where each parent of it up to the region stood, nearest first
    *  (`controlsInPlace`, `controlsOfRowMovedUp`): read at its `focusout` while it is still in the
    *  page, or, for an element taken away with no `focusout`, off the last record that took it
@@ -957,22 +979,31 @@ function elementFrom(node: Node | null): Element | null {
   return null;
 }
 
-/** The controls of the row that now stands where the row around `loss`'s element stood, among
+/** The controls of the row that now stands where a row around `loss`'s element stood, among
  *  `drawn`, in the order the focus is offered them: the same control as the lost one, so the
  *  reader can go on - unpinning, as Dismiss goes on to the next item - then that row's first
- *  control. The row around the element (`rowPlace`) has gone where its own spot's node has left
- *  the page while the parent it stood in is still in the region; the row now at its place is the
- *  element that stood right after it in that parent, still there and a row (`ROW_SELECTOR`) - the
- *  row that moved up, the same element. The same control is the one at the lost control's place
- *  among that row's controls (`rowControls`), of the same tag and role, and drawn: read by markup
- *  in both rows, so every engine finds the same one. None where the element stood in no row,
- *  where its row is still in the page or went with a parent of it, where no row stood after it,
- *  or where that row draws no control. */
+ *  control. The row that left is the one of the rows around the element (`rowPlaces`) whose own
+ *  spot's node has left the page while the parent it stood in is still in the region
+ *  (`goneFrom`): with rows nested, the outermost one that went, as an Inbox row a press takes
+ *  away with the ask card in it, since each row inside it went with a parent of its own. The row
+ *  now at its place is the element that stood right after it in that parent, still there and a
+ *  row (`ROW_SELECTOR`) - the row that moved up, the same element. The same control is the one at
+ *  the lost control's place among that row's controls (`rowControls`), of the same tag and role,
+ *  and drawn: read by markup in both rows, so every engine finds the same one. None where the
+ *  element stood in no row, where each row around it is still in the page or went with a parent
+ *  of its own, where no row stood after the one that left, or where that row draws no control. */
 function controlsOfRowMovedUp(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
-  const { element, region, rowPlace } = loss;
-  if (rowPlace === null) return [];
-  const spot = loss.spots.find(({ node }) => node === rowPlace.row);
-  if (spot === undefined || !goneFrom(spot, region)) return [];
+  const { element, region, rowPlaces, spots } = loss;
+  let left: { readonly index: number; readonly spot: Spot } | null = null;
+  for (const { index, row } of rowPlaces) {
+    const spot = spots.find(({ node }) => node === row);
+    if (spot !== undefined && goneFrom(spot, region)) {
+      left = { index, spot };
+      break;
+    }
+  }
+  if (left === null) return [];
+  const { index, spot } = left;
   const moved = elementFrom(spot.next);
   if (moved === null || moved.parentNode !== spot.parent || !moved.matches(ROW_SELECTOR)) {
     return [];
@@ -980,7 +1011,7 @@ function controlsOfRowMovedUp(loss: Loss, drawn: readonly HTMLElement[]): HTMLEl
   const controls = drawn.filter((control) => moved.contains(control));
   const first = controls[0];
   if (first === undefined) return [];
-  const same = rowControls(moved)[rowPlace.index];
+  const same = rowControls(moved)[index];
   const alike =
     same instanceof HTMLElement &&
     same !== first &&
@@ -1008,9 +1039,9 @@ function focusNoScroll(target: HTMLElement): boolean {
  *  their press drew in its place - the focus lands on that first: on the first control of a
  *  `<form>` there, the editor the press opened in the control's place, else on the first control
  *  of what stands there (`controlsInPlace`), focused with no scroll, since it stands where the
- *  reader was. Where nothing new stands there and the press took the element's own row away, the
- *  focus lands on the same control in the row that now stands at that place - the row that stood
- *  right after it, moved up - so the reader can go on, else on that row's first control
+ *  reader was. Where nothing new stands there and the press took away a row the element was in,
+ *  the focus lands on the same control in the row that now stands at that row's place - the row
+ *  that stood right after it, moved up - so the reader can go on, else on that row's first control
  *  (`controlsOfRowMovedUp`), and that control is scrolled into view (`land`). Only where no row
  *  stands there, or that row draws no control to take it, does the focus walk back: to the
  *  control the region now draws at its place, else the nearest one before it however many went
@@ -1085,8 +1116,8 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * then, while the element is still in the page; for a control taken away with no `focusout`, the
  * last record that took it - its parent and its siblings at that moment, since a control the batch
  * moved first was taken from there - is that spot, with the spots read as the element took the
- * focus behind it for a record whose parent has gone too. It holds the row around the element as
- * well, and the element's place among that row's controls (`rowPlaceOf`), read then too, since
+ * focus behind it for a record whose parent has gone too. It holds each row around the element,
+ * and the element's place among that row's controls (`rowPlacesOf`), read then too, since
  * the element has gone by the time the loss is answered. From the loss on, while its check or its
  * wait is out, the page's watcher notes every element the page adds (`arrived`), but none it only
  * moves - a keyed node React moves with `insertBefore`, which one batch reports as its removal and
@@ -1121,11 +1152,12 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * place, as Change answer and Add a priority do - the form's first control takes the focus, so
  * that a header the new content repeats above the form is not taken for the place; else the
  * first control of what stands there does. It is focused with no scroll, since it stands where
- * the reader was. Where nothing new stands there and the press took the element's own row away,
- * the row that stood right after it has moved up into the place - the same element, so nothing
- * new there - and the same control in that row takes the focus, at the lost one's place among the
- * row's controls and of its tag and role, else that row's first control (`controlsOfRowMovedUp`),
- * so the reader can go on, unpinning as Dismiss goes on to the next item. Only where no row stands
+ * the reader was. Where nothing new stands there and the press took away a row the element was in -
+ * with rows nested, the outermost that went, as an Inbox row with the ask card it holds - the row
+ * that stood right after that row has moved up into its place, the same element, so nothing new
+ * there, and the same control in it takes the focus, at the lost one's place among the row's
+ * controls and of its tag and role, else that row's first control (`controlsOfRowMovedUp`), so the
+ * reader can go on, unpinning as Dismiss goes on to the next item. Only where no row stands
  * there - a block taken away with nothing in its place, or the last row - or that row draws no
  * control does the focus walk back, as `handOn` states; that walk stays inside the region, so the
  * page behind a modal dialog is never reached. A loss the reader did not cause - an update of the
@@ -1349,9 +1381,10 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         taken: !stands(element),
       };
       // A focus going straight to another region is kept only as the place it left: the opener
-      // of the dialog it is entering, whose spots, arrivals and row place the hand-off never reads.
+      // of the dialog it is entering, whose spots, arrivals and row places the hand-off never
+      // reads.
       if (next instanceof Element) {
-        moving = { from: { ...fields, arrived: noArrivals, rowPlace: null, spots: [] }, to: next };
+        moving = { from: { ...fields, arrived: noArrivals, rowPlaces: [], spots: [] }, to: next };
         return;
       }
       // What the page changed before this loss is none of what a press draws in its place: those
@@ -1360,7 +1393,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       const loss: Loss = {
         ...fields,
         arrived: new Set<Node>(),
-        rowPlace: rowPlaceOf(element, region),
+        rowPlaces: rowPlacesOf(element, region),
         spots: spotsOf(element, region),
       };
       pending = { arrived: loss.arrived, cancel: afterComponents(() => check(loss)) };
@@ -1403,7 +1436,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         index,
         left: false,
         opener: openedFrom.get(held.region) ?? null,
-        rowPlace: rowPlaceOf(held.element, held.region),
+        rowPlaces: rowPlacesOf(held.element, held.region),
         spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
         taken: true,
       };
