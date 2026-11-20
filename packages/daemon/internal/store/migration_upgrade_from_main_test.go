@@ -27,10 +27,10 @@ import (
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
 // (20261111212544), are
 // main's own and are applied as main's run applied them. Every version of this branch's but
-// twenty-four stands below main's newest: a migration's version is a timestamp rather than a
-// place in a line, and the twenty-four above it are the phase entry's own (20261111225552,
+// twenty-five stands below main's newest: a migration's version is a timestamp rather than a
+// place in a line, and the twenty-five above it are the phase entry's own (20261111225552,
 // dispatch://INFRA-2800), which this branch wrote after main's claim-failure cause, and the
-// twenty-three the paragraphs below name.
+// twenty-four the paragraphs below name.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
@@ -79,13 +79,17 @@ import (
 // dispatch://INFRA-3583's project release (20261115073241) adds a table and a source to
 // claims_suspended_by_check and touches no outbox row: it is the next version of the list above
 // INFRA-2614's 20261114061900, so an upgrade applies it right after that one.
+// dispatch://INFRA-3759's project pause (20261115194357) adds the pause's three tables, two
+// columns of pod_resumes and the outbox's held_by_pause, and rewrites no kind list and no
+// suspension source, so it needs no row of its own here (migration_20261115194357_test.go reads
+// it): it stands above the project release and below claim sessions, so an upgrade applies it
+// between them.
 // t-e-54's claim sessions (20261116144907) creates claim_sessions and fills it from the claims'
 // sessions, claims.abandoned_session (20261029121200) among them, and touches no
-// outbox_kind_check: it stands above the project release and below the role-holders publication,
-// so an upgrade applies it between them.
-// The kind list with the role-holders publication (20261116165926) stands above the project
-// release and claim sessions and below the reviewer's reviewed commit: it names every kind the
-// merge-queue list names and its own.
+// outbox_kind_check: it stands above the project release and the project pause and below the
+// role-holders publication, so an upgrade applies it between them.
+// The kind list with the role-holders publication (20261116165926) stands above all of these but
+// the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
 // The two kind lists above it are named here too: the step record's (20261117000528) restates
 // 20261116165926's kinds with step_record, and the plan record's (20261117023932) restates those
 // with plan_record. They stand above every other version of the list that rewrites
@@ -109,8 +113,9 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261115073241, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
-	20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337, 20261119003157,
+	20261114061900, 20261115073241, 20261115194357, 20261116144907, 20261116165926, 20261116234034,
+	20261117000528, 20261117004117, 20261117023932, 20261117064152, 20261117112334, 20261117200337,
+	20261119003157,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -121,13 +126,14 @@ var thisBranchsMigrations = []int{
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
 // 20261113181500, 20261113182000, 20261114020537 and 20261114061900, dispatch://INFRA-3583's
-// 20261115073241, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
-// reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the step
-// record (20261117000528), the count of starts of each step (20261117004117) and its roll forward
-// (20261117064152), the kind list with the plan record (20261117023932), dispatch://INFRA-1997's
-// 20261117112334, dispatch://INFRA-4109's 20261117200337 and dispatch://INFRA-4374's
-// 20261119003157. That is why the loop below holds the list rather than counting it, so that a
-// version added above any of them is named here rather than read as main's.
+// 20261115073241, dispatch://INFRA-3759's 20261115194357, t-e-54's 20261116144907, the
+// role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
+// step records' three: the kind list with the step record (20261117000528), the count of starts of
+// each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
+// record (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
+// 20261117200337 and dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the
+// list rather than counting it, so that a version added above any of them is named here rather
+// than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

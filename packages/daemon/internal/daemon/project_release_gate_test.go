@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -316,7 +317,10 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 
 // Every outbox row that would start or prompt a role waits while the release holds, and every
 // other kind runs (record.HeldByProjectRelease). Every kind of every lane is named here, so a kind
-// added to the outbox without a decision for the release fails this test.
+// added to the outbox without a decision for the release fails this test, and so is every
+// supervise op, a project pause's `pause_stop` (a stop, which runs) and the launch the pause owes
+// a role it stopped (a start, which waits) among them, and the pause's two notices to the
+// controller, which wait as every controller notice does.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	const ownRound = "release:7"
 	type row struct {
@@ -327,17 +331,23 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 	cases := map[record.OutboxKind][]row{
 		record.OutboxKindSupervise: {
 			{"a start", record.SuperviseRequest{Op: "start"}, true},
+			{"the launch a project pause owed a role it stopped", record.SuperviseRequest{Op: "start", Pause: 3, WakeKind: pods.WakePause}, true},
 			{"an idle release's role stop", record.SuperviseRequest{Op: "release"}, true},
 			{"a suspend", record.SuperviseRequest{Op: "suspend"}, false},
 			{"an issue's close", record.SuperviseRequest{Op: "issue_close"}, false},
 			{"a tree's close", record.SuperviseRequest{Op: "tree_close"}, false},
+			{"a project pause's role stop", record.SuperviseRequest{Op: "pause_stop", Pause: 3}, false},
 		},
 		record.OutboxKindUpdateAsk: {
 			{"the release's own ask", record.UpdateAsk{Round: ownRound}, false},
 			{"a pod update round's ask", record.UpdateAsk{Round: "update:3"}, true},
 		},
-		record.OutboxKindNotice:             {{"a notice", record.Notice{}, true}},
-		record.OutboxKindControllerNotice:   {{"a controller notice", record.ControllerNotice{}, true}},
+		record.OutboxKindNotice: {{"a notice", record.Notice{}, true}},
+		record.OutboxKindControllerNotice: {
+			{"a controller notice", record.ControllerNotice{}, true},
+			{"a project-paused notice", record.ControllerNotice{Kind: record.ProjectPausedNotice}, true},
+			{"a project-resumed notice", record.ControllerNotice{Kind: record.ProjectResumedNotice}, true},
+		},
 		record.OutboxKindRoleMessage:        {{"a role message", record.RoleMessage{}, true}},
 		record.OutboxKindHookPrompt:         {{"a hook's prompt", record.HookPrompt{}, true}},
 		record.OutboxKindMergeQueueRead:     {{"a merge-queue read", record.MergeQueueRead{}, true}},

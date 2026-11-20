@@ -196,10 +196,11 @@ func (s *Store) ProjectReleaseStopSet(ctx context.Context, project string) ([]Pr
 
 // projectReleaseStopSet is every claim of project stored in a state whose process is up or coming
 // up (supervise.LiveStates), in token order: a project release's stop set (StartProjectRelease).
-// The states are supervise's, bound as text (stateNames), so the store names none of them itself.
+// The states are supervise's, bound as text (claimStateNames), so the store names none of them
+// itself.
 func projectReleaseStopSet(ctx context.Context, q rowsQuerier, project string) ([]ProjectReleaseClaim, error) {
 	rows, err := q.Query(ctx, `select token, tree, issue, role, session, state from claims
-		where project = $1 and state = any($2) order by token`, project, stateNames(supervise.LiveStates()))
+		where project = $1 and state = any($2) order by token`, project, claimStateNames(supervise.LiveStates()))
 	if err != nil {
 		return nil, fmt.Errorf("read the claims the project release of %s stops: %w", project, err)
 	}

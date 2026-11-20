@@ -213,8 +213,8 @@ func stopSettled(c supervise.Claim, byOperator bool) bool {
 	return false
 }
 
-// stopTokens is the tokens of claims, in their order.
-func stopTokens(claims []store.ProjectReleaseClaim) []claim.Token {
+// releaseStopTokens is the tokens of claims, in their order.
+func releaseStopTokens(claims []store.ProjectReleaseClaim) []claim.Token {
 	tokens := make([]claim.Token, len(claims))
 	for i, c := range claims {
 		tokens[i] = c.Token

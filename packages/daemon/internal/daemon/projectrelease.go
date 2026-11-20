@@ -141,9 +141,10 @@ type projectReleaser struct {
 	// pods is the runtime's part a release needs, nil on a runtime that runs no pod (tmux),
 	// which refuses the release (api.ErrProjectReleaseRunsNoPod).
 	pods runtime.ProjectPods
-	// enqueue writes the release's asks as outbox rows (supervision.enqueue); nil in a deployment
-	// with no outbox, where no role is asked.
-	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// enqueue writes the release's asks as outbox rows (supervision.enqueue), and answers whether
+	// it wrote them: it writes none for an issue of another project, whose rows only that project's
+	// daemon runs. Nil in a deployment with no outbox, where no role is asked.
+	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error)
 	// armBackstops arms the backstop an idle release this release took over would have armed at
 	// its teardown (outbox.armBackstops); nil with no workflow, which arms none.
 	armBackstops func(ctx context.Context, issue string) error

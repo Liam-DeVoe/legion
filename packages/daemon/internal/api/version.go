@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2421,6 +2420,39 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
 // 180: dispatch://INFRA-3583 -- the project release. The shim answers a new frame from the daemon,
 // `read-unpushed` (shimwire.ReadUnpushed: `id`, `issue`, `timeoutMs`), with
 // `read-unpushed-result` (shimwire.ReadUnpushedResult: `id`, `ok`, `commits`,
@@ -2459,17 +2491,18 @@ package api
 // and #4065 too and every number from 169 to 179 declared by another open pull request: 169 by
 // #4273, 170 by #4182, 172 by #3659, 173 by #4493, 174 by #3993, 175 by #3712, #4432 and #4495, 176
 // by #4030, #4173, #4180, #4193, #4259, #4261 and #4269, 177 by #4017, 178 by #3831, #4115 and
-// #4175, and 179 by #4392 and #4540, so this change took 180. A pod at main's 168, or at a number
-// another open pull request declares below 180, runs a plugin that does not know this release's
-// shapes, so it is served the state without `projectRelease`. This change first took 150, the
-// lowest free number at the forward merge of 2026-11-15, then 157 once main reached 151, then 159
-// once three other heads had taken 157, then 161 once #4175 declared 159 as well and #3519 took
-// 160, then 163 once #4173 declared 161 as well and three heads took 162, which held at the forward
-// merge that brought in c70a8022 with main at 160, then 171 once main reached 168 (#4488's entry
-// above) at the forward merge that brought in b2cf98a0: the check refused 168 at
+// #4175, and 179 by #4392 and #4540, so this change took 180. A pod at main's 178 (#4115's entry
+// above), or at a number another open pull request declares below 180, runs a plugin that does not
+// know this release's shapes, so it is served the state without `projectRelease`. This change
+// first took 150, the lowest free number at the forward merge of 2026-11-15, then 157 once main
+// reached 151, then 159 once three other heads had taken 157, then 161 once #4175 declared 159 as
+// well and #3519 took 160, then 163 once #4173 declared 161 as well and three heads took 162, which
+// held at the forward merge that brought in c70a8022 with main at 160, then 171 once main reached
+// 168 (#4488's entry above) at the forward merge that brought in b2cf98a0: the check refused 168 at
 // 2026-11-19T18:36:14Z naming 171, when #4065 declared 169 and #2230, #4173, #4180 and #4193
 // declared 170, and a reading of every open head (2026-11-19T18:36:50Z to 18:41:40Z) found 171
 // declared by none. 171 held at the forward merge that brought in 506395be with main still at 168.
+// 180 stays above main's 178, which the forward merge that brought in c7e1cbd5 (#4115) brought.
 // Read the base's own number and every open head again at the next merge rather than from this
 // entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md

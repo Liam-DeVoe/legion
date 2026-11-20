@@ -197,10 +197,12 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // written, so an answer that comes at once finds it. It answers whether any role was asked: none
 // where no role runs or the deployment has no outbox. Rows that could not be written are answered
 // by their error, and their roles are taken off the line and out of run.asked again, so no role
-// they never reached reads as asked. A role whose row was written counts as asked once the
-// outbox's publish of it reached a session of the role (reach), or once the role answered; one the
-// ask reached no session of by the bound, and that had not answered, is taken off the line then
-// (atBound).
+// they never reached reads as asked. Rows the outbox writes none of, those of a pod whose issue is
+// another project's (supervision.enqueue), are answered as rows that could not be written
+// (claim.ErrKeyOfAnotherProject), so such a pod is left at the bound rather than deleted with no
+// role asked. A role whose row was written counts as asked once the outbox's publish of it reached
+// a session of the role (reach), or once the role answered; one the ask reached no session of by
+// the bound, and that had not answered, is taken off the line then (atBound).
 func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
@@ -223,7 +225,11 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod.sandbox.PodUID, Text: text}
 	}
 	run.mu.Unlock()
-	if err := r.enqueue(ctx, pod.sandbox.Issue, rows...); err != nil {
+	written, err := r.enqueue(ctx, pod.sandbox.Issue, rows...)
+	if err == nil && !written {
+		err = fmt.Errorf("the asks to the roles of %s: %w", pod.sandbox.Issue, claim.ErrKeyOfAnotherProject)
+	}
+	if err != nil {
 		run.mu.Lock()
 		line = &run.result.Sandboxes[pod.line]
 		line.Asked = line.Asked[:before]
@@ -359,7 +365,7 @@ func (run *releaseRun) passBound(pod *releasePod) (dropped []claim.Token, kept b
 // only while the release runs and no claim of the pod is an operator's, and whose false answer
 // leaves the pod as well. A deleted pod's line takes its last read and its outcome (writeDeleted).
 func (r *projectReleaser) stopAndDelete(ctx context.Context, run *releaseRun, pod *releasePod, last releaseRead) {
-	tokens := stopTokens(pod.stop)
+	tokens := releaseStopTokens(pod.stop)
 	pending := r.stopClaims(ctx, run, tokens, "the project release stops it to delete its pod")
 	if ctx.Err() != nil {
 		return
@@ -444,7 +450,7 @@ func deletedOutcome(read releaseRead) api.ReleaseOutcome {
 // refusal of one is written on that claim's line. The line gives why as its first reason, and after
 // it each round the release could not end.
 func (r *projectReleaser) leave(ctx context.Context, run *releaseRun, pod *releasePod, why string) {
-	held := stopTokens(pod.stop)
+	held := releaseStopTokens(pod.stop)
 	var others []claim.Token
 	for _, v := range r.issueViews(pod.sandbox.Issue) {
 		if !slices.Contains(held, v.Token) {
