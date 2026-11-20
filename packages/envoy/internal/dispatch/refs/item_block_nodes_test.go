@@ -176,14 +176,14 @@ func TestAnOlderBuildSkipsItemBlockRows(t *testing.T) {
 	}
 	registry := nodeRegistry
 	previous := maps.Clone(registry)
-	for kind, entry := range previous {
+	for kind := range previous {
 		if slices.Contains(previousReleaseNodeKinds, kind) {
 			continue
 		}
-		// That release resolves no node of the kind. Its predicate stays: the registry answered
-		// for every kind then as it does now, and only the loader is the newer build's.
-		entry.load = nil
-		previous[kind] = entry
+		// That release resolves no node of the kind. Its key stays, and with it the predicate
+		// VisibleKind binds: the registry answered for every kind then as it does now, and only
+		// the loader is the newer build's.
+		previous[kind] = nil
 	}
 	nodeRegistry = previous
 	older, err := resolveNodes(ctx, tx, model.Actor{}, false, ends)

@@ -545,7 +545,9 @@ func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing
 		`, document, version).Scan(&versionAt, &now); err != nil {
 			t.Fatalf("read version %d of %s: %v", version, document, err)
 		}
-		indexing, err := refs.PlanBlocks(ctx, pass, index, v, document, record, version, versionAt, now, markdown, blocks, nil, nil)
+		indexing, err := refs.PlanBlocks(ctx, pass, index, v, now, refs.VersionBlocks{
+			ArtifactID: document, Record: record, Number: version, At: versionAt, Markdown: markdown, Blocks: blocks,
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1060,7 +1062,7 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 // only owes a document an index writes no revision at all, so it is told apart by what it sets
 // rather than by where it is.
 const (
-	fenceWriterFile     = "refs/blocks.go"
+	fenceWriterFile     = "refs/block_stand.go"
 	fenceWriterFunction = "func (b BlockIndexing) queueStand("
 )
 

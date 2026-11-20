@@ -616,7 +616,7 @@ var indexPasses = map[string]string{
 	// render's.
 	"refs/blocks.go#Queue":                  "the version's render, and where another release indexed the document since the store stated it, what the store still asserts against that render",
 	"refs/block_nodes.go#queueBlockParents": "the version's render",
-	"refs/blocks.go#queueBlockRefs":         "the version's render",
+	"refs/block_nodes.go#queueBlockRefs":    "the version's render",
 	"refs/refs.go#queueStamp":               "the event that recorded the write",
 }
 

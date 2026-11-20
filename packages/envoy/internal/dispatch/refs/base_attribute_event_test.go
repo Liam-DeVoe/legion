@@ -27,8 +27,8 @@ import (
 // Read path by path at this head:
 //
 //   - the comment path writes its node once per request (api's createCommentFor, through
-//     graphstore.QueueNodes) and never states a comment gone: refs/blocks.go is the only writer
-//     in the tree that puts graphstore.StateGone on a node;
+//     graphstore.QueueNodes) and never states a comment gone: refs/block_nodes.go is the only
+//     file in the tree whose writer puts graphstore.StateGone on a node, the block index's;
 //   - the block index states each node once per pass - the ids a version holds are stated live
 //     and the ids it dropped are stated gone, and the two sets are disjoint - and every caller
 //     causes one pass with one event (docs/block_index.go, docs/service.go, api/artifacts.go

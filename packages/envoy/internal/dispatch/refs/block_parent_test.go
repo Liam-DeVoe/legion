@@ -976,7 +976,9 @@ func TestAPassTheFenceRefusesCommitsNothing(t *testing.T) {
 	if err := tx.QueryRow(ctx, `select now()`).Scan(&now); err != nil {
 		t.Fatalf("read the pass's time: %v", err)
 	}
-	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, document.artifact, record, own, second.at, now, added.markdown, added.blocks, nil, nil)
+	indexing, err := PlanBlocks(ctx, tx, index, BlockIndexMarkingRule, now, VersionBlocks{
+		ArtifactID: document.artifact, Record: record, Number: own, At: second.at, Markdown: added.markdown, Blocks: added.blocks,
+	})
 	if err != nil {
 		t.Fatalf("plan the pass at version %d: %v", own, err)
 	}

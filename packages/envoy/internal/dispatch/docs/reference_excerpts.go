@@ -275,7 +275,10 @@ func planBlockIndex(
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}
-	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, artifactID, record, version, versionAt, now, markdown, blocks, located, pointers)
+	indexing, err := refs.PlanBlocks(ctx, tx, index, rule, now, refs.VersionBlocks{
+		ArtifactID: artifactID, Record: record, Number: version, At: versionAt,
+		Markdown: markdown, Blocks: blocks, Located: located, Pointers: pointers,
+	})
 	if err != nil {
 		return nil, nil, graphstore.Uncaused{}, err
 	}

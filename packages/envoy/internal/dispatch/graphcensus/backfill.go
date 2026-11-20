@@ -417,18 +417,15 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	blockIDs := make([]string, 0, len(held))
 	artifacts := make([]string, 0, len(held))
 	for _, row := range held {
-		nodes = append(nodes, graphstore.Node{
-			Kind: refs.BlockNodeKind, ID: row.address, Supertag: refs.BlockSupertag,
-			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
-			MadeAt: row.createdAt, MadeBy: backfillActor, SourceEvent: row.event,
-			Restates: true,
-		})
-		tuples = append(tuples, graphstore.Tuple{
-			FromKind: refs.BlockNodeKind, FromID: row.address, Kind: refs.TupleInDocument,
-			ToKind: "artifact", ToID: row.refKey,
-			At: row.createdAt, Who: backfillActor, SourceEvent: row.event, Asserted: true,
-		})
-		addresses = append(addresses, row.address)
+		node, member, fits := refs.BlockInDocument(row.refKey, row.blockID, backfillActor, row.createdAt, row.event)
+		if !fits {
+			// BlockRowsStatement reads no row whose address is past the store's bound, so a row
+			// refs holds past it is one the two disagree on, and the batch writes nothing.
+			return nil, 0, fmt.Errorf("block %s of %s is past the address bound the batch's read holds its rows to", row.blockID, row.refKey)
+		}
+		nodes = append(nodes, node)
+		tuples = append(tuples, member)
+		addresses = append(addresses, node.ID)
 		blockIDs = append(blockIDs, row.blockID)
 		artifacts = append(artifacts, row.artifactID)
 	}
