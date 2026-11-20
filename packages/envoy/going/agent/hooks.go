@@ -25,20 +25,24 @@ const (
 	hookHangText = "[[test_hang]]"
 )
 
-// hookTools are the test hooks' tools.
-func hookTools() []agentloop.Tool {
+// hookTools are the test hooks' tools in the step whose model call is numbered base, each run
+// through the worker's toolRun as every tool of a run is.
+func (w *worker) hookTools(base int) []agentloop.Tool {
 	empty := json.RawMessage(`{"type":"object","properties":{}}`)
+	tool := func(name, description string, run func()) agentloop.Tool {
+		return agentloop.Tool{Name: name, Description: description, Schema: empty,
+			Run: w.toolRun(base, name, func(context.Context, int, json.RawMessage) (string, bool) {
+				run()
+				return "", false
+			})}
+	}
 	return []agentloop.Tool{
-		{Name: hookHang, Description: "A test hook: never returns.", Schema: empty, Run: func(context.Context, agentloop.ToolCall) (string, bool) {
-			select {}
-		}},
-		{Name: hookPanic, Description: "A test hook: panics.", Schema: empty, Run: func(context.Context, agentloop.ToolCall) (string, bool) {
-			panic("the test hook's own panic")
-		}},
-		{Name: hookCrash, Description: "A test hook: panics past every recover.", Schema: empty, Run: func(context.Context, agentloop.ToolCall) (string, bool) {
+		tool(hookHang, "A test hook: never returns.", func() { select {} }),
+		tool(hookPanic, "A test hook: panics.", func() { panic("the test hook's own panic") }),
+		tool(hookCrash, "A test hook: panics past every recover.", func() {
 			go panic("the test hook's own panic, past every recover")
 			select {}
-		}},
+		}),
 	}
 }
 

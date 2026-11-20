@@ -180,6 +180,8 @@ var settings = []setting{
 		Description: "The model each request names."},
 	{Name: "DISPATCH_AGENT_SOCKET", Required: "no",
 		Description: "The Unix socket `envoy-dispatch agent`, the command bar's agent process, calls its server at. The server sets it for that process, which it starts itself with an environment of the chat model's settings and this one, and nothing else sets it: the server never reads it, and `envoy-dispatch agent` refuses to start without it."},
+	{Name: "DISPATCH_AGENT_SLOTS", Default: "8", Required: "no",
+		Description: "How many runs `envoy-dispatch agent` works at once: the server sets it for that process from the agent's slots, and nothing else sets it; the server never reads it."},
 	{Name: "SSL_CERT_FILE", Default: "the system's certificate authorities", Required: "no",
 		Description: "File of the certificate authorities Go's TLS trusts in place of the system's, which Go reads for itself and the server hands on to its agent process (`envoy-dispatch agent`), so the agent trusts the chat model's endpoint as the server does: for a harness whose model service has a certificate of its own."},
 	{Name: "DISPATCH_DECISION_MODEL", Required: "no",
@@ -238,8 +240,10 @@ var settings = []setting{
 		Description: "The `GOMEMLIMIT`, in bytes, a test process starts its agent process with, in place of the one its ceiling gives; a positive whole number, for an end-to-end test of the agent's claim gate, which takes no run above 70% of it, and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_AGENT_HOOKS", Required: "no",
 		Description: "Set to `1` so a test process starts its agent process with the agent's test hooks on: tools that hang, panic, and panic past every recover, and a reply whose words hang the stream, which an end-to-end test's fake chat model asks for. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
-	{Name: "DISPATCH_TEST_AGENT_CALL_PANIC", Required: "no",
-		Description: "A route, as its method and path (`GET /api/v1/search`), every call of which a test process makes for its agent panics in, for an end-to-end test of the recover that answers such a call with an error while the server serves on; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_CALL_HOOK", Required: "no",
+		Description: "A route every call of which a test process makes for its agent panics in (`panic GET /api/v1/search`), or is held in for a Go duration or until the call's own 60 s end (`hold 20s GET /api/v1/search`), for an end-to-end test of the recover around such a call, of the 16 calls at once, of a call's 60 s and of a second try of its key; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_SLOTS", Default: "8", Required: "no",
+		Description: "How many runs a test process's agent works at once, from 1 to 64, in place of the slots its limits give, for an end-to-end test whose runs make more calls at once than 8 runs can; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

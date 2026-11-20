@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -136,7 +137,14 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 		_, _ = io.Copy(io.Discard, stdin)
 		stop()
 	}()
-	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: agentSlots,
+	slots := agentSlots
+	if raw := strings.TrimSpace(env.get("DISPATCH_AGENT_SLOTS")); raw != "" {
+		if slots, err = strconv.Atoi(raw); err != nil || slots <= 0 {
+			fmt.Fprintf(stderr, "agent: DISPATCH_AGENT_SLOTS=%q (expected a positive whole number of runs)\n", raw)
+			return 1
+		}
+	}
+	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots,
 		Hooks: strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"}
 	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, config); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)

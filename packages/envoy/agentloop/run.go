@@ -109,14 +109,14 @@ func Run(ctx context.Context, req Request) (Result, error) {
 
 	result := r.result()
 	switch failure := r.failure(); {
-	case failure != nil:
-		return result, failure
-	case ctx.Err() != nil:
-		return result, fmt.Errorf("agentloop: %w", ctx.Err())
 	case transport.overLimit():
 		result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's response passed its limit of %d bytes", req.StreamLimit)
 	case r.replyOverLimit.Load():
 		result.Fault, result.Detail = FaultTooLarge, fmt.Sprintf("a model call's reply passed its limit of %d bytes", req.ReplyLimit)
+	case failure != nil:
+		return result, failure
+	case ctx.Err() != nil:
+		return result, fmt.Errorf("agentloop: %w", ctx.Err())
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
 	case stream.Err() != nil:
@@ -458,7 +458,8 @@ func afterHistory(messages []provider.Message, history int) int {
 
 // stepFinished keeps one model call that finished and gives it to the caller's OnStep. The
 // call's own output items are read once the run is over, so the step the callback is given
-// carries no Native.
+// carries no Native. A call whose reply passed Request.ReplyLimit ends the run instead, and is
+// given to no OnStep: the SDK can finish a step before drain has counted its parts.
 func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	step := Step{
 		Blocks: blocksOf(state.Content, r.kind),
@@ -469,10 +470,30 @@ func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 	r.steps = append(r.steps, step)
 	r.text, r.reason = state.Text, state.FinishReason
 	r.mu.Unlock()
+	if r.req.ReplyLimit > 0 && replyBytes(step.Blocks) > r.req.ReplyLimit {
+		r.replyOverLimit.Store(true)
+		r.cancel()
+		return
+	}
 	if r.req.OnStep == nil || r.failure() != nil {
 		return
 	}
 	r.callback("OnStep", func() error { return r.req.OnStep(step) })
+}
+
+// replyBytes is the bytes of the reply blocks hold: its prose, its reasoning and its tool calls'
+// arguments.
+func replyBytes(blocks []Block) int {
+	bytes := 0
+	for _, block := range blocks {
+		switch block.Kind {
+		case TextBlock, ThinkingBlock, ReasoningBlock:
+			bytes += len(block.Text)
+		case ToolCallBlock:
+			bytes += len(block.Input)
+		}
+	}
+	return bytes
 }
 
 // result is the run's steps, their usage summed and the last reply's text, as they stand.

@@ -359,22 +359,33 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 
 // toolRun is the agentloop Run of tool in the step whose model call is numbered base: it makes the
 // call do makes as the step numbered after base by the tool call's index, and saves it as that
-// step, with what the model is told of its result.
+// step, with what the model is told of its result. A do that panics is saved as a refusal naming
+// the panic, and the panic goes on to agentloop's recover, so the run's next step, which starts
+// from the saved steps, tells the model the tool failed.
 func (w *worker) toolRun(base int, tool string, do func(ctx context.Context, step int, input json.RawMessage) (string, bool)) func(context.Context, agentloop.ToolCall) (string, bool) {
 	return func(ctx context.Context, call agentloop.ToolCall) (string, bool) {
 		step := base + call.Index
-		result, refused := do(ctx, step, call.Input)
-		if w.lost.Load() {
-			return result, refused
-		}
 		input := call.Input
 		if !json.Valid(input) {
 			input = json.RawMessage(`{}`)
 		}
-		line := note(fmt.Sprintf("%s %s: %s", tool, input, result))
-		frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused})
-		w.save(agentwire.StepRequest{Step: step, Kind: agentwire.StepTool, Note: line, Frames: []agentwire.Frame{{Name: frameTool, Data: frame}}},
-			toolBody{Call: toolCall{ID: call.ID, Tool: tool, Arguments: input}, Result: result, Error: refused})
+		saveStep := func(result string, refused bool) {
+			if w.lost.Load() {
+				return
+			}
+			line := note(fmt.Sprintf("%s %s: %s", tool, input, result))
+			frame, _ := json.Marshal(toolFrame{Step: step, Tool: tool, Note: line, Error: refused})
+			w.save(agentwire.StepRequest{Step: step, Kind: agentwire.StepTool, Note: line, Frames: []agentwire.Frame{{Name: frameTool, Data: frame}}},
+				toolBody{Call: toolCall{ID: call.ID, Tool: tool, Arguments: input}, Result: result, Error: refused})
+		}
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				saveStep(fmt.Sprintf("the tool %s failed: it panicked (%v)", tool, recovered), true)
+				panic(recovered)
+			}
+		}()
+		result, refused := do(ctx, step, call.Input)
+		saveStep(result, refused)
 		return result, refused
 	}
 }

@@ -1,0 +1,1013 @@
+package main
+
+// agent_loop_test.go holds the agent's loop as a deployment meets it: a real envoy-dispatch
+// server on a real database, whose own envoy-dispatch agent calls a fake chat model over https
+// (going/agent/agenttest), trusting its certificate through SSL_CERT_FILE, with the agent's test
+// hooks on (going/agent/hooks.go) so a reply of the fake can hang a tool or a stream, or panic.
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"net/http"
+	"slices"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/sjawhar/envoy/going/agent"
+	"github.com/sjawhar/envoy/going/agent/agenttest"
+	"github.com/sjawhar/envoy/going/agentwire"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+)
+
+// modelScript is what a fake chat model answers, by the person's words of the run that asks: each
+// row's reply to the n-th request of its run, from 1.
+type modelScript struct {
+	mu   sync.Mutex
+	rows map[string]func(n int) agenttest.Reply
+}
+
+// set scripts the replies to the run whose person's words are words.
+func (s *modelScript) set(words string, reply func(n int) agenttest.Reply) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rows[words] = reply
+}
+
+// newFakeModel is a fake chat model over https that answers as its script says.
+func newFakeModel(t *testing.T) (*agenttest.Model, *modelScript) {
+	t.Helper()
+	script := &modelScript{rows: map[string]func(int) agenttest.Reply{}}
+	var fake *agenttest.Model
+	fake = agenttest.NewTLS(t, func(request *agenttest.Request) agenttest.Reply {
+		script.mu.Lock()
+		defer script.mu.Unlock()
+		for words, reply := range script.rows {
+			if request.Asks(words) {
+				return reply(len(fake.Asking(words)))
+			}
+		}
+		return agenttest.Reply{Text: "No row of this test asks that."}
+	})
+	return fake, script
+}
+
+// modelEnv is the environment of a server whose agent calls fake, with the agent's test hooks on.
+func modelEnv(t *testing.T, fake *agenttest.Model) map[string]string {
+	t.Helper()
+	return map[string]string{
+		"DISPATCH_ANSWERER":         "endpoint",
+		"DISPATCH_CHAT_ENDPOINT":    fake.URL(),
+		"DISPATCH_CHAT_MODEL":       agenttest.ModelID,
+		"DISPATCH_CHAT_TOKEN_FILE":  agenttest.TokenFile(t),
+		"SSL_CERT_FILE":             fake.CertFile(t),
+		"DISPATCH_TEST_AGENT_HOOKS": "1",
+	}
+}
+
+// modelServer is a server whose agent calls a fake chat model, and the script the fake answers by.
+type modelServer struct {
+	agentServer
+	fake   *agenttest.Model
+	script *modelScript
+}
+
+// startModelServer starts Dispatch with env and the fake model's settings on a database of its own.
+func startModelServer(t *testing.T, env map[string]string) modelServer {
+	t.Helper()
+	fake, script := newFakeModel(t)
+	merged := modelEnv(t, fake)
+	maps.Copy(merged, env)
+	return modelServer{agentServer: startAgentServer(t, merged), fake: fake, script: script}
+}
+
+// toolCall is the reply that calls tool with arguments.
+func toolCall(tool string, arguments map[string]any) agenttest.Reply {
+	return agenttest.Reply{Calls: []agenttest.Call{{Name: tool, Arguments: arguments}}}
+}
+
+// readCall is the reply that reads with tool of Dispatch, by call_tool, with arguments.
+func readCall(tool string, arguments map[string]any) agenttest.Reply {
+	return toolCall("call_tool", map[string]any{"tool": tool, "arguments": arguments})
+}
+
+// answer is the reply that answers text and calls nothing.
+func answer(text string) agenttest.Reply { return agenttest.Reply{Text: text} }
+
+// agentGrant is the credential a run acts with: the header identity of a test server where kind is
+// empty, or a sign-in's generation and expiry.
+type agentGrant struct {
+	kind       string
+	generation int64
+	expires    time.Time
+}
+
+// agentRun is a run a row starts, as the route that starts a run records one: login's words at
+// level, with what it already worked, under grant.
+type agentRun struct {
+	login, words, level string
+	workingMS           int64
+	grant               agentGrant
+}
+
+// begin records runs queued with their grants, in one transaction that announces them, so every
+// agent's claim finds them at once; it answers their ids.
+func (s agentServer) begin(t *testing.T, runs ...agentRun) []string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	ids := make([]string, 0, len(runs))
+	for _, run := range runs {
+		id := uuid.NewString()
+		if run.level == "" {
+			run.level = "standard"
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at, budget_used)
+			values ($1::uuid, $2, $3, $1::uuid, $4, 'ask', 'queued', $5, clock_timestamp(),
+			  jsonb_build_object('calls', 0, 'working_ms', $6::bigint, 'tokens', 0))
+		`, id, run.login, run.words, run.level, readShape, run.workingMS); err != nil {
+			t.Fatalf("record run %q: %v", run.words, err)
+		}
+		grant := run.grant
+		if grant.kind == "" {
+			grant.kind = "header"
+		}
+		var generation *int64
+		var expires *time.Time
+		if grant.kind == "sign_in" {
+			generation, expires = &grant.generation, &grant.expires
+		}
+		if _, err := tx.Exec(ctx, `insert into going_run_grants (run_id, kind, login, generation, expires_at) values ($1::uuid, $2, $3, $4, $5)`,
+			id, grant.kind, run.login, generation, expires); err != nil {
+			t.Fatalf("grant run %q: %v", run.words, err)
+		}
+		ids = append(ids, id)
+	}
+	if _, err := tx.Exec(ctx, `select pg_notify($1, 'ready')`, api.GoingRunsChannel); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+// ended waits up to within for run to leave queued and working, and answers its row.
+func (s agentServer) ended(t *testing.T, run string, within time.Duration) runRow {
+	t.Helper()
+	var row runRow
+	s.eventually(t, within, "run "+run+" to end", func() bool {
+		row = s.run(t, run)
+		return row.state != "queued" && row.state != "working"
+	})
+	return row
+}
+
+// toolResults is what the model was told of each tool call of run that saved its step, in order.
+func (s agentServer) toolResults(t *testing.T, run string) []string {
+	t.Helper()
+	rows, err := s.database.Pool.Query(context.Background(), `
+		select body->>'result' from going_run_steps where run_id = $1::uuid and kind = $2 order by step
+	`, run, agentwire.StepTool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var results []string
+	for rows.Next() {
+		var result string
+		if err := rows.Scan(&result); err != nil {
+			t.Fatal(err)
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
+// steps is how many steps run saved.
+func (s agentServer) steps(t *testing.T, run string) int {
+	t.Helper()
+	var steps int
+	if err := s.database.Pool.QueryRow(context.Background(), `select count(*) from going_run_steps where run_id = $1::uuid`, run).Scan(&steps); err != nil {
+		t.Fatal(err)
+	}
+	return steps
+}
+
+// endFrame is the end frame of run's events.
+func (s agentServer) endFrame(t *testing.T, run string) agentwire.EndFrame {
+	t.Helper()
+	var data []byte
+	if err := s.database.Pool.QueryRow(context.Background(), `
+		select data from going_run_events where run_id = $1::uuid and name = $2 order by sequence desc limit 1
+	`, run, agentwire.FrameEnd).Scan(&data); err != nil {
+		t.Fatalf("read run %s's end frame: %v", run, err)
+	}
+	var frame agentwire.EndFrame
+	if err := json.Unmarshal(data, &frame); err != nil {
+		t.Fatal(err)
+	}
+	return frame
+}
+
+// runs is how many runs are in state.
+func (s agentServer) runs(t *testing.T, state string) int {
+	t.Helper()
+	var count int
+	if err := s.database.Pool.QueryRow(context.Background(), `select count(*) from going_runs where state = $1`, state).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	return count
+}
+
+// stop stops run as its person's Stop does: it is set stopped and its lease freed, and the stop is
+// announced, in one transaction.
+func (s agentServer) stop(t *testing.T, run string) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := s.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		update going_runs set state = 'stopped', stop_reason = 'STOPPED: its person stopped it', lease_token = null, lease_owner = null,
+		  lease_ends_at = null, finished_at = now()
+		where id = $1::uuid
+	`, run); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `select pg_notify($1, 'stop')`, api.GoingRunsChannel); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// hookTimes is when each call the agent-call test hook held entered it (what "holds") or left it
+// (what "released"), in order.
+func (s agentServer) hookTimes(t *testing.T, what string) []time.Time {
+	t.Helper()
+	var times []time.Time
+	for _, line := range s.logLines(`msg="dispatch: a test hook ` + what + ` a call of the agent"`) {
+		times = append(times, logTime(t, line))
+	}
+	slices.SortFunc(times, func(a, b time.Time) int { return a.Compare(b) })
+	return times
+}
+
+// TestAStaleOwnerWritesNothing: a run has a lease, and an owner whose lease ended writes nothing
+// (check c17). The fake model holds one call for 3 times the lease while the agent's renewal goes
+// on beside it, so the run is still the agent's; once another owner holds the run, the server
+// refuses the renewal, and the loop's next call and step are refused, so nothing of the stale
+// owner is written.
+func TestAStaleOwnerWritesNothing(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	const words = "search while the model thinks"
+	release := make(chan struct{})
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			reply := readCall("dispatch_search", map[string]any{"query": "thinking"})
+			reply.Hold = release
+			return reply
+		}
+		return answer("Never reached.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	server.eventually(t, 30*time.Second, "the run's model call", func() bool { return len(server.fake.Asking(words)) == 1 })
+	lease := func() (token string, ends time.Time) {
+		t.Helper()
+		if err := server.database.Pool.QueryRow(context.Background(), `
+			select coalesce(lease_token::text, ''), coalesce(lease_ends_at, 'epoch') from going_runs where id = $1::uuid
+		`, run).Scan(&token, &ends); err != nil {
+			t.Fatal(err)
+		}
+		return token, ends
+	}
+	held, _ := lease()
+	time.Sleep(3 * 30 * time.Second)
+	token, ends := lease()
+	if row := server.run(t, run); row.state != "working" || token != held || !ends.After(time.Now()) {
+		t.Fatalf("after 3 lease terms of one model call the run is %s under lease %s ending %s, want working under its claim's lease %s, renewed beside the call",
+			row.state, token, ends, held)
+	}
+	server.exec(t, `
+		update going_runs set lease_token = gen_random_uuid(), lease_owner = 'an agent of another server', lease_ends_at = now() + interval '1 hour'
+		where id = $1::uuid
+	`, run)
+	close(release)
+	time.Sleep(15 * time.Second)
+	if steps := server.steps(t, run); steps != 0 {
+		t.Errorf("the stale owner saved %d steps of the run, want none", steps)
+	}
+	if calls := len(server.fake.Asking(words)); calls != 1 {
+		t.Errorf("the stale owner made %d model calls, want none after the one it held", calls)
+	}
+	if row := server.run(t, run); row.state != "working" || row.owner != "an agent of another server" {
+		t.Errorf("the run is %s held by %q, want working and its new owner's", row.state, row.owner)
+	}
+}
+
+// TestStopCancelsAStreamInFlight: Stop reaches a run in the agent within 1 s (check c27). The fake
+// model streams without end; Stop sets the run stopped, the agent's waiting renew is answered at
+// once, and the fake sees its stream cancelled within 1 s; nothing more of the run is written.
+func TestStopCancelsAStreamInFlight(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	const words = "say everything you know"
+	server.script.set(words, func(int) agenttest.Reply { return agenttest.Reply{Endless: true} })
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	server.eventually(t, 30*time.Second, "the endless stream", func() bool { return len(server.fake.Asking(words)) == 1 })
+	time.Sleep(2 * time.Second)
+	stream := server.fake.Asking(words)[0]
+	if _, left := stream.Left(); left {
+		t.Fatal("the stream ended before the stop")
+	}
+	stopped := time.Now()
+	server.stop(t, run)
+	server.eventually(t, 15*time.Second, "the stream to be cancelled", func() bool { _, left := stream.Left(); return left })
+	if left, _ := stream.Left(); left.Sub(stopped) > time.Second {
+		t.Errorf("the stream was cancelled %s after the stop, want within 1 s", left.Sub(stopped))
+	}
+	time.Sleep(3 * time.Second)
+	if row := server.run(t, run); row.state != "stopped" || server.steps(t, run) != 0 || len(server.fake.Asking(words)) != 1 {
+		t.Errorf("after the stop the run is %s with %d steps and %d model calls, want stopped with nothing more written",
+			row.state, server.steps(t, run), len(server.fake.Asking(words)))
+	}
+}
+
+// TestTheGrantIsCheckedAtEachCall: each call of a run is checked as the person's own request would
+// be (check c30). In a deployment whose people sign in by cookie: a call after the person signs out
+// is refused and the run stops with SESSION_ENDED, though the call before it ran; a sign-in past
+// its 30 days stops the run with SIGN_IN_EXPIRED; a membership the sign-in pool ended stops it with
+// MEMBERSHIP_ENDED; and a membership read the pool answers 503 waits, and the call runs once the
+// pool answers. The rows of an approval are the plan's (t8), and those of a run's start the start
+// route's (t14).
+func TestTheGrantIsCheckedAtEachCall(t *testing.T) {
+	issuer := oidctest.New(t)
+	issuer.EnableCodeFlow(issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	server := startModelServer(t, map[string]string{
+		"DISPATCH_IDENTITY":             "cookie",
+		"DISPATCH_SIGNIN_ISSUER":        issuer.URL(),
+		"DISPATCH_SIGNIN_CLIENT_ID":     cookieClientID,
+		"DISPATCH_SIGNIN_CLIENT_SECRET": cookieClientSecret,
+		"DISPATCH_SIGNIN_GROUP":         cookieGroup,
+		"DISPATCH_INSECURE_COOKIE":      "1",
+	})
+	// signIn signs the person in and answers the cookie and a grant of that sign-in, which
+	// expires at expires.
+	signIn := func(t *testing.T, expires time.Time) (*http.Cookie, string, agentGrant) {
+		t.Helper()
+		session := signInThrough(t, server.dispatchProcess, issuer)
+		var login string
+		grant := agentGrant{kind: "sign_in", expires: expires}
+		if err := server.database.Pool.QueryRow(context.Background(), `select login, generation from user_sessions`).Scan(&login, &grant.generation); err != nil {
+			t.Fatalf("read the sign-in's generation: %v", err)
+		}
+		return session, login, grant
+	}
+	whoami := readCall("dispatch_whoami", map[string]any{})
+	lapse := func(t *testing.T) {
+		t.Helper()
+		server.exec(t, `update people set confirmed_at = now() - interval '2 hours' where email = $1`, cookiePerson)
+	}
+	month := time.Now().Add(30 * 24 * time.Hour)
+
+	t.Run("a sign-out refuses the next call, and the run stops with that reason", func(t *testing.T) {
+		const words = "who am I, twice"
+		session, login, grant := signIn(t, month)
+		signedOut := make(chan struct{})
+		server.script.set(words, func(n int) agenttest.Reply {
+			switch n {
+			case 1:
+				return whoami
+			case 2:
+				reply := whoami
+				reply.Hold = signedOut
+				return reply
+			}
+			return answer("Twice.")
+		})
+		run := server.begin(t, agentRun{login: login, words: words, grant: grant})[0]
+		server.eventually(t, 30*time.Second, "the run's second model call", func() bool { return len(server.fake.Asking(words)) == 2 })
+		request, err := http.NewRequest(http.MethodPost, server.url("/auth/logout"), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.AddCookie(session)
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode/100 != 2 {
+			t.Fatalf("POST /auth/logout answered %d", response.StatusCode)
+		}
+		close(signedOut)
+		row := server.ended(t, run, time.Minute)
+		if row.state != "stopped" || !strings.HasPrefix(row.reason, "SESSION_ENDED") {
+			t.Errorf("the run ended %s with %q, want stopped with SESSION_ENDED", row.state, row.reason)
+		}
+		if results := server.toolResults(t, run); len(results) != 1 || !strings.Contains(results[0], "status 200") {
+			t.Errorf("the run's calls were told %q, want the one before the sign-out answered 200 and none after it", results)
+		}
+	})
+
+	t.Run("a sign-in past its 30 days refuses the next call, and the run stops with that reason", func(t *testing.T) {
+		const words = "who am I, after a month"
+		_, login, grant := signIn(t, time.Now().Add(-time.Minute))
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return whoami
+			}
+			return answer("Nobody.")
+		})
+		run := server.begin(t, agentRun{login: login, words: words, grant: grant})[0]
+		if row := server.ended(t, run, time.Minute); row.state != "stopped" || !strings.HasPrefix(row.reason, "SIGN_IN_EXPIRED") {
+			t.Errorf("the run ended %s with %q, want stopped with SIGN_IN_EXPIRED", row.state, row.reason)
+		}
+	})
+
+	t.Run("a token without the approve scope is refused at the approval", func(t *testing.T) {
+		t.Skip("t8: the approval is the plan's route")
+	})
+	t.Run("an IAP grant ends with the run's working budget, and an approval moves it", func(t *testing.T) {
+		t.Skip("t8: the approval is the plan's route")
+	})
+
+	t.Run("a lost membership stops the run", func(t *testing.T) {
+		const words = "who am I, once the pool forgets me"
+		_, login, grant := signIn(t, month)
+		lost := make(chan struct{})
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				reply := whoami
+				reply.Hold = lost
+				return reply
+			}
+			return answer("A member.")
+		})
+		run := server.begin(t, agentRun{login: login, words: words, grant: grant})[0]
+		server.eventually(t, 30*time.Second, "the run's model call", func() bool { return len(server.fake.Asking(words)) == 1 })
+		lapse(t)
+		issuer.RevokeGrants()
+		close(lost)
+		if row := server.ended(t, run, time.Minute); row.state != "stopped" || !strings.HasPrefix(row.reason, "MEMBERSHIP_ENDED") {
+			t.Errorf("the run ended %s with %q, want stopped with MEMBERSHIP_ENDED", row.state, row.reason)
+		}
+	})
+
+	t.Run("a membership read answered 503 waits and then runs", func(t *testing.T) {
+		const words = "who am I, while the pool is down"
+		_, login, grant := signIn(t, month)
+		lapse(t)
+		issuer.FailToken(http.StatusServiceUnavailable, "")
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return whoami
+			}
+			return answer("Still you.")
+		})
+		run := server.begin(t, agentRun{login: login, words: words, grant: grant})[0]
+		server.eventually(t, 30*time.Second, "the run's model call", func() bool { return len(server.fake.Asking(words)) == 1 })
+		time.Sleep(5 * time.Second)
+		if row := server.run(t, run); row.state != "working" || len(server.fake.Asking(words)) != 1 {
+			t.Fatalf("while the pool answers 503 the run is %s after %d model calls, want working, its call waiting", row.state, len(server.fake.Asking(words)))
+		}
+		issuer.FailToken(0, "")
+		if row := server.ended(t, run, time.Minute); row.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done once the pool answers", row.state, row.reason)
+		}
+		if results := server.toolResults(t, run); len(results) != 1 || !strings.Contains(results[0], "status 200") || !strings.Contains(results[0], login) {
+			t.Errorf("the call was told %q, want 200 naming %s", results, login)
+		}
+	})
+
+	t.Run("the stored grant holds no cookie, assertion, token or hash", func(t *testing.T) {
+		t.Skip("t14: the route that starts a run records its grant")
+	})
+	t.Run("an approval by token B moves the grant, and revoking token A stops nothing", func(t *testing.T) {
+		t.Skip("t8: the approval is the plan's route")
+	})
+	t.Run("a broker token, the shared token and a service token are refused at the start with RUN_NEEDS_PERSON_CREDENTIAL", func(t *testing.T) {
+		t.Skip("t14: the route that starts a run refuses them")
+	})
+}
+
+// requireTheWatchdogEndsAStuckAgent: a tool and a model stream that ignore their context hold
+// their steps past the model call's time and 10 s: the watchdog gives up each run's lease and
+// counts its goroutine stuck, and at 3 the agent exits and the server starts it again, while the
+// server answers each request; the next agent works the runs to their end. Each run has 5 s of a
+// Fast run's 90 s left, so its step's time is 5 s and the watchdog's 15 s.
+func requireTheWatchdogEndsAStuckAgent(t *testing.T) {
+	server := startModelServer(t, nil)
+	first := server.agentStarted(t, 1, 30*time.Second)
+	server.waitForAgentRenewal(t)
+	stuck := map[string]agenttest.Reply{
+		"hang in a tool":       toolCall("test_hang", map[string]any{}),
+		"hang in another tool": toolCall("test_hang", map[string]any{}),
+		"hang in the stream":   {Text: "[[test_hang]] and more"},
+	}
+	var runs []agentRun
+	for words, reply := range stuck {
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return reply
+			}
+			return answer("Done at last.")
+		})
+		runs = append(runs, agentRun{login: "alice", words: words, level: "fast", workingMS: 85_000})
+	}
+	ids := server.begin(t, runs...)
+	next := server.agentStarted(t, 2, 90*time.Second)
+	if next == first {
+		t.Fatalf("the agent started again under the pid of the one that exited, %d", first)
+	}
+	if gaveUp := server.logLines(`msg="agent: the watchdog gave up a run`); len(gaveUp) != 3 {
+		t.Errorf("the watchdog gave up %d runs before the agent exited, want 3:\n%s", len(gaveUp), strings.Join(gaveUp, "\n"))
+	}
+	server.requireServing(t)
+	for _, id := range ids {
+		if row := server.ended(t, id, 2*time.Minute); row.state != "done" {
+			t.Errorf("run %s ended %s with %q, want done by the next agent", id, row.state, row.reason)
+		}
+	}
+}
+
+// requireAPanicInACallbackIsRecovered: a tool that panics on the model loop's own goroutines is
+// recovered: the model is told the tool failed, the run answers, and the agent's process id does
+// not change.
+func requireAPanicInACallbackIsRecovered(t *testing.T) {
+	server := startModelServer(t, nil)
+	pid := server.agentStarted(t, 1, 30*time.Second)
+	const words = "call the tool that panics"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return toolCall("test_panic", map[string]any{})
+		}
+		return answer("The tool failed, and the run goes on.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	if row := server.ended(t, run, time.Minute); row.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+	}
+	if results := server.fake.Asking(words)[1].ToolResults(); len(results) != 1 || !strings.Contains(results[0], "panicked") {
+		t.Errorf("the model was told %q of the tool, want that it panicked", results)
+	}
+	if pids := server.agentPids(); len(pids) != 1 || pids[0] != pid {
+		t.Errorf("the agents started are %v, want the one, %d, whose callback panicked", pids, pid)
+	}
+}
+
+// requireARunThatPanicsPastItsRecoveryFails: a run whose tool panics past every recover kills the
+// agent each time it works; the death it causes beside another run is charged to neither, each
+// death it causes alone is charged to it, and at the third it fails with that reason, while the
+// run beside it ends as its own model answers, charged nothing.
+func requireARunThatPanicsPastItsRecoveryFails(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	const besideWords, crashWords = "wait beside the crash", "call the tool that kills the agent"
+	never := make(chan struct{})
+	server.script.set(besideWords, func(n int) agenttest.Reply {
+		if n == 1 {
+			return agenttest.Reply{Hold: never}
+		}
+		return answer("Done beside it.")
+	})
+	server.script.set(crashWords, func(int) agenttest.Reply { return toolCall("test_crash", map[string]any{}) })
+	beside := server.begin(t, agentRun{login: "alice", words: besideWords})[0]
+	server.eventually(t, 30*time.Second, "the run beside to be at its model", func() bool { return len(server.fake.Asking(besideWords)) == 1 })
+	crash := server.begin(t, agentRun{login: "alice", words: crashWords})[0]
+	if row := server.ended(t, crash, 3*time.Minute); row.state != "failed" || !strings.HasPrefix(row.reason, "AGENT_KILLED") || row.kills != 3 {
+		t.Errorf("the run that kills the agent ended %s with %q and %d kills, want failed with AGENT_KILLED at 3", row.state, row.reason, row.kills)
+	}
+	if row := server.ended(t, beside, time.Minute); row.state != "done" || row.kills != 0 {
+		t.Errorf("the run beside it ended %s with %q and %d kills, want done and charged none", row.state, row.reason, row.kills)
+	}
+	// The run fails at its fourth death's report, before the server starts the agent after it.
+	server.agentStarted(t, 5, 30*time.Second)
+	if pids := server.agentPids(); len(pids) != 5 {
+		t.Errorf("%d agents started, want 5: the first and one after each of its 4 deaths", len(pids))
+	}
+	server.requireServing(t)
+}
+
+// requireAPanickingRouteAnswersAnError: a route that panics while the server runs a call of the
+// agent's answers the call an error, which the model is told; the run goes on to its answer, and
+// the server's process serves on.
+func requireAPanickingRouteAnswersAnError(t *testing.T) {
+	server := startModelServer(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": "panic GET /api/v1/search"})
+	const words = "search where the route panics"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return readCall("dispatch_search", map[string]any{"query": "panics"})
+		}
+		return answer("The search failed.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	if row := server.ended(t, run, time.Minute); row.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+	}
+	if results := server.toolResults(t, run); len(results) != 1 || !strings.Contains(results[0], agentwire.CodeCallPanicked) {
+		t.Errorf("the call was told %q, want %s", results, agentwire.CodeCallPanicked)
+	}
+	if !server.logged(`msg="dispatch: a call of a command-bar run panicked"`) {
+		t.Error("the server did not log the call's panic")
+	}
+	select {
+	case <-server.Exited:
+		t.Fatalf("the server exited:\n%s", server.Output.String())
+	default:
+	}
+	server.requireServing(t)
+}
+
+// requireTheAgentsSlots: the agent works 8 runs at once; a ninth waits in the queue until one of
+// them ends.
+func requireTheAgentsSlots(t *testing.T) {
+	server := startModelServer(t, nil)
+	release := make(chan struct{})
+	var runs []agentRun
+	for index := range 9 {
+		words := fmt.Sprintf("slot run %d", index)
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return agenttest.Reply{Hold: release, Text: "Done."}
+			}
+			return answer("Done.")
+		})
+		runs = append(runs, agentRun{login: fmt.Sprintf("person%d", index/3), words: words})
+	}
+	ids := server.begin(t, runs...)
+	server.eventually(t, 30*time.Second, "8 runs at their model", func() bool { return server.fake.Count() == 8 })
+	time.Sleep(3 * time.Second)
+	if working, queued, calls := server.runs(t, "working"), server.runs(t, "queued"), server.fake.Count(); working != 8 || queued != 1 || calls != 8 {
+		t.Errorf("%d runs work, %d are queued and the model has %d calls, want 8 working, 1 queued, 8 calls", working, queued, calls)
+	}
+	close(release)
+	for _, id := range ids {
+		if row := server.ended(t, id, time.Minute); row.state != "done" {
+			t.Errorf("run %s ended %s with %q, want done", id, row.state, row.reason)
+		}
+	}
+}
+
+// requireOnePersonsRuns: two server processes and two agents share one database, and one person
+// works at most 3 runs at once across them. Each agent works 2 runs at once, so of the person's
+// first 3 runs each agent holds some; the person's next 2, queued once those 3 work, stay queued
+// for longer than a claim waits, whichever agent asks, as the runs' lease owners show.
+func requireOnePersonsRuns(t *testing.T) {
+	t.Run("at most 3 of one person's runs work under two servers and their agents", func(t *testing.T) {
+		database := storetest.Open(t)
+		fake, script := newFakeModel(t)
+		env := modelEnv(t, fake)
+		env["DISPATCH_TEST_AGENT_SLOTS"] = "2"
+		var servers []agentServer
+		for range 2 {
+			process := startDispatchProcessWith(t, database.Pool.Config().ConnString(),
+				dispatchOptions{Env: env, OwnProcessGroup: true, SigningKey: multiprocessSigningKey})
+			process.waitHealthy(t)
+			server := agentServer{dispatchProcess: process, database: database}
+			server.waitForAgentRenewal(t)
+			servers = append(servers, server)
+		}
+		release := make(chan struct{})
+		queue := func(from, to int) []string {
+			t.Helper()
+			var runs []agentRun
+			for index := from; index < to; index++ {
+				words := fmt.Sprintf("one of alice's runs, %d", index)
+				script.set(words, func(int) agenttest.Reply { return agenttest.Reply{Hold: release, Text: "Done."} })
+				runs = append(runs, agentRun{login: "alice", words: words})
+			}
+			return servers[0].begin(t, runs...)
+		}
+		// working is how many of alice's runs work under a live lease, by the agent instance that
+		// holds each, and total their sum.
+		working := func() map[string]int {
+			t.Helper()
+			rows, err := database.Pool.Query(context.Background(), `
+				select lease_owner from going_runs where author_login = 'alice' and state = 'working' and lease_ends_at >= now()
+			`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			owners := map[string]int{}
+			for rows.Next() {
+				var owner string
+				if err := rows.Scan(&owner); err != nil {
+					t.Fatal(err)
+				}
+				owners[owner]++
+			}
+			return owners
+		}
+		total := func(owners map[string]int) int {
+			sum := 0
+			for _, held := range owners {
+				sum += held
+			}
+			return sum
+		}
+		ids := queue(0, 3)
+		servers[0].eventually(t, time.Minute, "alice's first 3 runs to work under both agents", func() bool {
+			owners := working()
+			return total(owners) == 3 && len(owners) == 2
+		})
+		ids = append(ids, queue(3, 5)...)
+		// A claim waits 25 s for a ready run and then asks again, so 35 s holds at least one claim
+		// of each agent made after the 2 were queued, whether a notification woke it or not.
+		for deadline := time.Now().Add(35 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+			if owners := working(); total(owners) > 3 {
+				t.Fatalf("%d of alice's runs work at once, held by the agents %v, want 3 at the most", total(owners), owners)
+			}
+		}
+		if calls := fake.Count(); calls != 3 {
+			t.Errorf("the model has %d of alice's calls, want the 3 runs' that work", calls)
+		}
+		close(release)
+		for _, id := range ids {
+			if row := servers[0].ended(t, id, time.Minute); row.state != "done" {
+				t.Errorf("run %s ended %s with %q, want done", id, row.state, row.reason)
+			}
+		}
+	})
+	t.Run("the 21st queued run is refused with its reason", func(t *testing.T) {
+		t.Skip("t14: the route that starts a run refuses it")
+	})
+}
+
+// requireTheLevelsBudgets: a Fast run stops at its 6 model calls, at its 90 s of working time and
+// at a call that writes its 4,000 output tokens, each with the bound's name, and offers Continue.
+func requireTheLevelsBudgets(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	stopped := func(t *testing.T, run, reason string) {
+		t.Helper()
+		row := server.ended(t, run, 2*time.Minute)
+		if row.state != "stopped" || !strings.HasPrefix(row.reason, reason) {
+			t.Errorf("the run ended %s with %q, want stopped with %s", row.state, row.reason, reason)
+		}
+		if frame := server.endFrame(t, run); !slices.Equal(frame.Offers, []string{agentwire.OfferContinue}) {
+			t.Errorf("the run's end offers %v, want Continue", frame.Offers)
+		}
+	}
+	t.Run("a Fast run stops at its 6th model call", func(t *testing.T) {
+		const words = "look for ever, quickly"
+		server.script.set(words, func(int) agenttest.Reply { return toolCall("find_tools", map[string]any{"need": "an issue"}) })
+		run := server.begin(t, agentRun{login: "alice", words: words, level: "fast"})[0]
+		stopped(t, run, agent.ReasonCallBudget)
+		if calls := len(server.fake.Asking(words)); calls != 6 {
+			t.Errorf("the run made %d model calls, want 6", calls)
+		}
+	})
+	t.Run("a Fast run stops at its 90 s of working time", func(t *testing.T) {
+		const words = "think until the time is up"
+		never := make(chan struct{})
+		server.script.set(words, func(int) agenttest.Reply { return agenttest.Reply{Hold: never} })
+		run := server.begin(t, agentRun{login: "alice", words: words, level: "fast", workingMS: 89_500})[0]
+		stopped(t, run, agent.ReasonTimeBudget)
+	})
+	t.Run("a Fast run stops at a call that writes its 4,000 output tokens", func(t *testing.T) {
+		const words = "write at length"
+		server.script.set(words, func(int) agenttest.Reply {
+			return agenttest.Reply{Text: "A reply cut at its tokens", Finish: "length", Output: 4000}
+		})
+		run := server.begin(t, agentRun{login: "alice", words: words, level: "fast"})[0]
+		stopped(t, run, agent.ReasonOutputTokens)
+		if tokens := server.fake.Asking(words)[0].Field("max_tokens"); tokens != float64(4000) {
+			t.Errorf("the call asked for max_tokens %v, want 4000", tokens)
+		}
+	})
+}
+
+// requireOneModelCallsBounds: a model call's response is read up to 8 MiB and the reply it builds
+// up to 512 KiB, past which the run fails and says why; and a 429 of the model is tried again
+// after the time it names.
+func requireOneModelCallsBounds(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	failed := func(t *testing.T, words string, reply agenttest.Reply, says string) {
+		t.Helper()
+		server.script.set(words, func(int) agenttest.Reply { return reply })
+		run := server.begin(t, agentRun{login: "alice", words: words})[0]
+		if row := server.ended(t, run, time.Minute); row.state != "failed" || !strings.HasPrefix(row.reason, "MODEL_REPLY_TOO_LARGE") || !strings.Contains(row.reason, says) {
+			t.Errorf("the run ended %s with %q, want failed with MODEL_REPLY_TOO_LARGE naming %q", row.state, row.reason, says)
+		}
+	}
+	t.Run("a response past 8 MiB fails the run", func(t *testing.T) {
+		failed(t, "answer after a long stream", agenttest.Reply{Padding: 9 << 20, Text: "Short."}, "response passed its limit of 8388608 bytes")
+	})
+	t.Run("a reply past 512 KiB fails the run", func(t *testing.T) {
+		failed(t, "answer at great length", agenttest.Reply{Text: strings.Repeat("plum ", 120_000)}, "reply passed its limit of 524288 bytes")
+	})
+	t.Run("a 429 is tried again after the time it names", func(t *testing.T) {
+		const words = "answer when the quota allows"
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return agenttest.Reply{Status: http.StatusTooManyRequests, RetryAfter: "2"}
+			}
+			return answer("Answered after the wait.")
+		})
+		run := server.begin(t, agentRun{login: "alice", words: words})[0]
+		if row := server.ended(t, run, time.Minute); row.state != "done" {
+			t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+		}
+		requests := server.fake.Asking(words)
+		if len(requests) != 2 || requests[1].At.Sub(requests[0].At) < 2*time.Second {
+			t.Errorf("the model got %d calls, the second %s after the 429, want 2, at least 2 s apart", len(requests), requests[len(requests)-1].At.Sub(requests[0].At))
+		}
+	})
+}
+
+// requireOneReadToTheModel: the model is given at most 32 KiB of a read and a note that names the
+// rest. The read is a 40 KiB document. The server's own bound of 1 MiB on a call's answer is
+// TestTheAgentWireCalls' "an answer past 1 MiB is cut".
+func requireOneReadToTheModel(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.createProject(t, "READ", "Reads")
+	_, document := server.createIssueIn(t, "READ", "A long spec", strings.Repeat("A line of the long spec.\n\n", 1640))
+	const words = "read the long spec"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return readCall("dispatch_doc_read", map[string]any{"artifact": document})
+		}
+		return answer("Read part of it.")
+	})
+	run := server.begin(t, agentRun{login: dispatchTestLogin, words: words})[0]
+	if row := server.ended(t, run, time.Minute); row.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+	}
+	results := server.fake.Asking(words)[1].ToolResults()
+	if len(results) != 1 || len(results[0]) > 33<<10 || !strings.Contains(results[0], "you were given the first 32768") {
+		t.Errorf("the model was given %d results, the first of %d bytes, want one of 32 KiB and a note naming the rest", len(results), len(results[0]))
+	}
+}
+
+// requireOneStepsTime: a step whose tool ignores its context runs past its model call's time and
+// 10 s: the watchdog gives up its lease and counts a stuck goroutine, which /metrics shows, and
+// once the lease runs out the run is claimed again and works to its end.
+func requireOneStepsTime(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	const words = "call the tool that never returns"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return toolCall("test_hang", map[string]any{})
+		}
+		return answer("Done the second time.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words, level: "fast", workingMS: 85_000})[0]
+	server.waitForLog(t, 40*time.Second, `msg="agent: the watchdog gave up a run`, "run="+run)
+	server.eventually(t, 30*time.Second, "/metrics to show the stuck goroutine", func() bool {
+		return server.scrape(t)[`envoy_dispatch_agent_stuck_goroutines`] == 1
+	})
+	if row := server.ended(t, run, 2*time.Minute); row.state != "done" || len(server.fake.Asking(words)) != 2 {
+		t.Errorf("the run ended %s with %q after %d model calls, want done after 2", row.state, row.reason, len(server.fake.Asking(words)))
+	}
+}
+
+// requireTheServersCallSlots: the server runs 16 calls for its agent at once, counted in the
+// server; the 17th waits for a free one. 17 runs each read a route the test hook holds 20 s.
+func requireTheServersCallSlots(t *testing.T) {
+	server := startModelServer(t, map[string]string{
+		"DISPATCH_TEST_AGENT_SLOTS":     "17",
+		"DISPATCH_TEST_AGENT_CALL_HOOK": "hold 20s GET /api/v1/search",
+	})
+	var runs []agentRun
+	for index := range 17 {
+		words := fmt.Sprintf("held search %d", index)
+		server.script.set(words, func(n int) agenttest.Reply {
+			if n == 1 {
+				return readCall("dispatch_search", map[string]any{"query": "held"})
+			}
+			return answer("Searched.")
+		})
+		runs = append(runs, agentRun{login: fmt.Sprintf("person%d", index/3), words: words})
+	}
+	for _, id := range server.begin(t, runs...) {
+		if row := server.ended(t, id, 2*time.Minute); row.state != "done" {
+			t.Errorf("run %s ended %s with %q, want done", id, row.state, row.reason)
+		}
+	}
+	holds, releases := server.hookTimes(t, "holds"), server.hookTimes(t, "released")
+	if len(holds) != 17 || len(releases) != 17 {
+		t.Fatalf("the hook held %d calls and released %d, want 17 of each", len(holds), len(releases))
+	}
+	before := 0
+	for _, held := range holds {
+		if held.Before(releases[0]) {
+			before++
+		}
+	}
+	if before != 16 {
+		t.Errorf("%d calls ran at once before the first ended, want 16", before)
+	}
+	if holds[16].Before(releases[0]) {
+		t.Errorf("the 17th call entered its route at %s, before the first call ended at %s", holds[16], releases[0])
+	}
+}
+
+// requireOneCallsTime: a call runs at most 60 s in the server, on a context of its own; a call
+// past it fails with that reason, which the model is told, and the run goes on.
+func requireOneCallsTime(t *testing.T) {
+	server := startModelServer(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": "hold 70s GET /api/v1/search"})
+	const words = "search for longer than a call may"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n == 1 {
+			return readCall("dispatch_search", map[string]any{"query": "slow"})
+		}
+		return answer("The search ran out of time.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	if row := server.ended(t, run, 3*time.Minute); row.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+	}
+	if results := server.toolResults(t, run); len(results) != 1 || !strings.Contains(results[0], agentwire.CodeCallFailed) || !strings.Contains(results[0], "ran past its 1m0s") {
+		t.Errorf("the call was told %q, want %s naming its 60 s", results, agentwire.CodeCallFailed)
+	}
+	holds, releases := server.hookTimes(t, "holds"), server.hookTimes(t, "released")
+	if len(holds) != 1 || len(releases) != 1 {
+		t.Fatalf("the hook held %d calls and released %d, want 1 of each", len(holds), len(releases))
+	}
+	if took := releases[0].Sub(holds[0]); took < 59*time.Second || took > 65*time.Second {
+		t.Errorf("the call ended %s after it entered its route, want at its 60 s", took)
+	}
+}
+
+// requireASecondTryWaitsForTheFirst: a second try of a call's idempotency key waits for the first
+// try, which runs on in the server after its agent died, and then runs. The first agent dies while
+// the hook holds its call 20 s; the next one works the run again from its saved steps and makes the
+// same call, whose route it enters only once the first try left it.
+func requireASecondTryWaitsForTheFirst(t *testing.T) {
+	server := startModelServer(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": "hold 20s GET /api/v1/search"})
+	pid := server.agentStarted(t, 1, 30*time.Second)
+	const words = "search, and search again after a crash"
+	server.script.set(words, func(n int) agenttest.Reply {
+		if n <= 2 {
+			return readCall("dispatch_search", map[string]any{"query": "twice"})
+		}
+		return answer("Searched.")
+	})
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	server.eventually(t, 30*time.Second, "the first try to be held", func() bool { return len(server.hookTimes(t, "holds")) == 1 })
+	signalProcess(t, pid, syscall.SIGKILL)
+	if row := server.ended(t, run, 2*time.Minute); row.state != "done" {
+		t.Fatalf("the run ended %s with %q, want done", row.state, row.reason)
+	}
+	holds, releases := server.hookTimes(t, "holds"), server.hookTimes(t, "released")
+	if len(holds) != 2 || len(releases) != 2 || len(server.fake.Asking(words)) != 3 {
+		t.Fatalf("the hook held %d tries and released %d after %d model calls, want 2 tries of the call and 3 calls", len(holds), len(releases), len(server.fake.Asking(words)))
+	}
+	if holds[1].Before(releases[0]) {
+		t.Errorf("the second try entered the route at %s, before the first left it at %s", holds[1], releases[0])
+	}
+}
+
+// requireOneClaim: a claim waits 25 s at the most and answers that no run is ready, and the agent
+// asks again: a run queued after that wait is worked.
+func requireOneClaim(t *testing.T) {
+	server := startModelServer(t, nil)
+	server.waitForAgentRenewal(t)
+	time.Sleep(27 * time.Second)
+	const words = "a run after a quiet claim"
+	server.script.set(words, func(int) agenttest.Reply { return answer("Claimed and done.") })
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	if row := server.ended(t, run, 30*time.Second); row.state != "done" {
+		t.Errorf("the run ended %s with %q, want done by the agent's next claim", row.state, row.reason)
+	}
+}
+
+// requireTheClaimGate: the agent takes no claim while its memory is above 70% of its GOMEMLIMIT,
+// which the test sets at 1 MiB, under what any Go process holds: a ready run stays queued, and the
+// agent says why.
+func requireTheClaimGate(t *testing.T) {
+	server := startModelServer(t, map[string]string{"DISPATCH_TEST_AGENT_GOMEMLIMIT": "1048576"})
+	server.waitForAgentRenewal(t)
+	const words = "a run the agent has no room for"
+	server.script.set(words, func(int) agenttest.Reply { return answer("Done.") })
+	run := server.begin(t, agentRun{login: "alice", words: words})[0]
+	server.waitForLog(t, 30*time.Second, `msg="agent: its memory is above 70% of its limit, so it claims no run until it falls"`)
+	time.Sleep(10 * time.Second)
+	if row := server.run(t, run); row.state != "queued" || server.fake.Count() != 0 {
+		t.Errorf("the run is %s after %d model calls, want queued with none", row.state, server.fake.Count())
+	}
+	server.requireServing(t)
+}

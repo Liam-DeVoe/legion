@@ -39,13 +39,14 @@ type Call struct {
 
 // Reply is what the fake answers one request with. A Status other than 0 and 200 answers that
 // status with an error body, and RetryAfter its Retry-After header. Otherwise the reply streams
-// Text, in one piece, then Calls, and finishes with Finish ("stop", or "tool_calls" where it calls
-// a tool, by default), having written Output completion tokens. Hold, where set, is waited on
-// before anything is sent, until it closes or the client leaves; Endless streams text with no end
-// until the client leaves.
+// Padding bytes of SSE comments, which a reader skips, then Text, in one piece, then Calls, and
+// finishes with Finish ("stop", or "tool_calls" where it calls a tool, by default), having
+// written Output completion tokens. Hold, where set, is waited on before anything is sent, until
+// it closes or the client leaves; Endless streams text with no end until the client leaves.
 type Reply struct {
 	Status     int
 	RetryAfter string
+	Padding    int
 	Text       string
 	Calls      []Call
 	Finish     string
@@ -53,6 +54,11 @@ type Reply struct {
 	Hold       <-chan struct{}
 	Endless    bool
 }
+
+// Asked is how the agent's loop gives the model the person's words of the run it works (going/
+// agent's conversation): this line, then the words and the end of their line, which Asks matches
+// whole, so words that begin another run's words do not match that run.
+const Asked = "The person asks now:\n"
 
 // Request is one request the fake got: when it came, its body, and, once its stream ended, when
 // and whether its client left it before the reply was whole.
@@ -209,6 +215,42 @@ func (m *Model) Matching(words string) []*Request {
 	return matching
 }
 
+// Asking is every request of the run whose person's words are words, in order: the requests that
+// give words as what the person asks now, and not as an earlier turn of the conversation.
+func (m *Model) Asking(words string) []*Request {
+	return m.Matching(Asked + words + "\n")
+}
+
+// Asks reports whether the request is of the run whose person's words are words.
+func (r *Request) Asks(words string) bool {
+	return strings.Contains(r.Text(), Asked+words+"\n")
+}
+
+// ToolResults is the text of each tool result the request gives the model, in order.
+func (r *Request) ToolResults() []string {
+	var results []string
+	for _, message := range r.Messages() {
+		if message["role"] != "tool" {
+			continue
+		}
+		switch content := message["content"].(type) {
+		case string:
+			results = append(results, content)
+		case []any:
+			var parts []string
+			for _, part := range content {
+				if part, ok := part.(map[string]any); ok {
+					if text, ok := part["text"].(string); ok {
+						parts = append(parts, text)
+					}
+				}
+			}
+			results = append(results, strings.Join(parts, "\n"))
+		}
+	}
+	return results
+}
+
 func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	request := &Request{At: time.Now(), Body: body}
@@ -258,6 +300,15 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 		return true
+	}
+	if reply.Padding > 0 {
+		line := ": " + strings.Repeat("x", 4094) + "\n\n"
+		for sent := 0; sent < reply.Padding; sent += len(line) {
+			if _, err := fmt.Fprint(w, line); err != nil {
+				left()
+				return
+			}
+		}
 	}
 	if !send(chunk(map[string]any{"role": "assistant", "content": ""}, nil)) {
 		left()

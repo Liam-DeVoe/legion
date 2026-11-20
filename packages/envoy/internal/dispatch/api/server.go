@@ -201,10 +201,11 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
-	// AgentCallPanic is for end-to-end test processes only: the route, "METHOD /path", every call
-	// of which the server runs for its agent panics in, so a test holds the recover around a call
-	// to the server's own process (runCall). A deployment leaves it empty.
-	AgentCallPanic string
+	// AgentCallHook is for end-to-end test processes only: a route every call of which the server
+	// runs for its agent panics in, or is held in (AgentCallHook), so a test holds the recover
+	// around a call, the call slots and the call's time to the server's own process (runCall). A
+	// deployment leaves it zero.
+	AgentCallHook AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events: cmd/dispatch sets it
 	// unless NATS is disabled (DISPATCH_NATS_DISABLED=1). A mention's send then goes only once no
 	// earlier event of its comment's owner still owes a send its session may take
@@ -308,8 +309,8 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
-	// AgentCallPanic is for end-to-end test processes only; see Deps.AgentCallPanic.
-	AgentCallPanic string
+	// AgentCallHook is for end-to-end test processes only; see Deps.AgentCallHook.
+	AgentCallHook AgentCallHook
 	// OutboxPublishes is that an outbox publishes this deployment's events; see
 	// Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -404,7 +405,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		HorizonWarnEvery:       input.HorizonWarnEvery,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
-		AgentCallPanic:         input.AgentCallPanic,
+		AgentCallHook:          input.AgentCallHook,
 		OutboxPublishes:        input.OutboxPublishes,
 		Metrics:                input.Metrics,
 		DashboardEntry:         input.DashboardEntry,

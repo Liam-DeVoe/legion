@@ -124,7 +124,7 @@ func (w *worker) tools(base int) []agentloop.Tool {
 		},
 	}
 	if w.agent.config.Hooks {
-		tools = append(tools, hookTools()...)
+		tools = append(tools, w.hookTools(base)...)
 	}
 	return tools
 }

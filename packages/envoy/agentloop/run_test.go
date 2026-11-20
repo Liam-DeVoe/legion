@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -903,6 +904,8 @@ func TestAStreamPastItsLimitFails(t *testing.T) {
 			f := newFixture(t, s, OpenAIChat, 1)
 			f.req.Tools = nil
 			f.req.StreamLimit, f.req.ReplyLimit = c.streamLimit, c.replyLimit
+			var given atomic.Int32
+			f.req.OnStep = func(Step) error { given.Add(1); return nil }
 			result, err := Run(context.Background(), f.req)
 			if err != nil {
 				t.Fatal(err)
@@ -915,6 +918,11 @@ func TestAStreamPastItsLimitFails(t *testing.T) {
 			}
 			if result.Fault != c.fault || !strings.Contains(result.Detail, c.detail) {
 				t.Fatalf("result fault %q with %q, want %q naming %q", result.Fault, result.Detail, c.fault, c.detail)
+			}
+			// A reply past its limit is known whole only once its step finished, which is then
+			// given to no OnStep; a stream cut at its limit may end after its step finished.
+			if n := given.Load(); c.replyLimit < len(text) && n != 0 {
+				t.Errorf("OnStep was given %d steps of the reply past its limit, want none", n)
 			}
 		})
 	}

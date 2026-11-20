@@ -174,8 +174,8 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	}
 	doer := a.s.goingDoer(caller, a.s.deps.ServerURL).(goingInProcess)
 	doer.limit = agentwire.CallBodyLimit
-	if route := a.s.deps.AgentCallPanic; route != "" {
-		doer.handler = goingPanickingRoute(route, doer.handler)
+	if hook := a.s.deps.AgentCallHook; hook.Route != "" {
+		doer.handler = hook.wrap(doer.handler)
 	}
 	var answer agentwire.CallAnswer
 	switch request.Kind {
@@ -186,15 +186,70 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	case agentwire.KindWeb:
 		answer, refusal = a.webRead(ctx, request)
 	}
+	if refusal == nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// What a route answered once the call's own time was over is not the call's answer: the
+		// call failed, and a write that committed keeps its landing, which a second try answers.
+		return goingCallResult{refusal: goingAgentRefusal(agentwire.CodeCallFailed, "the call ran past its %s in the server", a.callTime)}
+	}
 	return goingCallResult{answer: answer, refusal: refusal}
 }
 
-// goingPanickingRoute is inner with the route the test hook names ("METHOD /path",
-// Deps.AgentCallPanic) panicking at each request of it.
-func goingPanickingRoute(route string, inner http.Handler) http.Handler {
+// AgentCallHook is a test hook on the calls the server runs for its agent (Deps.AgentCallHook),
+// which an end-to-end test of the agent process sets: every request of Route ("METHOD /path") that
+// a call sends panics, where Panic is set, or is held Hold, or until the call's own context ends,
+// before the route answers it. The zero hook sets none.
+type AgentCallHook struct {
+	Route string
+	Panic bool
+	Hold  time.Duration
+}
+
+// ParseAgentCallHook reads a hook as DISPATCH_TEST_AGENT_CALL_HOOK writes one: "panic METHOD
+// /path", or "hold DURATION METHOD /path".
+func ParseAgentCallHook(raw string) (AgentCallHook, error) {
+	fields := strings.Fields(raw)
+	var hook AgentCallHook
+	switch {
+	case len(fields) == 3 && fields[0] == "panic":
+		hook.Panic = true
+	case len(fields) == 4 && fields[0] == "hold":
+		hold, err := time.ParseDuration(fields[1])
+		if err != nil || hold <= 0 {
+			return AgentCallHook{}, fmt.Errorf("%q is no positive Go duration", fields[1])
+		}
+		hook.Hold = hold
+	default:
+		return AgentCallHook{}, errors.New("expected panic METHOD /path, or hold DURATION METHOD /path")
+	}
+	method, path := fields[len(fields)-2], fields[len(fields)-1]
+	if method != strings.ToUpper(method) || !strings.HasPrefix(path, "/") || strings.Contains(path, "?") {
+		return AgentCallHook{}, errors.New("expected a method and a request path, such as GET /api/v1/search")
+	}
+	hook.Route = method + " " + path
+	return hook, nil
+}
+
+// wrap is inner with the hook in front of its route: a request of it panics, or is held, logged
+// as it is held and as it is released, so a test reads when each call entered and left the route.
+func (h AgentCallHook) wrap(inner http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method+" "+r.URL.Path == route {
-			panic("the test hook DISPATCH_TEST_AGENT_CALL_PANIC panics " + route)
+		if r.Method+" "+r.URL.Path != h.Route {
+			inner.ServeHTTP(w, r)
+			return
+		}
+		if h.Panic {
+			panic("the test hook DISPATCH_TEST_AGENT_CALL_HOOK panics " + h.Route)
+		}
+		slog.Info("dispatch: a test hook holds a call of the agent", "route", h.Route, "hold", h.Hold)
+		timer := time.NewTimer(h.Hold)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-r.Context().Done():
+		}
+		slog.Info("dispatch: a test hook released a call of the agent", "route", h.Route)
+		if r.Context().Err() != nil {
+			return
 		}
 		inner.ServeHTTP(w, r)
 	})

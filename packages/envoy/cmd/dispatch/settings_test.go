@@ -2125,6 +2125,78 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_CEILING": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_AGENT_GOMEMLIMIT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.AgentLimit != 0 {
+				t.Errorf("unset: AgentLimit = %d, want 0 (the GOMEMLIMIT the ceiling gives)", boot.AgentLimit)
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GOMEMLIMIT": " 2097152 "}); boot.AgentLimit != 2<<20 {
+				t.Errorf("DISPATCH_TEST_AGENT_GOMEMLIMIT=2097152: AgentLimit = %d", boot.AgentLimit)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_GOMEMLIMIT": "0"},
+				`DISPATCH_TEST_AGENT_GOMEMLIMIT="0" (expected a positive whole number of bytes)`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_GOMEMLIMIT": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_HOOKS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_HOOKS": "1"}); !boot.AgentHooks {
+				t.Error("DISPATCH_TEST_AGENT_HOOKS=1: the agent's hooks are off")
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", true); !slices.Contains(env, "DISPATCH_TEST_AGENT_HOOKS=1") {
+				t.Errorf("the agent's environment with its hooks on is %v, want DISPATCH_TEST_AGENT_HOOKS=1", env)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_HOOKS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_CALL_HOOK": func(t *testing.T) {
+			for raw, want := range map[string]api.AgentCallHook{
+				" panic GET /api/v1/search ":   {Route: "GET /api/v1/search", Panic: true},
+				"hold 20s POST /api/v1/issues": {Route: "POST /api/v1/issues", Hold: 20 * time.Second},
+			} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": raw}); boot.AgentCallHook != want {
+					t.Errorf("DISPATCH_TEST_AGENT_CALL_HOOK=%q: AgentCallHook = %+v, want %+v", raw, boot.AgentCallHook, want)
+				}
+			}
+			for _, invalid := range []string{"panic /api/v1/search", "hold soon GET /api/v1/search", "hold 1s get /api/v1/search", "sleep GET /x"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_CALL_HOOK": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_CALL_HOOK=%q", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_CALL_HOOK": "panic GET /x"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_AGENT_SLOTS": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_SLOTS": " 17 "}); boot.AgentSlots != 17 {
+				t.Errorf("DISPATCH_TEST_AGENT_SLOTS=17: AgentSlots = %d", boot.AgentSlots)
+			}
+			for _, invalid := range []string{"0", "65", "many"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_SLOTS": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_SLOTS": "2"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_AGENT_SLOTS": func(t *testing.T) {
+			// The server names the agent's slots in its environment, and the agent refuses a count
+			// that is no positive whole number before it calls anything.
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentMemory{Slots: 5}, "", false); !slices.Contains(env, "DISPATCH_AGENT_SLOTS=5") {
+				t.Errorf("the agent's environment is %v, want DISPATCH_AGENT_SLOTS=5", env)
+			}
+			var stderr bytes.Buffer
+			values := envGetter(map[string]string{"DISPATCH_AGENT_SOCKET": "agent.sock", "DISPATCH_AGENT_SLOTS": "0"})
+			if code := runAgent(context.Background(), values, bytes.NewReader(make([]byte, agentwire.SecretSize)), &stderr); code != 1 ||
+				!strings.Contains(stderr.String(), `DISPATCH_AGENT_SLOTS="0"`) {
+				t.Errorf("DISPATCH_AGENT_SLOTS=0: exit %d, stderr %q; want 1, naming it", code, stderr.String())
+			}
+		},
+		"SSL_CERT_FILE": func(t *testing.T) {
+			// The trust the server reads its model service's certificate by is handed on to the
+			// agent process, which calls the same service.
+			bundle := filepath.Join(t.TempDir(), "roots.pem")
+			if boot := resolveWith(t, map[string]string{"SSL_CERT_FILE": " " + bundle + " "}); boot.TrustFile != bundle {
+				t.Errorf("TrustFile = %q, want %q", boot.TrustFile, bundle)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), bundle, false); !slices.Contains(env, "SSL_CERT_FILE="+bundle) {
+				t.Errorf("the agent's environment is %v, want SSL_CERT_FILE=%s", env, bundle)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", false); slices.ContainsFunc(env, func(entry string) bool { return strings.HasPrefix(entry, "SSL_CERT_FILE=") }) {
+				t.Errorf("unset: the agent's environment is %v, want no SSL_CERT_FILE", env)
+			}
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")

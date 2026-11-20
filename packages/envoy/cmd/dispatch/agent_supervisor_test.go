@@ -2,9 +2,9 @@ package main
 
 // agent_supervisor_test.go holds the server's supervision of its agent process as a deployment
 // meets it: a real envoy-dispatch server on a real database, which starts its own envoy-dispatch
-// agent, kills it and starts it again, and shows both processes on /metrics. This build's agent
-// has no model loop (going/agent): it claims each run and ends it failed, so the rows that need a
-// loop that works a run are the loop's, named t7 where they are skipped.
+// agent, kills it and starts it again, and shows both processes on /metrics. A server here names no
+// chat model unless a row gives it the fake one (agent_loop_test.go), so its agent ends each run it
+// claims failed with agent.ReasonNoModel.
 
 import (
 	"bytes"
@@ -420,11 +420,15 @@ func requireTheRestartWaits(t *testing.T) {
 	}
 }
 
-// TestAStuckOrPanickingRunStopsOnlyTheAgent: a kill of the agent process stops no request of the
-// server. An agent killed for memory is started again while the server serves on; a SIGSTOP holds
-// the agent's renewals, and the server kills it once it has missed 3 of them and starts another
-// within 40 s; the close of the agent's standard input at the server's stop ends the agent within
-// 1 s; and each quick exit doubles the wait before the next start, up to 30 s (check c19).
+// TestAStuckOrPanickingRunStopsOnlyTheAgent: a panic or a stuck run stops only the agent process
+// (check c19). An agent killed for memory is started again while the server serves on; a SIGSTOP
+// holds the agent's renewals, and the server kills it once it has missed 3 of them and starts
+// another within 40 s; the close of the agent's standard input at the server's stop ends the agent
+// within 1 s; each quick exit doubles the wait before the next start, up to 30 s; a tool and a
+// model stream that ignore their context are given up by the watchdog, and at 3 the agent exits
+// and starts again; a panic in a callback of the model loop is recovered; a run that panics past
+// every recover fails at its third death, and a run beside it is not counted; and a route that
+// panics during a call of the agent answers an error while the server serves on.
 func TestAStuckOrPanickingRunStopsOnlyTheAgent(t *testing.T) {
 	t.Run("an agent killed for memory is started again and the server serves on", func(t *testing.T) {
 		server := startAgentServer(t, map[string]string{"DISPATCH_TEST_AGENT_CEILING": "1"})
@@ -486,16 +490,13 @@ func TestAStuckOrPanickingRunStopsOnlyTheAgent(t *testing.T) {
 
 	t.Run("each quick exit doubles the wait before the agent starts again, up to 30 s", requireTheRestartWaits)
 
-	for _, row := range []string{
-		"a tool and a model stream that ignore their context: the watchdog gives up the lease, and after 3 the agent exits and starts again",
-		"a panic in a model-loop callback: the run goes on and the agent's process id does not change",
-		"one run that panics past its recovery 3 times fails with that reason, and a run beside it is not counted",
-		"a route that panics during a call of the agent answers an error, and the server's process id does not change",
-	} {
-		t.Run(row, func(t *testing.T) {
-			t.Skip("t7: the agent's model loop drives this row, and this build's agent has none")
-		})
-	}
+	t.Run("a tool and a model stream that ignore their context: the watchdog gives up the lease, and after 3 the agent exits and starts again",
+		requireTheWatchdogEndsAStuckAgent)
+	t.Run("a panic in a model-loop callback: the run goes on and the agent's process id does not change", requireAPanicInACallbackIsRecovered)
+	t.Run("one run that panics past its recovery 3 times fails with that reason, and a run beside it is not counted",
+		requireARunThatPanicsPastItsRecoveryFails)
+	t.Run("a route that panics during a call of the agent answers an error, and the server's process id does not change",
+		requireAPanickingRouteAnswersAnError)
 }
 
 // TestMetricsShowBothProcesses: /metrics shows the goroutines, live heap, total memory and memory
@@ -712,6 +713,7 @@ func TestTheAgentHoldsNoSecret(t *testing.T) {
 	socket := variables["DISPATCH_AGENT_SOCKET"]
 	want := map[string]string{
 		"DISPATCH_AGENT_SOCKET":    socket,
+		"DISPATCH_AGENT_SLOTS":     "8",
 		"GOMAXPROCS":               variables["GOMAXPROCS"],
 		"GOMEMLIMIT":               variables["GOMEMLIMIT"],
 		"DISPATCH_ANSWERER":        "endpoint",
@@ -720,7 +722,7 @@ func TestTheAgentHoldsNoSecret(t *testing.T) {
 		"DISPATCH_CHAT_MODEL":      "a-chat-model",
 	}
 	if socket == "" || variables["GOMAXPROCS"] == "" || variables["GOMEMLIMIT"] == "" || !maps.Equal(variables, want) {
-		t.Errorf("the agent's environment is %v, want the chat model's settings and the socket, GOMAXPROCS and GOMEMLIMIT alone", variables)
+		t.Errorf("the agent's environment is %v, want the chat model's settings and the socket, its slots, GOMAXPROCS and GOMEMLIMIT alone", variables)
 	}
 	if socket == "" {
 		t.FailNow()
@@ -771,33 +773,32 @@ var sectionFiveRows = []string{
 
 // TestEachBoundOfABackgroundRun: each limit of section 5 of the background-runs design is crossed
 // once, and the run waits or stops with the reason the section names (check c22). It fails on a
-// row of the section with no subtest. The rows the agent's model loop crosses are the loop's (t7),
-// the readers of a run's events the run stream's (t14), and the short answer's bounds the short
-// answer's (t12); each of those is skipped until its task lands.
+// row of the section with no subtest. The readers of a run's events are the run stream's (t14),
+// and the short answer's bounds the short answer's (t12); each of those is skipped until its task
+// lands.
 func TestEachBoundOfABackgroundRun(t *testing.T) {
 	skip := func(owner, why string) func(*testing.T) {
 		return func(t *testing.T) { t.Skip(owner + ": " + why) }
 	}
 	subtests := map[string]func(*testing.T){
-		"Runs working at once, in the agent": skip("t7", "the agent's loop holds its 8 slots"),
-		"Runs working at once, and queued, for one person": skip("t7",
-			"two agents that hold runs, and the route that starts a run, are the loop's and the routes'"),
-		"Model calls, time, output tokens":               skip("t7", "the loop spends a run's budget"),
-		"One model call":                                 skip("t7", "the loop reads the model's stream"),
-		"One read or write, to the model":                skip("t7", "the loop gives the model a call's answer"),
-		"One run's history to the model":                 requireTheHistoryBound,
-		"One step's time":                                skip("t7", "the loop's watchdog times a step"),
-		"Memory of the agent":                            requireTheAgentsMemoryBound,
-		"A run that kills the agent":                     requireARunThatKillsTheAgentThreeTimesFails,
-		"Kills for memory that no run alone causes":      requireUnexplainedKillsHalveTheSlots,
-		"Readers of a run's events":                      skip("t14", "the run stream's readers are the stream route's"),
-		"calls that the API runs for its agents at once": skip("t7", "the loop makes the calls"),
-		"One call in the API":                            skip("t7", "the loop makes the calls"),
-		"A second try of one idempotency key":            skip("t7", "the loop makes the calls"),
-		"A lease":                                        requireAStoppedOwnerLosesItsRun,
-		"One claim":                                      skip("t7", "the loop reads a claim that found no run and claims again"),
-		"A restart of the agent":                         requireTheRestartBound,
-		"The short answer and Jev's call, in the API":    skip("t12", "the short answer's bounds are its own task's"),
+		"Runs working at once, in the agent":               requireTheAgentsSlots,
+		"Runs working at once, and queued, for one person": requireOnePersonsRuns,
+		"Model calls, time, output tokens":                 requireTheLevelsBudgets,
+		"One model call":                                   requireOneModelCallsBounds,
+		"One read or write, to the model":                  requireOneReadToTheModel,
+		"One run's history to the model":                   requireTheHistoryBound,
+		"One step's time":                                  requireOneStepsTime,
+		"Memory of the agent":                              requireTheAgentsMemoryBound,
+		"A run that kills the agent":                       requireARunThatKillsTheAgentThreeTimesFails,
+		"Kills for memory that no run alone causes":        requireUnexplainedKillsHalveTheSlots,
+		"Readers of a run's events":                        skip("t14", "the run stream's readers are the stream route's"),
+		"calls that the API runs for its agents at once":   requireTheServersCallSlots,
+		"One call in the API":                              requireOneCallsTime,
+		"A second try of one idempotency key":              requireASecondTryWaitsForTheFirst,
+		"A lease":                                          requireAStoppedOwnerLosesItsRun,
+		"One claim":                                        requireOneClaim,
+		"A restart of the agent":                           requireTheRestartBound,
+		"The short answer and Jev's call, in the API":      skip("t12", "the short answer's bounds are its own task's"),
 	}
 	for _, row := range sectionFiveRows {
 		test, ok := subtests[row]
@@ -855,8 +856,8 @@ func requireTheHistoryBound(t *testing.T) {
 	if row := server.run(t, tooLarge); !strings.HasPrefix(row.reason, "HISTORY_TOO_LARGE") {
 		t.Errorf("the run whose last 8 steps hold 2.4 MiB stopped with %q, want HISTORY_TOO_LARGE", row.reason)
 	}
-	if row := server.run(t, fits); row.reason != agent.ReasonUnbuilt {
-		t.Errorf("the run whose last 8 steps hold 1.6 MiB stopped with %q, want the agent's own end of it, %q", row.reason, agent.ReasonUnbuilt)
+	if row := server.run(t, fits); row.reason != agent.ReasonNoModel {
+		t.Errorf("the run whose last 8 steps hold 1.6 MiB stopped with %q, want the agent's own end of it, %q", row.reason, agent.ReasonNoModel)
 	}
 }
 
@@ -901,12 +902,7 @@ func requireTheAgentsMemoryBound(t *testing.T) {
 		}
 		server.requireServing(t)
 	})
-	t.Run("no new claim above 70% of the agent's GOMEMLIMIT", skipT7("the loop's claim gate reads the agent's own memory"))
-}
-
-// skipT7 skips a row the agent's model loop drives.
-func skipT7(why string) func(*testing.T) {
-	return func(t *testing.T) { t.Skip("t7: " + why) }
+	t.Run("no new claim above 70% of the agent's GOMEMLIMIT", requireTheClaimGate)
 }
 
 // requireARunThatKillsTheAgentThreeTimesFails: a run the agent held alone each time it died is
@@ -932,7 +928,7 @@ func requireARunThatKillsTheAgentThreeTimesFails(t *testing.T) {
 		}
 		server.requireServing(t)
 	})
-	t.Run("a run beside it is not counted", skipT7("only the loop holds two runs at once"))
+	t.Run("a run beside it is not counted", requireARunThatPanicsPastItsRecoveryFails)
 }
 
 // requireUnexplainedKillsHalveTheSlots: two kills for memory within an hour that no run alone
@@ -980,8 +976,8 @@ func requireAStoppedOwnerLosesItsRun(t *testing.T) {
 	owner := server.stopHolding(t, pid, run)
 	server.agentStarted(t, 2, 40*time.Second)
 	server.eventually(t, 30*time.Second, "the next agent to claim the run", func() bool { return server.run(t, run).state == "failed" })
-	if row := server.run(t, run); row.reason != agent.ReasonUnbuilt {
-		t.Errorf("the run the stopped agent %s held stopped with %q, want the next agent's end of it, %q", owner, row.reason, agent.ReasonUnbuilt)
+	if row := server.run(t, run); row.reason != agent.ReasonNoModel {
+		t.Errorf("the run the stopped agent %s held stopped with %q, want the next agent's end of it, %q", owner, row.reason, agent.ReasonNoModel)
 	}
 	if !server.logged(`msg="dispatch: agent killed: it renewed nothing for 30s" pid=` + strconv.Itoa(pid) + " ") {
 		t.Errorf("the stopped agent %d was not killed for its renewals:\n%s", pid, server.Output.String())
@@ -990,7 +986,7 @@ func requireAStoppedOwnerLosesItsRun(t *testing.T) {
 
 // requireTheRestartBound: the agent starts again 1 s after an exit, then twice as long after each
 // quick exit, 30 s at the most, while Dispatch serves on. That the runs wait for the next agent is
-// "A lease"'s: this build's agent ends each run it claims, so a run left queued here would say
+// "A lease"'s: an agent killed at each start claims nothing, so a run left queued here would say
 // only that no agent lived long enough to claim it.
 func requireTheRestartBound(t *testing.T) {
 	t.Run("each quick exit doubles the wait, up to 30 s", requireTheRestartWaits)

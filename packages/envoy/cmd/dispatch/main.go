@@ -186,10 +186,14 @@ type bootConfig struct {
 	// hooks on (going/agent's hooks.go); only DISPATCH_TEST_AGENT_HOOKS=1, under the test hooks,
 	// sets it.
 	AgentHooks bool
-	// AgentCallPanic is the route, "METHOD /path", every call of which this process runs for its
-	// agent panics in (api.Deps.AgentCallPanic); only DISPATCH_TEST_AGENT_CALL_PANIC, under the
-	// test hooks, sets it.
-	AgentCallPanic string
+	// AgentCallHook is a route every call of which this process runs for its agent panics in, or
+	// is held in (api.Deps.AgentCallHook); only DISPATCH_TEST_AGENT_CALL_HOOK, under the test
+	// hooks, sets it.
+	AgentCallHook api.AgentCallHook
+	// AgentSlots is how many runs the agent works at once, zero for the slots its limits give
+	// (agentLimits); only DISPATCH_TEST_AGENT_SLOTS, under the test hooks, sets it, so a test
+	// crosses the server's bound of calls at once, which the agent's own slots stay under.
+	AgentSlots int64
 	// TrustFile is SSL_CERT_FILE, the file of certificate authorities crypto/x509 trusts in place
 	// of the system's, which this process hands on to its agent process, so the agent trusts the
 	// chat model's endpoint as the server does; empty for the system's.
@@ -309,6 +313,9 @@ func main() {
 	limits := agentLimits(containerLimit)
 	if boot.AgentCeiling > 0 {
 		limits.Ceiling = boot.AgentCeiling
+	}
+	if boot.AgentSlots > 0 {
+		limits.Slots = int(boot.AgentSlots)
 	}
 	if boot.AgentLimit > 0 {
 		limits.AgentLimit = boot.AgentLimit
@@ -1438,8 +1445,16 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_GOMEMLIMIT", boot.TestHooksEnabled, &boot.AgentLimit); err != nil {
 		return bootConfig{}, err
 	}
-	if boot.AgentCallPanic, err = agentCallPanic(env, boot.TestHooksEnabled); err != nil {
+	if boot.AgentCallHook, err = agentCallHook(env, boot.TestHooksEnabled); err != nil {
 		return bootConfig{}, err
+	}
+	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_SLOTS")); raw != "" {
+		if !boot.TestHooksEnabled {
+			return bootConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_AGENT_SLOTS")
+		}
+		if boot.AgentSlots, err = strconv.ParseInt(raw, 10, 64); err != nil || boot.AgentSlots <= 0 || boot.AgentSlots > 64 {
+			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", raw)
+		}
 	}
 	boot.TrustFile = strings.TrimSpace(env.get("SSL_CERT_FILE"))
 	boot.RuntimeDir = strings.TrimSpace(env.get("XDG_RUNTIME_DIR"))
@@ -1888,7 +1903,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
-	built.AgentCallPanic = boot.AgentCallPanic
+	built.AgentCallHook = boot.AgentCallHook
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
@@ -2339,23 +2354,24 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	return nil
 }
 
-// agentCallPanic reads DISPATCH_TEST_AGENT_CALL_PANIC, the route "METHOD /path" every call of which
-// the server runs for its agent panics in: empty where unset. It is refused without
-// DISPATCH_TEST_HOOKS=1, and so is a value that names no method and path.
-func agentCallPanic(env settingValues, testHooksEnabled bool) (string, error) {
-	const name = "DISPATCH_TEST_AGENT_CALL_PANIC"
+// agentCallHook reads DISPATCH_TEST_AGENT_CALL_HOOK, a route every call of which the server runs
+// for its agent panics in ("panic METHOD /path") or is held in ("hold DURATION METHOD /path"):
+// the zero hook where unset. It is refused without DISPATCH_TEST_HOOKS=1, and so is a value of
+// neither form.
+func agentCallHook(env settingValues, testHooksEnabled bool) (api.AgentCallHook, error) {
+	const name = "DISPATCH_TEST_AGENT_CALL_HOOK"
 	raw := strings.TrimSpace(env.get(name))
 	if raw == "" {
-		return "", nil
+		return api.AgentCallHook{}, nil
 	}
 	if !testHooksEnabled {
-		return "", fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+		return api.AgentCallHook{}, fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
 	}
-	method, path, split := strings.Cut(raw, " ")
-	if !split || method == "" || method != strings.ToUpper(method) || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " ?") {
-		return "", fmt.Errorf("%s=%q (expected a method and a request path, such as GET /api/v1/search)", name, raw)
+	hook, err := api.ParseAgentCallHook(raw)
+	if err != nil {
+		return api.AgentCallHook{}, fmt.Errorf("%s=%q (%v)", name, raw, err)
 	}
-	return raw, nil
+	return hook, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read
