@@ -70,7 +70,7 @@ export async function listing(
  *  `e2e/tools/row-map.ts` - spell them through this rather than each its own way, and they spell
  *  them attached, which is the one spelling this suite writes: the option is variadic, so
  *  `--project <name>` reads whatever follows it as a second name (`packages/dispatch/AGENTS.md`,
- *  "Write a project as `--project=<name>` and never `--project <name>`"). */
+ *  "End-to-end tests"). */
 export function projectArguments(projects: readonly string[]): string[] {
   return projects.map((project) => `--project=${project}`);
 }
