@@ -117,8 +117,8 @@ func TestClearBrokerRevocationSettlesOnlyWhatTheOperatorSaw(t *testing.T) {
 	if code != 0 || !strings.Contains(out, "clear-broker-revocation: "+reassignedEmail+" owes "+firstHolder+":1") || !strings.Contains(out, "nothing cleared") {
 		t.Fatalf("clear-broker-revocation %s: exit %d, want 0, the revocation owed listed and nothing cleared:\n%s", reassignedEmail, code, out)
 	}
-	// The line names the address's session generation at the recording, which the runbook's
-	// stale branch decides by: a row with one is settled there, a row with none left owed.
+	// The line names the address's session generation at the recording, which distinguishes rows
+	// an operator settles exactly as the list printed them.
 	if generation := s.brokerRevocationSessionGeneration(t, reassignedEmail, firstHolder); !strings.Contains(out, fmt.Sprintf(", session generation %d)", generation)) {
 		t.Fatalf("clear-broker-revocation %s lists:\n%s\nwant the owed row's session generation, %d, on its line", reassignedEmail, out, generation)
 	}

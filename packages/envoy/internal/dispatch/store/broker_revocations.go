@@ -99,11 +99,11 @@ type OwedBrokerRevocation struct {
 // session generation at the recording, "none" for a row recorded before migration 20261118152422
 // added the column.
 //
-// The session generation is printed because an operator has to tell the rows apart by it: the
-// runbook's recovery of a Dispatch database restored or made again alone settles, in its stale
-// branch, every revocation that carries one and leaves one that carries none owed, since the
-// broker refuses such a revoke on every call (400 SESSION_GENERATION_REQUIRED) and nothing applied
-// it. Settling it here would tell the broker nothing and lose the only record that it is owed.
+// The session generation is printed because an operator has to tell the rows apart by it. A row
+// carrying none is from before migration 20261118152422: the broker refuses it on every call
+// (400 SESSION_GENERATION_REQUIRED), so an operator records it again with the address's current
+// generation before paying it. Settling it directly would tell the broker nothing and lose the only
+// record that it is owed.
 func (o OwedBrokerRevocation) Listed() string {
 	generation := "none"
 	if o.SessionGeneration != nil {

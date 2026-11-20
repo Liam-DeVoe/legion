@@ -62,7 +62,7 @@ the last item is the broker's own clear, which recovers neither:
   SQL
   ```
 
-  `store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this block from this file and the runbook.
+  `store.TestAnAccountWrittenBackByItselfIsRecoveredByRecordingTheSkippedRevocation` runs this block from this file and the runbook, and `store.TestAnAccountWrittenBackOverARevocationPaidBeforeIsRecordedAgain` runs it where the replaced account's revocation was recorded and paid before, through its conflict arm.
   A statement that records an account where the address recorded none overwrote no `sub`, and this recovery does not cover it: the first sign-in would also have revoked the address's personal tokens that recorded another account or none, and recorded a revocation of each other account, which nothing then records.
 
 - **A revocation settled by itself** (`done_at` written while the broker confirmed nothing) is what `envoy-dispatch clear-broker-revocation` does, and tells the broker nothing:

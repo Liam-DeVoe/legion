@@ -189,18 +189,21 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	return nil
 }
 
-// checkIAPSignInSettings refuses the sign-in settings IAP identity cannot take. Identity-Aware
-// Proxy signs people in, so Dispatch runs no sign-in of its own: the issuer, client ID, client
-// secret and group are refused, each by name, and so are outside sign-in and the Workspace's
-// other domains, which widen Dispatch's own Google sign-in. DISPATCH_SIGNIN_DOMAIN is required, a
-// lowercase DNS name, since it is who may use Dispatch: an account whose assertion's hd is that
-// domain.
+// checkIAPSignInSettings refuses the sign-in and origin settings IAP identity cannot take.
+// Identity-Aware Proxy signs people in at IAP's one origin, so Dispatch runs no sign-in of its own:
+// the issuer, client ID, client secret and group are refused, each by name, and so are the outside
+// origin, outside sign-in and the Workspace's other domains, which widen Dispatch's own Google
+// sign-in. DISPATCH_SIGNIN_DOMAIN is required, a lowercase DNS name, since it is who may use
+// Dispatch: an account whose assertion's hd is that domain.
 func checkIAPSignInSettings(boot bootConfig) error {
 	var refused []string
 	for _, setting := range append(signInClientSettings(boot), struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup}) {
 		if setting.value != "" {
 			refused = append(refused, setting.name)
 		}
+	}
+	if boot.OutsideOrigin != "" {
+		refused = append(refused, "DISPATCH_OUTSIDE_ORIGIN")
 	}
 	if boot.SignInOutside {
 		refused = append(refused, "DISPATCH_SIGNIN_OUTSIDE")

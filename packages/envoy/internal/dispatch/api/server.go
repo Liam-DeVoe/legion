@@ -1102,10 +1102,10 @@ func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 //
 // With compareGrants, a caller that is not a broker-issued token is resolved once as the
 // connection opens, on the request, and kept in its context (withCallerResolved), so the handler
-// admits the caller the heartbeat compares against and verifies the credential no second time. A
-// broker-issued token's proof is spent by the handler's own decision (decideBrokerToken), so its
-// open asks resolves, which reads the broker's answer and the person's admission, the restricted
-// answer the heartbeat compares with.
+// admits the caller the heartbeat compares against and verifies the credential no second time
+// (TestTheLiveSocketResolvesItsCallerOnceAtOpen). A broker-issued token's proof is spent by the
+// handler's own decision (decideBrokerToken), so its open asks resolves, which reads the broker's
+// answer and the person's admission, the restricted answer the heartbeat compares with.
 func (s *server) whileCallerResolves(resolves func(*http.Request) (model.Actor, bool, error), compareGrants bool, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, closeConnection := context.WithCancelCause(r.Context())

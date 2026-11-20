@@ -160,6 +160,7 @@ func TestResolveBootConfigFencesIAPIdentity(t *testing.T) {
 		"DISPATCH_SIGNIN_CLIENT_ID":     "dispatch-client",
 		"DISPATCH_SIGNIN_CLIENT_SECRET": "client-secret",
 		"DISPATCH_SIGNIN_GROUP":         "dispatch-members",
+		"DISPATCH_OUTSIDE_ORIGIN":       "https://outside.example",
 	} {
 		if _, err := resolveBootConfig(envGetter(iapIdentityEnvironment(map[string]string{name: value}))); err == nil ||
 			!strings.Contains(err.Error(), name+" must be unset under DISPATCH_IDENTITY=iap") {
