@@ -18,10 +18,11 @@
 //                                           names a word of the vocabulary (`worldNames`), and 1,
 //                                           printing the first word and where it is, when
 //                                           something does, and 1, printing why, when the run's
-//                                           system prompt cannot be read (`systemPromptOf`):
-//                                           rig.sh's launch asks before every agent starts, and
-//                                           starts none of a world that names one or that it
-//                                           cannot read whole
+//                                           system prompt cannot be read (`systemPromptOf`) or its
+//                                           <run>/reviewer-wake.json cannot be parsed
+//                                           (`promptOf`): rig.sh's launch asks before every agent
+//                                           starts, and starts none of a world that names one or
+//                                           that it cannot read whole
 import { existsSync, readdirSync, readFileSync, type Stats, statSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -575,6 +576,102 @@ function within(dir: string, file: string): string | undefined {
     : relative;
 }
 
+/** The file rig.sh's run_threads_closed keeps the reviewer's wake in, whole: `{wake: [...]}`,
+ * each message the implementer sent the reviewer as Envoy's record holds it (record-publishes.ts:
+ * `at`, `topic`, `message`, `sender`, `subject`), in the order the rig wrote them into the
+ * reviewer's <run>/prompt.txt. */
+const WAKE_FILE = "reviewer-wake.json";
+
+/** One message an agent of a run sent the next, which the rig relayed into the next one's prompt
+ * (`promptOf`): when Envoy accepted it (`at`, a time), its body (`message`) and the session Envoy
+ * recorded as its sender (`sender`). */
+const Relayed = z.looseObject({
+  at: z.string().refine((at) => Number.isFinite(Date.parse(at)), "is no time"),
+  message: z.string(),
+  sender: z.string(),
+});
+export type Relayed = z.infer<typeof Relayed>;
+const Wake = z.strictObject({ wake: z.array(Relayed) });
+
+/** One message the rig relayed into a run's prompt, and where its text is in <run>/prompt.txt:
+ * from `start` up to `end`. */
+export interface RelayedAt {
+  readonly relayed: Relayed;
+  readonly start: number;
+  readonly end: number;
+}
+
+/** A run's prompt, as `promptOf` reads it: the text of <run>/prompt.txt, and each message of
+ * <run>/reviewer-wake.json at the place the rig wrote it there. */
+export interface RunPrompt {
+  readonly text: string;
+  readonly relayed: readonly RelayedAt[];
+}
+
+/** The prompt of the agent of `runDir`, or undefined for a run with no <run>/prompt.txt. Every
+ * reader of a run's prompt reads it here: launch's guard (`worldNames`) and rule 17 of health.ts
+ * (`namesOf`). The prompt is the rig's text but for the messages it relays from one agent of the
+ * run to the next (rig.sh's run_threads_closed, which keeps them whole in
+ * <run>/reviewer-wake.json), whose words are the sending agent's own (the architect's ruling of
+ * 2026-11-20T17:30Z): each is read where the rig wrote it (`relayedIn`), and `rigText` leaves it
+ * out. No such file is no message relayed; one that cannot be parsed is refused, naming it. */
+export function promptOf(runDir: string): RunPrompt | undefined {
+  const file = path.join(runDir, "prompt.txt");
+  if (!existsSync(file) || !statSync(file).isFile()) return undefined;
+  const text = readFileSync(file, "utf8");
+  return { text, relayed: relayedIn(text, wakeOf(runDir)) };
+}
+
+/** The messages <run>/reviewer-wake.json holds, in its order, and none for a run with no such
+ * file; a throw naming the file for one that is no JSON or not of the shape the rig writes. */
+function wakeOf(runDir: string): readonly Relayed[] {
+  const file = path.join(runDir, WAKE_FILE);
+  if (!existsSync(file)) return [];
+  let why: string;
+  try {
+    const parsed = Wake.safeParse(JSON.parse(readFileSync(file, "utf8")));
+    if (parsed.success) return parsed.data.wake;
+    why = z.prettifyError(parsed.error);
+  } catch (error) {
+    why = error instanceof Error ? error.message : String(error);
+  }
+  throw new Error(`<run>/${WAKE_FILE} cannot be parsed: ${why}`);
+}
+
+/** Where in `prompt` the rig wrote each of `wake`, in its order: run_threads_closed writes each
+ * message whole after a prefix of its own (`Implementer → reviewer, <key>. `), the line ending
+ * with a newline after the message. So each message is read at the end of the next line after the
+ * one before it, its first line ending where that line ends and the rest of it and a newline
+ * following. A message not there is none the rig wrote there: it and every one after it are read
+ * nowhere, and the prompt's text stays the rig's. */
+function relayedIn(prompt: string, wake: readonly Relayed[]): RelayedAt[] {
+  const found: RelayedAt[] = [];
+  let from = 0;
+  for (const relayed of wake) {
+    const lineEnd = prompt.indexOf("\n", from);
+    const firstLine = relayed.message.indexOf("\n");
+    const start = lineEnd - (firstLine < 0 ? relayed.message.length : firstLine);
+    if (lineEnd < 0 || start < from || !prompt.startsWith(`${relayed.message}\n`, start)) break;
+    const end = start + relayed.message.length;
+    found.push({ relayed, start, end });
+    from = end + 1;
+  }
+  return found;
+}
+
+/** `prompt`'s text less the text of each of `relayed` (`promptOf`), which are in its order: what
+ * the rig wrote of it, the prefix of each relayed message's line and the newline after it
+ * included. */
+export function rigText(prompt: string, relayed: readonly RelayedAt[]): string {
+  let text = "";
+  let from = 0;
+  for (const { start, end } of relayed) {
+    text += prompt.slice(from, start);
+    from = end;
+  }
+  return text + prompt.slice(from);
+}
+
 /** The files of a run the rig composes for each launch of an agent, beside its pane file (read
  * as its variables), its prompt and its system prompt (`worldNames`), each written afresh before
  * the launch the guard reads it for: the stand-ins on its PATH (rig.sh's standins: <run>/bin/gh,
@@ -605,10 +702,13 @@ export const COMPOSED = ["bin/gh", "bin/bun", "lib/gh.js", "jj.toml"];
  * `nameWords`; any other as text: `textWords`), which holds its profile, its Legion project,
  * issue and tree (so the Envoy topics they make), its HOME and TMPDIR; every path its namespace
  * mounts (`mountedPaths`: each a mount point and the host source /proc/self/mountinfo names);
- * its working directory and session directory; its prompt and its system prompt, which its
- * command line, /proc/1's, carries, and the text of the prompt file that argument names, which
- * its Oh My Pi reads (`systemPromptOf`, which refuses a system prompt it cannot read, and so does
- * the guard); and the files of COMPOSED, each named with the text around the word. */
+ * its working directory and session directory; its prompt, less each message the rig relayed
+ * into it from another agent of the run, whose words are that agent's own (`promptOf`, which
+ * refuses a <run>/reviewer-wake.json it cannot parse, and so does the guard, and `rigText`); its
+ * system prompt, which its command line, /proc/1's, carries, and the text of the prompt file that
+ * argument names, which its Oh My Pi reads (`systemPromptOf`, which refuses a system prompt it
+ * cannot read, and so does the guard); and the files of COMPOSED, each named with the text around
+ * the word. */
 export function worldNames(
   runDir: string,
   sessionsDir: string,
@@ -633,7 +733,13 @@ export function worldNames(
     if (existsSync(at) && statSync(at).isFile())
       checks.push({ place: `<run>/${file}`, value: readFileSync(at, "utf8"), name: false });
   };
-  composed("prompt.txt");
+  const prompt = promptOf(runDir);
+  if (prompt !== undefined)
+    checks.push({
+      place: "<run>/prompt.txt",
+      value: rigText(prompt.text, prompt.relayed),
+      name: false,
+    });
   const system = systemPromptOf(runDir);
   if (system !== undefined) {
     checks.push({ place: "<run>/system-args", value: system.argument, name: false });
