@@ -168,3 +168,31 @@ func TestARequestStoredOverTheCapOfASecretSinceTaggedPrivateStaysHidden(t *testi
 		t.Errorf("PendingForApprover(%s) once SHARED_KEY is PRIV's = %v; want the request shown to a person PRIV lists", insider, listed)
 	}
 }
+
+// TestASessionReadsARequestStoredOverTheCapAskingDispatchNothing: the session rule a session's
+// own routes read (hideFromSession) joins a row's reason projects through the same cap as the
+// person rule (reasonProjects). A request and a grant stored before the cap, with a reason naming
+// more than record.MaxReasonProjects projects, are read by another session of the same person,
+// which does not hold them: the rule shows both, and asks Dispatch nothing, since past the bound
+// the reason's keys count as naming no project, as every reader saw the row when it was written.
+func TestASessionReadsARequestStoredOverTheCapAskingDispatchNothing(t *testing.T) {
+	m, enr, key, dispatch := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	over := reasonNaming(record.MaxReasonProjects + 1)
+	pending := storedBeforeTheCap(t, m, enr, key, over, "DEEL_API_KEY")
+	granted := storedBeforeTheCap(t, m, enr, key, over, "AUTO_TOKEN")
+	if pending.RecordID == nil || granted.GrantID == nil {
+		t.Fatalf("the stored requests = %+v and %+v; want one pending and one granted", pending, granted)
+	}
+	other, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
+
+	asked := dispatch.Calls()
+	if err := m.HideRequestFromSession(t.Context(), pending.ID, other); err != nil {
+		t.Errorf("HideRequestFromSession(the stored request, another session of %s) = %v; want it shown", fixtureOperator, err)
+	}
+	if err := m.hideGrantFromSession(t.Context(), *granted.GrantID, other); err != nil {
+		t.Errorf("hideGrantFromSession(the stored grant, another session of %s) = %v; want it shown", fixtureOperator, err)
+	}
+	if calls := dispatch.Calls() - asked; calls != 0 {
+		t.Errorf("the session rule's two reads of the stored rows asked Dispatch %d times; want none: past the bound the reason is not read", calls)
+	}
+}

@@ -169,16 +169,26 @@ func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, facts ro
 // say, and nil for a grant they may see, which mayRevoke then lets them end only where its
 // approver is record.AnyoneApprover or they are its operator. It reads the grant as
 // GrantsForApprover lists it (grantKey), so such a person revokes exactly the grants their own
-// list may show them.
-func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
+// list may show them. It answers the grant as it judged it (grantJudged), which RevokeByApprover's
+// transaction compares with its own read.
+func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) (grantJudged, error) {
 	facts, err := m.readRowFacts(ctx, grantKey, grantID)
 	if err != nil {
-		return err
+		return grantJudged{}, err
 	}
+	judged := grantJudged{holder: facts.holder.ID, approver: record.CanonicalLogin(deref(facts.approver))}
 	if named, _ := namedOnGrant(login, facts.approver, m.operatorOf(facts.holder)); named {
-		return nil
+		return judged, nil
 	}
-	return m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
+	return judged, m.hideUnseenRow(ctx, "grant "+grantID, login, facts)
+}
+
+// grantJudged is what hideUnseenGrant judged a grant by: the enrollment that held it and its
+// approver. RevokeByApprover's transaction reads both again, and a grant whose read differs moved
+// between the two (an adoption's commit), so the rule judged another row, and the revoke starts
+// again from the rule.
+type grantJudged struct {
+	holder, approver string
 }
 
 // operatorOf is the person the enrollment that holds a grant acts for, as the person rule's

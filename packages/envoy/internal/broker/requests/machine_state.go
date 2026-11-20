@@ -404,6 +404,11 @@ type Machine struct {
 	// deterministically move the request to another enrollment in that window, which is where an
 	// adoption's commit lands; no production caller sets it.
 	testAdoptionHook func()
+	// testRevokeHook, when set, runs in RevokeByApprover between its person rule
+	// (hideUnseenGrant) and its transaction's read of the grant. It exists only so a test can move
+	// the grant to another enrollment in that window, where an adoption's commit can land; no
+	// production caller sets it.
+	testRevokeHook func()
 	// testCommitCut, when set, runs right after a decision's transaction has committed, and an
 	// error it returns is what the decision answers: a COMMIT the server applied whose answer
 	// the network then lost. testHoldCommit, when set, runs with every row of the decision
@@ -2706,11 +2711,44 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // nothing new succeeds and changes nothing.
 // The enrollment it reads the operator off, and the one withhold writes against, is the enrollment
 // the grants row names now, so an approver's revoke reaches a grant that moved and an operator's
-// withholds from the box the session runs on.
+// withholds from the box the session runs on. The person rule reads the grant on the pool, before
+// the transaction, since it may ask Dispatch, and the transaction reads it again (revokeJudged).
+// An adoption that moves the grant between the two reads would let the transaction decide on a row
+// the rule did not judge: a login exempt as the old enrollment's operator could then pass
+// mayRevoke's arm for a grant whose approver is record.AnyoneApprover without the rule. So the
+// transaction decides only on the enrollment and approver the rule judged, and starts again from
+// the rule when either moved, at most revokeJudgeAttempts times.
 func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor string) error {
-	if err := m.hideUnseenGrant(ctx, grantID, login); err != nil {
-		return err
+	for attempt := 1; ; attempt++ {
+		judged, err := m.hideUnseenGrant(ctx, grantID, login)
+		if err != nil {
+			return err
+		}
+		if m.testRevokeHook != nil {
+			m.testRevokeHook()
+		}
+		err = m.revokeJudged(ctx, grantID, login, actor, judged)
+		if !errors.Is(err, errGrantMovedSinceJudged) {
+			return err
+		}
+		if attempt == revokeJudgeAttempts {
+			return fmt.Errorf("revoke grant %s: %w, %d times in a row", grantID, err, attempt)
+		}
 	}
+}
+
+// errGrantMovedSinceJudged is revokeJudged's answer for a grant its transaction reads as held by
+// another enrollment, or as naming another approver, than the person rule judged it by
+// (grantJudged): an adoption moved it between the two reads. It writes nothing.
+var errGrantMovedSinceJudged = errors.New("the grant moved to another session after the person rule judged it")
+
+// revokeJudgeAttempts is how many times RevokeByApprover runs the person rule and its transaction
+// for a grant that keeps moving between them. Each move is an adoption's commit, which lands once
+// a session's process restarts, so a second attempt finds the grant still; a third is margin.
+const revokeJudgeAttempts = 3
+
+// revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it.
+func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -2721,6 +2759,9 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 	if err := tx.QueryRow(ctx, `select g.enrollment_id, g.request_id, g.approver, e.operator
 		from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1 for no key update of e`, grantID).Scan(&session, &requestID, &approver, &operator); err != nil {
 		return err
+	}
+	if session != judged.holder || record.CanonicalLogin(deref(approver)) != judged.approver {
+		return errGrantMovedSinceJudged
 	}
 	allowed, asOperator := mayRevoke(login, approver, operator)
 	if !allowed {
