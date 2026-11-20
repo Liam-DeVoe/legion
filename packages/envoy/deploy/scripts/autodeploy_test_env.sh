@@ -345,6 +345,10 @@ deploy_once >/dev/null 2>&1 || true
 # exactly that name (packages/envoy/.gitignore), and the next start removes it after a minute, and
 # nothing else in the directory. A TERM exits the deployer and its EXIT trap removes the file.
 repo_root=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+# scripts/e2e/lib/wait-gone.sh holds wait_gone, the wait for each process the poll row below
+# signals, which counts a zombie as gone and holds a pid to the process it first read.
+# shellcheck source-path=SCRIPTDIR source=../../../../scripts/e2e/lib/wait-gone.sh
+. "$repo_root/scripts/e2e/lib/wait-gone.sh"
 fresh_env
 AUTODEPLOY_TEST_KILL_AT_ENV_MV=1 deploy_once >/dev/null 2>&1 || true
 read -r _ staged staged_mode < <(grep '^mv-source ' "$argv" | head -n 1) ||
@@ -376,8 +380,9 @@ left=$(find "$compose" -maxdepth 1 -name '.env.stage.*' | head -n 1)
 # The deployer sets no INT or TERM trap, so one stopped by TERM while it waits out its poll stops at
 # once, where a TERM trap made bash wait for the running `sleep` to end first. The poll is an hour,
 # so a deployer that waits out its sleep stops after an hour and one that does not stops at once;
-# the row's bound, 120 s of the clock (SECONDS), guards only against never, so the load of the box
-# cannot move a run across it. Every process the row starts is stopped by its own process ID.
+# the row's bound, 120 s, guards only against never, so the load of the box cannot move a run
+# across it. Every process the row starts is stopped by its own process ID and waited for until it
+# is gone (wait_gone), so the rows after it meet none of them.
 # The deploy before it lands new-image, so the poll's pass finds nothing to deploy and sleeps.
 fresh_env
 output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_once) || true
@@ -406,39 +411,30 @@ if [[ -z "$poll_sleep" ]]; then
     done
   }
   descendants "$job"
-  for pid in "${tree[@]}"; do
-    kill "$pid" 2>/dev/null || true
-  done
+  # TERM to the descendants, deepest first (kill signals its pids in the order given), then the
+  # wrapper, which this shell reaps.
+  ((${#tree[@]} == 0)) || kill -- "${tree[@]}" 2>/dev/null || true
   kill "$job" 2>/dev/null || true
   wait "$job" || true
-  # A process sent TERM can still be running for a moment, and it is no child of this shell, so
-  # each one gets 5 s of the clock to be gone or a zombie before it counts as one the give-up left.
+  # A process sent TERM can still be running for a moment, and it is no child of this shell, so the
+  # descendants get 5 s to be gone (or zombies) before each one still there counts as one the
+  # give-up left.
   alive=()
-  for pid in "${tree[@]}"; do
-    gone=$((SECONDS + 5))
-    while state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]] && ((SECONDS < gone)); do
-      sleep 0.1
-    done
-    if state=$(ps -o stat= -p "$pid") && [[ ${state// /} != Z* ]]; then
-      alive+=("$pid")
-    fi
-  done
+  ((${#tree[@]} == 0)) || wait_gone "$((EPOCHSECONDS + 5))" "${tree[@]}" || alive=("${wait_gone_left[@]}")
   left=
   ((${#alive[@]} == 0)) || left=" (and the give-up left process(es) ${alive[*]} running)"
   fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged$left; its output: $(<"$root/poll.out")"
 fi
 deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')
 kill -TERM "$deployer"
-stopped=false
 termed=$SECONDS
-deadline=$((SECONDS + 120))
-while ((SECONDS <= deadline)); do
-  state=$(ps -o stat= -p "$deployer") || { stopped=true; break; }
-  [[ ${state// /} != Z* ]] || { stopped=true; break; }
-  sleep 0.1
-done
+stopped=false
+wait_gone "$((EPOCHSECONDS + 120))" "$deployer" && stopped=true
+# A deployer still there is killed, and the poll's sleep it started, which outlives it, is stopped;
+# both are waited for before the wrapper is reaped and the rows after this one run.
 $stopped || kill -KILL "$deployer" 2>/dev/null || true
 kill "$poll_sleep" 2>/dev/null || true
+wait_gone "$((EPOCHSECONDS + 10))" "$deployer" "$poll_sleep" || true
 wait "$job" || true
 $stopped || fail "a deployer stopped by TERM while it waited out its hour's poll was still running $((SECONDS - termed)) s later"
 
