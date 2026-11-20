@@ -859,13 +859,19 @@ func TestARolesExitIsReportedWithTheShimsOwnStatus(t *testing.T) {
 	}
 }
 
-// The container's SIGTERM starts every role's handler before it waits for either role to leave.
-// Both handlers wait for this test to release them, so a launcher that stopped roles one at a
-// time could start one handler but not the other; a time alone would instead fail on a busy
-// machine. Once both handlers have started, the test releases both, and the launcher leaves.
+// The container's SIGTERM starts every role's handler before it waits for either role to leave,
+// and the launcher leaves within one stop grace of the moment its roles may finish. Both handlers
+// wait for this test to release them, so a launcher that stopped roles one at a time could start
+// one handler but not the other; a time alone would instead fail on a busy machine. Once both
+// handlers have started, the test releases both. All that is left then is the roles' teardown,
+// under a second even on a loaded machine, so a launcher that waits a grace on anything past its
+// roles fails at the bound of one grace from the release. The case once held the whole stop to
+// 2.5 s for two handlers of 1.5 s each, which a loaded machine broke with the roles stopped
+// together (3.4 s in all on a loaded dev box).
 func TestTheContainersStopStartsEveryRolesHandlerBeforeEitherLeaves(t *testing.T) {
 	requireRoleNamespaces(t)
-	f := newFleet(t, 6*time.Second, "tester", "reviewer")
+	const grace = 6 * time.Second
+	f := newFleet(t, grace, "tester", "reviewer")
 	const handler = `trap 'printf started > /tmp/started
 while [ ! -e /tmp/release ]; do /bin/sleep 0.01; done
 printf done > /tmp/finished
@@ -896,15 +902,23 @@ while :; do /bin/sleep 600 & wait; done
 	for _, role := range roles {
 		f.waitForRoleFile(f.roleTmp(role, "started"))
 	}
+	released := time.Now()
 	release()
-	err := <-f.result
-	f.result <- err
+	var err error
+	select {
+	case err = <-f.result:
+		f.result <- err
+	case <-time.After(grace - time.Since(released)):
+		t.Fatalf("the launcher had not left %s after the case let both roles finish their handlers, one stop grace: it waits on something past its roles; its log: %s",
+			grace, f.stderr.String())
+	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("the launcher returned %v, want its context's end", err)
 	}
 	for _, role := range roles {
 		if body, readErr := os.ReadFile(f.roleTmp(role, "finished")); readErr != nil || string(body) != "done" {
-			t.Fatalf("role %s was cut short at the container's stop: %q, %v; the launcher's log: %s", role, body, readErr, f.stderr.String())
+			t.Fatalf("role %s was cut short at the container's stop: %q, %v: the roles are stopped one after another, not together, or not each given the whole grace; the launcher's log: %s",
+				role, body, readErr, f.stderr.String())
 		}
 	}
 }
