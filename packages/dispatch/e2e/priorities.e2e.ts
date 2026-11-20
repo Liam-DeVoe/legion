@@ -1904,6 +1904,39 @@ test("on a phone the priorities tab keeps each place and title together as wide 
       await settledValue("the box's scroll width", sideways),
       "the table's scroll width is its client width"
     ).toBe(0);
+    // Verification v64: the tab offers no Columns control on a phone, where it draws no column
+    // to choose; and the box's right border is the one line at the table's right, so no cell of
+    // the last column draws a right border of its own beside it.
+    await soft(
+      page.getByRole("tabpanel").getByRole("button", { exact: true, name: "Columns" }),
+      "the priorities tab offers no Columns control on a phone"
+    ).toHaveCount(0);
+    const rightLines = () =>
+      table.evaluate((element) => {
+        const cells = [...element.querySelectorAll("th, td")].filter(
+          (cell) => cell.getBoundingClientRect().width > 0
+        );
+        const right = Math.max(...cells.map((cell) => cell.getBoundingClientRect().right));
+        return cells
+          .filter((cell) => {
+            const style = getComputedStyle(cell);
+            return (
+              cell.getBoundingClientRect().right >= right - 0.5 &&
+              Number.parseFloat(style.borderRightWidth) > 0 &&
+              style.borderRightStyle !== "none" &&
+              !/rgba\(.*,\s*0\)$/.test(style.borderRightColor) &&
+              style.borderRightColor !== "transparent"
+            );
+          })
+          .map(
+            (cell) =>
+              `${cell.tagName.toLowerCase()} ${(cell.textContent ?? "").trim().slice(0, 16)}`
+          );
+      });
+    soft(
+      await settledValue("the last column's right borders", rightLines),
+      "one line at the box's right border: no cell of the last column draws its own"
+    ).toEqual([]);
 
     // The header row's controls, each by its 44 px touch target: its box, grown about its centre
     // to 44 px where it is smaller. No two of them may overlap, and the `#` header holds one
@@ -1966,6 +1999,237 @@ test("on a phone the priorities tab keeps each place and title together as wide 
       `the # column's sort is the only control of its header (${targets.placeControls.join(", ")})`
     ).toEqual(["sort"]);
     await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-2947 R7 (spec v86 to v89) and check 138e9e4d (Verification v64, v65), read on data
+// shaped as production's: a holder's claim chip on each fault tab drawn whole at 1280, its words
+// no wider than its box; at 1280 Title at least 260 px wide on the Active tab and 200 px on the
+// Parked tab, and on both no other column wider than its widest header or cell needs, with its
+// padding; and the status bar over the work under a priority, at 1280 and at 390, and over each
+// fault tab at 390, cutting no status's name - each name is whole in its segment, in view, or
+// whole in a legend under the bar - and at 390 drawing every count inside the bar.
+// SLOW(>=2s): the seed, eight more issues, two claims, and three pages read at two sizes.
+test("the fault tabs draw a holder's claim whole, and no status bar of these pages cuts a status's name", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  // Under #1, beside its rollout in flight and its smoke suite waiting, one issue in each other
+  // status a priority's work stands in, so its bar holds eight segments, as production's do.
+  const statuses = ["triage", "testing", "needs_review", "retro", "backlog", "icebox"] as const;
+  for (const status of statuses) {
+    const issue = await createIssue({ project: "CORE", title: `Under #1 in ${status}` });
+    await patchIssue(issue.key, { advances: [seed.ids[0]], status });
+  }
+  // One claimed issue on each fault tab, held by a session whose name runs as production's do.
+  const holder = {
+    id: "019a1c0f-6d4b-7e80-bf39-4a1b5c8d9e0f",
+    kind: "session" as const,
+    origin: { session_title: "Legion implementer · INFRA-2947 · build host" },
+  };
+  const unplaced = await createIssue({ project: "OPS", title: "Claimed under no priority" });
+  const parked = await createIssue({ project: "WEB", title: "Claimed and parked under #1" });
+  await patchIssue(unplaced.key, { status: "in_progress" });
+  await patchIssue(parked.key, { advances: [seed.ids[0]], status: "backlog" });
+  for (const key of [unplaced.key, parked.key]) {
+    await claimIssue(key, { actor: holder, as: "agent" });
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    const soft = expect.configure({ soft: true });
+
+    // Each status name the bar under `scope` draws that a reader cannot read whole: cut inside
+    // its segment, or with its segment scrolled past the bar's edge, and named whole in no
+    // legend under the bar.
+    const cutNames = (scope: Locator) =>
+      scope.locator('fieldset[aria-label="Issues by status"]').evaluate((bar) => {
+        const edge = bar.getBoundingClientRect();
+        const left = edge.left + bar.clientLeft;
+        const right = left + bar.clientWidth;
+        const whole = (element: Element) =>
+          element.scrollWidth <= element.clientWidth &&
+          element.scrollHeight <= element.clientHeight;
+        // A legend a reader sees: under the bar, drawn, and not hidden from sight or from a
+        // screen reader, as the bar's own measuring copy of its names is.
+        const legend = [...(bar.parentElement?.querySelectorAll("*") ?? [])].filter(
+          (element) =>
+            !bar.contains(element) &&
+            (bar.compareDocumentPosition(element) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0 &&
+            element.getBoundingClientRect().width > 0 &&
+            getComputedStyle(element).visibility !== "hidden" &&
+            element.closest('[aria-hidden="true"]') === null &&
+            whole(element)
+        );
+        return [...bar.querySelectorAll("button")].flatMap((segment) => {
+          const name =
+            (segment.getAttribute("title") ?? segment.textContent ?? "").split(":")[0]?.trim() ??
+            "";
+          const rect = segment.getBoundingClientRect();
+          const inView = rect.left >= left - 0.5 && rect.right <= right + 0.5;
+          if (inView && whole(segment)) return [];
+          return legend.some((element) => (element.textContent ?? "").includes(name)) ? [] : [name];
+        });
+      });
+    // Each segment of the bar under `scope` whose count is not drawn inside the bar as it stands
+    // at its start: inside the bar's inner box and inside its own segment. A segment's count is
+    // the number its tooltip names after the status.
+    const countsOutside = (scope: Locator) =>
+      scope.locator('fieldset[aria-label="Issues by status"]').evaluate((bar) => {
+        bar.scrollLeft = 0;
+        const edge = bar.getBoundingClientRect();
+        const left = edge.left + bar.clientLeft;
+        const right = left + bar.clientWidth;
+        return [...bar.querySelectorAll("button")].flatMap((segment) => {
+          const label = segment.getAttribute("title") ?? "";
+          const count = label.split(":")[1]?.trim() ?? "";
+          const box = segment.getBoundingClientRect();
+          const walker = document.createTreeWalker(segment, NodeFilter.SHOW_TEXT);
+          for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+            const text = node.textContent ?? "";
+            const at = text.lastIndexOf(count);
+            if (count === "" || at === -1) continue;
+            const range = document.createRange();
+            range.setStart(node, at);
+            range.setEnd(node, at + count.length);
+            const rect = range.getBoundingClientRect();
+            const inside =
+              rect.left >= Math.max(left, box.left) - 0.5 &&
+              rect.right <= Math.min(right, box.right) + 0.5;
+            return inside ? [] : [label];
+          }
+          return [`${label} (no count drawn)`];
+        });
+      });
+    // Title's width, and each other column whose header names it - all but the row's checkbox -
+    // that stands wider than its widest header or cell needs, with its padding and borders. What
+    // a header or cell needs is its content laid out at its max-content width, measured on a
+    // hidden copy of it inside the cell, so it takes the cell's own type.
+    const columnFit = (table: Locator) =>
+      table.evaluate((element) => {
+        const need = (cell: Element) => {
+          const probe = document.createElement("div");
+          probe.style.cssText =
+            "position:absolute;left:0;top:0;visibility:hidden;width:max-content;";
+          for (const child of cell.childNodes) probe.append(child.cloneNode(true));
+          cell.append(probe);
+          const width = probe.getBoundingClientRect().width;
+          probe.remove();
+          const style = getComputedStyle(cell);
+          return (
+            width +
+            Number.parseFloat(style.paddingLeft) +
+            Number.parseFloat(style.paddingRight) +
+            Number.parseFloat(style.borderLeftWidth) +
+            Number.parseFloat(style.borderRightWidth)
+          );
+        };
+        const headers = [...element.querySelectorAll("thead th")];
+        const rows = [...element.querySelectorAll("tbody tr[data-issue-row]")];
+        let title = 0;
+        const wide: string[] = [];
+        headers.forEach((header, at) => {
+          const name = (header.querySelector('button[title^="Sort"]')?.textContent ?? "").trim();
+          const width = header.getBoundingClientRect().width;
+          if (name.startsWith("Title")) {
+            title = Math.round(width);
+            return;
+          }
+          if (name === "") return;
+          const cells = rows.flatMap((row) => {
+            const cell = row.querySelectorAll("td")[at];
+            return cell === undefined ? [] : [cell];
+          });
+          const needed = Math.max(need(header), ...cells.map(need));
+          // A column's width is a whole number of pixels and its content's need a fraction: the
+          // need rounded up, and one pixel for the rounding of the cells beside it.
+          if (width > Math.ceil(needed) + 1)
+            wide.push(`${name} ${width.toFixed(1)} px, needs ${needed.toFixed(1)}`);
+        });
+        return { title, wide };
+      });
+
+    // At 1280: each fault tab's claim chip, whole; Title's width and each other column's fit;
+    // and the bar over #1's work.
+    await page.setViewportSize(DESKTOP);
+    await page.goto(PRIORITIES_PATH);
+    for (const [tab, name, key] of [
+      ["none", NO_PRIORITY_TABLE, unplaced.key],
+      ["parked", PARKED_TABLE, parked.key],
+    ] as const) {
+      await chooseTab(page, tab);
+      const table = page.getByRole("table", { exact: true, name });
+      const chip = table.locator("tr[data-issue-row]", { hasText: key }).getByTestId("issue-claim");
+      await expect(chip).toBeVisible();
+      const fit = await settledValue(`the ${tab} tab's columns`, () => columnFit(table));
+      const least = tab === "none" ? 260 : 200;
+      soft(
+        fit.title,
+        `at 1280 Title is at least ${least} px wide on the ${tab} tab`
+      ).toBeGreaterThanOrEqual(least);
+      soft(
+        fit.wide,
+        `at 1280 no column of the ${tab} tab but Title is wider than its widest header or cell needs`
+      ).toEqual([]);
+      const cut = await settledValue(`the ${tab} tab's claim chip`, () =>
+        chip.evaluate((element) => {
+          const cell = element.closest("td")?.getBoundingClientRect();
+          const parts = [element, ...element.querySelectorAll("*")].filter(
+            (part) =>
+              part.getBoundingClientRect().width > 0 &&
+              (part.scrollWidth > part.clientWidth || part.scrollHeight > part.clientHeight)
+          );
+          const box = element.getBoundingClientRect();
+          return {
+            cut: parts.map(
+              (part) =>
+                `${part.tagName.toLowerCase()} ${(part.textContent ?? "").trim().slice(0, 24)}`
+            ),
+            insideCell: cell !== undefined && box.right <= cell.right + 0.5,
+          };
+        })
+      );
+      soft(cut, `the ${tab} tab draws the holder's claim chip whole`).toEqual({
+        cut: [],
+        insideCell: true,
+      });
+    }
+    await page.goto(`/priorities/${seed.ids[0]}`);
+    const work = section(page, "Work advancing this priority");
+    await expect(work.getByRole("row", { name: /Under #1 in retro$/ })).toBeVisible();
+    soft(
+      await settledValue("the bar over #1's work at 1280", () => cutNames(work)),
+      "at 1280 the bar over a priority's work cuts no status's name"
+    ).toEqual([]);
+
+    // At 390: the same bar, and each fault tab's.
+    await page.setViewportSize(PHONE);
+    await page.reload();
+    await expect(work.getByRole("row", { name: /Under #1 in retro$/ })).toBeVisible();
+    soft(
+      await settledValue("the bar over #1's work at 390", () => cutNames(work)),
+      "at 390 the bar over a priority's work cuts no status's name"
+    ).toEqual([]);
+    soft(
+      await settledValue("the counts of the bar over #1's work at 390", () => countsOutside(work)),
+      "at 390 the bar over a priority's work draws every count inside the bar"
+    ).toEqual([]);
+    await page.goto(PRIORITIES_PATH);
+    for (const tab of ["none", "parked"] as const) {
+      await chooseTab(page, tab);
+      const panel = page.getByRole("tabpanel");
+      await expect(panel.locator("tbody tr[data-issue-row]").first()).toBeVisible();
+      soft(
+        await settledValue(`the ${tab} tab's bar at 390`, () => cutNames(panel)),
+        `at 390 the ${tab} tab's bar cuts no status's name`
+      ).toEqual([]);
+      soft(
+        await settledValue(`the counts of the ${tab} tab's bar at 390`, () => countsOutside(panel)),
+        `at 390 the ${tab} tab's bar draws every count inside the bar`
+      ).toEqual([]);
+    }
   } finally {
     await context.close();
   }
