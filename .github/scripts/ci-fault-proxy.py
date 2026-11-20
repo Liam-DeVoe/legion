@@ -33,16 +33,21 @@ It makes no fetch of its own: every byte it sends upstream is one a client sent 
 3 from the runner image, with nothing to install.
 
 How each client meets it. Measured in a Legion issue pod on 2026-11-07 with curl 8.14.1, bun
-1.4.4, gh 2.98.0, git 2.47.3 and node v24.22.1, against a proxy that answers as this one does,
-counting the proxy's own log lines per request; a runner carries other versions.
+1.4.4, gh 2.98.0, git 2.47.3 and node v24.22.1, the git and node lines again on 2026-11-20, against
+a proxy that answers as this one does, counting the proxy's own log lines per request; a runner
+carries other versions.
 
-  Which variable each reads. curl over plain http reads http_proxy and not HTTP_PROXY. curl, bun
-  and gh over https read https_proxy and HTTPS_PROXY. git reads https_proxy: with HTTPS_PROXY
-  alone, its request went direct. node 24's fetch reads https_proxy only beside
-  NODE_USE_ENV_PROXY=1, and HTTPS_PROXY never. A step that is not about which name a client
-  reads sets all four names, empties no_proxy and NO_PROXY, and sets NODE_USE_ENV_PROXY=1 for a
-  node client. It sets them through $GITHUB_ENV, as fault_env in .github/scripts/ci-tools-proof.sh
-  does, and that function's comment says why a step env: map will not do.
+  Which variable each reads. curl over plain http reads http_proxy and not HTTP_PROXY. curl, bun,
+  gh and git over https read https_proxy and HTTPS_PROXY: with HTTPS_PROXY the only proxy name
+  set, `git ls-remote https://github.com/git/git refs/heads/master` exited 128 with
+  `CONNECT tunnel failed, response 504`, and the proxy logged its CONNECT. node 24's fetch reads
+  the two https names only beside NODE_USE_ENV_PROXY=1, and neither without it: with HTTPS_PROXY
+  alone, `node -e 'fetch("https://api.github.com/")'` was answered 200 and the proxy logged
+  nothing, and with NODE_USE_ENV_PROXY=1 beside it the fetch failed on one 504 to CONNECT.
+  A step that is not about which name a client reads sets all four names, empties no_proxy and
+  NO_PROXY, and sets NODE_USE_ENV_PROXY=1 for a node client. It sets them through $GITHUB_ENV, as
+  fault_env in .github/scripts/ci-tools-proof.sh does, and that function's comment says why a
+  step env: map will not do.
 
   A 504 to CONNECT is not a 504 from the origin. The first is a tunnel that never opened, the
   second an HTTP response, and curl takes them down different paths:

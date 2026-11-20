@@ -528,15 +528,20 @@ RUN test -n "$LEGION_REVISION" \
 # variable the final stage's ENV sets is one `runtime.kubernetes.pod.env` may not set
 # (sandbox/operatorpod.go ImageEnv). A go.env default leaves GOPROXY to an operator, a role or a
 # command that names its own. The process environment outranks go.env, so each of those wins.
-# Because the file proxy comes first, a module this cache holds never reaches the network, which a
-# download fault rig must allow for. In an issue pod on 2026-11-07,
-# `go get github.com/pkg/errors@v0.9.1` succeeded with proxy.golang.org, sum.golang.org and
-# github.com all answering 504. With all three faulted, `go get github.com/mikefarah/yq/v4@v4.44.3`,
-# a module the cache does not hold, made 4 requests of proxy.golang.org, fell through to `direct`
-# and died in git (`invalid version: git ls-remote … CONNECT tunnel failed, response 504`). The
-# checksum database is a third host: with proxy.golang.org alone faulted, the module came through
-# `direct` and the build went on; with sum.golang.org faulted as well, it failed at
-# `verifying module: … Get "https://sum.golang.org/lookup/…": Gateway Timeout`. A rig faults all
+# Because the file proxy comes first, this cache serves a module's bytes, but not its checksum: its
+# sumdb/sum.golang.org holds no `supported` file, so the go command asks sum.golang.org itself, and
+# the first fetch of a module into a go.sum that lacks it reaches the network. In an issue pod on
+# 2026-11-20, with proxy.golang.org, sum.golang.org and github.com all answering 504, an empty
+# GOMODCACHE and a fresh `go mod init example.com/rig`,
+# `GOFLAGS=-mod=mod go get github.com/pkg/errors@v0.9.1` failed at `verifying module: … Get
+# "https://sum.golang.org/…": Gateway Timeout` in 3 runs. With go.sum already holding that
+# module's two lines (copied from packages/daemon/go.sum) it succeeded in 2 runs, and still made 2
+# requests, to proxy.golang.org and github.com, both answered 504. With all three faulted,
+# `go get github.com/mikefarah/yq/v4@v4.44.3`, a module the cache does not hold,
+# made 4 requests of proxy.golang.org, fell through to `direct` and died in git (`invalid version:
+# git ls-remote … CONNECT tunnel failed, response 504`, 2026-11-07). The checksum database is a
+# third host: with proxy.golang.org alone faulted, that module came through `direct` and the build
+# went on; with sum.golang.org faulted as well, it failed at `verifying module`. A rig faults all
 # three, names a module the image's cache does not hold, and runs with an empty GOMODCACHE of its
 # own (`GOMODCACHE=$(mktemp -d)`), since a role's own GOMODCACHE keeps what an earlier run fetched.
 # ghcr.io/cybermonklabs/legion/ci, the copy of debian:trixie-slim (.github/ci-images.yaml)

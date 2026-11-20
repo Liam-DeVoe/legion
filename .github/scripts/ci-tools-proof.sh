@@ -1042,8 +1042,8 @@ shorten_ladder() {
 
 # fault_env <proxy>: every variable curl, bun, gh and git read before they decide where to send a
 # request, written to $GITHUB_ENV and printed as it was written.
-# The four spellings are the whole of what those four read; node's fetch reads https_proxy only
-# beside NODE_USE_ENV_PROXY=1, which this function does not set
+# The four spellings are the whole of what those four read; node's fetch reads https_proxy and
+# HTTPS_PROXY only beside NODE_USE_ENV_PROXY=1, which this function does not set
 # (.github/scripts/ci-fault-proxy.py's header has the measurement). The two bypass lists are
 # emptied with a proxy set because either one holding a star sends every host past it. A cleared
 # proxy leaves those two alone: with nothing to go around, nothing reads them.
