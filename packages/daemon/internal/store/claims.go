@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 var _ supervise.Store = (*Store)(nil)
@@ -303,9 +304,23 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // so whichever decision makes a write, the store holds the change
 // and its publication together, or neither; PutClaim alone writes on the pool when it can queue
 // none, since then nothing goes with the write.
+//
+// A transaction that takes both the shared serializer and a claim's row takes the serializer
+// first, as a fact does, so no two of them wait on each other in a cycle. The database's rule of a
+// release's take (the trigger claims_refused_past_a_release_take) takes the serializer for a
+// write that starts a launch or makes the operator's suspension, and an upsert on its own meets
+// that rule as an insert, before its conflict locks the row. The read of the stored holder locks
+// the row first, so a write the rule's condition names — a claim written launching or suspended
+// by the operator (takesTheTakeRule) — takes the serializer before that read, whether or not the
+// rule then finds it starting anything.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
 	if !s.queuesRoleHolders(c) {
 		return false, upsertClaim(ctx, tx, c)
+	}
+	if takesTheTakeRule(c) {
+		if err := treelifecycle.Serialize(ctx, tx); err != nil {
+			return false, fmt.Errorf("put claim %s: %w", c.Token, err)
+		}
 	}
 	stored, err := storedRoleHolder(ctx, tx, c)
 	if err != nil {
@@ -322,6 +337,13 @@ func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (boo
 		return false, fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	return queued, nil
+}
+
+// takesTheTakeRule is whether a write of c meets the condition of the database's rule of a
+// release's take, the trigger claims_refused_past_a_release_take's `when`: c written launching or
+// suspended by the operator. Such a write may take the shared serializer inside the rule.
+func takesTheTakeRule(c supervise.Claim) bool {
+	return c.State == supervise.StateLaunching || c.SuspendedBy == supervise.SuspendedByOperator
 }
 
 // upsertClaim writes the row of claim c on db: putClaim's transaction, or the pool for a PutClaim
