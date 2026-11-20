@@ -26,11 +26,13 @@ import (
 // release mark (20261111001612), the issue's movement time (20261111010031), the declined ask
 // (20261111021610), the tree-stalled mark (20261111041503) and the claim's failure cause
 // (20261111212544), are
-// main's own and are applied as main's run applied them. Every version of this branch's but
-// twenty-five stands below main's newest: a migration's version is a timestamp rather than a place
-// in a line, and the twenty-five above it are the phase entry's own (20261111225552,
-// dispatch://INFRA-2800), which this branch wrote after main's claim-failure cause, and the
-// twenty-four the next paragraph names.
+// main's own and are applied as main's run applied them. A migration's version is a timestamp
+// rather than a place in a line, so a version of this branch's can stand below main's newest, as
+// the first of this list do. The versions of this list above main's newest are each one greater
+// than mainsNewestMigration: the phase entry's own (20261111225552, dispatch://INFRA-2800), which
+// this branch wrote after main's claim-failure cause, and each other version that
+// mainsNewestMigration's comment names. An upgrade of a database main migrated applies all of this
+// list in version order, and the test below holds the list against the embedded set.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
