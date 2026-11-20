@@ -104,6 +104,10 @@ var (
 	// could not be asked for: the list is allowed, as it is today, but unchecked, so the caller
 	// that goes on to mint or enroll logs that it did so. It wraps the failure it stands for.
 	ErrUnchecked = errors.New("projectaccess: dispatch could not be asked, so the empty list is allowed unchecked")
+	// ErrClosed is a developer box's credential naming a project Dispatch answers private or
+	// closing (Answer.Closed): the broker mints and renews no such credential, so a developer box
+	// holds none, whatever its person may see.
+	ErrClosed = errors.New("projectaccess: names a project that is private or turning private, which no developer-box credential lists")
 )
 
 // NotVisibleError is Visible's refusal: the first project of a list its person may not see, or
@@ -115,6 +119,16 @@ func (e *NotVisibleError) Error() string { return ErrNotVisible.Error() + ": " +
 
 // Unwrap is ErrNotVisible.
 func (e *NotVisibleError) Unwrap() error { return ErrNotVisible }
+
+// ClosedError is DeveloperBoxAsOf's refusal: the first project of a list that is private or
+// closing. It is ErrClosed (errors.Is). It is answered only for a project its person sees, so
+// naming it tells nobody of a project they cannot see.
+type ClosedError struct{ Project string }
+
+func (e *ClosedError) Error() string { return ErrClosed.Error() + ": " + e.Project }
+
+// Unwrap is ErrClosed.
+func (e *ClosedError) Unwrap() error { return ErrClosed }
 
 // ProjectNotFoundError is Access's answer for a project Dispatch does not hold: it is
 // ErrProjectNotFound (errors.Is), and it carries when the question it answers was asked, so a
@@ -158,6 +172,13 @@ type Answer struct {
 	SlackChannels []string `json:"-"`
 	// SlackChannelsPresent is whether the answer carried slack_channels.
 	SlackChannelsPresent bool `json:"-"`
+	// Closing is Dispatch's closing state: the owner has started the project's switch to
+	// private, which Dispatch completes only once no developer-box credential that lists the
+	// project is live. A closing project is public in every other way, Visibility included, and
+	// the exchange refuses a developer box a token of it as it refuses one of a private project
+	// (Closed). Dispatch writes the key only while the project is closing, so an answer that
+	// carries none, a Dispatch's from before the state included, is a project that is not.
+	Closing bool `json:"closing"`
 	// AskedAt is when the question this answers was asked, read before it was sent, so an
 	// answer's age is never less than it truly is. *Client always sets it; a zero AskedAt is an
 	// answer from a source that keeps no clock, which Stale takes as fresh.
@@ -179,6 +200,10 @@ func (a Answer) Private() bool { return a.Visibility == VisibilityPrivate }
 // Public reports whether the project is public. A project is public only when Dispatch says so:
 // a caller reads no other visibility, an empty one included, as public.
 func (a Answer) Public() bool { return a.Visibility == VisibilityPublic }
+
+// Closed reports whether no developer-box token may list the project: it is private, or closing
+// on its way there.
+func (a Answer) Closed() bool { return a.Private() || a.Closing }
 
 // Access is every question a broker reader asks Dispatch; *Client answers all three.
 type Access interface {
@@ -514,6 +539,32 @@ func Visible(ctx context.Context, a Access, person string, projects []string) er
 // exchange's mint rests on. It goes over the list at most maxRecheckPasses times, and a list whose
 // answers still age out faster than Dispatch answers them is a failure, not a pass.
 func VisibleAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
+	return passesAsOf(ctx, a, person, projects, func(string, Answer) error { return nil })
+}
+
+// DeveloperBoxAsOf is VisibleAsOf for a developer box's credential, which acts as its person
+// on a machine every agent of the box shares: beside the person seeing each project, it answers
+// a *ClosedError (which is ErrClosed) naming the first project Dispatch answers private or
+// closing (Answer.Closed). The broker mints such a credential for no project that is private,
+// or closing on its way there, and renews none, so no developer box holds one once the switch
+// to private completes. Each project is checked in the list's order, the person's sight first,
+// so a project the person may not see is refused as Visible refuses it, never named as closed.
+// Its answers are aged as VisibleAsOf's are, and the time it answers is the one a caller holds
+// its mint to (Stale) until the credential is stored.
+func DeveloperBoxAsOf(ctx context.Context, a Access, person string, projects []string) (time.Time, error) {
+	return passesAsOf(ctx, a, person, projects, func(project string, answer Answer) error {
+		if answer.Closed() {
+			return &ClosedError{Project: project}
+		}
+		return nil
+	})
+}
+
+// passesAsOf is the one check of a list against Dispatch's answers for person: each project must
+// be one Dispatch holds and person sees, and then pass also, whose refusal is answered as it is.
+// It asks again for every answer that aged past CacheTTL while the list was read, at most
+// maxRecheckPasses times over, and answers when the oldest answer it passed was asked.
+func passesAsOf(ctx context.Context, a Access, person string, projects []string, also func(project string, answer Answer) error) (time.Time, error) {
 	asked := make(map[string]time.Time, len(projects))
 	pending := projects
 	for pass := 0; len(pending) > 0; pass++ {
@@ -530,6 +581,9 @@ func VisibleAsOf(ctx context.Context, a Access, person string, projects []string
 			}
 			if !answer.Visible {
 				return time.Time{}, &NotVisibleError{Project: project}
+			}
+			if err := also(project, answer); err != nil {
+				return time.Time{}, err
 			}
 			asked[project] = answer.AskedAt
 		}
