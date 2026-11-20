@@ -172,6 +172,16 @@ export async function setListsState(state: ListsState): Promise<void> {
  *  (`queryRetryDelay`, `web/src/api/query-client.ts`) - so one jump fires whichever retry waits. */
 const PAGE_TIME_STEP_MS = 10_000;
 
+/** How long `spendPageTimeUntil` and `holdPageClockWhen` wait between two readings of the page,
+ *  so a reading after the clock moved is taken once what that move started has drawn. */
+const PAGE_READ_INTERVALS = [50, 50, 100, 200, 500];
+
+/** How far ahead of the page's own reading of its clock `holdPageClockWhen` pauses it. `pauseAt`
+ *  takes a time on the page's clock and refuses one the clock has already passed ("Cannot
+ *  fast-forward to the past"), and the clock runs on between that reading and the call, so the
+ *  pause is set a second ahead, as this suite's other pauses are. */
+const PAGE_HOLD_LEAD_MS = 1_000;
+
 /**
  * Spends `ms` of the page's own time in one jump, then sets the page's date back to the wall
  * clock's: the timers the jump fired keep the time they were moved, and only `Date.now()` goes
@@ -218,7 +228,49 @@ export async function spendPageTimeUntil(
         await spendPageTime(page, PAGE_TIME_STEP_MS);
         return false;
       },
-      { intervals: [50, 50, 100, 200, 500], message }
+      { intervals: PAGE_READ_INTERVALS, message }
+    )
+    .toBe(true);
+}
+
+/**
+ * Spends the page's own time as `spendPageTimeUntil` does until `ready` answers true, then holds
+ * the page's clock still there: no page timer fires until the row calls `page.clock.resume()`, so
+ * what the view says stays on the page while the row asserts it. A row asserts here what a view
+ * says, and what it does not say, while a read stands refused. A read that holds no data goes
+ * back to loading each time a poll sends it again, until its retries are refused again, and the
+ * view says nothing of the refusal in that time. An assertion that something is absent retries
+ * for the whole expect timeout, so on a running clock it can pass in such a window, whatever the
+ * view says while the refusal stands.
+ *
+ * The pause moves the clock `PAGE_HOLD_LEAD_MS` ahead and fires every page timer that falls due
+ * in that time, and a poll among them sends the read back to loading. So the page is read again a
+ * poll interval after the pause, once what the pause fired has drawn, and if `ready` no longer
+ * answers true the clock runs again and the time is spent until it does.
+ */
+export async function holdPageClockWhen(
+  page: Page,
+  ready: () => Promise<boolean>,
+  message: string
+): Promise<void> {
+  let held = false;
+  await expect
+    .poll(
+      async () => {
+        const shown = await ready();
+        if (held && shown) return true;
+        if (held) {
+          await page.clock.resume();
+          held = false;
+        } else if (shown) {
+          await page.clock.pauseAt((await page.evaluate(() => Date.now())) + PAGE_HOLD_LEAD_MS);
+          held = true;
+        } else {
+          await spendPageTime(page, PAGE_TIME_STEP_MS);
+        }
+        return false;
+      },
+      { intervals: PAGE_READ_INTERVALS, message }
     )
     .toBe(true);
 }

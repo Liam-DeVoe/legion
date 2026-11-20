@@ -1,4 +1,4 @@
-import { setListsState, setLiveSessions, spendPageTimeUntil } from "./agents";
+import { holdPageClockWhen, setListsState, setLiveSessions, spendPageTimeUntil } from "./agents";
 import { claimIssue, createIssue, createProject, mintAgentToken } from "./api";
 import { pickFilterOption } from "./filters";
 import { expect, test } from "./test";
@@ -18,6 +18,15 @@ import { asUser } from "./users";
 // refilling read says so only once up to 20 s of the page's own time are out. Those waits are page
 // timers: the row installs the page's clock before the page loads and moves it until each view
 // says what the row asserts (`spendPageTimeUntil`, `e2e/agents.ts`), rather than waiting them out.
+//
+// Under a refilling list the registry read holds no data, so each of the shell's 15 s polls
+// (`AGENT_REGISTRY_POLL_MS`) sends it back to loading until its retries are refused again, and in
+// that time neither view says the list refills: the chip drops its note and the filter its own. An
+// assertion that the claim does not lapse retries for the whole expect timeout, so on a running
+// clock it could pass in such a window even where a view lapses the claim while the refusal
+// stands. So each view is asserted with the page's clock held still at a moment it says the list
+// refills (`holdPageClockWhen`), where no poll can fire, and every assertion of that view reads
+// the page the refusal drew.
 
 const holder = { session_id: "claim-refill-session", title: "Claim refill holder" };
 const REFILLING = "The agent list is refilling. Try again in a moment.";
@@ -57,7 +66,7 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     const notice = page.getByTestId("issue-header").getByTestId("agent-list-refilling");
     await spendPageTimeUntil(page, () => notice.isVisible(), "the header's refilling notice shows");
     await expect(notice).toHaveText(REFILLING);
-    await spendPageTimeUntil(
+    await holdPageClockWhen(
       page,
       async () => ((await chip.getAttribute("title")) ?? "").includes(REFILLING),
       "the chip's title names the refilling list"
@@ -68,9 +77,13 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
     );
     await expect(chip).not.toHaveAttribute("title", /no longer running/);
 
+    // The clock is the context's, so a page loaded while it is held loads held, and the query
+    // client hands each read's answer to the views on a page timer: none would reach the issues
+    // page. So the clock runs again before that page loads, as it ran for the issue page.
+    await page.clock.resume();
     await page.goto("/projects/CORE/issues?unclaimed=1");
     const unchecked = page.getByTestId("unclaimed-unchecked");
-    await spendPageTimeUntil(page, () => unchecked.isVisible(), "the filter's note shows");
+    await holdPageClockWhen(page, () => unchecked.isVisible(), "the filter's note shows");
     await expect(unchecked).toHaveText(
       `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`
     );
