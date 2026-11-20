@@ -156,7 +156,6 @@ type UncausedTuple struct {
 	LegacyFromCause bool
 }
 
-
 // PlanUncaused is a write whose nodes are written before the event that causes it exists, held
 // for that event, and planned before anything is queued: the nodes, at the sentinel, the writer's
 // own facts, stated, and the mark its node write will leave on the rows it makes or moves
