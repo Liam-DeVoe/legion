@@ -346,11 +346,15 @@ function collectSourceFiles(root: string): string[] {
       const isSource = entry.name.endsWith(".ts") || entry.name.endsWith(".tsx");
       // A test file is the suite, and so is a draft matrix's coverage list (`*.coverage.ts`):
       // test-support data no product module imports, whose strings name the mounts the composer
-      // census finds (`<MentionComposer mutationKey={...}>`) rather than mounting anything.
+      // census finds (`<MentionComposer mutationKey={...}>`) rather than mounting anything. So is
+      // a fixture module (`*-fixture.ts`, `*-fixtures.ts`), which only the suite imports: one
+      // reads a node's line as a row draws it (`issue-page/projection-fixture.tsx`), mounting
+      // the line's projection for no reader.
       const isTest =
         entry.name.endsWith(".test.ts") ||
         entry.name.endsWith(".test.tsx") ||
-        entry.name.endsWith(".coverage.ts");
+        entry.name.endsWith(".coverage.ts") ||
+        /-fixtures?\.tsx?$/u.test(entry.name);
       if (isSource && !isTest) {
         files.push(child);
       }
@@ -1094,12 +1098,12 @@ type Held = string | typeof PROJECTED | Through | Props | ProseRecord;
  * the line a filter names a parent by. A value declared as one of them - a prop, a parameter -
  * is that text: handed whole to a call whose answer is drawn, as G's folded line once handed a
  * node to `firstLineOf(lineWords(node))`, it draws it, and so does one of those fields read off
- * it, as `chipWords(chip.reading.markdown)` would, unless the call is the projection, whose
+ * it, as `chipWords(wordsOf(chip.reading.tree))` would, unless the call is the projection, whose
  * answer is its line. A chip's `reading.words` is the page's word for a document and no
  * writer's.
  */
 const PROSE_RECORDS: ReadonlyMap<string, readonly string[]> = new Map([
-  ["NodeChip", ["reading.markdown", "reading.tree"]],
+  ["NodeChip", ["reading.tree"]],
   ["ParentLine", ["text", "tree"]],
   ["TreeNode", ["text", "tree"]],
 ]);
@@ -1127,12 +1131,19 @@ function declaredRecord(parameter: ts.ParameterDeclaration, prop: string): strin
   return recordOf(member?.type);
 }
 
+/** The hooks that project a published name by the one reader and mount no surface of their
+ *  own, so they name no row: the names store's projection of a target's name, which a chip
+ *  also names a block by (`refs/reference-names.tsx`'s `useReadingName`). What one answers is
+ *  a line. */
+const NAME_PROJECTIONS: ReadonlySet<string> = new Set(["useReadingName"]);
+
 /** Whether `expression` is a call of a projection hook. */
 function isProjection(expression: ts.Expression): boolean {
   return (
     ts.isCallExpression(expression) &&
     ts.isIdentifier(expression.expression) &&
-    READING_HOOKS.has(expression.expression.text)
+    (READING_HOOKS.has(expression.expression.text) ||
+      NAME_PROJECTIONS.has(expression.expression.text))
   );
 }
 
@@ -1430,7 +1441,7 @@ function rawDrawsOf(tree: ts.SourceFile, answers: ReadonlyMap<string, ProseAnswe
     return typeof what === "object" && "record" in what ? what.record : undefined;
   };
   /** The stored text a member chain off a record reads (`PROSE_RECORDS`): the path of the field
-   *  it reads, as `reading.markdown` of `chip.reading?.markdown`, where that field holds one. */
+   *  it reads, as `reading.tree` of `chip.reading?.tree`, where that field holds one. */
   const recordField = (leaf: ts.Expression, record: string): string | undefined => {
     const path: string[] = [];
     for (let at = leaf; !ts.isIdentifier(at); ) {
@@ -2903,7 +2914,7 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
       "  return <span>{drawnLine(first)}</span>;",
       "}",
       "function Chip({ chip }: { chip: NodeChip }) {",
-      '  return <a>{chipWords(chip.reading?.markdown ?? "")}</a>;',
+      "  return <a>{chipWords(wordsOf(chip.reading?.tree))}</a>;",
       "}",
       "const parentWords = (line: ParentLine) => <i>{cut(wordsOf(line.tree), 40)}</i>;",
       "function Line({ node }: { node: TreeNode }) {",
@@ -2919,7 +2930,7 @@ describe("a stored text drawn as its characters is read from the syntax tree", (
     ].join("\n");
     expect(draws(source)).toEqual([
       "fixture.tsx:3 TreeNode a JSX child",
-      "fixture.tsx:6 reading.markdown a JSX child",
+      "fixture.tsx:6 reading.tree a JSX child",
       "fixture.tsx:8 tree a JSX child",
     ]);
   });

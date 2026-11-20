@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
-import type { IssueReferenceSummary } from "../../api/types";
+import type { AskRead, IssueReferenceSummary } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 import { warmMarkdownRenderer } from "./markdown-engine";
 import { PlainText } from "./plain-text";
@@ -168,6 +168,90 @@ test("a plain line and a link name another issue's block the batch answered with
     await within(view.container).findByRole("link", { name: text });
     await waitFor(() => expect(view.getByTestId("line").textContent).toBe(`See ${text} first`));
     expect(getReferences, "the line and the link read the block twice").toHaveBeenCalledTimes(1);
+  } finally {
+    view.unmount();
+  }
+});
+
+/** An ask of CORE-1, by its whole id, whose question runs past the room a link's title has. */
+const LONG_ASK_ID = "6b3f2a10-4c5d-4e6f-8a9b-0c1d2e3f4a5b";
+const LONG_ASK = `dispatch://CORE-1/ask/${LONG_ASK_ID}`;
+const LONG_QUESTION =
+  "Should the outline keep every folded branch closed after the reader reloads the page twice?";
+
+// The architect's ruling (A) on R8's one rule: a name reads as a link to its target reads it. A
+// link titles an ask, a comment, a message and a block by the first 60 characters of its own
+// text and an ellipsis (`linkTitleMax`), so the name the page's batched read publishes for one is
+// cut there too: a plain line fed by the batch, a plain line that reads the ask itself and the
+// link to it read one question in the same words.
+test("a name past a link's room reads the same from the page's batch, from its own read and in a link", async () => {
+  const words = `${[...LONG_QUESTION].slice(0, 60).join("")}…`;
+  expect(words).toBe("Should the outline keep every folded branch closed after the…");
+  spies.push(
+    spyOn(api, "getAsk").mockResolvedValue({
+      answers: [],
+      ask: {
+        anchor: null,
+        answer: null,
+        artifact_id: null,
+        asked_of: null,
+        asked_of_at: null,
+        asked_of_by: null,
+        author: { id: "planner", kind: "session" },
+        block_id: null,
+        created_at: "2026-01-01T00:00:00Z",
+        edited_at: null,
+        id: LONG_ASK_ID,
+        issue_key: "CORE-1",
+        kind: "question",
+        multiple: false,
+        opened_event_id: 1,
+        options: [],
+        question: LONG_QUESTION,
+        question_tree: displayTree(LONG_QUESTION),
+        state: "open",
+        urgency: "med",
+      },
+      claimant: null,
+      edits: [],
+      followers: [],
+      replies: [],
+      route: null,
+      route_holder: null,
+      route_status: null,
+      route_status_reason: null,
+    } as unknown as AskRead)
+  );
+  const markdown = `See ${LONG_ASK} now`;
+  const tree = displayTree(LONG_QUESTION);
+  if (tree === undefined) throw new Error("the engine read no question");
+  const published: PublishedReferences = {
+    ambiguous: new Set(),
+    asked: new Set([LONG_ASK]),
+    gone: new Set(),
+    readings: new Map([[LONG_ASK, { tree }]]),
+    unnamed: new Set(),
+  };
+  const view = render(
+    <QueryClientProvider client={client()}>
+      <MemoryRouter>
+        <ReferenceNamesProvider>
+          <Publisher published={published} />
+          <PlainText markdown={markdown}>
+            {(line) => <span data-testid="batch">{line ?? ""}</span>}
+          </PlainText>
+        </ReferenceNamesProvider>
+        <PlainText markdown={markdown}>
+          {(line) => <span data-testid="own">{line ?? ""}</span>}
+        </PlainText>
+        <MarkdownBody markdown={markdown} />
+      </MemoryRouter>
+    </QueryClientProvider>
+  );
+  try {
+    await within(view.container).findByRole("link", { name: words });
+    await waitFor(() => expect(view.getByTestId("own").textContent).toBe(`See ${words} now`));
+    expect(view.getByTestId("batch").textContent, "the batch's name").toBe(`See ${words} now`);
   } finally {
     view.unmount();
   }

@@ -39,15 +39,10 @@ import {
   type TreeNode,
   targetNaming,
 } from "./issue-tree";
+import { useNodeLine } from "./NodeRow";
 import { NODE_TYPE_NAMES, nodeStateWord, PRESET_NAMES } from "./page-words";
 import { filterSignals, presetView } from "./presets";
-import {
-  lineWordsOf,
-  nameOf,
-  namesOf,
-  projectedNames,
-  publishingNames,
-} from "./projection-fixture";
+import { nameOf, namesOf, nodeLineOf, projectedNames, publishingNames } from "./projection-fixture";
 import { knownIssueKeys, rowReferences, rowReferenceWords } from "./row-references";
 import { storedReading } from "./stored-reading";
 import { blockNodeId, checkStanding, nodeIdOf, treeContext } from "./tree-drafts";
@@ -931,8 +926,9 @@ test("a task needed by a pinned and an unpinned pointer is one needs chip", () =
 // R21: an ask's question and a comment's or a message's body are markdown, and the batched read
 // names each by that stored text, so a chip naming one - and the name the page publishes for it,
 // which is the chip's by one rule (`targetNaming`) - is that text's plain-text projection, its
-// words with no `**`, backtick or link mark. The page publishes the name whole, as every surface
-// reads the target by it (R8), and the chip cuts it as a chip's words are cut where it draws it.
+// words with no `**`, backtick or link mark. The page publishes the name as a link to the
+// target reads it, as every surface reads the target by it (R8), and the chip cuts it as a
+// chip's words are cut where it draws it.
 // An issue's name is its title, which is no markdown and is drawn as written.
 test("a chip naming an ask, a comment or a message draws its plain words, an issue its title", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
@@ -1168,7 +1164,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   const read = nodeOf(root, blockNodeId("decisions-md", "d1"));
   expect(read?.tree).toEqual(reading);
   expect(read === undefined ? "" : nodeWords(read)).toBe("Keep it Keep the model pure.");
-  const line = read === undefined ? "" : lineWordsOf(read);
+  const line = read === undefined ? "" : nodeLineOf(read);
   expect(line).toBe("Keep it");
   // The heading is the whole of its block, so nothing of the line is cut and, by `drawnLine`'s
   // rule, it draws no ellipsis.
@@ -1179,7 +1175,7 @@ test("a node's one line is cut from its first block, so a heading is never run i
   const stored = nodeOf(root, blockNodeId("decisions-md", "d2"));
   expect(stored?.tree).toBeUndefined();
   expect(stored?.text).toBe(text);
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("Keep it");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("Keep it");
   // A chip naming a block is cut from the first block of the block's reading the same way.
   expect(nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map(nameOf)).toEqual(["Keep it"]);
 });
@@ -1194,7 +1190,7 @@ test("a node's line from a stored heading leaves out its marker once", () => {
     issue: issueDetails([spec, made]),
   });
   const stored = nodeOf(root, blockNodeId("decisions-md", "d1"));
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("# 1 rule");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("# 1 rule");
 });
 
 // A rendered body draws an address in code as its author wrote it (`MarkdownBody.tsx`), so a
@@ -1255,7 +1251,7 @@ test("an address in code stays as written in a node's line, from a reading and f
   const node = (id: string): TreeNode | undefined => nodeOf(root, blockNodeId("decisions-md", id));
   const line = (id: string): string => {
     const found = node(id);
-    return found === undefined ? "" : lineWordsOf(found);
+    return found === undefined ? "" : nodeLineOf(found);
   };
 
   const written = "Run dispatch read dispatch://CORE-2 before dispatch://CORE-3 lands.";
@@ -1334,7 +1330,7 @@ test("a node's one line is cut from its first block that holds words, past a rul
   });
   const line = (id: string): string => {
     const node = nodeOf(root, blockNodeId("decisions-md", id));
-    return node === undefined ? "" : lineWordsOf(node);
+    return node === undefined ? "" : nodeLineOf(node);
   };
 
   expect(line("d1")).toBe("Keep the model pure.");
@@ -1388,7 +1384,7 @@ test("a plan task written `**1\\. …**` keeps its label in its line, from its r
     });
     const task = nodeOf(root, blockNodeId("plan-md", "t1"));
     expect(task?.text, sent).toBe(words);
-    expect(task === undefined ? "" : drawnLine(firstLineOf(lineWordsOf(task))), sent).toBe(
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(
       "1. Stand the harness up and record what the page is today."
     );
   }
@@ -1438,10 +1434,30 @@ test("the line of the issue and of a child issue is its title as written", () =>
     const root = buildIssueTree({
       issue: { ...issueDetails([]), children: [childIssue("CORE-2", title)], title },
     });
-    expect(lineWordsOf(root), title).toBe(`${KEY} ${line}`);
+    expect(nodeLineOf(root), title).toBe(`${KEY} ${line}`);
     const child = nodeOf(root, "CORE-2");
     expect(child?.type, title).toBe("child_issue");
-    expect(child === undefined ? "" : lineWordsOf(child), title).toBe(line);
+    expect(child === undefined ? "" : nodeLineOf(child), title).toBe(line);
+  }
+});
+
+// R1 on the issue's own line: the issue's node holds its key and then its title, and the key is
+// the page's word for the issue, so R1's rule reads a leading label after it, as it reads one at
+// the start of any node's own words: `CORE-1 1. Migrate the table` keeps its `1.`, and a sentence
+// end after the label still ends the line. The key is no word of the title, so a name the page
+// published for the issue's own address takes no place in its line either.
+test("the issue's own line reads a label after its key, and names nothing in its key", () => {
+  const root = buildIssueTree({
+    issue: { ...issueDetails([]), title: "1. Ship it now. Then the rest of it." },
+  });
+  expect(nodeLineOf(root)).toBe(`${KEY} 1. Ship it now.`);
+  const named = renderHook(() => useNodeLine(root, { surface: "node-row-first-line" }), {
+    wrapper: publishingNames(new Map([[`dispatch://${KEY}`, "Ship it now"]])),
+  });
+  try {
+    expect(named.result.current.line).toBe(`${KEY} 1. Ship it now.`);
+  } finally {
+    named.unmount();
   }
 });
 
@@ -1460,7 +1476,9 @@ test("a chip, a published name and a row's link name a child issue by its whole 
   const citing = { ...comment("c1", "2026-11-05T01:00:00Z"), body: `See ${cited} first.` };
   const long = `${"a".repeat(225)} dispatch://CORE-3/spec#b-r1 then dispatch://CORE-4 up`;
   const longName = `${"a".repeat(225)} CORE-3 spec block then CORE-4 up`;
-  for (const [title, line, name = line] of [...TITLES, [long, long, longName] as const]) {
+  // The row's own line holds R1's 100 characters of the long title and says it carries on.
+  const longLine = `${"a".repeat(100)}…`;
+  for (const [title, line, name = line] of [...TITLES, [long, longLine, longName] as const]) {
     // The read's name for an issue, as the server cuts it: the title's first 240 characters.
     const head = [...title].slice(0, 240).join("");
     const reads = {
@@ -1479,7 +1497,7 @@ test("a chip, a published name and a row's link name a child issue by its whole 
     };
     const root = buildIssueTree(reads);
     const child = nodeOf(root, "CORE-2");
-    expect(child === undefined ? "" : lineWordsOf(child), title).toBe(line);
+    expect(child === undefined ? "" : nodeLineOf(child), title).toBe(line);
     const chips = nodeOf(root, blockNodeId("decisions-md", "d1"))?.chips;
     // The chip cuts the whole name where it draws it; the page publishes it whole.
     expect(
@@ -3141,7 +3159,7 @@ test("a bare address in a node's line reads as written until it is named, from a
     for (const [at, [words, line]] of lines.entries()) {
       const task = nodeOf(root, blockNodeId("plan-md", `t${at + 1}`));
       expect(task?.text, sent).toBe(words);
-      expect(task === undefined ? "" : drawnLine(firstLineOf(lineWordsOf(task))), sent).toBe(line);
+      expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(line);
     }
     expect(nodeOf(root, blockNodeId("plan-md", "t0"))?.chips.map(nameOf), sent).toEqual([
       read ? "Do it as CORE-2 says." : NODE_TYPE_NAMES.plan_task,
@@ -3168,8 +3186,8 @@ test("a bare address in a node's line reads as written until it is named, from a
 // comment draws as the plain-text projection of its reading, a name and so a title over one
 // record: a bare address in the body reads as its target's short form in the chip's name and in
 // the name the page publishes for it (`targetNaming`), since a name reads no other name. A link
-// whose target is an address reads as its words, as it did. The page publishes the name whole,
-// and the chip cuts it as a chip's words are cut.
+// whose target is an address reads as its words, as it did. The page publishes the name as a
+// link to the comment reads it, and the chip cuts it as a chip's words are cut.
 test("a chip naming a comment whose body holds a bare address names it by the short form", () => {
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -3218,9 +3236,9 @@ test("a stored text read to plain words holds the words of the server's reading 
     const names = projectedNames(new Map([["stored", { tree: storedReading(stored) }]]));
     expect(names.get("stored"), stored).toBe(reading);
   }
-  expect(lineWordsOf({ text: "Intro line:\n- item one\n- item two", type: "comment" })).toBe(
-    "Intro line:"
-  );
+  expect(
+    nodeLineOf({ id: "c1", text: "Intro line:\n- item one\n- item two", type: "comment" })
+  ).toBe("Intro line:");
 
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -3254,7 +3272,9 @@ test("a node's words keep the bare address its line reads", () => {
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task === undefined ? "" : nodeWords(task), sent).toBe(words);
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(
+      "Do it as dispatch://CORE-2 says."
+    );
   }
 });
 
@@ -3269,7 +3289,7 @@ test("a string that only looks like an address stays as written in a node's line
     ["no reading", false],
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(words);
   }
 });
 
@@ -3285,7 +3305,7 @@ test("a node with no reading takes its line from its stored text's first line of
   ] as const) {
     const task = nodeOf(planTasks([words], read), blockNodeId("plan-md", "t1"));
     expect(task?.tree === undefined, sent).toBe(!read);
-    expect(task === undefined ? "" : lineWordsOf(task), sent).toBe(words);
+    expect(task === undefined ? "" : nodeLineOf(task), sent).toBe(words);
   }
   const spec = artifact("artifact-spec", SPEC, "spec.md", true);
   const made = artifact("artifact-decisions", "decisions-md", "decisions.md");
@@ -3301,7 +3321,7 @@ test("a node with no reading takes its line from its stored text's first line of
   ] as const) {
     const node = nodeOf(root, blockNodeId("decisions-md", row.block_id));
     expect(node?.tree, row.block_id).toBeUndefined();
-    expect(node === undefined ? "" : lineWordsOf(node), row.block_id).toBe(line);
+    expect(node === undefined ? "" : nodeLineOf(node), row.block_id).toBe(line);
   }
 });
 
@@ -3336,7 +3356,7 @@ test("an issue addresses a node as its tree does, from the issue alone", () => {
     undefined,
     undefined,
   ]);
-  const context = treeContext({ issue }, () => undefined);
+  const context = treeContext({ issue });
   expect(references.map(context.nodeIdOf)).toEqual(references.map(alone));
 });
 
@@ -3366,8 +3386,8 @@ test("a result node holds the server's reading of its observed text where the re
   const read = nodeOf(root, "res-read");
   expect(read?.tree).toEqual(readingOf("Server words."));
   expect(read?.source).toBeUndefined();
-  expect(read === undefined ? "" : lineWordsOf(read)).toBe("Server words.");
+  expect(read === undefined ? "" : nodeLineOf(read)).toBe("Server words.");
   const stored = nodeOf(root, "res-stored");
   expect(stored?.tree).toBeUndefined();
-  expect(stored === undefined ? "" : lineWordsOf(stored)).toBe("Stored words only.");
+  expect(stored === undefined ? "" : nodeLineOf(stored)).toBe("Stored words only.");
 });

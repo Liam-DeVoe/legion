@@ -34,6 +34,7 @@ import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { usePlainHeadline } from "../refs/plain-text";
 import { ReferenceHostIs } from "../refs/reference-host";
+import { blockLineReading, useReadingName } from "../refs/reference-names";
 import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
@@ -442,24 +443,37 @@ export function NodeRow({
  * the paragraph after it. A reference in it reads as the same reference in the node's row does
  * (`RowText.tsx`): as its target's current name once it resolves, and as the words its author
  * wrote until then (R8, INFRA-1196 decision 350); and a numbered step keeps its number (decisions
- * 66 and 88). Each role is read by the issue the node's record is on. `line` is `undefined` until
- * the projection has answered, which is one pre-paint commit on a page whose engine is loaded,
- * and `""` for a node whose words hold none. `reads` draws nothing and the caller mounts it where
- * it draws the line.
+ * 66 and 88). The issue's own line is its key, which the page writes before its projected title
+ * and R1's rule reads a label after (`LineReading.key`). Each role is read by the issue the
+ * node's record is on. `line` is `undefined` until the projection has answered, which is one
+ * pre-paint commit on a page whose engine is loaded, and `""` for a node whose words hold none.
+ * `reads` draws nothing and the caller mounts it where it draws the line.
  */
-function useNodeLine(
-  node: Pick<TreeNode, "source" | "text" | "tree" | "type">,
+export function useNodeLine(
+  node: Pick<TreeNode, "id" | "source" | "text" | "tree" | "type">,
   { surface }: { readonly surface: "node-row-first-line" | "node-row-parent-line" }
 ): { line: string | undefined; reads: ReactNode } {
-  const { source, text: stored, tree, type } = node;
-  const reading = useMemo(() => lineReading({ text: stored, tree, type }), [stored, tree, type]);
+  const { id, source, text: stored, tree, type } = node;
+  const reading = useMemo(
+    () => lineReading({ id, text: stored, tree, type }),
+    [id, stored, tree, type]
+  );
   const { reads, text } = usePlainHeadline(
     "tree" in reading ? reading.tree : undefined,
     "markdown" in reading ? reading.markdown : undefined,
     { firstLine: "markdown" in reading, issue: source?.issue, surface }
   );
   const words = "none" in reading ? "" : text?.text;
-  return { line: words === undefined ? undefined : drawnLine(firstLineOf(words)), reads };
+  const key = "key" in reading ? reading.key : undefined;
+  const line = words === undefined || key === undefined ? words : `${key} ${words}`.trimEnd();
+  return { line: line === undefined ? undefined : drawnLine(firstLineOf(line, key)), reads };
+}
+
+/** The words a place that names a node by its one line draws where it must name it by
+ *  something (`ParentLink`): the line (`useNodeLine`), and the page's word for the node's kind
+ *  where its words hold none (R22). Nothing until the projection has answered. */
+export function lineOrKindWord(line: string | undefined, type: NodeType): string {
+  return line === "" ? NODE_TYPE_NAMES[type] : (line ?? "");
 }
 
 /** A folded branch's one line (`useNodeLine`): empty until the projection has answered. */
@@ -1203,13 +1217,16 @@ export function NodeEdges({
  *
  * The name is the chip's address as the shared plain-text projection reads it standing alone:
  * its target's current name (R8), which for a target the page's batched read answered is the
- * name the page published for it (`refs/reference-names.tsx`), whole, projected from the
- * target's own words in plain words with no list or block reading, so "1. Stand the harness up."
- * keeps its number (decisions 66 and 88); a party by its own name (R5), its role read by the
- * issue the node's record is on (`issue`); and an issue by its key and title. A chip whose
- * target has no name yet draws nothing until it has one - "the names come last and all at once"
- * (`useIssueTree.ts`) - which the projection's own answer says (`names`): a chip draws no
- * address.
+ * name the page published for it (`refs/reference-names.tsx`) as a link to the target reads it,
+ * projected from the target's own words in plain words with no list or block reading, so "1.
+ * Stand the harness up." keeps its number (decisions 66 and 88); a party by its own name (R5),
+ * its role read by the issue the node's record is on (`issue`); and an issue by its key and
+ * title. A block is the one target a chip names by other words than a link does: by the first
+ * block of its words that holds any, from the reading the chip carries (`blockLineReading`),
+ * projected as the page's names are (`useReadingName`), so a decision's chip is its heading. A
+ * chip whose target has no name yet draws nothing until it has one - "the names come last and
+ * all at once" (`useIssueTree.ts`) - which the projection's own answer says
+ * (`MarkdownHeadline.named`): a chip draws no address.
  */
 function Chip({
   chip,
@@ -1235,18 +1252,28 @@ function Chip({
   const carried =
     chip.reading !== undefined && "words" in chip.reading ? chip.reading.words : undefined;
   const word = anyDocument === undefined ? undefined : (carried ?? anyDocument);
+  // A block by its first block of words, from the reading the chip carries, with no read made.
+  const lineReading = useMemo(
+    () => (ambiguous || gone ? undefined : blockLineReading(chip.ref, chip.reading)),
+    [ambiguous, chip.reading, chip.ref, gone]
+  );
+  const line = useReadingName(lineReading, Number.POSITIVE_INFINITY);
   // The address as one text run, which the projection reads as the reference it is.
   const address = useMemo(() => titleReading(chip.ref), [chip.ref]);
-  const { names, reads, text } = usePlainHeadline(
-    ambiguous || gone || word !== undefined ? undefined : address,
+  const { reads, text } = usePlainHeadline(
+    ambiguous || gone || word !== undefined || lineReading !== undefined ? undefined : address,
     undefined,
     { issue, surface: "node-row-chip" }
   );
-  // The one reference the projection read, and whether it named it: one it holds no name for
-  // reads as the address written, which a chip never draws.
-  const reference = text?.addresses[0];
-  const named = reference !== undefined && names.get(reference)?.name !== undefined;
-  const name = text !== undefined && named ? chipName(target, text.text) : "";
+  // Named only where the projection wrote its target's name in place of the address, which a
+  // chip never draws (`MarkdownHeadline.named`).
+  const named = text !== undefined && text.named.length > 0;
+  const name =
+    line !== undefined
+      ? chipName(target, line)
+      : text !== undefined && named
+        ? chipName(target, text.text)
+        : "";
   const words = ambiguous ? chip.ref : (word ?? name);
   if (!gone && words === "") return reads;
   const href = chip.gone || target === undefined ? undefined : referenceHref(target);
@@ -1294,7 +1321,7 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
   const href = parent === undefined ? undefined : referenceHref(parent);
   const { line: drawn, reads } = useNodeLine(line, { surface: "node-row-parent-line" });
   // Nothing until the projection answers, one pre-paint commit on a page whose engine is loaded.
-  const words = drawn === "" ? NODE_TYPE_NAMES[line.type] : (drawn ?? "");
+  const words = lineOrKindWord(drawn, line.type);
   return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
       {reads}

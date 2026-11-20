@@ -15,7 +15,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { TextAskCard } from "../refs/markdown-cards";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
-import { useKnownAmbiguousReferences, useKnownReferenceNames } from "../refs/reference-names";
+import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
@@ -51,7 +51,7 @@ import {
  * words the shared projection reads a name to (`tree-drafts.ts`'s `treeContext`, part G's R4),
  * so a numbered step keeps its number (decisions 66 and 88). A short reference that two or more
  * targets answer to names no one of them: the page publishes it as ambiguous, apart from the
- * names (`useKnownAmbiguousReferences`), and it is drawn as its author wrote it, with no link
+ * names (`KnownReferences.ambiguous`), and it is drawn as its author wrote it, with no link
  * (decisions 62 and 89). A reference with no name yet - one the read has not answered, a gone
  * one - keeps its link and reads as the words its author wrote (R8, INFRA-1196 decision 350).
  * The row asks the server nothing for a reference the page reads (R21), so the body's own link
@@ -117,7 +117,8 @@ interface RowNames {
   readonly found: readonly RowReference[];
   /** The keys the page's batched read named an issue for: a row links one where it stands bare. */
   readonly issues: readonly string[];
-  /** The name each reference has, an issue's title apart from its key (`rowReferenceWords`). */
+  /** The name each reference is drawn by, an issue's title apart from its key, and a block's
+   *  first block of words, which a chip in place names it by (`rowReferenceWords`). */
   readonly names: ReadonlyMap<string, string>;
   /** The reads of the references the page reads no name for, which draw nothing. */
   readonly reads: ReactNode;
@@ -129,11 +130,12 @@ interface RowNames {
  * reference in the same words: the name the page published from its batched read, and a party's
  * own read, by the issue the record is on (`issue`), where a role is read. The page's names are
  * read once for each of its answers and shared by every row. An issue's name is its title, which
- * a row draws apart from its key.
+ * a row draws apart from its key. A block is drawn as a chip in place, named as a tie's chip
+ * names it: by the first block of its words that holds any, which the page's store projects
+ * beside its name (`KnownReferences.lines`).
  */
 function useRowNames(words: string, issue: string | undefined): RowNames {
-  const known = useKnownReferenceNames();
-  const ambiguous = useKnownAmbiguousReferences();
+  const { ambiguous, lines, names: known } = useKnownReferences();
   const issues = useMemo(() => knownIssueKeys(known), [known]);
   const found = useMemo(() => rowReferences(words, issues, ambiguous), [ambiguous, issues, words]);
   const addresses = useMemo(() => [...new Set(found.map((one) => one.reference))], [found]);
@@ -141,11 +143,11 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const names = useMemo(() => {
     const byReference = new Map<string, string>();
     for (const one of found) {
-      const name = named.get(one.reference)?.name;
+      const name = lines.get(one.reference) ?? named.get(one.reference)?.name;
       if (name !== undefined) byReference.set(one.reference, name);
     }
     return byReference;
-  }, [found, named]);
+  }, [found, lines, named]);
   const drawn = useMemo(
     () =>
       found
