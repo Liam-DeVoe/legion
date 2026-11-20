@@ -768,8 +768,8 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 }
 
 // ReadOnlyNewestPullRequestHead is NewestPullRequestHead for a read-only caller's read of the
-// results, which stores nothing (api/results_ci.go, server.newestPullRequestHead): the same
-// statement over the stored rows with the heads that caller's memory keeps laid on
+// results, which stores nothing (api/results_ci.go, comparisonReader.newestPullRequestHead):
+// the same statement over the stored rows with the heads that caller's memory keeps laid on
 // (keptHeadsRelation).
 func ReadOnlyNewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string, kept KeptHeads) (NewestHead, bool, error) {
 	return newestPullRequestHead(ctx, pool, newestPullRequestHeadRead.readOnly, issueKey, kept.columns.args()...)

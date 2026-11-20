@@ -361,15 +361,9 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 		pair.github.listsRuns(headCommit, completedRun(11, ciCheckRun, "success"))
 		atHead := fmt.Sprintf("pull request 5 at %.7s", headCommit)
 
-		// The results read derives c1 before it learns any head (listCheckResults runs
-		// deriveCIResults before comparisonReader.learn), so the first read holds no head for c1
-		// on either stack; k1's read-through then learns pull request 5.
-		first := pair.read(t, issue, "the first read")
-		assertCI(t, checkOf(t, first.writer, "c1"), ciCheckRun, model.CIStateNoResult, ciCaseNoHead,
-			ciUnconcludedLineOf("c1", ciCheckRun, ciCaseNoHead))
-		standsAtBasis(t, first.writer, "k1", pair.writer.ids[0], atHead)
-		first.calls(t, parityPulls, 1)
-		first.calls(t, parityCheckRuns, 0)
+		// The first read is row 15's: k1's read-through learns pull request 5, which the writer's
+		// read stores and the read-only read keeps.
+		pair.read(t, issue, "the first read")
 
 		// Inside the window the writer finds the head its read-through stored, reads c1's run
 		// there and derives c1's result from it.
@@ -417,8 +411,7 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 	// Tester's red row (round 3 at 7536478f): the first read of a check CI proves, as row 13 sets
 	// it up. That read's read-through learns pull request 5, headed at k1's commit, and the same
 	// answer names that head as k1's basis, so it derives c1 from the run at that head rather than
-	// answering that Dispatch holds no head. Row 13's first read asserts today's order, in which
-	// listCheckResults runs deriveCIResults before comparisonReader.learn.
+	// answering that Dispatch holds no head. Row 13 holds the second read.
 	t.Run("15 a check CI proves: the first read derives it at the head that read's read-through learns", func(t *testing.T) {
 		pair := newParityPair(t, appKey)
 		issue := pair.issue(t, "ROL", ciCheckBlock("c1", ciCheckKept)+"\n"+parityBeforeMergeCheck)
@@ -552,6 +545,67 @@ func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 		read.calls(t, parityPulls, 0)
 		read.calls(t, parityCompare, 0)
 	})
+}
+
+// TestACheckCIProvesIsAnsweredFromTheHeadItsFirstReadLearned holds the order of the results read
+// (plan D31): the comparison reader learns the heads GitHub names before a check CI proves is
+// derived, so a first read derives that check at the head its own read-through learned. A writer's
+// first read and a read-only read's first read are each made alone, on a fresh stack of its own
+// (newParityPair's two), of an issue whose newest pull request head no stored row holds. k1's
+// result is recorded at that head itself, so the read-through finds the result's commit as the
+// head and reads the bases again in the same read (comparisonReader.learn). Each read must derive
+// c1 from the run at that head, and stand c1's derived result and k1's result at the one pull
+// request headed there. Derived before the reader learns, each read answers c1 no_head.
+func TestACheckCIProvesIsAnsweredFromTheHeadItsFirstReadLearned(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate fixture key: %v", err)
+	}
+	appKey := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
+	pair := newParityPair(t, appKey)
+	issue := pair.issue(t, "RON", ciCheckBlock("c1", ciCheckKept)+"\n"+parityBeforeMergeCheck)
+	pair.record(t, issue, "k1", headCommit)
+	// From here GitHub names pull request 5 for k1's commit, headed at it and titled after the
+	// issue, and lists the run c1 names at that head, passed. No record's read-through stored the
+	// pull request.
+	pair.github.answersPulls(func(string) string { return parityOpenPull(5, headCommit, issue) })
+	pair.github.listsRuns(headCommit, completedRun(11, ciCheckRun, "success"))
+	atHead := fmt.Sprintf("pull request 5 at %.7s", headCommit)
+
+	for _, stack := range []*parityStack{pair.writer, pair.readOnly} {
+		t.Run(stack.who, func(t *testing.T) {
+			awaitSettledDocuments(t, stack.rig.database)
+			before := stack.calls.snapshot()
+			response := stack.rig.serve(pair.caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issue+"/results", stack.token, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("%s: status=%d body=%s", stack.who, response.Code, response.Body.String())
+			}
+			read := decodeBody[issueResults](t, response)
+			calls := stack.calls.since(before)
+			t.Logf("%s answered %s, with the GitHub calls %v", stack.who, stack.summary(read), calls)
+
+			ci := checkOf(t, read, "c1")
+			assertCI(t, ci, ciCheckRun, model.CIStatePass, ciConclusionSuccess,
+				ciVerdictLineOf("c1", ciCheckRun, model.CIStatePass, headCommit))
+			derived := assertDerived(t, ci, 11, ciCheckRun, ciConclusionSuccess, model.CIStatePass, headCommit)
+			if basis := derived.CommitStands.Basis; basis == nil || parityBasisName(basis) != atHead {
+				t.Errorf("%s stands c1's derived result at %+v, want %s", stack.who, basis, atHead)
+			}
+			if bases := parityBases(checkOf(t, read, "k1")); !slices.Equal(bases, []string{atHead}) {
+				t.Errorf("%s compares k1 with %v, want %s alone", stack.who, bases, atHead)
+			}
+			stands := standsAt(t, read, "k1", stack.ids[0], stack.who+": k1's result", model.CommitAtBasis, false)
+			if stands.Basis == nil || parityBasisName(stands.Basis) != atHead {
+				t.Errorf("%s stands k1's result at %+v, want %s", stack.who, stands.Basis, atHead)
+			}
+			// The read-through's one read of the commit's pull requests, and the one read of the
+			// check runs at the head it learned.
+			if calls[parityPulls] != 1 || calls[parityCheckRuns] != 1 {
+				t.Errorf("%s made the GitHub calls %v, want one of %s and one of %s",
+					stack.who, calls, parityPulls, parityCheckRuns)
+			}
+		})
+	}
 }
 
 // parityRepo is the repository the stand-in GitHub holds and the test's issues resolve to; its

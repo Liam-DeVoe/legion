@@ -150,9 +150,10 @@ type comparisonReader struct {
 	// their read-throughs and stored nowhere (delivery.CommitPullAnswers.Learned), taken when the
 	// reader is made and again after each of this read's own read-throughs keeps an answer. Every
 	// read of the stored heads, of the merged branch, in the issue's own repository and in a linked
-	// one, runs the writer's statement over the stored rows with these laid on
-	// (delivery.ReadOnlyHeadsAttributedTo, delivery.ReadOnlyHeadStoredAt,
-	// delivery.ReadOnlyBaseBranchMergedFor, delivery.ReadOnlyBaseBranchMergedIn), and a commit's
+	// one, and of the newest head a check CI proves is derived at, runs the writer's statement over
+	// the stored rows with these laid on (delivery.ReadOnlyHeadsAttributedTo,
+	// delivery.ReadOnlyHeadStoredAt, delivery.ReadOnlyBaseBranchMergedFor,
+	// delivery.ReadOnlyBaseBranchMergedIn, delivery.ReadOnlyNewestPullRequestHead), and a commit's
 	// branch answer reads a merge among them as its yes (delivery.Branches.ReadCommitOnBranch),
 	// which is what a writer's read reads once its reads have stored them. A writer's read stores
 	// what it finds and leaves this empty.
@@ -468,7 +469,11 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // standing at no basis for ever (dispatch://INFRA-1240). It runs over the whole document
 // before any check is answered, so every `before_merge` check of one issue names the same
 // list of heads: a head one check's result taught Dispatch is a basis the sibling check is
-// read against too, whichever came first in the document.
+// read against too, whichever came first in the document. It runs before any check CI proves
+// is derived, too (deriveCIResults), which reads the issue's newest pull request head after it
+// (newestPullRequestHead): a head learned here is the head such a check is derived at, as it
+// is another check's basis. The checks' results it reads are the recorded ones, since a derived
+// result is at that newest head and has nothing left to learn.
 //
 // A reader that named a commit asks GitHub nothing at all, and learns nothing here.
 //

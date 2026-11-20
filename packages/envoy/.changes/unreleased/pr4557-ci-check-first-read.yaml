@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  `GET /api/v1/issues/{key}/results` answers a check that CI proves from the pull request head the
+  same read learned. Before, the first read of an issue whose newest head no stored row held answered
+  such a check `no_head`, while the same answer named that head as another check's basis. It now
+  learns the heads before it reads the head's CI, for a writer's read and a read-only one alike.
+time: 2026-11-20T21:25:05Z
+custom:
+  Issue: pr4557
