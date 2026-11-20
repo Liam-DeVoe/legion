@@ -14,7 +14,7 @@ import (
 // the export's response-threshold timer never fires while a test runs.
 //
 // That timer meets a data race in nats-server's config reload. Every reload that touches
-// authorization (Reload, and so NkeyGrant.Grant, and the shared server's account doubling) rebinds
+// authorization (Reload, and so NkeyGrant.Grant) rebinds
 // each service export's account, under the exporting account's lock (configureAccounts, `se.acc =
 // v.(*Account)`, server/server.go:1383 in v2.15.1 and :1388 at main 08f7bd21cee8), and the
 // export's timer reads that field without the lock when it fires (checkExpiredResponses, `acc :=

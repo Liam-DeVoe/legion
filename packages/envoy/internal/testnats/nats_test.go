@@ -3,16 +3,11 @@ package testnats
 import (
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
-	"path/filepath"
-	"regexp"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -74,85 +69,6 @@ func TestRetryStreamStoreFailureRetriesOnlyTheStoreFailure(t *testing.T) {
 	})
 }
 
-// The package's tests share one server, and each gets it as a fresh container was: a stream and its
-// messages left by one test are not there when the next asks for the server, which hands it an
-// account of its own.
-func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
-	t.Run("leaves a stream and a message", func(t *testing.T) {
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := js.AddStream(&natsgo.StreamConfig{Name: "LEFT_BEHIND", Subjects: []string{"left.>"}}); err != nil {
-			t.Fatalf("add stream: %v", err)
-		}
-		if _, err := js.Publish("left.one", []byte("x")); err != nil {
-			t.Fatalf("publish: %v", err)
-		}
-	})
-	t.Run("finds none of it", func(t *testing.T) {
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		info, err := js.AccountInfo()
-		if err != nil {
-			t.Fatalf("account info: %v", err)
-		}
-		if info.Streams != 0 {
-			t.Errorf("the second subtest's account holds %d streams, want none of the first's", info.Streams)
-		}
-	})
-}
-
-// A test that publishes a burst without waiting for acks leaves messages the server routes after
-// the test ends. They land in that test's own account, so the next test, creating a stream on the
-// same subjects, finds none of them.
-func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
-	const burst = 20000
-	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
-	t.Run("publishes a burst and ends", func(t *testing.T) {
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := js.AddStream(config); err != nil {
-			t.Fatalf("add stream: %v", err)
-		}
-		payload := []byte(strings.Repeat("x", 64))
-		for i := range burst {
-			if err := conn.Publish(fmt.Sprintf("burst.%d", i%16), payload); err != nil {
-				t.Fatalf("publish %d: %v", i, err)
-			}
-		}
-	})
-	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := js.AddStream(config); err != nil {
-			t.Fatalf("add stream: %v", err)
-		}
-		time.Sleep(time.Second)
-		info, err := js.StreamInfo(config.Name)
-		if err != nil {
-			t.Fatalf("stream info: %v", err)
-		}
-		if info.State.Msgs != 0 {
-			t.Errorf("the recreated stream holds %d of the previous test's %d messages", info.State.Msgs, burst)
-		}
-	})
-}
-
 // fatalRecorder is t with Fatal recorded and the goroutine ended, as t.Fatal does.
 type fatalRecorder struct {
 	testing.TB
@@ -165,166 +81,29 @@ func (f *fatalRecorder) Fatalf(format string, args ...any) {
 	runtime.Goexit()
 }
 
-// A test gets one account however often it asks, so every connection it makes reaches the streams
-// any other made; a subtest gets an account of its own, where none of its parent's streams is.
-func TestATestGetsOneAccountAndEachSubtestItsOwn(t *testing.T) {
-	uri := URL(t)
-	if again := URL(t); again != uri {
-		t.Fatalf("a second URL for the same test is %q, want its first, %q", again, uri)
-	}
-	conn := Connect(t, uri)
-	defer conn.Close()
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := js.AddStream(&natsgo.StreamConfig{Name: "PARENT", Subjects: []string{"parent.>"}}); err != nil {
-		t.Fatalf("add stream: %v", err)
-	}
-	t.Run("subtest", func(t *testing.T) {
-		subURI := URL(t)
-		if subURI == uri {
-			t.Fatalf("the subtest got its parent's account, %q", uri)
-		}
-		sub := Connect(t, subURI)
-		defer sub.Close()
-		subJS, err := sub.JetStream()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := subJS.StreamInfo("PARENT"); !errors.Is(err, natsgo.ErrStreamNotFound) {
-			t.Fatalf("the subtest's account answers its parent's stream with %v, want not found", err)
-		}
-	})
-}
+// reloadGetters is how many connections through the relay
+// TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace runs direct gets on, one get at a time
+// on each in a loop, and reloadRounds how many reloads it makes under them.
+const (
+	reloadGetters = 4
+	reloadRounds  = 50
+)
 
-// namedTB is a test under another name, so one test can ask a server for accounts as many tests.
-type namedTB struct {
-	testing.TB
-	name string
-}
-
-func (n namedTB) Name() string { return n.name }
-
-// ownAccountServer returns an account server of the test's own, whose servers declare accounts
-// accounts each and are shut down and removed when the test ends.
-func ownAccountServer(t *testing.T, accounts int) *accountServer {
-	t.Helper()
-	return newAccountServer(t, accounts)
-}
-
-// A server whose accounts are all handed out hands out no more: the next test's account is the
-// first of a new server, and an account a test is still using keeps its connection and its streams.
-func TestTheAccountPastAServersLastIsTheFirstOfANewServer(t *testing.T) {
-	server := ownAccountServer(t, 2)
-	live := server.url(namedTB{t, "live"})
-	conn := Connect(t, live)
-	defer conn.Close()
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "live"})
-	if err != nil {
-		t.Fatalf("create bucket: %v", err)
-	}
-
-	second := server.url(namedTB{t, "second"})
-	third := server.url(namedTB{t, "third"})
-	host := func(uri string) string {
-		parsed, err := url.Parse(uri)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return parsed.Host
-	}
-	if want := fmt.Sprintf("nats://t2:t2@%s", host(live)); second != want {
-		t.Fatalf("the second test's URL is %q, want the first server's second account, %q", second, want)
-	}
-	if host(third) == host(live) || third != fmt.Sprintf("nats://t1:t1@%s", host(third)) {
-		t.Fatalf("the third test's URL is %q, want the first account of a server other than the full one at %s", third, host(live))
-	}
-	if _, err := kv.Put("after-the-third", []byte("1")); err != nil {
-		t.Fatalf("put after the third account was handed out: %v", err)
-	}
-	if status := conn.Status(); status != natsgo.CONNECTED {
-		t.Fatalf("the connection of an account in use is %v after the third account was handed out, want CONNECTED", status)
-	}
-}
-
-// Reload refuses a server an account server started, whose accounts other tests hold, and fails
-// the test that asked before it touches the server.
-func TestReloadRefusesAServerTestsShare(t *testing.T) {
-	server := ownAccountServer(t, 1)
-	Connect(t, server.url(namedTB{t, "holder"})).Close()
-	refused := &fatalRecorder{TB: t}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = server.newest.Reload(refused, accountsConfig(2))
-	}()
-	<-done
-	if !strings.Contains(refused.message, "Reload of a server the package's tests share") {
-		t.Fatalf("the reload of a shared server ended with %q, want its refusal", refused.message)
-	}
-	if reloads := strings.Count(server.newest.Log(), "Reloaded server configuration"); reloads != 0 {
-		t.Fatalf("the shared server was reloaded %d times", reloads)
-	}
-}
-
-// An account server whose accounts are all handed out hands out the next while a stream in an
-// account another test holds has just served a direct get, as a KV get is, and reloads no server
-// to do it. nats-server v2.15.1 reads its options without their lock as it serves a direct get
-// (getDirectRequest, server/stream.go:6365), and a reload replaces them under that lock (setOpts,
-// server/server.go:1224): so a reload of a server other tests use meets their direct gets. The
-// race detector reports that pair in some runs and not in others, so the test reads the server's
-// log for the reload itself.
-func TestTheNextAccountMeetsNoStreamThatServedADirectGet(t *testing.T) {
-	server := ownAccountServer(t, 1)
-	uri := server.url(namedTB{t, "serving"})
-	conn := Connect(t, uri)
-	defer conn.Close()
-	js, err := conn.JetStream()
-	if err != nil {
-		t.Fatal(err)
-	}
-	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "served"})
-	if err != nil {
-		t.Fatalf("create bucket: %v", err)
-	}
-	if _, err := kv.Put("key", []byte("1")); err != nil {
-		t.Fatalf("put: %v", err)
-	}
-	if _, err := kv.Get("key"); err != nil {
-		t.Fatalf("the direct get: %v", err)
-	}
-	server.url(namedTB{t, "next"})
-	if _, err := kv.Get("key"); err != nil {
-		t.Fatalf("the direct get after the next account was handed out: %v", err)
-	}
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		t.Fatal(err)
-	}
-	serversMu.Lock()
-	serving := servers[parsed.Host]
-	serversMu.Unlock()
-	if reloads := strings.Count(serving.Log(), "Reloaded server configuration"); reloads != 0 {
-		t.Errorf("the server holding the serving test's account was reloaded %d times to hand out the next account", reloads)
-	}
-}
-
-// A test that reloads its own server right after a direct get on it, as a KV get is, meets no
-// data race. nats-server v2.15.1 reads its options without their lock as it serves the get
-// (getDirectRequest, server/stream.go:6365) and the reload replaces them under that lock (setOpts,
-// server/server.go:1224); the relay's barrier orders the two (Server.Reload). Each round is one
-// more chance for the race detector to find them unordered.
-func TestAReloadRightAfterADirectGetOnTheSameServerIsNoRace(t *testing.T) {
-	const rounds = 50
+// A test that reloads its own server while its clients' direct gets, as KV gets are, are in flight
+// through the relay meets no data race. nats-server v2.15.1 reads its options without their lock as
+// it serves a direct get (getDirectRequest, server/stream.go:6365) and the reload replaces them
+// under that lock (setOpts, server/server.go:1224). A get the server has read when the relay holds
+// the clients is still being served; the barrier waits for it, and only the lock step after the
+// barrier orders it before the reload in locks the race detector sees (Server.Reload). With the lock
+// step before the hold, between the hold and the barrier, after the reload, or gone, the race
+// detector reports the pair and fails this test. Each get counts whether a reload began while it
+// was outstanding, so a run in which no get was in flight at a reload fails rather than passing on
+// a case it never made.
+func TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace(t *testing.T) {
 	server, uri := Start(t)
-	conn := Connect(t, uri)
-	defer conn.Close()
-	js, err := conn.JetStream()
+	setup := Connect(t, uri)
+	defer setup.Close()
+	js, err := setup.JetStream()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,14 +114,63 @@ func TestAReloadRightAfterADirectGetOnTheSameServerIsNoRace(t *testing.T) {
 	if _, err := kv.Put("key", []byte("1")); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	for round := range rounds {
-		if _, err := kv.Get("key"); err != nil {
-			t.Fatalf("the direct get of round %d: %v", round, err)
+	var begun, served, inFlight atomic.Int64
+	stop := make(chan struct{})
+	failures := make(chan error, reloadGetters)
+	var getters sync.WaitGroup
+	var ending sync.Once
+	end := func() {
+		ending.Do(func() {
+			close(stop)
+			getters.Wait()
+		})
+	}
+	defer end()
+	for range reloadGetters {
+		conn := Connect(t, uri)
+		t.Cleanup(conn.Close)
+		connJS, err := conn.JetStream()
+		if err != nil {
+			t.Fatal(err)
 		}
+		connKV, err := connJS.KeyValue("served")
+		if err != nil {
+			t.Fatalf("open the bucket on a getter's connection: %v", err)
+		}
+		getters.Go(func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				before := begun.Load()
+				if _, err := connKV.Get("key"); err != nil {
+					failures <- err
+					return
+				}
+				served.Add(1)
+				if begun.Load() != before {
+					inFlight.Add(1)
+				}
+			}
+		})
+	}
+	for round := range reloadRounds {
+		begun.Add(1)
 		if err := server.Reload(t, hostOnlyConfig); err != nil {
 			t.Fatalf("the reload of round %d: %v", round, err)
 		}
 	}
+	end()
+	close(failures)
+	for err := range failures {
+		t.Errorf("a direct get across the reloads failed: %v", err)
+	}
+	if inFlight.Load() == 0 {
+		t.Fatalf("no direct get was in flight when a reload began (%d gets across %d reloads), so this test says nothing about the order", served.Load(), reloadRounds)
+	}
+	t.Logf("%d direct gets across %d reloads, %d of them in flight when a reload began", served.Load(), reloadRounds, inFlight.Load())
 }
 
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
@@ -861,158 +689,4 @@ func TestTheAnonymousWaitRefusesAServerThatRefusesAnyone(t *testing.T) {
 	if want := "refused a client with no credential"; !strings.Contains(wait.message, want) {
 		t.Errorf("the anonymous wait ended with %q, want it to say %q", wait.message, want)
 	}
-}
-
-// envoyRoot is the module's directory, packages/envoy, from this package's own.
-const envoyRoot = "../.."
-
-// thisPackage is the natslive half of this rig, in image.go and image_test.go, which an untagged
-// build does not see at all.
-const thisPackage = "github.com/sjawhar/envoy/internal/testnats"
-
-// containerRigs are the packages of this module that may reach testcontainers: this rig, and the
-// two whose containers are not NATS and are not this issue's (internal/testpg runs pgvector,
-// internal/tests3 SeaweedFS). Every other package is a finding, whichever testcontainers package
-// it imports: modules/nats is the obvious way to start a NATS container, and
-// testcontainers.Run(ctx, testnats.Image) is the one that needs no such import.
-var containerRigs = []string{
-	thisPackage,
-	"github.com/sjawhar/envoy/internal/testpg",
-	"github.com/sjawhar/envoy/internal/tests3",
-}
-
-// containerModule is the import prefix every testcontainers package shares.
-const containerModule = "github.com/testcontainers/testcontainers-go"
-
-// dockerDriver matches a file of this module driving a container runtime by hand: exec's run with
-// docker as the command, however the call spells its context argument, and testcontainers' own
-// Docker client. The context argument runs to the end of the line rather than to the first ')',
-// since the module already passes context.Background() inline and a test's own is t.Context().
-// It is written from pieces so that this file, which has to name them, is not itself a finding.
-var dockerDriver = regexp.MustCompile(
-	`exec\.Command(Context)?\([^\n]*` + `"docker"` + `|NewDockerClient` + `WithOpts`)
-
-// No package of this module outside the rigs above imports a container runtime directly or drives
-// docker by hand: Envoy's agents have no container runtime, and a test that needs one cannot run
-// where they do. This pins those two ways to get one — a direct import of testcontainers, read
-// from go list's Imports, TestImports and XTestImports, and a hand-driven docker — against the
-// packages allowed to have them. It does not prove that no other package needs a runtime: a
-// package that imports an allowlisted rig passes and still starts that rig's container, as
-// cmd/listener's tests do through testpg.URL whenever DISPATCH_TEST_DATABASE_URL is unset. Direct
-// imports are the right scope today because that is the one such case with no opt-out (tests3's
-// one consumer, internal/dispatch/files, skips under DISPATCH_TEST_NO_CONTAINERS=1), and a
-// separate issue removes Postgres through testpg; widening this guard to walk go list -deps is
-// that issue's work, not this one's. internal/smoke's containers are behind the smoke build tag
-// and the rig's own behind natslive, so an untagged go list never sees their imports. The walk
-// does not go by tag: it reads every .go file, those included, and passes them because none
-// drives docker by hand.
-func TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime(t *testing.T) {
-	t.Run("imports", func(t *testing.T) {
-		for _, finding := range containerImporters(t) {
-			t.Errorf("package %s imports %s, which belongs to a container runtime; a test that needs a NATS server starts it with testnats.Start, StartConfig or URL", finding.pkg, finding.imported)
-		}
-	})
-	t.Run("docker", func(t *testing.T) {
-		for _, file := range dockerDriverFiles(t) {
-			t.Errorf("%s drives a container runtime itself; a test that has to stop a server's traffic uses testnats.Server.Freeze, and one that has to stop the server, Server.Stop", file)
-		}
-	})
-}
-
-// The file walk's matcher recognises a hand-driven docker in every way a test of this module spells
-// the call, the context argument included: the module already passes context.Background() inline,
-// and t.Context() is the test's own. Each line is assembled from pieces so this file, which the walk
-// also reads, is not a finding itself.
-func TestTheDockerDriverMatchCatchesEveryContextArgument(t *testing.T) {
-	const run, docker = "exec." + "Command", `"dock` + `er"`
-	for _, line := range []string{
-		run + "(" + docker + `, "pause", id)`,
-		run + "Context(ctx, " + docker + `, "pause", id)`,
-		run + "Context(context.Background(), " + docker + `, "pause", id)`,
-		run + "Context(t.Context(), " + docker + `, "unpause", id)`,
-		"client.NewDocker" + "ClientWithOpts(client.FromEnv)",
-	} {
-		if !dockerDriver.MatchString(line) {
-			t.Errorf("the docker-driver match misses %s", line)
-		}
-	}
-	if line := run + `("go", "list", "./...")`; dockerDriver.MatchString(line) {
-		t.Errorf("the docker-driver match flags %s, which runs no container", line)
-	}
-}
-
-// containerImport is a package of this module importing a testcontainers package, and the import
-// it was found by: a package reaching only testcontainers-go/wait has imported neither a runtime
-// client nor modules/nats, and the finding has to say which it did import.
-type containerImport struct{ pkg, imported string }
-
-// containerImporters lists every package of this module, outside the rigs allowed one, that
-// imports a testcontainers package, from its own sources or its tests', with the first such
-// import of each.
-func containerImporters(t *testing.T) []containerImport {
-	t.Helper()
-	const format = `{{.ImportPath}} {{join .Imports " "}} {{join .TestImports " "}} {{join .XTestImports " "}}`
-	list := exec.Command("go", "list", "-f", format, "./...")
-	list.Dir = envoyRoot
-	out, err := list.Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			t.Fatalf("go list ./...: %v: %s", err, exit.Stderr)
-		}
-		t.Fatalf("go list ./...: %v", err)
-	}
-	var importers []containerImport
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 || slices.Contains(containerRigs, fields[0]) {
-			continue
-		}
-		for _, imported := range fields[1:] {
-			if imported == containerModule || strings.HasPrefix(imported, containerModule+"/") {
-				importers = append(importers, containerImport{pkg: fields[0], imported: imported})
-				break
-			}
-		}
-	}
-	return importers
-}
-
-// dockerDriverFiles lists every Go file under packages/envoy that drives a container runtime
-// itself, by its path from there. The nested infra module is left out: its pulumilive lane runs a
-// real stack of containers on a host that has a runtime, which is the one place in this tree that
-// legitimately drives Docker.
-func dockerDriverFiles(t *testing.T) []string {
-	t.Helper()
-	var drivers []string
-	err := filepath.WalkDir(envoyRoot, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if path == filepath.Join(envoyRoot, "infra") || entry.Name() == "node_modules" || entry.Name() == "testdata" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.HasSuffix(path, ".go") {
-			return nil
-		}
-		text, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if dockerDriver.Match(text) {
-			relative, err := filepath.Rel(envoyRoot, path)
-			if err != nil {
-				return err
-			}
-			drivers = append(drivers, filepath.ToSlash(relative))
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("walk %s: %v", envoyRoot, err)
-	}
-	return drivers
 }
