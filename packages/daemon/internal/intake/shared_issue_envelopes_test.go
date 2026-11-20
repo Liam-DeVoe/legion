@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The issue event envelopes Dispatch's outbox builds, field for field
@@ -56,7 +57,7 @@ func TestTheSharedIssueEnvelopesCarryEveryFieldTheDaemonReads(t *testing.T) {
 			// left out, and a null claim is nobody's, not unknown.
 			file: "testdata/dispatch/issue-updated-null-fields.json", reads: issue,
 			want: DispatchIssue{Key: "CAPTURE-9", Seq: 4, Type: "issue.updated", Status: "todo", Title: "Reopen a root nobody holds",
-				Rank: "UUUm", ActorSession: "ses_architect3", Blockers: []string{}, ClaimKnown: true},
+				Rank: "UUUm", Blockers: []string{}, ClaimKnown: true},
 		},
 		{
 			file: "testdata/dispatch/issue-released-null-claim.json", reads: claimed,
@@ -126,13 +127,69 @@ var rawReads = map[string]reflect.Type{
 	"dispatchClaimPayload.claim":         reflect.TypeFor[dispatchClaim](),
 }
 
+type mapReadForTest struct {
+	Components map[string]json.RawMessage `json:"components"`
+}
+
+type ownJSONReadForTest struct{}
+
+func (ownJSONReadForTest) UnmarshalJSON([]byte) error { return nil }
+
+type ownJSONReadHolderForTest struct {
+	Lane ownJSONReadForTest `json:"lane"`
+}
+
+func TestSharedIssueEnvelopeWalkRejectsUninspectedReadTypes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		typ  reflect.Type
+		want string
+	}{
+		{"map", reflect.TypeFor[mapReadForTest]().Field(0).Type, "map"},
+		{"own unmarshal", reflect.TypeFor[ownJSONReadHolderForTest]().Field(0).Type, "ownJSONReadForTest"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := uninspectedReadType(tc.typ); !strings.Contains(got, tc.want) {
+				t.Fatalf("uninspectedReadType(%s) = %q, want it to name %q", tc.typ, got, tc.want)
+			}
+		})
+	}
+	if got := uninspectedReadType(reflect.TypeFor[time.Time]()); got != "" {
+		t.Fatalf("uninspectedReadType(time.Time) = %q, want time's own decoder allowed", got)
+	}
+}
+
+// uninspectedReadType names a map or a custom JSON decoder that requireReadFields cannot walk.
+// time.Time is the one decoder every current daemon reading type uses and has no JSON fields this
+// test needs to name.
+func uninspectedReadType(typ reflect.Type) string {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	switch typ.Kind() {
+	case reflect.Map:
+		return fmt.Sprintf("map %s", typ)
+	case reflect.Slice, reflect.Array:
+		return uninspectedReadType(typ.Elem())
+	case reflect.Struct:
+		if typ == reflect.TypeFor[time.Time]() {
+			return ""
+		}
+		unmarshaler := reflect.TypeFor[json.Unmarshaler]()
+		if typ.Implements(unmarshaler) || reflect.PointerTo(typ).Implements(unmarshaler) {
+			return fmt.Sprintf("%s implements json.Unmarshaler", typ)
+		}
+	}
+	return ""
+}
+
 // requireReadFields fails t for each field of reads, a type the daemon decodes object into, whose
 // JSON name object does not hold, and so for each field of a nested value the daemon reads that is
 // not null: a struct of reads, each object of a list of structs, or what into says a raw field or a
-// field holding the text of a JSON value is read into.
+// field holding the text of a JSON value is read into. A map or custom decoder has no declared
+// field walk, so it is refused by name rather than silently skipped.
 func requireReadFields(t *testing.T, what string, object map[string]json.RawMessage, reads reflect.Type, into map[string]reflect.Type) {
 	t.Helper()
-	unmarshaler := reflect.TypeFor[json.Unmarshaler]()
 	for field := range reads.Fields() {
 		if !field.IsExported() {
 			continue
@@ -169,12 +226,16 @@ func requireReadFields(t *testing.T, what string, object map[string]json.RawMess
 		for nested.Kind() == reflect.Pointer {
 			nested = nested.Elem()
 		}
+		if problem := uninspectedReadType(nested); problem != "" {
+			t.Errorf("the daemon reads %s.%s as %s, which the shared-envelope walk does not inspect", reads.Name(), name, problem)
+			continue
+		}
 		if nested.Kind() == reflect.Slice || nested.Kind() == reflect.Array {
 			element := nested.Elem()
 			for element.Kind() == reflect.Pointer {
 				element = element.Elem()
 			}
-			if element.Kind() != reflect.Struct || reflect.PointerTo(element).Implements(unmarshaler) {
+			if element.Kind() != reflect.Struct || element == reflect.TypeFor[time.Time]() {
 				continue
 			}
 			var items []json.RawMessage
@@ -195,7 +256,7 @@ func requireReadFields(t *testing.T, what string, object map[string]json.RawMess
 			}
 			continue
 		}
-		if nested.Kind() != reflect.Struct || reflect.PointerTo(nested).Implements(unmarshaler) {
+		if nested.Kind() != reflect.Struct || nested == reflect.TypeFor[time.Time]() {
 			continue
 		}
 		var inside map[string]json.RawMessage

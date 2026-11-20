@@ -71,6 +71,7 @@ import {
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
 } from "./dispatch-api";
+import { objectShape } from "./schema-inspection.testing";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
   for (const source of ["insert", "backfill"] as const) {
@@ -405,8 +406,15 @@ test("the envelope Dispatch publishes for an announcement carries a payload this
     import.meta.url
   );
   const envelope = JSON.parse(await Bun.file(path).text());
+  const payload = JSON.parse(envelope.payload);
   expect(envelope.topic).toBe(DISPATCH_SERVER_STARTED_SUBJECT);
-  expect(DispatchServerStartedPayloadSchema.parse(JSON.parse(envelope.payload))).toEqual({
+  expect(DispatchServerStartedPayloadSchema.parse(payload)).toEqual(payload);
+  const declared = objectShape(
+    DispatchServerStartedPayloadSchema,
+    "DispatchServerStartedPayloadSchema"
+  );
+  expect(Object.keys(payload).sort()).toEqual(Object.keys(declared ?? {}).sort());
+  expect(payload).toEqual({
     commit: "0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c",
     started_at: "2026-10-27T12:00:00Z",
   });

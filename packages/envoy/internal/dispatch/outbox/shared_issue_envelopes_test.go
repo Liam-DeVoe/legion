@@ -59,12 +59,11 @@ type sharedIssueEnvelope struct {
 // writes, gives for the issue before and after the write, so an example states only a write
 // Dispatch can make.
 //
-// The actors are the three a broker-issued token records (api.brokerTokenActor): the token names
-// a person or a service, never both and never neither, and a project only beside a person
-// (brokertoken.sessionCaller). implementer7 is a fleet's session, whose token names the service
-// its machine is; implementer8 acts for a person under a token an operator mapped to one project;
-// architect3 acts for a person under a token the broker scoped to its person, which names no
-// project, and its requests name no place. The issues' creator is a person at a browser.
+// The session actors are the three a broker-issued token records (api.brokerTokenActor): a token
+// names a person or a service, never both and never neither, and names a project only beside a
+// person (brokertoken.sessionCaller). The root's reopen is a person's write named in its body:
+// its user actor has no `proven` mark and the event notifies. The issues' creator is a person at
+// a browser.
 func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	at := func(value string) time.Time {
 		parsed, err := time.Parse(time.RFC3339Nano, value)
@@ -79,6 +78,7 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 	implementer7 := model.Actor{Kind: "session", ID: "ses_implementer7", Origin: origin("%3"), Service: new("legion-fleet"), Proven: true}
 	implementer8 := model.Actor{Kind: "session", ID: "ses_implementer8", Origin: origin("%4"), Owner: new("alice@example.com"), Project: new("CAPTURE"), Proven: true}
 	architect3 := model.Actor{Kind: "session", ID: "ses_architect3", Owner: new("bob@example.com"), Proven: true}
+	personNamedInBody := model.Actor{Kind: "user", ID: "alice@example.com"}
 	creator := &model.Actor{Kind: "user", ID: "alice@example.com", Proven: true}
 	held := &model.IssueClaim{Actor: implementer7, At: at("2026-11-19T06:00:00.25Z")}
 	taken := &model.IssueClaim{Actor: implementer8, At: at("2026-11-19T06:31:00.654321Z")}
@@ -97,7 +97,10 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 		Key: "CAPTURE-7", Project: "CAPTURE", Number: 7, Title: "Read every field Dispatch writes",
 		Status: "in_progress", Priority: new(1), Rank: "UUUk", Labels: []string{"legion"},
 		Parent: new("CAPTURE-1"), BlockedBy: []string{"CAPTURE-2", "CAPTURE-5"},
-		Advances:         []model.IssueAdvance{{ID: "contracts-hold-both-sides", Inherited: false}},
+		Advances: []model.IssueAdvance{
+			{ID: "contracts-hold-both-sides", Inherited: false},
+			{ID: "contracts-inherited-from-parent", Inherited: true},
+		},
 		AdvancesRevision: 3,
 		Assignee:         new("bob@example.com"),
 		Claim:            held,
@@ -114,11 +117,12 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 		VerificationArtifactID: "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a02",
 		PlanArtifactID:         "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a03",
 	}
-	// The patch took the child from todo, alice's and blocked by CAPTURE-2 alone.
+	// The patch took the child from todo, alice's, blocked by CAPTURE-2 and with no advances.
 	unpatched := child
 	unpatched.Status = "todo"
 	unpatched.Assignee = new("alice@example.com")
 	unpatched.BlockedBy = []string{"CAPTURE-2"}
+	unpatched.Advances = []model.IssueAdvance{}
 	unpatched.UpdatedAt = at("2026-11-19T06:10:00Z")
 	moved := updated(unpatched, child, model.ReferenceChanges{Targets: []model.ChangedReference{{Kind: "issue", ID: "CAPTURE-5"}}})
 	moved.Ancestors = []string{"CAPTURE-1"}
@@ -191,7 +195,7 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 			// A reopen's thread_logins are read by its own insert, after the asks the reopen
 			// restored (api.patchIssue, events.IssueLoginsOf).
 			file: "issue-updated-null-fields.json", number: 9, lastSeq: 3, logins: events.IssueLoginsOf("CAPTURE-9"),
-			event: model.Event{ID: 4801, IssueKey: new("CAPTURE-9"), Type: "issue.updated", Actor: architect3,
+			event: model.Event{ID: 4801, IssueKey: new("CAPTURE-9"), Type: "issue.updated", Actor: personNamedInBody, Notify: true,
 				CreatedAt: at("2026-11-19T05:10:00.5Z"), Payload: reopened},
 		},
 		{

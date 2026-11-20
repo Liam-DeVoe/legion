@@ -112,9 +112,8 @@ const ABSENT: Record<Example, Record<string, string>> = {
     "event.payload.thread_logins": "the write moved neither the status nor the assignee",
   },
   "issue-updated-null-fields.json": {
-    "event.actor.origin": NO_PLACE,
-    "event.actor.service": PERSON_ONLY_TOKEN,
-    "event.actor.project": PERSON_ONLY_TOKEN,
+    "envelope.source_session": "a person wrote it, so the envelope has no session source",
+    "event.actor.proven": "the person was named by the body, not proved by the credential",
     "event.payload.references_changed": "the write moved no issue's edges",
   },
   "issue-released-null-claim.json": {
@@ -278,6 +277,18 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
       throw new Error(`${file} is a ${event.type}, which PAYLOADS names no schema for`);
     const written = payload.written as { parse: (value: unknown) => unknown };
     expect(written.parse(event.payload)).toEqual(event.payload);
+    if (event.type === "issue.claimed") {
+      // model.IssueClaimEventPayload writes both with no omitempty tag, so readers must not
+      // accept a retained claimed event that loses either one.
+      for (const field of ["key", "reason"] as const) {
+        expect(
+          IssueClaimEventPayloadSchema.safeParse({ ...event.payload, [field]: undefined }).success
+        ).toBe(false);
+        expect(IssueClaimEventPayloadSchema.safeParse({ ...event.payload, [field]: null }).success).toBe(
+          false
+        );
+      }
+    }
     const reading = (tolerant: boolean): Reading => ({
       file,
       absent: ABSENT[file],
@@ -289,6 +300,7 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
     const excused = new Set<string>();
     walk(EnvelopeSchema, envelope, "envelope", "envelope", reading(false));
     walk(PublishedEventSchema, event, "event", "event", reading(false));
+    walk(DispatchEventSchema, event, "event", "event", reading(true));
     walk(payload.written, event.payload, "event.payload", `${event.type} payload`, reading(false));
     if (payload.read !== undefined) {
       // The reading schema keeps each key it declares, as Dispatch wrote it, and each key it
