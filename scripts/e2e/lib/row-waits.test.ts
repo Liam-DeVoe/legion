@@ -25,11 +25,12 @@ import * as ts from "typescript";
 
 const root = join(import.meta.dir, "..", "..", "..");
 
-/** The test files this file reads, from the root of the repository. */
+/** The test files this file reads, from the root of the repository: the files whose rows started
+ *  processes with no limit of their own, and now state one. `scripts/e2e/lib/leftovers.test.ts` is
+ *  not here: its rows, written for the run-marked process reads, state no limit of their own. */
 const files = [
   "scripts/e2e/lib/dispatch-keyed-comment.test.ts",
   "scripts/e2e/lib/dispatch-live-events.test.ts",
-  "scripts/e2e/lib/leftovers.test.ts",
   "scripts/e2e/lib/nats-image.test.ts",
   "scripts/e2e/lib/released-port-probe.test.ts",
   "scripts/e2e/lib/smoke-cleanup.test.ts",
