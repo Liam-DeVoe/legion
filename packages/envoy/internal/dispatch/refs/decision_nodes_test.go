@@ -307,7 +307,11 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 				full = append(full, pair)
 			}
 		}
-		if own, all := pairKeys(facts.typedPairs()), pairKeys(full); !reflect.DeepEqual(own, all) {
+		ownPairs, err := facts.typedPairs(ctx, tx, document.artifact)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		if own, all := pairKeys(ownPairs), pairKeys(full); !reflect.DeepEqual(own, all) {
 			t.Fatalf("the typed pass's pairs\n\t%v\ndiffer from the reconciler's typed pairs\n\t%v", own, all)
 		}
 		// The block index plans the typed-node pass's own facts of the version into its one

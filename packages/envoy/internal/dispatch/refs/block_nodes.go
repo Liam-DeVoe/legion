@@ -385,17 +385,34 @@ func NamedBlock(ctx context.Context, q Queryer, address string) (string, error) 
 
 // ResolveFarEnds reads, in one statement, the node each of addresses (block far ends, node ids)
 // resolves to (ResolvedBlockSQL), keyed by the address, for each that resolves to another node
-// than itself: an address that resolves to itself or to no block is absent.
+// than itself: an address that resolves to itself or to no block is absent. It answers no reader:
+// a read whose answer a reader is shown resolves through ReadableFarEnds.
 func ResolveFarEnds(ctx context.Context, q Queryer, addresses []string) (map[string]string, error) {
+	return resolveFarEnds(ctx, q, nil, addresses)
+}
+
+// ReadableFarEnds is ResolveFarEnds for the reader who: an address resolves only to a node who may
+// see, its statement binding the block predicate of the registry's (VisibleKind) over the node it
+// resolves to, so a block the reader may not see is not reached through an address that moved to
+// it or through its document's room, and the address stays as written, naming what it names for
+// that reader.
+func ReadableFarEnds(ctx context.Context, q Queryer, who model.Actor, addresses []string) (map[string]string, error) {
+	return resolveFarEnds(ctx, q, &who, addresses)
+}
+
+// resolveFarEnds is ResolveFarEnds for who, or for no reader where who is nil.
+func resolveFarEnds(ctx context.Context, q Queryer, who *model.Actor, addresses []string) (map[string]string, error) {
 	if len(addresses) == 0 {
 		return nil, nil
 	}
-	rows, err := q.Query(ctx, `
+	var args queryArgs
+	list := args.param(addresses)
+	query := `
 		select p.address, resolved.node_id
-		from unnest($1::text[]) as p (address)
-		cross join lateral (select `+ResolvedBlockSQL("p.address")+` as node_id) resolved
-		where resolved.node_id <> p.address
-	`, addresses)
+		from unnest(` + list + `::text[]) as p (address)
+		cross join lateral (select ` + ResolvedBlockSQL("p.address") + ` as node_id) resolved
+		where resolved.node_id <> p.address` + args.andVisible(who, BlockNodeKind, "resolved.node_id")
+	rows, err := q.Query(ctx, query, args.values...)
 	if err != nil {
 		return nil, fmt.Errorf("resolve the far ends %v: %w", addresses, err)
 	}

@@ -643,10 +643,20 @@ func (f TypedFacts) pairs(pairs []blockPair) []blockPair {
 
 // typedPairs is the pairs of the facts' own ties: each decision's and ask block's shaped and each
 // decision's from_ask, paired as the block index pairs a pointer (pointerPairs), and its
-// decided_by (pairs).
-func (f TypedFacts) typedPairs() []blockPair {
+// decided_by (pairs), each pointer's far end resolved, through q, to the node it resolves to now,
+// as PlanBlocks resolves the pairs it reconciles (resolvePointerPairs): a `dispatch://KEY/spec#b-…`
+// tie names the block of the spec's issue room once the spec is a fragment of that room (T17 of
+// this branch's plan), and the blocks the facts were read of, at their addresses under the
+// document artifactID the pass indexes, are the ones a pass writes.
+func (f TypedFacts) typedPairs(ctx context.Context, q Queryer, artifactID string) ([]blockPair, error) {
 	paired, _ := pointerPairs(f.nodes, slices.Concat(f.shaped, f.ties))
-	return f.pairs(paired)
+	written := make([]string, 0, len(f.nodes))
+	for position, node := range f.nodes {
+		if f.fits[position] {
+			written = append(written, blockNodeAddress(f.document.RefKey, node.ID))
+		}
+	}
+	return resolvePointerPairs(ctx, q, artifactID, written, f.pairs(paired))
 }
 
 // typedScope is the rows of block_refs the facts' own ties are: those of typedKinds held by the
@@ -879,10 +889,14 @@ func (d *DecisionIndexing) planTies(ctx context.Context, q Queryer, index BlockI
 	}
 	writer := document.Writer
 	_, newest := facts.versions.Newest(d.artifactID)
+	pairs, err := facts.typedPairs(ctx, q, d.artifactID)
+	if err != nil {
+		return err
+	}
 	d.blocks = BlockIndexing{
 		artifactID: d.artifactID, refKey: document.RefKey, version: d.version, versionAt: newest.At,
 		versions: facts.versions, documentOf: facts.documents,
-		pairs: facts.typedPairs(), scope: facts.typedScope(),
+		pairs: pairs, scope: facts.typedScope(),
 	}
 	only := make(map[string]struct{}, len(facts.typed))
 	for _, id := range facts.typed {
@@ -1157,8 +1171,12 @@ func PlanOpenedAskTies(ctx context.Context, q Queryer, index BlockIndex, artifac
 	if len(own) == 0 {
 		return plan, nil
 	}
+	typed, err := facts.typedPairs(ctx, q, artifactID)
+	if err != nil {
+		return OpenedAskTies{}, err
+	}
 	var pairs []blockPair
-	for _, pair := range facts.typedPairs() {
+	for _, pair := range typed {
 		if _, mine := own[pair.blockID]; mine && pair.kind == TupleShaped {
 			pairs = append(pairs, pair)
 		}

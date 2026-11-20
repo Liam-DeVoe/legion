@@ -453,7 +453,9 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // no read of the tables answers for them. A `#id` naming a block of the very version being
 // written, or one whose ask the same transaction opens - settlement makes the ask of every new
 // question block of an edit in one transaction - resolves to the ask it will name once the write
-// phase has run.
+// phase has run. An ask of a block of an issue room is queued under the room's key, its
+// block_artifact_id, so the asks queued under the room doc is edited in are read beside doc's own
+// (pendingQuestionAsks).
 //
 // It answers for who. A document who may not see has no question, as one no row holds has none,
 // so not even its block ids are answered, and an ask who may not see is no question of it, nor is
@@ -505,7 +507,11 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
 	if pending != nil {
-		for _, ask := range pending.PendingBlockAsks(doc) {
+		asks, err := pendingQuestionAsks(ctx, q, pending, doc)
+		if err != nil {
+			return nil, err
+		}
+		for _, ask := range asks {
 			queuedBlocks = append(queuedBlocks, ask.BlockID)
 			queuedAsks = append(queuedAsks, ask.ID)
 			queuedIssues = append(queuedIssues, ask.IssueKey)
@@ -563,6 +569,34 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		}
 	}
 	return questions, nil
+}
+
+// pendingQuestionAsks is the block asks the reading transaction has queued that doc's question
+// map reads beside the stored ones (Pending.PendingBlockAsks): those queued under doc itself, and
+// those queued under the issue room doc is edited in (DocumentRoomSQL), the room's own key, which
+// every ask of a block of the room is queued under, its block_artifact_id (docs' recordAskBlock).
+// The room's block ids are unique across its fragments, and the read the map makes keeps the asks
+// of doc's own question blocks alone. A document that is its own room reads its room in the same
+// statement and nothing beside its own.
+func pendingQuestionAsks(ctx context.Context, q Queryer, pending Pending, doc string) ([]PendingBlockAsk, error) {
+	asks := pending.PendingBlockAsks(doc)
+	var room string
+	if err := q.QueryRow(ctx, `select (`+DocumentRoomSQL("$1::uuid")+`)::text`, doc).Scan(&room); err != nil {
+		return nil, fmt.Errorf("read the room document %s is edited in: %w", doc, err)
+	}
+	if room == doc {
+		return asks, nil
+	}
+	own := make(map[string]struct{}, len(asks))
+	for _, ask := range asks {
+		own[ask.BlockID] = struct{}{}
+	}
+	for _, ask := range pending.PendingBlockAsks(room) {
+		if _, held := own[ask.BlockID]; !held {
+			asks = append(asks, ask)
+		}
+	}
+	return asks, nil
 }
 
 // AskRef is the `dispatch://` address of one ask a question map holds, as every writer of an

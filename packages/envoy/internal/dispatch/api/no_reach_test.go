@@ -674,7 +674,6 @@ func threeBadRequests(t *testing.T) {
 var routesNoSeedAnswers = map[string]string{
 	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
 	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
-	"GET /api/v1/projects/{key}/legion/board":                            "a Legion daemon set for the project",
 	"GET /api/v1/delivery/timeline":                                      "delivery settings",
 	"GET /api/v1/delivery/measures":                                      "delivery settings",
 	"GET /api/v1/delivery/pipeline":                                      "delivery settings",

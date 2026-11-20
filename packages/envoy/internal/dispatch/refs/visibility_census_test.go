@@ -399,6 +399,10 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		}
 		return err
 	})
+	record("ReadableFarEnds", "ReadableFarEnds of a block address", func() error {
+		_, err := ReadableFarEnds(ctx, recorder, who, []string{"CORE-1/spec#b1"})
+		return err
+	})
 	record("Closure", "Closure of CORE-1", func() error {
 		_, _, err := Closure(ctx, recorder, who, "CORE-1")
 		return err

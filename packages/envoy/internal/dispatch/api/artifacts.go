@@ -441,10 +441,11 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 // is then the zero Uncaused and the row names none. No row stands at the address, since the slug is
 // free under the owner lock this transaction holds, so a node there that is not gone stands behind
 // no row: a document a build before this one removed, stating nothing, live or at a state a later
-// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
-// both under this upload's event, so the new document's node carries no statement of the removed
-// one's as its own; it states the two itself, so the node write states no state of its own
-// beside them.
+// release marked it with. The write states it gone and then live, both under this upload's event,
+// so the new document's node carries no statement of the removed one's as its own; it states the
+// two itself, so the node write states no state of its own beside them, and the node is the new
+// document's, not one it restates (graphstore.Node's Restates), so its row moves live with the
+// statement that ends the two.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -504,6 +505,7 @@ func (s *server) queueNewArtifact(
 		}
 		var stated []graphstore.Tuple
 		if found && held.State != graphstore.StateGone {
+			node.Restates = false
 			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
 				stated = append(stated, graphstore.Tuple{
 					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,

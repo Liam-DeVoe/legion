@@ -310,15 +310,25 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 		t.Fatalf("block_refs of the seeded spec = %#v, want t1's serves edge at %s", rows, target)
 	}
 	rootR1 := "dispatch://" + root.Key + "/spec#b-r1"
+	// The node the requirement's address names now: the root is born converted, so its spec is a
+	// fragment of its issue room and r1's node is the room's block, at the tree artifact's address
+	// (T12a and T17 of this branch's plan), which the pointer resolves to as it is indexed.
+	rootR1Node, err := refs.NamedBlock(context.Background(), database.Pool, root.Key+"/spec#r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootR1Node == root.Key+"/spec#r1" {
+		t.Fatalf("%s names the node at its own address, want the block of %s's issue room", rootR1, root.Key)
+	}
 
 	t.Run("a requirement of its parent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), rootR1Node)
 	})
 
 	// The grandchild's parent is the pending one, so the root is reached only by the walk above
 	// it: this is the case that fails when that walk is dropped.
 	t.Run("a requirement of its grandparent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), rootR1Node)
 	})
 
 	t.Run("a block no document holds", func(t *testing.T) {

@@ -140,7 +140,7 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 		target, _ := refs.TargetOf(ref)
 		named[index] = target
 	}
-	if err := s.resolveBlockTargets(r.Context(), named); err != nil {
+	if err := s.resolveBlockTargets(r.Context(), who, named); err != nil {
 		return nil, err
 	}
 	names, err := refs.TargetNames(r.Context(), s.deps.Store.Pool, who, named)
@@ -158,21 +158,23 @@ func (s *server) referenceTargets(r *http.Request, who model.Actor, trees *displ
 	return answers, nil
 }
 
-// resolveBlockTargets writes, in place, the node each document block of named resolves to: the
-// far end of its address's moved_to tuples first, then the same block in its document's room,
-// then the address itself (refs.ResolveFarEnds, block_moved_to), as every reader of a reference
-// resolves one (T17 of this branch's plan). So a reference to a block of a document converted into
-// its issue's room, written at the document's own address, names the block the room's index
-// keeps under the room's tree, and its name and its text are read there. Every block of the set is
-// resolved in one statement, and a set that names no document block costs none.
-func (s *server) resolveBlockTargets(ctx context.Context, named []refs.Target) error {
+// resolveBlockTargets writes, in place, the node each document block of named resolves to for
+// who: the far end of its address's moved_to tuples first, then the same block in its document's
+// room, then the address itself (refs.ReadableFarEnds, block_moved_to), as every reader of a
+// reference resolves one (T17 of this branch's plan). So a reference to a block of a document
+// converted into its issue's room, written at the document's own address, names the block the
+// room's index keeps under the room's tree, and its name and its text are read there. A block who
+// may not see is reached through no address: the statement binds the block predicate for who, so
+// such an address stays as written and names what it names for that reader. Every block of the
+// set is resolved in one statement, and a set that names no document block costs none.
+func (s *server) resolveBlockTargets(ctx context.Context, who model.Actor, named []refs.Target) error {
 	var addresses []string
 	for _, target := range named {
 		if target.Kind == refs.BlockNodeKind {
 			addresses = append(addresses, target.ID)
 		}
 	}
-	resolved, err := refs.ResolveFarEnds(ctx, s.deps.Store.Pool, addresses)
+	resolved, err := refs.ReadableFarEnds(ctx, s.deps.Store.Pool, who, addresses)
 	if err != nil {
 		return err
 	}

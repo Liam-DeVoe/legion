@@ -443,8 +443,9 @@ func TestNoReadAnswersANodeTheActingPersonMayNotSee(t *testing.T) {
 	if len(mine) != 4 {
 		t.Fatalf("the batched read answers the author %d member for 4 references: %+v", len(mine), mine)
 	}
+	// The private block is named by its own words, the passage the fixture writes into it.
 	privateRemark := "A private remark about " + privateNodePhrase + "."
-	for index, want := range []string{"A passage about " + privateNodePhrase + ".", privateRemark, privateRemark} {
+	for index, want := range []string{privatePassage, privateRemark, privateRemark} {
 		if member := mine[index]; member.Gone || member.Name != want {
 			t.Errorf("the batched read answers the author %s as %+v; want it named %q", member.Ref, member, want)
 		}

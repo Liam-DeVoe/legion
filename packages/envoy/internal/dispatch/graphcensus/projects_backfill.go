@@ -707,6 +707,9 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		taken := map[string]graphstore.Node{}
 		// partOf holds, by id, the part_of of each document an issue owns, stated with its node.
 		partOf := map[string]graphstore.Tuple{}
+		// createdAt holds, by id, each row's own created_at, which an issue's child_of claim is
+		// dated at (issueParentClaims) whatever its node's statements are dated at.
+		createdAt := make(map[string]time.Time, len(nodes))
 		// retired holds the address of each retired document whose row names no node yet, which is
 		// named with the written rows and given no node write.
 		var retired []string
@@ -753,6 +756,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 				}
 				partOf[node.ID] = graphstore.ArtifactPartOf(node.ID, row.issue, node.MadeBy, at)
 			}
+			createdAt[node.ID] = row.MadeAt
 			write = append(write, node)
 		}
 		written.Rows, written.Nodes = int64(len(write))-named, int64(len(write))-named
@@ -796,7 +800,7 @@ func writeObjectBatch(ctx context.Context, database *store.Store, kind objectKin
 		}
 		switch kind.kind {
 		case graphstore.KindIssue:
-			claims, parents := issueParentClaims(write, marks)
+			claims, parents := issueParentClaims(write, marks, createdAt)
 			arms, params, err := graphstore.WriteArms(1, nil, nil, claims)
 			if err != nil {
 				return err
@@ -887,9 +891,12 @@ func heldRowMarks(ctx context.Context, tx pgx.Tx, kind string, ids []string) (ma
 // issueParentClaims is the child_of of each issue of nodes, the issue nodes the batch wrote, to
 // the parent marks names for it, read under the issue's own row (heldRowMarks), or to none where
 // it names none: a claim, which retracts every other parent the node holds and asserts this one
-// where the node is not at it already, dated and made as the node is, at the sentinel. It answers
-// how many of them name a parent, the tuples they can assert.
-func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark) ([]graphstore.Claim, int64) {
+// where the node is not at it already, made as the node is, at the sentinel. It is dated at the
+// row's own created_at (createdAt), the time graph_edges' arm over the rows that name no node dates
+// the same edge at, and the time an issue's create dates its child_of, so the store answers the
+// edge the backfill states at the moment the old arm answered it, whatever its node's statements
+// are dated at. It answers how many of them name a parent, the tuples they can assert.
+func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark, createdAt map[string]time.Time) ([]graphstore.Claim, int64) {
 	claims := make([]graphstore.Claim, len(nodes))
 	var parents int64
 	for index, node := range nodes {
@@ -901,7 +908,7 @@ func issueParentClaims(nodes []graphstore.Node, marks map[string]rowMark) ([]gra
 		claims[index] = graphstore.Claim{
 			FromKind: graphstore.KindIssue, FromID: node.ID, Kind: graphstore.TupleChildOf,
 			ToKind: graphstore.KindIssue, ToID: parent,
-			At: node.MadeAt, Who: node.MadeBy, SourceEvent: graphstore.NoEvent,
+			At: createdAt[node.ID], Who: node.MadeBy, SourceEvent: graphstore.NoEvent,
 		}
 	}
 	return claims, parents

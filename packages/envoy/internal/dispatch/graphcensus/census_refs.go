@@ -27,14 +27,17 @@ const referenceProjectionKind = "artifact_reference"
 // census names. A row of a document whose row names no node is a row of the release before's,
 // which graph_edges' arm over refs answers (store.ReferenceNotStated) and the census counts as a
 // class of its own, and a far end past the store's bound is no tuple, counted as a class of its own
-// too. A deployment whose documents cite nothing holds no row, no tuple and no unmarked row of the
-// kind, which is no refusal (projection.emptyAgrees).
+// too. A retired document's rows are set aside, as the census of the documents sets the document
+// aside (versionProjections): its row stays as the record of what it held, and its node is gone on
+// purpose (retiredDocument), so its references are no rows a present node owes its mentions. A
+// deployment whose documents cite nothing holds no row, no tuple and no unmarked row of the kind,
+// which is no refusal (projection.emptyAgrees).
 var refProjections = []projection{{
 	name:     referenceProjectionKind,
 	nodeKind: graphstore.KindArtifact,
 	table:    "refs",
-	note: "a document's references: the row side is every refs row of a document whose row names its node, as the" +
-		" triple of that node, mentions and the row's far end, against every mentions a present document node states now",
+	note: "a document's references: the row side is every refs row of a document whose row names its node and that is not" +
+		" retired, as the triple of that node, mentions and the row's far end, against every mentions a present document node states now",
 	rows: `
 		select 'artifact ' || r.from_id, a.node_kind, a.node_address, '` + graphstore.TupleMentions + `', r.to_kind, r.to_id
 		from refs r` + markedReferenceSource + `
@@ -51,10 +54,11 @@ var refProjections = []projection{{
 }}
 
 // markedReferenceSource joins, to the refs row aliased r, the artifacts row a of the document whose
-// reference it is, while that row names the document's node, and keeps the rows of a document
-// alone. It reads the document by its uuid as text, which artifacts_id_text indexes.
+// reference it is, while that row names the document's node and the document is not retired
+// (retiredDocument), and keeps the rows of a document alone. It reads the document by its uuid as
+// text, which artifacts_id_text indexes.
 var markedReferenceSource = `
-		join artifacts a on a.id::text = r.from_id and a.node_kind is not null
+		join artifacts a on a.id::text = r.from_id and a.node_kind is not null and not ` + retiredDocument("a") + `
 		where r.from_kind = '` + graphstore.KindArtifact + `'`
 
 // heldReference is the newest mentions tuple out of the node of the artifacts row aliased a to the
