@@ -388,7 +388,7 @@ func TestASecondBuildsFirstTickReadsNoEventBelowTheCursorAnotherBuildLeft(t *tes
 //
 // A build of the older rule marks a document only where its store_version is not its version
 // (markVersionedDocuments), and a build of a newer rule can owe a version a build of the older
-// rule indexed itself: dispatch://INFRA-1253 raises the rule to 2 for exactly that. So a build
+// rule indexed itself, which is what a later change raising the rule to 2 is for. So a build
 // that owes more than another must not inherit its cursor (R13), as a consumer takes a peer's
 // committed offset only where the two do the same work. This code holds one marking statement for
 // every rule, so the test stands for the debt the newer rule's own statement would read by setting
