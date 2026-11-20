@@ -506,6 +506,18 @@ export async function listIssues(project: string, options: ApiOptions = {}) {
   return answered;
 }
 
+/** Every open issue of the stack, in the server's order (lifecycle status, rank, creation time,
+ *  key): the read the Agents page's issue picker makes, `api.listIssues({ open: true })`
+ *  (`web/src/features/agents/AgentMessageComposer.tsx`), so a row reads here the list its picker
+ *  offers. Like `listIssues`, it asks for the whole list rather than a page. */
+export async function listOpenIssues(options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues", { query: { open: true } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error("GET /api/v1/issues answered a page where the whole list was asked for");
+  }
+  return answered;
+}
+
 // The five priority routes. A priority belongs to no project, so each of these reads or writes
 // the whole deployment's one order. Every caller here is the signed-in person rather than the
 // agent bearer (the default `as`), because a priority's margin draws who made each act and a

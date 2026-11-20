@@ -117,6 +117,50 @@ export async function clearIssueCreator(issueKey: string): Promise<void> {
   await sql(`UPDATE issues SET created_by = 'null'::jsonb WHERE key = ${sqlLiteral(issueKey)}`);
 }
 
+/** The id of every broadcast the stack holds: what a row holds at its start, so the broadcasts it
+ *  holds at its end and not in this list are the ones it made (`deleteBroadcastsBut`). */
+export async function broadcastIds(): Promise<string[]> {
+  const listed = await sql("SELECT id FROM broadcasts");
+  return listed === "" ? [] : listed.split("\n");
+}
+
+/**
+ * Deletes every broadcast but `kept`, and what each wrote, so `GET /api/v1/broadcasts` lists what
+ * it listed when `kept` was read. Dispatch has no route that deletes a broadcast, so this is the
+ * schema's own order, in one statement: `messages.broadcast_id` references `broadcasts(id)` with
+ * no cascade (migration 0050), and so do the copies' replies (`messages.in_reply_to`) and every
+ * delivery attempt of a copy or a reply (`message_deliveries.message_id` and `reply_id`, 0016),
+ * each of them NO ACTION, which is checked at the end of the statement (the reset's own delete
+ * relies on the same, `resetDatabaseOnce`). A copy's blocks go with it (0142, ON DELETE CASCADE).
+ * Its events and its references name it by id with no foreign key, so they are deleted beside it
+ * rather than left naming a message that no longer exists: the `message.*` events whose payload
+ * is the message (`id`) or one of its attempts (`message_id`), and the `refs` rows it is the
+ * source of.
+ */
+export async function deleteBroadcastsBut(kept: readonly string[]): Promise<void> {
+  const keptIds = `ARRAY[${kept.map(sqlLiteral).join(", ")}]::uuid[]`;
+  await sql(`WITH RECURSIVE made AS (
+  SELECT id FROM broadcasts WHERE NOT (id = ANY (${keptIds}))
+), thread (id) AS (
+  SELECT id FROM messages WHERE broadcast_id IN (SELECT id FROM made)
+  UNION
+  SELECT messages.id FROM messages JOIN thread ON messages.in_reply_to = thread.id
+), attempts AS (
+  DELETE FROM message_deliveries
+  WHERE message_id IN (SELECT id FROM thread) OR reply_id IN (SELECT id FROM thread)
+), feed AS (
+  DELETE FROM events
+  WHERE type LIKE 'message.%'
+    AND (payload->>'id' IN (SELECT id::text FROM thread)
+      OR payload->>'message_id' IN (SELECT id::text FROM thread))
+), sources AS (
+  DELETE FROM refs WHERE from_kind = 'message' AND from_id IN (SELECT id::text FROM thread)
+), copies AS (
+  DELETE FROM messages WHERE id IN (SELECT id FROM thread)
+)
+DELETE FROM broadcasts WHERE id IN (SELECT id FROM made)`);
+}
+
 // The reset's delete locks its tables one at a time, in its own order, waiting for each while it
 // holds the ones before it. A transaction that reads two of those tables in another order can
 // close a cycle with it (the Inbox reads asks before comments, the sidebar issues before

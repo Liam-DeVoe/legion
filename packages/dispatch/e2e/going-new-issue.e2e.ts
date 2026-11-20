@@ -10,8 +10,7 @@ import {
   replyToMessageDelivery,
   setNewIssueSettings,
 } from "./api";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 // Check k16 of dispatch://INFRA-1042/artifact/verification-md, serving R14: words that match
@@ -24,8 +23,12 @@ import { asUser } from "./users";
 // What this spec reads is the explicit path - the person types, the bar offers, the person
 // accepts - which is the same "nothing is written until the person accepts".
 
-/** Words no seeded item holds, which is what makes the bar offer them as a new issue. */
-const words = "the sextant rota is nowhere written down";
+/** Words no seeded item holds, which is what makes the bar offer them as a new issue. They name
+ *  the row's own project key (`rowKey`, e2e/test.ts): the bar searches every project of the
+ *  stack, and the issue an earlier row made from its words holds those words. */
+function words(): string {
+  return `the sextant rota of ${rowKey("CORE")} is nowhere written down`;
+}
 
 /** The label and the session this Dispatch files such words under. A deployment sets them in
  *  its environment (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION) and the server starts
@@ -43,7 +46,6 @@ async function configure(settings: { label: string; session: string }): Promise<
 }
 
 const label = "from-the-bar";
-const session = sessionIds.planner;
 
 function bar(page: Page): Locator {
   return page.getByRole("dialog", { name: "Search" });
@@ -51,7 +53,7 @@ function bar(page: Page): Locator {
 
 /** The row the bar offers the typed words as a new issue on. */
 function offer(page: Page): Locator {
-  return bar(page).getByRole("option", { name: `Make a new issue from “${words}”` });
+  return bar(page).getByRole("option", { name: `Make a new issue from “${words()}”` });
 }
 
 /** Opens the bar over the project's issue list and types the words. */
@@ -61,8 +63,8 @@ async function typeWords(page: Page): Promise<void> {
   await page.locator("body").focus();
   await page.keyboard.press("/");
   await expect(bar(page)).toBeVisible();
-  await page.getByRole("combobox", { name: "Search" }).fill(words);
-  await expect(bar(page).getByText(`No results for "${words}"`)).toBeVisible();
+  await page.getByRole("combobox", { name: "Search" }).fill(words());
+  await expect(bar(page).getByText(`No results for "${words()}"`)).toBeVisible();
 }
 
 /** The key of the issue the page is on. */
@@ -87,7 +89,10 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
   browser,
 }) => {
   const core = rowKey("CORE");
-  await setLiveSessions([plannerSession]);
+  // The session the settings file the words under: the row's own (`rowSessionId`,
+  // e2e/test.ts), so what the bar sends it lands in no other row's session.
+  const session = rowSessionId("planner");
+  await setLiveSessions([{ ...plannerSession, session_id: session }]);
   await configure({ label, session });
   const context = await asUser(browser, "alice");
 
@@ -102,12 +107,12 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
     await offer(page).click();
     await expect(page).toHaveURL(new RegExp(`/issues/${core}-\\d+$`));
     const key = keyOnPage(page);
-    await expect(page.getByRole("heading", { name: words })).toBeVisible();
+    await expect(page.getByRole("heading", { name: words() })).toBeVisible();
 
     // The words are the issue's first verification criterion, word for word, and Dispatch wrote
     // nothing else into it: no spec text, and no document beside the two.
     const results = await getIssueResults(key);
-    expect((results.checks ?? []).map((check) => check.text)).toEqual([words]);
+    expect((results.checks ?? []).map((check) => check.text)).toEqual([words()]);
     expect((await getIssueArtifactText(key, "spec")).markdown.trim()).toBe("");
     const issue = await getIssue(key);
     expect((issue.artifacts ?? []).map((artifact) => artifact.name).sort()).toEqual([
@@ -123,7 +128,7 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
       .poll(async () => (await getSentMessages()).map((message) => message.target_session))
       .toEqual([session]);
     const messages = await listIssueMessages(key);
-    expect(messages.map((message) => message.message.body)).toEqual([words]);
+    expect(messages.map((message) => message.message.body)).toEqual([words()]);
     const first = messages[0];
     if (first === undefined) {
       throw new Error("the issue holds no message to answer");
@@ -144,7 +149,7 @@ test("the bar offers unmatched words as a new issue, and accepting makes it and 
 test("with the session cleared the issue is still made and the bar says no conversation was started @phone", async ({
   browser,
 }) => {
-  await setLiveSessions([plannerSession]);
+  await setLiveSessions([{ ...plannerSession, session_id: rowSessionId("planner") }]);
   await configure({ label, session: "" });
   const context = await asUser(browser, "alice");
 
@@ -156,11 +161,13 @@ test("with the session cleared the issue is still made and the bar says no conve
     await expect(bar(page).getByTestId("search-new-issue-said")).toContainText(
       "No conversation was started"
     );
-    const made = (await listIssues(rowKey("CORE"))).filter((issue) => issue.title === words);
+    const made = (await listIssues(rowKey("CORE"))).filter((issue) => issue.title === words());
     expect(made).toHaveLength(1);
     const key = made[0]?.key ?? "";
     expect((await getIssue(key)).labels).toEqual([label]);
-    expect(((await getIssueResults(key)).checks ?? []).map((check) => check.text)).toEqual([words]);
+    expect(((await getIssueResults(key)).checks ?? []).map((check) => check.text)).toEqual([
+      words(),
+    ]);
 
     // Nothing was started on it: no message on the issue, and nothing sent to any session.
     expect(await listIssueMessages(key)).toHaveLength(0);

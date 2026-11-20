@@ -1,4 +1,4 @@
-import { agentRow, openAgents, plannerSession, seedAgents } from "./agents";
+import { agentRow, agentSessions, openAgents, seedAgents } from "./agents";
 import { createComment, createIssue, createProject } from "./api";
 import { openFromSidebar } from "./editor";
 import {
@@ -10,8 +10,11 @@ import {
   WRITE_REFUSED_TEXT,
 } from "./sends";
 import { expandedState } from "./settled";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** `seedAgents`' Planner and Reviewer, each under an id of the row's own (`rowSessionId`). */
+const sessions = agentSessions(rowSessionId);
 
 // A composer holds its draft and its refusal while its send is out, whatever unmounts it. These
 // rows take the reader away from a composer in the middle of its send - another page, a collapsed
@@ -65,12 +68,12 @@ test("a docked Conversation send refused while the reader is on the Inbox is the
 test("an Agents row send refused while the reader is on the Inbox is there on the return", async ({
   browser,
 }) => {
-  await seedAgents(rowKey("CORE"));
+  await seedAgents(rowKey("CORE"), sessions);
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await openAgents(page);
-    const row = agentRow(page, plannerSession.session_id);
+    const row = agentRow(page, sessions.planner.session_id);
     const field = row.getByRole("textbox", { name: "Comment" });
     // A server that is down is tried again under the send's key; Dispatch's own verdict is what
     // hands a message to one session back refused.

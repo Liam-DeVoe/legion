@@ -36,7 +36,7 @@ import {
   seedReferenceWorld,
   settledQuestions,
 } from "./reference-surfaces";
-import { expect, type Locator, type Page, test } from "./test";
+import { expect, type Locator, type Page, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -490,8 +490,11 @@ test("the one-line preview shows each reference the shared table links as its ta
   );
   await expectWorldHolds(world, cases);
   const titles = madeTitles(world, world.questions, "spec");
-  // One ask per row, asked by the agent session and answered by alice: that is what puts a row
-  // on her Answers page, and the row's preview is the question the session wrote.
+  // One ask per row, asked by the agent session and answered by the reader: that is what puts a
+  // row on her Answers page, and the row's preview is the question the session wrote. The reader
+  // is a person of the row's own (`rowPerson`, e2e/test.ts), so her Answers page lists this row's
+  // answers and no other row's.
+  const me = rowPerson("alice");
   const asks = new Map<Case, string>();
   for (const item of cases) {
     const ask = await createAsk(
@@ -499,12 +502,12 @@ test("the one-line preview shows each reference the shared table links as its ta
       { options: [{ label: "Yes" }, { label: "No" }], question: item.body },
       referenceAgent
     );
-    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] });
+    await answerAsk(ask.id, { expected_edited_at: null, selected: ["Yes"] }, { login: me });
     asks.set(item, ask.id);
   }
   const questions = new Map<string, string>();
   for (let offset = 0; ; ) {
-    const listed = await listMyAnswers({ limit: 50, offset });
+    const listed = await listMyAnswers({ limit: 50, offset }, { login: me });
     const rows = listed.rows ?? [];
     for (const row of rows) {
       questions.set(row.ask_id, row.question);
@@ -519,7 +522,7 @@ test("the one-line preview shows each reference the shared table links as its ta
     expect(questions.get(ask), rowName(item)).toBe(item.body);
   }
 
-  const context = await asUser(browser, "alice");
+  const context = await asUser(browser, me);
   try {
     const page = await context.newPage();
     await page.goto("/answers");

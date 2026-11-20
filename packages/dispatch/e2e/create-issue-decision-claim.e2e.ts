@@ -53,6 +53,9 @@ test("the dialog lists the answered ask it found and claims nothing about what s
     await expect(dialog).toBeVisible();
     const title = dialog.getByRole("textbox", { name: "Title" });
     await expect(title).toBeFocused();
+    // The check searches the project the dialog names, and with no project in the route the
+    // dialog preselects the first project of the stack, which can be another row's.
+    await dialog.getByRole("combobox", { name: "Project" }).selectOption(core);
     const related = dialog.getByRole("region", { name: "Related items" });
 
     await title.fill(draftTitle);

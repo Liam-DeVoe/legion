@@ -9,7 +9,7 @@ import {
 } from "./api";
 import { documentEditor } from "./editor";
 import { openSearchFromRail, searchSession, searchTerm, seedSearchFixture } from "./search";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -144,20 +144,22 @@ test("an ask hit says whether it is answered, and an answered one shows its late
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
   const issue = await createIssue({ project: core, title: "Planetarium" });
+  // Each question names the row's own key (`rowKey`, e2e/test.ts) beside the word it is found
+  // by: search reads every project of the stack, and only this row's three asks hold both.
   const answered = await createAsk(
     issue.key,
     {
       options: [{ label: "Brass" }, { label: "Steel" }],
-      question: "Which orrery frame do we keep?",
+      question: `Which orrery frame do we keep in ${core}?`,
     },
     searchSession
   );
   const resolved = await createAsk(
     issue.key,
-    { question: "Should the orrery gears be oiled?" },
+    { question: `Should the orrery gears be oiled in ${core}?` },
     searchSession
   );
-  await createAsk(issue.key, { question: "Who winds the orrery?" }, searchSession);
+  await createAsk(issue.key, { question: `Who winds the orrery of ${core}?` }, searchSession);
   const first = await answerAsk(answered.id, {
     expected_edited_at: null,
     selected: ["Brass"],
@@ -184,7 +186,7 @@ test("an ask hit says whether it is answered, and an answered one shows its late
   try {
     const page = await context.newPage();
     await openSearchFromRail(page, false);
-    await page.getByRole("combobox", { name: "Search" }).fill("orrery");
+    await page.getByRole("combobox", { name: "Search" }).fill(`orrery ${core}`);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     await expect(dialog.getByRole("option")).toHaveCount(3);
@@ -287,7 +289,10 @@ test("the palette's keyboard hints show for a pointer and not for a touch reader
   await createProject({ key: core, name: "Core" });
   await createIssue({ project: core, title: "Conversation view" });
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): the Inbox behind the
+  // palette holds none of another row's questions, whose priority selects carry options of
+  // their own, so the first option on the page is the palette's.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/");

@@ -1,8 +1,22 @@
-import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
+import {
+  agentRow,
+  agentSessions,
+  expectPickerOffers,
+  openAgents,
+  seedAgents,
+  seedPickerList,
+  shownAgentRows,
+} from "./agents";
 import { createMessage } from "./api";
 import { holdPosts, pasteFile, refusePosts, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Page, rowKey, test } from "./test";
+import { expect, type Page, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
+
+/** `seedAgents`' Planner and Reviewer, each under an id of the row's own (`rowSessionId`). A row
+ *  that steps through the issue picker puts its own issues where its steps land
+ *  (`seedPickerList`), so no pick acts on another row's issue. */
+const sessions = agentSessions(rowSessionId);
+const plannerSession = sessions.planner;
 
 /** Resolves once every timer queued before it has run: the next task, the soonest a reader's
  *  pick can follow a key. The issue picker's keyboard-step mark lasts until then, so a row that
@@ -20,7 +34,7 @@ test.describe("agents page", () => {
   test("j/k rove the agent rows, Enter opens the composer, i the issue picker, x selects and Shift+P pins @pr", async ({
     browser,
   }, testInfo) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -117,7 +131,7 @@ test.describe("agents page", () => {
   test("i lands in the issue picker, and Escape there closes it and returns to the row", async ({
     browser,
   }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -145,7 +159,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    const list = await seedPickerList(core, [await seedAgents(core, sessions), `${core}-2`]);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -154,7 +168,9 @@ test.describe("agents page", () => {
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       const toggle = row.getByRole("button", { name: "Choose issue" });
-      await expect(row.getByRole("combobox", { name: "Issue" })).toBeFocused();
+      const picker = row.getByRole("combobox", { name: "Issue" });
+      await expect(picker).toBeFocused();
+      await expectPickerOffers(picker, list);
 
       // The arrows move the selection; Enter is the pick.
       await page.keyboard.press("ArrowDown");
@@ -174,7 +190,7 @@ test.describe("agents page", () => {
   test("a slow issue list never pulls the reader off the row they moved to", async ({
     browser,
   }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -214,7 +230,7 @@ test.describe("agents page", () => {
   // draft the reader already has.
   test("a draft survives the issue pick, by keyboard and by pointer", async ({ browser }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    const list = await seedPickerList(core, [await seedAgents(core, sessions), `${core}-2`]);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -233,6 +249,7 @@ test.describe("agents page", () => {
       // from the keyboard the open hands over to.
       await toggle.click();
       await expect(row.getByRole("combobox", { name: "Issue" })).toBeFocused();
+      await expectPickerOffers(row.getByRole("combobox", { name: "Issue" }), list);
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(`${core}-1`);
@@ -257,7 +274,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -296,7 +313,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -355,7 +372,7 @@ test.describe("agents page", () => {
   test("a slow issue list never takes focus out of the message being typed", async ({
     browser,
   }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -392,7 +409,7 @@ test.describe("agents page", () => {
   test("Escape closes the issue picker from the row when the list fails or is still out", async ({
     browser,
   }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -447,7 +464,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    const list = await seedPickerList(core, [await seedAgents(core, sessions), `${core}-2`]);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -476,6 +493,7 @@ test.describe("agents page", () => {
       await expect(row).toBeFocused();
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
+      await expectPickerOffers(picker, list);
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
       await expect(toggle).toContainText(`${core}-1`);
@@ -506,7 +524,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -544,7 +562,7 @@ test.describe("agents page", () => {
   // That is a pick made, as a pointer's is, and it commits with no second Enter.
   test("a pick from the popup a key opened commits at once", async ({ browser }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -574,7 +592,7 @@ test.describe("agents page", () => {
   // first option - leaves the next change, a task later, a pick.
   test("a key that moves nothing leaves the next change a pick", async ({ browser }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -606,7 +624,7 @@ test.describe("agents page", () => {
   // them apart, with a task between, so the `keypress` is judged in a task of its own.
   test("type-ahead moves the issue selection and Enter commits it", async ({ browser }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    const list = await seedPickerList(core, [await seedAgents(core, sessions), `${core}-2`]);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -619,6 +637,7 @@ test.describe("agents page", () => {
       await page.keyboard.press("j");
       await page.keyboard.press("i");
       await expect(picker).toBeFocused();
+      await expectPickerOffers(picker, list);
       const cdp = await context.newCDPSession(page);
       const key = { code: "KeyC", key: "c", windowsVirtualKeyCode: 67 };
       await cdp.send("Input.dispatchKeyEvent", { ...key, type: "rawKeyDown" });
@@ -644,7 +663,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -691,7 +710,7 @@ test.describe("agents page", () => {
     browser,
   }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -740,7 +759,7 @@ test.describe("agents page", () => {
   // composer that kept the text would hand it to the next channel on the next pick.
   test("Discard clears the draft, and no pick brings it back", async ({ browser }) => {
     const core = rowKey("CORE");
-    await seedAgents(core);
+    await seedAgents(core, sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -770,7 +789,7 @@ test.describe("agents page", () => {
   // way out is "one level up". Focus on the row after a send would turn the next letters typed
   // into agent shortcuts.
   test("a sent message leaves focus in the composer, not on the row", async ({ browser }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -798,7 +817,7 @@ test.describe("agents page", () => {
   // The disable takes focus to the document; only that focus is the composer's to take back. A
   // reader who moved on during the round trip keeps where they went.
   test("a send in flight does not steal back focus the reader has moved", async ({ browser }) => {
-    await seedAgents(rowKey("CORE"));
+    await seedAgents(rowKey("CORE"), sessions);
     const context = await asUser(browser, "alice");
     try {
       const page = await context.newPage();
@@ -834,7 +853,7 @@ test.describe("agents page", () => {
   // advertised only when that button is reachable - the rule this slice already applied to the
   // Inbox's own snooze.
   test("i is listed as unavailable while the row is answering a message", async ({ browser }) => {
-    const issueKey = await seedAgents(rowKey("CORE"));
+    const issueKey = await seedAgents(rowKey("CORE"), sessions);
     const root = await createMessage(issueKey, {
       body: "Can this ship?",
       delivery: "btw",

@@ -1,9 +1,16 @@
 import { setTimeout as sleep } from "node:timers/promises";
 
-import { openAgents, seedAgents, shownAgentRows } from "./agents";
+import {
+  agentSessions,
+  expectPickerOffers,
+  openAgents,
+  seedAgents,
+  seedPickerList,
+  shownAgentRows,
+} from "./agents";
 import { createIssue, createProject, getIssue, patchIssue } from "./api";
 import { openIssue, searchPath } from "./keyboard-palette";
-import { expect, rowKey, test } from "./test";
+import { expect, rowKey, rowSessionId, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -414,7 +421,10 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
   browser,
 }) => {
   const core = rowKey("CORE");
-  await seedAgents(core);
+  // The Planner and the Reviewer are sessions of the row's own (`rowSessionId`), and the issues
+  // the picker's steps reach are the row's own, at the head of the list (`seedPickerList`).
+  const issueKey = await seedAgents(core, agentSessions(rowSessionId));
+  const list = await seedPickerList(core, [issueKey, `${core}-2`]);
   const context = await asUser(browser, "alice");
 
   try {
@@ -449,6 +459,7 @@ test("the Agents page offers a row's picker, which then commits a keyboard pick 
     const picker = row.getByRole("combobox", { name: "Issue" });
     const toggle = row.getByRole("button", { name: "Choose issue" });
     await expect(picker).toBeFocused();
+    await expectPickerOffers(picker, list);
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("ArrowDown");
     await expect(picker).toBeFocused();

@@ -58,7 +58,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { test as base } from "@playwright/test";
 
 import { sql } from "./psql";
-import { resetDatabase, sqlLiteral } from "./seed";
+import { broadcastIds, deleteBroadcastsBut, resetDatabase, sqlLiteral } from "./seed";
 import { signIn } from "./users";
 
 /** Bytes this process drew once, when it loaded this module, and folds into every `rowKey`: a
@@ -219,6 +219,9 @@ type DispatchFixtures = {
   /** The row's own people taken out again once it ends (`rowPerson`). It is automatic and
    *  carries no value: its work is its teardown. */
   ownPeople: undefined;
+  /** The broadcasts the row sent taken out again once it ends. It is automatic and carries no
+   *  value: its work is its teardown. */
+  ownBroadcasts: undefined;
 };
 
 export const test = base.extend<DispatchOptions & DispatchFixtures>({
@@ -252,12 +255,36 @@ export const test = base.extend<DispatchOptions & DispatchFixtures>({
     },
     { auto: true },
   ],
+  // The teardown is the `finally` of every row that sends a broadcast, through the page or
+  // through e2e/api.ts alike: every broadcast the stack holds at the row's end that it did not
+  // hold at its start, with the copies, replies, attempts and events each wrote
+  // (`deleteBroadcastsBut`). The list of every broadcast (`GET /api/v1/broadcasts`, the Agents
+  // page's Broadcasts region) is the stack's, not a person's, and a row that reads it whole -
+  // that it holds exactly the broadcast the row sent - reads it back at its start only if each
+  // row takes its own out again. Rows of one worker run one at a time on that worker's own
+  // stack, so what the end holds beyond the start is this row's. It is read after the reset and
+  // torn down after the default context is closed, which names it as it names `ownPeople`.
+  ownBroadcasts: [
+    async ({ freshDatabase: _resetFirst }, use) => {
+      const kept = await broadcastIds();
+      await use(undefined);
+      await deleteBroadcastsBut(kept);
+    },
+    { auto: true },
+  ],
   // `freshDatabase` is in this list for its order rather than for its value, hence the unused
   // binding: naming it is what makes Playwright empty the database before this fixture signs
-  // anyone in, which is the order the hooks this replaces were written in. `ownPeople` is here
-  // for its order too: set up before this context, it is torn down after it is closed.
+  // anyone in, which is the order the hooks this replaces were written in. `ownPeople` and
+  // `ownBroadcasts` are here for their order too: set up before this context, each is torn down
+  // after it is closed.
   context: async (
-    { context, signedIn, freshDatabase: _resetFirst, ownPeople: _deletedAfter },
+    {
+      context,
+      signedIn,
+      freshDatabase: _resetFirst,
+      ownPeople: _deletedAfter,
+      ownBroadcasts: _broadcastsDeletedAfter,
+    },
     use
   ) => {
     if (signedIn !== false) {

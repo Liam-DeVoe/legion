@@ -38,8 +38,7 @@ import { holdFirstRequest } from "./editor";
 import { inboxList } from "./inbox-pane";
 import { type KeyedWrite, keyedWrite } from "./keyed-writes";
 import { setCreatedAt } from "./seed";
-import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, rowSessionId, test } from "./test";
 import { assertPageFits } from "./unclipped";
 import { asUser } from "./users";
 
@@ -48,13 +47,20 @@ import { asUser } from "./users";
  *  own clock cannot skip, covers one deferred a task or two past it. */
 const ABSENCE_MARGIN_MS = 150;
 
+// The four sessions these rows seed. Each one's id is the running row's own (`rowSessionId`,
+// e2e/test.ts), read where a row names it, so it is a getter: Dispatch keeps what a session said
+// and what was said to it by the session's id, for every person at once, so a fixed id would
+// give each row's conversation, unread replies and open asks every earlier row's as well. A
+// spread or a JSON body of the session takes the row's id with it.
 const planner: FakeSession = {
   capabilities: ["aside", "btw"],
   dir: "/workspaces/planner",
   last_seen: Date.now() - 30_000,
   machine_id: "planner-host",
   roles: ["planner"],
-  session_id: sessionIds.planner,
+  get session_id() {
+    return rowSessionId("planner");
+  },
   title: "Planner",
 };
 const reviewer: FakeSession = {
@@ -63,7 +69,9 @@ const reviewer: FakeSession = {
   last_seen: Date.now() - 5 * 60_000,
   machine_id: "reviewer-host",
   roles: ["reviewer"],
-  session_id: sessionIds.reviewer,
+  get session_id() {
+    return rowSessionId("reviewer");
+  },
   title: "Reviewer",
 };
 const silent: FakeSession = {
@@ -72,7 +80,9 @@ const silent: FakeSession = {
   last_seen: Date.now() - 10_000,
   machine_id: "silent-host",
   roles: [],
-  session_id: sessionIds.silent,
+  get session_id() {
+    return rowSessionId("silent");
+  },
   title: "Silent",
 };
 const archivist: FakeSession = {
@@ -81,7 +91,9 @@ const archivist: FakeSession = {
   last_seen: Date.now() - 45 * 60_000,
   machine_id: "archivist-host",
   roles: [],
-  session_id: sessionIds.archivist,
+  get session_id() {
+    return rowSessionId("archivist");
+  },
   title: "Archivist",
 };
 
@@ -93,9 +105,13 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
   browser,
 }, testInfo) => {
   const core = rowKey("CORE");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): no other row's agent
+  // replies are unread for her, so the shell's Agents link carries no New replies, and no pin
+  // of hers puts another row's session on the page.
+  const me = rowPerson("alice");
   await setLiveSessions([planner, reviewer, silent, archivist]);
-  await createProject({ key: core, name: "Core" });
-  const issue = await createIssue({ project: core, title: "Agent page activity" });
+  await createProject({ key: core, name: "Core" }, { login: me });
+  const issue = await createIssue({ project: core, title: "Agent page activity" }, { login: me });
   const asPlanner = {
     actor: { id: planner.session_id, kind: "session" as const },
     as: "agent" as const,
@@ -103,7 +119,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
   await createAsk(issue.key, { question: "First" }, asPlanner);
   // Alice has replied to the second ask, so its next move is the Planner's.
   const answered = await createAsk(issue.key, { question: "Second" }, asPlanner);
-  await createComment(issue.key, { ask_id: answered.id, body: "Which release?" });
+  await createComment(issue.key, { ask_id: answered.id, body: "Which release?" }, { login: me });
   // The same two turns on an issue Bob holds: the card's first number is Alice's own work, so
   // neither of these is in it, while the second counts what waits on the Planner whoever holds
   // the issue.
@@ -123,7 +139,7 @@ test("Agents puts who needs you first, groups the rest by what each is doing, sh
     { actor: { id: reviewer.session_id, kind: "session" }, as: "agent" }
   );
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     const copied = await recordClipboard(page);
@@ -614,21 +630,26 @@ test("a reconnect picks up a Clear made from another device", async ({ browser }
 test("opening a row marks read the newer of two replies written in one millisecond", async ({
   browser,
 }) => {
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): no other row's agent
+  // reply is unread for her, so the page's New replies are this row's two alone.
+  const me = rowPerson("alice");
   await setLiveSessions([planner]);
   const plannerActor = { id: planner.session_id, kind: "session" as const };
-  const askA = await createAgentMessage(planner.session_id, {
-    body: "Question A",
-    delivery: "aside",
-  });
+  const askA = await createAgentMessage(
+    planner.session_id,
+    { body: "Question A", delivery: "aside" },
+    { login: me }
+  );
   const answerA = (await replyToMessageDelivery(
     askA.id,
     { attempt: 1, body: "Answer A" },
     plannerActor
   )) as Message;
-  const askB = await createAgentMessage(planner.session_id, {
-    body: "Question B",
-    delivery: "aside",
-  });
+  const askB = await createAgentMessage(
+    planner.session_id,
+    { body: "Question B", delivery: "aside" },
+    { login: me }
+  );
   const answerB = (await replyToMessageDelivery(
     askB.id,
     { attempt: 1, body: "Answer B" },
@@ -636,11 +657,11 @@ test("opening a row marks read the newer of two replies written in one milliseco
   )) as Message;
   // Alice's follow-up moves exchange A above B in the server's order, so the page meets the older
   // reply first: a comparison to the millisecond would keep it.
-  const followUp = await createAgentMessage(planner.session_id, {
-    body: "Follow-up on A",
-    delivery: "aside",
-    in_reply_to: answerA.id,
-  });
+  const followUp = await createAgentMessage(
+    planner.session_id,
+    { body: "Follow-up on A", delivery: "aside", in_reply_to: answerA.id },
+    { login: me }
+  );
   const second = Math.floor((Date.now() - 120_000) / 1000) * 1000;
   const at = (offsetSeconds: number, fraction = "") =>
     `${new Date(second + offsetSeconds * 1000).toISOString().slice(0, 19)}${fraction}Z`;
@@ -653,7 +674,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
   await setCreatedAt("messages", followUp.id, at(30));
   // The fixture holds only if the server lists A first, with both replies unread.
   expect(
-    (await listAgentMessages(planner.session_id)).map((read) => [
+    (await listAgentMessages(planner.session_id, { login: me })).map((read) => [
       read.message.body,
       (read.replies ?? [])
         .filter((reply) => reply.author.id === planner.session_id)
@@ -664,9 +685,9 @@ test("opening a row marks read the newer of two replies written in one milliseco
     ["Question A", [replyA], true],
     ["Question B", [replyB], true],
   ]);
-  expect((await getAgentStates())[planner.session_id]?.unread_replies).toBe(2);
+  expect((await getAgentStates({ login: me }))[planner.session_id]?.unread_replies).toBe(2);
 
-  const alice = await asUser(browser, "alice");
+  const alice = await asUser(browser, me);
   try {
     const page = await alice.newPage();
     await page.goto("/agents");
@@ -686,7 +707,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
     ).toContainText("Answer B");
     await expect(page.getByText(/^New repl/)).toHaveCount(0);
     await expect
-      .poll(async () => (await getAgentStates())[planner.session_id]?.unread_replies)
+      .poll(async () => (await getAgentStates({ login: me }))[planner.session_id]?.unread_replies)
       .toBe(0);
   } finally {
     await alice.close();
@@ -838,7 +859,9 @@ test("select-all ticks the rows in the order the page shows them, not the order 
     session("alpha", "Alpha"),
   ]);
 
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts): a pin is the person's,
+  // so Zeta starts unpinned whatever an earlier row pinned.
+  const alice = await asUser(browser, rowPerson("alice"));
   try {
     const page = await alice.newPage();
     await page.goto("/agents");

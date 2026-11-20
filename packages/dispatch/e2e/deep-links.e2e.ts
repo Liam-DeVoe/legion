@@ -77,7 +77,9 @@ async function leaveThreadOverlay(page: Page, project: string): Promise<void> {
 }
 
 /** The long-document fixture every landing test shares: the quotation is thousands of pixels
- *  below the fold, and the comment anchored to it is what the link names. */
+ *  below the fold, and the comment anchored to it is what the link names. The comment names the
+ *  row's own project key (`rowKey`, e2e/test.ts), so a search for `commentWords()` finds this
+ *  row's comment and no other row's: search reads every project of the stack. */
 async function seedLongDocument(quote = "Unique faraway quotation.") {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
@@ -88,12 +90,17 @@ async function seedLongDocument(quote = "Unique faraway quotation.") {
   });
   const comment = await createComment(issue.key, {
     anchor: { artifact: "spec", quote },
-    body: "This route must show its quote.",
+    body: `This route must show its quote in ${core}.`,
   });
   if (comment.anchor === null) {
     throw new Error("Expected anchored comment");
   }
   return { comment, issue, markId: comment.anchor.mark_id };
+}
+
+/** Words of `seedLongDocument`'s comment that no other row's item holds all of. */
+function commentWords(): string {
+  return `must show its quote in ${rowKey("CORE")}`;
 }
 
 /** Open asks the reader owns, seeded one at a time: each holds its transaction across the
@@ -628,7 +635,7 @@ for (const state of crossDocumentLandingStates) {
           await route.continue();
         });
       }
-      await (await searchHit(page, "must show its quote")).click();
+      await (await searchHit(page, commentWords())).click();
       await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
       if (!state.holdIssuePageCode) {
         await expect(page.getByRole("tab", { name: "Spec" })).toHaveAttribute(
@@ -683,7 +690,7 @@ const hiddenEditorJourneys = [
       await page.getByRole("combobox", { name: "Version" }).selectOption("1");
       await expect(page.getByTestId("version-view")).toBeVisible();
       await expect(page).toHaveURL(`/issues/${issueKey}/artifacts/spec?v=1`);
-      const hit = await searchHit(page, "must show its quote");
+      const hit = await searchHit(page, commentWords());
       return async () => {
         await hit.click();
         await expect(page).toHaveURL(link);

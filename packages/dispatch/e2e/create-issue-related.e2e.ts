@@ -47,9 +47,13 @@ async function seedProject(): Promise<{ astrolabe: string; zeppelin: string }> {
   return { astrolabe: astrolabe.key, zeppelin: zeppelin.key };
 }
 
-/** The create dialog, opened with `c` from the shell, and its title box and related section. */
+/** The create dialog, opened with `c` from the shell, and its title box and related section. The
+ *  check searches the project the dialog names, so the dialog is set to the row's own project
+ *  (`rowKey`, e2e/test.ts): with no project in the route it preselects the first project of the
+ *  stack, which can be another row's. */
 async function openCreateDialog(
-  page: Page
+  page: Page,
+  project: string
 ): Promise<{ dialog: Locator; related: Locator; title: Locator }> {
   await page.locator("body").focus();
   await page.keyboard.press("c");
@@ -57,6 +61,7 @@ async function openCreateDialog(
   await expect(dialog).toBeVisible();
   const title = dialog.getByRole("textbox", { name: "Title" });
   await expect(title).toBeFocused();
+  await dialog.getByRole("combobox", { name: "Project" }).selectOption(project);
   return { dialog, related: dialog.getByRole("region", { name: "Related items" }), title };
 }
 
@@ -77,7 +82,7 @@ test("a title checked before an issue was filed is checked again, not answered f
     await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
 
     const draft = "Astrolabe drift spoils the mooring calibration";
-    const first = await openCreateDialog(page);
+    const first = await openCreateDialog(page, core);
     await first.title.fill(draft);
     await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await expect(first.related.getByText(/searched .*and found nothing\.$/u)).toBeVisible();
@@ -93,7 +98,7 @@ test("a title checked before an issue was filed is checked again, not answered f
       title: draft,
     });
 
-    const second = await openCreateDialog(page);
+    const second = await openCreateDialog(page, core);
     await second.title.fill(draft);
     await page.clock.runFor(RELATED_DEBOUNCE_MS);
     await expect(second.related.getByRole("link", { name: `${filed.key} ${draft}` })).toBeVisible();
@@ -144,7 +149,7 @@ test("the dialog's own actions stay in the window once the section fills", async
     const page = await context.newPage();
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
-    const { dialog, related, title } = await openCreateDialog(page);
+    const { dialog, related, title } = await openCreateDialog(page, rowKey("CORE"));
 
     await title.fill("Astrolabe drift mooring calibration quadrant bezel sextant mirror");
     await expect(related.getByRole("link")).toHaveCount(3);
@@ -177,7 +182,7 @@ test("a title whose rare words match an existing issue lists it with its link", 
     await page.clock.install();
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Inbox" })).toBeVisible();
-    const { related, title } = await openCreateDialog(page);
+    const { related, title } = await openCreateDialog(page, rowKey("CORE"));
 
     await title.fill("Astrolabe drift during mooring");
     await page.clock.runFor(RELATED_DEBOUNCE_MS);
@@ -219,7 +224,7 @@ test("typing sends one check per pause, never one per keystroke", async ({ brows
       await route.continue();
     });
 
-    const { title } = await openCreateDialog(page);
+    const { title } = await openCreateDialog(page, rowKey("CORE"));
     await pauseClock(page);
     await title.pressSequentially("Astrolabe drift", { delay: 0 });
     await expect(title).toHaveValue("Astrolabe drift");
@@ -265,7 +270,7 @@ test("an answer that arrives after the title changed is not shown for the new ti
       await route.continue();
     });
 
-    const { related, title } = await openCreateDialog(page);
+    const { related, title } = await openCreateDialog(page, rowKey("CORE"));
     await pauseClock(page);
     await title.fill("Astrolabe drift during mooring");
     await page.clock.runFor(RELATED_DEBOUNCE_MS);
