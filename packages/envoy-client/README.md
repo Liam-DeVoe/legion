@@ -1077,15 +1077,22 @@ head of the thrown message.
 With `--include-children`, `--unlink-children` or `--include-parent`, `dispatch issue-update`
 sends `POST /api/v1/issues/{key}/status-change` (`DispatchClient.changeIssueStatus`) in place of
 the PATCH. The three flags go with `--status` alone, and with `--reason` beside `done`, which is
-posted first as for every close. The schema refuses them beside any other field, and
-`--include-children` beside `--unlink-children`, before anything is sent (exit 2). The answer names
-each issue the call changed with its status after the call, so the command reads before it writes:
-the issue's own read names its children, and with `--include-children` or `--include-parent` it
-reads the project's issues too. It prints one line for each changed issue, in the order the steps
-ran: `KEY: status a -> b`, or `KEY: unlinked from P`. A refusal names the issues the steps before
-it changed. A build older than the route answers no route: the write asks again as every write
-does, then the command refuses naming the route and sends no PATCH, since a PATCH would write the
-status without the option. The CLI's `--dry-run` prints the arguments and asks Dispatch nothing.
+posted first as for every close. The schema refuses them beside any other field,
+`--include-children` beside `--unlink-children`, and `--include-children` with `--status done`,
+before anything is sent (exit 2). Only a person who is signed in at a browser can close the open
+issues under an issue together with it, and the command presents a token: that person does it on
+the issue's page in Dispatch (Close issue, then Move them with it). The answer names each issue
+the call changed with its status after the call, so the command reads before it writes: the
+issue's own read names its children, with `--include-children` it reads the project's issues too,
+and with `--include-parent` alone it reads each issue above the issue, one parent at a time. It
+prints one line for each changed issue, in the order the steps ran: `KEY: status a -> b`, or
+`KEY: unlinked from P`. The issue the call names always gets a line, which carries the posted
+reason's message where there is one: in the order of the steps where the call changed it, and last
+where the call left its status as it was. A refusal names the issues the steps before it changed.
+A build older than the route answers no route: the
+write asks again as every write does, then the command refuses naming the route and sends no
+PATCH, since a PATCH would write the status without the option. The CLI's `--dry-run` prints the
+arguments and asks Dispatch nothing.
 `dispatch issues --json` prints `{issues, total, offset, limit}`, each issue with its status,
 parent and labels, as one JSON object and nothing else.
 `dispatch request-approval` refuses, before it sends anything, while the version the request would
