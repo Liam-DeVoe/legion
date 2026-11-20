@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -373,7 +373,7 @@ func tokenCallersServer(t *testing.T, on bool) statusChangeServer {
 	const sessionToken, personToken = "a-token-acting-as-its-session", "a-token-scoped-to-its-person"
 	rig.broker.Says(sessionToken, liveNamedToken(agent.jkt))
 	scoped := liveNamedToken(agent.jkt)
-	scoped.ProjectScope, scoped.Projects = brokertoken.ProjectScopePerson, nil
+	scoped.ProjectScope, scoped.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(personToken, scoped)
 	server := statusChangeServer{
 		name: "the token server", project: brokerTestProject, database: rig.database,
