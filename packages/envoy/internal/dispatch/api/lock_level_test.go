@@ -13,10 +13,13 @@
 // them, so keeping them there costs the race build one file's compile and, of the walk, only what
 // the census asks of it (module_source_test.go's header says why it is the one caller left in).
 // The work stays behind the tag: the constant fixpoint and the statement walk this guard runs
-// over the whole module, and TestNoForUpdateOnOwnerTables, which would otherwise run twice, once
-// under the detector and once in the text-check run that names the eighteen tests of these nine
-// guards and one_expression_guard_test.go. Its assertions concern module text, so the text-check
-// job runs it apart from the product suite.
+// over the whole module, and
+// TestNoForUpdateOnOwnerTables, which would otherwise run twice, once under the detector and
+// once in the text-check run that names the eighteen tests of these nine guards and
+// one_expression_guard_test.go. That file is where the module's second walk went: main had it
+// as a subtest of who_waits_test.go, parsing the same tree in the race binary, and its subject
+// is the module's text, which R15 of dispatch://INFRA-1066 has run in the text-check job rather
+// than inside a product suite - so it is on this side of the tag now.
 
 package api
 

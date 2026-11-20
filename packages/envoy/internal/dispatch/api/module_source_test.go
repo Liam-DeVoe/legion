@@ -179,8 +179,9 @@ func sqlStatements(file *ast.File, constants map[string]string) []string {
 	return statements
 }
 
-// sqlStatementsIn is sqlStatements over one syntax node in package pkg. The form-gate census
-// uses it for a declaration that opens an ask.
+// sqlStatementsIn is sqlStatements over one node of a file of package pkg: a declaration, a
+// function body or one expression, which the census of the writers that open an ask names by the
+// declaration that holds it (askOpeningWriters).
 func sqlStatementsIn(node ast.Node, pkg string, constants map[string]string) []string {
 	var statements []string
 	ast.Inspect(node, func(visited ast.Node) bool {
@@ -193,6 +194,7 @@ func sqlStatementsIn(node ast.Node, pkg string, constants map[string]string) []s
 			return true
 		}
 		statements = append(statements, sqlWhitespace.ReplaceAllString(strings.ToLower(text), " "))
+		// The whole concatenation is one statement; its parts are not statements of their own.
 		return false
 	})
 	return statements

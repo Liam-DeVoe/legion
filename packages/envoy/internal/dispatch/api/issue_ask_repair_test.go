@@ -50,7 +50,8 @@ func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFix
 	return newRepairFixtureWith(t, settle, nil, "")
 }
 
-// newRepairFixtureFrom is newRepairFixtureSettlingAfter with roots of The Spec.
+// newRepairFixtureFrom is newRepairFixtureSettlingAfter on a server whose setting names specRoots
+// as the roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
 func newRepairFixtureFrom(t *testing.T, settle time.Duration, specRoots string) repairFixture {
 	t.Helper()
 	return newRepairFixtureWith(t, settle, nil, specRoots)
@@ -62,12 +63,15 @@ const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
 
 // newRepairFixtureOn is newRepairFixtureSettlingAfter on a pool tracer traces (storetest.Traced),
 // so the repair's xid window can be measured on it (issue_ask_repair_xid_window_test.go); a nil
-// tracer leaves the pool untraced.
+// tracer leaves the pool untraced. Its rooms never idle out (repairRoomsNeverIdleOut), so a room
+// of the fixture leaves residency only through a close.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
 	t.Helper()
 	return newRepairFixtureWith(t, settle, tracer, "")
 }
 
+// newRepairFixtureWith is newRepairFixtureOn on a server whose setting names specRoots as the
+// roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
 func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTracer, specRoots string) repairFixture {
 	t.Helper()
 	database := storetest.Open(t)
