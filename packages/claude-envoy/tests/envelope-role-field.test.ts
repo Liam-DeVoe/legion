@@ -5,9 +5,9 @@ import { createEnvoyClient } from "@legion/envoy-client/transport"
 import envelopeWithoutRole from "../../contracts/fixtures/envelope-without-role.json"
 import { deliveryIdentity } from "../src/channel-topics"
 import {
-  CLAUDE_ENVOY_USER_AGENT,
   type ChannelSession,
   type ChannelToolRuntime,
+  CLAUDE_ENVOY_USER_AGENT,
   createChannelDelivery,
   executeEnvoyTool,
   startChannelSession,
