@@ -10,7 +10,7 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { IssueDetails, ReferenceTarget } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { refetchFailedOnFocus } from "../refs/reference-target";
 import {
@@ -115,21 +115,21 @@ const NO_AMBIGUOUS_TARGETS: ReadonlySet<string> = new Set();
  *  the same empty set on every render, as `NO_TARGET_NAMES` is the same empty map. */
 const NO_EDITED_TARGETS: ReadonlySet<string> = new Set();
 
-/** What the one more names read holds where nothing is left for it to name: no names, and the
- *  same empty answer on every render, so the answer it gave before stands over nothing. */
-const NO_MORE_TARGETS: { readonly targets: readonly ReferenceTarget[] } = { targets: [] };
-
 /**
- * The answer a names read gave last: its own while it holds one, and the last one it held while
- * its read under a new set of addresses is out or has failed. TanStack's `placeholderData` would
- * hold that answer only while the read is out: a read under a new key that fails holds no data,
- * where a refetch that fails under the same key keeps its own. The ref is written during render
- * only with the answer the read holds in that render, so it never stands over a newer one: a read
- * that holds an answer is drawn from it.
+ * The set of addresses a names read answered last: `refs` while its read under them holds an
+ * answer (`answered`), and the set it last held one for while its read under a new set is out or
+ * has failed. The page draws that set's answer as the cache holds it now, through an observer
+ * that never fetches (`enabled: false`): a write into the cached answer, as a correction's marks
+ * are (`markCorrectedPost`), draws again, and the observer keeps the query from garbage
+ * collection, where a ref holding the answer itself would go on drawing it as it was kept.
+ * TanStack's `placeholderData` would hold the last answer only while the read is out: a read
+ * under a new key that fails holds no data, where a refetch that fails under the same key keeps
+ * its own. The ref is written during render only with the set the read answers in that render,
+ * so it never stands over a newer one.
  */
-function useLastAnswer<T>(answer: T | undefined): T | undefined {
-  const last = useRef(answer);
-  if (answer !== undefined) last.current = answer;
+function useLastAnswered(refs: readonly string[], answered: boolean): readonly string[] {
+  const last = useRef<readonly string[]>([]);
+  if (answered) last.current = refs;
   return last.current;
 }
 
@@ -163,14 +163,15 @@ export const issueAsksQuery = (key: string) =>
  * message's edit or delete, an ask's edit, a document's new version, rename or removal, and an
  * issue's write that changes its title (`referenceNameTargets`). A post's edit or delete also
  * reaches an address that names the post by its whole id under another owner, which the server
- * reads as the post, and writes its own marks into the answer the read keeps, so a refetch that
- * fails leaves no deleted post's words, and no edited one's without its mark
- * (`markCorrectedPost`). A names read's key is the set of addresses it names, so a tree that
- * comes to hold another set reads again under a key of its own, and only a change under an
- * address the tree already names needs a rule. No rule there names `["whoami"]`: the reader's
- * login does not change while the page is open. A gap in the feed refreshes every read the app
- * holds (`refreshQueries`), these among them, and window focus fetches again only a read in
- * error (`refetchFailedOnFocus`).
+ * reads as the post, and writes its own marks into every answer the cache holds that names the
+ * post, the one the page draws while a read under a new set is out or has failed among them
+ * (`useLastAnswered`), so a read that fails leaves no deleted post's words, and no edited one's
+ * without its mark (`markCorrectedPost`). A names read's key is the set of addresses it names,
+ * so a tree that comes to hold another set reads again under a key of its own, and only a change
+ * under an address the tree already names needs a rule. No rule there names `["whoami"]`: the
+ * reader's login does not change while the page is open. A gap in the feed refreshes every read
+ * the app holds (`refreshQueries`), these among them, and window focus fetches again only a read
+ * in error (`refetchFailedOnFocus`).
  */
 const EVENT_FRESH = {
   refetchOnWindowFocus: refetchFailedOnFocus,
@@ -302,17 +303,26 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // set of addresses itself: one comment, message, ask or block arriving changes that set, and
   // without this the whole page would fall back to no names at all - every block row drawn with
   // empty text and every chip with its raw address - until the new read lands, and for as long
-  // as it keeps failing (`useLastAnswer`). Merging the two answers by `ref` would say no more
-  // than this does: the new read names every address the tree now holds, so the only names it
-  // lacks are the ones the previous answer carries, which is what is kept here. A name that
-  // moved is a stale word until a read under the new key succeeds, where a dropped one is the
-  // whole page's words at once; while that read stands failed - until window focus or an event
-  // reads it again (`EVENT_FRESH`) - the view says so (`IssueTreeView.namesFailed`).
+  // as it keeps failing. The answer that stands is the one the cache holds now for the set the
+  // read answered last, read by an observer that never fetches (`useLastAnswered`). Merging the
+  // two answers by `ref` would say no more than this does: the new read names every address the
+  // tree now holds, so the only names it lacks are the ones the previous answer carries, which is
+  // what is kept here. A name that moved is a stale word until a read under the new key
+  // succeeds, where a dropped one is the whole page's words at once; while that read stands
+  // failed - until window focus or an event reads it again (`EVENT_FRESH`) - the view says so
+  // (`IssueTreeView.namesFailed`).
+  const firstRefs = treeRead ? refs : [];
   const targets = useQuery({
-    ...referenceTargetsQuery(treeRead ? refs : []),
+    ...referenceTargetsQuery(firstRefs),
     ...EVENT_FRESH,
   });
-  const firstAnswer = useLastAnswer(targets.data);
+  const firstAnswered = useLastAnswered(firstRefs, targets.data !== undefined);
+  const firstHeld = useQuery({
+    ...referenceTargetsQuery(firstAnswered),
+    ...EVENT_FRESH,
+    enabled: false,
+  });
+  const firstAnswer = targets.data ?? firstHeld.data;
   const first = useMemo(
     () => (firstAnswer === undefined ? undefined : (firstAnswer.targets ?? [])),
     [firstAnswer]
@@ -338,12 +348,19 @@ export function useIssueTree(issue: IssueDetails): IssueTreeView {
   // (`extra`), and the first's for every other: an answer the second gave for an older set,
   // kept while its new set loads or after that read fails, may name an address the first read
   // has taken over since, whose name it holds from before. Where nothing is left for the second
-  // read to name, the answer it gave before is dropped: its query is disabled and never answers
-  // again, so that answer would have the page publish for good a name for an address no read
-  // asks for any more. A link beside the tree draws a published name in place of the one it
-  // reads of its own (`useKnownReferenceName`), and the feed refreshes a names read only for an
-  // address its key holds (`referenceNameTargets`), so no event would ever move that name.
-  const moreAnswer = useLastAnswer(extra.length === 0 ? NO_MORE_TARGETS : more.data);
+  // read to name, the answer it gave before is dropped, as the set it answered last becomes none,
+  // which holds no answer: its query is disabled and never answers again, so that answer would
+  // have the page publish for good a name for an address no read asks for any more. A link
+  // beside the tree draws a published name in place of the one it reads of its own
+  // (`useKnownReferenceName`), and the feed refreshes a names read only for an address its key
+  // holds (`referenceNameTargets`), so no event would ever move that name.
+  const moreAnswered = useLastAnswered(extra, extra.length === 0 || more.data !== undefined);
+  const moreHeld = useQuery({
+    ...referenceTargetsQuery(moreAnswered),
+    ...EVENT_FRESH,
+    enabled: false,
+  });
+  const moreAnswer = more.data ?? moreHeld.data;
   const named = useMemo(() => {
     const added = moreAnswer?.targets ?? [];
     if (first === undefined || added.length === 0) return first;

@@ -1,6 +1,7 @@
 import { isIdPrefix } from "@legion/contracts";
 
 import { askProject } from "../features/inbox/list-row";
+import { routeItem } from "../features/refs/block-reference";
 import { buildDispatchReference, parseNodeReference } from "../features/refs/routes";
 import { issueProject } from "../lib/issue-key";
 import {
@@ -1633,13 +1634,13 @@ const POST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  * (`dispatch://<PROJECT>/artifact/<slug>/comment/<id>`, with or without a version after the
  * slug), and as a block's (`…#b-<block id>`, pinned or not). That id is the post's whole id as it
  * is stored: the server looks the post up by that text, so an id spelled any other way, in upper
- * case or without its hyphens, names nothing. An id written short - 8 hex digits or more, and no
- * whole id (`isIdPrefix`) - names the post only in an address under what the post is on
- * (`eventAddresses`): the server resolves a short id among the items of the owner the address
- * names and no other, so the same prefix under another owner names one of that owner's items or
- * nothing. An address that writes no post's id - an issue, a document, a block of a document -
- * names no post. A dashboard URL, which the server reads too, is not read here: the issue page
- * names every read by its `dispatch://` address.
+ * case or without its hyphens, names nothing. An id written short - a hex digit, then seven or
+ * more hex digits or hyphens, read without case, and no whole id (`isIdPrefix`) - names the post
+ * only in an address under what the post is on (`eventAddresses`): the server resolves a short id
+ * among the items of the owner the address names and no other, so the same prefix under another
+ * owner names one of that owner's items or nothing. An address that writes no post's id - an
+ * issue, a document, a block of a document - names no post. A dashboard URL, which the server
+ * reads too, is not read here: the issue page names every read by its `dispatch://` address.
  */
 export function correctedPostAddresses(
   event: DispatchEvent
@@ -1652,12 +1653,7 @@ export function correctedPostAddresses(
   const owned = eventAddresses(event);
   return (address) => {
     const route = parseNodeReference(address);
-    const item =
-      route?.kind === "document"
-        ? route.item
-        : route !== undefined && "id" in route
-          ? { id: route.id, kind: route.kind }
-          : undefined;
+    const item = route === undefined ? undefined : routeItem(route);
     if (item?.kind !== kind) {
       return false;
     }

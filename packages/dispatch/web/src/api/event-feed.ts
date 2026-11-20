@@ -10,7 +10,7 @@ import { type PostDeletion, postDeletion } from "../features/refs/post-marks";
 
 import { askThreadsIssue, correctedPostAddresses, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
-import { inboxQuery } from "./queries";
+import { inboxQuery, type ReferenceTargetsAnswer } from "./queries";
 import { type RefreshTarget, refreshQueries, trackQueryFetches } from "./query-refresh";
 import type { AuthenticatedUser, DispatchEvent, EventType, ReferenceTarget } from "./types";
 
@@ -126,11 +126,6 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
   });
 }
 
-/** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
-interface ReferenceTargetsAnswer {
-  readonly targets: readonly ReferenceTarget[];
-}
-
 /**
  * Writes a post's correction into every names read the cache holds
  * (`["reference-targets", <addresses>]`), on each member that names the post or a block of it
@@ -181,13 +176,18 @@ export function markCorrectedPost(queryClient: QueryClient, event: DispatchEvent
     target.ambiguous !== true && !target.gone && names(target.ref);
   queryClient.setQueriesData<ReferenceTargetsAnswer>(
     { queryKey: ["reference-targets"] },
-    (answer) =>
-      answer?.targets.some(corrected) === true
-        ? {
-            ...answer,
-            targets: answer.targets.map((target) => (corrected(target) ? mark(target) : target)),
-          }
-        : undefined
+    (answer) => {
+      const first = answer?.targets.findIndex(corrected) ?? -1;
+      if (answer === undefined || first === -1) {
+        return undefined;
+      }
+      return {
+        ...answer,
+        targets: answer.targets.map((target, at) =>
+          at === first || (at > first && corrected(target)) ? mark(target) : target
+        ),
+      };
+    }
   );
 }
 

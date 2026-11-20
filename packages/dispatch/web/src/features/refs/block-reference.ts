@@ -35,13 +35,19 @@ export function itemOfBlock(
   if (!("block" in route) || route.block === undefined) {
     return undefined;
   }
-  if (route.kind === "document") {
-    return route.item;
-  }
-  // Every other route that names an item carries its id; a document's or a spec's does not.
-  return "id" in route && isBlockItemKind(route.kind)
-    ? { id: route.id, kind: route.kind }
-    : undefined;
+  return routeItem(route);
+}
+
+/** The ask, comment or issue message `route` names, itself or through a block of it; undefined
+ *  for every other route. */
+export function routeItem(
+  route: DispatchReferenceRoute
+): { kind: BlockItemKind; id: string } | undefined {
+  return route.kind === "document"
+    ? route.item
+    : "id" in route && isBlockItemKind(route.kind)
+      ? { id: route.id, kind: route.kind }
+      : undefined;
 }
 
 /** `route` naming its block `id`, pinned to `pin` when one is given, as the server's

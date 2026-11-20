@@ -3,13 +3,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
+import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { api } from "../../api/client";
+import { useEventFeed } from "../../api/event-feed";
 import { eventRefreshTargets } from "../../api/event-refresh";
+import { liveSocketFor } from "../../api/live-socket";
 import { referenceTargetsQuery } from "../../api/queries";
 import { MIN_REFETCH_INTERVAL_MS, refreshQueries } from "../../api/query-refresh";
 import type {
   Artifact,
   ArtifactBlock,
+  AuthenticatedUser,
   Comment,
   DispatchEvent,
   DisplayTree,
@@ -1360,7 +1364,7 @@ const NAMING_KEY = [[`dispatch://${KEY}`]];
 /** Names reads whose key names no address of the issue: another issue's, and a document of the
  *  issue's project, which is no address of the issue. */
 const NAMING_ELSEWHERE = [
-  ["dispatch://ACME-2", "dispatch://ACME-2/comment/comment-1"],
+  ["dispatch://ACME-2", "dispatch://ACME-2/comment/comment-9"],
   ["dispatch://CORE/artifact/roadmap-md"],
 ];
 
@@ -1420,7 +1424,7 @@ test("an edit on an issue refreshes the names reads whose key names the issue an
 test("an event on CORE-1 leaves a names read naming only CORE-12 alone", () => {
   const other = [
     "dispatch://CORE-12",
-    "dispatch://CORE-12/comment/comment-1",
+    "dispatch://CORE-12/comment/comment-9",
     "dispatch://CORE-12/spec#b-s1",
   ];
   const own = [`dispatch://${KEY}`, `dispatch://${KEY}/spec#b-s1`];
@@ -1613,5 +1617,203 @@ test("a cited comment's edit reads the names once more, and the page publishes i
   } finally {
     setSystemTime();
     for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// R2 and R3 of dispatch://INFRA-1523, and the architect's ruling of 2026-11-19 22:21Z: a names
+// read (`["reference-targets", <addresses>]`) that a post's edit or delete refreshes keeps the
+// answer it held while the refetch is out, and TanStack keeps that answer when the refetch fails.
+// So the feed writes the correction's own facts into the answer it keeps (`markCorrectedPost`):
+// after a failed refetch the kept answer and the page's published name give a deleted post's
+// deleted line, never its old words, and mark an edited post edited.
+
+/** A comment a turn cites by its whole id, as Dispatch stores one: a correction names the post by
+ *  that id. */
+const CITED_ID = "11111111-2222-4333-8444-555555555555";
+const CITED = `dispatch://${KEY}/comment/${CITED_ID}`;
+const OLD_WORDS = "Hold the deploy.";
+
+/** The page open on the issue: the workspace's event feed, the tree and what it publishes, signed
+ *  in as alice, with the comments read answering `stored` and the names read naming each comment
+ *  by its words until `deliver` makes every names read fail. A first load that fails puts back
+ *  what the page took before it throws. Returns what each step reads. */
+async function openCorrectedPage(stored: Comment[]) {
+  let failing = false;
+  let namesReads = 0;
+  const sockets = installFakeLiveSockets();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const stubs = stubTreeReads(
+    async (refs) => {
+      namesReads += 1;
+      if (failing) throw new Error("the names read failed");
+      return {
+        targets: namedTargets(refs).targets.map((target) => {
+          const turn = stored.find((one) => target.ref.endsWith(`/comment/${one.id}`));
+          return turn === undefined ? target : { ...target, kind: "comment", name: turn.body };
+        }),
+      };
+    },
+    { comments: stored }
+  );
+  let unmount: (() => void) | undefined;
+  // Puts back what the page took: the view, the feed's socket, the cache, the clock and the
+  // stubbed reads.
+  const restore = () => {
+    unmount?.();
+    liveSocketFor(client).close();
+    client.clear();
+    sockets.restore();
+    setSystemTime();
+    for (const stub of stubs) stub.mockRestore();
+  };
+  try {
+    const signedIn: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
+    client.setQueryData(["whoami"], signedIn);
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>
+        <ReferenceNamesProvider>{children}</ReferenceNamesProvider>
+      </QueryClientProvider>
+    );
+    const view = renderHook(
+      () => {
+        useEventFeed();
+        const { namesFailed } = useIssueTree(issue);
+        return {
+          edited: useKnownEditedReferences(),
+          name: useKnownReferenceName(CITED),
+          namesFailed,
+        };
+      },
+      { wrapper }
+    );
+    unmount = view.unmount;
+    await waitFor(() => expect(view.result.current.name).toBe(OLD_WORDS));
+    await waitFor(() => expect(client.isFetching()).toBe(0));
+    const socket = sockets.latest();
+    act(() => socket.open());
+    const { sub } = socket.subscribed("events");
+    act(() => socket.receive({ type: "events_start", sub, since: "0", replay_complete: true }));
+    return {
+      /** What the names reads the cache holds keep for the cited comment. */
+      cached: (): ReferenceTarget[] =>
+        client
+          .getQueryCache()
+          .findAll({ queryKey: ["reference-targets"] })
+          .flatMap(
+            (query) =>
+              (query.state.data as { targets: ReferenceTarget[] } | undefined)?.targets ?? []
+          )
+          .filter((target) => target.ref === CITED),
+      /** Delivers `event` on the feed with every names read failing from now on, and waits until
+       *  the names read it leads to has failed. */
+      deliver: async (event: DispatchEvent) => {
+        failing = true;
+        const before = namesReads;
+        // A second on, so the scheduler's interval between two fetches of one read
+        // (`MIN_REFETCH_INTERVAL_MS`) holds back none of the reads the event sends.
+        setSystemTime(Date.now() + MIN_REFETCH_INTERVAL_MS);
+        act(() => socket.receive({ type: "event", sub, id: String(event.id), event }));
+        await waitFor(() => expect(namesReads).toBeGreaterThan(before));
+        await waitFor(() => expect(client.isFetching()).toBe(0));
+        const states = client
+          .getQueryCache()
+          .findAll({ queryKey: ["reference-targets"] })
+          .map((query) => query.state.status);
+        expect(states, "the names read the event led to failed").toContain("error");
+      },
+      restore,
+      view,
+    };
+  } catch (error) {
+    restore();
+    throw error;
+  }
+}
+
+/** The delete of `cited` as Dispatch stores it, and as its event carries it: the comment's
+ *  routing fields and its marks, and no body. */
+function deletionOf(cited: Comment) {
+  const marks = { deleted_at: "2026-11-05T02:00:00Z", deleted_by: comment.author };
+  const { body: _body, ...routing } = cited;
+  return {
+    marks,
+    payload: { ...routing, ...marks, artifact_name: "" },
+    stored: { ...cited, ...marks, body: "" },
+  };
+}
+
+test("a deleted post's names read whose refetch fails names the deleted line, never the old words", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    const deleted = deletionOf(cited);
+    stored[1] = deleted.stored;
+    await page.deliver(feedEvent("comment.deleted", deleted.payload));
+    expect({
+      cached: page.cached(),
+      published: page.view.result.current.name,
+    }).toEqual({
+      cached: [{ ...deleted.marks, gone: false, kind: "comment", name: "", ref: CITED }],
+      published: "Deleted by alice",
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+test("an edited post's names read whose refetch fails marks the post edited", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    const editedAt = "2026-11-05T02:00:00Z";
+    const edited: Comment = {
+      ...cited,
+      body: "Hold the deploy until Friday.",
+      edited_at: editedAt,
+    };
+    stored[1] = edited;
+    await page.deliver(feedEvent("comment.edited", { ...edited, artifact_name: "" }));
+    // The words stay the kept answer's until a read succeeds; the mark is the edit's own.
+    expect({
+      cached: page.cached(),
+      edited: [...page.view.result.current.edited],
+    }).toEqual({
+      cached: [{ edited_at: editedAt, gone: false, kind: "comment", name: OLD_WORDS, ref: CITED }],
+      edited: [CITED],
+    });
+  } finally {
+    page.restore();
+  }
+});
+
+// The same where a new turn has changed the tree's set of addresses while every names read
+// fails: the page draws the answer the cache holds for the set it answered last
+// (`useLastAnswered`), and a delete that arrives only then writes its mark into that answer, so
+// the page names the deleted line there too, never the old words.
+test("a delete after a grown tree's names read failed names the deleted line, never the old words", async () => {
+  const cited: Comment = { ...comment, body: OLD_WORDS, id: CITED_ID };
+  const stored: Comment[] = [{ ...comment, body: `Read ${CITED} first.` }, cited];
+  const page = await openCorrectedPage(stored);
+  try {
+    // A new turn arrives: the tree holds one address more, and the names read of that set fails.
+    const second: Comment = { ...comment, body: "A second turn.", id: "comment-3" };
+    stored.push(second);
+    await page.deliver(feedEvent("comment.created", { ...second, artifact_name: "" }));
+    expect(page.view.result.current).toMatchObject({ name: OLD_WORDS, namesFailed: true });
+
+    const deleted = deletionOf(cited);
+    stored[1] = deleted.stored;
+    await page.deliver(feedEvent("comment.deleted", deleted.payload, { id: 3, seq: 3 }));
+    expect({
+      cached: page.cached(),
+      published: page.view.result.current.name,
+    }).toEqual({
+      cached: [{ ...deleted.marks, gone: false, kind: "comment", name: "", ref: CITED }],
+      published: "Deleted by alice",
+    });
+  } finally {
+    page.restore();
   }
 });
