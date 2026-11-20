@@ -54,10 +54,11 @@ import { noHookLimit, removeScratch } from "./step-end";
 
 const { marksDirectory } = marks;
 
-// The file's own directory of plants (`plantsRoot`), which each row empties, goes in a process of
-// its own at the end, within one child's limit (step-end.ts says why).
 afterAll(
   () => removeScratch([plantsRoot()], rowMs({ children: 1, reads: 0, bounds: [] })),
+  // The file's own directory of plants (`plantsRoot`), which each row empties, goes in a process of
+  // its own, which may take what the CI step leaves, or one child's limit, and the hook has no
+  // limit of Bun's: step-end.ts says why.
   noHookLimit
 );
 
