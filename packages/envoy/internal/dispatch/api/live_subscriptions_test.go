@@ -435,7 +435,7 @@ func TestASlowStreamWaitsAndNeverClosesTheSocket(t *testing.T) {
 	events := newFakeLiveKind(frames, 512)
 	rig := newLiveSocketRig(t, testServerOptions{liveKinds: map[string]liveKind{liveEventsView: events.kind(true)}},
 		func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(), asUser("alice"))
+	client := rig.open(t, smallReadDialer(t), asUser("alice"))
 	client.send(t, liveSubscribe("slow", eventsView(), ""))
 	running := events.next(t, "the slow events subscription")
 	socket := rig.sockets(t, 1)[0]
@@ -502,7 +502,7 @@ func TestSendWaitReturnsWhenItsSubscriptionStops(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			// The socket's end ends the subscription's context too, which derives from the socket's,
 			// and SendWait answers the socket's end whichever of the two it sees first.
-			socket := newLiveSocket(context.Background(), nil, nil)
+			socket := newLiveSocket(context.Background(), nil, nil, nil)
 			socket.stream = make(chan liveStreamFrame, 1)
 			stream := &liveSubscriptionStream{socket: socket}
 			ctx, cancel := context.WithCancel(socket.ctx)

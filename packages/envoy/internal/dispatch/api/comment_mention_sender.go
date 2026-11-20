@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"log/slog"
 	"sync"
@@ -245,7 +246,8 @@ type mentionSender struct {
 	// capacity is maxQueuedMentionSends; only a test lowers it.
 	capacity int
 	// claimRefresh is how often keepClaims writes the claims of the queued sends again:
-	// mentionClaimRefresh, which only a test shortens.
+	// mentionClaimRefresh, which only a test shortens. Its ticks run on the clock newMentionSender
+	// is given for them, not on clock below.
 	claimRefresh time.Duration
 	// heldWarnAfter is how long a send waits behind an earlier event before park logs its one WARN:
 	// model.MentionCopyHeldWarnAfter, which only a test shortens.
@@ -294,15 +296,21 @@ type mentionSender struct {
 
 // startMentionSender builds the server's mention sender (register), which sends on the server's
 // lifetime and drains for at most mentionDrainTimeout once it ends. An attempt no sender reaches
-// is the delivery sweep's (resumeOwedDeliveries).
+// is the delivery sweep's (resumeOwedDeliveries). Its claim refreshes run on the real clock.
 func (s *server) startMentionSender() *mentionSender {
-	return newMentionSender(s.lifetime, mentionClaimRefresh,
+	return newMentionSender(s.lifetime, mentionClaimRefresh, nil,
 		s.sendCommentMention, s.refreshMentionClaims, s.rereadMentionClaims, s.releaseMentionClaims)
 }
 
+// newMentionSender builds a mention sender whose keepClaims writes its claims again every
+// claimRefresh on refreshes: nil, as startMentionSender passes, is clock.Real(). The refreshes
+// have a clock of their own, apart from the server's (Deps.Clock) and the sender's parks (clock),
+// so a test that holds or moves either still counts every timer it armed there, and a test of the
+// refresh loop passes a fake it moves to each refresh (withMentionClaimRefresh).
 func newMentionSender(
 	lifetime context.Context,
 	claimRefresh time.Duration,
+	refreshes clock.Clock,
 	send func(context.Context, mentionSend) (mentionSend, bool),
 	refresh func(context.Context, []mentionClaim) ([]mentionClaim, error),
 	reread func(context.Context, []mentionClaim) ([]mentionClaim, error),
@@ -319,7 +327,7 @@ func newMentionSender(
 	}
 	m.after = func(delay time.Duration, f func()) { m.sendClock().AfterFunc(delay, f) }
 	m.done.Add(1)
-	go m.keepClaims()
+	go m.keepClaims(cmp.Or[clock.Clock](refreshes, clock.Real()))
 	return m
 }
 

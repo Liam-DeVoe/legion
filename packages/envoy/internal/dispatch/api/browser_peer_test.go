@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -81,15 +82,29 @@ func connectBrowserPeer(t *testing.T, documentService *docs.Service, artifactID 
 
 func (p *syncedPeer) connect(t *testing.T) {
 	t.Helper()
+	if err := p.tryConnect(t); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// tryConnect is connect for a caller that answers a refused upgrade itself: the dial's failure is
+// returned, and the peer is left unconnected.
+func (p *syncedPeer) tryConnect(t *testing.T) error {
+	t.Helper()
 	socketID := strconv.FormatInt(p.sockets.next.Add(1), 10)
 	headers := p.headers.Clone()
 	headers.Set(socketHeader, socketID)
-	conn := docstest.Dial(t, p.wsURL+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()), headers, p.artifactID, p.doc)
+	conn, err := docstest.DialContext(context.Background(), p.wsURL+"?schema_version="+strconv.Itoa(pmdoc.SchemaVersion()), headers, p.artifactID, p.doc)
+	if err != nil {
+		return err
+	}
+	t.Cleanup(conn.Close)
 	p.mu.Lock()
 	p.conn = conn
 	p.socketID = socketID
 	p.mu.Unlock()
 	p.barrier(t)
+	return nil
 }
 
 func (p *syncedPeer) connection() *docstest.Peer {

@@ -32,7 +32,7 @@ func newCmRun(v cmVariant, periods int, tracing bool) *cmRun {
 			return false
 		}
 	}
-	r.sender = newMentionSender(lifetime, 1000*time.Hour,
+	r.sender = newMentionSender(lifetime, 1000*time.Hour, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			reply := make(chan cmAnswer, 1)
 			if arrive(cmArrival{item: item, try: reply}) {

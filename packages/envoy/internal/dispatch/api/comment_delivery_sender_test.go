@@ -396,7 +396,9 @@ func allSent(attempts []model.CommentDelivery) bool {
 // releases them until this test does.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 	listener, state := newMentionListener(t)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// A clock that stands still: no window of the listener client's (envoy.CallWindow) ends a held
+	// send, so a create that waited for its sends would never answer.
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	release := state.hold("s1", "s2", "s3")
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions after the answer", "before")
@@ -1141,14 +1143,16 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 	})
 }
 
-// withMentionClaimRefresh gives served a mention sender that writes the claims of its queued sends
-// again every period, in place of the one register built, which uses mentionClaimRefresh (a third
-// of a claim lease). A test calls it before its first comment, while the sender it replaces holds
-// nothing, and the server's background wait waits the replacement out.
-func withMentionClaimRefresh(t *testing.T, served *server, period time.Duration) {
+// withMentionClaimRefresh gives served a mention sender whose claim refreshes (keepClaims) run on
+// refreshes, in place of the one register built, whose refreshes run on the real clock: a
+// refresh comes only once the test moves refreshes to it, mentionClaimRefresh after the one
+// before, and on clocktest.Held(), which no test moves, none comes. A test calls it before its
+// first comment, while the sender it replaces holds nothing, and the server's background wait
+// waits the replacement out.
+func withMentionClaimRefresh(t *testing.T, served *server, refreshes *clocktest.Fake) {
 	t.Helper()
 	served.mentions.wait()
-	served.mentions = newMentionSender(served.lifetime, period, served.sendCommentMention,
+	served.mentions = newMentionSender(served.lifetime, mentionClaimRefresh, refreshes, served.sendCommentMention,
 		served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 }
 
@@ -1208,17 +1212,25 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("the sender to write the claims of %d queued attempts again", len(commentIDs)), func() (string, bool) {
-		var refreshed int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from comment_deliveries
-			where comment_id = any($1::uuid[]) and target = $2 and attempt = 1 and state = 'pending'
-			  and claimed_at > now() - interval '5 seconds'
-		`, commentIDs, target).Scan(&refreshed); err != nil {
-			t.Fatalf("read the claims on the queued attempts: %v", err)
-		}
+		refreshed := refreshedClaims(t, database, commentIDs, target)
 		return fmt.Sprintf("%d of %d queued attempts are still under the claim they aged to",
 			len(commentIDs)-refreshed, len(commentIDs)), refreshed == len(commentIDs)
 	})
+}
+
+// refreshedClaims is how many of the comments' attempts for target are under a claim written in
+// the last 5 s.
+func refreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) int {
+	t.Helper()
+	var refreshed int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from comment_deliveries
+		where comment_id = any($1::uuid[]) and target = $2 and attempt = 1 and state = 'pending'
+		  and claimed_at > now() - interval '5 seconds'
+	`, commentIDs, target).Scan(&refreshed); err != nil {
+		t.Fatalf("read the claims on the queued attempts: %v", err)
+	}
+	return refreshed
 }
 
 // postMentionOfS1 posts a comment on the issue mentioning s1 and answers its id.
@@ -1236,7 +1248,10 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 // that runs while every attempt is old enough to be owed takes none of them and sends nothing
 // past the send in flight. The claims age to just short of a lease: one a lease old with no
 // refresh committed has lapsed, and the refresh no longer writes it (refreshMentionClaims), which
-// TestALostRefreshNeverRevivesALapsedClaim covers.
+// TestALostRefreshNeverRevivesALapsedClaim covers. The refresh loop runs on a fake of its own
+// (withMentionClaimRefresh), which the row moves to the refresh the loop armed,
+// mentionClaimRefresh after it began: no claim is written again before that move, and every one
+// is after it.
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
@@ -1244,7 +1259,9 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
-	withMentionClaimRefresh(t, served, 20*time.Millisecond)
+	refreshes := clocktest.New(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
+	began := refreshes.Now()
+	withMentionClaimRefresh(t, served, refreshes)
 	issue := createInteractionIssue(t, handler, "TEST", "A held lane", "before")
 	reached, release := state.stall("s1")
 	defer release()
@@ -1267,6 +1284,14 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	comments := append([]string{sending}, queued...)
 	ageAttempts(t, database, comments...)
 	ageQueuedClaims(t, database, served.mentions, model.DeliveryClaimLapse-5*time.Second)
+	refresh := refreshes.AwaitArmed(t, "the sender's claim refresh", 1)
+	if want := began.Add(mentionClaimRefresh); len(refresh) != 1 || !refresh[0].Equal(want) {
+		t.Fatalf("the sender's refresh loop armed %v, want its first refresh alone, at %v", refresh, want)
+	}
+	if refreshed := refreshedClaims(t, database, queued, "session:s1"); refreshed != 0 {
+		t.Fatalf("%d of the %d aged claims were written again before the refresh loop's clock reached its refresh", refreshed, len(queued))
+	}
+	refreshes.Set(refresh[0])
 	awaitRefreshedClaims(t, database, queued, "session:s1")
 	if err := served.resumeOwedDeliveries(context.Background()); err != nil {
 		t.Fatalf("resume the owed deliveries: %v", err)
@@ -1295,8 +1320,9 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
-	// A sender whose refresh cannot tick while the test runs: nothing writes its claims again.
-	withMentionClaimRefresh(t, served, time.Hour)
+	// A sender whose refresh never comes: its loop runs on a fake no one moves, so nothing writes
+	// its claims again.
+	withMentionClaimRefresh(t, served, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "A lapsed lane", "before")
 	reached, release := state.stall("s1")
 	defer release()
@@ -1351,7 +1377,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
 	// Only the refreshes this test makes itself run.
-	withMentionClaimRefresh(t, served, time.Hour)
+	withMentionClaimRefresh(t, served, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "A repeated comment", "before")
 	reached, release := state.stall("s1")
 	defer release()
@@ -1467,7 +1493,7 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 	started, finish := make(chan struct{}), make(chan struct{})
 	var released []mentionClaim
 	var releaseErr error
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, time.Hour, nil,
 		func(context.Context, mentionSend) (mentionSend, bool) {
 			close(started)
 			<-finish

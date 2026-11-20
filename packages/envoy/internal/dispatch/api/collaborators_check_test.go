@@ -2,7 +2,12 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"slices"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/collabtest"
 	"github.com/sjawhar/envoy/internal/oidc"
 )
@@ -376,3 +383,66 @@ func (c checkedStream) Replay(ctx context.Context, sessionID string) (agentstrea
 }
 
 func (c checkedStream) Watch(sessionID string) error { return c.next.Watch(sessionID) }
+
+// The control of the decorators above: a collaborator call the api rig's decorator wraps is
+// reported once its transaction has written, and not before. The call is identity's Login, as
+// the docs rig's own control makes it (docs.TestXidWindowCatchesACollaboratorCallInsideTheWindow),
+// through checkedIdentity on the traced pool's marked context: before the transaction's first
+// write the check stays silent, and after it the one call is reported, naming identity.Identity.Login.
+// A decorator that checked nothing would pass every route row of the xid window table unseen.
+func TestXidWindowCatchesACollaboratorCallInsideTheWindow(t *testing.T) {
+	tracer := storetest.NewXidTracer()
+	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
+	caught := &recordedFailures{TB: t}
+	people := checkedIdentity(caught, loginAs("alice@example.com"))
+	ctx := storetest.MarkXid(context.Background())
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	login := func(when string) {
+		t.Helper()
+		if _, err := people.Login(httptest.NewRequest(http.MethodGet, "/api/v1/issues", nil).WithContext(ctx)); err != nil {
+			t.Fatalf("%s: resolve the request's person: %v", when, err)
+		}
+	}
+	login("before the write")
+	if failures := caught.reported(); len(failures) != 0 {
+		t.Fatalf("a collaborator call before the transaction's first write was reported: %q", failures)
+	}
+	if _, err := tx.Exec(ctx, `insert into projects (key, name, default_assignee) values ('RIG', 'Rig', 'alice')`); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	login("after the write")
+	failures := caught.reported()
+	if len(failures) != 1 || !strings.HasPrefix(failures[0], "identity.Identity.Login was called while its caller holds a connection of the pool") {
+		t.Fatalf("a collaborator call after the transaction's first write was reported as %q, want one failure naming identity.Identity.Login", failures)
+	}
+}
+
+// loginAs is an identity that resolves every request to one person, reading nothing.
+type loginAs string
+
+func (l loginAs) Login(*http.Request) (string, error) { return string(l), nil }
+
+// recordedFailures is a testing.TB that records what a check reports through Errorf instead of
+// failing the test, so a control can assert that the check fires and on what. Everything else -
+// Cleanup, Helper, Fatalf - is the test's own.
+type recordedFailures struct {
+	testing.TB
+	mu       sync.Mutex
+	failures []string
+}
+
+func (r *recordedFailures) Errorf(format string, args ...any) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.failures = append(r.failures, fmt.Sprintf(format, args...))
+}
+
+func (r *recordedFailures) reported() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.failures)
+}

@@ -138,6 +138,10 @@ type testServerOptions struct {
 	// liveSocketAge is the server's Deps.LiveSocketAge: nil draws each socket's age as
 	// production does.
 	liveSocketAge func() time.Duration
+	// liveSocketClock is the server's Deps.LiveSocketClock, which a live socket's pong deadline and
+	// its wait for the page's close frame run on: nil is clock.Real(), and a test whose sockets
+	// must not end on a late pong passes clocktest.Held(), or a fake it moves to each deadline.
+	liveSocketClock clock.Clock
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -332,6 +336,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)

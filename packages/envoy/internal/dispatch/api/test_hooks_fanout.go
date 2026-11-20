@@ -340,7 +340,9 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 			fmt.Sprintf("no acknowledgement within %v from the test-hook process(es) holding lock key %s (each key is the backend pid of that process's listening connection)",
 				testHookTimeout, joinKeys(missing)))
 	}
-	poll := time.NewTicker(testHookPoll)
+	// The poll of the held locks runs on the server's clock, as the call's timeout does, so a test
+	// that drives a fake decides when each poll runs and sees the next armed once it has returned.
+	poll := newClockTicker(f.server.clock, testHookPoll)
 	defer poll.Stop()
 	for {
 		f.mu.Lock()
@@ -364,7 +366,8 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 		}
 		select {
 		case <-wait.arrived:
-		case <-poll.C:
+		case <-poll.C():
+			taken := f.server.clock.Now()
 			held, err := f.heldKeys(ctx)
 			if err != nil {
 				if ctx.Err() != nil {
@@ -373,6 +376,7 @@ func (f *testHookFanout) call(ctx context.Context, call testHookCall) (int, []by
 				return f.unanswered(ctx, err, "the processes holding a test-hook lock could not be read")
 			}
 			awaited = slices.DeleteFunc(awaited, func(key int32) bool { return !slices.Contains(held, key) })
+			poll.next(taken)
 		case <-ctx.Done():
 			return timedOut(missing)
 		}

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -133,9 +135,12 @@ func TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds(t *testing
 func TestTwoIssueReadsWithinTheTTLMakeOneListenerCall(t *testing.T) {
 	roster := &fakeRoster{}
 	roster.set("ses-sre", "sre")
-	handler, _, _ := cachedRouteStatusServer(t, roster)
-	// The deployment's own five seconds: the two reads below are a few milliseconds apart, well
-	// inside it (TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds reads it).
+	handler, _, served := cachedRouteStatusServer(t, roster)
+	// The answer serves an hour here, so the second read is inside it however slow the machine:
+	// the deployment's five seconds, which the database judges on its own clock, would ask again
+	// after a stall between the reads (TestTheDeploymentsRosterCacheKeepsAnAnswerAndASilenceFiveSeconds
+	// reads the deployment's own).
+	served.rosters.ttl = time.Hour
 	key := routedIssueKey(t, handler, "role:sre")
 	before := roster.lookups.Load()
 
@@ -322,18 +327,21 @@ func TestAnAnswersTTLCountsFromWhenItsCallWasSent(t *testing.T) {
 // The listener never answers, so the fetch ends at routeRosterTimeout, and the stored silence
 // must expire a window after that moment rather than a window after the send. This server runs
 // on the real clock: what the test reads is the gap between two moments the database stamped,
-// and the fetch's bound is the deployment's own two seconds.
+// and the fetch's bound is the deployment's own two seconds. The silence is an hour here, so the
+// second read is inside it however slow the machine; a window counted from the send still falls
+// the fetch's bound short of the one stored.
 func TestAFailuresWindowCountsFromWhenTheFailureIsKnown(t *testing.T) {
 	listenerURL, calls, _ := heldRosterListener(t)
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listenerURL})
+	served.rosters.silenceTTL = time.Hour
 	if readRoster(t, served, context.Background()).answered {
 		t.Fatal("a listener that hangs answered")
 	}
 	sent, expires := storedRoster(t, database)
-	if window := expires.Sub(sent); window < routeRosterTimeout+routeRosterSilenceTTL {
+	if window := expires.Sub(sent); window < routeRosterTimeout+served.rosters.silenceTTL {
 		t.Fatalf("the stored silence serves reads for %s from the call's send, want at least the fetch's bound (%s) "+
 			"and the silence window (%s): the window must count from when the failure was known",
-			window, routeRosterTimeout, routeRosterSilenceTTL)
+			window, routeRosterTimeout, served.rosters.silenceTTL)
 	}
 	// Inside that window no read asks the listener again.
 	if roster := readRoster(t, served, context.Background()); roster.answered {
@@ -366,25 +374,22 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 	served, calls, release, _ := heldRosterServer(t)
 	const readers = 16
 	results := make([]routeRoster, readers)
-	var started, done sync.WaitGroup
-	started.Add(readers)
+	var done sync.WaitGroup
 	done.Add(readers)
 	for index := range readers {
 		go func() {
 			defer done.Done()
-			started.Done()
 			results[index] = readRoster(t, served, context.Background())
 		}()
 	}
-	started.Wait()
 	awaitCalls(t, calls, 1)
-	// Every read is waiting on the one fetch: the cache holds a fetch in flight and no reader
-	// has answered, which a cache without a shared fetch could not show, since each read would
-	// have made a call of its own.
-	testwait.Eventually(t, "every read to be waiting on the one fetch", func() bool {
-		served.rosters.mu.Lock()
-		defer served.rosters.mu.Unlock()
-		return served.rosters.fetch != nil
+	// Every read is waiting on a fetch in flight before the listener answers, which a read that
+	// had not joined yet would not be: it would read the stored answer after the release and pass
+	// the count below with no fetch shared. A cache without a shared fetch has each read make a call
+	// of its own, which the count fails.
+	testwait.Until(t, fmt.Sprintf("all %d reads to wait on a fetch in flight", readers), func() (int, bool) {
+		waits := rosterWaits()
+		return waits, waits == readers
 	})
 	release()
 	done.Wait()
@@ -403,17 +408,16 @@ func TestConcurrentReadsOnAColdCacheMakeOneListenerCall(t *testing.T) {
 // readers, and its answer is the one the cache keeps.
 func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	served, calls, release, _ := heldRosterServer(t)
+	// The answer serves an hour here, so the last read below takes the fetch's answer however long
+	// after the fetch's send it comes: the deployment's five seconds, which the database judges,
+	// would ask the listener again after a stall.
+	served.rosters.ttl = time.Hour
 	read := func(ctx context.Context) <-chan routeRoster {
 		answer := make(chan routeRoster, 1)
-		started := make(chan struct{})
-		// A read whose request ends may end before its read of the stored answer does, which
-		// reads unknown as well.
 		go func() {
-			close(started)
 			roster, _ := served.readRouteRoster(ctx)
 			answer <- roster
 		}()
-		testwait.Receive(t, "the read to start", started)
 		return answer
 	}
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
@@ -422,6 +426,12 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	joinerCtx, cancelJoiner := context.WithCancel(context.Background())
 	joiner := read(joinerCtx)
 	patient := read(context.Background())
+	// All three wait on the one fetch before any request ends, so the joiner's request ends while
+	// it waits on a fetch it joined, not before its read of the stored answer.
+	testwait.Until(t, "the three reads to wait on the fetch in flight", func() (int, bool) {
+		waits := rosterWaits()
+		return waits, waits == 3
+	})
 
 	cancelLeader()
 	cancelJoiner()
@@ -448,4 +458,22 @@ func TestAReadWhoseRequestEndsWhileItWaitsReturnsPromptly(t *testing.T) {
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("four reads made %d listener calls, want 1", got)
 	}
+}
+
+// rosterWaits counts the reads parked in readRouteRoster's one wait, its select on a fetch in
+// flight and on the read's own request: the goroutines whose stack stands in that select. No state
+// of the cache counts the reads waiting on a fetch, and their stacks do, as serveStacks counts the
+// mention sender's lanes.
+func rosterWaits() int {
+	buffer := make([]byte, 1<<22)
+	stacks := string(buffer[:runtime.Stack(buffer, true)])
+	waits := 0
+	for _, goroutine := range strings.Split(stacks, "\n\n") {
+		header, frames, _ := strings.Cut(goroutine, "\n")
+		first, _, _ := strings.Cut(frames, "\n")
+		if strings.Contains(header, "[select") && strings.Contains(first, "api.(*server).readRouteRoster(") {
+			waits++
+		}
+	}
+	return waits
 }

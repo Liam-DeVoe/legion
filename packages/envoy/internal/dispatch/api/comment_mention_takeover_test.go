@@ -639,7 +639,7 @@ func TestASendTakenFromAHeldLaneStartsItsTakeOverWindowAtItsDelivery(t *testing.
 				envoyURL: listener.URL, outboxPublishes: true, clock: clock,
 			})
 			served.mentions.wait()
-			sender := newMentionSender(served.lifetime, time.Hour, served.sendCommentMention,
+			sender := newMentionSender(served.lifetime, time.Hour, nil, served.sendCommentMention,
 				served.refreshMentionClaims, served.rereadMentionClaims, served.releaseMentionClaims)
 			timers := make(chan func(), 4)
 			sender.mu.Lock()

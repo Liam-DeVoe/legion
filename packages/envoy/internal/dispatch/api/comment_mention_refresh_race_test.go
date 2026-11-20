@@ -32,7 +32,7 @@ func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 		// window of the listener client's may settle it behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
-	withMentionClaimRefresh(t, served, time.Hour)
+	withMentionClaimRefresh(t, served, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "A refresh racing a repeat", "before")
 	reached, release := state.stall("s1")
 	defer release()
@@ -121,7 +121,7 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			var gated atomic.Bool
 			refreshEntered, refreshGo := make(chan struct{}), make(chan struct{})
 			tryEntered, tryGo := make(chan struct{}), make(chan struct{})
-			sender := newMentionSender(served.lifetime, time.Hour,
+			sender := newMentionSender(served.lifetime, time.Hour, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					if item.heldFor != "" && gated.Load() {
 						tryEntered <- struct{}{}
@@ -306,7 +306,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 			var unsureDuring bool
 			gate := newParkGate(t)
 			var sender *mentionSender
-			sender = newMentionSender(served.lifetime, time.Hour,
+			sender = newMentionSender(served.lifetime, time.Hour, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					again, waits := served.sendCommentMention(ctx, item)
 					if (tc.during || tc.between) && item.heldFor == "" && refreshed.CompareAndSwap(false, true) {
@@ -427,7 +427,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			// tried is the claim each try of the parked send carried, in order.
 			var mu sync.Mutex
 			var tried []time.Time
-			sender := newMentionSender(served.lifetime, time.Hour,
+			sender := newMentionSender(served.lifetime, time.Hour, nil,
 				func(ctx context.Context, item mentionSend) (mentionSend, bool) {
 					if item.heldFor != "" {
 						mu.Lock()
@@ -568,7 +568,7 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 			var mu sync.Mutex
 			var tried []time.Time
 			triedHandOff := make(chan struct{}, 1)
-			sender = newMentionSender(lifetime, time.Hour,
+			sender = newMentionSender(lifetime, time.Hour, nil,
 				func(_ context.Context, try mentionSend) (mentionSend, bool) {
 					mu.Lock()
 					tried = append(tried, try.claimed)

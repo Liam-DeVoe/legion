@@ -300,7 +300,7 @@ func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
 	// Only the refreshes this test makes itself run.
-	withMentionClaimRefresh(t, served, time.Hour)
+	withMentionClaimRefresh(t, served, clocktest.Held())
 	published := &recordingOutboxPublisher{}
 	runOutboxBeside(t, deps, published)
 	issue := createInteractionIssue(t, handler, "TEST", "A repeated comment a Retry overtook", "before")

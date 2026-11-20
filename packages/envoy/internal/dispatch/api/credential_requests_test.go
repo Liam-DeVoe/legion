@@ -16,7 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -55,6 +58,20 @@ func newCredentialTestHandler(t *testing.T, brokerURL string) http.Handler {
 // from tokenFile, for a test of a token file Dispatch cannot read.
 func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) http.Handler {
 	t.Helper()
+	return credentialTestHandler(t, brokerURL, tokenFile, nil)
+}
+
+// newCredentialTestHandlerOn is newCredentialTestHandler whose client judges how old its read of
+// the broker's metadata is on grants (agentsecrets.WithClock), a fake the test moves.
+func newCredentialTestHandlerOn(t *testing.T, brokerURL string, grants clock.Clock) http.Handler {
+	t.Helper()
+	return credentialTestHandler(t, brokerURL, accountTokenFile(t, credentialTestAccountToken), grants)
+}
+
+// credentialTestHandler builds the handlers the constructors above answer: the client reads its
+// bearer from tokenFile and runs on grants, the real clock where that is nil.
+func credentialTestHandler(t *testing.T, brokerURL, tokenFile string, grants clock.Clock) http.Handler {
+	t.Helper()
 	database := storetest.Open(t)
 	documentService := docs.New(docs.Deps{
 		Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond,
@@ -76,6 +93,9 @@ func newCredentialTestHandlerReading(t *testing.T, brokerURL, tokenFile string) 
 	deps, err := NewDeps(depsInput)
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
+	}
+	if grants != nil && deps.AgentSecrets != nil {
+		agentsecrets.WithClock(grants)(deps.AgentSecrets)
 	}
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
@@ -510,7 +530,10 @@ func TestCredentialCapabilitiesFollowTheBrokersMetadata(t *testing.T) {
 	t.Run("the broker serves the device grant", func(t *testing.T) {
 		rig := newFakeBrokerRig(t)
 		rig.bodyByRoute[metadata] = `{"grant_types_supported":["refresh_token","urn:ietf:params:oauth:grant-type:device_code"]}`
-		handler := newCredentialTestHandler(t, rig.server.URL)
+		// The read's window runs on a fake the case never moves, so the second ask is inside it
+		// however slow the machine: on the wall clock, five seconds between the two asks would read
+		// the broker again.
+		handler := newCredentialTestHandlerOn(t, rig.server.URL, clocktest.New(time.Now()))
 		if !ask(t, handler) {
 			t.Fatalf("machine_code_page = false, want true: the metadata names the device code")
 		}

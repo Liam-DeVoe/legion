@@ -263,22 +263,36 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 	`, length); err != nil {
 		t.Fatalf("insert a %d-issue chain: %v", length, err)
 	}
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
+	walk := `
+		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
+		` + refs.IssueRepoTerms + `
+		select i.key, ` + refs.IssueRepoColumns + ` from issues i ` + refs.IssueRepoJoin + ` where i.project_key = 'DEEP'`
+	// The walk's cost is its steps: the rows repo_chain's recursive union makes. A walk capped at
+	// parentDepthCap makes, for the issue n links below the root, one step for itself and one per
+	// link up to the cap; one that walked every chain to its root would make a step per link of
+	// each, 2,001,000 here rather than the 65,472 counted below.
+	plan, text := analyzePlan(t, database, walk)
+	var steps float64
+	walked := false
+	for _, node := range plan.everyNode() {
+		if node.NodeType == "Recursive Union" {
+			steps, walked = node.Rows*node.Loops, true
+		}
 	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `set local statement_timeout = '10s'`); err != nil {
-		t.Fatalf("set statement_timeout: %v", err)
+	want := 0
+	for n := 1; n <= length; n++ {
+		want += min(n, parentDepthCap+1)
+	}
+	if !walked || steps != float64(want) {
+		t.Fatalf("the walk of a %d-issue chain took %.0f steps, want %d, one per link within %d of each issue:\n%s",
+			length, steps, want, parentDepthCap, text)
 	}
 	started := time.Now()
-	rows, err := tx.Query(ctx, `
-		with recursive subjects as (select i.key from issues i where i.project_key = 'DEEP'),
-		`+refs.IssueRepoTerms+`
-		select i.key, `+refs.IssueRepoColumns+` from issues i `+refs.IssueRepoJoin+` where i.project_key = 'DEEP'`)
+	rows, err := database.Pool.Query(ctx, walk)
 	if err != nil {
 		t.Fatalf("walk %d issues: %v", length, err)
 	}
+	defer rows.Close()
 	resolved, refused := 0, 0
 	for rows.Next() {
 		var key string
@@ -298,7 +312,7 @@ func TestIssueRepoWalkStopsAtTheDepthCap(t *testing.T) {
 		}
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("walk %d issues in a %d-link chain within 10s: %v", length, length-1, err)
+		t.Fatalf("walk %d issues in a %d-link chain: %v", length, length-1, err)
 	}
 	t.Logf("walked %d issues of a %d-link chain in %s", length, length-1, time.Since(started))
 	if resolved != parentDepthCap+1 || refused != length-parentDepthCap-1 {

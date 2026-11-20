@@ -121,25 +121,55 @@ type hookCallWait struct {
 
 // A process that dies while a call waits for it takes its lock with its connection, and the call
 // stops waiting for it: it answers once the processes still holding the lock have acknowledged,
-// not at the timeout, which the server's clock, a fake the test never moves, never reaches. Until
-// then it does not answer, since that process was alive when the call was sent; the quiet span
-// below starts once the call waits on that process alone, so it is the span a call that passed
-// over a live process would answer in.
+// not at the timeout, which the server's clock, a fake, never reaches here. Until then it does not
+// answer, since that process was alive when the call was sent. The call polls the held locks on
+// that clock (testHookPoll), and the row moves it to each poll: the call arms its next poll only
+// once a poll has returned and the call has gone round again owing an acknowledgement, so the
+// third poll armed shows the first two found the silent process's lock held and left the call
+// waiting on it. A call that passed over a live process answers from the first poll instead,
+// which the wait for each arm fails on at once.
 func TestATestHookStopsWaitingForAProcessWhoseLockIsGone(t *testing.T) {
 	fake := clocktest.New(time.Now())
+	started := fake.Now()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true, clock: fake})
-	conn, _ := holdTestHookLock(t, database)
+	conn, silent := holdTestHookLock(t, database)
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		answered <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/live/_test/disconnect", nil, "alice")
 	}()
-	awaitHookWaitingOnOthers(t, fake, served, fake.Now().Add(testHookTimeout), answered)
-	testwait.Quiet(t, "the hook's answer while the silent process lives", answered, 500*time.Millisecond,
-		"a call that stopped waiting for a live process would answer from its poll of the held locks, which runs on "+
-			"a real ticker (testHookPoll) and reports no poll that found the lock still held, the database is real "+
-			"I/O (no synctest), and no later action of the test is ordered after that poll")
+	awaitHookWaitingOnOthers(t, fake, served, started.Add(testHookTimeout), answered)
+	polled := func(at time.Time) {
+		t.Helper()
+		testwait.Until(t, "the call's poll of the held locks armed for "+at.Format(time.RFC3339Nano), func() ([]time.Time, bool) {
+			select {
+			case response := <-answered:
+				t.Fatalf("the hook answered %d while the silent process still held its lock: %s",
+					response.Code, response.Body.String())
+			default:
+			}
+			armed := fake.Armed()
+			return armed, slices.ContainsFunc(armed, at.Equal)
+		})
+	}
+	poll := started.Add(testHookPoll)
+	for range 2 {
+		polled(poll)
+		fake.Set(poll)
+		poll = poll.Add(testHookPoll)
+	}
+	polled(poll)
 	_ = conn.Close(context.Background())
+	// The lock goes once the server has ended the closed connection's backend, which the next poll
+	// must find gone.
+	testwait.Until(t, "the silent process's lock to go with its connection", func() ([]int32, bool) {
+		held, err := served.testHooks.heldKeys(context.Background())
+		if err != nil {
+			t.Fatalf("read the held test-hook locks: %v", err)
+		}
+		return held, !slices.Contains(held, silent)
+	})
+	fake.Set(poll)
 	response := testwait.Receive(t, "the hook's answer once the silent process's lock went", answered)
 	if response.Code != http.StatusOK {
 		t.Fatalf("disconnect hook after the silent process died: status=%d body=%s, want 200", response.Code, response.Body.String())

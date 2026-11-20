@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -140,15 +141,20 @@ func TestARefusedRequestIsLoggedWithNoCaller(t *testing.T) {
 
 // A socket that outlives its request resolves its caller again on every heartbeat, and that
 // resolution names no one on the line: a shared-token bearer's re-resolution would otherwise
-// replace the session the socket was admitted as with a nameless shared token.
+// replace the session the socket was admitted as with a nameless shared token. The heartbeats are
+// on the server's clock, a fake the handler moves through ten of them (driveHeartbeats), each
+// armed only once the check before it has returned.
 func TestASocketsHeartbeatLeavesTheSessionItWasAdmittedAs(t *testing.T) {
-	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: 10 * time.Millisecond})
+	const heartbeat = 10 * time.Millisecond
+	fake := clocktest.New(time.Now())
+	opened := fake.Now()
+	_, _, deps := newTestServer(t, testServerOptions{streamHeartbeat: heartbeat, clock: fake})
 	logged := captureLog(t)
 	served := directServer(deps)
 	socket := accesslog.Handler("/ws/live", served.whileCallerResolves(served.callerStillResolves, func(w http.ResponseWriter, r *http.Request) {
 		accesslog.Note(r.Context(), accesslog.KindSharedToken, "")
 		accesslog.Note(r.Context(), accesslog.KindSession, "session-0123456789abcdef")
-		time.Sleep(100 * time.Millisecond) // ten heartbeats
+		driveHeartbeats(t, fake, opened.Add(heartbeat), 10, heartbeat)
 	}))
 	request := httptest.NewRequest(http.MethodGet, "/ws/live", nil)
 	request.Header.Set("Authorization", "Bearer agent-token")

@@ -463,7 +463,10 @@ func TestConcurrentAgentsListsAndIssueReadsLeaveTheSharedListAsTheListenerSentIt
 func TestAnAgentsListWhoseRequestEndsWhileItWaitsOnTheFetchAnswers503(t *testing.T) {
 	database := storetest.Open(t)
 	mux := http.NewServeMux()
-	_, calls, release := heldRosterMux(t, mux, Deps{Store: database, Identity: headerIdentity(database)})
+	// The stored answer serves an hour, a wait this row does not read, so the list after the release
+	// reads the fetch's answer however long the machine takes to make it: the deployment's five
+	// seconds, judged on the database's clock, would ask the listener again after a stall.
+	_, calls, release := heldRosterMux(t, mux, Deps{Store: database, Identity: headerIdentity(database), RouteRosterTTL: time.Hour})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

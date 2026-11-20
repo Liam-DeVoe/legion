@@ -46,7 +46,7 @@ func newParkRig(t *testing.T, capacity int) *parkRig {
 	gate := make(chan struct{})
 	rig := &parkRig{written: map[mentionKey]int{}, clock: clocktest.New(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)),
 		release: sync.OnceFunc(func() { close(gate) })}
-	rig.sender = newMentionSender(lifetime, 100*time.Millisecond,
+	rig.sender = newMentionSender(lifetime, 100*time.Millisecond, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.mention.Target == "session:parked" && !rig.open.Load() {
 				rig.mu.Lock()

@@ -67,6 +67,9 @@ func newDocumentSocketTokenRig(t *testing.T, heartbeat time.Duration, fake *cloc
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	// A live socket's read deadline runs on a fake no one moves, so no pong the runner holds back
+	// ends one: the heartbeats the rows move through are the server's clock's alone.
+	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
 	rig.sockets = &servedSockets{finished: make(map[string]chan struct{})}
@@ -245,8 +248,8 @@ func TestADocumentSocketOutlivesItsHeartbeatsWhileItsCookieResolves(t *testing.T
 // heartbeats while the broker holds the token live, and closes with 1008 at the first heartbeat
 // once the broker stops holding it live and the answer it remembered has run out,
 // AffirmativeCacheTTL after it was remembered: the heartbeats and the verifier's cache are on one
-// fake clock the row moves. The heartbeat is a second, so the client's pong, which runs on the
-// real clock, meets the pong deadline on a loaded runner.
+// fake clock the row moves. The socket's read deadline runs on a fake no one moves
+// (newDocumentSocketTokenRig), so no pong the runner holds back ends the socket first.
 func TestALiveSocketOpenedByABrokerTokenResolvesThatTokenOnEveryHeartbeat(t *testing.T) {
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())

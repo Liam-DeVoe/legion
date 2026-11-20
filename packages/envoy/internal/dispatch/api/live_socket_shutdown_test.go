@@ -7,6 +7,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -23,10 +24,11 @@ import (
 // detector reports the wait against the first socket's count. Pages open sockets throughout the
 // shutdown, and each opens one more once the wait has returned, which it keeps open without
 // answering its close: a server that counted that socket would hold it in its set for
-// liveSocketCloseWait more, waiting for the answer, so the set read before the page lets it go
-// finds it there.
+// liveSocketCloseWait more, waiting for the answer. That wait runs on the sockets' read-deadline
+// clock, a fake no one moves here (liveSocketClock), so such a socket stays in the set until its
+// page lets it go, and the set read before then finds it there however late it comes.
 func TestSocketsOpeningAsDispatchShutsDownCloseWithServiceRestart(t *testing.T) {
-	rig := newLiveSocketRig(t, testServerOptions{}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{liveSocketClock: clocktest.Held()}, nil)
 
 	const pages = 16
 	serving := make([]*socketClient, pages)

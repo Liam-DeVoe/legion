@@ -24,11 +24,25 @@ const suggestionOutcomePage = 1000
 // next one's, whatever woke it (duty.WokenLoop.MinGap), and how long a pass that failed waits
 // before trying again; settle is how old an event or a newly recorded suggestion must be before a
 // pass judges by it (judgeSuggestionPage); page is suggestionOutcomePage. A test runs the loop
-// faster, or with a smaller page.
+// faster, or with a smaller page. settledOn is the clock a pass judges that age against: nil, as
+// the server's schedule leaves it, is the database's own now(), so a deployment judges every
+// stamp against the clock that wrote it; a test sets a fake it moves, and the pass hands its
+// reading to the statements in place of now() (judgedAt).
 type suggestionSchedule struct {
-	minGap time.Duration
-	settle time.Duration
-	page   int
+	minGap    time.Duration
+	settle    time.Duration
+	page      int
+	settledOn clock.Clock
+}
+
+// judgedAt is the moment a pass judges settle against: settledOn's reading, or nil, the
+// database's now().
+func (s suggestionSchedule) judgedAt() *time.Time {
+	if s.settledOn == nil {
+		return nil
+	}
+	at := s.settledOn.Now()
+	return &at
 }
 
 // suggestionOutcomeSchedule is the server's pace: a minute between passes, the period of the timer
@@ -61,9 +75,10 @@ var suggestionOutcomeSchedule = suggestionSchedule{minGap: time.Minute, settle: 
 const everySuggestion = `select * from write_suggestions`
 
 // touchedSuggestions is a later pass's candidates: the suggestions recorded since the last pass
-// ($1, ids as text), and the pending ones at least $4 seconds old (settle) whose source issue or
-// suggested issue is an issue of a page's events ($2) or whose source document is a document of a
-// page's events ($3, ids as text). Those are the only suggestions a page can resolve: each rule
+// ($1, ids as text), and the pending ones at least $4 seconds old (settle) at the moment the pass
+// judges ($5, the database's now() where null) whose source issue or suggested issue is an issue
+// of a page's events ($2) or whose source document is a document of a page's events ($3, ids as
+// text). Those are the only suggestions a page can resolve: each rule
 // needs an event on the source or suggested issue, or on the source document - a citation lands an
 // event there too, from the write that indexed the citing body - after the suggestion was
 // recorded, and a suggestion recorded since the last pass is judged against all its events, not
@@ -85,15 +100,15 @@ select * from write_suggestions where id = any($1::text[]::uuid[])
 union
 select * from write_suggestions
  where outcome = 'ignored' and source_issue_key = any($2::text[])
-   and created_at <= now() - $4::float8 * interval '1 second'
+   and created_at <= coalesce($5::timestamptz, now()) - $4::float8 * interval '1 second'
 union
 select * from write_suggestions
  where outcome = 'ignored' and suggested_issue_key is not null and suggested_issue_key = any($2::text[])
-   and created_at <= now() - $4::float8 * interval '1 second'
+   and created_at <= coalesce($5::timestamptz, now()) - $4::float8 * interval '1 second'
 union
 select * from write_suggestions
  where outcome = 'ignored' and source_artifact_id is not null and source_artifact_id = any($3::text[]::uuid[])
-   and created_at <= now() - $4::float8 * interval '1 second'`
+   and created_at <= coalesce($5::timestamptz, now()) - $4::float8 * interval '1 second'`
 
 // suggestionActedOnByCitation marks 'acted_on' every pending suggestion whose suggested item was
 // cited — a `dispatch://` mention landing a new reference-graph edge (packages/envoy/internal/
@@ -232,6 +247,7 @@ select coalesce((select max(id) from events where id <= $2::bigint), 0),
 // ids of those at least $3 seconds old; and the seconds until the first thing it held back for
 // being younger than that is old enough, null when it held back nothing. Events stop at the first
 // young one, rather than skipping it, so the cursor never moves past an event no pass has read.
+// Every age is read at $5, the moment the pass judges, which is the database's now() where null.
 const readSuggestionPage = `
 with page as (
   select id, issue_key, artifact_id, created_at from events
@@ -239,7 +255,7 @@ with page as (
 ),
 young as (
   select id, created_at from page
-   where created_at > now() - $3::float8 * interval '1 second'
+   where created_at > coalesce($5::timestamptz, now()) - $3::float8 * interval '1 second'
    order by id limit 1
 ),
 settled as (
@@ -252,11 +268,11 @@ select (select max(id) from settled),
        (select count(*) from settled),
        array(select distinct issue_key from settled where issue_key is not null),
        array(select distinct artifact_id::text from settled where artifact_id is not null),
-       array(select id::text from fresh where created_at <= now() - $3::float8 * interval '1 second'),
+       array(select id::text from fresh where created_at <= coalesce($5::timestamptz, now()) - $3::float8 * interval '1 second'),
        extract(epoch from least(
          (select created_at from young),
-         (select min(created_at) from fresh where created_at > now() - $3::float8 * interval '1 second')
-       ) + $3::float8 * interval '1 second' - now())::float8`
+         (select min(created_at) from fresh where created_at > coalesce($5::timestamptz, now()) - $3::float8 * interval '1 second')
+       ) + $3::float8 * interval '1 second' - coalesce($5::timestamptz, now()))::float8`
 
 // advanceSuggestionCursor marks swept the suggestions a pass judged ($1, ids as text) and moves
 // the cursor to the last event id it read ($2), leaving it where it was when the pass read none.
@@ -268,11 +284,11 @@ update suggestion_outcome_cursor set event_id = coalesce($2::bigint, event_id)`
 
 // sweepSuggestionOutcomePages judges page after page up to safe, each in a transaction of its own
 // (judgeSuggestionPage), until one comes back short, and returns how long until what it held back
-// for being younger than settle is old enough to judge, by the database's clock, or zero when it
-// held back nothing.
-func sweepSuggestionOutcomePages(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration) (settlesIn time.Duration, err error) {
+// for being younger than settle is old enough to judge, at judgedAt (the database's clock where
+// nil), or zero when it held back nothing.
+func sweepSuggestionOutcomePages(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration, judgedAt *time.Time) (settlesIn time.Duration, err error) {
 	for {
-		full, settlesIn, err := judgeSuggestionPageInTransaction(ctx, pool, safe, page, settle)
+		full, settlesIn, err := judgeSuggestionPageInTransaction(ctx, pool, safe, page, settle, judgedAt)
 		switch {
 		case err != nil:
 			return 0, err
@@ -285,13 +301,13 @@ func sweepSuggestionOutcomePages(ctx context.Context, pool *store.Pool, safe int
 
 // judgeSuggestionPageInTransaction is judgeSuggestionPage in a transaction of its own, committed
 // when the page is judged.
-func judgeSuggestionPageInTransaction(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration) (full bool, settlesIn time.Duration, err error) {
+func judgeSuggestionPageInTransaction(ctx context.Context, pool *store.Pool, safe int64, page int, settle time.Duration, judgedAt *time.Time) (full bool, settlesIn time.Duration, err error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return false, 0, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	full, settlesIn, err = judgeSuggestionPage(ctx, tx, safe, page, settle)
+	full, settlesIn, err = judgeSuggestionPage(ctx, tx, safe, page, settle, judgedAt)
 	if err != nil {
 		return false, 0, err
 	}
@@ -332,7 +348,7 @@ func judgeSuggestionPageInTransaction(ctx context.Context, pool *store.Pool, saf
 // horizon has reached it: its own commit notifies dispatch_events, which wakes the loop, and
 // while the horizon stands below it the pass asks for one of its own (suggestionOutcomePass,
 // RunSuggestionOutcomeSweep).
-func judgeSuggestionPage(ctx context.Context, tx pgx.Tx, safe int64, page int, settle time.Duration) (full bool, settlesIn time.Duration, err error) {
+func judgeSuggestionPage(ctx context.Context, tx pgx.Tx, safe int64, page int, settle time.Duration, judgedAt *time.Time) (full bool, settlesIn time.Duration, err error) {
 	var cursor *int64
 	if err := tx.QueryRow(ctx, `select event_id from suggestion_outcome_cursor for update`).Scan(&cursor); err != nil {
 		return false, 0, fmt.Errorf("read the suggestion outcome cursor: %w", err)
@@ -357,7 +373,7 @@ func judgeSuggestionPage(ctx context.Context, tx pgx.Tx, safe int64, page int, s
 		issues, documents, fresh []string
 		settlesInSeconds         *float64
 	)
-	if err := tx.QueryRow(ctx, readSuggestionPage, *cursor, page, settle.Seconds(), safe).Scan(
+	if err := tx.QueryRow(ctx, readSuggestionPage, *cursor, page, settle.Seconds(), safe, judgedAt).Scan(
 		&last, &events, &issues, &documents, &fresh, &settlesInSeconds,
 	); err != nil {
 		return false, 0, fmt.Errorf("read the events and suggestions after the outcome cursor: %w", err)
@@ -369,7 +385,7 @@ func judgeSuggestionPage(ctx context.Context, tx pgx.Tx, safe int64, page int, s
 	if events == 0 && len(fresh) == 0 {
 		return false, settlesIn, nil
 	}
-	if err := runSuggestionRules(ctx, tx, touchedSuggestionRules, fresh, issues, documents, settle.Seconds()); err != nil {
+	if err := runSuggestionRules(ctx, tx, touchedSuggestionRules, fresh, issues, documents, settle.Seconds(), judgedAt); err != nil {
 		return false, 0, err
 	}
 	if _, err := tx.Exec(ctx, advanceSuggestionCursor, fresh, last); err != nil {
@@ -422,7 +438,7 @@ func suggestionOutcomePass(ctx context.Context, clk clock.Clock, pool *store.Poo
 			return time.Time{}, fmt.Errorf("await the event log's safe horizon: %w", err)
 		}
 	}
-	settlesIn, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle)
+	settlesIn, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle, schedule.judgedAt())
 	if err != nil {
 		return time.Time{}, err
 	}

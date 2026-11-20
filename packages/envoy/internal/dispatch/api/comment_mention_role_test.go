@@ -94,7 +94,7 @@ func TestAMentionHeldOnOneIssueHoldsNoMentionOfAnotherIssueToTheSameSession(t *t
 	var mu sync.Mutex
 	var sent []string
 	open := false
-	sender := newMentionSender(lifetime, 100*time.Millisecond,
+	sender := newMentionSender(lifetime, 100*time.Millisecond, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			mu.Lock()
 			defer mu.Unlock()
@@ -228,7 +228,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 	var mu sync.Mutex
 	var sent []string
 	var gaveUp []mentionKey
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, time.Hour, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) {
 			if item.comment.ID == "first" {
 				once.Do(func() { close(started) })
@@ -291,7 +291,7 @@ func TestASendInFlightKeepsItsPlaceInTheQueue(t *testing.T) {
 // event of its issue and each send of that issue to the same recipient queued behind it.
 func TestEverySendOnAHeldLaneIsCounted(t *testing.T) {
 	lifetime, stop := context.WithCancel(context.Background())
-	sender := newMentionSender(lifetime, time.Hour,
+	sender := newMentionSender(lifetime, time.Hour, nil,
 		func(_ context.Context, item mentionSend) (mentionSend, bool) { return item, true },
 		func(_ context.Context, queued []mentionClaim) ([]mentionClaim, error) { return queued, nil },
 		rereadNone,

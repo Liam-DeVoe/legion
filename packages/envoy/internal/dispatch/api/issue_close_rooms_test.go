@@ -223,9 +223,12 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 }
 
 // waitForDocumentConnectionClose waits for the server to close a connected client's connection.
+// Its read ends where the shared wait gives up (testwait.Context; none under -timeout 0), so a
+// connection left open fails by name.
 func waitForDocumentConnectionClose(t *testing.T, connection *gws.Conn) {
 	t.Helper()
-	connection.SetReadDeadline(time.Now().Add(10 * time.Second))
+	deadline, _ := testwait.Context(t).Deadline()
+	connection.SetReadDeadline(deadline)
 	for {
 		if _, _, err := connection.ReadMessage(); err != nil {
 			var networkError net.Error

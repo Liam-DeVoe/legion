@@ -370,6 +370,7 @@ func TestTheEventFeedSendsNoReplayPastItsBounds(t *testing.T) {
 // the horizon (events.Horizon), and that stays below a while A is open.
 func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
+	reads := relayReads(rig.served.eventRelay)
 	issue := createInteractionIssue(t, rig.handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, rig.handler, "OTHER", "Other issue", "A spec")
 	// This subscription starts the relay before A opens. A relay starting while A is open takes its
@@ -377,6 +378,7 @@ func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 	// subscriptions below would be sent nothing while A is open for that reason alone.
 	subscribeEvents(t, rig.dial(t, withBearer("agent-token")), "starter", nil)
 
+	drainRelayReads(reads)
 	low, high, commitLow := appendOutOfOrder(t, rig.database, rig.served.deps.Events, issue.Key, other.Key)
 	resume := func(sub string) *socketClient {
 		t.Helper()
@@ -387,7 +389,7 @@ func TestTheEventFeedResumeCursorOrdersConcurrentEventCommits(t *testing.T) {
 		return client
 	}
 	open := resume("open")
-	testwait.Span(t, time.Second, relayHoldWhy)
+	awaitRelayHeldRead(t, rig.served.eventRelay, reads, low)
 	expectNoEventAbove(t, open, "open", low-1, "while the lower id is still open")
 
 	commitLow()
@@ -776,7 +778,7 @@ func TestAnEventCommittedDuringTheCatchUpIsSentOnce(t *testing.T) {
 	// order, so a resend of an event the catch-up sent would reach the page ahead of the next
 	// commit's.
 	renameIssue(t, handler, issue, "Renamed after the catch-up")
-	frame, ok := stream.next(t, "the commit after the catch-up").(LiveEventFrame)
+	frame, ok := stream.feedNext(t, database, "the commit after the catch-up").(LiveEventFrame)
 	if !ok {
 		t.Fatalf("frame = %+v, want the event of the commit after the catch-up", frame)
 	}

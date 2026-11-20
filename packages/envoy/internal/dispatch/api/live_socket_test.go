@@ -454,15 +454,27 @@ func (l smallSendBuffers) Accept() (net.Conn, error) {
 
 // smallReadDialer dials with a small receive buffer, so a page that stops reading holds back the
 // socket's writer after kilobytes; beside smallSendBuffers it is how a test plays a slow page. A
-// test that must know the writer stays held holds it with heldWrites instead.
-func smallReadDialer() *gws.Dialer {
-	return &gws.Dialer{HandshakeTimeout: 5 * time.Second, NetDial: func(network, address string) (net.Conn, error) {
-		conn, err := net.Dial(network, address)
+// test that must know the writer stays held holds it with heldWrites instead. Its handshake is
+// bounded by the test binary's deadline less the shared wait's margin (testwait.Context), so a
+// handshake that stalls fails by name, and none under -timeout 0.
+func smallReadDialer(t *testing.T) *gws.Dialer {
+	return &gws.Dialer{NetDialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
 		if tcp, ok := conn.(*net.TCPConn); ok {
 			_ = tcp.SetReadBuffer(4096)
 		}
 		return conn, err
-	}}
+	}, HandshakeTimeout: handshakeBound(t)}
+}
+
+// handshakeBound is a dial's handshake timeout that ends where the shared wait gives up, or none
+// (zero) under -timeout 0.
+func handshakeBound(t *testing.T) time.Duration {
+	deadline, bounded := testwait.Context(t).Deadline()
+	if !bounded {
+		return 0
+	}
+	return max(time.Until(deadline), time.Nanosecond)
 }
 
 // heldWrites wraps the server's listener so a test can hold a socket's writer inside a write, as a
@@ -656,13 +668,13 @@ func TestABearerMayReadTheSocket(t *testing.T) {
 }
 
 // A bearer revoked while its socket is open loses the socket at the next heartbeat's resolution, as
-// the document socket does: the request's context ends, and the socket closes
-// with 1008. The heartbeat is a second, so the client's pong, which gorilla's default handler
-// writes, has a heartbeat to meet the pong deadline on a loaded runner: the socket must last until
-// the revocation, and a pong timeout would end it first.
+// the document socket does: the request's context ends, and the socket closes with 1008. The
+// socket's read deadline runs on a fake no one moves (liveSocketClock), so no pong the runner holds
+// back ends the socket before the revocation; the heartbeat paces only the heartbeat frames the row
+// reads.
 func TestARevokedBearerClosesItsSocketWithPolicyViolation(t *testing.T) {
 	const heartbeat = time.Second
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: clocktest.Held()}, nil)
 	minted := mintAgentToken(t, rig.handler)
 	client := rig.dial(t, withBearer(minted.Token))
 
@@ -817,7 +829,7 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, func(listener net.Listener) net.Listener { return smallSendBuffers{listener} })
-	client := rig.open(t, smallReadDialer(), asUser("alice"))
+	client := rig.open(t, smallReadDialer(t), asUser("alice"))
 
 	// Every frame is answered with an error frame echoing its 4 KiB sub, and the page reads none of
 	// them: the socket's writer blocks, its queue fills, and the next frame overflows it.
@@ -1020,13 +1032,17 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 	}
 }
 
-// A page that answers each ping keeps its socket, idle, across many heartbeats. The heartbeat is a
-// second, so the page's first pong has a heartbeat to arrive before the pong deadline, two
-// heartbeats after the socket opened, and a loaded runner that delays it most of a heartbeat still
-// meets it. A page that answers no ping, which a short heartbeat ends quickly, is the next test's.
+// A page that answers each ping keeps its socket, idle, across many heartbeats: each pong moves the
+// socket's read deadline two heartbeats past it (serveLiveSocket's pongWait). The read deadline runs
+// on a fake of the row's own (liveSocketClock), which the row moves a heartbeat at a time, each time
+// once a pong the page sent after the last move has moved the deadline two heartbeats past the
+// clock: four heartbeats on, the socket has outlived the deadline its upgrade armed and the one
+// after it, through its pongs alone. The pings themselves come a heartbeat apart on the real clock,
+// and no time judges them. A page that answers no ping is the next test's.
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
-	const heartbeat = time.Second
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)
+	const heartbeat = 100 * time.Millisecond
+	deadlines := clocktest.New(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: deadlines}, nil)
 	answering := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	var pings atomic.Int32
 	answering.conn.SetPingHandler(func(data string) error {
@@ -1035,25 +1051,23 @@ func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	})
 	answering.read()
 
-	// The server pings once a heartbeat, and the pong deadline is two heartbeats from the last pong,
-	// so a socket still open at its fourth ping has outlived two pong deadlines: the page holds its
-	// socket only through its pongs.
-	testwait.Eventually(t, "the idle page's fourth ping", func() bool {
-		if !answering.open() {
-			t.Fatalf("an idle page that answers every ping lost its socket after %d pings: %v", pings.Load(), answering.err)
-		}
-		return pings.Load() >= 4
-	})
+	for range 4 {
+		deadlines.Advance(heartbeat)
+		awaitArmedAt(t, deadlines, "the read deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
+	}
+	if !answering.open() {
+		t.Fatalf("an idle page that answers every ping lost its socket after %d pings: %v", pings.Load(), answering.err)
+	}
 	rig.sockets(t, 1)
 }
 
 // A page that answers no ping is closed once its pong deadline passes (two heartbeats after its
-// last pong, live_socket.go's pongWait, a read deadline on the real connection, which this row
-// does not time: it holds the end itself). It has gone or
-// stopped reading, so the socket sends it no close frame: the connection ends, which gorilla and a
-// browser report as 1006, and the page reconnects on its backoff, as after every close but 1012,
-// which starts the backoff over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would
-// say its caller no longer resolves.
+// last pong, live_socket.go's pongWait, on the socket's read-deadline clock, the real one here,
+// which this row does not time: it holds the end itself). It has gone or stopped reading, so the
+// socket sends it no close frame: the connection ends, which gorilla and a browser report as 1006,
+// and the page reconnects on its backoff, as after every close but 1012, which starts the backoff
+// over (packages/dispatch/web/src/api/live-socket.ts, lost). 1008 would say its caller no longer
+// resolves.
 func TestAPageThatAnswersNoPingLosesItsSocketWithNoCloseFrame(t *testing.T) {
 	const heartbeat = 200 * time.Millisecond
 	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat}, nil)

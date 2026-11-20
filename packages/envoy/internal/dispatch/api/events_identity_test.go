@@ -45,8 +45,8 @@ func (i *endableIdentity) Login(*http.Request) (string, error) {
 // receiving the event feed they subscribed to while signed in: the live socket resolves them again
 // on each heartbeat (whileCallerResolves) and closes with 1008 at the first heartbeat once they no
 // longer resolve. The heartbeats are on the server's clock, a fake the row moves to the first one
-// after the session ends and holds there. The heartbeat is a second, so the client's pong, which
-// runs on the real clock, meets the pong deadline on a loaded runner.
+// after the session ends and holds there. The socket's read deadline runs on a fake no one moves
+// (Deps.LiveSocketClock), so no pong the runner holds back ends the socket first.
 func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	const heartbeat = time.Second
 	database := storetest.Open(t)
@@ -66,6 +66,7 @@ func TestTheEventFeedClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
 	server := httptest.NewServer(mux)
@@ -103,6 +104,7 @@ func TestAgentStreamClosesOnceItsViewerNoLongerResolves(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
 	}
+	deps.LiveSocketClock = clocktest.Held()
 	mux := http.NewServeMux()
 	t.Cleanup(Register(mux, t.Context(), deps).Wait)
 	server := httptest.NewServer(mux)

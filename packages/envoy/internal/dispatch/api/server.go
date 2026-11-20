@@ -180,6 +180,13 @@ type Deps struct {
 	// contracts.LiveSocketMaxAge), so the sockets a deploy opened together do not all end
 	// together; a test returns a fixed age.
 	LiveSocketAge func() time.Duration
+	// LiveSocketClock is what a GET /ws/live socket's read deadlines run on: the pong deadline, two
+	// heartbeats after the page's last pong, and the wait for the page's close frame once the socket
+	// sent its own (liveSocketCloseWait). Nil is clock.Real(), as a deployment leaves it; only a
+	// test sets another, a clocktest fake on which no page's reads end until the test moves it
+	// there. It is not Clock, so a test that moves the server's clock through its heartbeats or to
+	// a socket's age ends no read with it.
+	LiveSocketClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -1804,6 +1811,39 @@ func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause erro
 		end(context.Canceled)
 	}
 }
+
+// clockTicker is a time.Ticker on a clock.Clock, for a loop of this package whose ticks a test
+// moves a fake through: its ticks fall on a grid one interval apart from where it started, and a
+// tick its loop takes late drops the grid moments past which it was taken, as a ticker's channel,
+// full while its receiver is busy, drops them (duty.RunLeasedOn keeps the same grid). The loop
+// calls next once a tick's work is done, with the moment it took that tick, so the next tick is
+// armed only after that work: a test that sees it armed knows the tick before it has returned.
+type clockTicker struct {
+	clock    clock.Clock
+	interval time.Duration
+	due      time.Time
+	timer    clock.Timer
+}
+
+func newClockTicker(c clock.Clock, interval time.Duration) *clockTicker {
+	return &clockTicker{clock: c, interval: interval, due: c.Now().Add(interval), timer: c.NewTimer(interval)}
+}
+
+// C delivers each tick.
+func (t *clockTicker) C() <-chan time.Time { return t.timer.C() }
+
+// next arms the tick after the one the loop took at taken: the first grid moment past taken. One
+// that has passed by the time the tick's work is done comes at once.
+func (t *clockTicker) next(taken time.Time) {
+	t.due = t.due.Add(t.interval)
+	for !t.due.After(taken) {
+		t.due = t.due.Add(t.interval)
+	}
+	t.timer.Reset(t.due.Sub(t.clock.Now()))
+}
+
+// Stop stops the ticker.
+func (t *clockTicker) Stop() { t.timer.Stop() }
 
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {

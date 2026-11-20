@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -70,9 +71,13 @@ func recordedPool(t *testing.T, database *store.Store) (*store.Pool, *storetest.
 }
 
 // sweepHorizon is one runner's events.Horizon, one per process as a server keeps one
-// (api.Background's EventHorizon), observing through that process's own pool.
+// (api.Background's EventHorizon), observing through that process's own pool. It warns of a stall
+// at horizontest.StallWarning, as a test server's horizon does, so a wait on what its passes judge
+// fails at once on a hold of the test's own (horizontest.PollInProcess).
 func sweepHorizon(pool *store.Pool) *events.Horizon {
-	return events.NewHorizon(pool)
+	horizon := events.NewHorizon(pool)
+	horizon.SetStallWarning(horizontest.StallWarning, horizontest.StallWarning)
+	return horizon
 }
 
 // runSweep runs run on a goroutine until the test ends, and fails the test if it does not return
@@ -130,7 +135,8 @@ func TestTwoSuggestionSweepRunnersNeverJudgeOnePageTwiceAndBothPass(t *testing.T
 		t.Fatalf("release the cursor: %v", err)
 	}
 
-	testwait.Eventually(t, "one runner to judge the page and the other to read the cursor it advanced", func() bool {
+	// The passes judge a page only once horizon.Safe proves it, so the wait is the horizon's.
+	horizontest.PollInProcess(t, "one runner to judge the page and the other to read the cursor it advanced", database, func() bool {
 		return countStatements(recorded(), firstPassRead) == 1 && countStatements(recorded(), laterPageRead) >= 1
 	})
 	var cursor *int64

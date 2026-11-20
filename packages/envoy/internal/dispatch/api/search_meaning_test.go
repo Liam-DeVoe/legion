@@ -20,6 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -323,7 +324,11 @@ func askPartID(t *testing.T, database *store.Store, askID string, position int) 
 // whose errFor discriminates by InputType matches how the two callers actually differ in
 // production (embedqueue always calls with InputDocument, search's embedQuery always calls with
 // InputQuery): a background goroutine keeps embedqueue's own ProcessBatch throttled, simulating
-// a backlog saturating the model service's quota for bulk document traffic.
+// a backlog saturating the model service's quota for bulk document traffic. The limiter waits on
+// a fake no one moves (embed.WithLimiterClock), so once the drain has made its first call every
+// call through the limiter waits for good: a live query paced by it would never answer. The
+// server's own clock is held too, so no bound of the search's (searchEmbedTimeout) ends a query
+// that waits.
 func throttledSearchHandler(t *testing.T) http.Handler {
 	t.Helper()
 	const title, spec = "Celestial navigation device maintenance", "Routine upkeep notes."
@@ -331,7 +336,8 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 		issueEmbeddingText(title, spec): angledVector(0.9, 2),
 		"wibbleflorp":                   queryVector(),
 	}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	limited := embed.NewRateLimitedEmbedder(embedder, embed.WithLimiterClock(clocktest.New(time.Now())))
+	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder, clock: clocktest.Held()})
 	createInteractionIssue(t, handler, "PRIO", title, spec)
 	// Embeds while nothing is throttled yet: this is the content a later query below must still
 	// find - already embedded, before the saturating bulk traffic simulated next ever starts.
@@ -353,7 +359,7 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 	before := calls()
 
 	bgCtx, cancel := context.WithCancel(context.Background())
-	backgroundDeps := embedqueue.Deps{Store: database, Embedder: embed.NewRateLimitedEmbedder(embedder)}
+	backgroundDeps := embedqueue.Deps{Store: database, Embedder: limited}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -375,11 +381,18 @@ func throttledSearchHandler(t *testing.T) http.Handler {
 // TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled proves a live query embedding priority
 // over background work (throttledSearchHandler): concurrent live search requests keep succeeding
 // non-degraded, because their InputQuery calls go straight to the unwrapped fake embedder and are
-// never subject to that backoff at all.
+// never subject to that backoff at all. Each search must answer while the limiter's wait stands
+// for good: one paced by the limiter never answers, and the wait for it fails naming it.
 func TestSearchStaysNonDegradedWhileEmbedqueueIsThrottled(t *testing.T) {
 	handler := throttledSearchHandler(t)
 	for i := range 5 {
-		response := searchResponse(t, handler, "q=wibbleflorp")
+		answered := make(chan *httptest.ResponseRecorder, 1)
+		go func() { answered <- searchRequest(t, handler, "q=wibbleflorp") }()
+		recorder := testwait.Receive(t, fmt.Sprintf("search request %d to answer while the background drain's limiter waits for good", i), answered)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("search request %d: status=%d body=%s", i, recorder.Code, recorder.Body.String())
+		}
+		response := decodeBody[model.SearchResponse](t, recorder)
 		if response.Degraded != "" {
 			t.Errorf("search request %d: Degraded = %q, want empty - a live query must stay non-degraded while only background document traffic is throttled", i, response.Degraded)
 		}

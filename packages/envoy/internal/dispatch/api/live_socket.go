@@ -1,6 +1,7 @@
 package api
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	gws "github.com/gorilla/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -106,9 +108,14 @@ type liveSocket struct {
 	// waiting.
 	closed chan struct{}
 	// deadline orders the pong handler's extension of the read deadline with the last one the
-	// writer sets once it has closed; closing stops further extensions.
+	// writer sets once it has closed; closing stops further extensions. readsEnd is that deadline:
+	// a timer on clock (Deps.LiveSocketClock, clock.Real() where that is nil) that ends the page's
+	// reads once it fires, as a read deadline on the connection does once it passes (endReadsNow),
+	// and each awaitPong and endReads moves it, as each SetReadDeadline replaces the one before.
 	deadline sync.Mutex
 	closing  bool
+	clock    clock.Clock
+	readsEnd clock.Timer
 	// subs is every subscription the socket holds, by sub. Only the handler's goroutine touches it:
 	// the read loop, then the cleanup once the loop has ended.
 	subs map[string]*liveSub
@@ -122,7 +129,7 @@ type liveSocket struct {
 	beforePick func(socket *liveSocket, takesStream bool)
 }
 
-func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential) *liveSocket {
+func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Credential, deadlines clock.Clock) *liveSocket {
 	ctx, cancel := context.WithCancel(ctx)
 	return &liveSocket{
 		conn:       conn,
@@ -135,6 +142,7 @@ func newLiveSocket(ctx context.Context, conn *gws.Conn, credential *model.Creden
 		shut:       make(chan struct{}),
 		closed:     make(chan struct{}),
 		subs:       map[string]*liveSub{},
+		clock:      cmp.Or[clock.Clock](deadlines, clock.Real()),
 	}
 }
 
@@ -203,7 +211,7 @@ func (socket *liveSocket) awaitPong(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	if !socket.closing {
-		_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+		socket.endReadsInLocked(wait)
 	}
 }
 
@@ -213,7 +221,39 @@ func (socket *liveSocket) endReads(wait time.Duration) {
 	socket.deadline.Lock()
 	defer socket.deadline.Unlock()
 	socket.closing = true
-	_ = socket.conn.SetReadDeadline(time.Now().Add(wait))
+	socket.endReadsInLocked(wait)
+}
+
+// endReadsInLocked moves the read deadline to wait from now on the socket's clock, in place of
+// the one before; a wait of zero or less ends the reads here.
+func (socket *liveSocket) endReadsInLocked(wait time.Duration) {
+	switch {
+	case wait <= 0:
+		if socket.readsEnd != nil {
+			socket.readsEnd.Stop()
+		}
+		socket.endReadsNow()
+	case socket.readsEnd == nil:
+		socket.readsEnd = socket.clock.AfterFunc(wait, socket.endReadsNow)
+	default:
+		socket.readsEnd.Reset(wait)
+	}
+}
+
+// endReadsNow is the read deadline passing: a read in progress returns a timeout at once, and so
+// does every read after it.
+func (socket *liveSocket) endReadsNow() {
+	_ = socket.conn.SetReadDeadline(time.Now())
+}
+
+// stopReadDeadline stops the read deadline's timer once the page's reads are over, so none
+// outlives its socket.
+func (socket *liveSocket) stopReadDeadline() {
+	socket.deadline.Lock()
+	defer socket.deadline.Unlock()
+	if socket.readsEnd != nil {
+		socket.readsEnd.Stop()
+	}
 }
 
 // close sends the page a close frame with code and reason, and waits for its reply.
@@ -234,6 +274,7 @@ func (socket *liveSocket) close(code int, reason string) {
 func (socket *liveSocket) closeUnserved() {
 	defer socket.cancel()
 	defer socket.conn.Close()
+	defer socket.stopReadDeadline()
 	socket.close(gws.CloseServiceRestart, "")
 	for {
 		if _, _, err := socket.conn.NextReader(); err != nil {
@@ -364,7 +405,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	// The socket's age runs on the server's clock from the upgrade.
 	aged := s.clock.NewTimer(s.liveSocketAge())
 	defer aged.Stop()
-	socket := newLiveSocket(r.Context(), conn, actor.Credential)
+	socket := newLiveSocket(r.Context(), conn, actor.Credential, s.deps.LiveSocketClock)
 	socket.beforePick = s.liveWriterBeforePick
 	if !s.liveSockets.add(socket) {
 		socket.closeUnserved()
@@ -372,6 +413,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.liveSockets.remove(socket)
 	defer conn.Close()
+	defer socket.stopReadDeadline()
 	defer s.deliveryHub.Close(socket)
 	defer s.endLiveSubscriptions(socket)
 

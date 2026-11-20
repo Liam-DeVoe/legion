@@ -144,11 +144,12 @@ func receiveRelayedThrough(t *testing.T, subscription <-chan relayedEvent, datab
 // quietRelayReads waits until the relay has published through the event log's head - its
 // generation's start, its catch-up after the LISTEN and any re-read a gap above the horizon
 // scheduled are over by then - and drains the page reads they made, so a count of the reads one
-// commit costs counts that commit's alone.
+// commit costs counts that commit's alone. The relay publishes up to the safe horizon, so the wait
+// is the horizon's (horizontest.PollInProcess), which fails at once on a hold of the test's own.
 func quietRelayReads(t *testing.T, relay *eventStreamRelay, database *store.Store, reads <-chan int64) {
 	t.Helper()
 	head := eventHead(t, database)
-	testwait.Eventually(t, fmt.Sprintf("the relay to have published through event %d, the log's head", head), func() bool {
+	horizontest.PollInProcess(t, fmt.Sprintf("the relay to have published through event %d, the log's head", head), database, func() bool {
 		return relayPublished(relay) >= head
 	})
 	for len(reads) > 0 {
@@ -166,13 +167,6 @@ func relayPublished(relay *eventStreamRelay) int64 {
 	}
 	return relay.generation.cursor
 }
-
-// relayGapRereadsWhy is why a test holds a span while a gap in the event log stands open: the
-// relay's re-reads of a gap run on its own goroutine, on a schedule of its own, and a re-read
-// that took no shared connection leaves no state of this test to read and no later action of
-// the test to wait on.
-const relayGapRereadsWhy = "the relay's gap re-reads run on its own goroutine on a schedule of its own, and a " +
-	"re-read that took no shared connection leaves no state of this test to read and no later action to wait on"
 
 // recordRelayDials has relay dial its listener connections on deps' pool, as it does by default,
 // and records each one (listenerDials), so a test reads the relay's own connections and their
@@ -361,15 +355,17 @@ func TestOutOfOrderCommitsOnAnotherProcessReachAnOpenSubscriptionInIDOrder(t *te
 	first, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, first, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, first, "OTHER", "Other issue", "A spec")
-	handler, _ := secondProcess(t, database)
+	handler, processB := secondProcess(t, database)
+	held := relayReads(processB.eventRelay)
 	second := httptest.NewServer(handler)
 	t.Cleanup(second.Close)
 	client := openLiveSocketAt(t, gws.DefaultDialer, "ws"+strings.TrimPrefix(second.URL, "http")+"/ws/live", withBearer("agent-token")).servedBy(database).read()
 	subscribeEvents(t, client, "events", nil)
 
 	// Appended through a broker of process A's own: B learns of them only from the rows.
+	drainRelayReads(held)
 	low, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
-	testwait.Span(t, time.Second, relayHoldWhy)
+	awaitRelayHeldRead(t, processB.eventRelay, held, low)
 	expectNoEventAbove(t, client, "events", low-1, "on process B while process A's lower id is open")
 	commitLow()
 	expectEventsInOrder(t, client, "events", low, high)
@@ -388,21 +384,40 @@ func TestARelayGapRereadTakesNoSharedConnectionWhileTheHorizonStandsStill(t *tes
 	issue := createInteractionIssue(t, handler, "TEST", "Issue", "A spec")
 	other := createInteractionIssue(t, handler, "OTHER", "Other issue", "A spec")
 	relay, reads := newCountedRelay(t, deps)
+	held := relayReads(relay)
 	dials := recordRelayDials(relay, deps)
 	subscription, _, opened := subscribeRelay(t, relay)
 	waitListening(t, database, "the relay's listener holding a LISTEN", dials)
 	quietRelayReads(t, relay, database, reads)
 
+	drainRelayReads(held)
 	low, high, commitLow := appendOutOfOrder(t, database, deps.Events, issue.Key, other.Key)
 	// The higher id's commit notifies: that read checks for a reset on the shared pool, takes the
-	// horizon and leaves the gap open, publishing nothing. Its reset check is the one shared
-	// connection the gap may cost, so the count starts after it, and the span after that covers
-	// the re-reads the relay makes while the lower id stays open.
-	testwait.Quiet(t, "the relay's subscription while the gap stands open", subscription, time.Second, relayHoldWhy)
+	// horizon and leaves the gap open, publishing nothing. The relay reports each read once it has
+	// published (afterRead), so the subscription holds whatever that read published once it has
+	// reported. Its reset check is the one shared connection the gap may cost, so the count starts
+	// after it, and covers the gap re-reads the relay makes next while the lower id stays open, each
+	// reported in its turn.
+	awaitRelayHeldRead(t, relay, held, low)
+	select {
+	case event := <-subscription:
+		t.Fatalf("the relay's subscription was sent event %d while the gap below %d stood open", event.Event.ID, high)
+	default:
+	}
 	before := acquires(deps.Store)
-	testwait.Span(t, time.Second, relayGapRereadsWhy)
+	const gapRereads = 3
+	for n := range gapRereads {
+		testwait.Until(t, fmt.Sprintf("the relay's gap re-read %d of %d while the lower id stays open", n+1, gapRereads), func() (relayRead, bool) {
+			select {
+			case read := <-held:
+				return read, read.gap != events.GapNone
+			default:
+				return relayRead{}, false
+			}
+		})
+	}
 	if got := acquires(deps.Store); got != before {
-		t.Fatalf("the relay's gap re-reads took %d shared-pool connections while %d stayed open, want none", got-before, low)
+		t.Fatalf("the relay's %d gap re-reads took %d shared-pool connections while %d stayed open, want none", gapRereads, got-before, low)
 	}
 	if len(reads) != 0 {
 		t.Fatalf("the relay read the event log %d times while the gap below %d stood open, want none", len(reads), high)
@@ -591,7 +606,7 @@ func TestEventLogResetClearsTheRelaysHorizon(t *testing.T) {
 
 	// The subscription made while a was open is sent it first.
 	eventsStartID(t, waiting, "events")
-	if id := mustEventFrameID(t, waiting.event(t, "events")); id != low {
+	if id := mustEventFrameID(t, eventFeedEvent(t, waiting, "events")); id != low {
 		t.Fatalf("the subscription made while %d was open was sent event %d first, want %d, which committed after it subscribed", low, id, low)
 	}
 

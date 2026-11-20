@@ -340,6 +340,8 @@ func TestRelatedCheckMeaningEmbedderFailingSearchesByKeywordsOnly(t *testing.T) 
 // not answer in time. The check runs on a clock the case moves to that deadline, and the embedder
 // records the context it was called with, so that the meaning deadline is what ended the meaning
 // search is a state the case reads on either side of that move rather than a time it measures.
+// The embedding's own bound (searchEmbedTimeout, embedQuery) is on that clock too, armed for the
+// same moment, since both are three seconds from the check's start; no real time ends it first.
 func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *testing.T) {
 	embedder := &fakeEmbedder{delay: time.Hour}
 	handler, _, srv := meaningServer(t, embedder)
@@ -354,18 +356,21 @@ func TestRelatedCheckMeaningEmbedderPastThreeSecondsSearchesByKeywordsOnly(t *te
 	go func() {
 		answered <- srv.relatedCheck(context.Background(), relatedInput{project: "MSLOW", text: "Nightly snapshots finish late"})
 	}()
-	armed := clock.AwaitArmed(t, "the check's meaning deadline and its allowance", 2)
+	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
+	// The embedding's bound is armed before the embedder is called.
+	embedding := testwait.Receive(t, "the check's meaning stage to call the embedder", recorded.contexts)
+	armed := clock.AwaitArmed(t, "the check's meaning deadline, the embedding's bound and the check's allowance", 3)
 	meaning := checkStart.Add(relatedMeaningAllowance)
-	if !armed[0].Equal(meaning) || !armed[1].Equal(checkStart.Add(relatedCheckAllowance)) {
-		t.Fatalf("the check armed %v, want its meaning deadline at %v and its allowance at %v", armed, meaning, checkStart.Add(relatedCheckAllowance))
+	want := []time.Time{meaning, checkStart.Add(searchEmbedTimeout), checkStart.Add(relatedCheckAllowance)}
+	if !slices.EqualFunc(armed, want, time.Time.Equal) {
+		t.Fatalf("the check armed %v, want its meaning deadline at %v, the embedding's bound at %v and its allowance at %v",
+			armed, want[0], want[1], want[2])
 	}
 	select {
 	case early := <-answered:
 		t.Fatalf("the check answered %+v before its meaning deadline, the embedder still held", early)
 	default:
 	}
-	// The stage's goroutine embeds; the check does not wait for that goroutine to have started.
-	embedding := testwait.Receive(t, "the check's meaning stage to call the embedder", recorded.contexts)
 	if err := embedding.Err(); err != nil {
 		t.Fatalf("the embedding's context ended (%v) before the clock reached the meaning deadline", err)
 	}
