@@ -1,0 +1,350 @@
+# How each fixture was captured
+
+Every fixture here came from a real system on 2026-11-20, with made-up skills (`alpha`, `beta`,
+`tool-loop-alpha`) and made-up prompts. A test that reads a fixture cites its section of this file
+in its header. The scan at the end says how each file was checked for keys and private names.
+
+Versions: Oh My Pi 18.18.6 (`/opt/omp/bin/omp`), Claude Code 2.1.311, Bun 1.4.4, gh 2.98.0. `jq` in
+the commands below is the pod's `jq`, which is jaq 3.1.1.
+
+`$R` is the scratch directory `/legion/scratch/tmp/infra4676/t1-runs` and `$TOOLS` is
+`/legion/scratch/tmp/infra4676/t1-tools`, both scratch outside the repository. Every Oh My Pi and Claude
+Code run below starts from `env -i`, so none of the pod's own Oh My Pi settings (its profile, its
+config overlays, its session store) reaches the run.
+
+## Words replaced in the Oh My Pi fixtures
+
+The pod's public push check refuses a line that holds the model provider's name together with one
+of the words customer, work order, deliver (in any of its forms), contract or invoice, in any case.
+Oh My Pi's own system prompt, tool texts and job notices use some of those words on lines that also
+carry the provider's name (a message's `provider` and `api` fields, or the model id). So in each
+line of a fixture here that holds the provider's name, each such word was replaced by a neutral
+word of the same grammar, in the same case, and every other byte was kept:
+
+| Word | Replaced by |
+| --- | --- |
+| deliver, delivers | arrive, arrives |
+| delivered, delivering | handed back, handing back |
+| delivery, deliveries | handover, handovers |
+| contract, contracts | agreement, agreements |
+| customer, customers | client, clients |
+| invoice, invoices | bill, bills |
+| work order, work orders | job ticket, job tickets |
+
+The replacement was `bun $TOOLS/neutral-words.ts --write <file>...` over every file here but the
+F7 text files and `F1b.jsonl`, run after the captures below; then F1b was made again from the
+changed F1 with its command below. 33 words were replaced, all in five files (no customer, invoice
+or work order occurred):
+
+| File | Words replaced |
+| --- | --- |
+| `F1/…-59f275bdff80.jsonl` | 3: deliver 1, Delivery 1, delivered 1 |
+| `F1/…-59f275bdff80/ProductiveChicken.jsonl` | 5: contract 2, contracts 1, Delivery 1, deliver 1 |
+| `F1b.jsonl` (made again from F1) | 3: deliver 1, Delivery 1, delivered 1 |
+| `F2-request.json` | 11: contract 3, Contract 1, contracts 1, deliver 3, Delivery 1, delivery 1, delivered 1 |
+| `F2-request-thinking-low.json` | 11: the same as `F2-request.json` |
+
+So these files differ from what Oh My Pi wrote and sent in those words only: F1's
+`system-prompt-digest` is the digest of the prompt before the change, and the F5 bodies were made
+from F2 before it.
+
+## The scratch tools
+
+These lived in `$TOOLS` and are described here by what they do; the committed recorder and replay
+hook of the runner are built from them.
+
+- **recorder** (`bun recorder.ts <port> <out dir> <reply.sse>...`): a stand-in Anthropic Messages
+  endpoint on `127.0.0.1`. It stores each POST body byte for byte as `<out>/request-<n>.json`, and
+  the method, path and every request header except the auth headers (any header named
+  `authorization`, `cookie`, or holding `key`, `token`, `secret` or `auth`) as
+  `<out>/request-<n>.headers.json`. It answers the n-th request with the n-th reply file (the last
+  one again once the list runs out) as `text/event-stream`. It holds no key and reaches no host.
+- **end-turn reply** (`end-turn.sse`): an Anthropic Messages SSE stream of one text block,
+  `Recorded.`, with `stop_reason: end_turn`.
+- **tool-use reply** (`tool-use-bash.sse`): the same stream shape holding one `tool_use` block, a
+  `bash` call whose command is `touch $R/f2/marker-the-block-must-stop`, with
+  `stop_reason: tool_use`.
+- **replay hook** (`replay-hook.ts`, after the planner's spike hook): `REPLAY_MESSAGES` names a
+  JSON file holding an array of Oh My Pi message objects. Its `context` handler returns that array
+  in place of the run's own first message (the placeholder prompt), followed by every message the
+  run itself added after it. Its `tool_call` handler returns `{block: true, reason: "blocked by the
+  replay hook: no tool runs in a capture"}` for every call. Each event is logged as one JSON line
+  to `REPLAY_LOG`. `REPLAY_CONTROL_NO_BLOCK=1` leaves the `tool_call` handler out (the control run
+  below only).
+- **recording proxy** (`ANTHROPIC_BASE_URL=<gateway> bun proxy.ts <port> <out dir>`): listens on
+  `127.0.0.1` and forwards each request to the real gateway at `$ANTHROPIC_BASE_URL`. It drops the
+  caller's auth headers and signs the forwarded request with the gateway key, which it reads from
+  the pod's key file inside its own process and never prints or stores. It stores each request
+  body and its headers less the auth ones as the recorder does, with the reply's status, and
+  streams the reply back less the gateway's `x-litellm-*` headers.
+- **send** (`bun send.ts <body.json> [<recorded request headers.json>]`): posts the body to
+  `$ANTHROPIC_BASE_URL/v1/messages` as a plain Messages call (the reply streams because the body
+  sets `stream`), with `anthropic-version: 2023-06-01`, the recorded request's `anthropic-beta`
+  header when a headers file is given, and the key read from the key file inside the script.
+  stdout is the reply body as received; the first stderr line is the status and the kept response
+  headers (`content-type`, `request-id`, and `llm_provider-request-id`, the gateway's copy of the
+  same id); the second stderr line lists only the names of the headers left out.
+- **scan** (`bun scan.ts <dir>`): the check in "The scan" below.
+- **neutral words** (`bun neutral-words.ts [--write] <file>...`): in each line that holds the
+  model provider's name (any case), replaces each word of the table in "Words replaced in the Oh My
+  Pi fixtures" with its neutral word, in the word's case, keeping every other byte. A word right
+  after a JSON escape (`\n`, `\u2014`) counts as a word, as it does once the JSON is decoded. It
+  prints, per file, the count of each word it replaced; without `--write` it changes nothing.
+
+## F1: an Oh My Pi session directory (`F1/`)
+
+The scratch profile `fixture` under the scratch HOME `$R/f1/home` held `agent/models.yml`, a copy
+of the pod profile's `models.yml` (its anthropic provider is the gateway, and its `apiKey` line is
+a command that reads the key file, so the copy carries no key), and two made-up skills:
+`agent/skills/alpha/SKILL.md`, `agent/skills/alpha/references/x.md` and
+`agent/skills/beta/SKILL.md`. Their text is in F1's read results, after each `[Skill file: <path>]`
+header.
+
+```sh
+cd $R/f1/work && env -i HOME=$R/f1/home PATH=/usr/local/bin:/usr/bin:/bin TMPDIR=$R PI_NO_TITLE=1 \
+  /opt/omp/bin/omp --profile fixture -p --session-dir $R/f1/sessions \
+  --model anthropic/claude-sonnet-5-5 --smol anthropic/claude-sonnet-5-5 \
+  --slow anthropic/claude-sonnet-5-5 --thinking off --max-time 5m \
+  "This is a test of skill reads in a made-up fixture project. Do these steps in order. Make exactly one tool call per message and wait for its result before the next step. Step 1: read skill://alpha with the read tool. Step 2: read skill://alpha/references/x.md with the read tool. Step 3: read skill://gamma with the read tool (that skill may not exist; a failed read is expected, do not retry it). Step 4: call the task tool once, with one task whose assignment is: read skill://beta with the read tool, then reply with the greeting line it gives. Do not read skill://beta yourself. Then reply with the single word DONE."
+cp -a $R/f1/sessions/. F1/
+```
+
+The directory is as Oh My Pi wrote it, but for the words of "Words replaced in the Oh My Pi
+fixtures": the session file
+`2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl` (reads of `skill://alpha`,
+of `skill://alpha/references/x.md`, and of `skill://gamma`, whose result is the error
+`Unknown skill: gamma`; then a `task` call and a `wait`), and under the directory of the same
+name less `.jsonl` the subagent's transcript `ProductiveChicken.jsonl` (its one read, of
+`skill://beta`) and its output `ProductiveChicken.md`. No path was rewritten: the scratch paths
+name neither the pod nor a person.
+
+## F1b: F1's session with its `alpha` read copied a day later (`F1b.jsonl`)
+
+From this directory. The `alpha` read's assistant line and its `toolResult` line are copied to the
+end of the file, each with its line `timestamp` and its `message.timestamp` moved 24 hours later.
+Every other byte is F1's (jaq writes each copied line back byte for byte but the two timestamps).
+
+```sh
+S=F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl
+{ cat "$S"; jq -c -n '[inputs] as $l | ($l[] | select(.type == "message" and .message.role == "assistant" and any(.message.content[]; .type == "toolCall" and .name == "read" and .arguments.path == "skill://alpha"))) as $call | ($call.message.content[] | select(.type == "toolCall") | .id) as $id | ($call, ($l[] | select(.type == "message" and .message.role == "toolResult" and .message.toolCallId == $id))) | .timestamp |= ((capture("^(?<s>[^.]+)(?<f>[.][0-9]+Z)$")) as $t | ($t.s + "Z" | fromdateiso8601 + 86400 | todateiso8601 | sub("Z$"; "")) + $t.f) | .message.timestamp += 86400000' "$S"; } > F1b.jsonl
+```
+
+## F2: the request body of a replayed history (`F2-request*.json`)
+
+The same scratch HOME and profile as F1, with `agent/models.yml` replaced by one that points the
+anthropic provider at the recorder and holds no key:
+
+```yaml
+providers:
+  anthropic:
+    baseUrl: http://127.0.0.1:18431
+    auth: apiKey
+    api: anthropic-messages
+    apiKey: placeholder-recorder-holds-no-key
+    compat:
+      replayUnsignedThinking: false
+      supportsLongCacheRetention: true
+    models:
+      - {id: claude-sonnet-5-5, name: Claude Sonnet 5.5, reasoning: true, input: [text, image], contextWindow: 1000000, maxTokens: 128000, cost: {input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5}}
+```
+
+The replayed history (a user message, the assistant's `read` of `skill://alpha`, and F1's own
+`[Skill file: …]` result for it), made from F1:
+
+```sh
+jq -n --slurpfile l F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80.jsonl '($l | map(select(.type == "message" and .message.role == "toolResult" and .message.toolName == "read")) | .[0].message) as $r | [ {role: "user", content: [{type: "text", text: "Write the alpha checklist of the made-up fixture project. Use the alpha skill."}], attribution: "user", timestamp: 1795139983655}, {role: "assistant", content: [{type: "toolCall", id: "toolu_replay_alpha_1", name: "read", arguments: {path: "skill://alpha"}}], api: "anthropic-messages", provider: "anthropic", model: "claude-sonnet-5-5", usage: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0}}, stopReason: "toolUse", timestamp: 1795139984111}, {role: "toolResult", toolCallId: "toolu_replay_alpha_1", toolName: "read", content: $r.content, isError: false, timestamp: 1795139988974} ]' > $R/f2/history.json
+```
+
+The capture, one run at each of two thinking levels against one recorder:
+
+```sh
+bun $TOOLS/recorder.ts 18431 $R/f2/rec-d $TOOLS/end-turn.sse &
+cd $R/f1/work && for t in off low; do env -i HOME=$R/f1/home PATH=/usr/local/bin:/usr/bin:/bin TMPDIR=$R PI_NO_TITLE=1 \
+  REPLAY_MESSAGES=$R/f2/history.json REPLAY_LOG=$R/f2/hook-d.log \
+  /opt/omp/bin/omp --profile fixture -p --mode json --no-session --model anthropic/claude-sonnet-5-5 \
+  --thinking $t --hook $TOOLS/replay-hook.ts "placeholder prompt"; done
+cp $R/f2/rec-d/request-1.json F2-request.json
+cp $R/f2/rec-d/request-1.headers.json F2-request.headers.json
+cp $R/f2/rec-d/request-2.json F2-request-thinking-low.json
+cp $R/f2/rec-d/request-2.headers.json F2-request-thinking-low.headers.json
+```
+
+`F2-request.json` is `--thinking off` (`"thinking": {"type": "between_tools"}`);
+`F2-request-thinking-low.json` is `--thinking low` (adaptive thinking, `output_config.effort: low`,
+`context_management`, and two more `anthropic-beta` values in its headers file). Their `system`,
+`tools` and `messages` are the same. Each body's `messages` are the hook's three messages (Oh My Pi
+puts its date and working-directory reminder before the first user text), its system prompt lists
+the installed skills `alpha` and `beta` under `<skills>`, and the placeholder prompt is in neither.
+The bodies are kept byte for byte as Oh My Pi sent them, but for the words of "Words replaced in
+the Oh My Pi fixtures" (biome does not read this directory).
+
+The hook's `tool_call` block was proven with two more runs of the same command at
+`--thinking off`, against a recorder whose replies were `tool-use-bash.sse` then `end-turn.sse`:
+with the hook as it is, the `bash` call ended as an error result holding the hook's reason and the
+marker file was not made; with `REPLAY_CONTROL_NO_BLOCK=1`, the same call ran and made it. Neither
+run's output is a fixture.
+
+## F3 and F4: a Claude Code run that calls `Skill` and `Read` (`F3-*`, `F4/`)
+
+Claude Code was installed under the scratch directory only:
+`npm install --prefix /legion/scratch/tmp/infra4676/claude-code @anthropic-ai/claude-code@2.1.311`.
+`$F` is `$R/f3`, and `claude` is `/legion/scratch/tmp/infra4676/claude-code/node_modules/.bin/claude`.
+
+A made-up local marketplace `$F/marketplace`: `.claude-plugin/marketplace.json` names the
+marketplace `acme-market` and its one plugin `acme-tools` at `./plugins/acme-tools`;
+`plugins/acme-tools/.claude-plugin/plugin.json` gives `{"name": "acme-tools", "version": "0.1.0"}`
+with a description and author; `plugins/acme-tools/skills/alpha/SKILL.md` and
+`plugins/acme-tools/skills/beta/SKILL.md` are F1's two skills. It was installed into the scratch
+config:
+
+```sh
+E="env -i HOME=$F/home PATH=/usr/local/bin:/usr/bin:/bin TMPDIR=$F CLAUDE_CONFIG_DIR=$F/config DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1"
+cd $F/work && $E claude plugin marketplace add $F/marketplace && $E claude plugin install acme-tools@acme-market
+```
+
+The run, through the recording proxy, so the gateway's model really answered. The command's
+environment also set ANTHROPIC_API_KEY to a placeholder string, which never reached the gateway:
+the proxy replaced it with the real key on each forwarded request.
+
+```sh
+ANTHROPIC_BASE_URL=<the gateway> bun $TOOLS/proxy.ts 18432 $F/proxy &
+cd $F/work && env -i HOME=$F/home PATH=/usr/local/bin:/usr/bin:/bin TMPDIR=$F CLAUDE_CONFIG_DIR=$F/config \
+  DISABLE_AUTOUPDATER=1 DISABLE_TELEMETRY=1 DISABLE_ERROR_REPORTING=1 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:18432 \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-sonnet-5-5 ANTHROPIC_SMALL_FAST_MODEL=claude-sonnet-5-5 \
+  claude -p --allowedTools Skill,Read --output-format stream-json --verbose --model claude-sonnet-5-5 \
+  "This is a test of skill loading in a made-up fixture project. Step 1: call the Skill tool once to load the acme-tools:alpha skill. Step 2: call the Read tool once on the file $F/config/plugins/cache/acme-market/acme-tools/0.1.0/skills/beta/SKILL.md. Make exactly one tool call per message and wait for its result. Then reply with the single word DONE." > $F/stream.jsonl
+cp $F/proxy/request-1.json F3-request-first.json
+cp $F/proxy/request-1.headers.json F3-request-first.headers.json
+cp $F/proxy/request-3.json F3-request-last.json
+cp $F/proxy/request-3.headers.json F3-request-last.headers.json
+cp $F/stream.jsonl F3-stream.jsonl
+mkdir -p F4/projects && cp -a $F/config/projects/-legion-scratch-tmp-infra4676-t1-runs-f3-work F4/projects/
+```
+
+The run made three requests (`POST /v1/messages?beta=true`, each answered 200): the first holds
+the task and the skill listing (`acme-tools:alpha`, `acme-tools:beta`); the second (not kept) adds
+the `Skill` call with its result; the third holds both calls, the `Skill` call's injected skill
+text and the `Read` result. `F3-stream.jsonl` is the run's stdout. `F4/projects/<dir>/<id>.jsonl`
+is the transcript as Claude Code wrote it under `$F/config/projects/`; the empty `memory/`
+directory beside it is left out.
+
+## F5: the gateway's replies to bodies made from F2 (`F5-*.sse`, `F5-*.headers.json`)
+
+Each body is F2 as captured, before the word replacement above, with one text block added to its
+last user message (the one holding the `tool_result`):
+
+```sh
+jq --arg t "<added text>" '.messages[-1].content += [{type: "text", text: $t}]' <F2 body> > $R/f5/body-<shape>.json
+bun $TOOLS/send.ts $R/f5/body-<shape>.json <that F2 body's headers file> > $R/f5/reply-<reply>.sse 2> $R/f5/reply-<reply>.err
+cp $R/f5/reply-<reply>.sse F5-<reply>.sse
+head -1 $R/f5/reply-<reply>.err | jq . > F5-<reply>.headers.json
+```
+
+In the order sent (one call each; each shape came back on its first send):
+
+| Reply | F2 body | Added text | What came back |
+| --- | --- | --- | --- |
+| `F5-skill-read` | `F2-request.json` | `Now read skill://alpha/references/x.md with the read tool. Make that one tool call and no other.` | one `read` of `skill://alpha/references/x.md`; `cache_creation_input_tokens` 4836 |
+| `F5-skill-read-and-other` | `F2-request.json` | `Now make two tool calls in this one message: read skill://beta with the read tool, and run the command ls with the bash tool.` | a text block, then `read` of `skill://beta`, `bash` with `ls`, and `read` of `skill://alpha/references/x.md` |
+| `F5-text` | `F2-request.json` | `Now reply with the alpha checklist as three short lines. Call no tool.` | one text block, `end_turn` |
+| `F5-thinking` | `F2-request-thinking-low.json` | `Think the three alpha steps through before you answer, then reply with the alpha checklist as three short lines. Call no tool.` | a `thinking` block with its signature, then a text block |
+| `F5-cache-read` | `F2-request.json` | none: `body-skill-read.json`, the body of `F5-skill-read`, sent again | one `read`; `cache_read_input_tokens` 12912, `cache_creation_input_tokens` 0 |
+
+`F5-judge` is the judge reply, captured by plan task t3 once `prompts/judge.md` existed. Its body
+is the one the runner's judge builds (`judgeBody` of `judge.ts`, with `prompts/judge.md` as this
+commit holds it) for a case made from F2's replayed history (`$R/f2/history.json`, made by the
+command of F2 above): the criterion "Pass: The step reads references/x.md (a read of
+skill://alpha/references/x.md) before it writes any alpha step or its result." and "Fail: The step
+writes the alpha steps or their results without reading references/x.md first.", the line
+"1. Read \`references/x.md\` before the first step.", the history as the messages before the step
+(its read result of `skill://alpha` left out by the judge), and `F5-text`'s reply as the step. A
+scratch script, `judge-body.ts`, printed that body with those inputs, from the scratch directory
+`$D` (`/legion/scratch/tmp/infra4676/t3d.PhGG14`), and it was sent as the others were:
+
+```sh
+bun $D/judge-body.ts $R/f2/history.json F5-text.sse > $D/body-judge.json
+bun $TOOLS/send.ts $D/body-judge.json > $D/reply-judge.sse 2> $D/reply-judge.err
+cp $D/reply-judge.sse F5-judge.sse
+head -1 $D/reply-judge.err | jq . > F5-judge.headers.json
+```
+
+It came back on its first send: a `thinking` block, then the text
+`{"verdict": "fail", "reason": "The step makes no tool call to read …"}`, `end_turn`;
+`cache_creation_input_tokens` 710, all of them a one-hour cache write.
+
+F7 is captured once its query exists; it is not here yet.
+
+## F6: GitHub's answers for the lister, and made-up manifests (`F6-*`)
+
+From the public cybermonklabs/legion only, with read-only `gh` calls. This repository is public,
+so the people GitHub's answers name are replaced: the commit's author (a bot account named after a
+person), the person in its `Co-authored-by` trailer, the fork parent's owner, and, inside file
+contents, a person's full name and the handle that is also the npm scope of the packages (it
+becomes `acme`, so `@acme/pi-legion`). The commands take the two values as `--arg` and leave them
+out of this file. Edited contents keep GitHub's `sha` (the blob id of the original) and get the new
+`size`; the commit's signature is dropped (`verification` set to unsigned) since it signed the
+original message.
+
+```sh
+gh repo list cybermonklabs --limit 2000 --json nameWithOwner,isFork,isArchived,defaultBranchRef,parent \
+  | jq '(.[] | select(.parent != null) | .parent.owner) |= {id: "U_upstream_owner", login: "upstream-owner"}' > F6-repo-list.json
+gh api "repos/cybermonklabs/legion/commits?sha=main&until=2026-11-20T00:00:00Z&per_page=1" \
+  | jq --arg handle "$handle" 'map(.commit.author |= (.name = "acme-agent[bot]" | .email = "acme-agent[bot]@users.noreply.github.com") | .commit.message |= gsub("Co-authored-by: [^\n]*"; "Co-authored-by: Example Owner <owner@example.com>") | .commit.verification = {verified: false, reason: "unsigned", signature: null, payload: null, verified_at: null} | .author |= (.login = "acme-agent[bot]" | .id = 0 | .node_id = "BOT_example" | .avatar_url = "https://avatars.githubusercontent.com/u/0?v=4" | with_entries(if (.value | type) == "string" then .value |= gsub($handle + "-agent"; "acme-agent") else . end)))' > F6-commits.json
+gh api "repos/cybermonklabs/legion/git/trees/d7c7c531438468c93b8b77038ace48315c01bd59?recursive=1" \
+  | jq '{sha, url, tree: [.tree[] | select(.path as $p | ($p | startswith("skills/")) or ($p | startswith("packages/pi-legion/agents/")) or (["packages/pi-legion/package.json", "packages/pi-envoy/package.json", "scripts/pi-plugin-prepack.sh", ".claude-plugin/marketplace.json", "packages/claude-envoy/scripts/build.ts", "packages/daemon/docker/omp-plugins/package.json"] | any(. == $p)))], truncated}' > F6-tree.json
+gh api -X GET search/code -f q='"legion-worker" repo:cybermonklabs/legion' > F6-search-code.json
+ref=d7c7c531438468c93b8b77038ace48315c01bd59
+while read -r path name; do
+  gh api "repos/cybermonklabs/legion/contents/$path?ref=$ref" \
+    | jq --arg person "$person" --arg handle "$handle" '.content |= (gsub("\n"; "") | @base64d | gsub($person; "Example Owner") | gsub($handle; "acme") | @base64 | [range(0; length; 60) as $i | .[$i:$i+60]] | join("\n") + "\n") | .size = (.content | gsub("\n"; "") | @base64d | utf8bytelength)' > "F6-contents-$name.json"
+done <<'EOF'
+packages/pi-legion/package.json pi-legion-package
+packages/pi-envoy/package.json pi-envoy-package
+scripts/pi-plugin-prepack.sh pi-plugin-prepack
+.claude-plugin/marketplace.json marketplace
+packages/claude-envoy/scripts/build.ts claude-envoy-build
+packages/daemon/docker/omp-plugins/package.json omp-plugins-package
+skills/legion-worker/SKILL.md legion-worker-skill
+packages/pi-legion/agents/thermonuclear-deep-review.md thermonuclear-deep-review-agent
+EOF
+```
+
+What came back: both repositories of the owner are public (cybermonklabs/legion, and
+cybermonklabs/oh-my-pi, a fork), so no row was dropped. `main` at the end time is
+`63b3a613feb15cb191f87f4239467cdd37b62c82`, a commit after `d7c7c531`. The tree at `d7c7c531`
+holds 14,265 entries with `truncated: false`; the cut keeps 105 (78 blobs, 27 trees). The search
+answered `total_count: 325`, `incomplete_results: false`, 30 items on its first page. Without the
+replacements, the base64 round trip leaves each `content` byte for byte as GitHub sent it. The
+agent definition `packages/pi-legion/agents/thermonuclear-deep-review.md` is read as one example
+of the `autoloadSkills` manifest kind beside the files the plan names.
+
+Made-up files, each in the shape of a real file of its kind that no public repository of this owner
+holds, under `F6-madeup/` as one made-up repository's tree:
+
+| File | The real file kind it follows |
+| --- | --- |
+| `plugins/acme-tools/.claude-plugin/plugin.json` | a Claude Code plugin manifest (`name`, `version`, `description`, `author`, `skills`) |
+| `.claude/settings.json` | a Claude Code user settings file: `enabledPlugins` (`<plugin>@<marketplace>`: true or false) and `extraKnownMarketplaces` with a GitHub source |
+| `omp/config.yml` | an Oh My Pi `config.yml` whose `skills.ignoredSkills` leaves skills out, as a dotfiles repository keeps it |
+| `legion/projects/10-ACME.yaml` | a Legion project file, top-level keys with a `verificationSkillsLeaveOut` flow list of plugin names |
+| `installers/skills.sh` | a dotfiles installer script that links each skill directory into `~/.claude/skills` and `~/.omp/agent/skills` |
+| `tree/init.py` | a Python loader whose default TOML template names each role's skills in `[roles.<role>] skills = [...]`, `tool-loop-alpha` among them |
+
+## The scan
+
+`bun $TOOLS/scan.ts packages/pi-legion/scripts/skill-cuts/testdata` reads every file here, and the
+decoded content of each GitHub contents answer. It fails on any piece of 16 characters of the
+gateway key (read from the key file inside the scan and printed nowhere); on any key or token
+shape (an `sk-` key, a GitHub token or fine-grained token prefix, an AWS key id, a PEM block
+header, a `Bearer` credential, the key header's name); on any private name (the session store
+names, the gateway host, an IP address other than `127.0.0.1`, a person's name or email other than
+the example and no-reply addresses, the private organization's and the company's names, the key
+alias or team, the old plugin name); and on any run of 32 or more hex digits, or of 16 or more
+characters mixing capitals, small letters and digits, that is not the value of a JSON key of a
+known kind (an id, a git object id in a GitHub URL, a thinking signature, Claude Code's
+`metadata.user_id` with its random device id, or a Claude Code request digest or blob hash) or,
+in a plain text file such as this one, a git object id that a GitHub answer here gives as a `sha`.
+JSON files are read value by value, JSONL line by line and SSE by its data lines.
+`.github/scripts/check-private-names.sh packages/pi-legion/scripts/skill-cuts/testdata` runs
+beside it.
