@@ -318,7 +318,7 @@ function drawBody(
                     <FocusedProbe />
                     <LocationProbe />
                     <TreeReads issue={issue} />
-                    {drawn ? stage ? <ViewStage view="spec">{body}</ViewStage> : body : null}
+                    {drawn ? stage ? <ViewStage>{body}</ViewStage> : body : null}
                   </FocusedNodeProvider>
                 </OutlineRequestProvider>
               </MarginProvider>
