@@ -96,7 +96,7 @@ func TestTheExecFormReleasesAGitHubAppProfileAndTheBrokerRefusesItsNarrowingFlag
 	profiles := policytest.ProfilesFile(
 		policytest.AppProfile("APP_KEY"),
 		`{"name": "APP_KEY_PROOFS", "source": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
-		`{"name": "APP_KEY_MISSING", "source": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read"}}}`,
+		`{"name": "APP_KEY_MISSING", "source": "APP_KEY", "github": {"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	)
 	rig := brokertest.NewRig(t, brokertest.WithProfiles(profiles), brokertest.WithMinters(map[string]requests.Minter{
 		policy.TypeGitHubApp: secrets.GitHubApp{Base: github.URL, HTTP: github.Client()}.Mint,

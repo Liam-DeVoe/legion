@@ -91,7 +91,7 @@ func TestAGitHubAppCheckOfAProfileBeforeApprovalReleasesNoToken(t *testing.T) {
 	// cut leaves it out and the release names it.
 	leanWithIssues := readScope("ada")
 	leanWithIssues.Repositories = []string{"ada/lean"}
-	leanWithIssues.Permissions = map[string]string{"contents": "read", "issues": "write"}
+	leanWithIssues.Permissions = map[string]string{"contents": "read", "issues": "write", "metadata": "read"}
 	// administration is a permission the stand-in's installation does not hold at all.
 	noneHeld := readScope("ada")
 	noneHeld.Permissions = map[string]string{"administration": "write"}

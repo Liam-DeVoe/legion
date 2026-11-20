@@ -399,16 +399,19 @@ type Config struct {
 	AzureTokenFile string
 	// BROKER_AZURE_LOGIN_SECRET: the one agent-secret name allowed to release the broker's Azure
 	// projected token, for example AZURE_LOGIN. Empty (the default) disables azure-login
-	// releases. Must be an uppercase agent-secret name, not its store id or slug. That secret
-	// must be human tier in the policy snapshot checked for each release, with a person's
-	// approval recorded for that name in its grant. Another secret with type=azure-login,
-	// the named secret retagged to agent tier, or an automatic grant releases no token.
+	// releases. Must be an uppercase agent-secret name, not its store id or slug. It names the
+	// stored secret, never a profile: a profile of that secret releases the token under its own
+	// name too. That secret or profile must be human tier in the policy snapshot checked for each
+	// release, with a person's approval recorded for that name in its grant. Another secret with
+	// type=azure-login, a profile of one, the named secret retagged to agent tier, or an automatic
+	// grant releases no token.
 	AzureLoginSecret string
 	// BROKER_SERVICE_ACCOUNT_SECRETS: the one Google service account each google-service-account
 	// agent secret mints a token for, whitespace-separated <SECRET NAME>=<account email>
 	// entries, such as GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com. The name is
-	// the uppercase agent-secret name a session asks for (DEV_PERSON, GCP_ADMIN), not that
-	// secret's store id or its slug, and each secret is named at most once; the account is a
+	// the stored secret's uppercase agent-secret name (DEV_PERSON, GCP_ADMIN), never a profile's:
+	// a profile of a bound secret mints under its source's binding, whatever its own name. It is
+	// not that secret's store id or its slug, and each secret is named at most once; the account is a
 	// user-managed Google service account, <account id>@<project id>.iam.gserviceaccount.com in
 	// lowercase, held to secrets.ValidServiceAccountEmail, the minter's own rule, so no binding
 	// can ever name an address the minter would refuse. A Google-managed service agent is

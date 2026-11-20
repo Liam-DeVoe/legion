@@ -15,15 +15,24 @@ body: |-
   values answer names what the cut left out (`github_left_out`) and an empty cut sends nothing. A
   token GitHub answers with a permission or a level past the request is refused and revoked,
   `metadata: read` included: GitHub grants that with every installation token, so a GitHub
-  profile names it. A request may narrow a profile to one account or to repositories of it with
-  RFC 9396 `locations` in its signed request, which the approval page prints with the profile's
-  scope; a grant is reused only for the same profile and target. A GitHub profile with a `proxy`
-  block is minted by the proxy for the grant's target, and a `value: token` profile is released
-  as one placeholder, which the proxy swaps for the token in a header the block names or inside
-  a git Basic credential
-  (`x-access-token:<placeholder>`). New refusals: `TARGET_REFUSED`, `SERVED_ONLY_AS_PROFILES`,
-  `PROFILE_REFUSED`, `PROFILE_MINT_REFUSED`, `GITHUB_APP_FIELD_REMOVED`. `envoy-broker profiles
-  check <file> [--against <old file>]` validates a file and prints every field a change adds and
+  profile must name `metadata: read` and the profiles file refuses one that does not. A
+  `value: token` profile whose account resolves to more than one installation is refused before
+  any token is minted. A Google or Azure profile of another name mints under its source's
+  binding. A request may narrow a profile to one account or to repositories of it with RFC 9396
+  `locations` in its signed request, which the approval page prints with the profile's scope
+  (Google scopes included); a grant is reused only for the same profile and target, an approval
+  is refused when the target is no longer inside the profile, and the approval page's form
+  carries the digest of each profile it printed, so an approval after the profile changed is
+  refused `403 PROFILE_CHANGED`. The profile's digest is compared at every release. A GitHub
+  profile with a `proxy` block is minted by the proxy for the grant's target, and a
+  `value: token` profile is released as one placeholder, which the proxy swaps for the token in
+  a header the block names or inside a git Basic credential (`x-access-token:<placeholder>`). A
+  reread of a source, or of any profile of it, makes the proxy read every profile of that source
+  again. New refusals: `TARGET_REFUSED` (400 on `POST /v1/requests` and
+  `POST /v1/grants/{id}/values`, 403 at the proxy), `SERVED_ONLY_AS_PROFILES`, `PROFILE_REFUSED`,
+  `PROFILE_MINT_REFUSED` (403 at the proxy), `GITHUB_APP_FIELD_REMOVED`, and `INVALID_RELEASE`
+  (400), which a values body the route cannot read now answers. `envoy-broker profiles check
+  <file> [--against <old file>]` validates a file and prints every field a change adds and
   removes.
   **Deploy the profiles file with this release**: the broker refuses `BROKER_AIRLOCK_RULES_FILE`
   at boot, and serves no github-app secret that no profile names.

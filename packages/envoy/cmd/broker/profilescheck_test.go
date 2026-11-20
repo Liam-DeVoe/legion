@@ -238,6 +238,11 @@ func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
 			[]string{`profiles[0] "GITHUB_WRITE"`, "github.permissions.workflows", "write alone"},
 		},
 		{
+			"a github block that names no metadata",
+			`{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["example-org"], "permissions": {"contents": "read"}}}]}`,
+			[]string{`profiles[0] "GITHUB_READ"`, "github.permissions", "names no metadata", "every installation token"},
+		},
+		{
 			"requesters present and empty",
 			`{"profiles": [{"name": "GITHUB_ADMIN_PAT", "requesters": [], "proxy": {"hosts": ["api.github.com"]}}]}`,
 			[]string{`profiles[0] "GITHUB_ADMIN_PAT"`, "requesters", "nobody"},
@@ -392,13 +397,13 @@ func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
 // every field it had.
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
 	old := profilesFile(t, `{"profiles": [
-  {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read"}},
+  {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}},
    "proxy": {"hosts": ["api.github.com"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}], "judge": 300}},
   {"name": "LEGACY", "proxy": {"hosts": ["old.example.com"]}}
 ]}`)
 	now := profilesFile(t, `{"profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon"], "maxGrant": "1h",
-   "github": {"accounts": ["example-org", "ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "pull_requests": "read"}, "value": "token"},
+   "github": {"accounts": ["example-org", "ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read", "pull_requests": "read"}, "value": "token"},
    "proxy": {"hosts": ["api.github.com", "uploads.github.com"], "headers": ["authorization", "x-api-key"],
     "allow": [{"method": "POST", "pathPrefix": "/v1/"}], "kind": "aws", "judge": 600, "guidance": "grant for the release job"}}
 ]}`)
@@ -444,7 +449,7 @@ profile "LEGACY": proxy.guidance ""
 // block added, with each of its fields, and one that loses a block as that block removed, with
 // each field it had, rather than as a run of fields changed from nothing.
 func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
-	old := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read"}}}]}`)
+	old := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "proxy": {"hosts": ["api.github.com"]}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
@@ -455,6 +460,7 @@ func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
 		`profile "LEGION_IMPLEMENT_APP": github.accounts example-org`,
 		`profile "LEGION_IMPLEMENT_APP": github.repositories every repository the installation reaches`,
 		`profile "LEGION_IMPLEMENT_APP": github.permissions contents read`,
+		`profile "LEGION_IMPLEMENT_APP": github.permissions metadata read`,
 		`profile "LEGION_IMPLEMENT_APP": github.value installations`,
 		`profile "LEGION_IMPLEMENT_APP": proxy added`,
 		`profile "LEGION_IMPLEMENT_APP": proxy.hosts api.github.com`,
@@ -513,8 +519,8 @@ func TestProfilesCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {
 // else gets: a report of no lines at all would read as a report that had not run. A file that
 // spells a profile another way, an account in upper case, changes nothing the broker serves.
 func TestProfilesCheckSaysWhenNothingChanged(t *testing.T) {
-	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["Example-Org"], "permissions": {"contents": "read"}}}]}`)
-	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["example-org"], "permissions": {"contents": "read"}, "value": "installations"}}]}`)
+	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["Example-Org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
+	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "installations"}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
 	if code != 0 || stderr != "" {
 		t.Fatalf("exit %d with stderr %q, want exit 0 and nothing on stderr", code, stderr)

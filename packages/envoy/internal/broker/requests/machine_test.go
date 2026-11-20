@@ -5,8 +5,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -15,6 +18,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/google/uuid"
+	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -1514,5 +1518,47 @@ func TestAGoogleProfileReleaseAsksForTheProfilesScopes(t *testing.T) {
 	}
 	if want := [][]string{{"https://www.googleapis.com/auth/bigquery"}}; !reflect.DeepEqual(asked, want) {
 		t.Fatalf("the minter was asked for scopes %v, want the profile's own, %v", asked, want)
+	}
+}
+
+// TestAGoogleProfileUnderAnotherNameMintsUnderItsSourcesBinding: the deployment binds each
+// google-service-account secret by its stored name (BROKER_SERVICE_ACCOUNT_SECRETS), so a release
+// of a profile of it under a name of its own mints, through the real minter, under the binding the
+// deployment wrote for the source.
+func TestAGoogleProfileUnderAnotherNameMintsUnderItsSourcesBinding(t *testing.T) {
+	machine, enrollmentID, key, _ := newFixture(t)
+	source := policytest.TypeSecret("GCP_FLEET", fixtureOperator, policy.TierAgent, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+	source.Tags[policy.TagScopes] = "bigquery cloud-platform"
+	fixtureStore(machine).Put(source)
+	machine.Policy = policytest.ProfiledCurrent(t, fixtureStore(machine),
+		policytest.ProfilesFile(`{"name": "GCP_FLEET_BIGQUERY", "source": "GCP_FLEET", "google": {"scopes": ["bigquery"]}}`), fixtureService)
+	// The account policytest.TypeValue's google-service-account value names.
+	const account = "robot-1@acme-deployment.iam.gserviceaccount.com"
+	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/projects/-/serviceAccounts/"+account+":generateAccessToken" {
+			t.Errorf("the minter asked IAM for %s, want the bound account's token", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "impersonated-not-a-secret"})
+	}))
+	t.Cleanup(iam.Close)
+	minter := &secrets.GoogleServiceAccount{
+		BaseURL: iam.URL, HTTP: iam.Client(), Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "broker-own-not-a-secret"}),
+		Accounts: map[string]string{"GCP_FLEET": account},
+	}
+	machine.Minters = map[string]Minter{policy.TypeGoogleServiceAccount: minter.Mint}
+	hour := 3600
+	compact, err := record.Sign(key, machine.Audience, []record.AuthorizationDetail{{Type: record.KindAgentSecret, Identifier: "GCP_FLEET_BIGQUERY", Actions: []string{"inject"}}}, "query", "", &hour, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	request, err := machine.Create(t.Context(), enrollmentID, compact, "")
+	if err != nil || request.GrantID == nil {
+		t.Fatalf("Create(GCP_FLEET_BIGQUERY) = %+v, %v; want a grant", request, err)
+	}
+	release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{})
+	if err != nil || release.Values["GCP_FLEET_BIGQUERY"] != "impersonated-not-a-secret" {
+		t.Fatalf("Values = %v, %v; want GCP_FLEET_BIGQUERY's token, minted under GCP_FLEET's binding", release.Values, err)
 	}
 }

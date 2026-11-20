@@ -71,7 +71,8 @@ type GitHubAnswer struct {
 type GitHubTokenAnswer string
 
 const (
-	// GitHubTokensOrdinary answers each token request what its own body asked for, as GitHub does.
+	// GitHubTokensOrdinary answers each token request what its own body asked for, with metadata
+	// at read beside it, as GitHub does.
 	GitHubTokensOrdinary GitHubTokenAnswer = "ordinary"
 	// GitHubTokensRefused answers every token request HTTP 422 and mints nothing, which is what
 	// GitHub answers a body naming a permission the installation does not hold. The answer says
@@ -143,6 +144,12 @@ var writeOnlyPermissions = []string{"profile", "workflows"}
 // profile asks for it, and the minter refuses a token holding a permission its request did not
 // name, so it is the permission half of a token wider than asked.
 const widerPermission, widerPermissionLevel = "administration", "write"
+
+// grantedPermission is the grant GitHub adds to every installation token, whatever its body named:
+// metadata at read. Every token this stand-in answers holds it, so a request that left it out is
+// answered a token past the request, which the minter refuses (secrets' heldBy) as it refuses
+// GitHub's, and every GitHub profile names it (policy.ParseProfiles).
+const grantedPermission, grantedPermissionLevel = "metadata", "read"
 
 // GitHubStand is the four routes a github-app profile's release is made, spent and given back
 // over: GET /app/installations, which answers the installations it was given; POST
@@ -330,9 +337,10 @@ func (g *GitHubStand) Answer(w http.ResponseWriter, _ *http.Request, seen Reques
 // heldBy). A request naming a permission the owner's installation does not hold at that level,
 // or workflows or profile at read, is answered 422 and minted nothing, as GitHub answers it
 // (holdsAll). The answer echoes the body: a selection of the repositories it named, or all of the
-// account's when it named none, and the permissions it asked for. The other answers (Answers)
-// answer in its place: three that refuse this request or every one, one that mints wider than
-// asked, and one outage before it.
+// account's when it named none, and the permissions it asked for, or all the installation holds
+// when it named none, with metadata at read beside them wherever they do not name it
+// (grantedPermission). The other answers (Answers) answer in its place: three that refuse this
+// request or every one, one that mints wider than asked, and one outage before it.
 func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner string) {
 	answering := g.answering()
 	asked := githubTokenRequest(seen)
@@ -360,9 +368,15 @@ func (g *GitHubStand) answerToken(w http.ResponseWriter, seen Request, owner str
 	if len(repositories) == 0 {
 		selection = "all"
 	}
-	permissions := asked.Permissions
+	permissions := maps.Clone(asked.Permissions)
 	if len(permissions) == 0 {
-		permissions = g.held(owner)
+		permissions = maps.Clone(g.held(owner))
+	}
+	if permissions == nil {
+		permissions = map[string]string{}
+	}
+	if _, named := permissions[grantedPermission]; !named {
+		permissions[grantedPermission] = grantedPermissionLevel
 	}
 	if answering.Mode == GitHubTokensWider {
 		// Wider on both of the rules a token is checked by: every repository of the account, and

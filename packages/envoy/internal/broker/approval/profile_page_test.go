@@ -25,7 +25,7 @@ func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 	local := r.machine.Secrets.(secrets.AWS).Client.(*secrets.Local)
 	local.Put(policytest.TypeSecret("ADA_APP", ada, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
 	r.machine.Policy = policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(
-		`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"pull_requests": "write", "contents": "write"}}, "proxy": {"hosts": ["api.github.com"]}}`,
+		`{"name": "GITHUB_WRITE", "source": "ADA_APP", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"pull_requests": "write", "contents": "write", "metadata": "read"}}, "proxy": {"hosts": ["api.github.com"]}}`,
 	))
 	enrollmentID, key := r.benSession(t, "ben-box")
 	compact, err := record.Sign(key, r.url, []record.AuthorizationDetail{
@@ -48,7 +48,7 @@ func TestTheApprovalPagePrintsTheProfilesScope(t *testing.T) {
 	block := pageText(t, recordBlock(t, b.Page(t, *created.RecordID).Body, *created.RecordID))
 	for _, row := range []struct{ field, want string }{
 		{"source", "Source ADA_APP"},
-		{"permissions", "Permissions contents: write, pull_requests: write"},
+		{"permissions", "Permissions contents: write, metadata: read, pull_requests: write"},
 		{"accounts", "GitHub accounts acme, ada"},
 		{"repositories", "Repositories ada/lean, ada/proofs"},
 		{"target", "Target ada/proofs"},

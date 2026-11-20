@@ -494,7 +494,7 @@ func TestMintCallEndsWhenTheDeadlineIsShorterThanTheWait(t *testing.T) {
 // token request's access_tokens body, naming its repositories and its permissions.
 func TestMintCallSendsItsBodyAgain(t *testing.T) {
 	retry, _, _ := testRetry(atTheTop)
-	scoped := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read"},"repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
+	scoped := reply{status: http.StatusCreated, body: `{"token":"token-7","expires_at":"2026-11-14T13:00:00Z","permissions":{"contents":"read","metadata":"read"},"repository_selection":"selected","repositories":[{"name":"proofs"}]}`}
 	up := newScripted(t, installed, answered(http.StatusServiceUnavailable, nil), scoped)
 	scope := readScope("acme")
 	scope.Repositories = []string{"acme/proofs"}
@@ -502,7 +502,7 @@ func TestMintCallSendsItsBodyAgain(t *testing.T) {
 		t.Fatalf("Mint of a token naming a repository after a 503: %v", err)
 	}
 	tokens := up.tokenRequests()
-	if len(tokens) != 2 || tokens[0].body != `{"repositories":["proofs"],"permissions":{"contents":"read"}}` || tokens[1].body != tokens[0].body {
+	if len(tokens) != 2 || tokens[0].body != `{"repositories":["proofs"],"permissions":{"contents":"read","metadata":"read"}}` || tokens[1].body != tokens[0].body {
 		t.Fatalf("the token requests sent %+v; want the scope's body twice", tokens)
 	}
 }
@@ -521,7 +521,7 @@ func TestGoogleMintersRetryA503AndAnswerInvalidGrantAtOnce(t *testing.T) {
 			BaseURL: up.server.URL, HTTP: up.server.Client(), Source: brokerSource(),
 			Accounts: map[string]string{"GCP_FLEET": serviceAccountEmail}, Retry: retry,
 		}
-		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Type: "google-service-account", Value: serviceAccountValue})
+		return minter.Mint(t.Context(), secrets.MintRequest{Name: "GCP_FLEET", Source: "GCP_FLEET", Type: "google-service-account", Value: serviceAccountValue})
 	}
 	for _, tc := range []struct {
 		name       string

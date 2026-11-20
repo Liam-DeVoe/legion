@@ -836,7 +836,7 @@ func refusedTypeValues(t *testing.T) []refusedTypeValue {
 // client's refusal of the same value must carry.
 func mintRefusal(t *testing.T, secretType, value string) string {
 	t.Helper()
-	req := secrets.MintRequest{Name: "TYPE_KEY", HumanTier: true, Value: value, GitHub: &secrets.GitHubScope{
+	req := secrets.MintRequest{Name: "TYPE_KEY", Source: "TYPE_KEY", HumanTier: true, Value: value, GitHub: &secrets.GitHubScope{
 		Accounts: []string{"acme-org"}, Permissions: map[string]string{"metadata": "read"}, Value: policy.ValueInstallations,
 	}}
 	var err error
@@ -848,7 +848,7 @@ func mintRefusal(t *testing.T, secretType, value string) string {
 	case policy.TypeGoogleServiceAccount:
 		_, err = (&secrets.GoogleServiceAccount{}).Mint(t.Context(), req)
 	case policy.TypeAzureLogin:
-		_, err = secrets.AzureLogin{SecretName: req.Name}.Mint(t.Context(), req)
+		_, err = secrets.AzureLogin{SecretName: req.Source}.Mint(t.Context(), req)
 	default:
 		t.Fatalf("no minter of type %q", secretType)
 	}

@@ -165,12 +165,14 @@ service account the broker may mint a token for, whitespace-separated
 BROKER_SERVICE_ACCOUNT_SECRETS="GCP_ADMIN=gcp-admin@example-project.iam.gserviceaccount.com DEV_ADA=dev-ada@example-project.iam.gserviceaccount.com"
 ```
 
-The name is the uppercase name a session asks for, not the secret's store id or its slug; the
-account is a user-managed service account, `<account id>@<project id>.iam.gserviceaccount.com` in
-lowercase. The broker refuses to start, naming the entry, on a name no agent secret can carry, an
-address that is not a user-managed account, a Google-managed service agent (Google's own services
-run as those accounts, and the broker must not be able to impersonate one), or a secret named
-twice. One account may back two secrets, since only the secret's name is the key.
+The name is the stored secret's uppercase name, as a session asks for it, not its store id or its
+slug, and never a profile's: a profile of a bound secret mints under its source's binding, whatever
+its own name, and `BROKER_AZURE_LOGIN_SECRET` names the stored `azure-login` secret in the same way.
+The account is a user-managed service account, `<account id>@<project id>.iam.gserviceaccount.com`
+in lowercase. The broker refuses to start, naming the entry, on a name no agent secret can carry,
+an address that is not a user-managed account, a Google-managed service agent (Google's own
+services run as those accounts, and the broker must not be able to impersonate one), or a secret
+named twice. One account may back two secrets, since only the secret's name is the key.
 
 This setting, and not a secret's stored value, chooses the account: the broker holds
 `roles/iam.serviceAccountTokenCreator` on every account bound here, so a mint happens only where

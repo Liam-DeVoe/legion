@@ -120,7 +120,7 @@ func TestAnAzureLoginSplitCarriesTheApplicationAndTenantItsDocumentNames(t *test
 		t.Fatal(err)
 	}
 	minted, err := (secrets.AzureLogin{TokenFile: file, SecretName: "AZURE_LOGIN"}).Mint(t.Context(), secrets.MintRequest{
-		Name: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"the-tenant","client_id":"the-application"}`,
+		Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"the-tenant","client_id":"the-application"}`,
 	})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)

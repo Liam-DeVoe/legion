@@ -18,10 +18,7 @@
 package airlock
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -183,31 +180,6 @@ func (r Rules) JudgeSeconds(name string) (uint32, bool) {
 		return 0, false
 	}
 	return *s.Judge, true
-}
-
-// Digest is the fingerprint of one secret's entry, "" when the file has none for it. It is the
-// SHA-256, in hex, of the entry's JSON as encoding/json marshals a SecretRule with its guidance
-// left out: every other field is in the fingerprint, in the struct's own field order, and only
-// guidance carries omitempty, so an entry with none fingerprints as it did before the field
-// existed. The broker folds it into its policy version, so a change to one secret's entry ends
-// the grants that entry affects and no others. Guidance is left out because it tells the judge
-// how to decide requests to come and changes nothing a live grant may do: writing it ends no
-// grant.
-//
-// Digest is no part of the Lean model: it fingerprints a rules file the model says nothing
-// about, and no decision of Decide or Rewrite reads it.
-func (r Rules) Digest(name string) string {
-	s := r.Lookup(name)
-	if s == nil {
-		return ""
-	}
-	fingerprinted := *s
-	fingerprinted.Guidance = ""
-	// Marshal cannot fail for a SecretRule: every field is a string, a slice of strings or of
-	// Allow, or a *uint32, and encoding/json refuses none of those.
-	encoded, _ := json.Marshal(fingerprinted)
-	sum := sha256.Sum256(encoded)
-	return hex.EncodeToString(sum[:])
 }
 
 // HostBound reports whether host matches one of hosts: the same name, or a "*.suffix"

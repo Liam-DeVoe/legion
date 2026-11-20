@@ -56,9 +56,10 @@ const (
 // token route reads an installation id as.
 var profileInstallations = map[string]int64{"acme": 41, "ada": 42}
 
-// readProfile is the profiles file of the one profile: contents read on both accounts, the value
-// form value ("" for none, which is installations), and a proxy block on the rig's bound host
-// holding allow, the block's own allow list as JSON.
+// readProfile is the profiles file of the one profile: permissions (readOnly, contents and
+// metadata read, unless a row edits them) on both accounts, the value form value ("" for none,
+// which is installations), and a proxy block on the rig's bound host holding allow, the block's
+// own allow list as JSON.
 func readProfile(value, permissions, allow string) string {
 	github := `"accounts": ["acme", "ada"], "permissions": ` + permissions
 	if value != "" {
@@ -68,8 +69,9 @@ func readProfile(value, permissions, allow string) string {
 		`"proxy": {"hosts": ["` + boundHost + `"], "allow": ` + allow + `}}`)
 }
 
-// readOnly is the permissions every row's profile asks for until a row edits them.
-const readOnly = `{"contents": "read"}`
+// readOnly is the permissions every row's profile asks for until a row edits them: contents at
+// read, and the metadata at read every GitHub profile names.
+const readOnly = `{"contents": "read", "metadata": "read"}`
 
 // rolledGrants is the proxy's GrantSource over the broker it reads now: one requests.Machine, and
 // another in its place once a row rolls the profiles file (roll), as the broker a profiles change
@@ -277,7 +279,7 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 			if len(minted) != 1 {
 				t.Fatalf("the proxy's read minted %d tokens: %+v; want one, of the target's account", len(minted), minted)
 			}
-			want := mintAsked{path: "/app/installations/42/access_tokens", Repositories: []string{"proofs"}, Permissions: map[string]string{"contents": "read"}}
+			want := mintAsked{path: "/app/installations/42/access_tokens", Repositories: []string{"proofs"}, Permissions: map[string]string{"contents": "read", "metadata": "read"}}
 			if got := minted[0]; got.path != want.path || !slices.Equal(got.Repositories, want.Repositories) || !maps.Equal(got.Permissions, want.Permissions) {
 				t.Errorf("the proxy's mint asked %+v; want ada's installation, the target's repository and the profile's permissions, %+v", got, want)
 			}
@@ -378,7 +380,7 @@ func TestAnEditedProfileEndsTheProxysHeldToken(t *testing.T) {
 		t.Fatalf("the first call = %d %s; want 200", answer.StatusCode, body)
 	}
 
-	pr.roll(t, readProfile(policy.ValueToken, `{"contents": "read", "metadata": "read"}`, allow))
+	pr.roll(t, readProfile(policy.ValueToken, `{"contents": "read", "metadata": "read", "pull_requests": "read"}`, allow))
 	sent, minted, refusals := len(pr.requests()), len(pr.mintsAsked(t)), len(pr.logs.refusals())
 	answer, body := pr.get(client, "https://"+boundHost+profileRepository, "Authorization", "Bearer "+placeholder)
 	if answer.StatusCode != http.StatusProxyAuthRequired {

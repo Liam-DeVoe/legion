@@ -84,12 +84,14 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 		{"a level GitHub does not give", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "none"}}`), "github.permissions.contents", []string{`"none"`, "read, write or admin"}},
 		{"workflows at read", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "write", "workflows": "read"}}`), "github.permissions.workflows", []string{`"read"`, "write alone"}},
 		{"profile at admin", githubWrite(`{"accounts": ["example-org"], "permissions": {"profile": "admin"}}`), "github.permissions.profile", []string{`"admin"`, "write alone"}},
-		{"a value that is neither", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "read"}, "value": "raw"}`), "github.value", []string{`"raw"`, "installations", "token"}},
+		{"a github block that names no metadata", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "read"}}`), "github.permissions", []string{`"metadata": "read"`, "every installation token"}},
+		{"metadata at write", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "write"}}`), "github.permissions.metadata", []string{`"write"`, "read alone"}},
+		{"a value that is neither", githubWrite(`{"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "raw"}`), "github.value", []string{`"raw"`, "installations", "token"}},
 		{"a google block with no scopes", `{"name": "GOOGLE_READ", "google": {}, "proxy": {"hosts": ["storage.googleapis.com"]}}`, "google.scopes", []string{"required"}},
 		{"an empty scopes list", `{"name": "GOOGLE_READ", "google": {"scopes": []}, "proxy": {"hosts": ["storage.googleapis.com"]}}`, "google.scopes", []string{"required"}},
 		{"a whole scope URL", `{"name": "GOOGLE_READ", "google": {"scopes": ["https://www.googleapis.com/auth/cloud-platform"]}}`, "google.scopes[0]", []string{"after https://www.googleapis.com/auth/"}},
 		{"a scope twice", `{"name": "GOOGLE_READ", "google": {"scopes": ["cloud-platform", "cloud-platform"]}}`, "google.scopes[1]", []string{"twice"}},
-		{"github and google together", `{"name": "GITHUB_WRITE", "github": {"accounts": ["example-org"], "permissions": {"contents": "read"}}, "google": {"scopes": ["cloud-platform"]}}`, "github and google", []string{"both"}},
+		{"github and google together", `{"name": "GITHUB_WRITE", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}, "google": {"scopes": ["cloud-platform"]}}`, "github and google", []string{"both"}},
 		{"a proxy block with no hosts", adminPAT(`{"judge": 300}`), "proxy.hosts", []string{"required"}},
 		{"a proxy block with an empty hosts list", adminPAT(`{"hosts": []}`), "proxy.hosts", []string{"required"}},
 		{"a proxy host with a scheme", adminPAT(`{"hosts": ["api.github.com", "https://github.com"]}`), "proxy.hosts[1]", []string{"holds a scheme"}},
@@ -114,7 +116,7 @@ func TestParseProfilesRefusesEachMalformedField(t *testing.T) {
 	}
 	t.Run("the control: a profile of each kind", func(t *testing.T) {
 		valid := profilesFile(githubRead,
-			githubWrite(`{"accounts": ["example-org", "ada"], "repositories": ["example-org/legion", "ada/proofs"], "permissions": {"contents": "write", "workflows": "write", "profile": "write", "administration": "admin"}, "value": "installations"}`),
+			githubWrite(`{"accounts": ["example-org", "ada"], "repositories": ["example-org/legion", "ada/proofs"], "permissions": {"contents": "write", "metadata": "read", "workflows": "write", "profile": "write", "administration": "admin"}, "value": "installations"}`),
 			`{"name": "GOOGLE_READ", "source": "GCS_READER", "requesters": ["ada@example.com", "legion-daemon"], "maxGrant": "1h", "google": {"scopes": ["devstorage.read_only"]}}`,
 			adminPAT(`{"hosts": ["api.github.com", "*.githubusercontent.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "", "judge": 900, "guidance": "`+strings.Repeat("g", 2000)+`"}`),
 		)
@@ -187,7 +189,7 @@ func TestParseProfilesRefusesUnknownFieldsAndASecondValue(t *testing.T) {
 func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		`{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "tier": "agent", "requesters": ["legion-daemon", "ada@example.com"], "maxGrant": "1h30m",
-		  "github": {"accounts": ["Example-Org", "ada"], "repositories": ["example-org/widgets", "Example-Org/legion", "ada/proofs", "example-org/widgets"], "permissions": {"contents": "write", "workflows": "write"}}}`,
+		  "github": {"accounts": ["Example-Org", "ada"], "repositories": ["example-org/widgets", "Example-Org/legion", "ada/proofs", "example-org/widgets"], "permissions": {"contents": "write", "metadata": "read", "workflows": "write"}}}`,
 		`{"name": "GOOGLE_READ", "google": {"scopes": ["devstorage.read_only", "cloud-platform"]}, "proxy": {"hosts": ["storage.googleapis.com"]}}`,
 	)))
 	if err != nil {
@@ -199,7 +201,7 @@ func TestParseProfilesReadsEachFieldAsTheBrokerServesIt(t *testing.T) {
 		GitHub: &policy.GitHubBlock{
 			Accounts:     []string{"ada", "example-org"},
 			Repositories: []string{"ada/proofs", "example-org/legion", "example-org/widgets"},
-			Permissions:  map[string]string{"contents": "write", "workflows": "write"},
+			Permissions:  map[string]string{"contents": "write", "metadata": "read", "workflows": "write"},
 			Value:        policy.ValueInstallations,
 		},
 	}
@@ -304,7 +306,7 @@ func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
 			t.Errorf("%s left the digest where it was: %s", name, moved)
 		}
 	}
-	const write = `{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write"}%s}}`
+	const write = `{"name": "GITHUB_WRITE", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}%s}}`
 	github := digest(t, "GITHUB_WRITE", fmt.Sprintf(write, ""))
 	for name, edit := range map[string]string{
 		"a repository named": `, "repositories": ["example-org/legion"]`,
@@ -330,7 +332,7 @@ func TestProfilesDigestLeavesGuidanceOut(t *testing.T) {
 func TestProxyRulesHoldOneEntryPerProxyBlock(t *testing.T) {
 	profiles, err := policy.ParseProfiles([]byte(profilesFile(
 		githubRead,
-		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write"}}}`,
+		`{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "write", "metadata": "read"}}}`,
 		`{"name": "AWS_KEY", "proxy": {"hosts": ["*.amazonaws.com"], "headers": [], "allow": [{"method": "GET", "pathPrefix": "/"}], "kind": "aws", "judge": 300, "guidance": "grant it for the backup job"}}`,
 	)))
 	if err != nil {

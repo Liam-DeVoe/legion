@@ -25,10 +25,11 @@ import (
 )
 
 // appScope is the scope of a github-app profile of the one account that reads its repositories'
-// contents, as requests' release builds it from a profile: secrets.GitHubApp.Mint refuses a mint
-// with no scope before GitHub is asked anything, so every github-app mint below carries one.
+// contents, with the metadata at read every GitHub profile names, as requests' release builds it
+// from a profile: secrets.GitHubApp.Mint refuses a mint with no scope before GitHub is asked
+// anything, so every github-app mint below carries one.
 func appScope(account string) *secrets.GitHubScope {
-	return &secrets.GitHubScope{Accounts: []string{account}, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations}
+	return &secrets.GitHubScope{Accounts: []string{account}, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations}
 }
 
 // TestEachTypeReachesItsOwnMinter: the broker's minters send a github-app secret's value to the
@@ -46,7 +47,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 			_ = json.NewEncoder(w).Encode([]map[string]any{{"id": 7, "account": map[string]string{"login": "acme-org"}, "permissions": map[string]string{"contents": "read", "metadata": "read"}}})
 		case r.Method == http.MethodPost && r.URL.Path == "/app/installations/7/access_tokens":
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"token": "github-installation-token", "expires_at": "2026-10-24T13:00:00Z", "permissions": map[string]string{"contents": "read"}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"token": "github-installation-token", "expires_at": "2026-10-24T13:00:00Z", "permissions": map[string]string{"contents": "read", "metadata": "read"}})
 		default:
 			t.Errorf("GitHub endpoint asked %s %s", r.Method, r.URL.Path)
 		}
@@ -93,7 +94,7 @@ func TestEachTypeReachesItsOwnMinter(t *testing.T) {
 		t.Fatalf("google-login minter = %q, %v; want the Google endpoint's access token", minted.Value, err)
 	}
 	account := `{"service_account":"dev-aditya@example-identities.iam.gserviceaccount.com"}`
-	minted, err = minters[policy.TypeGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_PERSON", Value: account})
+	minted, err = minters[policy.TypeGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_PERSON", Source: "DEV_PERSON", Value: account})
 	if err != nil || minted.Value != "service-account-access-token" {
 		t.Fatalf("google-service-account minter = %q, %v; want the IAM endpoint's access token", minted.Value, err)
 	}
@@ -135,7 +136,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if mint == nil {
 		t.Fatal("request machine has no Azure login minter")
 	}
-	got, err := mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"tenant","client_id":"client"}`})
+	got, err := mint(t.Context(), secrets.MintRequest{Name: "AZURE_LOGIN", Source: "AZURE_LOGIN", HumanTier: true, Value: `{"tenant_id":"tenant","client_id":"client"}`})
 	if err != nil {
 		t.Fatalf("Mint: %v", err)
 	}

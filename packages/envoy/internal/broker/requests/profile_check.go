@@ -177,8 +177,9 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 // spent approval this check saves.
 //
 // Only two answers refuse the request: the profile's scope refused (secrets.ErrMintNarrowingRefused:
-// a cut that leaves no permission, which the minter refuses before any token request, or GitHub's
-// 422 to the token request) and the App with no installation on an account the scope names
+// a cut that leaves no permission, or a bare token of an account the App has more than one
+// installation on, each of which the minter refuses before any token request, or GitHub's 422 to
+// the token request) and the App with no installation on an account the scope names
 // (secrets.ErrMintNoInstallation). Every other refusal GitHub makes is trouble here, since every
 // 4xx that is no rate limit wraps secrets.ErrMintRefused (secrets' mintStatusError) and a 401 to
 // the App's JWT, a 403 of some other kind and a 404 on the token route each say nothing about the
@@ -205,10 +206,11 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 	case err == nil:
 		return true, nil
 	case errors.Is(err, secrets.ErrMintNarrowingRefused):
-		// An empty cut, or a scope the minter refuses before it asks GitHub anything, is its own
-		// answer: every probe below would meet it again and blame the first repository it asks
-		// about. GitHub's 422 to a scope of one account's repositories is what the search reads.
-		if errors.Is(err, secrets.ErrMintEmptyCut) || len(scope.Accounts) != 1 || len(scope.Repositories) == 0 {
+		// An empty cut, a bare token of several installations, or a scope the minter refuses
+		// before it asks GitHub anything, is its own answer: every probe below would meet it
+		// again and blame the first repository it asks about. GitHub's 422 to a scope of one
+		// account's repositories is what the search reads.
+		if errors.Is(err, secrets.ErrMintEmptyCut) || errors.Is(err, secrets.ErrMintSeveralInstallations) || len(scope.Accounts) != 1 || len(scope.Repositories) == 0 {
 			return true, fmt.Errorf("%s: %w", name, err)
 		}
 		return true, m.narrowingCause(ctx, mint, name, served, value, scope)

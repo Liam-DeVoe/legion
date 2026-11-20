@@ -25,10 +25,10 @@ import (
 // block.
 var targetProfiles = policytest.ProfilesFile(
 	policytest.AppProfile("APP_KEY"),
-	`{"name": "PROOFS_READ", "source": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"contents": "read"}}}`,
+	`{"name": "PROOFS_READ", "source": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	`{"name": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"metadata": "read"}}}`,
-	`{"name": "GITHUB_READ", "source": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"contents": "read"}, "value": "token"}}`,
-	`{"name": "ADA_TOKEN", "source": "HUMAN_APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read"}, "value": "token"}}`,
+	`{"name": "GITHUB_READ", "source": "HUMAN_APP_KEY", "github": {"accounts": ["acme", "ada", "example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
+	`{"name": "ADA_TOKEN", "source": "HUMAN_APP_KEY", "github": {"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}}`,
 	`{"name": "DEEL_PROXIED", "source": "DEEL_API_KEY", "proxy": {"hosts": ["api.deel.example"]}}`,
 )
 

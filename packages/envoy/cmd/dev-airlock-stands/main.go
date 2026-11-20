@@ -71,7 +71,8 @@
 // ordinary answer again, which the broker's minter retries. A refuse-repository that names no
 // repository is refused 400, as a mode outside the six is. The
 // report names that address (github_answer_url), and until a check calls it the stand answers
-// each token request what its body asked for.
+// each token request what its body asked for, with metadata at read beside it, as GitHub grants
+// that with every installation token.
 //
 // Every stand's requests are read back at the recording route this prints for it, GET
 // <records URL>/records/<stand>, whose answer is the JSON array of what that stand was sent:
@@ -539,8 +540,9 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// own body and nothing more; the other seven answer as the service they stand in for. Every
 	// one of them records what it was sent, which is what they are all for.
 	services[standS].AnswerWith(airlocktest.NewUpgradeStand(airlocktest.UpgradeOptions{Path: upgradePath}).Answer)
-	// The GitHub stand answers each token request what its body asked for until a check sets
-	// another answer, so a stack driven with no call to its answer route mints as GitHub does. It
+	// The GitHub stand answers each token request what its body asked for, with metadata at read
+	// beside it, until a check sets another answer, so a stack driven with no call to its answer
+	// route mints as GitHub does. It
 	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
 	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
 	// scope would have that revoke end the token the airlock's proxy holds for the same scope.

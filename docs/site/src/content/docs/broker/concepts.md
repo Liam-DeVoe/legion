@@ -679,12 +679,18 @@ The broker evaluates every name
   the target's: a JSON object of installations, or that one account's bare token for a profile
   whose `github.value` is `token`. The broker asks GitHub for the profile's permissions cut to what
   each installation holds, as its list of installations gives them: a permission the installation
-  holds none of is left out, and one it holds at a lower level is asked for at that level. The
-  values answer names each entry the cut left out (`github_left_out`), and the broker logs one
-  line for each. A cut that leaves no permission refuses the release with no request to GitHub
-  (`422 PROFILE_MINT_REFUSED`), since GitHub gives every permission the installation holds to a
-  request that names none, and GitHub's own `422`, such as for a repository the installation does
-  not reach, refuses it the same way. The broker releases a token only once GitHub's answer shows
+  holds none of is left out, and one it holds at a lower level is asked for at that level. A GitHub
+  profile names `metadata: read`, which GitHub grants with every installation token: the broker
+  refuses a token holding a permission its request did not name, so the profiles file, at the boot
+  and in `profiles check`, refuses a `github` block whose `permissions` leave `metadata` out or name
+  it at any level but `read`. The values answer names each entry the cut left out
+  (`github_left_out`), and the broker logs one line for each. A cut that leaves no permission
+  refuses the release with no request to GitHub (`422 PROFILE_MINT_REFUSED`), since GitHub gives
+  every permission the installation holds to a request that names none, and so does a
+  `value: token` profile whose account the App has more than one installation on (logins that
+  differ only in case), since a token minted for each would leave all but one live with nobody
+  holding it. GitHub's own `422`, such as for a repository the installation does not reach,
+  refuses it the same way. The broker releases a token only once GitHub's answer shows
   it holds no more than the request asked, for every profile, and gives back one that holds more
   (`502 MINT_FAILED`). A target is an entry of the signed request's `locations`, so the record a
   person approves holds it and the approval page prints it beside the profile's source,

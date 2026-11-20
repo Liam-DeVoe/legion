@@ -520,16 +520,23 @@ func (m *Machine) release(ctx context.Context, g requestedSecret, served policy.
 	return token, nil
 }
 
-// mintRequest is the input one granted name's release gives its minter: the name, the type tag
-// its minters count their attempts under, the stored value as the line-ending rule spends it, the
-// scope in effect of the GitHub profile the name is served as (gitHubScope), and, from the policy
-// snapshot the release was checked against, the tier and the Google OAuth scopes (the profile's
-// google block, else its source's scopes tag). Create's check builds its request here too and
-// sets Check on it (checkMint), which is the whole worth of the check: it asks GitHub about the
-// same profile, with the same scope, as the release it stands for.
+// mintRequest is the input one granted name's release gives its minter: the name, the stored
+// secret the value was read from (the profile's source, else the name itself), by which the
+// deployment binds a minted type (BROKER_SERVICE_ACCOUNT_SECRETS, BROKER_AZURE_LOGIN_SECRET), the
+// type tag its minters count their attempts under, the stored value as the line-ending rule
+// spends it, the scope in effect of the GitHub profile the name is served as (gitHubScope), and,
+// from the policy snapshot the release was checked against, the tier and the Google OAuth scopes
+// (the profile's google block, else its source's scopes tag). Create's check builds its request
+// here too and sets Check on it (checkMint), which is the whole worth of the check: it asks GitHub
+// about the same profile, with the same scope, as the release it stands for.
 func mintRequest(name, secretType string, served policy.Secret, value string, scope *secrets.GitHubScope) secrets.MintRequest {
+	source := name
+	if served.Profile != nil {
+		source = served.Profile.Source
+	}
 	return secrets.MintRequest{
 		Name:         name,
+		Source:       source,
 		Type:         secretType,
 		HumanTier:    served.Tier == policy.TierHuman,
 		Value:        value,

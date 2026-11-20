@@ -97,8 +97,8 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 	// APP_KEY's profile names one repository; OTHER_APP_KEY's, one the stand-in refuses, which
 	// the spent-checks row asks for to spend the enrollment's checks.
 	profiles := map[string]string{
-		"APP_KEY":       `{"accounts": ["ada"], "repositories": ["ada/` + standInRepository + `"], "permissions": {"contents": "read"}}`,
-		"OTHER_APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read"}}`,
+		"APP_KEY":       `{"accounts": ["ada"], "repositories": ["ada/` + standInRepository + `"], "permissions": {"contents": "read", "metadata": "read"}}`,
+		"OTHER_APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	}
 	for _, tc := range []struct {
 		name string
@@ -281,7 +281,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 // answer that is no verdict names the whole scope and says the cause was not found.
 func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.T) {
 	profiles := map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/` + standInRepository + `"], "permissions": {"contents": "read"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/` + standInRepository + `"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	}
 	for _, tc := range []struct {
 		name string

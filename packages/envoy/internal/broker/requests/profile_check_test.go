@@ -320,7 +320,7 @@ func everyMintGivenBack(t *testing.T, stand *gitHubStand) {
 // instead of the target's would be served and send the request to its approver.
 func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "permissions": {"contents": "read"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
 	f.stand.Answers(airlocktest.GitHubAnswer{Mode: airlocktest.GitHubTokensRefusedRepository, Repository: "missing"})
 
@@ -373,7 +373,7 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logged := policytest.CaptureLog(t)
 			f := newProfileFixture(t, tc.installations, map[string]string{
-				"APP_KEY": `{"accounts": ` + tc.accounts + `, "permissions": {"contents": "read"}}`,
+				"APP_KEY": `{"accounts": ` + tc.accounts + `, "permissions": {"contents": "read", "metadata": "read"}}`,
 			})
 
 			request, err := f.createTargeted(t, "APP_KEY", tc.target...)
@@ -417,10 +417,18 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 // installation holds none of is refused by Create before anybody is asked to approve it
 // (secrets.ErrMintEmptyCut, inside secrets.ErrMintNarrowingRefused), naming the profile and the
 // permissions it asks for, and GitHub is asked for no token: a request naming no permissions is
-// one GitHub answers with every permission the installation holds.
+// one GitHub answers with every permission the installation holds. Every GitHub profile names
+// metadata at read, which every installation GitHub lists holds, so on GitHub a cut keeps at
+// least metadata and mints, naming each permission it left out. The installation here holds
+// nothing at all, metadata included, a shape GitHub never lists: it is the one shape that reaches
+// the rule, a cut that leaves no permission is refused and sends nothing.
 func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T) {
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"administration": "write"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"administration": "write", "metadata": "read"}}`,
+	})
+	f.stand.GitHubStand = airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
+		Installations: map[string]int64{standInOwner: 7},
+		Permissions:   map[string]map[string]string{standInOwner: {}},
 	})
 
 	request, err := f.create(t, "APP_KEY")
@@ -443,6 +451,37 @@ func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T
 	}
 }
 
+// TestAPendingRequestForABareTokenOfAnAccountWithTwoInstallationsIsRefusedBeforeAPersonIsAsked: a
+// value-token profile releases one installation's bare token, and the App is installed on Ada and
+// on ada, logins GitHub compares as one account. Create refuses it before anybody is asked
+// (secrets.ErrMintSeveralInstallations, inside secrets.ErrMintNarrowingRefused), naming the
+// installations and no repository, since no repository of the profile is at fault, and GitHub
+// is asked for no token.
+func TestAPendingRequestForABareTokenOfAnAccountWithTwoInstallationsIsRefusedBeforeAPersonIsAsked(t *testing.T) {
+	f := newProfileFixture(t, map[string]int64{standInOwner: 7, "Ada": 8}, map[string]string{
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}`,
+	})
+
+	request, err := f.create(t, "APP_KEY")
+	if !errors.Is(err, secrets.ErrMintSeveralInstallations) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || request.ID != "" || request.RecordID != nil {
+		t.Fatalf("Create(APP_KEY) of a bare token of an account with two installations = %+v, %v; want ErrMintSeveralInstallations and no request", request, err)
+	}
+	for _, word := range []string{"APP_KEY", "installation 7", "installation 8"} {
+		if !strings.Contains(err.Error(), word) {
+			t.Errorf("the refusal says %q; want it to name %q", err, word)
+		}
+	}
+	if strings.Contains(err.Error(), "repository") {
+		t.Errorf("the refusal says %q; two installations are no repository's fault", err)
+	}
+	if rows, grants, records := heldRows(t, f.Machine); rows != 0 || grants != 0 || records != 0 {
+		t.Fatalf("the refused request left %d request rows, %d grants and %d records; want none of any", rows, grants, records)
+	}
+	if asked := f.stand.tokenRequests(); len(asked) != 0 {
+		t.Fatalf("GitHub was asked for %d tokens for a bare token of two installations; want none", len(asked))
+	}
+}
+
 // TestACheckMintGitHubServesLetsTheRequestThrough is the control of the refusals above: a profile
 // the stand-in mints writes the pending request and its record exactly as a request naming no
 // GitHub profile does, and the check that said so released no token — the one it minted it gave
@@ -450,7 +489,7 @@ func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T
 // checked at all.
 func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read"}}`,
+		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
 
 	request, err := f.create(t, "APP_KEY")
@@ -486,7 +525,7 @@ func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
 func TestAProfileOfRepositoriesOfTwoAccountsIsCheckedAndReleasedWithNoTarget(t *testing.T) {
 	installations := map[string]int64{standInOwner: 7, otherOwner: 8}
 	f := newProfileFixture(t, installations, map[string]string{
-		"APP_KEY": `{"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/proofs"], "permissions": {"contents": "read"}}`,
+		"APP_KEY": `{"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
 
 	pending, err := f.create(t, "APP_KEY")

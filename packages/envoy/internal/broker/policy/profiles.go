@@ -124,6 +124,14 @@ var permissionLevels = []string{"read", "write", "admin"}
 // read would be refused by GitHub at every mint.
 var writeOnlyPermissions = []string{"profile", "workflows"}
 
+// metadataPermission is the permission every GitHub profile names, at read and no other level.
+// GitHub grants metadata: read with every installation token, whatever the request named, and
+// the minter refuses a token holding a permission its request did not name (secrets' heldBy), so
+// a profile that left it out could never mint. Every endpoint GitHub lists under it ("Permissions
+// required for GitHub Apps") needs read, so a profile asking for it at write or admin would claim
+// a grant no token of it carries.
+const metadataPermission = "metadata"
+
 // ParseProfiles reads a profiles file and refuses one the broker would not serve. It decodes the
 // file strictly (airlock.Decode: a field the broker does not know, and anything after the file's
 // one object, are refused), and then holds each profile, in the file's order, to the file's shape:
@@ -131,10 +139,10 @@ var writeOnlyPermissions = []string{"profile", "workflows"}
 // requesters of a person's or a service's shape, and never an empty list, which would serve the
 // profile to nobody; a maxGrant of at least a second; a github block of GitHub logins, repositories
 // of those accounts, at most secrets.MaxNarrowedRepositories of them, and permissions at levels
-// GitHub gives; a google block of scope names; never both; and a proxy block whose hosts are in
-// the one grammar a rules host is written in (rulehost.Refusal), which airlock.Validate, the Lean
-// model's answer, accepts, and whose guidance the judge reads whole. Each refusal names the
-// profile by its index and name and the field it refuses.
+// GitHub gives, metadata at read among them; a google block of scope names; never both; and a
+// proxy block whose hosts are in the one grammar a rules host is written in (rulehost.Refusal),
+// which airlock.Validate, the Lean model's answer, accepts, and whose guidance the judge reads
+// whole. Each refusal names the profile by its index and name and the field it refuses.
 //
 // It reads no secret: whether a profile fits its source, and is no looser than it, is the policy
 // load's question. Nor does it read the deployment's services: CheckRequesters does, at the boot.
@@ -348,7 +356,8 @@ func (e profileEntry) checkRequesters(refuse func(field, why string) error) erro
 // check holds a github block to its shape: accounts that are GitHub logins, each once whatever
 // its case; repositories, when present, at least one and at most secrets.MaxNarrowedRepositories,
 // each account/name of an account the block names; and permissions, at least one, each a
-// permission's name at a level GitHub gives it.
+// permission's name at a level GitHub gives it, and metadata at read among them
+// (metadataPermission).
 func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 	if b == nil {
 		return nil
@@ -385,6 +394,12 @@ func (b *GitHubBlock) check(refuse func(field, why string) error) error {
 		case slices.Contains(writeOnlyPermissions, permission) && level != "write":
 			return refuse(field, fmt.Sprintf("is %q, but GitHub grants %s at write alone", level, permission))
 		}
+	}
+	switch level, named := b.Permissions[metadataPermission]; {
+	case !named:
+		return refuse("github.permissions", `names no metadata: GitHub grants "metadata": "read" with every installation token, and the broker refuses a token holding a permission its profile does not name, so a profile that leaves it out never mints; add "metadata": "read"`)
+	case level != "read":
+		return refuse("github.permissions."+metadataPermission, fmt.Sprintf("is %q, but metadata is read alone: every endpoint it covers needs read, and GitHub grants it at read with every installation token", level))
 	}
 	if b.Value != "" && b.Value != ValueInstallations && b.Value != ValueToken {
 		return refuse("github.value", fmt.Sprintf("%q is neither %s nor %s", b.Value, ValueInstallations, ValueToken))

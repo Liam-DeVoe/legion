@@ -238,7 +238,7 @@ func TestATargetRefusalIsOneOfThisPackagesRefusals(t *testing.T) {
 // both accounts among them, each as account/name, so the minter can send each account its own.
 func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 	m, enrollmentID, key := targetFixture(t, policy.TierAgent, policytest.ProfilesFile(
-		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs", "acme/site"], "permissions": {"contents": "read"}}}`,
+		`{"name": "APP_KEY", "github": {"accounts": ["acme", "ada"], "repositories": ["ada/lean", "ada/proofs", "acme/site"], "permissions": {"contents": "read", "metadata": "read"}}}`,
 	))
 	var asked []secrets.GitHubScope
 	m.Minters = map[string]Minter{
@@ -266,7 +266,7 @@ func TestAReleaseMintsTheTargetsScope(t *testing.T) {
 			if _, err := m.Values(t.Context(), *request.GrantID, enrollmentID, ReleaseCall{}); err != nil {
 				t.Fatalf("Values: %v", err)
 			}
-			row.want.Permissions = map[string]string{"contents": "read"}
+			row.want.Permissions = map[string]string{"contents": "read", "metadata": "read"}
 			row.want.Value = policy.ValueInstallations
 			if want := []secrets.GitHubScope{row.want}; !reflect.DeepEqual(asked, want) {
 				t.Fatalf("the minter was asked for %+v, want the target's scope %+v", asked, want)

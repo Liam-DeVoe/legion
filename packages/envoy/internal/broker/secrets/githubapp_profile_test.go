@@ -204,10 +204,11 @@ func asGitHubAnswers(installation string, body []byte) (int, any) {
 	return http.StatusCreated, answer
 }
 
-// readScope is a profile's scope of contents at read on accounts, every repository the
-// installation reaches, released as today's JSON of installations.
+// readScope is a profile's scope of contents at read, with the metadata at read every GitHub
+// profile names, on accounts, every repository the installation reaches, released as today's
+// JSON of installations.
 func readScope(accounts ...string) *secrets.GitHubScope {
-	return &secrets.GitHubScope{Accounts: accounts, Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations}
+	return &secrets.GitHubScope{Accounts: accounts, Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations}
 }
 
 // TestAProfileMintAsksForItsPermissionsCutToTheInstallation: a profile's token is asked for with
@@ -486,6 +487,56 @@ func TestAValueTokenProfileWithTwoAccountsIsRefused(t *testing.T) {
 	}
 	if requests, _ := github.take(); requests != 0 {
 		t.Fatalf("GitHub received %d requests, want none", requests)
+	}
+}
+
+// TestAValueTokenProfileOfAnAccountWithTwoInstallationsIsRefusedBeforeAnyToken: GitHub compares
+// logins without regard to case, so an App installed on Ada and on ada has two installations on
+// the one account a value-token profile names, and a token of each would be minted where the
+// release hands over one bare token. The scope is refused as the caller's (ErrMintNarrowingRefused,
+// which the broker answers PROFILE_MINT_REFUSED), naming the account and that the App has more
+// than one installation on it, from the installations listing alone: GitHub is asked for no
+// token, by a release or a check, so none is left live that nobody holds. The installations form
+// of the same scope is the control: it releases a token of each installation.
+func TestAValueTokenProfileOfAnAccountWithTwoInstallationsIsRefusedBeforeAnyToken(t *testing.T) {
+	key, err := testAppKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stand := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: map[string]int64{"Ada": 3, "ada": 2}})
+	service, err := airlocktest.NewService(airlocktest.ServiceOptions{Plain: true})
+	if err != nil {
+		t.Fatalf("start the GitHub stand-in: %v", err)
+	}
+	t.Cleanup(service.Close)
+	service.AnswerWith(stand.Answer)
+	app := secrets.GitHubApp{Base: service.URL(), HTTP: http.DefaultClient}
+	value := githubAppValue(t, "123456", key)
+	tokenRequests := func() int {
+		asked := 0
+		for _, seen := range service.Requests() {
+			if seen.Method == http.MethodPost && strings.HasSuffix(seen.Path, "/access_tokens") {
+				asked++
+			}
+		}
+		return asked
+	}
+
+	bare := readScope("ada")
+	bare.Value = policy.ValueToken
+	for _, check := range []bool{false, true} {
+		minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: bare, Check: check})
+		if minted.Value != "" || !errors.Is(err, secrets.ErrMintSeveralInstallations) || !errors.Is(err, secrets.ErrMintNarrowingRefused) || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "more than one installation") {
+			t.Fatalf("Mint (check %t) of a value-token profile of an account with two installations = %q, %v; want ErrMintSeveralInstallations, inside ErrMintNarrowingRefused, naming the account and its installations", check, minted.Value, err)
+		}
+		if asked := tokenRequests(); asked != 0 {
+			t.Fatalf("Mint (check %t) sent GitHub %d token requests; want none", check, asked)
+		}
+	}
+
+	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: value, GitHub: readScope("ada")})
+	if err != nil || !strings.Contains(minted.Value, `"Ada"`) || !strings.Contains(minted.Value, `"ada"`) {
+		t.Fatalf("Mint of the installations form of that scope = %q, %v; want a token of each installation", minted.Value, err)
 	}
 }
 

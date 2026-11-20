@@ -251,12 +251,13 @@ func gitHubAppValue(t *testing.T) string {
 }
 
 // acmeScope is the profile's scope each GitHub row below mints for unless it says otherwise:
-// contents at read on acme-org, on the repositories of acme-org these names name, or on every
-// repository the installation reaches where it names none, released as the JSON of installations.
+// contents at read on acme-org, with the metadata at read every GitHub profile names, on the
+// repositories of acme-org these names name, or on every repository the installation reaches
+// where it names none, released as the JSON of installations.
 func acmeScope(names ...string) *secrets.GitHubScope {
 	scope := &secrets.GitHubScope{
 		Accounts:    []string{"acme-org"},
-		Permissions: map[string]string{"contents": "read"}, Value: policy.ValueInstallations,
+		Permissions: map[string]string{"contents": "read", "metadata": "read"}, Value: policy.ValueInstallations,
 	}
 	for _, name := range names {
 		scope.Repositories = append(scope.Repositories, "acme-org/"+name)
@@ -280,10 +281,11 @@ func mintedGitHubToken(t *testing.T, value, owner string) string {
 
 // TestTheGitHubStandAnswersWhatATokenRequestAsked: the access_tokens answer is what the minter
 // checks its request against (its heldBy), so the stand-in has to say what the body it was sent
-// asked for - a selection of the repositories it named, and the permissions it named - and "all"
-// for a body that named no repositories at all. Against a stand-in that answered the token
-// alone, the minter would refuse every profile's token, since it refuses a token that names no
-// permissions.
+// asked for - a selection of the repositories it named, and the permissions it named, with
+// metadata at read beside them, which GitHub grants with every installation token whatever the
+// body named - and "all" for a body that named no repositories at all. Against a stand-in that
+// answered the token alone, the minter would refuse every profile's token, since it refuses a
+// token that names no permissions.
 func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 	service := newService(t, ServiceOptions{Plain: true})
 	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
@@ -300,6 +302,12 @@ func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 			selection:    "selected",
 			repositories: []string{"proofs", "widgets"},
 			permissions:  map[string]string{"contents": "read", "metadata": "read"},
+		},
+		{
+			name:        "a body naming permissions but not metadata, which the token holds at read all the same",
+			body:        `{"permissions":{"contents":"read"}}`,
+			selection:   "all",
+			permissions: map[string]string{"contents": "read", "metadata": "read"},
 		},
 		{
 			name:        "a body naming neither, which GitHub answers with all the installation holds",
@@ -341,6 +349,27 @@ func TestTheGitHubStandAnswersWhatATokenRequestAsked(t *testing.T) {
 				t.Error("the answer carries no token")
 			}
 		})
+	}
+}
+
+// TestTheGitHubStandHasTheMinterRefuseAScopeThatLeavesMetadataOut: GitHub grants metadata at read
+// with every installation token, and the minter refuses a token holding a permission its request
+// did not name (secrets' heldBy), so against the stand-in, as against GitHub, a scope that leaves
+// metadata out releases nothing, and the same scope naming it is released. It is the local driver
+// of the rule the profiles file holds every GitHub profile to (policy.ParseProfiles).
+func TestTheGitHubStandHasTheMinterRefuseAScopeThatLeavesMetadataOut(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewGitHubStand(GitHubOptions{Installations: map[string]int64{"acme-org": 7}}).Answer)
+	app := secrets.GitHubApp{Base: service.URL()}
+
+	bare := acmeScope()
+	bare.Permissions = map[string]string{"contents": "read"}
+	minted, err := app.Mint(t.Context(), secrets.MintRequest{Value: gitHubAppValue(t), GitHub: bare})
+	if err == nil || minted.Value != "" || secrets.MintErrorClass(err) != "upstream" || !strings.Contains(err.Error(), "did not name") {
+		t.Fatalf("mint of a scope leaving metadata out = %q, %v (class %s); want nothing released, class upstream, naming the permission the request did not name", minted.Value, err, secrets.MintErrorClass(err))
+	}
+	if _, err := app.Mint(t.Context(), secrets.MintRequest{Value: gitHubAppValue(t), GitHub: acmeScope()}); err != nil {
+		t.Fatalf("mint of the same scope naming metadata at read: %v", err)
 	}
 }
 
@@ -407,7 +436,7 @@ func TestTheGitHubStandHoldsThePermissionsItWasGiven(t *testing.T) {
 
 	t.Run("the broker's minter, for a profile asking past acme-org's map", func(t *testing.T) {
 		scope := acmeScope()
-		scope.Permissions = map[string]string{"contents": "write", "issues": "read", "workflows": "write"}
+		scope.Permissions = map[string]string{"contents": "write", "issues": "read", "metadata": "read", "workflows": "write"}
 		minted, err := secrets.GitHubApp{Base: service.URL()}.Mint(t.Context(), secrets.MintRequest{Value: gitHubAppValue(t), GitHub: scope})
 		if err != nil {
 			t.Fatalf("mint a profile asking past acme-org's map: %v", err)
@@ -421,8 +450,8 @@ func TestTheGitHubStandHoldsThePermissionsItWasGiven(t *testing.T) {
 			Permissions map[string]string `json:"permissions"`
 		}
 		if last.Path != "/app/installations/7/access_tokens" || json.Unmarshal([]byte(last.Body), &sent) != nil ||
-			!maps.Equal(sent.Permissions, map[string]string{"contents": "read", "workflows": "write"}) {
-			t.Fatalf("the stand-in was last asked %s %s with %s; want acme-org's token asking for contents at read and workflows at write", last.Method, last.Path, last.Body)
+			!maps.Equal(sent.Permissions, map[string]string{"contents": "read", "metadata": "read", "workflows": "write"}) {
+			t.Fatalf("the stand-in was last asked %s %s with %s; want acme-org's token asking for contents at read, metadata at read and workflows at write", last.Method, last.Path, last.Body)
 		}
 	})
 }

@@ -6,10 +6,17 @@ import (
 	"time"
 )
 
-// MintRequest is one release's input to a minter: the secret's stored value, its name, its type
-// and whether the policy snapshot checked for this release holds it as human tier. The Azure
-// minter requires that name to match its configured secret and HumanTier to be true. Type is the
-// secret's type tag, which the HTTP minters count their attempts under
+// MintRequest is one release's input to a minter: the secret's stored value, its name, the name
+// of the stored secret that value was read from, its type and whether the policy snapshot checked
+// for this release holds it as human tier.
+// Name is what the session asked for: a profile's name, or a stored secret's own.
+// Source is the policy name of the stored secret the value was read from: a profile's source, and
+// Name itself for a secret served by its own name. The deployment's settings that bind a minted
+// type name stored secrets (BROKER_SERVICE_ACCOUNT_SECRETS, BROKER_AZURE_LOGIN_SECRET), so the
+// google-service-account minter looks its binding up by Source, and the Azure minter requires
+// Source to be its configured secret, with HumanTier true: a profile of that secret mints under
+// its source's binding, whatever its own name.
+// Type is the secret's type tag, which the HTTP minters count their attempts under
 // (broker_mint_attempts_total).
 // GitHub is a github-app profile's scope in effect for this release, which only the github-app
 // minter reads and every other type leaves nil; that minter refuses a request without one, since
@@ -21,6 +28,7 @@ import (
 // asked for before the tag existed.
 type MintRequest struct {
 	Name         string
+	Source       string
 	Type         string
 	HumanTier    bool
 	Value        string
@@ -44,6 +52,15 @@ type MintRequest struct {
 	// leaves its token live until it lapses. So a caller learns the verdict before it spends
 	// anything on the release itself.
 	Check bool
+}
+
+// named is how a minter's refusal names the secret a release is for: its name, and, for a profile
+// of another name, the stored secret it is a profile of, whose name the deployment binds.
+func (r MintRequest) named() string {
+	if r.Source == r.Name {
+		return r.Name
+	}
+	return r.Name + ", a profile of " + r.Source
 }
 
 // GitHubScope is a profile's scope in effect for one release: the target's when the request
@@ -131,6 +148,16 @@ var (
 // refused would read an empty cut, which every probe meets again, as the first repository it
 // asks about (requests' narrowingCause).
 var ErrMintEmptyCut = fmt.Errorf("%w: the profile's permissions, cut to what the installation holds, leave none", ErrMintNarrowingRefused)
+
+// ErrMintSeveralInstallations is the refusal of a value-token profile whose one account the App
+// has more than one installation on, logins that differ only in case, which GitHub compares as
+// one: the release hands over one installation's bare token, and a token minted for each would
+// leave all but that one live with nobody holding it, so the minter asks GitHub for no token at
+// all (GitHubApp.Mint). It is no class of its own: it wraps ErrMintNarrowingRefused, as
+// ErrMintEmptyCut does, and for the same reason: the broker's check before an approval must tell
+// it from GitHub's 422, since a search for the repository GitHub refused would meet it at every
+// probe and blame the first repository it asks about (requests' narrowingCause).
+var ErrMintSeveralInstallations = fmt.Errorf("%w: the profile releases one account's bare token, and the App has more than one installation on that account", ErrMintNarrowingRefused)
 
 // ErrMintNoInstallation is the one refusal of GitHub's that is about the account a release is
 // for: the App has no installation on any account the profile's scope names (GitHubApp.Mint). It
