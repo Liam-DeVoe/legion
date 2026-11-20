@@ -958,10 +958,10 @@ RULES = {
           for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/tests3/storesteps_test.go": reads(
         (".github/workflows/dispatch-browser.yaml",
-         "internal/tests3/storesteps_test.go:100 os.ReadFile (workflow :61, ../../../..): "
+         "internal/tests3/storesteps_test.go:109 os.ReadFile (workflow :68, ../../../..): "
          "TestEveryWaitAndCheckOfTheScriptHasACase holds the shard job's file-store steps to their bounds"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
-         "internal/tests3/storesteps_test.go:127 os.ReadFile (repository :60, ../../../..) reads the script the "
+         "internal/tests3/storesteps_test.go:163 os.ReadFile (repository :67, ../../../..) reads the script the "
          "shard job's wait step runs, which TestEveryWaitAndCheckOfTheScriptHasACase holds to its bounds")),
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),

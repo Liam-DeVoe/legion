@@ -25,6 +25,13 @@ import (
 //     or a wait by any other command (`wget`, `weed shell`, `tail`, `.`) is named, and no
 //     function runs itself again. set runs only as `set -eu`, so no step turns off the exit on a
 //     failed command or sets its arguments.
+//   - A step runs in the job's shell, sh -e, the POSIX sh this program reads: no store step names
+//     a shell: of its own, and neither the shard job nor the workflow a defaults.run.shell, since
+//     another shell may read a word otherwise (bash makes {--max-time,0,http://...} three words,
+//     and gives curl --max-time 0). A script a step's run: names runs as a program of its own:
+//     the shell its first line names runs it, and the runner's -e does not reach it. So its first
+//     line is #!/bin/sh and its first statement `set -eu` (scriptHeadFindings, which holds
+//     one-collection.sh to the same), or a failed command, prepare among them, would not end it.
 //   - They ask the store things only through the wait step's s3, whose one kind of curl is
 //     `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`: -q, first, reads no .curlrc,
 //     which could make curl try again; -g makes a URL's [..] and {..} text, not a list of
@@ -81,8 +88,13 @@ var stepCommands = map[string]bool{
 var scriptStep = regexp.MustCompile(`^\.github/scripts/[A-Za-z0-9._-]+\.sh$`)
 
 // A storeStep is the shell one step of storeSteps runs, and the file it is read from: the step's
-// run: text, from the workflow, or the script that text names.
-type storeStep struct{ file, text string }
+// run: text, from the workflow, or the script that text names (script). shell is the step's own
+// shell: key, or else its job's or its workflow's defaults.run.shell, "" where none names one.
+type storeStep struct {
+	file, text string
+	script     bool
+	shell      string
+}
 
 // planted answers the step with old replaced by replacement in its text, once (replaceOnce).
 func (s storeStep) planted(t *testing.T, old, replacement string) storeStep {
@@ -91,44 +103,69 @@ func (s storeStep) planted(t *testing.T, old, replacement string) storeStep {
 	return s
 }
 
-// storeStepRuns answers the shell each step of storeSteps runs, read from workflow's shard job:
-// its run: text, or, where that text is the path of a script of this repository and nothing else,
-// that script. A run: text that names a script with anything around it is read as it stands, so
-// the script's name is a command the rules name.
-func storeStepRuns(t *testing.T) map[string]storeStep {
+// workflowText answers the text of workflow.
+func workflowText(t *testing.T) string {
 	t.Helper()
 	raw, err := os.ReadFile(workflow)
 	if err != nil {
 		t.Fatalf("read %s: %v", workflow, err)
 	}
+	return string(raw)
+}
+
+// storeStepRuns answers the shell each step of storeSteps runs, read from text, workflow's shard
+// job: its run: text, or, where that text is the path of a script of this repository and nothing
+// else, that script; and the shell that runs that text. A run: text that names a script with
+// anything around it is read as it stands, so the script's name is a command the rules name.
+func storeStepRuns(t *testing.T, text string) map[string]storeStep {
+	t.Helper()
+	type defaults struct {
+		Run struct {
+			Shell string `yaml:"shell"`
+		} `yaml:"run"`
+	}
 	var parsed struct {
-		Jobs map[string]struct {
-			Steps []struct {
-				Name string `yaml:"name"`
-				Run  string `yaml:"run"`
+		Defaults defaults `yaml:"defaults"`
+		Jobs     map[string]struct {
+			Defaults defaults `yaml:"defaults"`
+			Steps    []struct {
+				Name  string `yaml:"name"`
+				Run   string `yaml:"run"`
+				Shell string `yaml:"shell"`
 			} `yaml:"steps"`
 		} `yaml:"jobs"`
 	}
-	if err := yaml.Unmarshal(raw, &parsed); err != nil {
+	if err := yaml.Unmarshal([]byte(text), &parsed); err != nil {
 		t.Fatalf("parse %s: %v", workflow, err)
 	}
+	job := parsed.Jobs["shard"]
 	runs := map[string]storeStep{}
-	for _, step := range parsed.Jobs["shard"].Steps {
-		if slices.Contains(storeSteps, step.Name) {
-			runs[step.Name] = storeStep{path.Base(workflow), step.Run}
+	for _, step := range job.Steps {
+		if !slices.Contains(storeSteps, step.Name) {
+			continue
 		}
+		shell := step.Shell
+		if shell == "" {
+			shell = job.Defaults.Run.Shell
+		}
+		if shell == "" {
+			shell = parsed.Defaults.Run.Shell
+		}
+		runs[step.Name] = storeStep{file: path.Base(workflow), text: step.Run, shell: shell}
 	}
 	for _, name := range storeSteps {
-		run := runs[name].text
+		step := runs[name]
+		run := step.text
 		if run == "" {
 			t.Fatalf("%s: the shard job has no step %q that runs a script", workflow, name)
 		}
 		if script := strings.TrimSpace(run); scriptStep.MatchString(script) {
-			text, err := os.ReadFile(repository + script)
+			raw, err := os.ReadFile(repository + script)
 			if err != nil {
 				t.Fatalf("%s: step %q runs %s: %v", workflow, name, script, err)
 			}
-			runs[name] = storeStep{path.Base(script), string(text)}
+			step.file, step.text, step.script = path.Base(script), string(raw), true
+			runs[name] = step
 		}
 	}
 	return runs
@@ -247,7 +284,8 @@ func endsOnTimeout(decl *syntax.FuncDecl) bool {
 }
 
 // stepFindings answers what the shell of the shard job's step name (step: its run: text, or the
-// script that text names) breaks of the rules above for the workflow's store steps.
+// script that text names, with the shell that runs it) breaks of the rules above for the
+// workflow's store steps.
 func stepFindings(name string, step storeStep) []string {
 	var findings []string
 	lines := strings.Split(step.text, "\n")
@@ -257,6 +295,14 @@ func stepFindings(name string, step storeStep) []string {
 			shown = strings.TrimSpace(lines[line-1])
 		}
 		findings = append(findings, fmt.Sprintf("%s, step %q, line %d: %s: %s", step.file, name, line, what, shown))
+	}
+	if step.shell != "" {
+		findings = append(findings, fmt.Sprintf("%s, step %q: a shell of its own (shell: %s, the step's or a defaults.run.shell), which may read a word otherwise than this program, which reads the step as the POSIX sh the job runs it in with neither, sh -e, so it may hold a wait past its bound", step.file, name, step.shell))
+	}
+	if step.script {
+		for _, head := range scriptHeadFindings(step.text) {
+			finding(head.line, head.what)
+		}
 	}
 	read := readShell(step.text)
 	for _, refused := range read.refused {

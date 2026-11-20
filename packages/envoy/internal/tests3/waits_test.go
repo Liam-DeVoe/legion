@@ -104,6 +104,10 @@ var goBounds = []goBound{
 //     registered's own "$1" as its seconds, shifts and sets none, and the script sets a trap on
 //     EXIT alone, whose command runs once it ends: a trap on any other condition runs its
 //     command in the middle of a wait, where it may set that wait's deadline again.
+//   - The script runs as a program of its own (the check step, the wait script and tests3.Start
+//     run it by its path), in the shell its first line names and out of reach of a runner's -e:
+//     its first line is #!/bin/sh and its first statement `set -eu` (scriptHeadFindings), so the
+//     shell that runs it is the POSIX sh this program reads, and a failed command ends it.
 //   - No check ends the script with no message for a case to want: exit runs only in fail and
 //     usage, return only as `return "$status"`, and no test (`[`, `test`, `grep`) runs where
 //     nothing acts on its failure (an if, until or while, || or &&), which `set -e` turns into an
@@ -132,7 +136,8 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read seaweedfs.go: %v", err)
 	}
-	steps := storeStepRuns(t)
+	workflowSource := workflowText(t)
+	steps := storeStepRuns(t, workflowSource)
 	t.Run("one-collection.sh", func(t *testing.T) {
 		for _, finding := range scriptFindings(oneCollection, storeCases, scriptBounds, cases) {
 			t.Error(finding)
@@ -179,6 +184,13 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 				return stepFindings(storeSteps[0], steps[storeSteps[0]].planted(t, old, replacement))
 			}
 		}
+		// workflowPlant plants a text in the workflow and answers the findings of its step name.
+		workflowPlant := func(old, replacement, name string) func() []string {
+			return func() []string {
+				return stepFindings(name, storeStepRuns(t, replaceOnce(t, filepath.Base(workflow), workflowSource, old, replacement))[name])
+			}
+		}
+		prepare := "one-collection.sh prepare dispatch-e2e-objects \"$RUNNER_TEMP/weed.log\"\n"
 		const (
 			tail     = "a tail that is not `tail -n <lines> [--] <file>...`"
 			unknown  = "a word whose value this program cannot know"
@@ -196,6 +208,9 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			nested   = "a wait inside another wait"
 			arith    = "arithmetic other than a wait's deadline statement"
 			curlLine = `curl -q -g --proto =http -sf --max-time "$seconds" "$@"`
+			noSetEU  = "a first statement other than `set -eu`"
+			notSh    = "a first line other than #!/bin/sh"
+			ownShell = "a shell of its own"
 		)
 		// One wait of the wait step, read by the program, after its deadline: shape is what
 		// stands around it.
@@ -358,6 +373,26 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			// The steps' set runs only as set -eu.
 			{"a set in the wait step that turns off the exit on a failure", wait("set -eu\n", "set +e\n"), "a set other than `set -eu`"},
 			{"a set in the wait step that sets its arguments", wait("set -eu\n", "set -eu\nset -- x\n"), "a set other than `set -eu`"},
+			{"a set -eu that turns the exit off after it", wait("set -eu\n", "set -eu +e\n"), "a set other than `set -eu`"},
+			// A script runs as a program of its own: the shell its first line names runs it, and no
+			// runner's -e reaches it, so its first statement is set -eu, or a failed prepare goes on.
+			{"a wait script with no set -eu", wait("set -eu\n", ""), noSetEU},
+			{"a wait script whose set -eu comes after prepare", func() []string {
+				return stepFindings(waitStep, steps[waitStep].planted(t, "set -eu\n", "").planted(t, prepare, prepare+"set -eu\n"))
+			}, noSetEU},
+			{"a wait script whose set -eu is in a function", wait("set -eu\n", "strict() {\n  set -eu\n}\n"), noSetEU},
+			{"a wait script of no statement", func() []string {
+				return stepFindings(waitStep, storeStep{file: steps[waitStep].file, text: "#!/bin/sh\n", script: true})
+			}, noSetEU},
+			{"one-collection.sh with no set -eu", script("set -eu\n", ""), noSetEU},
+			{"a wait script that bash runs, with a word bash splits", func() []string {
+				return stepFindings(waitStep, steps[waitStep].planted(t, "#!/bin/sh\n", "#!/usr/bin/env bash\n").
+					planted(t, "store=http://", "s3 10 \"the root\" -o /dev/null {--max-time,0,http://127.0.0.1:18333/}\nstore=http://"))
+			}, notSh},
+			{"one-collection.sh that bash runs", script("#!/bin/sh\n", "#!/usr/bin/env bash\n"), notSh},
+			{"a store step with a shell of its own", workflowPlant("        id: file-store\n", "        id: file-store\n        shell: bash -e {0}\n", waitStep), ownShell},
+			{"a shard job whose steps a default shell runs", workflowPlant("  shard:\n    needs: binaries\n", "  shard:\n    needs: binaries\n    defaults:\n      run:\n        shell: bash -e {0}\n", storeSteps[0]), ownShell},
+			{"a workflow whose steps a default shell runs", workflowPlant("\njobs:\n", "\ndefaults:\n  run:\n    shell: bash -e {0}\n\njobs:\n", storeSteps[2]), ownShell},
 			// A command the rules read, or the deadline a wait reads, that the file makes its own.
 			{"a date of the wait step's own", wait("s3() {", "date() {\n  echo 0\n}\ns3() {"), ruled},
 			{"a date of the script's own", script("\nwithin() {\n", "\ndate() {\n  echo 0\n}\n\nwithin() {\n"), ruled},
@@ -434,6 +469,7 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			// A trap on a condition other than EXIT runs its command in the middle of a wait.
 			{"a trap on CHLD that runs a wait", script(`trap 'rm -rf "$work"' EXIT`, "trap 'rm -rf \"$work\"' EXIT\nagain() {\n  if [ -z \"${busy:-}\" ]; then busy=1; grow; busy=; fi\n}\ntrap again CHLD"), "a trap on a condition other than EXIT"},
 			{"a trap on CHLD that shifts", script(`trap 'rm -rf "$work"' EXIT`, "trap 'rm -rf \"$work\"' EXIT\ntrap shift CHLD"), "a trap on a condition other than EXIT"},
+			{"a trap on EXIT and CHLD that runs a wait", script(`trap 'rm -rf "$work"' EXIT`, "trap 'rm -rf \"$work\"' EXIT\nagain() {\n  if [ -z \"${busy:-}\" ]; then busy=1; grow; busy=; fi\n}\ntrap again EXIT CHLD"), "a trap on a condition other than EXIT"},
 			{"a tail given to eval", inPrepare("  eval \"tail -f \\\"$log\\\"\"\n"), "runs eval, which is not in scriptCommands"},
 			{"an alias that follows the log", inPrepare("  alias poll=\"tail -f \\\"$log\\\"\"\n  poll\n"), "runs alias, which is not in scriptCommands"},
 			{"a tail given to a within whose seconds are unquoted arithmetic", inPrepare("  within $((60)) rule \"$work/rule.txt\" tail -f \"$log\"\n"), tail},
@@ -781,6 +817,9 @@ func scriptFindings(script string, cases []storeCase, bounds []scriptBound, name
 	for _, refused := range read.refused {
 		finding(refused.line, refused.what)
 	}
+	for _, head := range scriptHeadFindings(script) {
+		finding(head.line, head.what)
+	}
 	selfRunning := read.selfRunning()
 	for _, name := range slices.Sorted(maps.Keys(selfRunning)) {
 		finding(int(read.functions[name].Pos().Line()), "a function that runs itself again ("+selfRunning[name]+"), so nothing but a bound ends it")
@@ -1052,4 +1091,31 @@ func exitTrap(args []shellWord) bool {
 		args = args[1:]
 	}
 	return len(args) == 2 && args[1].is("EXIT")
+}
+
+// scriptHeadFindings answers, by line, what the head of a script that runs as a program of its
+// own breaks (one-collection.sh, and a script a store step's run: names). The kernel runs such a
+// file in the shell its first line names, so that line is #!/bin/sh, the POSIX sh this program
+// reads: bash, for one, reads {--max-time,0,http://...}, one word to a POSIX parse, as three, and
+// gives curl --max-time 0. No runner's -e reaches such a program, so its first statement is
+// `set -eu`: with it missing, after a command or in a function, a failed command (one-collection.sh
+// prepare among them) does not end the script, which goes on to write.
+func scriptHeadFindings(text string) []shellRefusal {
+	var found []shellRefusal
+	if first, _, _ := strings.Cut(text, "\n"); first != "#!/bin/sh" {
+		found = append(found, shellRefusal{1, "a first line other than #!/bin/sh: the file runs as a program in the shell that line names, which may read a word otherwise than this program, which reads POSIX sh, so it may hold a wait past its bound"})
+	}
+	file, err := parseShell(text)
+	if err != nil {
+		// The reader refuses a file that does not parse, by its own finding.
+		return found
+	}
+	if len(file.Stmts) == 0 || !callIs(file.Stmts[0], "set", "-eu") {
+		line := 1
+		if len(file.Stmts) > 0 {
+			line = int(file.Stmts[0].Pos().Line())
+		}
+		found = append(found, shellRefusal{line, "a first statement other than `set -eu`: the file runs as a program of its own, which no runner's -e reaches, so a failed command does not end it"})
+	}
+	return found
 }

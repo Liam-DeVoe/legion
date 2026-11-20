@@ -188,8 +188,13 @@ a go command compiles, so a go command here would fall out of check-ci-filters.s
 reduction and be counted as reading every Go file of the repository. For the same reason
 this job pins no `defaults.run.shell` and no step-level `shell:`. So every `run:` of this
 job is executed by `sh -e {0}`, not bash - measured in job 128496236572, whose every step
-logs that shell - and each one must stay POSIX. A script a step calls carries its own
-`#!/usr/bin/env bash` and is unaffected.
+logs that shell - and each one must stay POSIX. A script a step calls runs in the shell its
+own first line names, out of reach of that `-e`: the suite's, PostgreSQL's and the record's
+scripts carry `#!/usr/bin/env bash`. The file store's wait script and the one-collection.sh
+it runs carry `#!/bin/sh` and begin with `set -eu`, and packages/envoy's
+TestEveryWaitAndCheckOfTheScriptHasACase, which reads them as POSIX sh, refuses any other
+first line or first statement for them, and a `shell:` key or a `defaults.run.shell` for the
+file-store steps.
 
 The stacks' PostgreSQL binaries and this run's worker count are set on the browser step's
 own command line, where they have always been, rather than in an `env:`.
