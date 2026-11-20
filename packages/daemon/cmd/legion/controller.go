@@ -12,9 +12,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -34,6 +37,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
+	"github.com/sjawhar/legion/daemon/internal/shim"
 )
 
 // controllerSecretVariable names the controller capability's secret: its file is written under it,
@@ -334,25 +338,90 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(promptFile) +
 		" " + shellprefix.Word(daemon.ControllerStartCommand)
 	fmt.Fprintf(stderr, "[legion] starting the controller for %s against %s; state in %s\n", cfg.Project, cfg.DaemonURL, stateDir)
-	// Interactive and in the foreground: the operator's terminal is Oh My Pi's. The child is not
-	// bound to ctx — a Ctrl-C reaches Oh My Pi through the terminal's process group and is its to
-	// handle, while this process, whose signals main has already caught, waits for its exit.
-	omp := exec.Command("sh", "-c", command)
+	// Interactive and in the foreground: the operator's terminal is Oh My Pi's, and so is the
+	// terminal's process group, which a terminal's own signals reach whole (runOhMyPi). The shell
+	// execs the command line, so Oh My Pi runs in the process started here, as in a pane, and a
+	// signal sent to that pid is Oh My Pi's rather than a shell's that would leave it running.
+	omp := exec.Command("sh", "-c", "exec "+command)
 	omp.Dir = controllerDir
 	for _, name := range slices.Sorted(maps.Keys(env)) {
 		omp.Env = append(omp.Env, name+"="+env[name])
 	}
 	omp.Stdin, omp.Stdout, omp.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := omp.Run(); err != nil {
-		switch end := procgroup.Ended(err); {
-		case end.Exited != nil:
-			return end.Exited.ExitCode(), nil
-		case end.Signal != "":
-			return 1, nil // killed by a signal
+	return runOhMyPi(ctx, omp, ohMyPiStopGrace)
+}
+
+// ohMyPiStopGrace is how long `legion controller start` waits for its Oh My Pi to exit once it has
+// sent it a signal, before it kills it (runOhMyPi): shim.DefaultGrace, the time a role's stop gives
+// the same Oh My Pi to exit on its SIGTERM before that stop kills it.
+const ohMyPiStopGrace = shim.DefaultGrace
+
+// runOhMyPi runs omp, the controller's Oh My Pi, and answers its exit code, or 128+<signal> once a
+// signal sent to this process was sent on to it.
+//
+// Oh My Pi shares this process's group, the terminal's foreground group, and is not bound to ctx:
+// a terminal's Ctrl-C, SIGHUP or SIGQUIT reaches it with this process, and is its to handle, and
+// a cancel of ctx could only kill it outright. What the terminal does not send is sent on instead:
+// a SIGTERM, a SIGHUP or a SIGQUIT sent to this process's own pid alone, which main's
+// signal.NotifyContext and the command's hang-up and quit watch (stoppingOnHangupOrQuit) catch, so
+// that without this Oh My Pi would run on, never told, with this process waiting for it. Each goes
+// to omp's pid, which the shell exec'd Oh My Pi into, never to the group, which would reach this
+// process and every sibling of it as well (forwardTo's reason). Where the terminal sent it, Oh My
+// Pi gets it twice, as gh does under `legion gh` (forwardTo). SIGINT is not sent on: the terminal
+// sends it to the whole group every time, so there is no SIGINT this would be Oh My Pi's only way
+// of hearing. SIGHUP is sent on only where this process was not started with it ignored, for
+// runGhChild's reason.
+//
+// From the first signal sent on, the wait for Oh My Pi is bounded at grace; one still running then
+// is killed, so this command never outlives its Oh My Pi, nor waits on it without end. The
+// forwarding is armed before the start, so a signal in the moment between the fork and the wait is
+// held and sent on; one that came before it, which cancelled ctx, starts no Oh My Pi.
+func runOhMyPi(ctx context.Context, omp *exec.Cmd, grace time.Duration) (int, error) {
+	forwarded := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT}
+	if !signal.Ignored(syscall.SIGHUP) {
+		forwarded = append(forwarded, syscall.SIGHUP)
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, forwarded...)
+	defer signal.Stop(signals)
+	if cause := context.Cause(ctx); cause != nil {
+		if status, ok := endedBySignal(cause); ok {
+			return status, nil
 		}
+		return 0, fmt.Errorf("run Oh My Pi: %w", cause)
+	}
+	if err := omp.Start(); err != nil {
 		return 0, fmt.Errorf("run Oh My Pi: %w", err)
 	}
-	return 0, nil
+	exited := make(chan error, 1)
+	go func() { exited <- omp.Wait() }()
+	var sent syscall.Signal
+	var killAt <-chan time.Time
+	for {
+		select {
+		case err := <-exited:
+			switch end := procgroup.Ended(err); {
+			case sent != 0:
+				return 128 + int(sent), nil
+			case err == nil:
+				return 0, nil
+			case end.Exited != nil:
+				return end.Exited.ExitCode(), nil
+			case end.Signal != "":
+				return 1, nil // killed by a signal
+			}
+			return 0, fmt.Errorf("run Oh My Pi: %w", err)
+		case sig := <-signals:
+			_ = omp.Process.Signal(sig)
+			if sent == 0 {
+				sent = sig.(syscall.Signal)
+				killAt = time.After(grace)
+			}
+		case <-killAt:
+			_ = omp.Process.Kill()
+			killAt = nil
+		}
+	}
 }
 
 // controllerEnvironment is what the controller's Oh My Pi is told on top of the operator's own

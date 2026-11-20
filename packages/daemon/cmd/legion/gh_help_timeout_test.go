@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/heldprocess"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 )
@@ -37,7 +38,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	timeout := ghHelpTimeout
 	ghHelpTimeout = time.Second
 	t.Cleanup(func() { ghHelpTimeout = timeout })
-	killRecordedHelper(t, pidFile, helperSeconds)
+	heldprocess.KillOnCleanup(t, pidFile, helperSeconds)
 
 	_, err := readGhHelp(context.Background(), gh, os.Environ(), []string{"pr"})
 	if err == nil || !strings.Contains(err.Error(), "did not answer its help within") {
@@ -53,7 +54,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	}
 	// The group's stop is SIGTERM, then SIGKILL after procgroup.StopGrace; the helper, a sleep,
 	// ends on the SIGTERM, and the bound leaves room for a loaded machine to reap it.
-	for deadline := time.Now().Add(procgroup.StopGrace + 5*time.Second); helperRunning(pid, helperSeconds); time.Sleep(50 * time.Millisecond) {
+	for deadline := time.Now().Add(procgroup.StopGrace + 5*time.Second); heldprocess.Running(pid, helperSeconds); time.Sleep(50 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("gh's helper (pid %d) is still running after the help read gave up; want the read's timeout to stop gh's whole process group", pid)
 		}
@@ -111,11 +112,11 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 			name: "the help read", seconds: "297", check: passes, keepsNothing: true,
 			gh: func(pidFile, seconds string) string {
 				return "#!/bin/sh\nfor last; do :; done\nif [ \"$last\" = --help ]; then\n  cat '" + filepath.Join(help, "gh.txt") + "'\n" +
-					holdsStandIn(pidFile, seconds) + "fi\nexit 0\n"
+					heldprocess.Script(pidFile, seconds) + "fi\nexit 0\n"
 			},
 		},
 		{
-			name: "the shared check", seconds: "296", check: holdsStandIn,
+			name: "the shared check", seconds: "296", check: heldprocess.Script,
 			gh: func(string, string) string { return ghStandInPrefix(help) + "exit 0\n" },
 		},
 		{
@@ -125,7 +126,7 @@ func TestASignalToLegionGhsGroupStopsWhatItStartedBeforeGh(t *testing.T) {
 			name: "the guard's visibility read", seconds: "295", check: passes,
 			gh: func(pidFile, seconds string) string {
 				return ghStandInHelp(help) +
-					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + holdsStandIn(pidFile, seconds) + ";;\nesac\nexit 0\n"
+					"case \" $* \" in\n" + ghVisibilityReadArgv + ")\n" + heldprocess.Script(pidFile, seconds) + ";;\nesac\nexit 0\n"
 			},
 		},
 	} {

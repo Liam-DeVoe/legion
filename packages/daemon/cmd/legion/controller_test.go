@@ -356,7 +356,8 @@ func newControllerStart(t *testing.T, d *controllerDaemon, opts controllerOption
 	// file `legacy-loaded-from` names, when there is one. As the controller it records its argv,
 	// a copy of the file its --append-system-prompt names and that file's mode (the command removes
 	// the file once Oh My Pi exits), environment, and working directory, and exits with the code
-	// the test asked for.
+	// the test asked for. Under LEGION_TEST_HOLD it instead writes its pid to `held` and waits until
+	// the file that variable names exists, ignoring each signal LEGION_TEST_HOLD_IGNORES names.
 	omp := filepath.Join(record, "omp")
 	script := fmt.Sprintf(`#!/bin/sh
 if [ "$1" = models ]; then
@@ -380,7 +381,8 @@ fi
 [ -f "$GH_CONFIG_DIR/hosts.yml" ] && cp "$GH_CONFIG_DIR/hosts.yml" %[1]s/hosts-at-start
 %[3]s
 if [ -n "$LEGION_TEST_HOLD" ]; then
-  : >%[1]s/held
+  [ -z "$LEGION_TEST_HOLD_IGNORES" ] || trap '' $LEGION_TEST_HOLD_IGNORES
+  echo $$ >%[1]s/held.new && mv %[1]s/held.new %[1]s/held
   i=0
   while [ "$i" -lt 1200 ] && [ ! -e "$LEGION_TEST_HOLD" ]; do i=$((i + 1)); sleep 0.1; done
   [ "$1" = --append-system-prompt ] && cp "$2" %[1]s/held-prompt

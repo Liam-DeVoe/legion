@@ -124,10 +124,10 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 // text shape's kind — and leaves the guard's wording alone when it is empty, which is what the
 // push shape wants: the guard already calls it "the push to origin".
 //
-// A signal that ended ctx — main's SIGINT or SIGTERM, or the SIGHUP leakCheckCommand catches — is
-// the status whatever the guard answered, 128+<signal> (endedBySignal), and nothing is printed:
-// the guard's answer is then the setup failure of a check the signal stopped, which says nothing
-// about the write and is not reported as if it did. The push is refused either way.
+// A signal that ended ctx — main's SIGINT or SIGTERM, or the SIGHUP or SIGQUIT leakCheckCommand
+// catches — is the status whatever the guard answered, 128+<signal> (endedBySignal), and nothing
+// is printed: the guard's answer is then the setup failure of a check the signal stopped, which
+// says nothing about the write and is not reported as if it did. The push is refused either way.
 func leakCheckReport(ctx context.Context, stderr io.Writer, what string, err error) int {
 	if status, ok := signalled(ctx); ok {
 		return status

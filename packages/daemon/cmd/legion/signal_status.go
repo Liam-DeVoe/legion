@@ -66,18 +66,16 @@ func hangupOrQuit(cause error) (syscall.Signal, bool) {
 // nothing. A signal that arrived just before stop is still read as one, so a caller reads the
 // context's cause after stop, and finds errHangup or errQuit there whenever this took one.
 //
-// A signal this process was started with ignored is left alone, for the reason runGhChild arms
-// no forwarding of SIGHUP there: arming it would undo a `nohup gh …`. With both ignored it is ctx
-// itself and arms nothing.
+// A SIGHUP this process was started with ignored is left alone, for the reason runGhChild arms no
+// forwarding of it there: arming it would undo a `nohup gh …`. SIGQUIT is watched whatever this
+// process was started with: the Go runtime keeps an inherited ignore of SIGHUP and SIGINT alone,
+// and puts its own handler over one of SIGQUIT, which ends the process with a goroutine dump
+// (sigInstallGoHandler, runtime/signal_unix.go; runGit's note in git.go), so a process started
+// with SIGQUIT ignored would die of it all the same without this watch.
 func hangupOrQuitCancels(ctx context.Context) (context.Context, func()) {
-	var watched []os.Signal
-	for _, sig := range []os.Signal{syscall.SIGHUP, syscall.SIGQUIT} {
-		if !signal.Ignored(sig) {
-			watched = append(watched, sig)
-		}
-	}
-	if len(watched) == 0 {
-		return ctx, func() {}
+	watched := []os.Signal{syscall.SIGQUIT}
+	if !signal.Ignored(syscall.SIGHUP) {
+		watched = append(watched, syscall.SIGHUP)
 	}
 	cancelled, cancel := context.WithCancelCause(ctx)
 	cause := func(sig os.Signal) error {

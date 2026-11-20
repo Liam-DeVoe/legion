@@ -2627,13 +2627,14 @@ func TestLegionGhLetsOnlyTheRateLimitReadBypassTheGuard(t *testing.T) {
 	}
 }
 
-// A SIGTERM or a SIGHUP sent to `legion gh`'s own pid reaches the gh it is waiting for, which is
-// what an exec'd gh — the shape this replaced — ended on. Neither signal reaches gh by itself:
-// the child is given no process group of its own on purpose, so a terminal's SIGINT reaches it
-// with the rest of the group, but a signal sent to one pid reaches that pid alone. Without the
-// forwarding a SIGTERM would end at main's own signal.NotifyContext, whose cancellation the
-// child's context has taken off, and gh would run on with nobody waiting for it, while a SIGHUP
-// would kill `legion gh` where it stood and leave gh running.
+// A SIGTERM, a SIGHUP or a SIGQUIT sent to `legion gh`'s own pid reaches the gh it is waiting for,
+// which is what an exec'd gh — the shape this replaced — ended on. None of them reaches gh by
+// itself: the child is given no process group of its own on purpose, so a terminal's SIGINT
+// reaches it with the rest of the group, but a signal sent to one pid reaches that pid alone.
+// Without the forwarding a SIGTERM would end at main's own signal.NotifyContext, whose
+// cancellation the child's context has taken off, and gh would run on with nobody waiting for it,
+// while a SIGHUP would kill `legion gh` where it stood, and a SIGQUIT would end it with a
+// goroutine dump, and leave gh running.
 //
 // The stand-in gh records the signal it caught and exits with a status of its own, so what this
 // reads is both halves: gh ended on the signal, and its status came back through `legion gh`.
@@ -2650,19 +2651,21 @@ func TestLegionGhForwardsATerminatingSignalToGh(t *testing.T) {
 	}{
 		{"SIGTERM", syscall.SIGTERM, 42},
 		{"SIGHUP", syscall.SIGHUP, 43},
+		{"SIGQUIT", syscall.SIGQUIT, 44},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			records := t.TempDir()
 			ghRecord, running := filepath.Join(records, "gh"), filepath.Join(records, "running")
-			// The stand-in traps both signals, says it is running once the traps are set, and
-			// then waits in ticks short enough that a trap runs within one of them: a shell runs
-			// no trap while a foreground command of its own is still going. The wait gives up
+			// The stand-in traps the three signals, says it is running once the traps are set,
+			// and then waits in ticks short enough that a trap runs within one of them: a shell
+			// runs no trap while a foreground command of its own is still going. The wait gives up
 			// after thirty seconds and exits 9, so a forwarding that never arrives is a failure
 			// naming it rather than a test binary that hangs until its deadline.
 			stub := filepath.Join(t.TempDir(), "gh")
 			script := ghStandInPrefix(help) +
 				"trap 'printf \"gh caught TERM\\n\" >>\"$GH_STANDIN_RECORD\"; exit 42' TERM\n" +
 				"trap 'printf \"gh caught HUP\\n\" >>\"$GH_STANDIN_RECORD\"; exit 43' HUP\n" +
+				"trap 'printf \"gh caught QUIT\\n\" >>\"$GH_STANDIN_RECORD\"; exit 44' QUIT\n" +
 				": >\"$GH_STANDIN_RUNNING\"\n" +
 				"ticks=0\nwhile [ \"$ticks\" -lt 600 ]; do sleep 0.05; ticks=$((ticks+1)); done\n" +
 				"printf 'gh caught nothing\\n' >>\"$GH_STANDIN_RECORD\"\nexit 9\n"

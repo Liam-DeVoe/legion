@@ -8,12 +8,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/sjawhar/envoy/heldprocess"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The commands an operator runs from a terminal whose work outlives a kill of the command alone,
@@ -65,7 +70,7 @@ func TestHangupOrQuitWatchHelper(t *testing.T) {
 	}
 	cmd := &cobra.Command{Use: "held", SilenceErrors: true, SilenceUsage: true}
 	stoppingOnHangupOrQuit(cmd, func(ctx context.Context, _ []string) int {
-		held := exec.CommandContext(ctx, "sh", "-c", holdsStandIn(pidFile, os.Getenv(hangupWatchSeconds)))
+		held := exec.CommandContext(ctx, "sh", "-c", heldprocess.Script(pidFile, os.Getenv(hangupWatchSeconds)))
 		procgroup.Configure(held)
 		if err := held.Run(); err != nil {
 			return 1
@@ -110,4 +115,121 @@ func TestAHangupOrQuitStopsTheWorkOfACommandUnderTheWatch(t *testing.T) {
 			signalWhileHeld(t, command, "a command under the hang-up and quit watch", pidFile, tc.seconds, "its work", tc.signal)
 		})
 	}
+}
+
+// controllerSignalHelper is the variable that makes TestControllerStartSignalHelper run: it names
+// the directory the helper and the test share.
+const controllerSignalHelper = "LEGION_TEST_CONTROLLER_SIGNAL_DIR"
+
+// TestControllerStartSignalHelper is the process
+// TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand signals: the real command
+// line of `legion controller start` (operatorMachine.run), whose recording Oh My Pi is held
+// (LEGION_TEST_HOLD), ignoring the signals LEGION_TEST_HOLD_IGNORES names. It writes the recording
+// directory's path to `record` in its directory, its stderr to `stderr` once the command ends, and
+// exits with the command's status.
+func TestControllerStartSignalHelper(t *testing.T) {
+	dir := os.Getenv(controllerSignalHelper)
+	if dir == "" {
+		t.Skip("subprocess helper")
+	}
+	c := newControllerStart(t, newControllerDaemon(t), controllerOptions{})
+	t.Setenv("LEGION_TEST_HOLD", filepath.Join(dir, "release"))
+	if err := os.WriteFile(filepath.Join(dir, "record"), []byte(c.record), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, _, stderr := c.run()
+	_ = os.WriteFile(filepath.Join(dir, "stderr"), []byte(stderr), 0o600)
+	os.Exit(code)
+}
+
+// TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand: a SIGHUP, a SIGQUIT or a
+// SIGTERM sent to `legion controller start`'s own pid while its Oh My Pi runs - a `kill` from
+// another terminal, which the terminal's own group, Oh My Pi's, does not get - is sent on to Oh My
+// Pi (runOhMyPi), and the command ends with 128+<signal> once Oh My Pi has: at once where Oh My Pi
+// ends on the signal, and at ohMyPiStopGrace, with Oh My Pi killed, where it ignores it. Before, the
+// command caught the signal, cancelled a context Oh My Pi is not bound to, and waited for Oh My Pi
+// for as long as the session lasted, with Oh My Pi never told.
+func TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		signal  syscall.Signal
+		ignores string
+	}{
+		{"SIGHUP", syscall.SIGHUP, ""},
+		{"SIGQUIT", syscall.SIGQUIT, ""},
+		{"SIGTERM", syscall.SIGTERM, ""},
+		{"SIGHUP to an Oh My Pi that ignores it", syscall.SIGHUP, "HUP"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			helper := exec.Command(os.Args[0], "-test.run=^TestControllerStartSignalHelper$", "-test.count=1")
+			helper.Env = append(os.Environ(), controllerSignalHelper+"="+dir, "LEGION_TEST_HOLD_IGNORES="+tc.ignores)
+			printed, err := os.Create(filepath.Join(dir, "printed"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { printed.Close() })
+			helper.Stdout, helper.Stderr = printed, printed
+			if err := helper.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan struct{})
+			go func() {
+				_ = helper.Wait()
+				close(exited)
+			}()
+			// The held Oh My Pi ends on the release whatever it ignores, and the helper's handle
+			// kills only the helper's own pid.
+			t.Cleanup(func() {
+				_ = os.WriteFile(filepath.Join(dir, "release"), nil, 0o600)
+				select {
+				case <-exited:
+				case <-time.After(30 * time.Second):
+					_ = helper.Process.Kill()
+					<-exited
+				}
+			})
+			var omp int
+			testwait.Eventually(t, "the controller's Oh My Pi to be held", func() bool {
+				record, err := os.ReadFile(filepath.Join(dir, "record"))
+				if err != nil {
+					return false
+				}
+				held, err := os.ReadFile(filepath.Join(string(record), "held"))
+				if err != nil {
+					return false
+				}
+				omp, err = strconv.Atoi(strings.TrimSpace(string(held)))
+				return err == nil && ohMyPiRuns(omp)
+			})
+			if err := helper.Process.Signal(tc.signal); err != nil {
+				t.Fatal(err)
+			}
+			bound := ohMyPiStopGrace + 5*time.Second
+			select {
+			case <-exited:
+			case <-time.After(bound):
+				raw, _ := os.ReadFile(printed.Name())
+				t.Fatalf("legion controller start still runs %s after a %v to its pid while Oh My Pi (pid %d) ran; want it to send the signal on and end within ohMyPiStopGrace: %s", bound, tc.signal, omp, raw)
+			}
+			if want := 128 + int(tc.signal); helper.ProcessState.ExitCode() != want {
+				stderr, _ := os.ReadFile(filepath.Join(dir, "stderr"))
+				t.Errorf("legion controller start after a %v to its pid = %v; want exit %d: %s", tc.signal, helper.ProcessState, want, stderr)
+			}
+			if ohMyPiRuns(omp) {
+				t.Errorf("the controller's Oh My Pi (pid %d) still runs after legion controller start ended on a %v to its pid; want it ended first", omp, tc.signal)
+			}
+		})
+	}
+}
+
+// ohMyPiRuns says whether pid is still the recording Oh My Pi: a shell running the script named
+// omp, read from /proc so a pid the kernel has given out since does not count.
+func ohMyPiRuns(pid int) bool {
+	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
+	if err != nil {
+		return false
+	}
+	argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	return len(argv) >= 2 && filepath.Base(argv[1]) == "omp"
 }
