@@ -38,14 +38,7 @@ func InsertTree(tree *pmdoc.Node) ([]byte, error) {
 // bytes, which every read still answers as stored. q reads the comments, inside the caller's
 // transaction where it has one.
 func MaskedVersionText(ctx context.Context, q Queryer, artifactID, markdown string, insertTree []byte) (string, error) {
-	if len(insertTree) == 0 {
-		return markdown, nil
-	}
-	tree, err := pmdoc.FromJSON(insertTree)
-	if err != nil {
-		return "", fmt.Errorf("read the insert tree of a version of document %s: %w", artifactID, err)
-	}
-	masked, err := deletedInsertMarks(ctx, q, artifactID, insertMarkIDs(tree))
+	tree, masked, err := versionMask(ctx, q, artifactID, insertTree)
 	if err != nil {
 		return "", err
 	}
@@ -58,6 +51,75 @@ func MaskedVersionText(ctx context.Context, q Queryer, artifactID, markdown stri
 		return "", fmt.Errorf("render a version of document %s without a deleted insert's words: %w", artifactID, err)
 	}
 	return text, nil
+}
+
+// MaskedVersionBlockTexts is, of blockIDs, blocks of one version of the document artifactID, each
+// block that holds words of an insert suggestion whose comment its author deleted and whose
+// suggestion no accept made document text, by its id, with the text a read of that block at the
+// version answers: its text in the version's tree rendered without those words, found by the one
+// lookup MaskedVersionText masks the version's whole text by (versionMask). insertTree is the
+// version's artifact_versions.insert_tree. A block that holds no such words is absent, and its
+// caller answers the text the block index recorded of it (refs.BlockTextAt), as it answers the
+// blocks of a version that stores no tree: a pinned block reference's text and the first lines of
+// a pinned short block id's candidates (api's blockReferenceNode and wholeID).
+//
+// A block is named in the tree by its id attribute (pmdoc.BlockIDAttr), and its text is the
+// markdown its byte range in the render holds (pmdoc.RenderWithBlockOffsets): the range the block
+// index records a version's text of the block over (refs.PlanBlocks, markdown[From:To]), the first
+// block of a repeated id being the one recorded, as there. The words stand in every block around
+// them too - the paragraph of a list item and the list holding it alike - and each of those holds
+// them.
+func MaskedVersionBlockTexts(ctx context.Context, q Queryer, artifactID string, insertTree []byte, blockIDs []string) (map[string]string, error) {
+	if len(blockIDs) == 0 {
+		return nil, nil
+	}
+	tree, masked, err := versionMask(ctx, q, artifactID, insertTree)
+	if err != nil || len(masked) == 0 {
+		return nil, err
+	}
+	holding := map[string]bool{}
+	blocksHoldingMasked(tree, masked, holding)
+	asked := map[string]bool{}
+	for _, id := range blockIDs {
+		if holding[id] {
+			asked[id] = true
+		}
+	}
+	if len(asked) == 0 {
+		return nil, nil
+	}
+	dropMarkedNodes(tree, masked)
+	markdown, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
+	if err != nil {
+		return nil, fmt.Errorf("render a version of document %s without a deleted insert's words: %w", artifactID, err)
+	}
+	texts := make(map[string]string, len(asked))
+	for _, offset := range offsets {
+		if _, found := texts[offset.ID]; found || !asked[offset.ID] {
+			continue
+		}
+		texts[offset.ID] = markdown[offset.From:offset.To]
+	}
+	return texts, nil
+}
+
+// versionMask is what a version of the document artifactID is masked by: its insert tree
+// (artifact_versions.insert_tree) read back, and the marks of that tree's inserts whose words no
+// read gives (deletedInsertMarks). masked is empty where the version stores no tree or every
+// insert of it stands, and the tree is then of no use to the caller.
+func versionMask(ctx context.Context, q Queryer, artifactID string, insertTree []byte) (*pmdoc.Node, map[string]bool, error) {
+	if len(insertTree) == 0 {
+		return nil, nil, nil
+	}
+	tree, err := pmdoc.FromJSON(insertTree)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read the insert tree of a version of document %s: %w", artifactID, err)
+	}
+	masked, err := deletedInsertMarks(ctx, q, artifactID, insertMarkIDs(tree))
+	if err != nil {
+		return nil, nil, err
+	}
+	return tree, masked, nil
 }
 
 // deletedInsertMarksSQL answers, of the insert suggestion marks $2 of document $1, each one whose
@@ -145,6 +207,15 @@ func insertMarkID(mark pmdoc.Mark) (string, bool) {
 	return id, ok && id != ""
 }
 
+// InsertMarkPath is the jsonpath that finds, in a stored insert tree (artifact_versions.insert_tree,
+// pmdoc's JSON, where a mark is {"type", "attrs"}), the mark insertMarkID reads in Go: a
+// suggestion's mark recording the kind insert, whose id is the path's variable id. A statement
+// that finds an insert among the stored trees, which reads no tree into Go, finds it by this rule
+// (jsonb_path_exists(insert_tree, InsertMarkPath, jsonb_build_object('id', <mark id>))): the
+// kept answers and the answer runs whose text held a deleted insert's words (api's
+// answerEndedByDelete and goingItemText).
+const InsertMarkPath = `$.** ? (@.type == "` + string(MarkSuggestion) + `" && @.attrs.kind == "insert" && @.attrs.id == $id)`
+
 // dropMarkedNodes takes out of node, in place, every node carrying the mark of an insert
 // suggestion masked names: its text runs, and an inline node such as a hard break the insert
 // carried. The blocks stand as they are, an insert's split one included, so the version keeps its
@@ -169,4 +240,19 @@ func carriesMaskedInsert(node *pmdoc.Node, masked map[string]bool) bool {
 		}
 	}
 	return false
+}
+
+// blocksHoldingMasked adds to holding the id of every block of node that holds a node carrying the
+// mark of an insert suggestion masked names, and reports whether node holds one.
+func blocksHoldingMasked(node *pmdoc.Node, masked, holding map[string]bool) bool {
+	holds := carriesMaskedInsert(node, masked)
+	for _, child := range node.Children {
+		if blocksHoldingMasked(child, masked, holding) {
+			holds = true
+		}
+	}
+	if id, named := node.Attrs[pmdoc.BlockIDAttr].(string); holds && named && id != "" {
+		holding[id] = true
+	}
+	return holds
 }

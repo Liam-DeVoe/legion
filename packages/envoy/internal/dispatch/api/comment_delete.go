@@ -13,7 +13,9 @@
 // they froze. The delete's own comment.deleted, of a comment that is itself a reply, carries no
 // text of the post it answers
 // (commentCorrectionPayload). A pending suggestion's proof is in the document itself, so the same
-// transaction rejects it before the clear.
+// transaction rejects it before the clear, and where that reject takes an insert's words out of
+// the document, writes the document's next version as its settlement would (docs.SettleVersion),
+// so every store built from the latest version is written without the words before it commits.
 package api
 
 import (
@@ -129,6 +131,9 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	// operations queue their writes on the ledger, in the order made, and Commit sends them as
 	// one batch.
 	quoteIsBody := false
+	// rejectedInsert is that the reject below took a pending insert suggestion's words out of the
+	// document, which the delete then settles (docs.SettleVersion, below).
+	rejectedInsert := false
 	if comment.Suggestion != nil && comment.Anchor != nil && (comment.Suggestion.Accepted == nil || !*comment.Suggestion.Accepted) {
 		storedKind, taken, err := loadStoredSuggestion(r.Context(), tx, comment.ID)
 		if err != nil {
@@ -151,6 +156,7 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 				markGone = true
 			}
 		}
+		rejectedInsert = kind == "insert"
 		quoteIsBody = kind == "insert" || storedKind == "insert" ||
 			(markGone && storedKind == "" && comment.Anchor.Quote == comment.Suggestion.ReplaceWith)
 		if err := s.deps.Docs.RewriteTakenAnchors(documentCtx, comment.Anchor.ArtifactID, taken, actor); err != nil {
@@ -200,6 +206,29 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 	if err := s.projectThreadMark(documentCtx, tx, ledger, comment, actor); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	// A pending insert's words were the post's own and never document text, and every store a
+	// read builds from the document's latest version - the block index and the block texts, the
+	// blocks' excerpts and the mentions' excerpts, search and the issue's search vector, the names
+	// read and the related-item check - holds them until a version without them is written. The
+	// settlement the reject arms writes that version a settle delay after the delete commits, so
+	// the delete writes it here instead, as that settlement would (docs.SettleVersion): in its own
+	// transaction, under the owner lock it holds, after every document write it makes, and every
+	// one of those stores is written from the text without the words in the write phase the
+	// delete commits with. It is the version that settlement would write, which then finds nothing
+	// to version, so the delete adds no version and no approval move or carry the settlement would
+	// not have made (SettleVersion says why). A reject of a replace or a delete takes no text out,
+	// and a mark already gone takes nothing out either, so neither settles here.
+	var settled *docs.VersionResult
+	if rejectedInsert && !s.deleteLeavesSettlement {
+		written, err := s.deps.Docs.SettleVersion(documentCtx, comment.Anchor.ArtifactID, actor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if written.Wrote {
+			settled = &written
+		}
 	}
 	// The answer is read here, in the read phase, with the attempts as they stand: the settle
 	// below is queued, so the attempts it settles are set in the answer as it leaves them, and
@@ -268,6 +297,16 @@ func (s *server) deleteComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	events = append(events, event)
+	// The settled version's artifact.version follows the delete's own event, as the settlement's
+	// would have, and carries no diff, as the settlement's carries none.
+	if settled != nil {
+		versionEvent, err := s.commitArtifactVersionEvent(ledger, ownerOf(comment.IssueKey, comment.ArtifactID), actor, comment.Anchor.ArtifactID, artifactName, *settled, nil)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		events = append(events, versionEvent)
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return

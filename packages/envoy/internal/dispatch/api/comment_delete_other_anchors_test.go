@@ -40,8 +40,11 @@ type anchorsOnAnInsert struct {
 	documentService *docs.Service
 	handler         http.Handler
 	database        *store.Store
-	issueKey        string
-	artifactID      string
+	// server is the server handler serves, whose fields only a test sets
+	// (server.deleteLeavesSettlement).
+	server     *server
+	issueKey   string
+	artifactID string
 	// insert is alice's insert suggestion, on a browser's insert mark around insertedWords.
 	insert model.Comment
 	// onWords and resolved are bob's comments anchored on insertedWords, the second resolved, and
@@ -62,7 +65,7 @@ type anchorsOnAnInsert struct {
 // quotes what it was made on, standing, before anything is decided or deleted.
 func newAnchorsOnAnInsert(t *testing.T) anchorsOnAnInsert {
 	t.Helper()
-	documentService, handler, database := browserDocumentService(t)
+	documentService, handler, database, served := browserDocumentServer(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Anchors on an insert's words", "The "+insertedWords+" brown fox jumps")
 	writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
 		Kind:  docs.MarkSuggestion,
@@ -87,7 +90,7 @@ func newAnchorsOnAnInsert(t *testing.T) anchorsOnAnInsert {
 		return decodeBody[model.Ask](t, asked).ID
 	}
 	f := anchorsOnAnInsert{
-		documentService: documentService, handler: handler, database: database,
+		documentService: documentService, handler: handler, database: database, server: served,
 		issueKey: issue.Key, artifactID: issue.PrimaryArtifactID,
 		insert: createThreadComment(t, handler, issue.Key, map[string]any{
 			"body":       "Add this word.",

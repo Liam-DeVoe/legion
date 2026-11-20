@@ -219,9 +219,14 @@ func TestAProjectDocumentsVersionGivesNoWordOfAPendingInsertDeletedSince(t *test
 // The diff a named version's artifact.version event carries is read from the version before it as
 // every read of that version answers it (transactionVersionMarkdown): a version named after the
 // delete writes no word of the insert into its event, though the version before it stores them.
+// The delete writes the document's next version itself (docs.SettleVersion), so this row leaves
+// that version to the settlement (server.deleteLeavesSettlement), as a build without the settle
+// does when it serves the delete during a rollout: the version before the named one is then the
+// one holding the insert.
 func TestAVersionNamedAfterTheDeleteWritesNoWordOfTheInsertIntoItsDiff(t *testing.T) {
 	f := newAnchorsOnAnInsert(t)
 	pending := nameVersion(t, f.handler, f.artifactID, "With the insert pending")
+	f.server.deleteLeavesSettlement = true
 	deleteThreadComment(t, f.handler, f.insert.ID, "alice")
 	next := nameVersion(t, f.handler, f.artifactID, "After the delete")
 	if next != pending+1 {

@@ -576,6 +576,14 @@ type server struct {
 	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
 	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
 	afterMentionCopyRule func()
+	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
+	// rejects leave the document's next version to the settlement the reject arms, as the delete
+	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// every server the deployment builds leaves it, settles in the delete. Only a test sets it:
+	// to time the delete without its settle beside the delete with it, and to reach a document
+	// whose latest version still holds a deleted insert's words, as one does where a build
+	// without the settle served the delete during a rollout, for the readers that mask them.
+	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
