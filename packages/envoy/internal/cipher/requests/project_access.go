@@ -67,11 +67,15 @@ type projectFacts struct {
 	// facts that asked Dispatch nothing: the age a decision made on them is checked by
 	// (atDecision).
 	asked time.Time
+	// privateChannelsNamed is whether some private project's owner names a Slack channel, read
+	// only when a requested project-channels name has no airlock entry
+	// (policy.Requester.PrivateChannelsNamed).
+	privateChannelsNamed bool
 }
 
 // requester is r with these facts, the form policy.Set.Evaluate reads them in.
 func (f projectFacts) requester(r policy.Requester) policy.Requester {
-	r.Projects, r.ProjectStates, r.Named = f.projects, f.states, f.named
+	r.Projects, r.ProjectStates, r.Named, r.PrivateChannelsNamed = f.projects, f.states, f.named, f.privateChannelsNamed
 	return r
 }
 
@@ -183,6 +187,38 @@ func (m *Machine) projectFacts(ctx context.Context, e enrollmentRow, names []str
 // reads Dispatch further before it decides and so checks the age of everything it read at once
 // (atDecision): the approval's decision, the judge's project check and the listings.
 func (m *Machine) collectProjectFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
+	fenced, err := m.privateChannelsNamed(ctx, names, set)
+	if err != nil {
+		return projectFacts{}, err
+	}
+	facts, err := m.credentialFacts(ctx, e, names, set)
+	facts.privateChannelsNamed = fenced
+	return facts, err
+}
+
+// privateChannelsNamed reports, for a request or release of names under set, whether some private
+// project's owner names a Slack channel: read from the public fence (privateChannels) only when a
+// name of names carries a project-channels tag and has no airlock entry, the one case Evaluate
+// reads it for (policy.Requester.PrivateChannelsNamed). Every other request asks nothing here. A
+// fence the broker could not read is ErrProjectAccessUnavailable: whether such a name may leave
+// the airlock is unknown, so nothing is decided until Dispatch answers.
+func (m *Machine) privateChannelsNamed(ctx context.Context, names []string, set *policy.Set) (bool, error) {
+	outside := slices.ContainsFunc(names, func(name string) bool {
+		secret := set.Secrets[name]
+		return secret.ProjectChannels != "" && secret.AirlockDigest == ""
+	})
+	if !outside {
+		return false, nil
+	}
+	fence := m.privateChannels(ctx)
+	if fence.unread {
+		return false, fmt.Errorf("%w: the private projects' Slack channels could not be read, so a project-channels secret with no airlock entry is decided once they can", ErrProjectAccessUnavailable)
+	}
+	return len(fence.excluded) > 0, nil
+}
+
+// credentialFacts is collectProjectFacts' read of the credential and the tagged projects.
+func (m *Machine) credentialFacts(ctx context.Context, e enrollmentRow, names []string, set *policy.Set) (projectFacts, error) {
 	tagged := taggedProjects(set, names)
 	person, named := m.credentialProjects(e)
 	limited := anyChannelLimited(set, names)

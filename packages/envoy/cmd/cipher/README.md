@@ -143,8 +143,10 @@ A Slack bot token can carry the `project-channels` tag, whose one value is `slac
 credential names a private project then gets the token only behind the airlock, and the airlock's
 proxy carries only a post to a Slack channel that project's owner named in Dispatch; it refuses any
 other call `CHANNEL_NOT_ALLOWED`. Every other session that gets the token behind the airlock, once
-the broker knows a project is private, is refused `PRIVATE_CHANNEL` any call that names a channel
-a private project's owner named, and any search. `agent-secrets secret create --project-channels
+a private project's owner lists a channel, is refused `PRIVATE_CHANNEL` any Slack method but
+`chat.postMessage`, `conversations.replies` and `auth.test`, and any call that names a channel a
+private project's owner listed; outside the airlock no session gets the token then
+(`project-channels-need-airlock`). `agent-secrets secret create --project-channels
 slack` writes the tag, `secret retag --project-channels slack|none` writes it or removes it, `secret
 show` prints it as a `project_channels:` line, `secret list` prints it as a `PROJECT_CHANNELS`
 column, and `--json` carries it as `project_channels`, null for a secret without it. Any other

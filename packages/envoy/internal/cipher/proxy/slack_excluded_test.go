@@ -50,9 +50,21 @@ var (
 	unfencedPlaceholder = requests.PlaceholderPrefix + "UnfencedUnfencedUnfencedUnfence1"
 )
 
-// historyOf is a read of channel's messages, conversations.history, as a Slack client asks it.
+// historyOf is a read of channel's messages, conversations.history, as a Slack client asks it: a
+// method no repository code sends with the token, which the fence refuses whatever it names.
 func historyOf(channel string) slackPost {
 	return slackPost{method: http.MethodGet, path: "/api/conversations.history?channel=" + channel}
+}
+
+// readOf is the controller's read of a thread in channel, conversations.replies, as its skill
+// sends it: a method the fence allows, checked by the channel it names.
+func readOf(channel string) slackPost {
+	return slackPost{method: http.MethodGet, path: "/api/conversations.replies?channel=" + channel + "&ts=" + slackThread}
+}
+
+// readAs is that read with its query spelled as query.
+func readAs(query string) slackPost {
+	return slackPost{method: http.MethodGet, path: "/api/conversations.replies?" + query}
 }
 
 // refusedAs fails t unless p was answered 403 code in the proxy's refusal shape, its words
@@ -80,7 +92,8 @@ type fenceCase struct {
 	public *slackPost
 }
 
-// fenceCases are the calls naming PRIV's channel, or that the fence cannot read as naming none.
+// fenceCases are the calls naming PRIV's channel, calling a method the fence does not allow, or
+// that the fence cannot read as naming none.
 func fenceCases(t *testing.T) []fenceCase {
 	t.Helper()
 	public := func(p slackPost) *slackPost { return &p }
@@ -91,37 +104,37 @@ func fenceCases(t *testing.T) []fenceCase {
 		}
 		return s
 	}
+	get := func(path string) slackPost { return slackPost{method: http.MethodGet, path: path} }
 	jsonType := [][2]string{{"Content-Type", slackJSON}}
 	big := `{"channel":"` + pubChannel + `","text":"` + strings.Repeat("x", maxSlackPostBody) + `"}`
 	return []fenceCase{
-		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), skip(fenceQuery), public(historyOf(pubChannel))},
-		{"conversations.replies naming it in the query", slackPost{method: http.MethodGet, path: "/api/conversations.replies?channel=" + privChannel + "&ts=" + slackThread},
-			skip(fenceQuery), public(slackPost{method: http.MethodGet, path: "/api/conversations.replies?channel=" + pubChannel + "&ts=" + slackThread})},
+		{"conversations.history naming PRIV's channel in the query", historyOf(privChannel), skip(fenceMethod, fenceQuery), nil},
+		{"conversations.replies naming it in the query", readOf(privChannel), skip(fenceQuery), public(readOf(pubChannel))},
 		{"chat.postMessage naming it in JSON", jsonPost(postTo(privChannel)), skip(fenceJSON), public(jsonPost(postTo(pubChannel)))},
 		{"chat.postMessage naming it in a form", formPost("channel=" + privChannel + "&text=the+release+notes+are+out"), skip(fenceForm),
 			public(formPost("channel=" + pubChannel + "&text=the+release+notes+are+out"))},
-		{"channels=" + pubChannel + "," + privChannel, formPost("channels=" + pubChannel + "," + privChannel + "&content=x"), skip(fenceSplit),
-			public(formPost("channels=" + pubChannel + "&content=x"))},
-		{"channel_id", slackPost{method: http.MethodGet, path: "/api/bookmarks.list?channel_id=" + privChannel}, skip(fenceChannelID),
-			public(slackPost{method: http.MethodGet, path: "/api/bookmarks.list?channel_id=" + pubChannel})},
-		{"channel=" + pubChannel + "&channel=" + privChannel, slackPost{method: http.MethodGet, path: "/api/conversations.history?channel=" + pubChannel + "&channel=" + privChannel}, skip(fenceEvery), nil},
-		{"channel=%20c0priv00001%20", slackPost{method: http.MethodGet, path: "/api/conversations.history?channel=%20c0priv00001%20"}, skip(fenceFold), nil},
+		{"channels=" + pubChannel + "," + privChannel, readAs("channels=" + pubChannel + "," + privChannel + "&ts=" + slackThread), skip(fenceSplit),
+			public(readAs("channels=" + pubChannel + "&ts=" + slackThread))},
+		{"channel_id", readAs("channel_id=" + privChannel + "&ts=" + slackThread), skip(fenceChannelID), public(readAs("channel_id=" + pubChannel + "&ts=" + slackThread))},
+		{"channel=" + pubChannel + "&channel=" + privChannel, readAs("channel=" + pubChannel + "&channel=" + privChannel + "&ts=" + slackThread), skip(fenceEvery), nil},
+		{"channel=%20c0priv00001%20", readAs("channel=%20c0priv00001%20&ts=" + slackThread), skip(fenceFold), nil},
 		{`{"channel":["` + privChannel + `"]}`, jsonPost(`{"channel":["` + privChannel + `"],"text":"x"}`), skip(fenceStrings), nil},
 		{`{"channel":123}`, jsonPost(`{"channel":123,"text":"x"}`), skip(fenceStrings), nil},
 		{"a non-empty text/plain body", slackPost{method: http.MethodPost, path: slackPostPath, header: [][2]string{{"Content-Type", "text/plain; charset=utf-8"}}, body: "channel=" + privChannel + "&text=x"}, skip(fenceType), nil},
 		{"a body with no Content-Type", slackPost{method: http.MethodPost, path: slackPostPath, body: postTo(privChannel)}, skip(fenceType), nil},
 		{"a second JSON value after the object", jsonPost(postTo(pubChannel) + `{"channel":"` + privChannel + `"}`), skip(fenceObject), nil},
-		{"search.messages", slackPost{method: http.MethodGet, path: "/api/search.messages?query=release"}, skip(fenceSearch), nil},
-		{"assistant.search.context", slackPost{method: http.MethodPost, path: "/api/assistant.search.context", header: jsonType, body: `{"query":"release"}`}, skip(fenceSearch), nil},
-		{"a multipart body", func() slackPost {
-			p := multipartPost(t)
-			p.path = "/api/files.upload"
-			return p
-		}(), skip(fenceType), nil},
+		{"search.messages", get("/api/search.messages?query=release"), skip(fenceMethod), nil},
+		{"assistant.search.context", slackPost{method: http.MethodPost, path: "/api/assistant.search.context", header: jsonType, body: `{"query":"release"}`}, skip(fenceMethod), nil},
+		{"reactions.list", get("/api/reactions.list"), skip(fenceMethod), nil},
+		{"stars.list", get("/api/stars.list"), skip(fenceMethod), nil},
+		{"files.list naming no channel", get("/api/files.list"), skip(fenceMethod), nil},
+		{"files.info", get("/api/files.info?file=F0FILE00001"), skip(fenceMethod), nil},
+		{"conversations.list", get("/api/conversations.list"), skip(fenceMethod), nil},
+		{"a multipart body", multipartPost(t), skip(fenceType), nil},
 		{"CHANNEL in another case", jsonPost(`{"CHANNEL":"` + privChannel + `","text":"x"}`), skip(fenceKeyCase), nil},
 		{"chann%65l in a form", formPost("chann%65l=" + privChannel + "&text=x"), skip(fenceForm), nil},
 		{"a JSON channel spelled with an escape", jsonPost(`{"channel":"C0PRIV\u00300001","text":"x"}`), skip(fenceJSON), nil},
-		{"a query url.ParseQuery refuses", slackPost{method: http.MethodGet, path: "/api/conversations.history?channel=" + pubChannel + "&cursor=%zz"}, skip(fenceParse), nil},
+		{"a query url.ParseQuery refuses", readAs("channel=" + pubChannel + "&ts=" + slackThread + "&cursor=%zz"), skip(fenceParse), nil},
 		{"Content-Encoding: gzip", slackPost{method: http.MethodPost, path: slackPostPath,
 			header: [][2]string{{"Content-Type", slackForm}, {"Content-Encoding", "gzip"}}, body: gzipped(t, "channel="+privChannel+"&text=x")},
 			skip(fenceEncoding, fenceParse), nil},
@@ -136,13 +149,16 @@ func grantFenced(r *rig, placeholder, grantID string, secret requests.AirlockSec
 }
 
 // TestAPublicSlackGrantNeverNamesAPrivateChannel: a grant of the token whose Excluded holds PRIV's
-// channel refuses 403 PRIVATE_CHANNEL, before any of it reaches Slack, every call that names that
-// channel in any way Slack reads one, and every call it cannot read as naming none; each case has a
-// control, a proxy that skips the case's rule, which carries the call to the stand-in. The same
-// calls naming a public channel reach the stand-in with the real token, and a grant with no
-// Excluded carries every one of them as before the fence. A name the broker could not read the
-// fence of refuses every call PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a
-// private project's entry carries no slack_channels, and serves again once a read answers.
+// channel refuses 403 PRIVATE_CHANNEL, before any of it reaches Slack, every call of a method the
+// fence does not allow (reactions.list, stars.list, files.list, files.info, conversations.list and
+// the searches among them), every call that names PRIV's channel in any way Slack reads one, and
+// every call it cannot read as naming none; each case has a control, a proxy that skips the
+// case's rule, which carries the call to the stand-in: for a method the fence does not allow, the
+// blocklist of channel arguments alone lets it through. The allowed calls naming a public channel,
+// and auth.test, reach the stand-in with the real token, and a grant with no Excluded carries
+// every one of them as before the fence. A name the broker could not read the fence of refuses
+// every call PRIVATE_CHANNELS_UNREAD, while Dispatch's list fails and while a private project's
+// entry carries no slack_channels, and serves again once a read answers.
 func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 	r := newRig(t, Options{Rules: slackRules()})
 	value := map[string]string{requests.SlotValue: slackValue}
@@ -173,6 +189,11 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 		})
 	}
 
+	t.Run("auth.test, which names no channel and answers no channel's content", func(t *testing.T) {
+		check := slackPost{method: http.MethodPost, path: "/api/auth.test"}
+		sendSlack(t, r, client, fencedPlaceholder, check).served(t, "auth.test by a fenced grant", check, slackValue)
+	})
+
 	t.Run("a fenced name whose entry is no header swap", func(t *testing.T) {
 		aws := newAWSRig(t, false)
 		values := map[string]string{requests.SlotAWSAccessKeyID: awsRealKeyID, requests.SlotAWSSecretAccessKey: awsRealSecret}
@@ -193,8 +214,8 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 		}
 		w.dispatch.SetPrivateProjectsDown(false)
 		w.clock.advance(time.Minute + time.Second)
-		p.send(t, historyOf(pubChannel)).served(t, "a public read once the list answers again", historyOf(pubChannel), slackValue)
-		p.send(t, historyOf(privChannel)).refusedAs(t, "a read of PRIV's channel once the list answers again", historyOf(privChannel), codePrivateChannel, privateChannel)
+		p.send(t, readOf(pubChannel)).served(t, "a public read once the list answers again", readOf(pubChannel), slackValue)
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel once the list answers again", readOf(privChannel), codePrivateChannel, privateChannel)
 	})
 	t.Run("unread while a private project's entry carries no slack_channels", func(t *testing.T) {
 		omitted := privateRow([]string{privChannel}, slackPerson)
@@ -207,8 +228,8 @@ func TestAPublicSlackGrantNeverNamesAPrivateChannel(t *testing.T) {
 		}
 		w.dispatch.SetRow(privKey, privateRow([]string{privChannel}, slackPerson))
 		w.clock.advance(time.Minute + time.Second)
-		p.send(t, historyOf(pubChannel)).served(t, "a public read once PRIV's entry carries its channels", historyOf(pubChannel), slackValue)
-		p.send(t, historyOf(privChannel)).refusedAs(t, "a read of PRIV's channel once its entry carries it", historyOf(privChannel), codePrivateChannel, privateChannel)
+		p.send(t, readOf(pubChannel)).served(t, "a public read once PRIV's entry carries its channels", readOf(pubChannel), slackValue)
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel once its entry carries it", readOf(privChannel), codePrivateChannel, privateChannel)
 	})
 }
 
@@ -261,12 +282,12 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: privateRow([]string{privChannel}, slackPerson)}, false)
 		w.declare(privKey)
 		p := w.pod(t, "public")
-		p.send(t, historyOf(privChannel)).served(t, "a read before the token carries project-channels", historyOf(privChannel), slackValue)
+		p.send(t, readOf(privChannel)).served(t, "a read before the token carries project-channels", readOf(privChannel), slackValue)
 		if first := p.grants.last()[slackName]; !first.Expires.IsZero() || first.Excluded != nil {
 			t.Fatalf("the untagged token was released with Expires %v Excluded %#v; want neither, as before the tag", first.Expires, first.Excluded)
 		}
 		w.retag(t)
-		p.send(t, historyOf(privChannel)).refusedAs(t, "a read of PRIV's channel at the first call after the retag", historyOf(privChannel), codePrivateChannel, privateChannel)
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of PRIV's channel at the first call after the retag", readOf(privChannel), codePrivateChannel, privateChannel)
 		reads := p.grants.all()
 		if len(reads) != 2 {
 			t.Fatalf("the proxy read the grant %d time(s); want twice, the second at the first call after the retag", len(reads))
@@ -280,7 +301,7 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 		w := newFenceWorld(t, map[string]projectaccesstest.Row{privKey: {Visibility: "public", Owner: slackOwner, Listed: []string{slackPerson}}}, true)
 		p := w.pod(t, "public")
 		read := w.clock.now()
-		p.send(t, historyOf(privChannel)).served(t, "a read of "+privChannel+" while no project is private", historyOf(privChannel), slackValue)
+		p.send(t, readOf(privChannel)).served(t, "a read of "+privChannel+" while no project is private", readOf(privChannel), slackValue)
 		// Each check of the first read reports and goes on, so a value that is not bounded is
 		// also shown reaching Slack on PRIV's channel below.
 		first := p.grants.last()[slackName]
@@ -296,7 +317,7 @@ func TestAValueReleasedBeforeTheFirstPrivateChannelLearnsIt(t *testing.T) {
 		w.dispatch.SetRow(privKey, private)
 		w.declare(privKey)
 		w.clock.advance(ownerChangeHeard - mintAgainBefore + projectaccess.CacheTTL + time.Second)
-		p.send(t, historyOf(privChannel)).refusedAs(t, "a read of "+privChannel+" once PRIV is private and names it", historyOf(privChannel), codePrivateChannel, privateChannel)
+		p.send(t, readOf(privChannel)).refusedAs(t, "a read of "+privChannel+" once PRIV is private and names it", readOf(privChannel), codePrivateChannel, privateChannel)
 	})
 }
 
@@ -371,7 +392,7 @@ func settleRun(t *testing.T, start func(time.Time) map[string]projectaccesstest.
 	w := newFenceWorld(t, rows, true)
 	w.declare(declaredBefore...)
 	p := w.pod(t, "public")
-	read := historyOf(addedChannel)
+	read := readOf(addedChannel)
 	p.send(t, read).served(t, "P's read of "+addedChannel+" just before T", read, slackValue)
 
 	w.clock.advance(time.Second)
