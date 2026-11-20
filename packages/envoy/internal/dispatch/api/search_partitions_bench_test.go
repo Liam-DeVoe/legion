@@ -40,9 +40,11 @@ import (
 // (production's own split was not readable; its largest project holds most of its rows).
 //
 // Every row is embedded by embed.BedrockModel at its text, and its vector is one of eight topics of
-// its project (a random unit vector each) plus two random vectors of a pool of 4,096 at weights 0.7
-// and 0.35, normalised: rows of one topic lie near each other and near no other topic, and no two
-// rows share a vector. The queries are the 40 rows of bench_queries: a topic of a project, the
+// its project (a random unit vector each) plus three random vectors of a pool of 4,096 at weights
+// 0.7, 0.35 and 0.2, normalised, each chosen by a hash of the row's kind and id: rows of one topic
+// lie near each other and near no other topic, and two rows share a vector only where all four
+// choices meet, one in 8 x 4,096^3 (about 5 x 10^11). The queries are the 40 rows of
+// bench_queries: a topic of a project, the
 // project's share of the queries following its share of the rows, plus one vector of the pool at
 // 0.5, normalised.
 //
@@ -97,18 +99,24 @@ create function pg_temp.scaled_unit(x float8[], scale float8) returns vector lan
 $f$;
 create table bench_normals as select g as n, pg_temp.normals(g) as x from generate_series(0, 4095) g;
 create table bench_noise as
-select n, pg_temp.scaled_unit(x, 0.7) as v07, pg_temp.scaled_unit(x, 0.35) as v035, pg_temp.scaled_unit(x, 0.5) as v05
+select n, pg_temp.scaled_unit(x, 0.7) as v07, pg_temp.scaled_unit(x, 0.35) as v035, pg_temp.scaled_unit(x, 0.2) as v02,
+       pg_temp.scaled_unit(x, 0.5) as v05
 from bench_normals;
 create unique index on bench_noise (n);
 create table bench_topics as
 select p.key, t, pg_temp.scaled_unit(pg_temp.normals(p.n * 8 + t), 1) as v from bench_projects p cross join generate_series(0, 7) t;
 create unique index on bench_topics (key, t);
 
--- vector_of(project, k) is row k's vector in project.
-create function pg_temp.vector_of(p text, k bigint) returns vector language sql stable as $f$
-  select l2_normalize(topic.v + a.v07 + b.v035)
-  from bench_topics topic, bench_noise a, bench_noise b
-  where topic.key = p and topic.t = (k * 7919) % 8 and a.n = (k * 104729) % 4096 and b.n = (k * 1299709 + 17) % 4096
+-- vector_of(project, k) is the vector of the row k names, by its kind and id, in project. Each of
+-- its four choices is a hash of k of its own, so no residue of a row number decides more than one
+-- of them (a multiple of a number modulo 4,096 would give every project only 4,096 vectors, each
+-- shared by dozens of rows).
+create function pg_temp.vector_of(p text, k text) returns vector language sql stable as $f$
+  select l2_normalize(topic.v + a.v07 + b.v035 + c.v02)
+  from bench_topics topic, bench_noise a, bench_noise b, bench_noise c
+  where topic.key = p and topic.t = abs(hashtext(k || ':t')) % 8
+    and a.n = abs(hashtext(k || ':a')) % 4096 and b.n = abs(hashtext(k || ':b')) % 4096
+    and c.n = abs(hashtext(k || ':c')) % 4096
 $f$;
 
 insert into issues (key, project_key, number, title, created_by, rank, created_at, updated_at)
@@ -153,27 +161,22 @@ do $$ declare dropped record; begin
 end $$;
 
 insert into embeddings (kind, id, text_snapshot, content_hash, embedded_hash, model, embedding, embedded_at, covers, project_key)
-select w.kind, w.id, w.text, md5(w.text), md5(w.text), current_setting('bench_corpus.model'), pg_temp.vector_of(w.project, w.k),
-       now(), w.covers, w.project
+select w.kind, w.id, w.text, md5(w.text), md5(w.text), current_setting('bench_corpus.model'),
+       pg_temp.vector_of(w.project, w.kind || ':' || w.id), now(), w.covers, w.project
 from (
-  select 'issue' as kind, i.key as id, 'Bench issue ' || i.key as text, null::text[] as covers, i.project_key as project,
-         i.number::bigint * 31 + 7 as k
+  select 'issue' as kind, i.key as id, 'Bench issue ' || i.key as text, null::text[] as covers, i.project_key as project
     from issues i
   union all
-  select 'document_block', a.id::text || '#b' || b, 'Block ' || b || ' of ' || a.slug, array['b' || b], a.project_key,
-         abs(hashtext(a.id::text)::bigint) * 29 + b
+  select 'document_block', a.id::text || '#b' || b, 'Block ' || b || ' of ' || a.slug, array['b' || b], a.project_key
     from artifacts a cross join generate_series(1, 25) b where a.slug like 'doc-%'
   union all
-  select 'comment_block', 'comment/' || c.id::text || '#b' || b, 'Comment window ' || b, array['b' || b], i.project_key,
-         abs(hashtext(c.id::text)::bigint) * 3 + b
+  select 'comment_block', 'comment/' || c.id::text || '#b' || b, 'Comment window ' || b, array['b' || b], i.project_key
     from comments c join issues i on i.key = c.issue_key cross join generate_series(1, 2) b
   union all
-  select 'message_block', 'message/' || m.id::text || '#b' || b, 'Message window ' || b, array['b' || b], i.project_key,
-         abs(hashtext(m.id::text)::bigint) * 5 + b
+  select 'message_block', 'message/' || m.id::text || '#b' || b, 'Message window ' || b, array['b' || b], i.project_key
     from messages m join issues i on i.key = m.issue_key cross join generate_series(1, 2) b
   union all
-  select 'ask_part', 'ask/' || k.id::text || '#p' || b, 'Ask part ' || b, array['p' || b], i.project_key,
-         abs(hashtext(k.id::text)::bigint) * 11 + b
+  select 'ask_part', 'ask/' || k.id::text || '#p' || b, 'Ask part ' || b, array['p' || b], i.project_key
     from asks k join issues i on i.key = k.issue_key cross join generate_series(1, 2) b
 ) w;
 
@@ -262,6 +265,18 @@ func TestBuildMeaningSearchBenchCorpus(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("bench corpus: scale=%s projects=%d embeddings_bytes=%d (%.1f GiB) built in %v", scale, projects, bytes, float64(bytes)/(1<<30), built)
+	// Rows that share a vector tie in every nearest-neighbour read, and a tie is broken by
+	// whichever row a scan meets first, which differs between two builds' plans of the same rows:
+	// a recall or a rank comparison over such a corpus compares the tie-breaks. So the corpus
+	// refuses itself where its rows do not each hold a vector of their own.
+	var stored, distinct int64
+	if err := conn.QueryRow(ctx, `select count(*), count(distinct embedding) from embeddings`).Scan(&stored, &distinct); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("bench corpus: %d rows hold %d distinct vectors", stored, distinct)
+	if distinct < stored-stored/1000 {
+		t.Fatalf("the corpus's %d rows hold only %d distinct vectors: its nearest-neighbour reads are tie-breaks", stored, distinct)
+	}
 }
 
 // TestPartitionEmbeddingsOnBenchCorpus migrates DISPATCH_BENCH_DATABASE_URL with this build and
