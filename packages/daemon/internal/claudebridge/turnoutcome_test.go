@@ -154,7 +154,9 @@ func TestAnAttemptClaudeCodeRetriesIsNoTurnOfItsOwn(t *testing.T) {
 // A turn the daemon's prompt did not start — one an Envoy delivery started, here — ends with no
 // prompt_result, so its report is the one thing the daemon decides it by: the report carries the
 // status Claude Code named for the refusal (api_error_status), and the daemon fails the claim on
-// one that cannot clear. A content filter's refusal names no status, and its report carries none.
+// one that cannot clear. A content filter's refusal names no status, and its report carries none;
+// nor does a refusal whose api_error_status is no HTTP status (outside 100 to 599), which the
+// daemon's route would refuse with the whole report, leaving the turn unrecorded.
 func TestARefusedTurnIsReportedWithTheStatusClaudeCodeNamedForIt(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 	inbox := r.dialInbox()
@@ -175,6 +177,13 @@ func TestARefusedTurnIsReportedWithTheStatusClaudeCodeNamedForIt(t *testing.T) {
 	r.untilTurnEnds()
 	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 0 || report.Sequence != 2 {
 		t.Fatalf("the content filter's refusal was reported %+v, want the second turn refused with no status", report)
+	}
+
+	r.prompt("p2", "api-error-999 the provider named no HTTP status")
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := r.reported(); report.Outcome != claim.TurnRefused || report.HTTPStatus != 0 || report.Sequence != 3 || report.Message == "" {
+		t.Fatalf("the refusal whose api_error_status is 999 was reported %+v, want the third turn refused with the provider's words and no status", report)
 	}
 }
 

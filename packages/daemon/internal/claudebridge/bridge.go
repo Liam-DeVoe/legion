@@ -596,10 +596,13 @@ func providerFailed(res resultLine) bool {
 // httpStatusOf is the HTTP status a result's api_error_status holds, and zero for one that holds
 // no number: the member is absent or `null` on every result of the background recordings
 // (testdata/background-turn.jsonl:12) and a number on one that failed on the provider
-// (testdata/api-error-529.jsonl:5), and a shape this does not expect costs the status alone.
+// (testdata/api-error-529.jsonl:5), and a shape this does not expect costs the status alone. A
+// number outside 100 to 599 is no HTTP status, and the daemon refuses a report whose status is one
+// (api's turn-outcome route), which would leave the turn unrecorded: it costs the status alone
+// too, and the turn is reported refused with none, as pi-legion reports such a value.
 func httpStatusOf(raw json.RawMessage) int {
 	var status int
-	if err := json.Unmarshal(raw, &status); err != nil {
+	if err := json.Unmarshal(raw, &status); err != nil || status < 100 || status > 599 {
 		return 0
 	}
 	return status
