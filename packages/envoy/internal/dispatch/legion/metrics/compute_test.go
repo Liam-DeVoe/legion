@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 )
 
@@ -813,10 +814,11 @@ func TestAMedianInterpolatesBetweenTheClosestRanks(t *testing.T) {
 		{"four", []float64{1, 2, 3, 4}, 2.5, 3.7},
 	} {
 		t.Run(one.name, func(t *testing.T) {
-			if got := quantile(one.values, 0.5); got != one.median {
+			sorted := measures.MergedSamples([]measures.DayPart{{Series: "hours", Samples: one.values}}, "hours")
+			if got := quantile(sorted, 0.5); got != one.median {
 				t.Errorf("median of %v = %g, want %g", one.values, got, one.median)
 			}
-			if got := quantile(one.values, 0.9); got != one.p90 {
+			if got := quantile(sorted, 0.9); got != one.p90 {
 				t.Errorf("p90 of %v = %g, want %g", one.values, got, one.p90)
 			}
 		})

@@ -1028,15 +1028,21 @@ func listEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, 
 }
 
 // runJobsByRun runs query, a read of delivery_run_jobs over the runs runIDs, and answers its jobs
-// keyed by run id, each run's in ListRunJobs' order. Each run's jobs are sorted here rather than
-// by an order by: Postgres cannot read delivery_run_jobs' primary key in (run_id, ...) order for
-// `run_id = any($2)`, so an order by sorts the whole 28-day read (about 50,000 rows), on disk past
-// work_mem, where sorting each run's few jobs costs a few milliseconds.
+// keyed by run id, each run's in ListRunJobs' order (collectJobsByRun); no run is no read.
 func runJobsByRun(ctx context.Context, pool *store.Pool, runIDs []int64, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
-	byRun := make(map[int64][]DeliveryRunJob, len(runIDs))
 	if len(runIDs) == 0 {
-		return byRun, nil
+		return make(map[int64][]DeliveryRunJob), nil
 	}
+	return collectJobsByRun(ctx, pool, len(runIDs), query, arguments...)
+}
+
+// collectJobsByRun runs query, a read of delivery_run_jobs over at most runs runs, and answers its
+// jobs keyed by run id, each run's in ListRunJobs' order. Each run's jobs are sorted here rather
+// than by an order by: Postgres cannot read delivery_run_jobs' primary key in (run_id, ...) order
+// for `run_id = any($2)`, so an order by sorts the whole 28-day read (about 50,000 rows), on disk
+// past work_mem, where sorting each run's few jobs costs a few milliseconds.
+func collectJobsByRun(ctx context.Context, pool *store.Pool, runs int, query string, arguments ...any) (map[int64][]DeliveryRunJob, error) {
+	byRun := make(map[int64][]DeliveryRunJob, runs)
 	rows, err := pool.Query(ctx, query, arguments...)
 	if err != nil {
 		return nil, err
@@ -1089,16 +1095,7 @@ func listRuns(ctx context.Context, pool *store.Pool, repo string, kind DeliveryR
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	runs := []DeliveryRun{}
-	for rows.Next() {
-		run, err := ScanRun(rows)
-		if err != nil {
-			return nil, err
-		}
-		runs = append(runs, run)
-	}
-	return runs, rows.Err()
+	return collectRuns(rows)
 }
 
 // windowApplyRunsCreated is the creation of a window's apply runs (listWindowRuns) over the alias
@@ -1214,6 +1211,37 @@ func listRunsStartedIn(ctx context.Context, pool *store.Pool, repo string, kind 
 	if err != nil {
 		return nil, err
 	}
+	return collectRuns(rows)
+}
+
+// deployRunsOnMain is the deploy runs on main of a repository ($1), whatever their event: the
+// measures' deploy population (listRunsStartedIn's ("main", "")) over the whole history, which
+// HistoryRows reads.
+const deployRunsOnMain = `from delivery_runs where repo = $1 and kind = 'deploy' and head_branch = 'main'`
+
+// listDeployRunsOnMain lists every deploy run on main of repo, in listRunsStartedIn's order and
+// with no limit: HistoryRows' runs.
+func listDeployRunsOnMain(ctx context.Context, pool *store.Pool, repo string) ([]DeliveryRun, error) {
+	rows, err := pool.Query(ctx, `select `+RunColumns+` `+deployRunsOnMain+` order by started_at, run_id`, repo)
+	if err != nil {
+		return nil, err
+	}
+	return collectRuns(rows)
+}
+
+// listDeployRunJobsOnMain lists the jobs named names of every deploy run on main of repo, keyed by
+// run id, each run's in ListRunJobs' order: HistoryRows' jobs. It names the runs by the read that
+// lists them rather than by their ids, so it waits on no read of them.
+func listDeployRunJobsOnMain(ctx context.Context, pool *store.Pool, repo string, names []string) (map[int64][]DeliveryRunJob, error) {
+	if len(names) == 0 {
+		return make(map[int64][]DeliveryRunJob), nil
+	}
+	return collectJobsByRun(ctx, pool, 0, `select `+JobColumns+` from delivery_run_jobs
+		where repo = $1 and name = any($2) and run_id in (select run_id `+deployRunsOnMain+`)`, repo, names)
+}
+
+// collectRuns reads rows of RunColumns, in their order, and closes them.
+func collectRuns(rows pgx.Rows) ([]DeliveryRun, error) {
 	defer rows.Close()
 	runs := []DeliveryRun{}
 	for rows.Next() {
@@ -1292,6 +1320,26 @@ func ListPullRequestsInWindow(ctx context.Context, pool *store.Pool, from, to ti
 	if err != nil {
 		return nil, err
 	}
+	return collectPullRequests(rows)
+}
+
+// listPullRequestsMergedBefore lists every population pull request merged before to, in
+// ListPullRequestsInWindow's order and with no limit: HistoryRows' pull requests.
+func listPullRequestsMergedBefore(ctx context.Context, pool *store.Pool, to time.Time) ([]DeliveryPullRequest, error) {
+	rows, err := pool.Query(ctx, `
+		select `+PullRequestColumns+`
+		from delivery_pull_requests
+		where merged_at < $1
+		order by merged_at, (repo || '#' || number) collate "C"
+	`, to)
+	if err != nil {
+		return nil, err
+	}
+	return collectPullRequests(rows)
+}
+
+// collectPullRequests reads rows of PullRequestColumns, in their order, and closes them.
+func collectPullRequests(rows pgx.Rows) ([]DeliveryPullRequest, error) {
 	defer rows.Close()
 	prs := []DeliveryPullRequest{}
 	for rows.Next() {

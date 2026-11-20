@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,15 +32,20 @@ type heads struct {
 	events, observations, changes int64
 }
 
-// consumerState is what one poll read of the consumers and their feeds.
+// consumerState is what one poll read of the consumers and their feeds: at this head, the
+// refresher's cursors (its two feeds' and the stored figures' own, by name), its walks, its day
+// rows' builds, the projects that hold day rows and how far each project's stored figures are
+// built (eval_figures_built).
 type consumerState struct {
-	heads    heads
-	facts    map[string]int64
-	projects []string
-	computed map[string]string
-	days     map[string]int64
-	walks    []walk
-	builtBy  map[string]int64
+	heads       heads
+	facts       map[string]int64
+	projects    []string
+	computed    map[string]string
+	days        map[string]int64
+	walks       []walk
+	builtBy     map[string]int64
+	dayProjects []string
+	built       map[string]time.Time
 }
 
 // walk is one row of eval_days_walks.
@@ -173,6 +179,25 @@ func readConsumers(ctx context.Context, pool *store.Pool, mode string) (consumer
 	}); err != nil {
 		return consumerState{}, fmt.Errorf("read the day rows' builds: %w", err)
 	}
+	projects, err := pool.Query(ctx, `select distinct project_key from eval_days order by project_key`)
+	if err != nil {
+		return consumerState{}, fmt.Errorf("read the projects that hold day rows: %w", err)
+	}
+	if state.dayProjects, err = pgx.CollectRows(projects, pgx.RowTo[string]); err != nil {
+		return consumerState{}, fmt.Errorf("read the projects that hold day rows: %w", err)
+	}
+	built, err := pool.Query(ctx, `select project_key, through from eval_figures_built`)
+	if err != nil {
+		return consumerState{}, fmt.Errorf("read how far the stored figures are built: %w", err)
+	}
+	state.built = map[string]time.Time{}
+	var through time.Time
+	if _, err := pgx.ForEachRow(built, []any{&project, &through}, func() error {
+		state.built[project] = through.UTC()
+		return nil
+	}); err != nil {
+		return consumerState{}, fmt.Errorf("read how far the stored figures are built: %w", err)
+	}
 	return state, nil
 }
 
@@ -194,8 +219,11 @@ func collectPairs(ctx context.Context, pool *store.Pool, query string, into map[
 // caughtUp is what the consumers still owe, none once they have caught up: every project Legion
 // works read whole under build; each cursor at or past previous, where its feed stood lagPolls
 // polls before (a feed the server's own sweeps keep writing is never still, so a cursor is held
-// to a head it has had a whole sweep to reach); and at this head every walk done through today
-// under build, and every day row written by build.
+// to a head it has had a whole sweep to reach), the stored figures' own cursor among them; and at
+// this head every walk done under build (walkDone), every day row written by build, and every
+// project that holds day rows with its stored figures built through the last end day of today
+// (evals.FiguresThrough's mark): a first paint measured before that would read the day rows,
+// which the stored figures are there to spare it.
 func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	var missing []string
 	if previous == nil {
@@ -225,26 +253,38 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 	if previous != nil {
 		behind("the refresher", s.days, "events", previous.events)
 		behind("the refresher", s.days, "delivery_changes", previous.changes)
+		behind("the stored figures", s.days, "figures", previous.changes)
 	}
-	tomorrow := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	families := map[string]bool{}
 	for _, one := range s.walks {
 		families[one.family+"/"+one.project] = true
-		if one.builtBy != build || one.next == nil || !one.next.Equal(tomorrow) {
+		if want := walkDone(one.family, today); one.builtBy != build || one.next == nil || !one.next.Equal(want) {
 			next := "none"
 			if one.next != nil {
 				next = one.next.Format(time.DateOnly)
 			}
-			missing = append(missing, fmt.Sprintf("the %s walk of %q under %s through %s (it is %q at %s)", one.family, one.project, build, tomorrow.Format(time.DateOnly), one.builtBy, next))
+			missing = append(missing, fmt.Sprintf("the %s walk of %q under %s through %s (it is %q at %s)", one.family, one.project, build,
+				want.AddDate(0, 0, -1).Format(time.DateOnly), one.builtBy, next))
 		}
 	}
 	want := []string{"delivery/"}
 	for _, project := range s.projects {
 		want = append(want, "legion/"+project)
 	}
+	for _, project := range s.dayProjects {
+		want = append(want, "figures/"+project)
+	}
 	for _, family := range want {
 		if !families[family] {
 			missing = append(missing, "the "+family+" walk")
+		}
+	}
+	last := today.AddDate(0, 0, evals.FigureLead)
+	for _, project := range s.dayProjects {
+		if through, held := s.built[project]; !held || through.Before(last) {
+			missing = append(missing, fmt.Sprintf("the stored figures of %s built through %s (built %t through %s)", project,
+				last.Format(time.DateOnly), held, through.Format(time.DateOnly)))
 		}
 	}
 	for other, count := range s.builtBy {
@@ -256,6 +296,16 @@ func (s consumerState) caughtUp(mode, build string, previous *heads) []string {
 		missing = append(missing, "a day row")
 	}
 	return missing
+}
+
+// walkDone is where a walk of family stands once it is done as of today: a walk of the day rows at
+// tomorrow, once it has built today, and the stored figures' walk (family `figures`) at the day
+// after the last end day it folds, evals.FigureLead days after today.
+func walkDone(family string, today time.Time) time.Time {
+	if family == "figures" {
+		return today.AddDate(0, 0, evals.FigureLead+1)
+	}
+	return today.AddDate(0, 0, 1)
 }
 
 // summary is one line of the state.
@@ -272,9 +322,9 @@ func (s consumerState) summary(build string) string {
 		return line
 	}
 	done := 0
-	tomorrow := time.Now().UTC().Truncate(24*time.Hour).AddDate(0, 0, 1)
+	today := time.Now().UTC().Truncate(24 * time.Hour)
 	for _, one := range s.walks {
-		if one.builtBy == build && one.next != nil && one.next.Equal(tomorrow) {
+		if one.builtBy == build && one.next != nil && one.next.Equal(walkDone(one.family, today)) {
 			done++
 		}
 	}
@@ -283,5 +333,6 @@ func (s consumerState) summary(build string) string {
 		builds = append(builds, fmt.Sprintf("%s=%d", other, count))
 	}
 	slices.Sort(builds)
-	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d day_rows_by_build=[%s]", s.days, len(s.walks), done, strings.Join(builds, " "))
+	return line + fmt.Sprintf(" refresher_cursors=%v walks=%d done=%d figures_built=%d of %d day_rows_by_build=[%s]", s.days, len(s.walks), done,
+		len(s.built), len(s.dayProjects), strings.Join(builds, " "))
 }

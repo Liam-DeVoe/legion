@@ -161,17 +161,15 @@ type DayPoint struct {
 // first day (FirstDays). A range that starts before a series' first day, or a series with no first
 // day at all, reads "no data": every statistic of that range null, whatever rows the range holds;
 // the per-day array still answers each day that holds a row (R12).
+//
+// It folds the rows in day order: it sorts rows by day in place, keeping their order within a day,
+// as the stored figures are folded (figures.go, newFigureGroup), so a fold whose sums depend on
+// the order of its parts answers the stored figures' bits whatever order the read's plan answered
+// its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers what this
+// does, bit for bit.
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
-	var listed, headline []Series
-	for _, series := range entry.Series {
-		if !series.Listed {
-			continue
-		}
-		listed = append(listed, series)
-		if series.Role == RoleHeadline {
-			headline = append(headline, series)
-		}
-	}
+	listed, headline := listedAndHeadline(entry)
+	slices.SortStableFunc(rows, func(a, b WindowRow) int { return a.Part.Day.Compare(b.Part.Day) })
 	var windowParts, compareParts []measures.DayPart
 	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
@@ -193,10 +191,35 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	}
 	// Each day of the window folded alone, by the same fold, for the headline series' arrays.
 	days := slices.SortedFunc(maps.Keys(byDay), func(a, b time.Time) int { return a.Compare(b) })
-	perDay := make([]map[string]Statistics, len(days))
+	daily := make([]dayFold, len(days))
 	for index, day := range days {
-		perDay[index] = FoldStatistics(definition, headline, byDay[day], Range{From: day, To: day.AddDate(0, 0, 1)})
+		folded := FoldStatistics(definition, headline, byDay[day], Range{From: day, To: day.AddDate(0, 0, 1)})
+		kept := map[string]Statistics{}
+		for _, series := range headline {
+			if holds(byDay[day], series.Series) {
+				kept[series.Series] = folded[series.Series]
+			}
+		}
+		daily[index] = dayFold{day: day, folded: kept}
 	}
+	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
+}
+
+// dayFold is one day of a window that holds a row of the eval: the fold of that day's rows alone of
+// each headline series that holds a row that day.
+type dayFold struct {
+	day    time.Time
+	folded map[string]Statistics
+}
+
+// valuesOf is each of listed, an eval's listed series, with its values: windowed and compared, the
+// folds of the window's rows and the compare range's (nil with no compare range), via, the
+// via-repository counts of the window's rows, and daily, the window's days that hold a row of the
+// eval, in day order; read against firsts, each series' first day, as SeriesValuesOf says. It is
+// the statement both reads make of their folds, SeriesValuesOf's of the day rows and
+// StoredFigures.SeriesValues' of the stored figures.
+func valuesOf(listed []Series, windowed map[string]Statistics, via map[string]int, compared map[string]Statistics, daily []dayFold,
+	firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	values := make([]SeriesValues, len(listed))
 	for index, series := range listed {
 		first, held := firsts[series.Series]
@@ -215,9 +238,9 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 			value.Change = changeOf(value.Window, value.Compare)
 		}
 		if series.Role == RoleHeadline {
-			for dayIndex, day := range days {
-				if slices.ContainsFunc(byDay[day], func(part measures.DayPart) bool { return part.Series == series.Series }) {
-					value.Days = append(value.Days, DayPoint{Day: day.Format(time.DateOnly), Statistics: perDay[dayIndex][series.Series]})
+			for _, day := range daily {
+				if stats, found := day.folded[series.Series]; found {
+					value.Days = append(value.Days, DayPoint{Day: day.day.Format(time.DateOnly), Statistics: stats})
 				}
 			}
 		}
@@ -645,8 +668,8 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 		}
 	case AggQuantile:
 		stats["sum"], stats["max"] = new(folded.Sum), largest
-		if samples := measures.MergedSamples(parts, series); len(samples) > 0 {
-			stats["median"], stats["p90"] = new(measures.Quantile(samples, 0.5)), new(measures.Quantile(samples, 0.9))
+		if samples := measures.MergedSamples(parts, series); samples.Len() > 0 {
+			stats["median"], stats["p90"] = new(samples.Quantile(0.5)), new(samples.Quantile(0.9))
 		}
 	case AggMax:
 		stats["max"] = largest

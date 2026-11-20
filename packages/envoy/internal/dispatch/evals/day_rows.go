@@ -71,8 +71,10 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
 // what names the rows in a refusal. Its upsert's change rows wait in the change log's outbox
 // (migration 20261117100014), so the transaction takes no change log lock, and they are moved into
-// the log once it has committed (drainChanges).
-func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
+// the log once it has committed (drainChanges). Where figures is set, the same transaction folds
+// again the stored figures of the day and of its gaps' days whose rows it moved (foldFiguresInTx);
+// a walk's day leaves them to the end of its batch (refresh.foldWalked).
+func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string, figures bool) error {
 	date := measures.Midnight(day.Day)
 	evalIDs := make([]string, len(slugs))
 	for i, slug := range slugs {
@@ -167,6 +169,21 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	// This write is the rewrite a day owed of its families.
 	if _, err := tx.Exec(ctx, `delete from eval_days_owed where project_key = $1 and family = any($2) and day = $3`, day.Project, families, date); err != nil {
 		return fmt.Errorf("clear what %s owed %s: %w", day.Project, date.Format(time.DateOnly), err)
+	}
+	if figures {
+		last := date
+		for _, gap := range day.Gaps {
+			if gap.Day.After(last) {
+				last = measures.Midnight(gap.Day)
+			}
+		}
+		spans := make(map[string]daySpan, len(evalIDs))
+		for _, evalID := range evalIDs {
+			spans[evalID] = daySpan{first: date, last: last}
+		}
+		if err := foldFiguresInTx(ctx, tx, builtBy, day.Project, spans); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the day rows of %s on %s: %w", day.Project, date.Format(time.DateOnly), err)

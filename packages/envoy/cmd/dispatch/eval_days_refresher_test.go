@@ -63,7 +63,7 @@ func TestTheEvalDayRefresherCatchesUpInTheDispatchProcess(t *testing.T) {
 		var cursors, deliveryDone, legionDone int
 		var build string
 		if err := database.Pool.QueryRow(t.Context(), `
-			select (select count(*) from eval_days_cursor),
+			select (select count(*) from eval_days_cursor where name in ('delivery_changes', 'events')),
 			       (select count(*) from eval_days_walks where family = 'delivery' and next_day = $1),
 			       (select count(*) from eval_days_walks where family = 'legion' and project_key = $2 and next_day = $1),
 			       coalesce((select built_by from eval_days_walks where family = 'delivery'), '')

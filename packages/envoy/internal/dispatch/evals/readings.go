@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -74,7 +75,9 @@ type Written struct {
 // appended to where the batch replaces no reading of their day, and folded again from the
 // readings that stand where it does, so the write reads no stored reading but the readings it
 // replaces and the standing readings of the days it corrects. A batch that would leave a day row
-// holding a value past what a float holds is refused (CodeReadingDayOverflow).
+// holding a value past what a float holds is refused (CodeReadingDayOverflow). The same
+// transaction folds again the stored figures of the days whose rows it moved, where BuiltBy
+// writes them (figures.go), under the eval's lock it holds.
 func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error) {
 	if !slugPattern.MatchString(batch.Slug) {
 		return Written{}, refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", batch.Slug)
@@ -131,6 +134,16 @@ func (s *Store) WriteReadings(ctx context.Context, batch Batch) (Written, error)
 				return err
 			}
 			if err := writeDays(ctx, w, definition, byName, readings, folded, batch.BuiltBy); err != nil {
+				return err
+			}
+			spans := map[string]daySpan{}
+			for _, reading := range slices.Concat(readings, folded) {
+				if reading.Value != nil {
+					day := measures.Midnight(reading.MeasuredAt)
+					addSpan(spans, evalID, day, day)
+				}
+			}
+			if err := foldFiguresInTx(ctx, w.Tx, batch.BuiltBy, batch.Project, spans); err != nil {
 				return err
 			}
 		}

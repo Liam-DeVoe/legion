@@ -71,12 +71,14 @@ var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_
 
 // BaseLacks are the tables of this head's Legion evals that the base head 02a7b3c6 does not have
 // (its migrations stop below 20261117100005, the registry's): the filings, the session titles, the
-// registry and its day rows. This head derives every one of them from LegionTables' rows (the
-// session titles by a trigger on events, the rest by the server's facts consumer and refresher), so
-// the fixture writes none of them in any mode, and a database holding eval_days is this head's.
+// registry, its day rows, the refresher's state and the rows' stored figures. This head derives
+// every one of them from LegionTables' rows (the session titles by a trigger on events, the rest by
+// the server's facts consumer and refresher), so the fixture writes none of them in any mode, and a
+// database holding eval_days is this head's.
 var BaseLacks = []string{
 	"issue_filings", "session_titles", "session_titles_backfill", "eval_versions", "eval_series",
-	"eval_readings", "eval_days", "eval_day_members", "eval_days_cursor", "eval_days_walks",
+	"eval_readings", "eval_days", "eval_day_members", "eval_days_cursor", "eval_days_walks", "eval_days_settings",
+	"eval_range_figures", "eval_day_figures", "eval_figures_built",
 }
 
 // LegionSpec is the Legion history of project the Legion mode writes: enough trees for at least

@@ -592,14 +592,14 @@ func tablePhase(phase string) string {
 	return phase
 }
 
-// quantile is the q-th quantile of a sorted list, "linear interpolation between the closest
-// ranks", and zero for an empty one: the delivery measures' own rule (measures.Quantile),
-// rounded as every number of a fold is.
-func quantile(sorted []float64, q float64) float64 {
-	if len(sorted) == 0 {
+// quantile is the q-th quantile of samples in ascending order, "linear interpolation between the
+// closest ranks", and zero for none: the delivery measures' own rule (measures.Quantile), rounded
+// as every number of a fold is.
+func quantile(sorted measures.SortedSamples, q float64) float64 {
+	if sorted.Len() == 0 {
 		return 0
 	}
-	return round(measures.Quantile(sorted, q))
+	return round(sorted.Quantile(q))
 }
 
 // hours is a duration in hours, rounded as every number of a fold is.

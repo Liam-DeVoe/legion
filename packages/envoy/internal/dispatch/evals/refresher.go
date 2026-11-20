@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -31,9 +32,10 @@ import (
 //     each of those items was counted on before, so an item whose day or project moved rewrites
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
-//     day before and after. A settings change (the delivery settings, or a repository's
-//     mapping in repo_projects, 20261117100020) begins the delivery walk again, and a mapping
-//     begins every project's Legion walk again too.
+//     day before and after. A change of the delivery settings rewrites, in one transaction, every
+//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a
+//     change of a repository's mapping in repo_projects (20261117100020) begins the delivery walk
+//     again, and every project's Legion walk too.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of
@@ -96,12 +98,14 @@ var refresherCursors = []string{changesCursor, eventsCursor}
 
 // The walks of eval_days_walks, by family: the delivery and CI rows of every project (one walk,
 // whose project is the empty string), the Legion rows of one project, the zero rows of one
-// project's logged evals, and one project's unowned-p0 row of today.
+// project's logged evals, one project's unowned-p0 row of today, and one project's stored figures,
+// a walk of their ranges' end days (walkFigures).
 const (
 	walkDelivery = "delivery"
 	walkLegion   = "legion"
 	walkLogged   = "logged"
 	walkUnowned  = "unowned"
+	walkFigures  = "figures"
 )
 
 // RefresherDeps is what RunRefresher needs of the server.
@@ -247,8 +251,9 @@ func (r refreshed) sorted() []string {
 // refresh is one pass: it moves the change log's pending rows into the log (delivery.DrainPending),
 // so the page it reads holds every change committed before it began, seeds the projects it owes a
 // seed (refresh.load, with seeds, the loop's own), reads page after page of the two feeds until one
-// comes back short and writes the days each names, makes a batch of each walk, prunes the change
-// log, and answers what it wrote and when the loop should run again.
+// comes back short and writes the days each names, makes a batch of each walk, makes the stored
+// figures' part (figuresPass), prunes the change log, and answers what it wrote and when the loop
+// should run again.
 //
 // A pass that leaves an event id standing above the safe horizon it read has read less than the
 // log holds (events.Horizon.HeldBack): an event that committed while a lower id was still open,
@@ -283,6 +288,11 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
+	building, err := r.figuresPass(ctx, pending, sched.page)
+	if err != nil {
+		return r.report, time.Time{}, err
+	}
+	pending = pending || building
 	// The log keeps a day (delivery.ChangeRetention). A failed prune leaves the rows for the next
 	// pass and fails nothing else, as the reconcile's does.
 	if _, err := delivery.PruneChanges(ctx, s.database.Pool); err != nil && ctx.Err() == nil {
@@ -380,13 +390,16 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 	return cursors, read.RowsAffected() > 0, nil
 }
 
-// commitPage moves the two cursors to the positions a page read and begins again each walk the
-// page's changes call for, in one transaction: the days the page named are written before it, so
-// a crash between the two reads the same changes again, and a walk the changes begin again is
-// recorded with the cursor that passed them. The event cursor is stamped with the moment the pass
-// ran as of, and the change cursor with its ReadAt, when a page last read the change log to its
-// end (page), which the lost-cursor rule reads and which a full page leaves where it stood.
-func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey) error {
+// commitPage moves the two cursors to the positions a page read, begins again each walk the page's
+// changes call for and records built, where it is set, as the delivery settings the delivery and
+// CI rows stand built under (eval_days_settings), in one transaction: the days the page named are
+// written before it, so a crash between the two reads the same changes again, and a walk the
+// changes begin again is recorded with the cursor that passed them, and with the settings the walk
+// builds under where none were recorded (syncSettings). The event cursor is stamped with the
+// moment the pass ran as of, and the change cursor with its ReadAt, when a page last read the
+// change log to its end (page), which the lost-cursor rule reads and which a full page leaves where
+// it stood.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, built *delivery.DeliverySettings) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
@@ -426,8 +439,17 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
+	var recorded time.Time
+	if built != nil {
+		if recorded, err = recordBuiltUnder(ctx, tx, *built); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
+	}
+	if built != nil {
+		r.builtAt = recorded
 	}
 	return nil
 }
@@ -476,7 +498,18 @@ func (s *Store) readWalks(ctx context.Context, build string) (map[walkKey]walkSt
 // and, where that is past today, drops another build's record of the walk that has not moved for
 // staleWalk.
 func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) error {
-	if _, err := r.store.database.Pool.Exec(ctx, `
+	return r.recordWalkIn(ctx, r.store.database.Pool, key, next)
+}
+
+// executor is what recordWalkIn writes through: the pool, or a transaction whose other writes the
+// record commits with (the figures walk's, buildFigures).
+type executor interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// recordWalkIn is recordWalk's write in q.
+func (r *refresh) recordWalkIn(ctx context.Context, q executor, key walkKey, next time.Time) error {
+	if _, err := q.Exec(ctx, `
 		insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
 		values ($1, $2, $3, $4, $5)
 		on conflict (family, project_key, built_by) do update
@@ -487,7 +520,7 @@ func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) e
 	if !next.After(r.today) {
 		return nil
 	}
-	if _, err := r.store.database.Pool.Exec(ctx, `
+	if _, err := q.Exec(ctx, `
 		delete from eval_days_walks where family = $1 and project_key = $2 and built_by <> $3 and updated_at < $4
 	`, key.family, key.project, r.build, r.now.Add(-staleWalk)); err != nil {
 		return fmt.Errorf("drop the stale %s walks of %q: %w", key.family, key.project, err)
@@ -496,18 +529,18 @@ func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) e
 }
 
 // RefresherAge answers how long before now the refresher last read its feeds, as the oldest of its
-// two cursors' updated_at, and false when no pass has committed on this database. Every pass
-// stamps the event cursor with the moment it ran as of, whether or not its feed held anything new,
-// and the change cursor with the moment one of its pages last read the change log to its end
-// (commitPage). So the age is the time since the last pass ran, or since a pass last read the
-// change log to its end, whichever is older: a pass catching up a backlog of changes reads as old
-// as its last read of the whole log. It is not how long ago the last change arrived: it is the
-// freshness the eval list states of the computed evals' day rows. A caller whose clock stands
-// behind the writing process's reads a negative age, as it would of any moment another process
-// stamped.
+// two cursors' updated_at (the stored figures' own cursor, figuresCursor, is not one of them), and
+// false when no pass has committed on this database. Every pass stamps the event cursor with the
+// moment it ran as of, whether or not its feed held anything new, and the change cursor with the
+// moment one of its pages last read the change log to its end (commitPage). So the age is the time
+// since the last pass ran, or since a pass last read the change log to its end, whichever is older:
+// a pass catching up a backlog of changes reads as old as its last read of the whole log. It is not
+// how long ago the last change arrived: it is the freshness the eval list states of the computed
+// evals' day rows. A caller whose clock stands behind the writing process's reads a negative age, as
+// it would of any moment another process stamped.
 func (s *Store) RefresherAge(ctx context.Context, now time.Time) (time.Duration, bool, error) {
 	var oldest *time.Time
-	if err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor`).Scan(&oldest); err != nil {
+	if err := s.database.Pool.QueryRow(ctx, `select min(updated_at) from eval_days_cursor where name = any($1)`, refresherCursors).Scan(&oldest); err != nil {
 		return 0, false, fmt.Errorf("read the age of the eval day-row refresher's cursors: %w", err)
 	}
 	if oldest == nil {

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
 
 // Entry is one eval as the registry read answers it: its newest definition and the newest
@@ -327,6 +329,13 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 // than one repository: only that read folds two rows of one series and day, which can tie, and
 // it sets no order. Every other row answers no write: null and the empty string.
 func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	return dayWindow(ctx, s.database.Pool, projects, entries, repos, window, compare)
+}
+
+// dayWindow is DayWindow's read in q: the pool, or a transaction that writes the rows it reads,
+// as the stored figures' writes fold them (figures.go), so a fold of the rows a write left reads
+// them as a paint does.
+func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
@@ -364,7 +373,7 @@ func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entr
 		query += "\n\t\tunion all\n\t\t" + ranged("false", 11, 12)
 		args = append(args, compare.From.UTC(), compare.To.UTC())
 	}
-	rows, err := s.database.Pool.Query(ctx, query, args...)
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the day rows of %v: %w", projects, err)
 	}

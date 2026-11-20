@@ -32,10 +32,14 @@ import (
 //     request the run ships now (delivery/containment.go's rule, DeliveryDay.linked) and of each
 //     it shipped when that pull request was last counted (shipped_by), whose rows hold the
 //     completion of the run that ships it as their deploy time.
-//   - settings: every day of every delivery and CI series from its first input day, by beginning
-//     the delivery walk again; a change of repo_projects (whose change names the repository) also
-//     begins every project's Legion walk again, since the mapping decides the repository an issue
-//     or a filing with none of its own resolves to (ReadLegionDay).
+//   - settings: a change of the delivery settings rewrites, in one transaction, every day of the
+//     delivery and CI evals it moves from their first input day on, and begins no walk
+//     (settings_rewrite.go: settingsMoves names what each setting moves, and the pass finds the
+//     change by comparing the settings it reads with those the rows stand built under, so one that
+//     moves no eval rewrites nothing); a change of repo_projects (whose change names the
+//     repository) begins the delivery walk again, and every project's Legion walk too, since the
+//     mapping decides the project a row counts for and the repository an issue or a filing with
+//     none of its own resolves to (ReadLegionDay).
 //   - issue_facts: the issue's Legion close day before the change and after it, which the change
 //     names itself (t_old and t_new, migration 20261117100002) and no read is made to find: a
 //     Legion day counts an issue on its close day alone, so an issue closed again on another day
@@ -72,8 +76,15 @@ type refresh struct {
 	// settings is nil where no delivery settings exist, which leaves the delivery and CI rows
 	// unwritten: without a deploy repository no day of them can be read.
 	settings *delivery.DeliverySettings
-	first    map[walkKey]map[string]time.Time
-	since    map[string]LegionSince
+	// builtUnder is the delivery settings the stored delivery and CI rows stand built under
+	// (eval_days_settings), and builtAt when they were recorded, read by the pass's first page that
+	// has settings (builtRead) and moved by each of its pages that brings the rows to the settings
+	// it reads (syncSettings); nil where none are recorded.
+	builtUnder *delivery.DeliverySettings
+	builtAt    time.Time
+	builtRead  bool
+	first      map[walkKey]map[string]time.Time
+	since      map[string]LegionSince
 	// reads, done and unowned hold for one page (page sets them anew) and then the walks: a page
 	// writes a day once, from one read of it, and a change to that day committed after the read
 	// is on a later page, which must read and write the day again. Kept for the whole pass, they
@@ -90,9 +101,12 @@ type refresh struct {
 	walkApplies     *delivery.ApplyRows
 	walkAppliesFrom time.Time
 	// walking is set while the pass walks, whose days run in order and so need no gap filled
-	// behind a first day they move (gapsBehind).
+	// behind a first day they move (gapsBehind), and whose days' stored figures are folded once
+	// the walks' batches are written (foldWalked) rather than in each day's own transaction.
 	walking bool
-	report  refreshed
+	// walked is the days the pass's walks wrote, by family and project (noteWalked).
+	walked map[walkKey]map[time.Time]bool
+	report refreshed
 }
 
 // load reads the projects and the delivery settings and seeds the projects the pass owes a seed
@@ -154,7 +168,8 @@ func (r *refresh) loadSettings(ctx context.Context) error {
 // pageWork is what one page of the feeds names: the pull requests and runs whose rows changed, by
 // row key; the Legion days the facts and filing changes name, by project; the issues whose
 // repository or parent moved; the projects whose count of unowned P0 issues may have moved; the
-// logged evals whose readings changed, by project; and the walks to begin again.
+// logged evals whose readings changed, by project; the walks to begin again; and the delivery
+// settings to record with the page's cursors as the ones the delivery and CI rows stand built under.
 type pageWork struct {
 	prs        map[string]pullRequestRef
 	runs       map[string]runRef
@@ -166,6 +181,12 @@ type pageWork struct {
 	// project's) and walkLogged (every project's).
 	restart  map[string]bool
 	settings bool
+	// settingsRow is whether the page holds a change of the delivery_settings row (a settings
+	// change that names no repository), which syncSettings checks against the other builds' writes.
+	settingsRow bool
+	// built is the delivery settings commitPage records in eval_days_settings with the cursors and
+	// the walks the page begins again (syncSettings), nil for none.
+	built *delivery.DeliverySettings
 }
 
 // pullRequestRef is a pull request's row by its key; runRef a run's.
@@ -208,10 +229,14 @@ func (w *pageWork) addChange(change delivery.Change) {
 			w.runs[RunMember(change.Repo, id)] = runRef{repo: change.Repo, id: id}
 		}
 	case delivery.ChangeKindSettings:
+		// The page reads the settings again and rewrites what they moved (syncSettings). A
+		// repository's mapping moves which project every row of the repository counts for, so it
+		// begins the walks again.
 		w.settings = true
-		w.restart[walkDelivery] = true
-		if change.Repo != "" {
-			w.restart[walkLegion] = true
+		if change.Repo == "" {
+			w.settingsRow = true
+		} else {
+			w.restart[walkDelivery], w.restart[walkLegion] = true, true
 		}
 	case delivery.ChangeKindIssueFacts, delivery.ChangeKindIssueFilings:
 		// Each names its Legion days itself, in its project: a facts change the issue's close day
@@ -260,8 +285,9 @@ func (w *pageWork) restarts(projects []string) []walkKey {
 }
 
 // page is one page of each feed: it reads where each cursor stands and a page of each feed after
-// it, writes the days the page names, and moves the cursors in a transaction of its own, which
-// also records the walks the page begins again. It answers whether a feed holds more rows.
+// it, brings the delivery and CI rows to the delivery settings it reads (syncSettings), writes the
+// days the page names, and moves the cursors in a transaction of its own, which also records the
+// walks the page begins again. It answers whether a feed holds more rows.
 //
 // A database holding no cursor row has committed no pass: the cursors start at the feeds' heads,
 // and every walk begins, which builds every day the feeds' history could name. A change cursor
@@ -336,10 +362,13 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 			delete(r.first, walkKey{family: walkDelivery, project: project})
 		}
 	}
+	if err := r.syncSettings(ctx, work); err != nil {
+		return false, err
+	}
 	if err := r.apply(ctx, work); err != nil {
 		return false, err
 	}
-	if err := r.commitPage(ctx, moved, work.restarts(r.projects)); err != nil {
+	if err := r.commitPage(ctx, moved, work.restarts(r.projects), work.built); err != nil {
 		return false, err
 	}
 	return full, nil
@@ -625,8 +654,11 @@ func (r *refresh) writeDelivery(ctx context.Context, read DeliveryDay, project s
 		return nil
 	}
 	day.Gaps = r.gapsBehind(walkDelivery, project, read.Day, built.Rows, first)
-	if err := r.store.WriteProjectDay(ctx, day, r.build); err != nil {
+	if err := r.store.writeProjectDay(ctx, "delivery", day, deliveryDaySlugs, deliveryDayFamilies, r.build, !r.walking); err != nil {
 		return err
+	}
+	if r.walking {
+		r.noteWalked(walkDelivery, project, read.Day)
 	}
 	r.noteBuilt(walkDelivery, project, read.Day, built.Rows)
 	r.done[key], r.report.days[key] = true, true
@@ -703,8 +735,11 @@ func (r *refresh) writeLegion(ctx context.Context, project string, day time.Time
 		return nil
 	}
 	written.Gaps = r.gapsBehind(walkLegion, project, read.Day, built.Rows, first)
-	if err := r.store.WriteLegionProjectDay(ctx, written, r.build); err != nil {
+	if err := r.store.writeProjectDay(ctx, "Legion", written, legionDaySlugs, legionDayFamilies, r.build, !r.walking); err != nil {
 		return err
+	}
+	if r.walking {
+		r.noteWalked(walkLegion, project, read.Day)
 	}
 	r.noteBuilt(walkLegion, project, read.Day, built.Rows)
 	r.done[key], r.report.days[key] = true, true
@@ -850,8 +885,9 @@ func (r *refresh) noteBuilt(family, project string, day time.Time, built []DayRo
 }
 
 // walk makes a batch of each walk: the delivery walk (where delivery settings exist), and each
-// project's Legion walk, logged zero fill and unowned-p0 row of today. It answers whether a walk
-// has days left, which asks for the next pass at once.
+// project's Legion walk, logged zero fill and unowned-p0 row of today, and then folds the stored
+// figures of the days the batches wrote (foldWalked). It answers whether a walk has days left,
+// which asks for the next pass at once.
 func (r *refresh) walk(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx, r.build)
 	if err != nil {
@@ -884,7 +920,7 @@ func (r *refresh) walk(ctx context.Context) (bool, error) {
 			return false, err
 		}
 	}
-	return pending, nil
+	return pending, r.foldWalked(ctx)
 }
 
 // walkDays makes one batch of the walk key: from the first day it has not built, or, where it is

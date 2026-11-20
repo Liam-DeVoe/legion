@@ -4,6 +4,7 @@ Go binary serving the Dispatch dashboard and API.
 People sign in through a Cognito sign-in pool or with Google directly, where the `DISPATCH_SIGNIN_*` settings configure one, and are named by lowercase email;
 the web app's GitHub reads go to GitHub as the GitHub App.
 Dispatch keeps application state in Postgres.
+Its subcommands (`census`, `settings`, `routes`, `openapi`, `rebuild-refs`, `backfill-files` and others) are the `subcommands` table in `cmd/dispatch/subcommands.go`, and an argument it does not know is refused with every one named.
 
 This file uses semantic line breaks: one sentence per line, and a long sentence may break after a clause.
 A blank line separates list items.
@@ -159,6 +160,7 @@ Each item below names a variable, then its purpose.
   `/debug/vars` (Profiling, below) shows how near each cap a running process is.
 
 `DISPATCH_REPO_PROJECTS` optionally seeds repository-to-project settings at boot with comma-separated `owner/repo=KEY` entries.
+Each repository is read as a mapping's path is, lower-cased with one trailing `.git` trimmed, and held to the names GitHub allows as the settings route holds a mapping's path: an entry such as `acme/.git=KEY`, which reads as `acme/`, or `acme/..=KEY` is refused, naming the entry, and the boot with it.
 Existing dashboard mappings take precedence over this seed:
 it adds only a repository with no mapping, and announces each one it adds with `settings.repo_project.updated`, as a dashboard write does.
 Dispatch resolves every external issue through the stored mapping, then falls back to `DISPATCH_DEFAULT_PROJECT` when configured.
@@ -227,7 +229,7 @@ Every mutating row of the route table declares what its write belongs to (`inter
 a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
 *a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
-*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on, and the caller-private `me` rows;
+*the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
@@ -981,7 +983,7 @@ What the two processes share, and what each keeps to itself:
 
 - A send waits out a listener take-over.
   While the active Envoy listener pod is replaced, its successor refuses connections, answers 502, 503 or 504, or does not hold the session yet;
-  a send that meets one of those (or a receipt timeout) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
+  a send that meets one of those (or a receipt timeout, or a 503 coded `maybe_stored`, whose publish the stream never acknowledged) is tried again under the attempt it holds and the same idempotency key, renewing its claim before each try, for up to 12 seconds from its first try, and only then settles `failed` (`api/envoy_resolve.go`, `listenerTakeoverWindow`).
   A request that sends during a take-over answers up to 12 seconds later, and a mention of a session that is really gone reads `failed: no live session` about 12 seconds after it was made.
   A targeted message to such a session is queued instead at that moment:
   when neither the listener's registry nor its known-session store holds the session, Dispatch publishes the message on the session's own subject, `notifications.agent.<session>`, under the dedupe key the listener's send would have used, and records the attempt `queued` (`api/message_queue_publish.go`).
@@ -1493,7 +1495,7 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The second process's page waits on the row and then reads the cursor the first advanced, so it judges what the first did not rather than the same page twice, and no wake is given up to another process's pass.
 
 - The delivery settings both GitHub intakes route by are one cache per process (`delivery.SettingsCache`), read at start and again when `delivery_settings` changes:
-  `delivery_settings_changed` notifies `dispatch_delivery_settings` (`0156`) for a change to any column but the freshness ones every GitHub event and reconcile pass rewrite.
+  `delivery_settings_changed` notifies `dispatch_delivery_settings` (`0156`, `20261120111107`) for a change to any column but the freshness ones every GitHub event and reconcile pass rewrite and who saved the settings and when (`updated_by`, `updated_at`).
   A settings change reaches a running intake without a restart, and neither intake reads the row per message or on a timer;
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
@@ -1503,11 +1505,21 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
+  A change of the delivery settings is answered by that pass alone, which rewrites every day of the delivery and CI evals the change moves, in one transaction (their day rows, the rows' stored figures, and the members whose day, repository or shipping run moved), and begins no walk (`internal/dispatch/evals/settings_rewrite.go`).
+  The pass finds what moved by comparing the settings it reads with those the rows stand built under (`eval_days_settings`, `20261117100021`), so a change no day row reads (a workflow path, the population rule, the roll-up job) rewrites nothing, and where none are recorded it begins the delivery walk again.
+  Where another build moved a value of a row a setting can move since the settings were recorded (`eval_days.built_by`, `updated_at`), a settings change rewrites every eval a setting can move, as a new deploy repository does: in a roll, the release before this one writes rows under settings it read and records none, which a change and a later one back to the recorded settings would otherwise leave standing.
+  A repository's mapping in `repo_projects` begins the delivery walk and every project's Legion walk again.
   A change cursor whose change has left the log, or names another change, is a loss only when that change was younger than its 24 hours or no page read the change log to its end for longer than that, and so is one above the newest seq of a log that holds rows, whose sequence went backwards (`delivery.CursorLost`, the one rule the delivery live hub and the Legion facts consumer read their own cursors by too): one pruned after its 24 hours while pages read the log to its end within them lost nothing, as does one over a log a prune emptied, and a loss begins every walk again.
   Each page judges the cursor at its own reading of the clock, and a page shorter than its limit stamps that reading as the cursor's last read of the whole log (`delivery.ChangeCursor`'s `ReadAt`), while a full page leaves the stamp where it stood, so a catch-up that a prune overtakes between two pages reads the cursor as lost.
   The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
   It asks for its next pass at once while a walk has days left, and otherwise at the earlier of the next UTC midnight and five minutes after the oldest delivery change passes its 24 hours, which the pass prunes (`delivery.PruneChanges`), so the change log keeps its retention where no GitHub App runs the reconcile that prunes it too, and the passes that prune a busy log run every five minutes rather than every 10 s.
   A pass that leaves an event above the safe horizon it read (`events.Horizon.HeldBack`) asks for its next pass 10 s on, since the end of the write that held that event back wakes nothing; a failed pass is retried 10 s later.
+
+- The eval list's stored figures (`eval_range_figures`, `eval_day_figures`, `20261120072042`, `internal/dispatch/evals/figures.go`) are folds of day rows, written beside them, which a read of a range the Evals tab offers looks up by key (Routes below).
+  Each write of day rows folds again, in its own transaction, the figures of every day whose rows it moved: the day's own row and every stored range whose span holds the day, each upserted only where its figures moved, so a write that moved nothing writes none; the refresher's walks fold the days of their batch at its end.
+  Once no walk of the day rows has days left, the refresher's pass builds up to 28 end days of its build's figures walk (`eval_days_walks`, family `figures`), which folds every range of each project through two days after today and writes those whose figures moved, and then each new end day, so a release whose folds agree with the one before it writes next to nothing and one whose folds differ rewrites what they move.
+  The first whole figures walk of a project, by any build, sets its marker (`eval_figures_built`), from which a read of an offered range reads the stored figures.
+  The figures read the change log from a cursor of their own (`eval_days_cursor`'s `figures` row), which every build that writes figures reads, so a write of day rows by a build that writes none, such as the release before this one during a roll, is folded by the next pass of a build that does; the refresher's age reads the two feeds' cursors alone.
 
 - The Legion facts consumer (`legionfacts.Run`, lease `legion-facts`) keeps each project's `issue_facts` and `issue_filings` true to their inputs, and holds no timer that rewrites a row.
   It is woken by `dispatch_events`, by the sampler's `dispatch_legion_state` and by `delivery_changes`, and reads the events after its cursor up to the safe horizon it reads once (`events.Horizon.SafeOrAwait`, which waits on no open transaction past a process's first pass), the sampler's observations and the delivery changes (`issue_facts_cursor`).
@@ -2315,6 +2327,22 @@ two checks hold `cause` to that length and null exactly when `succeeded` is true
 The loop that holds a read's lease writes that read's row over the one before it when its pass ends (`store.GitHubReadAttempts.Record`), and a row trigger notifies `dispatch_github_read_attempts` with the read's name at each write, which refreshes every process's copy of the record (Background loops, above).
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
 
+Migration `20261120072042_eval_figures` creates the eval list's stored figures (`internal/dispatch/evals/figures.go`; Background loops, above, and Routes, below, say who writes and reads them):
+`eval_range_figures`, keyed by `(project_key, repo, days, end_day, eval_id)`, the fold of one range's day rows of an eval and the oldest `updated_at` among those rows;
+`eval_day_figures`, keyed by `(project_key, repo, day, eval_id)`, one day's figures of an eval's headline series and the stamp of the rows they fold (`rows_stamp`);
+and `eval_figures_built`, keyed by project, the day through which the project's figures are built, which the first whole figures walk of any build sets.
+`repo` is `''` for the project's own rows, `figures` holds every statistic as its 64 bits, so a `-0` survives, and each figure row records the `fold_key` of the definition it was folded under and the build that folded it (`built_by`);
+a row goes with its project, and a check holds each `eval_id` to its project.
+The walk family `figures` is admitted by `eval_days_walks`' own migration (`20261117100021`), of this release too.
+Three new tables: nothing existing is read, locked or rewritten, the previous release neither reads nor writes them, and its census answers `0`.
+
+Migration `20261120111107_delivery_settings_bookkeeping` replaces the body of `delivery_settings_changed` (`0100`, `0156`) so that it ignores `updated_by` as it ignores the freshness columns and `updated_at`:
+a save of the delivery settings with the same values by another person logs no settings change and sends nothing on `dispatch_delivery_settings`, since no day row, delivery window or intake reads who saved them.
+Every other column logs and announces as before, and every insert and update still sends `delivery_freshness`.
+Both builds of a roll read the change log as before: a settings change is still a `settings` row with no repository, which the release before this one answers by beginning its delivery walk again and this one by rewriting what the change moves, and a save of `updated_by` alone moved nothing either reads.
+`0106`'s trigger calls the function by name, so every save by either build runs the new body once it commits.
+It locks no table and rewrites no row, and its census answers `0`.
+
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);
 `embedder_identity`, the identity of the process's embedder; and `file_store`, whether it stores files in a bucket.
@@ -2559,6 +2587,11 @@ The stored digest is what says the check's words moved after a result was record
 Nothing updates a row — another run is another row — and a table check refuses a `pass` that counts a failed, skipped or excluded case.
 `check_results_check` serves the Verification tab's read of one check's results newest first, and `check_results_issue` an issue's own reads.
 A new table: nothing existing is read, locked or rewritten, the previous release neither reads nor writes it, and its census answers `0`.
+
+Migration `20261117093000_check_results_commit_repo` adds the nullable column `check_results.commit_repo`: the repository the record route took a result's commit to be of, written only where that is a repository the check's issue links a pull request in rather than the one the issue resolves to, and null for every other row, the rows before it included.
+Such a repository is one with an open or merged linked pull request that GitHub said holds the commit, and no other: where a linked read did not answer and no repository is shown to hold the commit, no result is stored at all (`502 GITHUB_UNREADABLE`).
+The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
+A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
@@ -4152,6 +4185,13 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
+  PUT holds the path's owner and name to the characters GitHub allows, and refuses a name that is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed (`acme/...git`, `acme/.git`), with `400 INVALID_REPO_PROJECT`, as it holds `renamed_to`; the stored name becomes the repository of the project's issues that name none, which delivery puts into GitHub paths.
+  DELETE removes the mapping stored under exactly the path's spelling, the two segments as the server unescapes them joined by `/`, compared byte for byte, and no other: a canonical path, lower case with no trailing `.git`, removes the mapping of that name, as before, and any other spelling removes only a mapping stored under that spelling.
+  So `DELETE /api/v1/settings/repo-projects/acme/x.git` removes `acme/x.git`, which a PUT of `acme/x.git.git` stores, and leaves `acme/x` beside it; `…/Acme/X` removes a mapping direct SQL stored as `Acme/X`; `…/acme/x.git.git` removes nothing unless a mapping is stored under that spelling; and the same request sent again removes nothing more.
+  A DELETE that removes nothing answers `204`, or `400 INVALID_ISSUE_REF` where its path is no `owner/name` reference at all.
+  A mapping stored under `acme/..` is removed only by a request that sends the dots percent-encoded and keeps them, `DELETE /api/v1/settings/repo-projects/acme/%2E%2E` from curl with `--path-as-is` or from a client that builds the path itself: a browser resolves `..` and `%2E%2E` as dot segments, so the dashboard's delete of such a mapping does not reach it; a `/` in a name is written `%2F`.
+  The CI reconcile's warning about such a mapping names the request that removes it (`removed_by`), the path that spells the mapping's own name, split at the first `/` that leaves neither half empty nor a lone `/`, with a `/` inside a half written `%2F` (`DELETE /api/v1/settings/repo-projects/%2Fa/b` removes a mapping direct SQL stored as `/a/b`); for a mapping no path spells — a name with no `/`, one whose only `/` begins or ends it (`/acme`, or `acme/`, which a PUT of `acme/.git` stored before the rule above), or one each of whose `/` leaves nothing or a lone `/` on one side (`acme//`) — it names no request and says the mapping is removed by SQL.
+  A `renamed_to` stored under such a name is no mapping's own name, so a removal of that name removes nothing: the warning names the PUT of the mapping it belongs to instead (`mended_by`), which mends it with a `renamed_to` GitHub allows, or `""` to clear it, and where that mapping's own name is one the PUT refuses or reads as another mapping's, it names that mapping's removal in the PUT's place (`removed_by`).
   `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
@@ -4187,6 +4227,7 @@ Each item below names a path with its method and identity, then its purpose.
   Each item is an eval's current definition (every field of `eval_versions`, read through `evals_current`), its owner, each listed series with its statistics over the window and over the compare range, the change between them, `data_since`, the via-repository count and, for a headline series, a per-day array, and the verdict of its target (null where the target is off).
   The window is `[from, to)` as the delivery routes read it (RFC3339, a moment of the UTC years 1 to 9999, the last 7 days by default, at most 84 days); `compare_from` and `compare_to` come together or not at all, each range at most 84 days and the two of any length; each range is the UTC days it covers, which the answer's `window` and `compare` state, and which end by 9999-12-31, since no JSON answer writes a later time.
   Every statistic is folded from the stored day rows of those days (`eval_days`), never from the population again: a computed eval through the one fold its `source` names (`evals.FoldStatistics`, `internal/dispatch/evals/statistics.go`), which the delivery routes fold their stored day parts through too, a logged eval through its series' `agg`.
+  A window and a compare range each of a length the Evals tab offers (7, 14, 28 or 84 days, or one day longer, as the live view reads), of the project's own rows or one repository's, are looked up in the stored figures, folds of those day rows kept ahead of the read (Background loops, above), which answer the same bytes; any other read, and an eval whose project's figures are not built yet or were folded under another definition, folds the day rows, each eval's in day order.
   Each row records which writer made it (`eval_days.writer`), and an eval folds its own writer's rows alone: a computed eval the rows the computation wrote (the refresher and the day builders), a logged eval those the readings write kept, so an eval whose source changes, which only the seed does when it makes computed a slug a reading registered first, never folds a row the other writer made.
   A series with no day row reads every statistic `null`, never 0, and a range that starts before a series' first day (`data_since`) reads `null` too, its per-day array still answering the days that exist.
   A figure the fold of a range takes past what a float holds (two days each summing 1e308) reads `null` too, as does a change between two such figures: each day row is finite, since the readings write refuses one that would not be, but their sum need not be.
@@ -4246,6 +4287,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Whether Dispatch's GitHub App, which GitHub sends the repository's webhook events through, is installed on the repository:
   `200 {installed}`, `false` when GitHub answers 404.
+  A path whose owner or name has a character GitHub does not allow, or whose name is `.`, `..`, empty or longer than 100 characters once a trailing `.git` is trimmed, is `400 INVALID_REPO_PROJECT`, and GitHub is asked nothing.
   `503 GITHUB_APP_UNCONFIGURED` when Dispatch holds no App key, `502 GITHUB_UNREADABLE` naming the repository and GitHub's error on any other failure.
   The Legion daemon asks it for every repository it serves, for `legion state`.
 
@@ -4633,6 +4675,9 @@ Each item below names a path with its method and identity, then its purpose.
   with `ask_id` instead of `reply_to` it names a part of that ask.
   `400 INVALID_COMMENT` with neither `reply_to` nor `ask_id`, and for a block or part the named item does not hold now.
   The delivery callback `POST /api/v1/comments/{id}/reply` takes `reply_to_block` for a block of comment `{id}`, never for a part of the ask its thread hangs under.
+  A reply or error callback on `POST /api/v1/comments/{id}/reply` or `POST /api/v1/messages/{id}/reply` is accepted from the session the attempt names, and, for an attempt sent for a `role:` route, from the session the role's claim names when the reply arrives while the listener's role lookup (`GET /v1/roles/<role>`) calls it live: the session that took the role from the one Dispatch sent to, which the listener hands what that session had not read.
+  Dispatch asks the listener before the reply's transaction opens, and only when the attempt names another session; a lookup the listener does not answer is `503 ENVOY_UNAVAILABLE`, and any other session, or the role's holder while it is not live, is `403 REPLY_FORBIDDEN`.
+  The attempt's first stored reply stays its reply, and a later reply is answered as any second reply is (the stored reply; a message reply with `follow_up` is posted under the first).
   A comment's record in its document's margin - its body and replies, or a suggestion's and its replacement - holds at most 256 KiB of text, and a document's margin 1 MiB:
   a comment, reply or suggestion that would leave either past its bound and bigger is `413 CAP_EXCEEDED`, naming the bound and both sizes.
   A quote anchor that would leave the marks on the document's text carrying more than 1 MiB of ids and authors, and more than they carried, is `413 CAP_EXCEEDED` too, as for an ask's.
@@ -4699,7 +4744,7 @@ Each item below names a path with its method and identity, then its purpose.
   a bearer reading a direct message names its session in `?session=` (`400 SESSION_REQUIRED`, `403 THREAD_FORBIDDEN`).
   While the message is owed a block index, `indexed` is `false` and `blocks` empty; the read writes nothing.
 
-- `/api/v1/issues/{key}/results` (GET, POST; cookie, trusted header, or bearer)
+- `/api/v1/issues/{key}/results` (GET; cookie, trusted header, or bearer)
 
   GET lists the `check` blocks of the issue's Verification document in document order:
   `{issue, verification_artifact_id, checks}`, each check with its attributes (`when`, `surface`, `run`, `negative_control`, `ci_check`), the version its words last changed in, their digest, and every result recorded against it from any issue, newest first.
@@ -4712,13 +4757,24 @@ Each item below names a path with its method and identity, then its purpose.
     The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
+  Each basis is `{kind, repo?, commit?, branch?, pull_request?, learned_at?}`, `kind` `named`, `pull_request` or `branch`; `repo` is the `owner/repo` of a basis in a repository the issue links a pull request in and does not resolve to, and is absent from every basis of the issue's own repository, so pull request `#7` or branch `main` of that linked repository reads apart from the issue's own.
   Each result carries `commit_stands`, where its own commit stands against those, `check_words_moved`, and `retracted` where a retraction stands against it.
 
   - A `before_merge` check is compared with every head Dispatch holds for the check's own issue: the head of an `open` pull request, and the final head of a `merged` one, attributed to that issue.
+    A pull request that the issue's external links name (`https://github.com/<owner>/<repo>/pull/<n>`) in a repository the issue does not resolve to counts as one attributed to it, since the attribution holds an issue to its own repository and can never give it that pull request (`delivery.HeadsAttributedTo`, `linkedPullRequestTerms`); its basis names that repository in `repo`.
+    The link is matched to the stored row by repository and number, so a push that moves that pull request's head moves the basis, and one that closed without a merge is no basis.
+    The owner and the name are read by the patterns every name GitHub allows is read by, an owner of a letter or digit and then up to 38 letters, digits, `-` and `_` (a managed user's `mona-cat_octo` among them) and a name of letters, digits, `.`, `-` and `_`, and a name of `.` or `..` alone names no pull request, so a link cannot send a read of GitHub up the path.
+    A link to a pull request of the issue's own repository adds nothing: the attribution alone decides which pull requests of that repository are the issue's.
 
   - An `after_merge` check is compared with the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue — and with that repository's default branch, which answers alone where Dispatch holds no merge of the issue or the merged row names no base branch.
 
   - A `default_branch` check is compared with that repository's default branch alone, whatever branch the pull request merged into.
+
+  - A result of an `after_merge` or `default_branch` check whose commit the record route took to be of a repository the issue links a pull request in is compared in that repository:
+    the record route keeps that repository with the result (`check_results.commit_repo`, POST below), and the read asks that repository's branches, for `after_merge` the base branch of the merged linked pull request (`delivery.BaseBranchMergedIn`) and then its default branch, for `default_branch` its default branch alone; the branch the result stands at names that repository in `repo`.
+    Asked of the issue's own repository, GitHub answers `404` for such a commit.
+    A `before_merge` result of that kind is read through that repository, below, for the same reason.
+    Every other result keeps no repository and is compared as above.
 
   - A check compared with nothing says why in `compared_nothing`:
     `no_pull_request_or_branch` where the issue resolves to no repository, and where a `before_merge` check's issue holds no pull request at all;
@@ -4731,7 +4787,9 @@ Each item below names a path with its method and identity, then its purpose.
     A branch check still places a commit a stored `branch_commits` yes carries, since that answer is keyed by a branch and stands for good.
     An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
     Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the answer `unknown` wherever no branch carries the commit, and never `other_commit`.
-    An issue that resolves to no repository is never unknown: Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit.
+    An issue that resolves to no repository is never unknown, since Dispatch holds every head such an issue will ever have, so a commit none of them names is another commit; the one exception is a `before_merge` result whose `check_results.commit_repo` names a linked repository, which that repository decides, as the next sentence says.
+    A result whose commit is taken to be of a repository the issue links a pull request in (`check_results.commit_repo`) is decided by that repository: a `before_merge` one is `unknown` where Dispatch cannot read it and `other_commit` where no compared head is its commit, and a branch check's walks that repository's branches.
+    Such an `other_commit` or `unknown` answer carries that repository as `repo` (`owner/name`), so a reader names it rather than the issue's own repository; an answer about the issue's own repository carries none, and an `at_basis` answer names a linked repository in its `basis`.
 
   - `check_words_moved` is whether the check's words changed after the result was recorded, which the digest the result kept decides against the block's digest now.
     It is a second fact and a second field: a result at a compared commit whose check has been reworded since is both, and one word for both would hide which.
@@ -4748,6 +4806,7 @@ Each item below names a path with its method and identity, then its purpose.
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened stand at that head once the pull request opens at its commit:
 
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
+    It asks the repository the result's `check_results.commit_repo` names where it names one, and the repository the issue resolves to otherwise: asked of the issue's own repository, a commit only a linked repository holds names no pull request on any read, and a linked pull request whose head reaches it after the record would never be learned.
 
   - Without that read it would stand at no basis for ever:
     the read-through the record itself makes runs once, while no pull request carries the commit, and a deployment holding no delivery settings binds no intake durable and so consumes no `pull_request` event at all (`delivery.Intake.Run`).
@@ -4782,6 +4841,8 @@ Each item below names a path with its method and identity, then its purpose.
   Nothing is written on a push: a push that moves a pull request's head leaves the result at the old head standing at no basis, by itself.
   An issue with no Verification document answers no checks.
 
+- `/api/v1/issues/{key}/results` (POST; cookie, trusted header, or bearer)
+
   POST records one result: `{check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?, actor?}`.
   What it takes, and what it refuses:
 
@@ -4794,10 +4855,27 @@ Each item below names a path with its method and identity, then its purpose.
   - `role` is at most 32 characters of `[a-z-]`, `verdict` is `pass` or `fail`, `commit` is 40 lowercase hex, and absent counts are 0;
     a `pass` counting any failed, skipped or excluded case is `400 RESULT_CONTRADICTS`, and any other malformed field `400 RESULT_INPUT`.
 
-  - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything, and refuses a result at one it does not with `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
+  - Dispatch asks GitHub whether the repository the check's issue resolves to holds that commit, before it writes anything.
+    When GitHub does not say it does — it says that repository does not hold it, or its read did not answer — Dispatch reads the external links of the check's issue: each link of the form `https://github.com/<owner>/<repo>/pull/<n>` names that repository, and the repository counts when GitHub says one of those pull requests is open or merged (`delivery.PullRequestOpenOrMerged`).
+    A pull request that closed without a merge does not make its repository count, and neither does one GitHub answers `404` or `410` for (a mistyped link, or a pull request since deleted), nor a repository the App is not installed on, nor one it cannot read (GitHub's `403` that is no rate limit, as `githubapp.RateLimit` reads one): each is GitHub's answer, not a failed read, and no retry changes it until someone gives the App the repository.
+    One record reads at most 10 linked pull requests, one after another, and each distinct repository once, until one of its pull requests counts (`linkedPullRequestReads`); a link past the bound is left unread.
+    A link names a pull request only where the pattern the links are read by takes it (`delivery.LinkedPullRequests`): an owner that is a login GitHub serves, and a name of letters, digits, `.`, `-` and `_` that is neither `.` nor `..`; any other link, such as one whose owner is `-acme` or `my.org`, spends no read, and no refusal names it.
+    A link that pattern takes whose repository's name GitHub's naming rule then refuses (such as `acme/.git`, which is empty once `.git` is trimmed) does not count either: it spends one of the record's 10 reads, makes no GitHub request, and the refusal below names its repository as one whose links Dispatch set aside, which no grant of the App mends.
+    Dispatch then asks GitHub whether each repository that counts holds the commit, and refuses a result at a commit that no repository it asked holds with `400 RESULT_COMMIT_UNKNOWN`, naming the commit, each `owner/repo` it asked, each linked pull request of a repository the App is not installed on or cannot read with its reason (`owner/repo#n (repository_unreadable)`), as a pull request it could not read, at most 10 of those and a count of the rest, or, where it read that pull request and could not read the commit, as the one in whose repository it could not read the commit, every one of those, since each spent one of the record's 10 reads, and that the App is to be granted that repository or a readable pull request linked, each repository whose links it set aside for the naming rule, and how many linked pull requests the bound left unread where it left any.
+    So an issue whose work is in two repositories takes a result at the head of the pull request it links in the second repository, also while GitHub cannot answer for the first.
 
-  - Only GitHub's `422 No commit found for SHA` refuses:
-    a deployment with no App key, an issue resolving to no repository, a repository the App cannot read (GitHub answers `404` for that), a rate limit, a timeout and a failed read all store the result as before.
+  - A read of a linked pull request's state or of a linked repository's commit that does not answer — a rate limit, a 5xx, a timeout — refuses the record where no repository is shown to hold the commit, with `502 GITHUB_UNREADABLE` naming that repository, the commit and GitHub's own message, and stores nothing:
+    the repository may hold the commit, and stored under it the result would sit at a commit no read showed any repository to hold.
+    The refusal tells the caller to record the result again, and a rate limit names GitHub's wait, in the sentence and in `Retry-After`.
+
+  - A failed read of Dispatch's own rows of the issue's links refuses the record with `500 INTERNAL` and stores nothing: the links are read, before anything is written, wherever GitHub does not say that the issue's own repository holds the commit.
+
+  - Otherwise only GitHub's `422 No commit found for SHA` refuses, and only once it has said so of the issue's own repository:
+    a deployment with no App key and an issue resolving to no repository store the result as before, and so do an issue's own repository the App cannot read (GitHub answers `404` for that; a linked repository the App is not installed on or cannot read is one that does not count, as above), a rate limit, a timeout and a failed read of the issue's own repository, each where every linked read answered.
+    Any of those four reads of the issue's own repository beside a linked read that did not answer is the `502 GITHUB_UNREADABLE` above.
+    The stored result keeps a linked repository (`check_results.commit_repo`) where GitHub said that repository holds the commit.
+    Where the read of the issue's own repository did not answer, every linked read answered and no linked repository holds the commit, the result keeps none, as before.
+    After the write, the read-through of the pull requests GitHub names for the commit reads the repository the commit is taken to be of, that linked repository or the issue's own, so the pull request of a linked repository is learned from that repository.
 
   - A screenshot names an image document of the recording issue or of the check's issue.
 
@@ -4819,7 +4897,7 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
 
-  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`).
+  The dry run of a result's record, which `dispatch result --dry-run` sends: it takes the record's body and refuses it as the record does before it writes anything (`400 RESULT_INPUT`, `400 RESULT_CONTRADICTS`, `400 UNKNOWN_CHECK`, `409 CHECK_AMBIGUOUS`, `409 CHECK_PROVED_BY_CI`, `400 RESULT_COMMIT_UNKNOWN`, `502 GITHUB_UNREADABLE`).
   Otherwise it answers `200 {line}`, the line the record would answer, and records nothing: no row and no event.
   A closed issue, a screenshot and a check reworded while the record writes are refused by the record alone, since the record judges them under its locks.
   The dry run is a path of its own, not a flag on the record: a release that does not serve it answers `404`, where it would drop a flag it did not know and record the result.
@@ -5424,3 +5502,21 @@ go vet ./...
 ```
 
 `internal/dispatch/api` alone takes close to `go test`'s default ten-minute package deadline (about 600 s), so it runs first and on its own, with 20 minutes, as CI's `envoy-go` job runs it (`docs/testing.md`, "Go's package deadline").
+
+`./scripts/dev-postgres.sh` prints the database URL to set (Local Postgres, above).
+One test: `go test -run TestName ./internal/dispatch/api`, which needs no deadline of its own.
+
+Three suites build only under a tag, and the commands above run none of them.
+A claim about two processes, or two builds, on one database needs evidence from them.
+Each needs `DISPATCH_TEST_DATABASE_URL`.
+
+```sh
+go test -tags memory -count=1 -timeout 60m ./cmd/dispatch        # resident memory of real servers
+go test -tags multiprocess -count=1 -timeout 30m ./cmd/dispatch  # two servers, one database
+bash scripts/build-dispatch-build.sh --previous-release --out "$TMPDIR/dispatch-previous"
+bash scripts/build-dispatch-build.sh --commit edb69e0d7588ec037847182e74a04a343a0664c9 --out "$TMPDIR/dispatch-first-rollout"
+DISPATCH_PREVIOUS_BUILD="$TMPDIR/dispatch-previous" DISPATCH_FIRST_ROLLOUT_BUILD="$TMPDIR/dispatch-first-rollout" \
+  go test -tags twobuild -count=1 -timeout 30m ./cmd/dispatch   # this build beside earlier ones
+```
+
+"Two builds at once", above, says what the two-build test runs and why it needs the first-rollout build.
