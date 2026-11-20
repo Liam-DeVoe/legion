@@ -89,6 +89,7 @@ interface ErrorPayload {
   error?: string;
   state?: UserIssueState;
   candidates?: readonly ErrorCandidate[];
+  unconfirmed_repositories?: readonly string[];
 }
 
 export class ApiError extends Error {
@@ -99,6 +100,10 @@ export class ApiError extends Error {
    *  choice; the shape of each entry follows `code` (`ErrorCandidate`). Undefined for a refusal
    *  that listed nothing, which is almost all of them. */
   readonly candidates: readonly ErrorCandidate[] | undefined;
+  /** The repository names a switch to private waits on its owner to confirm, by their stored
+   *  names (`409 PRIVATE_PROJECT_NOT_PROVISIONED` with `unconfirmed_repositories`); undefined for
+   *  every other refusal, that code's provisioning refusal among them. */
+  readonly unconfirmedRepositories: readonly string[] | undefined;
   /** How long the server asked the caller to wait before trying again (`Retry-After` in
    *  delta-seconds, as Dispatch sends with a 503 refusing excess load), in milliseconds;
    *  undefined when the response carried none. */
@@ -111,8 +116,40 @@ export class ApiError extends Error {
     this.status = status;
     this.state = payload.state;
     this.candidates = payload.candidates;
+    this.unconfirmedRepositories = payload.unconfirmed_repositories;
     this.retryAfterMs = retryAfterMs;
   }
+}
+
+/** One repository name a project's issues or its default hold, as `GET
+ *  /api/v1/projects/{key}/repositories` answers it to the project's owner, who confirms each
+ *  before the project can be private: the stored name (`repo`); the GitHub id recorded beside it
+ *  (`id`), null until a write or a confirm records one; GitHub's answer for that name now
+ *  (`github_id`, `github_full_name`), both null when GitHub did not answer; and how many issues of
+ *  other projects hold the same name with no id (`named_elsewhere`, which a shared confirm records
+ *  the id on too) and hold this id (`shared_elsewhere`, whose people read the repository). */
+export interface ProjectRepository {
+  readonly repo: string;
+  readonly id: number | null;
+  readonly github_id: number | null;
+  readonly github_full_name: string | null;
+  readonly named_elsewhere: number;
+  readonly shared_elsewhere: number;
+}
+
+/** `GET /api/v1/projects/{key}/repositories`' answer, each name once, sorted. */
+export interface ProjectRepositories {
+  readonly repositories: readonly ProjectRepository[];
+}
+
+/** `POST /api/v1/projects/{key}/repositories/confirm`'s body: the stored name, the id GitHub
+ *  answered for it when the owner read the list (`409 REPOSITORY_CHANGED` when GitHub answers
+ *  another now), and whether the issues of other projects that hold the name with no id get it
+ *  too. */
+export interface ConfirmRepositoryInput {
+  readonly repo: string;
+  readonly id: number;
+  readonly shared: boolean;
 }
 
 /** A request the browser could not get an answer to at all: the connection failed or dropped
@@ -559,6 +596,21 @@ export function inboxDismissRequest(body: Body<"/api/v1/me/inbox/dismiss", "post
  *  (`putDocumentRead`). */
 export function documentReadRequest(id: string, version: number) {
   return writeRequest("put", "/api/v1/me/documents/{id}/read", { id }, { version });
+}
+
+/** `POST /api/v1/projects/{key}/repositories/confirm`: the owner's confirm of one repository name
+ *  (`confirmProjectRepository`), answered with the project's repositories as it left them. The
+ *  route is not in the generated document yet, so the path and both shapes are written here
+ *  (`ProjectRepository`). */
+export function confirmProjectRepositoryRequest(
+  project: string,
+  input: ConfirmRepositoryInput
+): WriteRequest<ProjectRepositories> {
+  return {
+    body: input,
+    method: "POST",
+    path: `/api/v1/projects/${encodeURIComponent(project)}/repositories/confirm`,
+  };
 }
 
 /** `PUT /api/v1/me/issues/{key}/state`: the person's state of an issue (`putIssueState`). */
@@ -1041,6 +1093,22 @@ export class DispatchApiClient {
    *  email) and groups (by name) its access list names, each sorted. Needs the `person` scope. */
   getProjectAccess(project: string) {
     return this.read("/api/v1/projects/{key}/access", { key: project });
+  }
+
+  /** The repository names the project's issues and its default hold, each beside GitHub's answer
+   *  for it now, which its owner confirms before the project can be private
+   *  (`ProjectRepository`). The owner's alone, at a browser. */
+  getProjectRepositories(project: string): Promise<ProjectRepositories> {
+    return this.json<ProjectRepositories>(
+      `/api/v1/projects/${encodeURIComponent(project)}/repositories`
+    );
+  }
+
+  /** Records GitHub's id for one stored repository name on the project's rows that hold it with
+   *  none, and with `shared` on other projects' such rows too; `409 REPOSITORY_CHANGED` when
+   *  GitHub's answer is no longer `id`. The owner's alone, at a browser. */
+  confirmProjectRepository(project: string, input: ConfirmRepositoryInput, bounds: WriteBounds) {
+    return this.send(confirmProjectRepositoryRequest(project, input), bounds);
   }
 
   /** Gives the project to another full member (`owner`) or sets its visibility; only its owner

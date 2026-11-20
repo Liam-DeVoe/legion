@@ -322,6 +322,10 @@ test("the Access tab, at /access, shows the project's owner and the people and g
   const listAccessGroups = spyOn(api, "listAccessGroups").mockResolvedValue([
     { members: [], name: "crew", not_signed_in: [], owner: "alice" },
   ]);
+  // alice owns public CORE, so the tab reads the repositories she confirms before a switch.
+  const getProjectRepositories = spyOn(api, "getProjectRepositories").mockResolvedValue({
+    repositories: [],
+  });
   const page = renderPage("/projects/CORE/issues");
   try {
     await screen.findByRole("heading", { name: "Core" });
@@ -343,6 +347,7 @@ test("the Access tab, at /access, shows the project's owner and the people and g
     page.restore();
     getProjectAccess.mockRestore();
     listAccessGroups.mockRestore();
+    getProjectRepositories.mockRestore();
   }
 });
 

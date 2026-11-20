@@ -757,6 +757,45 @@ test("API client sends project access and group requests to their routes", async
   expect(JSON.parse(stub.requests[7]?.body as string)).toEqual({ members: ["carol@example.com"] });
 });
 
+test("API client sends a project's repository list and confirm to their routes, and reads the unconfirmed names of a switch's refusal", async () => {
+  const stub = stubFetch(({ path }) =>
+    path.endsWith("/access")
+      ? Response.json(
+          {
+            code: "PRIVATE_PROJECT_NOT_PROVISIONED",
+            error: "CORE stays public until its owner confirms each repository its issues name",
+            unconfirmed_repositories: ["acme/widgets"],
+          },
+          { status: 409 }
+        )
+      : Response.json({ repositories: [] })
+  );
+  const repositoriesApi = createApiClient(stub.fetch);
+
+  await repositoriesApi.getProjectRepositories("CORE");
+  await repositoriesApi.confirmProjectRepository(
+    "CORE",
+    { id: 9003, repo: "acme/widgets", shared: true },
+    keyed("post-1")
+  );
+  const refused = await repositoriesApi
+    .patchProjectAccess("CORE", { visibility: "private" }, keyed("patch-1"))
+    .catch((error: unknown) => error);
+
+  expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
+    ["GET", "/api/v1/projects/CORE/repositories"],
+    ["POST", "/api/v1/projects/CORE/repositories/confirm"],
+    ["PATCH", "/api/v1/projects/CORE/access"],
+  ]);
+  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({
+    id: 9003,
+    repo: "acme/widgets",
+    shared: true,
+  });
+  expect(refused).toBeInstanceOf(ApiError);
+  expect((refused as ApiError).unconfirmedRepositories).toEqual(["acme/widgets"]);
+});
+
 test("API client sends inline artifacts as JSON", async () => {
   const stub = stubFetch(() => Response.json({ artifact: {}, version: {} }));
   const api = createApiClient(stub.fetch);

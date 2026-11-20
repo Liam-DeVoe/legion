@@ -7,7 +7,7 @@ import { MemoryRouter } from "react-router-dom";
 import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pagedGroups } from "../../__tests__/paged-groups";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, type ProjectRepository } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
@@ -46,17 +46,20 @@ const notOwner = "Only alice, the project's owner, changes who may see it.";
 /** The panel for CORE, signed in as `login` through the identity the shell already read: the
  *  query client holds `/auth/whoami`'s answer fresh, as the shell's leaves it, so a panel that
  *  asked for the identity again would show in `whoAmI`. The access read answers what the last
- *  write left, as Dispatch does: `lands(next)` is a write that leaves `next` and answers it. */
+ *  write left, as Dispatch does: `lands(next)` is a write that leaves `next` and answers it.
+ *  `repositories` is what `GET /api/v1/projects/CORE/repositories` answers its owner. */
 function renderPanel({
   answer = access(),
   groups = [crew, ops],
   login = "alice",
   memberKind,
+  repositories = [],
 }: {
   answer?: ProjectAccess;
   groups?: AccessGroup[];
   login?: string;
   memberKind?: "restricted";
+  repositories?: ProjectRepository[];
 } = {}) {
   let stored = answer;
   const queryClient = new QueryClient({
@@ -70,6 +73,9 @@ function renderPanel({
   });
   const spies = {
     getProjectAccess: spyOn(api, "getProjectAccess").mockImplementation(async () => stored),
+    getProjectRepositories: spyOn(api, "getProjectRepositories").mockResolvedValue({
+      repositories,
+    }),
     listAccessGroups: spyOn(api, "listAccessGroups").mockResolvedValue(groups),
     whoAmI: spyOn(api, "whoAmI"),
   };
@@ -179,6 +185,10 @@ test("shows the owner, the visibility, and the people and groups the access list
 test("the group picker offers the groups of every page the group list answers", async () => {
   const pages = pagedGroups([[crew], [ops]]);
   const read = spyOn(api, "getProjectAccess").mockResolvedValue(access({ groups: [] }));
+  // alice owns public CORE, so the panel reads its repositories too.
+  const repositories = spyOn(api, "getProjectRepositories").mockResolvedValue({
+    repositories: [],
+  });
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(whoAmIQuery().queryKey, {
     event_head: "0",
@@ -203,6 +213,7 @@ test("the group picker offers the groups of every page the group list answers", 
     queryClient.clear();
     pages.mockRestore();
     read.mockRestore();
+    repositories.mockRestore();
   }
 });
 
@@ -883,6 +894,196 @@ test("a person who is not the owner cannot press the switch", async () => {
     expect(toggle).toHaveAttribute("title", notOwner);
     await user.click(toggle);
     expect(patch).not.toHaveBeenCalled();
+  } finally {
+    panel.restore();
+    patch.mockRestore();
+  }
+});
+
+/** One row of CORE's repositories as its owner reads them: confirmed when `id` is set. */
+function repository(overrides: Partial<ProjectRepository> & { repo: string }): ProjectRepository {
+  return {
+    github_full_name: overrides.repo,
+    github_id: 9003,
+    id: null,
+    named_elsewhere: 0,
+    shared_elsewhere: 0,
+    ...overrides,
+  };
+}
+
+const widgets = repository({ named_elsewhere: 2, repo: "acme/widgets" });
+const tools = repository({ github_id: 9004, id: 9004, repo: "acme/tools", shared_elsewhere: 3 });
+const gone = repository({ github_full_name: null, github_id: null, repo: "acme/gone" });
+
+// A switch to private waits until the owner confirms each repository CORE's issues and its
+// default name: the stored name, beside what GitHub holds under it now, by full name and id.
+// How issues of other projects use the name informs the owner and decides nothing: those that
+// hold it with no id are what Confirm as shared also records it on, and those that hold its id
+// share it, so their people read it too.
+test("the owner of a public project reads each repository its issues name, beside GitHub's name and id and how other projects use it", async () => {
+  const panel = renderPanel({ repositories: [widgets, tools, gone] });
+  try {
+    const section = await screen.findByRole("region", { name: "Repositories" });
+    const row = (name: string) => within(section).getByRole("listitem", { name });
+    await waitFor(() => expect(within(section).getAllByRole("listitem")).toHaveLength(3));
+
+    expect(within(row("acme/widgets")).getByText("Not confirmed")).toBeInTheDocument();
+    expect(
+      within(row("acme/widgets")).getByText("GitHub: acme/widgets, id 9003")
+    ).toBeInTheDocument();
+    expect(
+      within(row("acme/widgets")).getByText(
+        "Also named by 2 issues of other projects with no repository confirmed: Confirm as shared records this repository on them too."
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(row("acme/widgets")).getByRole("button", { name: "Confirm acme/widgets" })
+    ).toBeInTheDocument();
+    expect(
+      within(row("acme/widgets")).getByRole("button", { name: "Confirm acme/widgets as shared" })
+    ).toBeInTheDocument();
+
+    expect(within(row("acme/tools")).getByText("Confirmed: id 9004")).toBeInTheDocument();
+    expect(
+      within(row("acme/tools")).getByText(
+        "Also used by 3 issues of other projects; their people read this repository."
+      )
+    ).toBeInTheDocument();
+    expect(within(row("acme/tools")).queryByRole("button")).not.toBeInTheDocument();
+
+    expect(
+      within(row("acme/gone")).getByText(
+        "GitHub did not answer for this name, so it cannot be confirmed yet."
+      )
+    ).toBeInTheDocument();
+    expect(
+      within(row("acme/gone")).queryByRole("button", { name: /^Confirm/ })
+    ).not.toBeInTheDocument();
+    expect(panel.getProjectRepositories).toHaveBeenCalledWith("CORE");
+  } finally {
+    panel.restore();
+  }
+});
+
+// Confirm records GitHub's id for the stored name on CORE's own rows; Confirm as shared also
+// records it on the issues of other projects that hold the name with no id. Each sends the id the
+// row shows, which Dispatch checks against GitHub's answer at the confirm, and the list is read
+// again once it lands.
+test("Confirm sends the stored name with GitHub's id, Confirm as shared says shared, and the list is read again", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ repositories: [widgets] });
+  const confirm = spyOn(api, "confirmProjectRepository").mockResolvedValue({ repositories: [] });
+  try {
+    const section = await screen.findByRole("region", { name: "Repositories" });
+    await user.click(await within(section).findByRole("button", { name: "Confirm acme/widgets" }));
+    await waitFor(() =>
+      expect(confirm).toHaveBeenCalledWith(
+        "CORE",
+        { id: 9003, repo: "acme/widgets", shared: false },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(2));
+
+    await user.click(
+      await within(section).findByRole("button", { name: "Confirm acme/widgets as shared" })
+    );
+    await waitFor(() =>
+      expect(confirm).toHaveBeenLastCalledWith(
+        "CORE",
+        { id: 9003, repo: "acme/widgets", shared: true },
+        keyedAttempt
+      )
+    );
+    await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(3));
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+  }
+});
+
+// Dispatch refuses a confirm whose id is no longer GitHub's answer for the name (409
+// REPOSITORY_CHANGED): the name now holds another repository. Pressing again would send the same
+// stale id, so there is no Retry: the list is read again, and the row shows what GitHub holds now
+// for the owner to confirm or not.
+test("a confirm refused REPOSITORY_CHANGED says the name now holds another repository, reads the list again, and offers no Retry", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ repositories: [widgets] });
+  const confirm = spyOn(api, "confirmProjectRepository").mockRejectedValue(
+    new ApiError(409, {
+      code: "REPOSITORY_CHANGED",
+      error: "acme/widgets is GitHub's repository 9010 now, not 9003: nothing was recorded",
+    })
+  );
+  try {
+    const section = await screen.findByRole("region", { name: "Repositories" });
+    await user.click(await within(section).findByRole("button", { name: "Confirm acme/widgets" }));
+    const alert = await within(section).findByRole("alert");
+    expect(
+      within(alert).getByText(
+        "GitHub now holds another repository under acme/widgets: check its name and id again, then confirm."
+      )
+    ).toBeInTheDocument();
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(2));
+  } finally {
+    panel.restore();
+    confirm.mockRestore();
+  }
+});
+
+// The list and the confirm are the owner's alone (owner's cookie), and are what a switch to
+// private waits on: a person who is not the owner, and the owner of a project that is private
+// already, are shown no section and never read it. A restricted member is never an owner.
+for (const { who, options } of [
+  { options: { login: "bob" }, who: "a person who is not the owner" },
+  { options: { login: "bob", memberKind: "restricted" as const }, who: "a restricted member" },
+  { options: { answer: access({ visibility: "private" }) }, who: "the owner of a private project" },
+]) {
+  test(`${who} is shown no Repositories section and never reads the list`, async () => {
+    const panel = renderPanel({ ...options, repositories: [widgets] });
+    try {
+      await screen.findByRole("switch", { name: "Private" });
+      await settle();
+      expect(screen.queryByRole("region", { name: "Repositories" })).not.toBeInTheDocument();
+      expect(panel.getProjectRepositories).not.toHaveBeenCalled();
+    } finally {
+      panel.restore();
+    }
+  });
+}
+
+// Until each repository is confirmed, Dispatch refuses the switch with 409
+// PRIVATE_PROJECT_NOT_PROVISIONED and names the unconfirmed ones in `unconfirmed_repositories`.
+// That is the owner's to do, not the operator's, so the switch says so and names them, with no
+// Retry, and the list is read again. The same code with no such field is the deployment's list,
+// which keeps its sentence (the refusal table above).
+test("a switch refused for unconfirmed repositories sends the owner to the list below and names them", async () => {
+  const user = userEvent.setup();
+  const panel = renderPanel({ repositories: [widgets, gone] });
+  const patch = spyOn(api, "patchProjectAccess").mockRejectedValue(
+    new ApiError(409, {
+      code: "PRIVATE_PROJECT_NOT_PROVISIONED",
+      error:
+        "CORE stays public until its owner confirms each repository its issues name: acme/widgets, acme/gone",
+      unconfirmed_repositories: ["acme/widgets", "acme/gone"],
+    })
+  );
+  try {
+    await screen.findByRole("region", { name: "Repositories" });
+    await user.click(await screen.findByRole("switch", { name: "Private" }));
+    const alert = await within(screen.getByRole("region", { name: "Visibility" })).findByRole(
+      "alert"
+    );
+    expect(
+      within(alert).getByText(
+        "Confirm CORE's repositories below first: acme/widgets, acme/gone. Then make CORE private."
+      )
+    ).toBeInTheDocument();
+    expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("access-visibility")).toHaveTextContent("Public");
+    await waitFor(() => expect(panel.getProjectRepositories).toHaveBeenCalledTimes(2));
   } finally {
     panel.restore();
     patch.mockRestore();

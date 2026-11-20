@@ -8,8 +8,21 @@ import {
 import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
-import { accessGroupsQuery, projectAccessQuery, whoAmIQuery } from "../../api/queries";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  type ConfirmRepositoryInput,
+  type ProjectRepositories,
+  type ProjectRepository,
+  type WriteBounds,
+} from "../../api/client";
+import {
+  accessGroupsQuery,
+  projectAccessQuery,
+  projectRepositoriesQuery,
+  whoAmIQuery,
+} from "../../api/queries";
 import type { AccessGroup, ProjectAccess } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -140,11 +153,20 @@ function switchRefusal(
           "This deployment cannot make a project private yet: ask its operator to set up private projects.",
         retry: false,
       };
-    case "PRIVATE_PROJECT_NOT_PROVISIONED":
-      return {
-        message: `This deployment has not set up ${project} to be private: ask its operator to set it up.`,
-        retry: false,
-      };
+    case "PRIVATE_PROJECT_NOT_PROVISIONED": {
+      // The same code says two things: the deployment's list does not name the project, which is
+      // the operator's to change, or the owner has repositories to confirm, which Dispatch names.
+      const unconfirmed = refused.unconfirmedRepositories ?? [];
+      return unconfirmed.length > 0
+        ? {
+            message: `Confirm ${project}'s repositories below first: ${unconfirmed.join(", ")}. Then make ${project} private.`,
+            retry: false,
+          }
+        : {
+            message: `This deployment has not set up ${project} to be private: ask its operator to set it up.`,
+            retry: false,
+          };
+    }
     case "PRIVATE_PROJECTS_INCOMPLETE":
       return {
         message: `This deployment is not ready to keep ${project} private yet: ask its operator to finish setting up private projects.`,
@@ -240,9 +262,16 @@ function useAccessWrite(
       }
       onLanded(change);
     },
-    onSettled: () => {
+    onSettled: (_answer, _error, change) => {
       dropSettledWrites(queryClient, mutationKey);
       void queryClient.invalidateQueries({ queryKey: accessKey });
+      // A switch refused for repositories still to confirm is answered beside a list that may be
+      // older than what Dispatch just read: the list is read again with it.
+      if (change.kind === "visibility") {
+        void queryClient.invalidateQueries({
+          queryKey: projectRepositoriesQuery(project).queryKey,
+        });
+      }
     },
   });
   const saves = useMutationState<
@@ -279,6 +308,181 @@ const fieldLabelClass = `grid min-w-0 flex-1 basis-56 gap-1 text-sm font-medium 
 const headingClass = `text-base font-semibold ${textPrimaryOnCanvas}`;
 const listClass = `mt-3 rounded-xl border ${card}`;
 const rowClass = `flex min-h-11 items-center justify-between gap-3 border-b px-4 py-2 last:border-0 ${borderDefault}`;
+
+/** "N issues of other projects", in the count's number. */
+function issuesOfOtherProjects(count: number): string {
+  return `${count} ${count === 1 ? "issue" : "issues"} of other projects`;
+}
+
+/** What GitHub holds under one stored repository name, as its row says it: its full name and id;
+ *  that it holds another repository than the one the project's issues recorded; or that it did
+ *  not answer. */
+function githubLine(project: string, row: ProjectRepository): string {
+  if (row.github_id === null || row.github_full_name === null) {
+    return row.id === null
+      ? "GitHub did not answer for this name, so it cannot be confirmed yet."
+      : "GitHub did not answer for this name just now.";
+  }
+  if (row.id !== null && row.id !== row.github_id) {
+    return `GitHub now holds another repository under this name: ${row.github_full_name}, id ${row.github_id}. ${project}'s issues keep id ${row.id}.`;
+  }
+  return `GitHub: ${row.github_full_name}, id ${row.github_id}`;
+}
+
+/**
+ * The repository names a project's issues and its default hold, which its owner confirms before
+ * the project can be private (`GET` and `POST /api/v1/projects/{key}/repositories…`, the owner's
+ * alone): each stored name beside what GitHub holds under it now, so the owner sees when a name
+ * has come to hold a repository they did not mean, and confirms the id GitHub answers. Confirm
+ * records it on the project's rows; Confirm as shared, offered while issues of other projects hold
+ * the name with no id, records it on those too. How other projects use a name informs the owner
+ * and holds nothing back: only an unconfirmed name does, and the switch names those. A confirm
+ * refused because GitHub now answers another id (409 REPOSITORY_CHANGED) offers no Retry, since
+ * it would send the same id: the list is read again after every confirm, and the row shows what
+ * GitHub holds now.
+ */
+function RepositoriesSection({ project }: { project: string }): ReactNode {
+  const ids = useId();
+  const queryClient = useQueryClient();
+  const list = useQuery(projectRepositoriesQuery(project));
+  const confirm = useKeyedWrite<ProjectRepositories, ConfirmRepositoryInput>({
+    inline: true,
+    label: (input) => `Confirm ${input.repo} for ${project}${input.shared ? " as shared" : ""}`,
+    mutationKey: ["project-repositories-confirm", project],
+    onSettled: () =>
+      void queryClient.invalidateQueries({
+        queryKey: projectRepositoriesQuery(project).queryKey,
+      }),
+    scope: { id: `project-repositories:${project}` },
+    write: (input, bounds) => api.confirmProjectRepository(project, input, bounds),
+  });
+
+  const refusalOf = (row: ProjectRepository): ReactNode => {
+    const pressed = confirm.variables;
+    if (!confirm.isError || pressed === undefined || pressed.repo !== row.repo) {
+      return null;
+    }
+    const changed =
+      confirm.error instanceof ApiError && confirm.error.code === "REPOSITORY_CHANGED";
+    return (
+      <div className="mt-2">
+        <QueryError
+          message={
+            changed
+              ? `GitHub now holds another repository under ${row.repo}: check its name and id again, then confirm.`
+              : apiErrorMessage(confirm.error, `Couldn't confirm ${row.repo}.`)
+          }
+          onRetry={changed ? undefined : () => confirm.mutate(pressed)}
+          retrying={confirm.isPending}
+        />
+      </div>
+    );
+  };
+
+  let body: ReactNode;
+  if (list.isPending) {
+    body = <p className={`mt-3 text-sm ${textMutedOnCanvas}`}>Loading the repositories…</p>;
+  } else if (list.isError) {
+    body = (
+      <div className="mt-3">
+        <QueryError
+          error={list.error}
+          message={apiErrorMessage(list.error, "Couldn't load the repositories.")}
+          onRetry={() => void list.refetch()}
+          retrying={list.isFetching}
+        />
+      </div>
+    );
+  } else if (list.data.repositories.length === 0) {
+    body = (
+      <p className={`mt-3 text-sm ${textMutedOnCanvas}`}>
+        No issue of {project} names a repository.
+      </p>
+    );
+  } else {
+    body = (
+      <ul aria-label="Repositories" className={listClass}>
+        {list.data.repositories.map((row) => {
+          const busy =
+            confirm.isPending && confirm.variables?.repo === row.repo ? "Confirming…" : undefined;
+          // The id a confirm of this row sends: GitHub's answer, for a name not confirmed yet.
+          const confirmId = row.id === null ? row.github_id : null;
+          return (
+            <li
+              aria-label={row.repo}
+              className={`border-b px-4 py-3 last:border-0 ${borderDefault}`}
+              key={row.repo}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className={`min-w-0 break-all font-mono text-sm ${textPrimaryOnSurface}`}>
+                  {row.repo}
+                </span>
+                <span className={`text-sm ${textMutedOnSurface}`}>
+                  {row.id === null ? "Not confirmed" : `Confirmed: id ${row.id}`}
+                </span>
+              </div>
+              <p className={`mt-1 break-all text-sm ${textMutedOnSurface}`}>
+                {githubLine(project, row)}
+              </p>
+              {row.named_elsewhere > 0 ? (
+                <p className={`mt-1 text-sm ${textMutedOnSurface}`}>
+                  {row.id === null
+                    ? `Also named by ${issuesOfOtherProjects(row.named_elsewhere)} with no repository confirmed: Confirm as shared records this repository on them too.`
+                    : `Also named by ${issuesOfOtherProjects(row.named_elsewhere)} with no repository confirmed.`}
+                </p>
+              ) : null}
+              {row.shared_elsewhere > 0 ? (
+                <p className={`mt-1 text-sm ${textMutedOnSurface}`}>
+                  Also used by {issuesOfOtherProjects(row.shared_elsewhere)}; their people read this
+                  repository.
+                </p>
+              ) : null}
+              {confirmId === null ? null : (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <RefusableButton
+                    busy={busy}
+                    look="secondary-compact"
+                    onPress={() => confirm.mutate({ id: confirmId, repo: row.repo, shared: false })}
+                    refusal={null}
+                  >
+                    Confirm<span className="sr-only"> {row.repo}</span>
+                  </RefusableButton>
+                  {row.named_elsewhere > 0 ? (
+                    <RefusableButton
+                      busy={busy}
+                      look="secondary-compact"
+                      onPress={() =>
+                        confirm.mutate({ id: confirmId, repo: row.repo, shared: true })
+                      }
+                      refusal={null}
+                    >
+                      Confirm<span className="sr-only"> {row.repo}</span> as shared
+                    </RefusableButton>
+                  ) : null}
+                </div>
+              )}
+              {refusalOf(row)}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
+
+  return (
+    <section aria-labelledby={`${ids}-repositories`}>
+      <h2 className={headingClass} id={`${ids}-repositories`}>
+        Repositories
+      </h2>
+      <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
+        Before {project} can be made private, confirm that each repository its issues and its
+        default name is the one GitHub holds under that name now. Dispatch then shows each
+        repository by its GitHub id.
+      </p>
+      {body}
+    </section>
+  );
+}
 
 /**
  * A project's Access tab: its one owner, its visibility, and the people and groups its access
@@ -517,6 +721,11 @@ export function ProjectAccessPanel({ project }: { project: string }): ReactNode 
         </p>
         {refusalIn("visibility")}
       </section>
+
+      {/* The list and its confirms are the owner's alone, and what a switch to private waits on,
+          so only the owner of a public project reads it; a restricted member is never an
+          owner. */}
+      {viewer === owner && !isPrivate ? <RepositoriesSection project={project} /> : null}
 
       <section aria-labelledby={`${ids}-slack`}>
         <h2 className={headingClass} id={`${ids}-slack`}>

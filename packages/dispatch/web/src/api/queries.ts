@@ -359,6 +359,16 @@ export const projectAccessQuery = (project: string) =>
     queryFn: () => api.getProjectAccess(project),
   });
 
+/** The repository names one project's issues and its default hold, beside GitHub's answer for
+ *  each (`GET /projects/{key}/repositories`), read by the Access tab for the owner of a public
+ *  project, who confirms each before the switch to private takes it; read again after each
+ *  confirm and after a switch refused for them. */
+export const projectRepositoriesQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["project-repositories", project],
+    queryFn: () => api.getProjectRepositories(project),
+  });
+
 /** Every group an access list can name, read by Settings → Groups and the Access tab's group
  *  picker, and refreshed by the `access_group.changed` each group write appends. */
 export const accessGroupsQuery = () =>
