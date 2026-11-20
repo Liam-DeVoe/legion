@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -558,6 +559,11 @@ func (kv KeyValue) Status(ctx context.Context) (nats.KeyValueStatus, error) {
 // call, in this goroutine. A background loop is not such a caller: the role claim reaper passes
 // its own loop's ctx, which the listener's shutdown ends under a pass in flight
 // (store.StartRoleClaimReaper).
+//
+// A panic in call reaches the caller as a panic of its own while the caller still waits, so a
+// caller that recovers a panic in its call (cistore's batch writer) still does when call runs on
+// another goroutine; once the caller has stopped waiting, it is a panic of call's own goroutine,
+// as it is for any goroutine.
 func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answered bool, err error) {
 	if ctx.Done() == nil {
 		value, err = call()
@@ -567,18 +573,51 @@ func Bounded[T any](ctx context.Context, call func() (T, error)) (value T, answe
 		return value, false, err
 	}
 	type answer struct {
-		value T
-		err   error
+		value    T
+		err      error
+		panicked any
 	}
 	answers := make(chan answer, 1)
+	var (
+		mu   sync.Mutex
+		left bool
+	)
 	go func() {
+		defer func() {
+			panicked := recover()
+			if panicked == nil {
+				return
+			}
+			mu.Lock()
+			gone := left
+			if !gone {
+				answers <- answer{panicked: panicked}
+			}
+			mu.Unlock()
+			if gone {
+				panic(panicked)
+			}
+		}()
 		value, err := call()
 		answers <- answer{value: value, err: err}
 	}()
 	select {
 	case got := <-answers:
+		if got.panicked != nil {
+			panic(got.panicked)
+		}
 		return got.value, true, got.err
 	case <-ctx.Done():
+		mu.Lock()
+		left = true
+		mu.Unlock()
+		select {
+		case got := <-answers:
+			if got.panicked != nil {
+				panic(got.panicked)
+			}
+		default:
+		}
 		return value, false, ctx.Err()
 	}
 }
