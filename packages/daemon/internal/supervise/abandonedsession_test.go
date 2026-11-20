@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,8 +58,8 @@ func (h *harness) abandonSession() string {
 
 // A retry in a new session leaves the recorded session behind. The claim records which session it
 // abandoned and why, since nothing else does — the session itself stays in its store — and the
-// first task the agent that replaces it is given names that session, the reason, the issue's
-// branch and the handoffs committed on it. Nothing in a new session says that an older one
+// first task the agent that replaces it is given names that session, quoted, the reason, the
+// issue's branch and the handoffs committed on it. Nothing in a new session says that an older one
 // existed, so a worker given the bare task would read an empty transcript as a fresh start and do
 // again what the abandoned session already pushed.
 func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *testing.T) {
@@ -82,6 +83,9 @@ func TestTheFreshSessionsFirstTaskNamesTheSessionItReplacedAndWhatOutlivedIt(t *
 		if !strings.Contains(first, want) {
 			t.Errorf("the first task of the fresh session does not name %q:\n%s", want, first)
 		}
+	}
+	if quoted := "The session this claim ran before this one, " + strconv.Quote(session) + ", was abandoned"; !strings.Contains(first, quoted) {
+		t.Errorf("the first task of the fresh session does not quote the session it replaced, %q:\n%s", quoted, first)
 	}
 	if !strings.HasSuffix(first, "Continue Workflow. Issue: LEGION-209. Phase: implementing.") {
 		t.Errorf("the first task of the fresh session is %q, want it to end with the task itself", first)
