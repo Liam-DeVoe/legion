@@ -838,59 +838,6 @@ func (r *projectReleaser) writeFinish(ctx context.Context, run *releaseRun, resu
 	}
 }
 
-// writeClaims writes each stop-set claim's line from the claim's own record as the store holds it
-// now: how it ended is its suspension's source when it is suspended, and its state otherwise, and
-// only a claim held `project_release` is one the next boot starts. A claim the store holds no
-// record of is api.ReleasedClaimUnrecorded. pending, and the run's detail, are why a claim was not
-// stored suspended in time. A read of the store that fails is made again, retry later, up to
-// projectReleaseTries reads in all (tryBounded), since one that failed would leave every line's
-// end unwritten for the whole release; a store that cannot be read at any of them leaves each
-// line's end unwritten, saying so, rather than naming one the release did not read. A line's
-// detail is written in one place, as the store keeps a far side's error text
-// (storetext.FarSideError): it carries a machine's refusal of the stop, the store's answer to a
-// read of the claim, or the read of the claims that failed here.
-func (r *projectReleaser) writeClaims(ctx context.Context, run *releaseRun, pending map[claim.Token]string) {
-	var claims []supervise.Claim
-	err := r.tryBounded(ctx, r.retry, "project release: read the claims it stopped; reading them again", func() error {
-		var err error
-		claims, err = r.store.Claims(ctx)
-		return err
-	}, "release", run.id)
-	if err != nil {
-		r.log.Error("project release: read the claims it stopped", "release", run.id, "error", err)
-	}
-	stored := map[claim.Token]supervise.Claim{}
-	for _, c := range claims {
-		stored[c.Token] = c
-	}
-	run.mu.Lock()
-	defer run.mu.Unlock()
-	for i := range run.result.Claims {
-		line := &run.result.Claims[i]
-		detail, explained := run.detail[line.Token]
-		if why, ok := pending[line.Token]; ok {
-			detail, explained = why, true
-		}
-		if err != nil {
-			detail, explained = "how it stands is not known: the release could not read the claims at its end: "+err.Error(), true
-		}
-		if explained {
-			line.Detail = storetext.FarSideError(detail)
-		}
-		if err != nil {
-			line.Ended, line.BootStarts = "", false
-			continue
-		}
-		c, ok := stored[line.Token]
-		if !ok {
-			line.Ended, line.BootStarts = api.ReleasedClaimUnrecorded, false
-			continue
-		}
-		line.Ended = api.ReleasedClaimEndOf(c)
-		line.BootStarts = c.ProjectReleased()
-	}
-}
-
 // fail records a release that could not go on with what stopped it, and finishes it: nothing more
 // of it acts, and the boot ends it as it ends any release. Why can carry a far side's error text,
 // such as a list of the project's Sandboxes the API server refused, so it is logged and kept as
