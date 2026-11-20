@@ -437,9 +437,11 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	return token, answer, shape, nil
 }
 
-// SessionCaller reads the broker's answer for a service that accepts ordinary session tokens.
-// It never admits a read-only or results token: only a verifier whose service opts into those
-// capabilities can admit them, and that service must then restrict every route accordingly.
+// SessionCaller is the NATS auth service's reading of the broker's answer about a token as a
+// session's caller (internal/broker/natscallout): sessionShape with the read-only and results
+// switches off, so it serves no read-only token and no results token, as a verifier built without
+// Options.ServesReadOnly and Options.ServesResults serves neither. It holds no proof to the key;
+// whoever calls it checks the proof its credential carries against answer.Thumbprint.
 func SessionCaller(answer Introspection) (Caller, error) {
 	shape, err := sessionShape(answer, false, false)
 	if err != nil {
@@ -448,8 +450,13 @@ func SessionCaller(answer Introspection) (Caller, error) {
 	return callerOf(answer, shape), nil
 }
 
-// sessionShape is the shared validation boundary for introspection readers and HTTP verifiers.
-// Reading a shape once preserves both the limited-token restrictions and the current caller API.
+// sessionShape is the one reading of the broker's answer about a token as a session's: Verify and
+// Live make it through live with their verifier's Options.ServesReadOnly and
+// Options.ServesResults, and the NATS auth service through SessionCaller with both off. The token
+// is live (ErrNotActive), bound to a key (ErrKeyMismatch: no proof can be the key it does not
+// have), and issued for acting as a session in a shape this package reads, a read-only one only
+// when servesReadOnly is set and a results one only when servesResults is (ErrNotASession). The
+// shape it answers is what callerOf marks the Caller by.
 func sessionShape(answer Introspection, servesReadOnly, servesResults bool) (tokenShape, error) {
 	if !answer.Active {
 		return shapeNotASession, ErrNotActive
@@ -457,12 +464,28 @@ func sessionShape(answer Introspection, servesReadOnly, servesResults bool) (tok
 	if answer.Thumbprint == "" {
 		return shapeNotASession, ErrKeyMismatch
 	}
+	// A token names a person or a service: an exchange decided one of the two for every token
+	// issued for acting as a session, and one that names neither is no session's credential
+	// whatever else it carries.
+	//
+	// The rest is the shape and the list the Projects beside it are read under. The shape is the
+	// project scope read together with the OAuth scope: a project-scope word this package does
+	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
+	// here rather than taken as a token that names no project at all (ErrNotASession). A
+	// read-only token passes only a verifier whose service serves one, and a results token only a
+	// verifier whose service serves results tokens. A named token is an operator's entry's, which
+	// names one project, or none for an account entry that names none, and always a person: a
+	// named answer naming two or more projects, which a reader holding a write to one project
+	// would take as no limit at all, or naming none and no person, is the same case. A list no
+	// exchange mints (oauthwire.ValidProjects) and a service's token naming a project, which the
+	// exchange refuses to mint, are refused for the same reason.
 	shape := shapeOf(answer)
 	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
 		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
 		(shape == shapeResults && !servesResults) ||
 		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
-		(answer.Person == "" && len(answer.Projects) > 0) || oauthwire.ValidProjects(answer.Projects) != nil {
+		(answer.Person == "" && len(answer.Projects) > 0) ||
+		oauthwire.ValidProjects(answer.Projects) != nil {
 		return shapeNotASession, ErrNotASession
 	}
 	return shape, nil

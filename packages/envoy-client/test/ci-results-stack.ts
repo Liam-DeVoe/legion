@@ -54,7 +54,8 @@ const REPOSITORY = "local-org/local-repo";
 const WORKFLOW = ".github/workflows/ci-results.yaml";
 /** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
 const REF_PATTERN = "refs/heads/*/*";
-/** The person the entry acts for. */
+/** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
+ *  stored result, no answer of Dispatch and no output of `dispatch result --project` names. */
 const PERSON = "ada@example.com";
 /** The audience a job asks its runner to mint its token for, which the broker requires. */
 const ACTIONS_AUDIENCE = "dispatch-ci-results-local";
@@ -127,7 +128,11 @@ export interface StoredResult {
   readonly id: string;
   readonly seq: number;
   readonly attestation: {
-    readonly predicate: { readonly check: string; readonly verdict: string };
+    readonly predicate: {
+      readonly check: string;
+      readonly verdict: string;
+      readonly observed: string;
+    };
   };
 }
 
@@ -143,7 +148,7 @@ export interface CIResultsStack {
   readonly github: FakeGitHubActions;
   readonly project: string;
   readonly repository: string;
-  /** The person the result entry acts for. */
+  /** The person the result entry acts for: the broker's configuration, which no result names. */
   readonly person: string;
   /** The session and the principal every results token of the entry writes under. */
   readonly resultSession: string;
@@ -433,12 +438,12 @@ export async function startCIResultsStack(options: {
 /** The CLI of this checkout, as a shell outside the package runs it. */
 const CLI = `bun ${path.resolve(import.meta.dir, "..", "bin", "dispatch.ts")}`;
 
-/** Resolves on the first Ctrl-C or SIGTERM. */
 /** Quotes one value for a POSIX shell without interpreting its contents. */
 function shellWord(value: string): string {
   return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }
 
+/** Resolves on the first Ctrl-C or SIGTERM. */
 function untilInterrupted(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   process.once("SIGINT", () => resolve());
@@ -501,7 +506,7 @@ async function wholeStack(): Promise<void> {
     console.log("# The try line: one stored result, then a session's read of it:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
-      `env -u AGENT_SECRETS_URL DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --project ${stack.project} --commit ${tested}`
+      `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --project ${stack.project} --commit ${tested}`
     );
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);

@@ -143,6 +143,7 @@ export class DispatchServiceError extends Error {
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
     readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** The wait the answer's `Retry-After` names, and null where it names none. */
     readonly retryAfterMs: number | null = null
   ) {
     super(message);
@@ -486,8 +487,7 @@ export interface DispatchWriteRetry {
  * p95 19.6 s, p99 45.5 s, p99.9 62 s, each command timed whole, process start included, so an
  * upper bound on the write itself. 20 s of silence is that p95, and two silent attempts and the
  * ask that collects the answer still fit in 55 s (20 + 1 + 20 + 2 = 43 s). Cutting off a healthy
- * write costs nothing against a Dispatch known to run the keyed layer, which goes on running it
- * and replays its answer.
+ * write costs nothing: Dispatch's keyed layer goes on running it and replays its answer.
  */
 export const DISPATCH_WRITE_RETRY: DispatchWriteRetry = {
   pausesMs: [1_000, 2_000, 4_000, 8_000],
@@ -2485,9 +2485,10 @@ export class DispatchClient {
   }
 
   /**
-   * A multipart write. The form is encoded here, once: every encoding of a `FormData` draws a new
-   * boundary, and a retry whose bytes differ from its first attempt's is a different request to
-   * Dispatch, which refuses a key reused for one (`422 KEY_REUSED`).
+   * A multipart write. The form is encoded here, once, outside the no-route retries: every
+   * encoding of a `FormData` draws a new boundary, and a retry whose bytes differ from its first
+   * attempt's is a different request to Dispatch, which refuses a key reused for one
+   * (`422 KEY_REUSED`), and every attempt of the call carries its one key.
    */
   async #form<T>(
     method: WriteMethod,
@@ -3044,7 +3045,7 @@ export class DispatchClient {
           error.candidates,
           error.current,
           error.mismatches,
-          retryAfterMs(response)
+          retryAfterMs(response) || null
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

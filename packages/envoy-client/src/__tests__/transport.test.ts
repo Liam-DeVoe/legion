@@ -1,10 +1,7 @@
-import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-
-const REDIRECT_TOKEN = fixtureSecret("listener");
-
 import { describe, expect, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import noInterestsFixture from "../../../contracts/fixtures/envoy-session-no-interests.json";
 import { consumerDelivery } from "../../test/subscribe-answer";
 import { bearerCredential, type RequestCredential } from "../bearer";
@@ -21,6 +18,9 @@ import {
   type RoleInfo,
   roleHeldBy,
 } from "../transport";
+
+/** The listener's bearer in the redirect cases, made for this run so no line holds a credential. */
+const REDIRECT_TOKEN = fixtureSecret("listener");
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
  *  refuses a claim take by: a change of that constant must change the rule's text, and these

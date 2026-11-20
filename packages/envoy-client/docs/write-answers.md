@@ -46,7 +46,7 @@ No request of the client follows a redirect: not a read, and not a write.
 Dispatch's API routes answer no request with a 3xx, so a 3xx is a refusal of whatever answered in Dispatch's place.
 It is a `DispatchGatewayError`, whatever its body is.
 Its message names the request as for any gateway's answer, then the status and the reason phrase, and the origin that the redirect points at.
-That origin is the scheme and the host of the `Location`, with a port that is not the scheme's own (`redirectOrigin` in `errors.ts`).
+That origin is the scheme and the host of the `Location`, with a port that is not the scheme's own (`redirectOrigin` in `excerpt.ts`).
 The message holds nothing of the target's path, query, fragment or user, and nothing of the answer's body.
 A redirector writes its target into the body too, as text or as the text of a link, and that target can carry a secret.
 
@@ -114,7 +114,8 @@ It is the stored result, a replay, a landed answer, or the handler's refusal.
 An echoed 401 is no verdict, because it can come after the handler committed.
 `422 KEY_REUSED` is no verdict either, because it says only that this request did not run.
 A no-route answer, Dispatch's check of the token, a dead token or a credential that could not present proves nothing of the earlier attempt.
-Before any attempt may have reached a handler, the caller's cancellation remains its own error. After a possible landing it is the unsettled error's `last` and `cause`.
+Before any attempt may have reached a handler, the caller's cancellation remains its own error.
+After a possible landing it is the unsettled error's `last` and `cause`.
 
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown.
 It does for a `DispatchWriteUnsettledError`, for a gateway's answer with `mayHaveReachedDispatch`, and for Dispatch's own 5xx.
