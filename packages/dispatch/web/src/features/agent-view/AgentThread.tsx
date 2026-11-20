@@ -464,7 +464,9 @@ function ModePicks({
 /** The delivery modes the session takes and its own slash commands, offered for the `/` token
  *  the caret sits in. A mode pick sets "Send as" and writes nothing; a command pick writes the
  *  command at the start of a message and the bare name inside a sentence (`slashFormatter`),
- *  and sending it is the composer's ordinary Send. */
+ *  and sending it is the composer's ordinary Send. A typed `/btw ` or `/aside ` is sent as
+ *  typed, not stripped as the mention composer strips it (`deliveryPlan`): the mode belongs to
+ *  the delivery picker, so the message goes in the picked mode as written (`pickedDelivery`). */
 function SlashCommands({
   commands,
   modes,
@@ -623,7 +625,7 @@ export function AgentThread({
   // go without it and the picture's line would join whatever is typed next. Send says the upload
   // is what holds it and the form refuses the send under it, so neither way out of this box
   // sends a message the picture would miss - the rule every upload host keeps
-  // (`packages/dispatch/AGENTS.md`, `MentionComposer`, `AskAnswerArea`).
+  // (`MentionComposer`, `AskAnswerArea`).
   const uploading = upload.pending > 0;
   return (
     <ThreadPrimitive.Root className="flex min-h-0 flex-1 flex-col">

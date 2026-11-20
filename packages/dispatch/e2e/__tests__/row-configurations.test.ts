@@ -182,10 +182,10 @@ test(
  *  which is the one title left in that list and drops rows rather than taking them.
  *
  *  Measured at this head with `--list`, and the same numbers
- *  `.github/workflows/dispatch-browser.yaml` and `packages/dispatch/AGENTS.md` print beside
- *  them. Moving a wall-clock row to another file, or another project, is an edit of this
- *  table in the same commit, which is what makes such a move something a reader decides on
- *  rather than something a run goes quiet about. */
+ *  `.github/workflows/dispatch-browser.yaml` prints beside them. Moving a wall-clock row to
+ *  another file, or another project, is an edit of this table in the same commit, which is
+ *  what makes such a move something a reader decides on rather than something a run goes
+ *  quiet about. */
 const clockRowsOwned: Readonly<Record<string, Readonly<Record<string, number>>>> = {
   "chromium-alone": {
     "agent-workspace-timing.e2e.ts": 4,

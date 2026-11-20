@@ -895,8 +895,8 @@ export async function watchTheBuildsWindow(page: Page): Promise<TheBuildWatched>
  * Reads the opening timeline off `page`: what the socket recorder above wrote, and the two
  * numbers the browser's own resource timing holds - when the document's text was asked for and
  * when it answered, which is the schema admission check nothing connects before
- * (`packages/dispatch/AGENTS.md`). Both text routes are read, since a Spec tab's address names
- * no slug and its text is read by the id the issue answers with.
+ * (`ProofDocument`'s `admitTheDocument`). Both text routes are read, since a Spec tab's address
+ * names no slug and its text is read by the id the issue answers with.
  */
 export async function readTheOpening(page: Page): Promise<DocumentOpening> {
   return await page.evaluate(() => {

@@ -348,6 +348,9 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(priority === undefined ? {} : { priority }),
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
+      // `--parent ''` clears as `--clear-parent` does: the server clears a parent on JSON null and
+      // refuses a blank one (400 PARENT_INPUT), so an empty value goes out as null. The tool's
+      // description names only null, since the going catalogue sends `""` as given.
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
       ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
       ...advancesWrite,

@@ -70,7 +70,7 @@ function documentOf(issue: IssueDetails, route: IssueRoute): Artifact | undefine
  * 4,725 ms to 6,505 ms on the 28-section document and from 5,166 ms to 7,794 ms on the
  * 140-section one (`e2e/large-documents.ts`). The reader reads that draw while they wait for
  * the editor, so the socket is opened by the page's admission as it always was
- * (`ProofDocument`'s `admitTheDocument`, `packages/dispatch/AGENTS.md`).
+ * (`ProofDocument`'s `admitTheDocument`).
  */
 export function openDocumentEarly(client: QueryClient, pathname: string, search: string): void {
   const address = `${pathname}${search}`;

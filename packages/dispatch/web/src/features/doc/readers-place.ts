@@ -18,8 +18,9 @@
  *
  * A panel arriving must not shift what a reader is looking at. Where the panel's box is known
  * before its read answers, the panel reserves it and nothing moves; where its height is
- * whatever the answer turns out to be, this module is the answer, and
- * `packages/dispatch/AGENTS.md` ("Panels that arrive after the reader") says which is which.
+ * whatever the answer turns out to be, this module is the answer. `AfterTheFirstBatch.tsx`
+ * draws the two kinds: `AfterTheFirstBatch` for a part whose space is drawn before it lands,
+ * and `ChromeAfterTheFirstBatch` for the chrome over the document, whose height is not known.
  */
 
 import {

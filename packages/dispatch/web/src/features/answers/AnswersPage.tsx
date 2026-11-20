@@ -71,6 +71,9 @@ function AnswerRow({
         <AskOwnerLink owner={row.owner} />
         {row.kind === "answer" && !row.current ? <LabelPill>Changed since</LabelPill> : null}
       </div>
+      {/* The question is Markdown its asker wrote, so it is formatted and then cut to two lines,
+          as the reply below is to three; the note the person answered with is drawn whole
+          (`MarkdownBody`). */}
       <MarkdownPreview
         className={`mt-1 text-sm font-medium ${textPrimaryOnCanvas}`}
         fullTitle

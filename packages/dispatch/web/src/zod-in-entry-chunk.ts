@@ -15,6 +15,10 @@ import { join } from "node:path";
  * `index.html` loads, and every chunk the browser preloads with it - which is the entry's own
  * static-import closure, the modules of that same first task - must hold none of zod's runtime.
  * A lazy chunk may hold it: it is downloaded and evaluated when the page asks for it, not here.
+ *
+ * The same subpaths keep zod out of a chunk this check does not read: `@legion/proof-editor`
+ * takes its block-pointer parsers from `@legion/contracts/dispatch-block-ref`, so the headless
+ * Markdown engine the page warms at boot (`warmMarkdownRenderer`) builds no schema either.
  */
 const DIST_DIR = join(import.meta.dir, "..", "dist");
 

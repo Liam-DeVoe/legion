@@ -923,7 +923,11 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Route the issue to role:<name> or session:<id>; an empty string clears it.")
         .optional(),
-      // Describes last, after `.nullable().optional()`, for the reason `priority` does.
+      // Describes last, after `.nullable().optional()`, for the reason `priority` does. It names
+      // only null as the clear: the CLI's `--parent ''` clears too, because the envoy-client
+      // executor sends JSON null for an empty value (`dispatch-commands/issues.ts`), but the going
+      // catalogue (`GoingCaller.Do`) sends a call's arguments as given, and the server refuses a
+      // blank parent with 400 PARENT_INPUT.
       parent: z
         .string()
         .nullable()

@@ -49,13 +49,12 @@ export function AfterTheFirstBatch({
  *
  * How tall each will be is the issue's own labels, chips, claim, route markers and components
  * laid out, or the artifact's name, approval and versions - none of it known until the part
- * renders, so no placeholder can be the right size and the page re-places the reader instead
- * (`packages/dispatch/AGENTS.md`, "A panel that arrives after the reader"). `keepWhatStandsUnder`
- * is that re-placing: the box this draws is watched for as long as it is on the page, and the
- * page moves by whatever it grows above the top of the reader's screen, so the words under it
- * stay on the line they are on. It is every change of the box rather than one commit of it,
- * because a part arrives over as many commits as its chunk needs - the chunk's own fallback
- * first, the part itself after it.
+ * renders, so no placeholder can be the right size and the page re-places the reader instead.
+ * `keepWhatStandsUnder` is that re-placing: the box this draws is watched for as long as it is
+ * on the page, and the page moves by whatever it grows above the top of the reader's screen, so
+ * the words under it stay on the line they are on. It is every change of the box rather than
+ * one commit of it, because a part arrives over as many commits as its chunk needs - the
+ * chunk's own fallback first, the part itself after it.
  *
  * A reader who presses or tabs into the space has reached for the chrome, and gets it then:
  * the press is `onPointerDownCapture` below and the Tab is the reach this draws, a control of

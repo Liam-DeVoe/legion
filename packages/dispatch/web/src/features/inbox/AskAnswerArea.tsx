@@ -108,7 +108,7 @@ export function AskAnswerArea<Name extends string>({
   // picker is open and read again the moment it opens, exactly as the Conversation tab's
   // composer keeps it. The sessions `@` lists are the same sessions, read the same way - the
   // issue's stopped roles among them, which this picker left out while the composer under it on
-  // the same tab offered them (dispatch://INFRA-341, R2, `packages/dispatch/AGENTS.md`).
+  // the same tab offered them (dispatch://INFRA-341, R2).
   const { listing, onPickerOpenChange, options, stoppedOptions } = useMentionOptions(
     true,
     undefined,
