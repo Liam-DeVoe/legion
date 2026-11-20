@@ -796,11 +796,14 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // ask_followers arms; 20261116184707_issue_tree_graph_edges_both_arms and
 // 20261117020856_graph_edges_asks_and_store_class each keep that list, widen what the tuple arm
 // answers and add one arm over the same tuples, answering the relations out of a finding of a lens
-// as a lens_block (armOfAFinding); and 20261117140000_issue_tree_relations, the last migration to
-// restate graph_edges, adds one arm over the artifacts that carry their node, answering each one's
-// attached_to from its part_of tuple. Each of the arms over a kind the store now writes answers
-// only the rows of its table that name no node, and the seed names the node of every row it
-// writes, so those arms answer nothing here (armGatedPerRow).
+// as a lens_block (armOfAFinding); and 20261117140000_issue_tree_relations adds one arm over the
+// artifacts that carry their node, answering each one's attached_to from its part_of tuple.
+// 20261118023219_issue_tree_components and 20261119100000_issue_tree_artifact_refs, the last
+// migration to restate graph_edges, keep that list arm for arm; the second has the tuple arm read
+// a document's mentions through a union of its own beside the log's other tuples, which is one arm
+// (topLevelUnion). Each of the arms over a kind the store now writes answers only the rows of its
+// table that name no node, and the seed names the node of every row it writes, so those arms
+// answer nothing here (armGatedPerRow).
 const graphArmCount = 30
 
 var (
@@ -811,6 +814,12 @@ var (
 // armGatedPerRow matches one of the four arms over a kind the node and tuple store writes: the
 // test that keeps it to the rows of its own table that name no node.
 var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
+// topLevelUnion is the UNION ALL that joins two arms of graph_edges in pg_get_viewdef's pretty
+// form, which puts every top-level one on a line of its own (docs' readGraphEdgesArms reads the
+// view so as well). A union inside an arm's sub-select is indented under it and is part of that
+// arm.
+const topLevelUnion = "\nUNION ALL\n"
 
 // armOfAFinding matches the arm that answers the relations out of a finding of a lens, which it
 // names by the literal from_kind lens_block. The seed writes no lens and so no finding, the work
@@ -831,9 +840,9 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges', true)`).Scan(&definition); err != nil {
 		t.Fatalf("read the graph_edges definition: %v", err)
 	}
-	arms := strings.Split(definition, "UNION ALL")
+	arms := strings.Split(definition, topLevelUnion)
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261117140000 restate it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migrations 20261109215947 to 20261119100000 restate it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
