@@ -27,13 +27,15 @@ const WORK_PREFIX = "w";
  *  last changed among them; a project's own table keeps its own layout. The widths fit the box a
  *  1280 px window leaves beside the margin, 606 px, as a desktop's box (`useTableLayout`): the
  *  key, the project's key, and the status with its longest pill, "Needs review", whole inside
- *  the cell's padding; Title takes what they and the row's actions leave, and wraps in its two
- *  lines. Its key is its own, not the one a scoped table without a layout keeps (`IssuesTable`),
- *  whose stored layouts were written for a project's opening set and would show that set again
- *  here. */
+ *  the cell's padding. It draws no row's actions after them (`rowActions`), so no empty column
+ *  stands at its right: the selection's bar keeps Start next. Title takes all the width they
+ *  leave, and wraps in its two lines. Its key is its own, not the one a scoped table without a
+ *  layout keeps (`IssuesTable`), whose stored layouts were written for a project's opening set
+ *  and would show that set again here. */
 const WORK_LAYOUT = {
   key: "priority-page-work",
   opens: ["key", "title", "status", "project"],
+  rowActions: false,
   widths: {
     key: { min: 96, size: 96 },
     project: { min: 72, size: 72 },

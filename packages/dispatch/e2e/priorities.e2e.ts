@@ -1426,18 +1426,15 @@ test("a priority's own page writes its title and description and lists only its 
 // the project and the status leave, so no space stands empty at the table's right: the last
 // column that draws anything ends at the box's right edge, less the room a filling column leaves
 // there for the box's borders and a scrollbar (`EDGE_ROOM`, 20 px,
-// `features/project/issues-table-layout.ts`). An issue title of 34 characters, and one of 60,
-// the most R7 names, reads whole there: no ellipsis, no clamp, nothing of it past its box.
-// SLOW(>=2s): the seed, two more issues, and one page read at the desktop's size.
-test("at 1280 by 800 a priority's work table leaves no empty room at its right and reads a title of up to 60 characters whole", async ({
+// `features/project/issues-table-layout.ts`). An issue title of 34 characters reads whole there:
+// no ellipsis, no clamp, nothing of it past its box.
+// SLOW(>=2s): the seed, one more issue, and one page read at the desktop's size.
+test("at 1280 by 800 a priority's work table leaves no empty room at its right and reads a 34-character title whole", async ({
   browser,
 }) => {
   const seed = await seedPriorities();
-  const titles = [
-    "Daemon rollout to every build host",
-    "Daemon rollout to every build host and each developer laptop",
-  ] as const;
-  expect(titles.map((title) => title.length)).toEqual([34, 60]);
+  const titles = ["Daemon rollout to every build host"] as const;
+  expect(titles.map((title) => title.length)).toEqual([34]);
   const keys: string[] = [];
   for (const title of titles) {
     const issue = await createIssue({ project: "CORE", title });

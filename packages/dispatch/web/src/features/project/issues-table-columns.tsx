@@ -417,7 +417,8 @@ export interface IssueTableColumnWidth {
 export type IssueTableWidths = Readonly<Partial<Record<IssueTableColumnId, IssueTableColumnWidth>>>;
 
 /** The width an issues table draws after its columns, for a row's actions, where its listing can
- *  hold a row they act on (`listsQueued`). */
+ *  hold a row they act on (`listsQueued`) and its layout does not leave them out (`rowActions`,
+ *  `IssuesTable`). */
 export const ROW_ACTIONS_WIDTH = 104;
 
 /** The one column no reader can hide or show (`enableHiding: false`): the row's checkbox, which
@@ -436,7 +437,7 @@ const layouts = new Map<string, LayoutColumns>();
  * those columns shown, registry and listing columns alike, and every other one hidden until the
  * reader shows it from the column control; the row's checkbox stays (`ALWAYS_SHOWN`), and Title
  * fills a desktop box (`fills`, `useTableLayout`): it takes the width the other shown columns
- * and the row's actions (`actions`, none where the listing holds no row they act on) leave.
+ * and the row's actions (`actions`, none where the table draws none) leave.
  * `widths` puts a column's starting width and minimum in place of the registry's or the listing
  * column's. A project's table names neither; each fault list of the priorities page names its
  * own. Built once for each set and kept, since the stored layout is read again whenever this

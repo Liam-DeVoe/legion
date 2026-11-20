@@ -2448,12 +2448,14 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   full.unmount();
 });
 
-/** A layout of four columns that fits a box 606 px wide, the box a priority's page leaves its
- *  work table beside the margin at 1280 px: select 44, key 96, status 150, project 72 and the
- *  row's actions 104 leave Title 120 of it, past its 116 px minimum, with the box's 20 px edge. */
+/** A priority's page's work layout, which fits a box 606 px wide, the box that page leaves its
+ *  work table beside the margin at 1280 px: it draws no row's actions (`rowActions`), so select
+ *  44, key 96, status 150 and project 72 leave Title 224 of it, past its 116 px minimum, with the
+ *  box's 20 px edge. */
 const FITS_NARROW = {
   key: "fits-narrow",
   opens: ["key", "title", "status", "project"],
+  rowActions: false,
   widths: {
     key: { min: 96, size: 96 },
     project: { min: 72, size: 72 },
@@ -2489,14 +2491,41 @@ async function narrowHeaders(width: number): Promise<{ cells: string[]; stacked:
 // columns cannot fit, keeps the phone's widths, and there Title's header stacks.
 test("a filling layout that fits a 606 px box lays it out as a desktop's", async () => {
   expect(await narrowHeaders(606)).toEqual({
-    cells: ["- 44px", "Key 96px", "Title 120px", "Project 72px", "Status 150px", "- 104px"],
+    cells: ["- 44px", "Key 96px", "Title 224px", "Project 72px", "Status 150px"],
     stacked: false,
   });
 });
 
 test("the same layout in a 390 px phone's box keeps the phone's widths and stacks Title's header", async () => {
   expect(await narrowHeaders(390)).toEqual({
-    cells: ["- 44px", "Key 88px", "Title 199.5px", "Project 72px", "Status 150px", "- 104px"],
+    cells: ["- 44px", "Key 88px", "Title 199.5px", "Project 72px", "Status 150px"],
     stacked: true,
   });
+});
+
+// `rowActions: false` leaves the row's actions out of a table whose listing holds rows they act
+// on: the queue's second row, which a table with them offers Start next on, draws no cell after
+// its columns, nor does the header, and the table is its columns' width alone. Title takes the
+// 104 px the actions take where they are drawn (`ROW_ACTIONS_WIDTH`): 120 + 104 in a 606 px box.
+test("a layout that leaves out the row's actions draws no cell for them and gives their width to Title", async () => {
+  stubScrollBoxWidth(606);
+  const queued = { advances: [{ id: "p", inherited: false }], labels: ["legion"] };
+  table([issue("CORE-1", queued), issue("CORE-2", queued)], "", undefined, {
+    layout: FITS_NARROW,
+    listing: { advances: "p" },
+  });
+  const list = await screen.findByRole("table", { name: "Priority issues table" });
+  const second = await within(list).findByRole("row", { name: "CORE-2 Work CORE-2" });
+  const headers = [...list.querySelectorAll("thead th")];
+  expect(headers.map((cell) => cell.textContent?.replace(/[▲▼]|Filter$/g, "") || "-")).toEqual([
+    "-",
+    "Key",
+    "Title",
+    "Project",
+    "Status",
+  ]);
+  expect(second.querySelectorAll("td").length).toBe(headers.length);
+  expect(within(list).queryByRole("button", { name: "Start next" })).toBeNull();
+  expect(within(list).getByRole("columnheader", { name: /^Title/ }).style.width).toBe("224px");
+  expect(list.style.width).toBe("586px");
 });

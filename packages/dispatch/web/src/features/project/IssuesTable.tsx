@@ -75,12 +75,17 @@ export function IssuesTable({
    *  set of columns it opens with shown (`opens`), registry and listing columns alike, every
    *  other one opening hidden for the reader to show, and the widths it gives any column in
    *  place of its own (`widths`, `issueTableLayout`). Given one, Title fills a desktop box: it
-   *  takes what the other shown columns leave (`fills`). Each fault list of the priorities page
-   *  gives its own; unset, the table opens as a project's table does. */
+   *  takes what the other shown columns and the row's actions leave (`fills`). `rowActions:
+   *  false` draws no row's actions after the columns, no cell for a row's Start next, and keeps
+   *  no width for them, as on a listing that holds no issue in Legion's queue (`listsQueued`):
+   *  Title takes that width too, and the selection's bar keeps Start next. Each fault list of
+   *  the priorities page and a priority's work table give their own; unset, the table opens as
+   *  a project's table does. */
   layout?: {
     readonly key: string;
     readonly opens: readonly IssueTableColumnId[];
     readonly widths?: IssueTableWidths;
+    readonly rowActions?: boolean;
   };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
@@ -104,11 +109,13 @@ export function IssuesTable({
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  // Whether the listing can hold a row a reader starts next (`listsQueued`), and the width drawn
-  // after the columns for that row's Start next; a fault list of the priorities page holds none,
-  // and draws none.
-  const queued = listsQueued(listing);
-  const actions = queued ? ROW_ACTIONS_WIDTH : 0;
+  // Whether the table draws a row's actions after its columns - the cell for its Start next -
+  // and the width it draws them at: where the listing can hold a row a reader starts next
+  // (`listsQueued`) and its layout does not leave them out (`rowActions`). A fault list of the
+  // priorities page holds no such row and a priority's work table leaves them out, so neither
+  // draws them.
+  const rowActions = listsQueued(listing) && ownLayout?.rowActions !== false;
+  const actions = rowActions ? ROW_ACTIONS_WIDTH : 0;
   // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
   // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
@@ -306,7 +313,7 @@ export function IssuesTable({
       </p>
     );
 
-  const visibleColumns = table.getVisibleLeafColumns().length + (queued ? 1 : 0);
+  const visibleColumns = table.getVisibleLeafColumns().length + (rowActions ? 1 : 0);
 
   return (
     <section aria-label={name} className="space-y-3 sm:pb-24">
@@ -453,7 +460,7 @@ export function IssuesTable({
             index={index}
             measure={measure}
             moved={moved}
-            onStartNext={queued ? (key) => startNext([key]) : undefined}
+            onStartNext={rowActions ? (key) => startNext([key]) : undefined}
             row={row}
           />
         )}

@@ -36,8 +36,9 @@ export function IssueRow({
   measure: (element: Element | null) => void;
   /** The issues this action has just changed, which the row shows until the next one. */
   moved: ReadonlySet<string>;
-  /** Starts the row's issue next: absent on a table whose listing holds no issue in Legion's
-   *  queue (`listsQueued`), which draws no cell for it. */
+  /** Starts the row's issue next: absent on a table that draws no row's actions - its listing
+   *  holds no issue in Legion's queue (`listsQueued`), or its layout leaves them out
+   *  (`rowActions`, `IssuesTable`) - which draws no cell for it. */
   onStartNext: ((key: string) => void) | undefined;
   row: Row<Item>;
 }): ReactNode {
