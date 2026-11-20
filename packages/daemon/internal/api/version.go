@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,14 +2454,24 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 185: a claim Envoy cannot reach, and its relaunch on its same session.
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 192: a claim Envoy cannot reach, and its relaunch on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
 // last registration with Envoy is more than 20 minutes old, counted from the latest of that
 // registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
-// below 185 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
+// below 192 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
 // knows no such key. The `legion` tool's controller gains `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
@@ -2524,8 +2533,13 @@ package api
 // 2026-11-19T22:54Z, gave 178 at two other heads (cybermonklabs/legion#3831 among them, which
 // declared it first) and 179 at two, so 180 was the lowest number above 178 that no open head
 // declared. It took 185 at the forward merge of 2026-11-20 that brought main in at 32a82acbee,
-// which landed contract 178 (cybermonklabs/legion#4115), the entry right above: a reading at
-// refs/pull/<n>/head for each of the 248 open pull requests, made at 2026-11-20T04:11Z, gave 179 at
-// one other head, 180 at one (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and
-// 184 at four, so 185 was the lowest number above the base's 178 that no other open head declared.)
-const DaemonAPIVersion = 185
+// which landed contract 178 (cybermonklabs/legion#4115): a reading at refs/pull/<n>/head for each
+// of the 248 open pull requests, made at 2026-11-20T04:11Z, gave 179 at one other head, 180 at one
+// (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and 184 at four, so 185 was the
+// lowest number above the base's 178 that no other open head declared. It took 192 at the forward
+// merge of 2026-11-20 that brought main in at 1c7c825367, which landed contract 188
+// (cybermonklabs/legion#4543), the entry right above: a reading at refs/pull/<n>/head for each of
+// the 264 open pull requests, made at 2026-11-20T10:33Z, gave 186 at one other head, 187 at two,
+// 188 at three, 189 at three, 190 at two and 191 at one, so 192 was the lowest number above the
+// base's 188 that no other open head declared.)
+const DaemonAPIVersion = 192

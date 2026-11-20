@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-    The plugin declares daemon API contract 185 in `package.json`'s `legion.daemonApiVersion`:
+    The plugin declares daemon API contract 192 in `package.json`'s `legion.daemonApiVersion`:
     install it with a `legion` built from the same commit.
     A Claude Code worker's claim boot (`claims/register` and `claims/ready`) now waits up to an
     hour for a daemon that is not serving, and is made once the daemon serves again. A daemon is
