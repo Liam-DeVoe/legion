@@ -199,7 +199,7 @@ spends the head's one re-run on a run nobody counted. The wait ends one of three
   process runs (under `runtime: tmux`, and under `runtime: kubernetes` with idle release off), a
   phase worker that ended its turn with a WAITING line gets the phase reminder 15 minutes later
   (`LEGION_STALL_WAITING_MS`). Where idle release is on, the pod goes first, and the bound is the
-  daemon's backstop about an hour after it went idle. The role then reads the counted set once
+  daemon's backstop about an hour after the release. The role then reads the counted set once
   more and takes whichever of the first two the reading gives.
 
 The role runs `gh run rerun <run id> --failed` in the head's own `pull_request` run. In that turn:
@@ -268,8 +268,12 @@ so only the role ends a round such a red would hold, and it ends it by this page
 
 ## What becomes of the record
 
-After a green re-run, and before it completes its phase, the role runs these three commands in this
-order. A red cleared and never written up is a flaky test nobody fixes, which is the cost this page
+A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended,
+owes the record before the press and none of these three steps: the census is one issue per test,
+and a fault of a download or a runner belongs to the tree that owns that step.
+
+After a green re-run of a failing test, and before it completes its phase, the role runs these
+three commands in this order. A red cleared and never written up is a flaky test nobody fixes, which is the cost this page
 is paid to stop. A re-run that comes back red is the round's failure and owes no occurrence.
 
 1. `dispatch search --query '<the failing test's full name>'`, which finds the issue that tracks

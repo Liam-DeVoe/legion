@@ -837,6 +837,22 @@ const REVIEW_ENDS_ITS_ROUND = "since the reviewer's one review ends its round";
 const SPENT_IS_SAID = "names the check, and says the head's one re-run is spent";
 const NULL_ROLLUP_WAITS_FIRST =
   "read first in a turn, is waited on like any other absence, as *The act and the wait* says";
+/**
+ * When the daemon's backstop comes. The page said "about an hour after it went idle", but the
+ * daemon releases an idle pod after 10 minutes and the backstop wakes an open phase's worker an
+ * hour after the release (packages/daemon/internal/config/kubernetes.go; go/worker-common.md,
+ * "60 minutes after the release").
+ */
+const BACKSTOP_AFTER_THE_RELEASE =
+  "the bound is the daemon's backstop about an hour after the release";
+/**
+ * A green re-run of a red in no test owes the record and no census step, the architect's decision
+ * of 2026-11-20: the census is one issue per test, and a download's or a runner's fault belongs to
+ * the tree that owns that step. Worlds `c` and `h`, whose reds are in no test, already owe no step
+ * there (`disposal: false` in red_world_table).
+ */
+const NO_TEST_OWES_NO_CENSUS =
+  "A green re-run of a red in no test, such as a download that answered 5xx or a runner that ended, owes the record before the press and none of these three steps";
 
 /**
  * The sentences INFRA-1303's batch of record at 6a643564 showed a role misreading, each pinned
@@ -963,6 +979,16 @@ export function redAtTheHeadFaults(pages: {
           sentence: NULL_ROLLUP_WAITS_FIRST,
           because:
             "a role that takes a null rollup on its first read for an empty set re-runs nothing and ends a wait that has not begun",
+        },
+        {
+          sentence: NO_TEST_OWES_NO_CENSUS,
+          because:
+            "a role that files a census issue for a download's or a runner's fault puts a flaky-test record where no test is",
+        },
+        {
+          sentence: BACKSTOP_AFTER_THE_RELEASE,
+          because:
+            "a role that counts the backstop from the pod going idle expects its wake fifty minutes early",
         },
         {
           sentence: ANCESTRY_EXIT_STATUSES,

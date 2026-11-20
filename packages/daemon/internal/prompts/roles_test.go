@@ -355,6 +355,8 @@ func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
 		// merges the pull request and no later step of the merger's runs (review round 3, finding 4).
 		"still before you queue it, run the three steps of that page's *What becomes of the record*",
 		"saying that the requeued build's outcome is not yet known",
+		// A group build that failed in no test owes no census step (the architect, 2026-11-20).
+		"A group build that failed at a step and in no test, such as a download that answered 5xx or a runner that ended, owes the record and none of those three steps",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
