@@ -14947,16 +14947,16 @@ console.log(JSON.stringify(args));
        *  its row, whether the row returned or the runner abandoned it at its limit. */
       const workDirectories: string[] = [];
       // The limit of every row of this describe, set here as the default for the rows registered
-      // inside it (`setDefaultTimeout` is read as each row is registered), so a row added here
-      // takes it too: a hang guard, not a bound on work. What can hang is a wait with no deadline
-      // of its own, which each row makes after `bootShellSession`: an `until` for a command that
-      // never starts, never writes its pid or never ends, or a reply that never arrives. 120_000.
-      // Worst measured cost: 10 476.19 ms, the row "answers the addressed session's message when
-      // the host leaves as the command ends", over 20 runs of this describe at 16 busy loops (the
-      // 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. A
-      // row run alone pays the file's start as well: one run of "hands the agent no copy when the
-      // host moved on with no session event" alone cost 25 497.91 ms there, which main's 20_000
-      // cut, and 120_000 is 4.7 times that.
+      // inside it (`setDefaultTimeout` is read as each row is registered, and bun 1.4.4 keeps it to
+      // this describe, so the rows after it keep the run's own default), so a row added here takes
+      // it too: a hang guard, not a bound on work. What can hang is a wait with no deadline of its
+      // own, which each row makes after `bootShellSession`: an `until` for a command that never
+      // starts, never writes its pid or never ends, or a reply that never arrives. 120_000. Worst
+      // measured cost: 10 476.19 ms, the row "answers the addressed session's message when the
+      // host leaves as the command ends", over 20 runs of this describe at 16 busy loops (the 96
+      // rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, 2026-11-20T10:52Z to 11:27Z. One run
+      // of "hands the agent no copy when the host moved on with no session event" alone cost
+      // 25 497.91 ms there, which main's 20_000 cut, and 120_000 is 4.7 times that.
       setDefaultTimeout(120_000);
       // A bound on work, not a hang guard: the poll below waits at most 1_000 turns for a killed
       // group to end. 60_000. Worst measured cost: 159.52 ms over 81 invocations in 3 runs of this
@@ -16274,10 +16274,6 @@ console.log(JSON.stringify(args));
         expect(streamFrames()).toEqual([]);
         expect(replies).toEqual([]);
       });
-
-      // Every row registered after this describe runs at bun's own default again, 5 s: this
-      // file's `bun test` passes no `--timeout` and no bunfig sets one.
-      setDefaultTimeout(5_000);
     });
 
     // The windows the `!` rows above hold, on the two other branches of a delivery: a typed
