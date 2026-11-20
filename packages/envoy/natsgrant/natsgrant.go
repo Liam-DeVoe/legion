@@ -1,6 +1,6 @@
 // Package natsgrant is the one table of NATS grants Envoy's clients hold: the sets a hub renders
 // into its static authorization (packages/envoy/infra/core wraps each as the rules a User takes) and
-// the grants the auth service answers a connection with (internal/broker/natscallout). Both read
+// the grants the auth service answers a connection with (internal/cipher/natscallout). Both read
 // the same functions, so a hub's static user and a connection the auth service admits for the same
 // kind hold the same lists, built from the names internal/bus and internal/contracts export.
 //
@@ -59,7 +59,7 @@ const inboxes = nats.InboxPrefix + ">"
 // publish route refuses a topic under either lane by name on every listener, and publishes
 // nothing (cmd/listener/api.go, publisherLanes).
 // The deny is in PublishDeny, so a hub's static user (packages/envoy/infra/core renders it) and a
-// connection the auth service admits (internal/broker/natscallout encodes it) both carry it.
+// connection the auth service admits (internal/cipher/natscallout encodes it) both carry it.
 //
 // The deny alone does not stop a session on a shared host user from posing as Dispatch or as
 // GitHub. listenerGrant allows the stream's create and update ($JS.API.STREAM.CREATE and
@@ -211,7 +211,7 @@ func ListenerHost(machineID string) Permissions {
 // names github), as machine machineID: Listener with GitHub's lane (githubLane) taken off its
 // publish deny. That listener's webhook route and CI summary loop publish every GitHub event, and
 // no other listener may. The set still denies Dispatch's lane. The auth service answers a service
-// of the kind webhook-listener with it (internal/broker/natscallout).
+// of the kind webhook-listener with it (internal/cipher/natscallout).
 func WebhookListener(machineID string) Permissions {
 	return publishing(Listener(machineID), githubLane)
 }
@@ -505,7 +505,7 @@ func NamesSystemSubject(p Permissions) (string, bool) {
 // list to that direction (server/accounts.go, client.go), so a user answered with one may publish,
 // or subscribe, to every subject but the ones a deny list names. A deny list beside it narrows
 // that and closes nothing, so an empty allow list is open whatever PublishDeny or SubscribeDeny
-// hold, and the auth service refuses every grant this names (internal/broker/natscallout).
+// hold, and the auth service refuses every grant this names (internal/cipher/natscallout).
 // A blank entry is the same fault: jwt skips an empty entry when it adds it to a user
 // (StringList.Add skips ""), so a list of "" encodes as an empty one, and a whitespace entry names
 // no subject any grant of this package means.
