@@ -270,9 +270,12 @@ func partitionOfIn(t *testing.T, database *Store, table, id string) string {
 	return partition
 }
 
-// A copy batch holds the rows it read until it commits: a write of one of them waits, and then
-// lands on the copied row, so the write is what the partitioned table keeps and not the older
-// copy. The control is the same write against a batch that has committed, which does not wait.
+// A copy batch holds the rows it read until it commits, so a delete of one of them waits for the
+// batch and then removes the copied row too, where a delete the batch did not hold off would run
+// before the batch's insert committed, find no copy to remove, and leave the batch to bring the
+// row back. An update needs no such hold - it meets the batch's uncommitted copy on the unique key
+// and waits there - so the row is held to a delete, the write only the batch's row lock orders.
+// The control is the same delete against a batch that has committed, which does not wait.
 func TestACopyBatchHoldsAWriteOfItsRowsUntilItCommits(t *testing.T) {
 	ctx := context.Background()
 	database, _ := openPartitionTestStore(t, 2)
@@ -287,36 +290,31 @@ func TestACopyBatchHoldsAWriteOfItsRowsUntilItCommits(t *testing.T) {
 	if err := batch.QueryRow(ctx, copyEmbeddingsBatchQuery, "", "", EmbeddingPartitionCopyBatch).Scan(&read, &copied, &finished); err != nil {
 		t.Fatalf("copy a batch: %v", err)
 	}
-	wrote := make(chan error, 1)
+	deleted := make(chan error, 1)
 	go func() {
-		_, err := database.Pool.Exec(ctx, `update embeddings set text_snapshot = 'written while the batch held it' where id = 'PARTA-1'`)
-		wrote <- err
+		_, err := database.Pool.Exec(ctx, `delete from embeddings where id = 'PARTA-1'`)
+		deleted <- err
 	}()
 	if waited := waitForALockWaiter(t, database, 5*time.Second); !waited {
-		t.Fatal("the write of a row the open batch read did not wait for the batch")
-	}
-	select {
-	case err := <-wrote:
-		t.Fatalf("the write finished before the batch committed (%v)", err)
-	default:
+		t.Error("the delete of a row the open batch read did not wait for the batch")
 	}
 	if err := batch.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-wrote; err != nil {
-		t.Fatalf("the write: %v", err)
+	if err := <-deleted; err != nil {
+		t.Fatalf("the delete: %v", err)
 	}
-	var text string
-	if err := database.Pool.QueryRow(ctx, `select text_snapshot from embeddings_partitioned where id = 'PARTA-1'`).Scan(&text); err != nil {
+	var left int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from embeddings_partitioned where id = 'PARTA-1'`).Scan(&left); err != nil {
 		t.Fatal(err)
 	}
-	if text != "written while the batch held it" {
-		t.Errorf("embeddings_partitioned holds %q for PARTA-1, want the write that waited for the batch", text)
+	if left != 0 {
+		t.Errorf("embeddings_partitioned holds %d rows of PARTA-1 after it was deleted from embeddings, want none: the batch brought the row back", left)
 	}
-	// The control: nothing holds the row now, so the same write does not wait.
+	// The control: nothing holds the rows now, so the same delete does not wait.
 	done := make(chan error, 1)
 	go func() {
-		_, err := database.Pool.Exec(ctx, `update embeddings set text_snapshot = 'written after' where id = 'PARTA-1'`)
+		_, err := database.Pool.Exec(ctx, `delete from embeddings where id = 'PARTA-2'`)
 		done <- err
 	}()
 	select {
@@ -325,7 +323,7 @@ func TestACopyBatchHoldsAWriteOfItsRowsUntilItCommits(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("a write with no batch open waited: the wait above proves nothing")
+		t.Fatal("a delete with no batch open waited: the wait above proves nothing")
 	}
 }
 
