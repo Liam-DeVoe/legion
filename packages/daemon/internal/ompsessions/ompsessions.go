@@ -7,10 +7,11 @@
 // starts, keys a session by the path its file would have had (the
 // session file a claim records), and reads a session as the row's content followed by its parts in
 // offset order. Legion reads it to hold a resume to a session the table holds (Written, the role
-// launcher's check and the tmux runtime's under runtime.tmux.session_store postgres), to hold a
-// tmux daemon's boot to a table it can read (HasTable), seeds it once from the files sessions were
-// kept in before (Import, `legion sessions import`), and keeps a Claude Code session's files in it
-// as Oh My Pi's own writes would (Append and Replace, the role launcher's, which no Oh My Pi runs
+// launcher's check and the tmux runtime's under runtime.tmux.session_store postgres), to find the
+// file of a session named by its id alone (FindByID, the same two's lookup), to hold a tmux
+// daemon's boot to a table it can read (HasTable), seeds it once from the files sessions were kept
+// in before (Import, `legion sessions import`), and keeps a Claude Code session's files in it as
+// Oh My Pi's own writes would (Append and Replace, the role launcher's, which no Oh My Pi runs
 // beside).
 package ompsessions
 
@@ -24,6 +25,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -136,6 +138,32 @@ func HasTable(ctx context.Context, conn *pgx.Conn) (bool, error) {
 		return false, fmt.Errorf("read the session table: %w", err)
 	}
 	return true, nil
+}
+
+// FindByID is the path of the newest session the table holds under the session id id, for a start
+// of the role launcher that names a session by its id alone (shimwire.LauncherStart.ResumeSession),
+// and for the tmux runtime's resume of one under runtime.tmux.session_store postgres: the path of
+// the row whose path ends in `_<id>.jsonl`, the one with the greatest mtime_ms, then
+// the least path. It compares the path's last characters with that suffix as text (right(path, n),
+// n the suffix's length in characters), never with LIKE, so a `_` or a `%` in the id matches only
+// itself. found is false when the table holds no such session; a database no Oh My Pi has opened
+// has no table yet, and so holds none, as Written answers. It refuses an id that is not a single
+// path element (empty, or holding `/` or NUL) before any query.
+func FindByID(ctx context.Context, conn *pgx.Conn, id string) (path string, found bool, err error) {
+	if id == "" || strings.ContainsAny(id, "/\x00") {
+		return "", false, fmt.Errorf("look up session %q by its id: the id is not a single path element", id)
+	}
+	suffix := "_" + id + ".jsonl"
+	err = conn.QueryRow(ctx,
+		"SELECT path FROM omp_session_files WHERE right(path, $1) = $2 ORDER BY mtime_ms DESC, path ASC LIMIT 1",
+		utf8.RuneCountInString(suffix), suffix).Scan(&path)
+	if isUndefinedTable(err) || errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("look up session %s by its id: %w", id, err)
+	}
+	return path, true, nil
 }
 
 // Read is the session the table holds at path as Oh My Pi reads it (readFull): the row's content,

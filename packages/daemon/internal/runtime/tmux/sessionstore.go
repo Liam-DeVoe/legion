@@ -38,18 +38,35 @@ func (r *Runtime) sessionWritten(ctx context.Context, file string) (bool, error)
 	return ok, nil
 }
 
+// sessionByID is the path of the newest session the session table holds under the session id id
+// (ompsessions.FindByID), the path its file would have had, for a resume that names its session by
+// its id alone; "" when the table holds none, which the resume answers as a session found nowhere
+// (runtime.ErrSessionFileMissing). An error is a look-up that could not say: a database it could
+// not reach or read.
+func (r *Runtime) sessionByID(ctx context.Context, id string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, sessionLookupTimeout)
+	defer cancel()
+	conn, err := ompsessions.Connect(ctx, r.sessionDSNFile)
+	if err != nil {
+		return "", fmt.Errorf("resume session %s: %w", id, err)
+	}
+	defer conn.Close(context.Background())
+	path, _, err := ompsessions.FindByID(ctx, conn, id)
+	return path, err
+}
+
 // recordedSession is where the session a resume names is, "" when it is nowhere, with the folders
-// searched for it. Under a session database an Oh My Pi session is a row of the session table
-// rather than a file (sessionInDatabase), so the row is the whole search: the session is at its
-// recorded path or nowhere, and no folder is searched. Every other session is searched for as a
-// file (sessionFileOf).
-func (r *Runtime) recordedSession(ctx context.Context, file string, backend runtime.Backend, sessionsDir func() (string, error)) (string, []string, error) {
+// searched for it and what the search skipped. Under a session database an Oh My Pi session is a
+// row of the session table rather than a file (sessionInDatabase), so the row is the whole search:
+// the session is at its recorded path or nowhere, and no folder is searched or skipped. Every
+// other session is searched for as a file (sessionFileOf).
+func (r *Runtime) recordedSession(ctx context.Context, file string, backend runtime.Backend, sessionsDir func() (string, error)) (found string, searched, skipped []string, err error) {
 	if !r.sessionInDatabase(backend) {
 		return sessionFileOf(file, sessionsDir)
 	}
 	written, err := r.sessionWritten(ctx, file)
 	if err != nil || !written {
-		return "", nil, err
+		return "", nil, nil, err
 	}
-	return file, nil, nil
+	return file, nil, nil, nil
 }

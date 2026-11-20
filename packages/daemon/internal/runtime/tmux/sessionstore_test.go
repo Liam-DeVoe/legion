@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
@@ -84,6 +86,55 @@ func TestAResumeUnderASessionDatabaseIsHeldToTheSessionTable(t *testing.T) {
 
 	if err := resume(held); ran == 0 {
 		t.Errorf("a resume of a session the table holds never reached tmux: %v", err)
+	}
+}
+
+// Under runtime.tmux.session_store postgres a claim that records its session's id and no file of
+// it is looked up in the session table, never in the pane's sessions directory. With no row of the
+// id — in a database no Oh My Pi has opened yet, a newer file of the session on this host all the
+// same — the session is found nowhere: runtime.ErrSessionFileMissing naming the id, which the
+// claim's machine answers by forgetting the session once, as it answers a search of the folders
+// that finds no file of it, and no pane opens. With rows of the id the pane's command resumes the
+// newest row's path (ompsessions.FindByID), and the file on this host is still never read.
+func TestAResumeByIDUnderASessionDatabaseReadsTheSessionTable(t *testing.T) {
+	_, dsnFile := testdb.DSNFile(t, "legion_tmux_sessions_by_id_test")
+	ctx := context.Background()
+	f := newFakeServerRuntimeWith(t, staticCredential, nil, func(o *Options) {
+		o.Environ = append(o.Environ, "HOME="+filepath.Join(o.StateDir, "home"))
+		o.SessionDSNFile = dsnFile
+	})
+	spec := f.spec(t, claim.RoleTester)
+	spec.ResumeSession = resumeSessionID
+	sessions := paneSessions(f)
+	written := time.Date(2026, 11, 19, 22, 12, 27, 829_000_000, time.UTC)
+	onHost := filepath.Join(sessions, resumeFolder, "2026-11-20T00-12-27-829Z_"+resumeSessionID+".jsonl")
+	writeSession(t, onHost, written.Add(2*time.Hour))
+
+	_, err := f.Resume(ctx, nil, spec)
+	if !errors.Is(err, runtime.ErrSessionFileMissing) || !strings.Contains(err.Error(), "the session table holds no row of OMP session "+resumeSessionID) {
+		t.Errorf("Resume by the id before any Oh My Pi made the table = %v, want runtime.ErrSessionFileMissing naming the table and the id", err)
+	}
+	if opened(f.argvs) {
+		t.Error("a resume by the id that the table holds no row of opened a pane")
+	}
+
+	conn, err := ompsessions.Connect(ctx, dsnFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(ctx)
+	older := filepath.Join(sessions, resumeFolder, "2026-11-19T22-12-27-829Z_"+resumeSessionID+".jsonl")
+	newest := filepath.Join(sessions, "--state-workspaces-acme-widgets-legion-43--", "2026-11-19T23-12-27-829Z_"+resumeSessionID+".jsonl")
+	for path, at := range map[string]time.Time{older: written, newest: written.Add(time.Hour)} {
+		if _, err := ompsessions.Import(ctx, conn, path, []byte(`{"type":"session","version":3,"id":"`+resumeSessionID+`"}`+"\n"), at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := f.Resume(ctx, nil, spec); err != nil {
+		t.Fatalf("Resume by the id of a session the table holds: %v", err)
+	}
+	if command := openedCommand(f); !strings.Contains(command, "--resume="+newest) || strings.Contains(command, onHost) {
+		t.Errorf("the pane's command = %q, want it to resume the table's newest row %s", command, newest)
 	}
 }
 
