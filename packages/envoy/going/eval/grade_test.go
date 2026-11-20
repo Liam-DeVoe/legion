@@ -2,6 +2,7 @@ package eval
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -139,5 +140,34 @@ func TestTheCheckerReportsAMessageNoApprovedRowMade(t *testing.T) {
 	}
 	if len(broken) != 1 || !strings.Contains(broken[0], "does not ask for it") {
 		t.Errorf("the checker reported %q on a message change-03 does not ask for; want that one message", broken)
+	}
+}
+
+// TestAChartShowsItsRowsByTheWeeksItDraws: chart-01's rows, written by ISO week, are shown by
+// a drawn chart whose server chain names each week by its first day, as the server draws it; the
+// same chart with one week's count wrong misses that row.
+func TestAChartShowsItsRowsByTheWeeksItDraws(t *testing.T) {
+	tasks, err := LoadTasks(Files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chart := taskByID(t, tasks, "chart-01").Grade.Chart
+	drawn := func(counts ...int) []json.RawMessage {
+		weeks := []string{"2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26", "2026-11-02", "2026-11-09", "2026-11-16"}
+		rows := make([]map[string]any, len(weeks))
+		for i, week := range weeks {
+			rows[i] = map[string]any{"week": week, "closed": counts[i]}
+		}
+		block, err := json.Marshal(map[string]any{"kind": "chart", "title": "Issues closed each week in DEMO", "rows": rows})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return []json.RawMessage{block}
+	}
+	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 2, 2, 2, 1)); len(missing) != 0 {
+		t.Errorf("the drawn chart of every week's count misses %v; want none", missing)
+	}
+	if missing := MissingChartRows(chart.Rows, "", drawn(2, 2, 1, 2, 2, 2, 3, 1)); len(missing) != 1 || missing[0] != "2026-W46=2" {
+		t.Errorf("the drawn chart with 3 closed in the week of 9 November misses %v; want 2026-W46=2", missing)
 	}
 }

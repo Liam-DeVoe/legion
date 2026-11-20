@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/rank"
@@ -28,7 +29,9 @@ import (
 // no route can set. The writes follow cmd/dispatch-seed's: each document, ask, comment and message
 // is indexed with the server's own indexers in the same transaction, each ask has its opening
 // event, and each owner's event counter and each project's next issue number are settled, so a
-// server started on the database reads every item at once and rewrites none of them.
+// server started on the database reads every item at once and rewrites none of them. Each
+// document also holds its live state, the first update the create routes seed a document with
+// (docs.Service.SeedText), which is what a read of the document's text reads.
 //
 // The ids of the seed's asks, comments and messages are uuids made from the seed's own (ItemID).
 // The sessions are no rows of Dispatch: Envoy holds them, so a caller hands Seed.Sessions to the
@@ -69,7 +72,19 @@ func WriteSeed(ctx context.Context, database *store.Store, seed *Seed) (bool, er
 			return false, fmt.Errorf("eval: write the seed's %s: %w", step.name, err)
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	// The transaction is the document service's, as a create route's is (docs.Service.Join), so
+	// each document's first update is written with the rows and the service credits it once the
+	// ledger commits the transaction.
+	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	defer func() { _ = service.Shutdown(context.WithoutCancel(ctx)) }()
+	documentCtx, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	for _, document := range w.documents {
+		if _, err := service.SeedText(documentCtx, document.id, document.markdown, w.actor(w.creator())); err != nil {
+			return false, fmt.Errorf("eval: seed the text of document %s: %w", document.id, err)
+		}
+	}
+	if err := ledger.Commit(documentCtx); err != nil {
 		return false, fmt.Errorf("eval: commit the seed: %w", err)
 	}
 	return true, nil
@@ -135,12 +150,19 @@ func holdsTheSeed(ctx context.Context, q refs.Queryer, seed *Seed) (bool, error)
 }
 
 // seedWriter is one run of WriteSeed: its transaction, the seed, which of the seed's names are
-// sessions, and the last event sequence written under each event owner.
+// sessions, the last event sequence written under each event owner, and each document written,
+// whose live state WriteSeed seeds once every row is written.
 type seedWriter struct {
-	tx       pgx.Tx
-	seed     *Seed
-	sessions map[string]bool
-	seqs     map[string]int
+	tx        pgx.Tx
+	seed      *Seed
+	sessions  map[string]bool
+	seqs      map[string]int
+	documents []seededDocument
+}
+
+// seededDocument is a document WriteSeed wrote: its id and the seed's markdown of it.
+type seededDocument struct {
+	id, markdown string
 }
 
 // actor is the stored actor of one of the seed's names: a session's, or a person's.
@@ -409,6 +431,7 @@ func (w *seedWriter) writeArtifacts(ctx context.Context) error {
 // the block index reads; then the blocks, their windows, the document's references and their
 // excerpts, and for a spec its task progress, as cmd/dispatch-seed's writeDocument indexes one.
 func (w *seedWriter) writeDocumentVersion(ctx context.Context, id, markdown string, at time.Time, spec bool) error {
+	w.documents = append(w.documents, seededDocument{id: id, markdown: markdown})
 	tree, err := pmdoc.Parse(markdown)
 	if err != nil {
 		return fmt.Errorf("parse its markdown: %w", err)

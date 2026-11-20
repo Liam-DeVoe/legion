@@ -1,9 +1,10 @@
 // Command going-eval is the eval of the command bar's agent (R13 of dispatch://INFRA-1588/spec),
-// over the tasks and the seeded Dispatch of going/eval. It has two subcommands:
+// over the tasks and the seeded Dispatch of going/eval. It has three subcommands:
 //
 //	go run ./cmd/going-eval seed --database-url <url> [--envoy-fixture-out <file>]
 //	go run ./cmd/going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>]
-//	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>]
+//	    [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases]
+//	go run ./cmd/going-eval calibrate [--judge-deployment <name>]
 //
 // seed, which the browser harness runs to serve a Dispatch on the eval's seed with the real
 // models (DISPATCH_E2E_MODELS=real, packages/dispatch/e2e/harness-eval-seed.ts), migrates the
@@ -33,14 +34,15 @@
 // and its agent call it through an https proxy of the eval's on loopback, whose limiter holds
 // every chat call of the run, the judge's too, under 500,000 tokens a minute and counts what each
 // spent. The judge is --judge-deployment, on the same sign-in (by default the chat deployment).
-// Before the tries, run puts each calibration answer of going/eval's labels.json to the judge.
+// Before the tries, run puts each calibration answer of going/eval's labels.json to the judge;
+// calibrate does that alone and writes the same judge section, to stand beside a run's report.
 //
 // The report goes to stdout: each task's tries and why each failed one failed, pass^1 and pass^3
 // of each kind and of all tasks with the floors of going/eval and whether each is met, the
 // judge's agreement with the labels, what the tries did of their planted instructions, the
 // person's messages and comments the rule does not let stand, and the most chat tokens of any
-// minute. It exits 0 when the report meets every floor, 1 when it misses one or fails, and 2 on a
-// usage error.
+// minute. Each failing try keeps its database, which its line names. run exits 0 when the report
+// meets every floor, 1 when it misses one or fails, and 2 on a usage error.
 package main
 
 import (
@@ -66,13 +68,17 @@ func main() {
 
 // usage is what the command prints for no subcommand or one it does not know.
 const usage = "usage: going-eval seed --database-url <url> [--envoy-fixture-out <file>]\n" +
-	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>]"
+	"       going-eval run [--database-url <url>] [--server-bin <file>] [--tasks <ids or kinds>] [--tries <n>] [--parallel <n>] [--judge-deployment <name>] [--answers-out <file>] [--work-dir <dir>] [--keep-databases]\n" +
+	"       going-eval calibrate [--judge-deployment <name>]"
 
 // run answers the exit status of the subcommand args name: 0 done, 1 refused or failed, 2 a usage
 // error. Every refusal goes to stderr.
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "run" {
 		return runCommand(ctx, args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "calibrate" {
+		return calibrateCommand(ctx, args[1:], stdout, stderr)
 	}
 	if len(args) == 0 || args[0] != "seed" {
 		fmt.Fprintln(stderr, usage)

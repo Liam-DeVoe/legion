@@ -21,9 +21,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going/eval"
-	"github.com/sjawhar/envoy/internal/dispatch/embed"
 )
 
 // evalPerson is the person every try acts as, who is none of the seed's people.
@@ -275,17 +273,9 @@ func runEval(ctx context.Context, options runOptions, stdout, stderr io.Writer) 
 		return false, err
 	}
 	defer e.proxy.close()
-	tokens, err := embed.NewEntraTokenSource(embed.EntraConfig{
-		TenantID: chat.TenantID, ClientID: chat.ClientID, TokenFile: chat.TokenFile, Scope: cmp.Or(chat.Scope, embed.DefaultEntraScope),
-	})
-	if err != nil {
-		return false, fmt.Errorf("the judge's Azure sign-in: %w", err)
+	if e.judge, err = newJudge(chat, options.judgeDeployment, e.limits, seed.Now); err != nil {
+		return false, err
 	}
-	model := agentloop.Model{Endpoint: agentloop.Endpoint{Kind: agentloop.OpenAIChat, BaseURL: chat.Endpoint, Token: tokens.Token}, ID: options.judgeDeployment}
-	if chat.APIVersion != "" {
-		model.Endpoint.Query = url.Values{"api-version": {chat.APIVersion}}
-	}
-	e.judge = &judge{model: model, limits: e.limits, written: seed.Now}
 	if options.answersOut != "" {
 		file, err := os.Create(options.answersOut)
 		if err != nil {
@@ -296,7 +286,7 @@ func runEval(ctx context.Context, options runOptions, stdout, stderr io.Writer) 
 	}
 
 	fmt.Fprintln(stderr, "going-eval: putting the calibration answers to the judge")
-	calibration := e.calibrate(ctx, all)
+	calibration := calibrate(ctx, e.judge, all)
 
 	fmt.Fprintln(stderr, "going-eval: writing the seed")
 	if e.databases, err = newDatabases(ctx, options.databaseURL, seed); err != nil {
@@ -509,7 +499,7 @@ type calibrationResult struct {
 }
 
 // calibrate puts each labelled answer of labels.json to the judge, against its task's facts.
-func (e *evalRun) calibrate(ctx context.Context, tasks []eval.Task) calibrationResult {
+func calibrate(ctx context.Context, j *judge, tasks []eval.Task) calibrationResult {
 	labels, err := eval.LoadLabels(eval.Files, tasks)
 	if err != nil {
 		return calibrationResult{err: err}
@@ -517,7 +507,7 @@ func (e *evalRun) calibrate(ctx context.Context, tasks []eval.Task) calibrationR
 	result := calibrationResult{answers: len(labels.Answers)}
 	for i, answer := range labels.Answers {
 		task := tasks[slices.IndexFunc(tasks, func(t eval.Task) bool { return t.ID == answer.Task })]
-		reading, err := e.judge.read(ctx, task.Words, answer.Answer, task.Grade.Facts)
+		reading, err := j.read(ctx, task.Words, answer.Answer, task.Grade.Facts)
 		if err != nil {
 			return calibrationResult{err: fmt.Errorf("answer %d (%s): %w", i+1, answer.Task, err)}
 		}
@@ -651,23 +641,8 @@ func writeReport(w io.Writer, in reportInput) bool {
 	fmt.Fprintf(w, "| all | %d | %s | %.0f%% %s | %s | %.0f%% %s |\n\n", len(in.tasks), rate(passes, tries), 100*eval.PassOneFloor, meets(oneOK),
 		rate(whole, all), 100*eval.PassThreeFloor, meets(threeOK))
 
-	fmt.Fprintln(w, "## The judge")
-	fmt.Fprintln(w)
-	c := in.calibration
-	if c.err != nil {
-		missed = append(missed, "the judge's calibration did not run")
-		fmt.Fprintf(w, "The calibration did not run: %v\n\n", c.err)
-	} else {
-		ok := c.answers == eval.JudgeCalibrationAnswers && float64(c.agreed)/float64(c.answers) >= eval.JudgeAgreementFloor
-		if !ok {
-			missed = append(missed, fmt.Sprintf("the judge agrees with %s of the labels, under %.0f%%", rate(c.agreed, c.answers), 100*eval.JudgeAgreementFloor))
-		}
-		fmt.Fprintf(w, "The judge (%s) gives the agreed label of the two labelling agents to %s of the calibration answers of labels.json; the floor is %.0f%% of %d: %s.\n",
-			in.options.judgeDeployment, rate(c.agreed, c.answers), 100*eval.JudgeAgreementFloor, eval.JudgeCalibrationAnswers, meets(ok))
-		for _, d := range c.disagreed {
-			fmt.Fprintf(w, "- %s\n", d)
-		}
-		fmt.Fprintln(w)
+	if problem := writeCalibration(w, in.options.judgeDeployment, in.calibration); problem != "" {
+		missed = append(missed, problem)
 	}
 
 	fmt.Fprintln(w, "## Planted instructions")

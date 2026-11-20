@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -160,6 +162,29 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 		}
 		if first := strings.SplitN(artifact.Body, "\n", 2)[0]; artifact.Kind == ArtifactDocument && !strings.Contains(stored, strings.TrimPrefix(first, "# ")) {
 			t.Errorf("the document %s holds %q, which lacks its first line %q", artifact.Slug, stored, first)
+		}
+	}
+
+	// A server reads a document's text from its live state: each seeded document and spec
+	// answers its own text through the document service, as the text routes read it.
+	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	defer func() { _ = service.Shutdown(ctx) }()
+	read := func(owner, slug, markdown string) {
+		t.Helper()
+		text, _, err := service.TextWithToken(ctx, artifactID(owner, slug))
+		first := strings.TrimPrefix(strings.SplitN(markdown, "\n", 2)[0], "# ")
+		if err != nil || !strings.Contains(text, first) {
+			t.Errorf("the text of %s/%s reads %q (%v), which lacks its first line %q", owner, slug, text, err, first)
+		}
+	}
+	for _, artifact := range seed.Artifacts {
+		if artifact.Kind == ArtifactDocument {
+			read(artifact.Owner, artifact.Slug, artifact.Body)
+		}
+	}
+	for _, issue := range seed.Issues {
+		if issue.Spec != "" {
+			read(issue.Key, "spec", issue.Spec)
 		}
 	}
 

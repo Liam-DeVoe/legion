@@ -393,7 +393,7 @@ const judgePrompt = `You grade an answer that the assistant of Dispatch, an issu
 
 For each fact, decide whether the answer states it. The answer may state it in other words, in a table or a list, or with more beside it. A fact the answer leaves out, gets wrong, contradicts or states only in part is not stated. A number, a name, an issue key, a time or a state must be the fact's own. Read only what the answer says, not what it might have meant.
 
-The facts were written on %s, the day the data is about: "today" in a fact is that day, and an answer that names that day or that time states it.
+The facts were written on %s, the day the data is about: "today" in a fact is that day, and an answer that names that day or that time states it. A week may be named by its ISO number (2026-W45) or by a day of it, such as its Monday (2026-11-02): both name the one week.
 
 Answer with one JSON object and nothing else: {"facts": [{"fact": <its number>, "stated": true or false, "why": "<one sentence>"}]}, one entry for each fact, in order.`
 

@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // answer.go reads an answer task's answer for what no judge is asked: the items it links and the
@@ -70,15 +71,15 @@ func MissingChartRows(rows []ChartRow, answer string, blocks []json.RawMessage) 
 	return missing
 }
 
-// inBlocks reports whether a drawn row holds the label as one of its values and the count as
-// another.
+// inBlocks reports whether a drawn row holds the label as one of its values (sameLabel) and the
+// count as another.
 func inBlocks(drawn []map[string]any, row ChartRow) bool {
 	for _, values := range drawn {
 		label, count := false, false
 		for _, value := range values {
 			switch v := value.(type) {
 			case string:
-				label = label || strings.EqualFold(strings.TrimSpace(v), row.Label)
+				label = label || sameLabel(v, row.Label)
 			case float64:
 				count = count || v == float64(row.Count)
 			}
@@ -88,6 +89,31 @@ func inBlocks(drawn []map[string]any, row ChartRow) bool {
 		}
 	}
 	return false
+}
+
+// isoWeek is a chart label of a week, as the tasks write it: 2026-W45.
+var isoWeek = regexp.MustCompile(`^(\d{4})-W(\d{2})$`)
+
+// sameLabel reports whether a drawn value is the label of a chart's row: the label itself, with
+// no regard to case, or, for a label of an ISO week, a day of that week, which is how the server's
+// chain names a week it groups by (the date of its first day).
+func sameLabel(value, label string) bool {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, label) {
+		return true
+	}
+	week := isoWeek.FindStringSubmatch(label)
+	if week == nil {
+		return false
+	}
+	day, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		if day, err = time.Parse(time.RFC3339, value); err != nil {
+			return false
+		}
+	}
+	year, number := day.UTC().ISOWeek()
+	return fmt.Sprintf("%d-W%02d", year, number) == label
 }
 
 // inLines reports whether a line of the prose holds the label and, once the label is taken out,
