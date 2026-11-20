@@ -60,7 +60,10 @@ test("processes that bind one session id at the same time each stay an owner of 
   // Each writer says it is ready, waits for the parent's line, binds the session again and again,
   // and after each write reads the record: for its own store, and, once it has read every writer's
   // store there, for a store that went. Each one stays live until its stdin closes, so no owner of
-  // a full record can legitimately go, and a store that went is one a write dropped.
+  // a full record can legitimately go, and a store that went is one a write dropped. A read counts
+  // distinct stores: one listing can name an owner file twice (gVisor's tmpfs lists again a file
+  // renamed into the directory between a readdir's getdents64 calls), and a record of three
+  // writers' stores with one listed twice is not full before the fourth writer's first write.
   const writer = join(root, "writer.ts");
   writeFileSync(
     writer,
@@ -77,9 +80,9 @@ let full = false;
 for (let write = 0; write < ${WRITES}; write += 1) {
   writeAskgateRecord(dir, owner, "warn");
   const state = askgateState(dir);
-  const stores = state.kind === "on" ? state.stores : [];
-  if (!stores.includes(owner.store)) dropped += 1;
-  if (stores.length >= ${WRITERS}) full = true;
+  const stores = new Set(state.kind === "on" ? state.stores : []);
+  if (!stores.has(owner.store)) dropped += 1;
+  if (stores.size >= ${WRITERS}) full = true;
   else if (full) lost += 1;
 }
 console.log(JSON.stringify({ store: owner.store, dropped, lost }));
