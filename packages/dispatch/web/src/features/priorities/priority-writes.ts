@@ -5,8 +5,8 @@ import { prioritiesQuery } from "../../api/queries";
 import type { CreatePriorityInput, PatchPriorityInput } from "../../api/types";
 import { useIsHuman } from "../../hooks/useIsHuman";
 import { isConflict } from "../writes/conflicts";
+import { type Shape, shape } from "../writes/tab-storage";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { type Shape, shape } from "../writes/write-storage";
 import {
   defineWriteKind,
   ofKind,
@@ -334,6 +334,7 @@ export function usePriorityWrites(
     detail: (input: CreatePriorityInput) => input.title,
     kind: newPriorityWrite,
     label: (input) => `New priority “${input.title}”`,
+    method: "POST",
     write: (input, bounds) => api.createPriority(input, bounds),
     onSettled: () => void refresh(),
   });

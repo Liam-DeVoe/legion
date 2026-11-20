@@ -11,28 +11,22 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { conflictWords } from "./conflicts";
-import {
-  expiredRetryNote,
-  SendExpiredError,
-  SendInterruptedError,
-  SendStoppedError,
-  sameKeyRetryNote,
-} from "./keyed-write";
+import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write";
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write, writeDraft } from "./write-store";
 
-/** Why the refused write was not saved, in the reader's words. */
-function refusalReason(refusal: Error): string {
-  if (refusal instanceof SendInterruptedError) {
-    return `this page was closed before Dispatch confirmed it. ${sameKeyRetryNote("saved")}`;
+/** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
+ *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
+ *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`):
+ *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
+function refusalReason(keyed: boolean, refusal: Error): string {
+  if (!(refusal instanceof SendStoppedError)) {
+    return apiErrorMessage(refusal, "Dispatch could not be reached");
   }
-  if (refusal instanceof SendExpiredError) {
-    return `Dispatch has not confirmed it. ${expiredRetryNote("saved")}`;
-  }
-  if (refusal instanceof SendStoppedError) {
-    return `Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`;
-  }
-  return apiErrorMessage(refusal, "Dispatch could not be reached");
+  const retry = retryNote(keyed, refusal, "saved");
+  return refusal instanceof SendInterruptedError
+    ? `this page was closed before Dispatch confirmed it. ${retry}`
+    : `Dispatch has not confirmed it. ${retry}`;
 }
 
 /** The reader's own text a write a conflict refused carried, drawn as they wrote it, with a way
@@ -158,7 +152,9 @@ export function PendingWritesIndicator(): ReactNode {
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
                       {conflict ?? "Not saved"}: {row.label}
-                      {conflict === undefined ? ` — ${refusalReason(row.refusal)}` : null}
+                      {conflict === undefined
+                        ? ` — ${refusalReason(row.keyed, row.refusal)}`
+                        : null}
                     </span>
                     {draft === undefined ? null : <DraftToCopy text={draft} />}
                     {conflict === undefined ? (

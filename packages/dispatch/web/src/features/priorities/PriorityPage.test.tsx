@@ -454,7 +454,7 @@ test("the page carries no tab strip, no version control and no delete", async ()
   page();
   await waitFor(titleHeading);
   expect(screen.queryByRole("tablist")).toBeNull();
-  expect(screen.queryAllByRole("tab")).toEqual([]);
+  expect(screen.queryAllByRole("tab").length).toBe(0);
   expect(screen.queryByRole("button", { name: /delete|retire|remove/i })).toBeNull();
   expect(screen.queryByRole("button", { name: /version|history of this|restore/i })).toBeNull();
   const text = document.body.textContent ?? "";
@@ -526,8 +526,8 @@ test("j, k, x and Enter act on the work rows, the one table the page draws", asy
 test("the margin stands beside the page, with no tabs and no control of its own", async () => {
   page();
   const margin = await screen.findByRole("complementary", { name: "Margin" });
-  expect(within(margin).queryAllByRole("combobox")).toEqual([]);
-  expect(within(margin).queryAllByRole("tab")).toEqual([]);
+  expect(within(margin).queryAllByRole("combobox").length).toBe(0);
+  expect(within(margin).queryAllByRole("tab").length).toBe(0);
 });
 
 test("an id no priority carries says so and gives the way back", async () => {

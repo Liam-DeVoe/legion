@@ -173,7 +173,7 @@ test("a history that cannot be read says so, and lists nothing", async () => {
   expect(await screen.findByRole("alert")).toHaveTextContent(
     "Could not load what happened to this priority."
   );
-  expect(screen.queryAllByRole("listitem")).toEqual([]);
+  expect(screen.queryAllByRole("listitem").length).toBe(0);
 });
 
 test("the margin is the history alone: no control of states and no view that can only be empty", async () => {
@@ -182,17 +182,17 @@ test("the margin is the history alone: no control of states and no view that can
   // A priority carries no comments, questions or pins until dispatch://INFRA-1098 makes its
   // description a document, so the margin offers no choice of what it shows.
   const aside = screen.getByRole("complementary", { name: "Margin" });
-  expect(within(aside).queryAllByRole("combobox")).toEqual([]);
-  expect(within(aside).queryAllByRole("listbox")).toEqual([]);
-  expect(within(aside).queryAllByRole("tab")).toEqual([]);
+  expect(within(aside).queryAllByRole("combobox").length).toBe(0);
+  expect(within(aside).queryAllByRole("listbox").length).toBe(0);
+  expect(within(aside).queryAllByRole("tab").length).toBe(0);
   expect(aside.querySelectorAll("select")).toHaveLength(0);
   const text = aside.textContent ?? "";
   for (const word of ["Words anyone wrote", "Questions", "Pinned"]) {
     expect(text).not.toContain(word);
   }
   // Nor does it draw a pin control, or an entry for a document: the description is no document.
-  expect(within(aside).queryAllByRole("button", { name: /pin/i })).toEqual([]);
-  expect(within(aside).queryAllByRole("link", { name: /pin|document/i })).toEqual([]);
+  expect(within(aside).queryAllByRole("button", { name: /pin/i }).length).toBe(0);
+  expect(within(aside).queryAllByRole("link", { name: /pin|document/i }).length).toBe(0);
   expect(/document/i.test(text)).toBe(false);
   expect(within(aside).getAllByRole("listitem")).toHaveLength(HISTORY.length);
 });

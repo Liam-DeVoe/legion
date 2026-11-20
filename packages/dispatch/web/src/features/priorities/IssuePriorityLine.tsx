@@ -19,7 +19,8 @@ import {
   surfaceMutedStrongBg,
   textSecondaryHoverToPrimary,
 } from "../../theme/classes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";
 import { orderLabel } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
@@ -188,11 +189,20 @@ export function IssuePriorityLine({
   // priority is a link in the ink; what qualifies it is quiet words, a refusal the failed red;
   // the trigger is muted words on the page's pane that turn ink under the pointer.
   const failed = page === null ? dangerText : pageFailedText;
-  // A failed save shows the server's reason, else the page's own line; each carries the mark of
-  // whose words it is.
+  // A failed save shows the server's reason, else the page's own line. A write the reader
+  // stopped may have been saved, and the line offers no Retry of it: each press here is a new
+  // write of the set the line reads, under a key of its own. Each carries the mark of whose
+  // words it is: the stopped note and the page's own line are the page's, a server's reason is
+  // not.
   const notSaved =
     page?.ANSWER_LINES.priorities_not_saved ?? "Could not save what this issue advances.";
-  const saveFailure = apiErrorMessage(write.error, notSaved);
+  const stopped = endedStopped(write);
+  const saveFailure = stopped
+    ? stoppedWriteNote("what this issue advances", "saved", {
+        anew: "It is read again, and adding or removing a priority sends a new write.",
+      })
+    : apiErrorMessage(write.error, notSaved);
+  const failureIsPageWords = stopped || saveFailure === notSaved;
   // In a row of Details, with no priority to stand beside, the trigger says what it does, as the
   // labels' says "Add a label", because that panel raises no tooltip that could say it instead.
   // Its name then begins with the words it draws and ends with the joining word and the issue's
@@ -271,7 +281,7 @@ export function IssuePriorityLine({
         <span
           className={`max-w-full [overflow-wrap:anywhere] text-xs ${failed}`}
           role="alert"
-          {...(saveFailure === notSaved ? page?.pageChrome : page?.authorText)}
+          {...(failureIsPageWords ? page?.pageChrome : page?.authorText)}
         >
           {saveFailure}
         </span>
