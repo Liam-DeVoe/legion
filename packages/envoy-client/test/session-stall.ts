@@ -476,6 +476,24 @@ async function roleClaim(claims: KV, role: string): Promise<RoleClaim | undefine
   return RoleClaimSchema.parse(JSON.parse(entry.string()));
 }
 
+/** The claim the role bucket holds, read again until deadline while the test's own connection
+ *  is still back from a bus outage: JetStream's read of the bucket answers TIMEOUT until the
+ *  client has reconnected (CI run 44816526076), which says nothing of the claim. */
+async function roleClaimThrough(
+  claims: KV,
+  role: string,
+  deadline: number
+): Promise<RoleClaim | undefined> {
+  for (;;) {
+    try {
+      return await roleClaim(claims, role);
+    } catch (error) {
+      if (Date.now() > deadline) throw error;
+    }
+    await Bun.sleep(POLL_MS);
+  }
+}
+
 describe.skipIf(!envoyStackEnabled)("a session its box stalls", () => {
   let stack: EnvoyStack | undefined;
   let nats: NatsConnection | undefined;
@@ -1063,7 +1081,8 @@ describe.skipIf(!envoyStackEnabled || !dispatchStackEnabled)(
           holder_state: "unresponsive",
           claim_released: false,
         });
-        expect(await roleClaim(claims, roleHolder.role)).toEqual(claimed);
+        const after = await roleClaimThrough(claims, roleHolder.role, Date.now() + 60_000);
+        expect(after).toEqual(claimed);
         const read = IssueClaimSchema.parse(
           await write("person", "GET", `/api/v1/issues/${issue}`)
         );
