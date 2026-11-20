@@ -10710,6 +10710,39 @@ sleep() { command sleep 0.05; }`;
     expect(missed).toEqual([]);
   });
 
+  // Catches: a role prompt of the daemon's that names a word of the vocabulary. The daemon
+  // composes a worker's system prompt from the files of packages/daemon/internal/prompts/, and
+  // the guard reads that prompt as text (run-names.ts's worldNames, `textWords`), so one such word
+  // in this checkout's prompts refuses every agent of the role that loads it, before it starts:
+  // the head label's reviewer never started while five lines of the reviewer and worker prompts
+  // said `text-only` (INFRA-764). Each file of the directory but a Go test is read, line by line,
+  // and the row names the file, the line and the word.
+  test("no file of the daemon's prompts names a word the guard refuses", () => {
+    const prompts = path.join("packages", "daemon", "internal", "prompts");
+    const files = readdirSync(path.join(CHECKOUT, prompts), { recursive: true, encoding: "utf8" })
+      .map((name) => path.join(prompts, name))
+      .filter((file) => !file.endsWith("_test.go") && statSync(path.join(CHECKOUT, file)).isFile());
+    // What was read: the prompts of both daemon parts and the composer, so a walk that found no
+    // file is no prompt read as clean.
+    expect(files).toEqual(
+      expect.arrayContaining([
+        path.join(prompts, "go", "reviewer.md"),
+        path.join(prompts, "roles", "reviewer.md"),
+        path.join(prompts, "prompts.go"),
+      ])
+    );
+    const vocab = vocabulary(["head", "base"]);
+    const named = files.flatMap((file) =>
+      readFileSync(path.join(CHECKOUT, file), "utf8")
+        .split("\n")
+        .flatMap((line, index) => {
+          const word = textWords(line, vocab);
+          return word === undefined ? [] : [`${file}:${index + 1}: "${word}"`];
+        })
+    );
+    expect(named).toEqual([]);
+  });
+
   // Catches: a guard that reads a system prompt it cannot read as one with nothing wrong in it.
   // <run>/system-args names a file (run-names.ts's `systemPromptIn`), and a file that is not
   // there, or is empty, or an argument of neither shape the daemon's composer answers with, is a

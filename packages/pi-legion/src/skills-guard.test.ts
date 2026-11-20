@@ -613,7 +613,7 @@ test("one last chance at the reviewer's text commit for each role, in every copy
     ]
   );
   countedOncePerFile(
-    "When the implementer then pushes its one text-only commit, read it, resolve each thread you opened, one call per thread, and approve the head it made, by SHA: its text stands, so where you disagree you approve it all the same, or tell the architect when your finding is behavioural.",
+    "When the implementer then pushes its one commit that changes only text, read it, resolve each thread you opened, one call per thread, and approve the head it made, by SHA: its text stands, so where you disagree you approve it all the same, or tell the architect when your finding is behavioural.",
     [prompt("roles/reviewer.md")]
   );
   countedOncePerFile(

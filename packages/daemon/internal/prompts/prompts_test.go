@@ -58,7 +58,7 @@ func TestComposeOrdersSharedRolePartsBeforeTheGoDaemonParts(t *testing.T) {
 			"read CI for everything static", "try to break it", "dispatch handoff-write --issue <issue> --phase test"}},
 		{"reviewer", claim.RoleReviewer, false, []string{"core/common.md", "core/reviewer.md", "mechanics/headless.md", "reviewer.md"}, []string{"reviewer.md", "worker-common.md"}, []string{`op: "handoff_complete"`,
 			"Retro commits nothing, so nothing of retro's sits above your approved head", "`pullRequest.head` is the commit the pull request stands on",
-			"Your approval of the head the implementer's later text-only push makes is read by no daemon check"}},
+			"Your approval of the head the implementer's later push that changes only text makes is read by no daemon check"}},
 		// The merge the merger is told to run names the head GitHub must match, on a queue base and
 		// off it, and carries the message it writes itself; its completion is an ordinary phase
 		// completion, refused only on the grounds every phase worker's is (dispatch://INFRA-714, R2).
