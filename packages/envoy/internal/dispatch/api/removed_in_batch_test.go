@@ -69,7 +69,7 @@ func TestAnOperationWhoseBlockAnEarlierOperationRemovedIsRefused(t *testing.T) {
 
 // A list inserted after a list's own block, and then that block deleted, in one edit, leaves the
 // inserted items where the list stood: the insert joins the list it is anchored on, and the delete
-// removes what the list held when the edit began. Version 336 of
+// removes all the list holds but what the insert wrote. Version 336 of
 // dispatch://INFRA/artifact/superfan-fans-log-md lost both lists (dispatch://INFRA-4517).
 func TestAListInsertedAfterAListTheSameEditDeletesIsKept(t *testing.T) {
 	handler := newTestHandler(t)
@@ -83,5 +83,18 @@ func TestAListInsertedAfterAListTheSameEditDeletesIsKept(t *testing.T) {
 	}
 	if after, want := documentMarkdown(t, handler, issue.PrimaryArtifactID), "Intro.\n\n- new one\n- new two\n\nAfter.\n"; after != want {
 		t.Fatalf("document after the batch = %q, want %q", after, want)
+	}
+}
+
+// A delete naming both a block and a find is refused before either is read, as it always was:
+// 400 INVALID_OP on find, whatever the block names, even one the document does not carry.
+func TestADeleteNamingBothABlockAndAFindIsRefused(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "BATCH", "Both fields", removedInBatchSpec)
+	status, code, refusal := postEdits(t, handler, issue.PrimaryArtifactID, []map[string]any{
+		{"op": "delete", "block": "gone", "find": "Intro."},
+	})
+	if want := `operation 0: invalid document operation field "find": delete takes find or block, not both`; status != http.StatusBadRequest || code != "INVALID_OP" || refusal != want {
+		t.Fatalf("a delete naming both fields: status=%d code=%q error=%q, want 400 INVALID_OP %q", status, code, refusal, want)
 	}
 }

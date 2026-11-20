@@ -10711,6 +10711,57 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // An edit under a block guard that took blocks the guard did not name - the nested list of an
+  // item a marker delete removed - says so, with each block's token, under the Applied line.
+  test("names the blocks a guarded edit took that its guard did not name", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const path = new URL(String(url)).pathname;
+      if (path === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          primary_artifact_id: "artifact-42",
+          artifacts: [{ id: "artifact-42", slug: "spec", name: "spec.md", primary: true }],
+        });
+      }
+      if (path === "/api/v1/artifacts/artifact-42/edits") {
+        return response({
+          applied: 1,
+          version: { number: 3 },
+          changed: true,
+          unchanged_ops: [],
+          lost_ops: [],
+          token: "sha256:after-edit",
+          written: "",
+          unguarded_blocks: [{ id: "nested-1", token: "sha256:nested" }],
+        });
+      }
+      throw new Error(`unexpected request: ${path}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_doc_edit",
+      args: {
+        issue: "DSP-42",
+        artifact: "spec",
+        ops: [{ op: "delete", find: "- Parent" }],
+        precondition: { blocks: [{ id: "parent-1", token: "sha256:parent" }] },
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      "Applied 1 ops (version 3)\n" +
+        "Block guard: this edit also took a block the guard did not name, and did not check it: nested-1 (token sha256:nested); name it in precondition.blocks to refuse the edit if it changed.\n" +
+        "Document token: sha256:after-edit"
+    );
+  });
+
   // A concurrent browser deletion that lands after the version is written is past undoing, so the
   // edit reports it: the version records text the live document no longer has (LEGION-269). An
   // edit that survives reads exactly as it always did.

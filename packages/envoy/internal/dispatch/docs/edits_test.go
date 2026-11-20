@@ -4049,8 +4049,8 @@ func newEntries(count int) string {
 }
 
 // An insert anchored on a list or inside it joins that list (pmdoc.ValidDocument.ListBoundary), and
-// a later operation of the same edit that deletes the list deletes what the list held when the
-// edit began: the items the insert wrote stay, a list of their own where that list stood. Version
+// a later operation of the same edit that deletes the list deletes all the list holds but what the
+// insert wrote: the items the insert wrote stay, a list of their own where that list stood. Version
 // 336 of dispatch://INFRA/artifact/superfan-fans-log-md inserted a 16-item list after a list's own
 // block and then deleted that block, and lost both lists: the insert's items had become the list's
 // last items, and the delete took them with it (dispatch://INFRA-4517). A paragraph written into a
@@ -4136,6 +4136,102 @@ func TestAnInsertBesideABlockALaterOperationDeletesKeepsItsBlocks(t *testing.T) 
 				t.Fatalf("after the insert and the delete = %q, %v; want %q", markdown, err, test.want)
 			}
 		})
+	}
+}
+
+// A delete of a block keeps only the blocks an earlier insert of the same edit wrote into it: a
+// block an earlier replace wrote there is the block's, and goes with it. A replace that writes a
+// typed block over the paragraph of the one it stands in, a second paragraph into a callout, or a
+// heading into a quote gives what it writes an id the edit began without, and the delete kept
+// each where the block stood, so the text the caller deleted stayed, where the same edit with a
+// replace that keeps its paragraph's id deleted it. The last row is that replace.
+func TestADeleteTakesTheBlocksAnEarlierReplaceWroteInsideItsBlock(t *testing.T) {
+	const requirement = ":::requirement{#r1}\nThe read succeeds.\n:::\n\nAfter.\n"
+	for _, test := range []struct {
+		name, markdown string
+		// ops builds the batch from the id of the document's first block.
+		ops func(first string) []model.EditOp
+	}{
+		{
+			name:     "a requirement a replace rewrote under its own id",
+			markdown: requirement,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "The read succeeds.", With: ":::requirement{#r1}\nThe read fails.\n:::"},
+					{Op: "delete", Block: "r1"},
+				}
+			},
+		},
+		{
+			name:     "a paragraph a replace wrote into a callout",
+			markdown: ":::callout{#c1 kind=\"note\" title=\"T\"}\nNote body.\n:::\n\nAfter.\n",
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "Note body.", With: "Note body.\n\nSecond."},
+					{Op: "delete", Block: "c1"},
+				}
+			},
+		},
+		{
+			name:     "a heading a replace wrote into a quote",
+			markdown: "> Quoted words.\n\nAfter.\n",
+			ops: func(first string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "Quoted words.", With: "## Heading"},
+					{Op: "delete", Block: first},
+				}
+			},
+		},
+		{
+			name:     "a replace that keeps its paragraph's id",
+			markdown: requirement,
+			ops: func(string) []model.EditOp {
+				return []model.EditOp{
+					{Op: "replace", Find: "succeeds", With: "fails"},
+					{Op: "delete", Block: "r1"},
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tree, err := parseInput(test.markdown)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first, _ := tree.Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+			batch, err := applyOperations(tree, test.ops(first))
+			if err != nil {
+				t.Fatalf("replace, then delete = %v, want both applied", err)
+			}
+			if markdown, err := renderTree(batch.tree); err != nil || markdown != "After.\n" {
+				t.Fatalf("after the replace and the delete = %q, %v; want %q", markdown, err, "After.\n")
+			}
+		})
+	}
+}
+
+// A delete of a block keeps the blocks an earlier move of the same edit wrote into it, as it keeps
+// an insert's: a list item moved into a list, then the list deleted, stays where the list stood, a
+// list of its own. It went with the list.
+func TestADeleteKeepsTheBlocksAnEarlierMoveWroteInsideIt(t *testing.T) {
+	tree, err := parseInput("- moved one\n\nIntro.\n\n- old one\n- old two\n\nAfter.\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, _ := tree.Children[0].Children[0].Attrs[pmdoc.BlockIDAttr].(string)
+	list, _ := tree.Children[2].Attrs[pmdoc.BlockIDAttr].(string)
+	if item == "" || list == "" || tree.Children[2].Type != "bullet_list" {
+		t.Fatalf("the fixture parsed as %d blocks, item %q, list %q", len(tree.Children), item, list)
+	}
+	batch, err := applyOperations(tree, []model.EditOp{
+		{Op: "move", Block: item, After: "old two"},
+		{Op: "delete", Block: list},
+	})
+	if err != nil {
+		t.Fatalf("move, then delete = %v, want both applied", err)
+	}
+	if markdown, err := renderTree(batch.tree); err != nil || markdown != "Intro.\n\n- moved one\n\nAfter.\n" {
+		t.Fatalf("after the move and the delete = %q, %v; want %q", markdown, err, "Intro.\n\n- moved one\n\nAfter.\n")
 	}
 }
 

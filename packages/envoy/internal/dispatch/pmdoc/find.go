@@ -432,7 +432,7 @@ func (f *QuoteFinder) prepare() error {
 			f.err = f.doc.Validate()
 		}
 		if f.err == nil {
-			f.text = buildFlattenedText(f.doc)
+			f.text = buildFlattenedText(f.doc, false)
 		}
 	}
 	return f.err
@@ -630,7 +630,26 @@ type flattenedText struct {
 	value     string
 	positions []int
 	marks     []inlineMarkup
-	forms     *textForms
+	// links is the URL each run of linked units links to, in unit order, for a quote read as
+	// markdown alone (renderedMarkdownQuote): what a quote spells a link with is its markup and
+	// its URL (Spelling), and a document's link carries its own URL on its mark.
+	links []linkedUnits
+	forms *textForms
+}
+
+// linkedUnits is a run of a flattened text's units, from from up to to, under a link to href.
+type linkedUnits struct {
+	from, to int
+	href     string
+}
+
+// hrefIn is the URL of the first link over a unit of span, and "" where no link covers one.
+func (t flattenedText) hrefIn(span range16) string {
+	index := sort.Search(len(t.links), func(index int) bool { return t.links[index].to > span.from })
+	if index < len(t.links) && t.links[index].from < span.to {
+		return t.links[index].href
+	}
+	return ""
 }
 
 type textForms struct {
@@ -700,13 +719,15 @@ func flattenedTextSize(doc *Node) (units, bytes int) {
 // through. The string and the index are allocated once, at the size the document measures
 // (flattenedTextSize), rather than grown: growing the index copied the whole of it at every
 // doubling, which on a document whose paragraph is a mebibyte long was most of what a cold
-// one-word edit allocated (sjawhar/legion#2522).
-func buildFlattenedText(doc *Node) flattenedText {
+// one-word edit allocated (sjawhar/legion#2522). links says to record the URL of each link's
+// units (flattenedText.links), which only a quote's reading needs.
+func buildFlattenedText(doc *Node, links bool) flattenedText {
 	units, bytes := flattenedTextSize(doc)
 	var out strings.Builder
 	out.Grow(bytes)
 	positions := make([]int, 0, units)
 	marks := make([]inlineMarkup, 0, units)
+	var linked []linkedUnits
 	lastEnd := -1
 	walk(doc, func(node *Node, _ []int, pos, end int) bool {
 		if node.Type != "text" {
@@ -718,6 +739,7 @@ func buildFlattenedText(doc *Node) flattenedText {
 			marks = append(marks, 0)
 		}
 		markup := nodeInlineMarkup(node)
+		from := len(positions)
 		// A quote is matched against the text every read serves, so a browser's U+0000 is U+FFFD
 		// here too; both are one UTF-16 unit, so no position moves.
 		for _, char := range nulAsReplacement(node.Text) {
@@ -732,10 +754,24 @@ func buildFlattenedText(doc *Node) flattenedText {
 			}
 			pos += width
 		}
+		if links && markup&inlineMarkupLink != 0 {
+			linked = append(linked, linkedUnits{from: from, to: len(positions), href: linkHref(node.Marks)})
+		}
 		lastEnd = end
 		return true
 	})
-	return flattenedText{value: out.String(), positions: positions, marks: marks, forms: &textForms{}}
+	return flattenedText{value: out.String(), positions: positions, marks: marks, links: linked, forms: &textForms{}}
+}
+
+// linkHref is the URL of the link among marks, and "" where none is a link.
+func linkHref(marks []Mark) string {
+	for _, mark := range marks {
+		if mark.Type == "link" {
+			href, _ := mark.Attrs["href"].(string)
+			return href
+		}
+	}
+	return ""
 }
 
 func nodeInlineMarkup(node *Node) inlineMarkup {
@@ -776,23 +812,25 @@ type quoteMatch struct {
 
 // Spelling is the inline markup a quote spells over the range it matched, as the finder read it:
 // for a quote matched as markdown (markdownQuoteMatches), the markup the quote writes over each
-// UTF-16 unit of the match's text, as the matcher paired the quote's text with the document's.
-// A quote matched as written, exactly or with its whitespace normalized, spells none: a `*`, `_`
-// or backtick in it is text the document holds, not markup. The zero Spelling spells nothing.
+// UTF-16 unit of the match's text, as the matcher paired the quote's text with the document's,
+// and the URL of the link it writes there. A quote matched as written, exactly or with its
+// whitespace normalized, spells none: a `*`, `_` or backtick in it is text the document holds,
+// not markup. The zero Spelling spells nothing.
 type Spelling struct {
 	units []spelledUnit
 }
 
-// spelledUnit is one UTF-16 unit of a match's text: its ProseMirror position, and the inline
-// markup the quote writes over it.
+// spelledUnit is one UTF-16 unit of a match's text: its ProseMirror position, the inline markup
+// the quote writes over it, and the URL of the link the quote writes over it, "" for none.
 type spelledUnit struct {
 	pos    int
 	markup inlineMarkup
+	href   string
 }
 
 // spelling is how match's quote spells the text of t it matched: none for a match of the text as
 // written, and otherwise the markup of each quote rune over each unit of the text rune the
-// matcher paired it with.
+// matcher paired it with, with the URL of the quote's link over that rune.
 func (t flattenedText) spelling(match quoteMatch) Spelling {
 	if match.quote == nil {
 		return Spelling{}
@@ -802,29 +840,40 @@ func (t flattenedText) spelling(match quoteMatch) Spelling {
 	units := make([]spelledUnit, 0, match.textTo-match.textFrom)
 	for index, quoteSpan := range quoteSpans {
 		markup := markupInRange(match.quote.marks, quoteSpan)
+		href := ""
+		if markup&inlineMarkupLink != 0 {
+			href = match.quote.hrefIn(quoteSpan)
+		}
 		textSpan := textSpans[match.offset+index]
 		for unit := textSpan.from; unit < textSpan.to; unit++ {
-			units = append(units, spelledUnit{pos: t.positions[unit], markup: markup})
+			units = append(units, spelledUnit{pos: t.positions[unit], markup: markup, href: href})
 		}
 	}
 	return Spelling{units: units}
 }
 
-// spells reports whether s writes markType's markup over every unit of its match at a position
-// from from to to, and over one at least: the quote spells that markup over that stretch of the
-// match, not over another stretch of it. A mark the markdown matcher does not read
-// (markTypeMarkup), strikethrough or an anchor, is never spelled.
-func (s Spelling) spells(markType string, from, to int) bool {
-	markup := markTypeMarkup(markType)
+// spells reports whether s writes mark's markup over every unit of its match at a position from
+// from to to, and over one at least: the quote spells that markup over that stretch of the match,
+// not over another stretch of it. A link is spelled only with its own URL: a find that writes the
+// link's text under another, copied from an older read after another writer changed the URL,
+// spells another link, and the URL the document holds would go with no word. A mark the markdown
+// matcher does not read (markTypeMarkup), strikethrough or an anchor, is never spelled.
+func (s Spelling) spells(mark Mark, from, to int) bool {
+	markup := markTypeMarkup(mark.Type)
 	if markup == 0 {
 		return false
+	}
+	link := markup == inlineMarkupLink
+	href := ""
+	if link {
+		href, _ = mark.Attrs["href"].(string)
 	}
 	spelled := false
 	for _, unit := range s.units {
 		if unit.pos < from || unit.pos >= to {
 			continue
 		}
-		if unit.markup&markup == 0 {
+		if unit.markup&markup == 0 || (link && unit.href != href) {
 			return false
 		}
 		spelled = true
@@ -915,7 +964,7 @@ func renderedMarkdownQuote(quote string) (flattenedText, bool) {
 	if err != nil {
 		return flattenedText{}, false
 	}
-	rendered := buildFlattenedText(parsed)
+	rendered := buildFlattenedText(parsed, true)
 	if rendered.value == quote || !hasInlineMarkup(rendered.marks) {
 		return flattenedText{}, false
 	}
@@ -1366,13 +1415,14 @@ func (s *markSearch) close() {
 // it too or drops it by leaving it off; one that spells it over part of that text alone (`a **b**
 // c` over `**a b c**`) spells that part's markup, not the span's, so the span keeps it. A quote
 // matched as written spells nothing: its `*`, `_` or backtick is text the document holds (`2*3*4`
-// in `*a 2\*3\*4 b*`). Strikethrough is never markup the finder reads, so it is never taken off.
+// in `*a 2\*3\*4 b*`), and one that writes a link's text under another URL spells another link, so
+// the link keeps its own. Strikethrough is never markup the finder reads, so it is never taken off.
 func WithoutQuotedMarkup(marks []Mark, spelled Spelling) []Mark {
 	if len(spelled.units) == 0 {
 		return marks
 	}
 	return slices.DeleteFunc(marks, func(mark Mark) bool {
-		return spelled.spells(mark.Type, math.MinInt, math.MaxInt)
+		return spelled.spells(mark, math.MinInt, math.MaxInt)
 	})
 }
 

@@ -202,11 +202,15 @@ type Span struct {
 // spelled is how the find that matched r spells it (QuoteFinder.FindSpelling). A find that spells
 // a span's markup over the whole span (`wrote [this](https://example.com/Sami)`) crosses no edge
 // of it: it replaces that markup too, which is then the text written over it to keep or drop
-// (WithoutQuotedMarkup). The test is the span's own: a find that spells one span's markup and
-// covers a second span of the type whose markup it does not spell (`wrote [this](…) and that`,
-// where `that` is a second link) crosses the second span's edge. One that spells only the part of
-// a span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that span's edge,
-// and a find matched as written spells no markup at all.
+// (WithoutQuotedMarkup). A link is spelled only with its own URL, so a find that writes its text
+// under another crosses its edge. A link written as its own text - a bare URL, or a www link the
+// writer leaves bare - has no markup but that text, so a find that covers the whole of it spells
+// it, however the finder read the find: such a link was refused with the find itself as the
+// markup to spell. The test is the span's own: a find that spells one span's markup and covers a
+// second span of the type whose markup it does not spell (`wrote [this](…) and that`, where
+// `that` is a second link) crosses the second span's edge. One that spells only the part of a
+// span it covers (`**bold** now` in `**Sami said bold** now`) still crosses that span's edge, and
+// a find matched as written spells no other markup at all.
 func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 	type open struct {
 		mark Mark
@@ -234,10 +238,15 @@ func (at TextblockAt) CrossedSpan(r Range, spelled Spelling) (Span, bool) {
 			if span.from >= r.To || pos <= r.From || (span.from <= r.From && r.To <= pos) {
 				continue
 			}
-			if r.From <= span.from && pos <= r.To && spelled.spells(span.mark.Type, span.from, pos) {
+			covers := r.From <= span.from && pos <= r.To
+			if covers && spelled.spells(span.mark, span.from, pos) {
 				continue
 			}
-			return spanOf(span.mark, children[span.first:index]), true
+			crossed := spanOf(span.mark, children[span.first:index])
+			if covers && crossed.Markdown != "" && crossed.Markdown == crossed.Text {
+				continue
+			}
+			return crossed, true
 		}
 		opened = kept
 		if child == nil || (pos >= r.To && len(opened) == 0) {

@@ -13,7 +13,17 @@ body: |-
   link went with its URL and a span cut to end on a space was written with character references:
   narrow the `find` to the span's inside, or spell the whole span's markup in it. Each span is
   weighed alone, so a `find` that spells one link's markup and covers a second link
-  (`wrote [this](https://a.example/1) and that`) is refused naming `that`.
+  (`wrote [this](https://a.example/1) and that`) is refused naming `that`. A link is spelled only
+  with the URL it has: a `find` that writes its text under another URL
+  (`wrote [this](https://wrong.example/9) today`) is refused naming the link, with its own URL in
+  the markup to spell. A bare URL or a bare `www.` link is its own markup, so a `find` that covers
+  the whole of it spells it: `docs at https://example.com/x` was refused with that same `find` as
+  the markup to spell.
+
+  The rule has two limits. No `find` spells strikethrough's markup, so a `find` crossing a struck
+  span's edge is narrowed to its inside, and the text outside it replaced in an operation of its
+  own. A span is kept only by a `with` of one paragraph: a `with` that parses to blocks keeps the
+  ask and comment anchors the match lies inside, and none of its spans.
 
   A `replace` takes `op`, `find`, `with` and `occurrence` alone. One that names no `with`, or
   carries any other member whatever it holds (`markdown`, `markdown: ""`, `text`, `replacement`),

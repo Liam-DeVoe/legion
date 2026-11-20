@@ -12,12 +12,15 @@ body: |-
 
   The operations of one edit apply in order, each reading the document as the operations before
   it left it, and none removes or changes a block it does not name. A delete of a block removes
-  what that block held when the edit began, so list content an earlier `insert` joined to the list
-  it was anchored on stays where the list stood, a list of its own, and a paragraph an `insert`
-  wrote into a typed block stays where that block stood. An insert of a list after a list's own
-  block, then a delete of that block, lost both lists: the inserted items had joined the list, and
-  the delete took them with it. A later operation of the same edit may still name a block such a
-  delete kept.
+  all it holds but the blocks an earlier `insert` or `move` of the edit wrote into it, so list
+  content an `insert` joined to the list it was anchored on stays where the list stood, a list of
+  its own, a paragraph an `insert` wrote into a typed block stays where that block stood, and a
+  list item a `move` put in a list stays where the list stood. A block an earlier `replace` wrote
+  there is the deleted block's, and goes with it. An insert of a list after a list's own block,
+  then a delete of that block, lost both lists: the inserted items had joined the list, and the
+  delete took them with it. A later operation of the same edit may still name a block such a
+  delete kept. A `delete` naming both `block` and `find` is `400 INVALID_OP` before either is
+  read, as before.
 time: 2026-11-18T19:45:00Z
 custom:
     Issue: pr2697

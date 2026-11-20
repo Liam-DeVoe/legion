@@ -1,13 +1,16 @@
 kind: Fixed
 body: |-
-  A `dispatch doc-edit` block guard covers the whole of what an operation removes or rewrites, so
-  a change another writer made anywhere inside it refuses the edit, and nothing is written. A
-  `delete` whose `find` opens with a list marker removed the item and the items nested in it while
-  asking a guard on the item's text alone, so it deleted a nested change another writer had just
-  made. Such a delete now asks for the item's paragraph and its nested lists and typed blocks; a
-  `delete` or `move` whose block's leaving empties a list or a quote asks for that list or quote;
-  and a `replace` whose `with` rewrites the typed block around its match asks for that typed block.
-  An uncovered edit is refused `400 INVALID_PRECONDITION` naming each block it lacks, as before. A
+  A `dispatch doc-edit` block guard still needs only the blocks it always needed: the block each
+  operation names or whose text it matches, and a `move`'s block. What an operation takes beyond
+  them is now named in the answer instead of passing in silence: a `delete` whose `find` opens
+  with a list marker removes the item and the items nested in it, and under a guard on the item's
+  text alone it deleted a nested change another writer had just made with no word. The answer's
+  `unguarded_blocks` lists, as `{id, token}` at the token the edit read, each block the edit took
+  that the guard did not name: the nested lists and typed blocks of an item a marker delete
+  removes, the list or quote a `delete` or `move` empties, and the typed block a `replace`'s
+  `with` rewrites. A guard that names such a block is held to its token, so it refuses the edit
+  with `409 PRECONDITION_FAILED`, and writes nothing, when that block changed. No block an earlier
+  `insert` or `move` of the same edit wrote is listed, since its id is new on every request. A
   task item's checked mark is in no listed block's token, so a guard does not see it change.
 time: 2026-11-19T20:30:00Z
 custom:

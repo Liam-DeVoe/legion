@@ -461,6 +461,17 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   // (packages/contracts/src/dispatch-tools.ts).
   const written = edited.written;
   const writtenLines = written === undefined || written === "" ? [] : [written];
+  // The blocks the edit took that its block guard did not name - the rest of what a delete or a
+  // move removed, a typed block a replace rewrote - at the token the edit read each at: the guard
+  // did not check them, and naming them in it refuses the edit if one of them changed. An edit
+  // under no block guard, or an older server, carries none, and the result reads as it always did.
+  const unguarded = edited.unguarded_blocks ?? [];
+  const unguardedLines =
+    unguarded.length === 0
+      ? []
+      : [
+          `Block guard: this edit also took ${unguarded.length === 1 ? "a block" : `${unguarded.length} blocks`} the guard did not name, and did not check ${unguarded.length === 1 ? "it" : "them"}: ${unguarded.map((block) => `${block.id} (token ${block.token})`).join(", ")}; name ${unguarded.length === 1 ? "it" : "them"} in precondition.blocks to refuse the edit if ${unguarded.length === 1 ? "it" : "any of them"} changed.`,
+        ];
   // The token of the document this edit produced, rendered as dispatch_doc_read renders it:
   // the next guarded edit passes it as `precondition.document` with no read in between. A
   // Dispatch server predating it returns none, and the result reads as it always did.
@@ -470,6 +481,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
       `${applied}${await notSubscribed(resolvedTopic(resolved), input.subscriptions)}`,
       ...checkLines,
       ...declinedLines,
+      ...unguardedLines,
       ...writtenLines,
       ...tokenTrailer,
       ...adviceLines,

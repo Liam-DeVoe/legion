@@ -5150,6 +5150,9 @@ Each item below names an operation and its required fields, then its behavior.
   Text that stays in the matched block keeps every bold, italic, strikethrough, link or code span the target lies wholly inside (replacing `said` in `**Sami said bold**` gives `**Sami answered bold**`), and a `find` that spells a span's markup over all of the span's text it covers (`**Sami bold**`) lets `with` decide that span's formatting; one that spells it over part of that text (`a **b** c` over `**a b c**`) keeps the span.
   A `find` matched as the text is written spells no markup: `2*3*4` inside `*a 2\*3\*4 b*` is the span's own text, so the replacement stays in the italic.
   A `find` that crosses a span's edge, covering text inside it and text outside it (`wrote this`, where only `this` is a link), is `400 FIND_CROSSES_SPAN` with nothing written: narrow it to the span's inside, or spell the whole span's markup in it (`wrote [this](https://example.com/Sami)`), which then replaces the markup too.
+  A link is spelled only with the URL it has, so `wrote [this](https://wrong.example/9)` over that link is refused naming it, and a bare URL or a bare `www.` link is its own markup, so a `find` that covers the whole of it spells it (`docs at https://example.com/x`).
+  No `find` spells strikethrough's markup: replace the text outside a struck span in an operation of its own.
+  A `with` that parses to blocks keeps none of the spans the match lies inside.
   Each span is weighed alone: `wrote [this](https://a.example/1) and that`, where `that` is a second link, spells the first link and crosses the second's edge, so it is refused naming `that`.
 
 - `delete` (`find` or `block`)
@@ -5167,9 +5170,11 @@ Each item below names an operation and its required fields, then its behavior.
   Use `replace` for inline continuation.
 
 The operations of one request apply in order, each reading the document as the operations before it left it, and none removes or changes a block it does not name.
-A delete of a block removes what that block held when the request began: list content an earlier `insert` joined to a list it was anchored on, or a paragraph it wrote into a typed block, stays where the deleted block stood, a list keeping it as a list of its own, where the delete took it with the block.
-An operation whose block an earlier `delete` by `block` removed, that block or one inside it, is `400 INVALID_OP` naming that delete, and one whose block, text or heading is gone otherwise is `404 TARGET_NOT_FOUND`, as a target the document never held is;
+A delete of a block removes all it holds but the blocks an earlier `insert` or `move` of the request wrote into it: list content an `insert` joined to a list it was anchored on, a paragraph it wrote into a typed block, or a list item a `move` put in a list, stays where the deleted block stood, a list keeping it as a list of its own, where the delete took it with the block; a block an earlier `replace` wrote there goes with it.
+An operation whose `block` names a block an earlier `delete` by `block` removed, that block or one inside it, is `400 INVALID_OP` naming that delete; a `block:<id>` anchor naming such a block, and an operation whose block, text or heading is gone otherwise, are `404 TARGET_NOT_FOUND`, as a target the document never held is;
 either way, nothing in the request is written.
+A block guard (`precondition.blocks`) must name the block each operation names or whose text it matches, and for a move the block it moves: one that leaves such a block out is `400 INVALID_PRECONDITION` naming it.
+What an operation takes beyond that - the rest of what a delete or a move removes, such as an item's nested lists or a list or quote its removal empties, and a typed block a `replace`'s `with` rewrites - the guard need not name: the answer's `unguarded_blocks` lists each such block the guard left out, `{id, token}` at the token the edit read it at, and a guard that names one is `409 PRECONDITION_FAILED` when that block changed.
 
 Table-row fragments contain body rows only: omit the table header and delimiter row.
 Short rows are padded to the table width while all operations in the edit request add at most 10,000 cells;

@@ -141,10 +141,10 @@ func (d ValidDocument) DeleteBlock(blockID string) (*Node, error) {
 var ErrKeptBlocksDoNotFit = errors.New("the blocks kept from the deleted block cannot stand where it stood")
 
 // DeleteBlockKeeping is DeleteBlock, except that the blocks inside the deleted block that held
-// does not name stay where it stood. held is the ids the block and the blocks inside it carried
-// when the caller's edit began, so every other block inside it is one an earlier write of that
-// edit put there - list content an insert joined to the list it was anchored on, a paragraph an
-// insert wrote into a typed block - which a delete of the block holding it now does not name
+// does not name stay where it stood. held is the ids the delete removes: the block's and those of
+// the blocks inside it but the ones an earlier write of the caller's edit put there for the delete
+// to keep - list content an insert joined to the list it was anchored on, a paragraph an insert
+// wrote into a typed block - which a delete of the block holding it now does not name
 // (keptBlocks). A nil held keeps nothing, as DeleteBlock does. The tree it returns is a new one,
 // which it validates: kept blocks that cannot stand where the block stood are
 // ErrKeptBlocksDoNotFit, beside the rule they break.

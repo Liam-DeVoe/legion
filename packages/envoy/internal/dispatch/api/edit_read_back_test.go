@@ -140,7 +140,7 @@ func checkBoundedReadBack(t *testing.T, got string, blocks []string) {
 		t.Fatalf("written cut %q, want a piece of the third block %q", cut, blocks[2])
 	}
 	left := utf8.RuneCountInString(blocks[2]) - utf8.RuneCountInString(cut) + utf8.RuneCountInString(blocks[3])
-	if want := docs.ReadBackCutLine(left, 2); entries[3] != want {
+	if want := docs.ReadBackCutLine(left, 2, 0); entries[3] != want {
 		t.Fatalf("written ends %q, want %q", entries[3], want)
 	}
 	if len(got) < 1900 {
@@ -188,7 +188,7 @@ func TestDocumentEditReadBackOfAGrownBlockSaysWhatItDoesNotShow(t *testing.T) {
 		t.Fatalf("written = %q, want the opening of the grown block and the line closing the read-back", written)
 	}
 	left := utf8.RuneCountInString(grown) - utf8.RuneCountInString(shown)
-	if want := docs.ReadBackCutLine(left, 1); line != want {
+	if want := docs.ReadBackCutLine(left, 1, 0); line != want {
 		t.Fatalf("written ends %q, want %q", line, want)
 	}
 	for _, says := range []string{"read-back", fmt.Sprintf("%d characters", left), "not shown", "the document holds them"} {
@@ -202,6 +202,37 @@ func TestDocumentEditReadBackOfAGrownBlockSaysWhatItDoesNotShow(t *testing.T) {
 
 	if after, want := documentMarkdown(t, handler, issue.PrimaryArtifactID), strings.Replace(before, "Bravo.", grown, 1); after != want {
 		t.Fatalf("the document reads %q after the edit, want every character the replace wrote: %q", after, want)
+	}
+}
+
+// Past the bound, the line closing the read-back counts the markdown it leaves unshown, which the
+// document holds, apart from the lines naming blocks the edit removed, which it does not: a
+// replace that grew a block past the bound and two deletes after it ended `626 characters of 3
+// blocks are not shown here, and the document holds them`, counting the two deleted paragraphs'
+// lines as blocks the document held, so an agent could read its deletes as not done.
+func TestDocumentEditReadBackPastItsBoundCountsTheRemovedBlocksApart(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Grown, then two deleted", "Alpha.\n\nBravo.\n\nCharlie.\n\nDelta.\n")
+	grown := strings.TrimSpace(strings.Repeat("alpha ", 400))
+	edited := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{"ops": []map[string]any{
+		{"op": "replace", "find": "Alpha.", "with": grown},
+		{"op": "delete", "find": "Bravo."},
+		{"op": "delete", "find": "Charlie."},
+	}})
+	if edited.Applied != 3 || len(edited.Written) > 2000 {
+		t.Fatalf("applied = %d, written holds %d bytes; want 3 applied within the 2,000-byte bound", edited.Applied, len(edited.Written))
+	}
+	shown, line, closed := strings.Cut(edited.Written, "\n\n")
+	if !closed || shown == grown || !strings.HasPrefix(grown, shown) {
+		t.Fatalf("written = %q, want the opening of the grown block and the line closing the read-back", edited.Written)
+	}
+	left := utf8.RuneCountInString(grown) - utf8.RuneCountInString(shown)
+	want := fmt.Sprintf("the read-back shows at most 2000 bytes; %d characters of 1 block are not shown here, and the document holds them; 2 lines naming blocks the edit removed, left empty or moved are not shown either", left)
+	if line != want || line != docs.ReadBackCutLine(left, 1, 2) {
+		t.Fatalf("written ends %q, want %q", line, want)
+	}
+	if after, wantDocument := documentMarkdown(t, handler, issue.PrimaryArtifactID), grown+"\n\nDelta.\n"; after != wantDocument {
+		t.Fatalf("the document reads %q after the edit, want %q", after, wantDocument)
 	}
 }
 
