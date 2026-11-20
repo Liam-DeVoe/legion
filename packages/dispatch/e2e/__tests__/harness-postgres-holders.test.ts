@@ -214,15 +214,19 @@ for (const { title, link, spell } of pgCtlSpellings) {
         postmaster = { pid: served, start: startOfPid(served) };
         const second = await sweep(row, given);
 
-        expect(marks.stillRuns(postmaster.pid, postmaster.start)).toBe(false);
-        expect([existsSync(data), existsSync(sockets), existsSync(mark)]).toEqual([
-          false,
-          false,
-          false,
-        ]);
-        expect(
-          holding(second, `removed the postmaster of ${named}, that directory and ${namedSockets}`)
-        ).toHaveLength(1);
+        // One check of what the second start did and of every line it printed, so that a failure
+        // shows those lines: in 1 of 19 runs of this round's repeats its second start left the data
+        // directory, the socket directory and the mark while the postmaster no longer ran, and the
+        // three checks that stood here printed none of its lines.
+        expect({
+          postmaster: marks.stillRuns(postmaster.pid, postmaster.start),
+          left: [existsSync(data), existsSync(sockets), existsSync(mark)],
+          removed: holding(
+            second,
+            `removed the postmaster of ${named}, that directory and ${namedSockets}`
+          ).length,
+          second,
+        }).toEqual({ postmaster: false, left: [false, false, false], removed: 1, second });
       } finally {
         await endChild(harness);
         for (const each of [pgCtl, postmaster]) {
