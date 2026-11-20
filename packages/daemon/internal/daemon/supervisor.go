@@ -554,7 +554,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	case stream.TurnEnd:
 		return supervise.StreamTurnEnd{Claim: ev.Claim}, nil
 	case stream.TurnAnswered:
-		return supervise.StreamTurnAnswered{Claim: ev.Claim, Streaming: ev.Streaming}, nil
+		return supervise.StreamTurnAnswered{Claim: ev.Claim, Streaming: ev.Streaming, Ask: ev.Ask}, nil
 	case stream.ToolStep:
 		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
 			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil

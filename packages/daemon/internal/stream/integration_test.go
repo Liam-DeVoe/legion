@@ -565,15 +565,16 @@ func bridge(t *testing.T, legion, addr string) {
 	}
 
 	// A request crosses the shim to OMP and its answer comes back, read as an event in its place
-	// too (TurnAnswered).
-	if state, err := conn.GetState(ctx); err != nil || state.IsStreaming {
-		t.Fatalf("GetState = %+v, %v; want OMP's answer, not streaming", state, err)
+	// too (TurnAnswered), naming the ask it answers.
+	state, err := conn.GetState(ctx)
+	if err != nil || state.IsStreaming || state.Ask == "" {
+		t.Fatalf("GetState = %+v, %v; want OMP's answer to a named ask, not streaming", state, err)
 	}
 	// A turn OMP runs is observed through Events().
 	if err := syscall.Kill(shim.childPID(t), syscall.SIGUSR2); err != nil {
 		t.Fatalf("signal the fake OMP: %v", err)
 	}
-	first.expect(t, stream.TurnAnswered{Claim: integrationClaim},
+	first.expect(t, stream.TurnAnswered{Claim: integrationClaim, Ask: state.Ask},
 		stream.TurnStart{Claim: integrationClaim}, stream.TurnEnd{Claim: integrationClaim})
 	if got, want := childFrames(t, shim.stdinRecord), []string{"negotiate_protocol", "get_state"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fake OMP read %q, want %q", got, want)
@@ -625,10 +626,11 @@ func bridge(t *testing.T, legion, addr string) {
 	}
 
 	// The new connection carries a new request to OMP, whose answer is read behind the turns.
-	if _, err := conn.GetState(ctx); err != nil {
+	state, err = conn.GetState(ctx)
+	if err != nil {
 		t.Fatalf("GetState after the restart: %v", err)
 	}
-	second.expect(t, stream.TurnAnswered{Claim: integrationClaim})
+	second.expect(t, stream.TurnAnswered{Claim: integrationClaim, Ask: state.Ask})
 	want := []string{"negotiate_protocol", "get_state", "negotiate_protocol", "get_state"}
 	if got := childFrames(t, shim.stdinRecord); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the fake OMP read %q, want %q", got, want)

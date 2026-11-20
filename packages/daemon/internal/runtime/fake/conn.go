@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"sync"
 	"time"
@@ -51,7 +52,9 @@ type Conn struct {
 	tokenReads   int
 	shutdowns    int
 	state        runtime.ConnState
-	failures     map[string]error
+	// asks is the id of every get_state the connection answered, in order (GetState, LastAsk).
+	asks     []string
+	failures map[string]error
 }
 
 // NewConn is a connection that accepts everything and reports no turn in flight.
@@ -73,13 +76,29 @@ func (c *Conn) registered(seq uint64) {
 	c.seq = seq
 }
 
+// GetState answers the state the test set (SetStreaming) under an ask id of its own, "ask-1",
+// "ask-2" and on, as the stream's answer names the get_state it answers (runtime.ConnState.Ask).
 func (c *Conn) GetState(_ context.Context) (runtime.ConnState, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.failures["GetState"]; err != nil {
 		return runtime.ConnState{}, err
 	}
-	return c.state, nil
+	state := c.state
+	state.Ask = fmt.Sprintf("ask-%d", len(c.asks)+1)
+	c.asks = append(c.asks, state.Ask)
+	return state, nil
+}
+
+// LastAsk is the id of the last get_state the connection answered, "" for none: the id the
+// worker stream's event of that answer would name, for a test that delivers it.
+func (c *Conn) LastAsk() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.asks) == 0 {
+		return ""
+	}
+	return c.asks[len(c.asks)-1]
 }
 
 func (c *Conn) Shutdown(_ context.Context) error {

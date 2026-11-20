@@ -40,16 +40,20 @@ type StreamTurnEnd struct{ Claim claim.Token }
 // Machine.streaming), as the worker stream delivers it: behind every frame the shim sent before
 // that answer, its replay of the frames it held while no daemon was attached among them, since
 // the shim writes that replay before any later frame on the connection and one claim's events are
-// handled in the order they arrive. Streaming is what the agent said. It is the decision of its
-// own the stale-plugin relaunch of a claim a daemon start restored ready or idle waits for
-// (Machine.askTurn, turnAnswered), which so reads the claim with every replayed turn already
-// applied. It answers an ask made on the connection it arrives on whose request still waits for
-// it: an answer to an earlier connection's ask, which the shim replays from its backlog after
-// that connection broke, is delivered as none (stream's Conn.stateAnswered), and the next
-// connection's hello asks again on that connection (reconnected, askRestoredTurn).
+// handled in the order they arrive. Streaming is what the agent said, and Ask the id of the ask it
+// answers (runtime.ConnState.Ask). It is the decision of its own the stale-plugin relaunch of a
+// claim a daemon start restored ready or idle waits for (Machine.askTurn, turnAnswered), which so
+// reads the claim with every replayed turn already applied. It answers an ask made on the
+// connection it arrives on whose request still waits for it: an answer to an earlier
+// connection's ask, which the shim replays from its backlog after that connection broke, is
+// delivered as none (stream's Conn.stateAnswered), and the next connection's hello asks again
+// on that connection (reconnected, askRestoredTurn). The answer to the ask a placed count of the
+// process's turns made is also what checks that count, behind the frames before it
+// (learnTurns, checkPlacedCount), whatever the claim's row does with its words.
 type StreamTurnAnswered struct {
 	Claim     claim.Token
 	Streaming bool
+	Ask       string
 }
 
 // IssueTurnEnded is a turn ending on another claim of this claim's issue, posted by the daemon to
@@ -1542,7 +1546,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		// No shim yet (a sweep before its hello): the hello asks.
 		return nil
 	}
-	streaming, answered := m.streaming(ctx, conn)
+	state, answered := m.streaming(ctx, conn)
 	if !answered {
 		m.unansweredAsks++
 		level := slog.LevelInfo
@@ -1554,7 +1558,7 @@ func (m *Machine) askTurnOver(ctx context.Context, ev Event) error {
 		return nil
 	}
 	m.unansweredAsks = 0
-	if streaming {
+	if state.IsStreaming {
 		// The agent is still in the turn an earlier daemon saw start. Its agent_end ends it
 		// (turnEnded).
 		m.askFirst = false
@@ -1728,11 +1732,11 @@ func (m *Machine) staleStep(s StreamToolStep) bool {
 // was sent a start twice, so its count of the process's turns is no longer known (turnCount), and
 // the turn given a take accepted while it was not known is no longer the last start the machine
 // saw, so that take's report places no count (takeAnchor, learnTurns): the report of a later
-// take's own turn may.
+// take's own turn may. A count a take's report placed that the agent's answer has not checked
+// yet goes back with it (turnCount.lose).
 func turnStartedWhileBusy(m *Machine, _ context.Context, _ Event) error {
 	if m.compacting == nil {
-		count := m.counted()
-		count.known, count.anchor = false, takeAnchor{}
+		m.counted().lose()
 		return nil
 	}
 	m.startTurn(0)
@@ -1973,11 +1977,11 @@ func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
 // leave the turn the daemon gives a take named as an earlier one, and that turn's late report
 // would give back a take whose turn is running (notTheTakesTurn). The count is known again where
 // the report of a take accepted after the ready places the turn given that take (learnTurns),
-// whichever way the producer numbered this one; a take's anchor kept before it goes with it.
+// whichever way the producer numbered this one; a take's anchor kept before it goes with it, and
+// a placed count the agent's answer has not checked yet goes back (turnCount.lose).
 func turnEndedBeforeReady(m *Machine, _ context.Context, _ Event) error {
 	m.log.Info("supervise: a turn ended before the agent said ready; the count of its process's turns is no longer known")
-	count := m.counted()
-	count.known, count.anchor = false, takeAnchor{}
+	m.counted().lose()
 	return nil
 }
 

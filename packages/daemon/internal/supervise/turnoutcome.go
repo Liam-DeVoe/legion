@@ -430,7 +430,7 @@ func (m *Machine) reportedTask(ctx context.Context, r RequestTurnOutcome) error 
 	if p.awaitsTurn() {
 		started = m.startedUnseen(ctx, r)
 	} else {
-		m.learnTurns(r)
+		m.learnTurns(ctx, r)
 	}
 	if r.ProviderError != nil {
 		if err := m.providerErrored(ctx, *r.ProviderError); err != nil {
@@ -603,12 +603,21 @@ type aheadReport struct {
 // (notTheTakesTurn) and reads a report's turn start as unseen wherever the claim is not working
 // (startedUnseen), as the machine read every report before it counted; anchor is what a take
 // accepted meanwhile saw (takeAnchor), and the report of that take's own turn makes the count
-// known again where it places that turn among the ones the machine saw (learnTurns). The next
-// launch counts its generation afresh, known (counted).
+// known again where it places that turn among the ones the machine saw (learnTurns), placed
+// until the agent's answer to the ask that placement makes has checked it (placedCount,
+// checkPlacedCount). The next launch counts its generation afresh, known (counted).
 type turnCount struct {
 	generation, ended, take uint64
 	known                   bool
 	anchor                  takeAnchor
+	placed                  placedCount
+}
+
+// lose is the count no longer known: what a placement still unchecked added to the ends counted
+// goes back, so they are the ends seen again, and a take's anchor goes with it.
+func (c *turnCount) lose() {
+	c.ended -= c.placed.offset
+	c.known, c.anchor, c.placed = false, takeAnchor{}, placedCount{}
 }
 
 // counted is the claim's count of its process's turns, begun afresh, known, for a launch
@@ -632,9 +641,24 @@ type takeAnchor struct {
 	number, reported, conn, given uint64
 }
 
+// placedCount is a count of the process's turns a take's report placed (learnTurns) that the
+// agent's answer to the ask the placement made has still to check (checkPlacedCount): ask, that
+// ask's id (runtime.ConnState.Ask), "" for none; sequence, the turn the daemon gave the take, as
+// the placed count numbers it; offset, what the placement added to the ends counted; and conn,
+// the sequence of the connection the take was accepted on.
+type placedCount struct {
+	ask                    string
+	sequence, offset, conn uint64
+}
+
 // turnsKnownAgainLine is the line of a count of the process's turns a take's report made known
 // again (learnTurns), at Info, with the report's sequence and the ends the count now holds.
 const turnsKnownAgainLine = "supervise: the report of a take's own turn places the turn the daemon gave it; the count of its process's turns is known again"
+
+// turnsPlacementTakenBackLine is the line of a placed count the agent's answer took back, or that
+// the agent did not answer the ask for (learnTurns, checkPlacedCount), at Info, with the sequence
+// the count gave the turn given the take and why.
+const turnsPlacementTakenBackLine = "supervise: the agent's answer does not bear out the count of its process's turns a take's report placed; the count is not known again"
 
 // anchorTake keeps, for a take just accepted while the claim's count of its process's turns is
 // not known, what learnTurns needs to place that take's turn (takeAnchor), and drops what an
@@ -681,19 +705,36 @@ func (m *Machine) anchorTake(first bool) {
 //     leaves the take's own turn a later sequence than this one, whether or not its report has come;
 //   - the connection the take was accepted on is still the claim's (takeAnchor.conn): every frame
 //     from the take on reached the machine in the order the shim wrote it, none dropped from the
-//     backlog of a shim with no daemon to send to, so the first start the machine saw after the
-//     take — the turn it gave the take (takeAnchor.given) — is that first turn's;
-//   - no start has come since that one: the claim works the given turn, its end still to come, or
-//     that end has come and nothing after it. The one start seen after a take that is not of a turn
-//     after it is one a shim replays behind its hello, of a turn that ended while no daemon heard
-//     it; given that, the take's own turn is the one after it, whose start the shim writes when the
-//     turn starts, before its report can be sent, so the machine sees that second start first.
+//     backlog of a shim with no daemon to send to, so of the turns that started after the take,
+//     that first turn's start is the first the machine sees;
+//   - no start has come since the one the daemon gave the take (takeAnchor.given), at the report
+//     and again at the agent's answer to the ask the placement makes (checkPlacedCount): the claim
+//     works the given turn, its end still to come, or that end has come and nothing after it.
+//
+// The last is what tells the given turn from a start that reached the machine late, of a turn
+// that ended before the take: one a shim replays behind its hello, of a turn that ran while no
+// daemon heard it, or one queued behind the claim's earlier decisions while the report and the
+// take came over HTTP, which nothing orders with the frames. The machine cannot tell such a start
+// from any other — no frame says it is replayed, and its events come in the order of a live
+// turn's — and behind it the take's own turn is the one after it, whose report can come before
+// its start does. But the shim sends a turn's start before that turn's report can be sent, so
+// before the agent answers an ask made at the report, and the worker stream hands the machine
+// that answer behind every frame the shim sent before it, naming the ask it answers
+// (StreamTurnAnswered.Ask), so no answer to an earlier ask stands in for it: by then the take's
+// own turn's start has come, after the one given, and the placement goes back (lose). An agent
+// that does not answer leaves nothing to check by, and the placement goes back at once.
 //
 // The producer then numbered the given turn r.Sequence where the count numbered it given, so
-// every count moves by the difference: the ends seen, and the take's turn. Anything else leaves
-// the count not known, the take's anchor spent either way, and the report of a later take's turn
-// may place it.
-func (m *Machine) learnTurns(r RequestTurnOutcome) {
+// every count moves by the difference: the ends seen, and the take's turn. The count stands from
+// the report on, since the report of the run given the next take may come before the answer does.
+// Until the answer, every start the machine handles is one the shim sent before it, so a take a
+// wrong count would give back is one accepted after the report and given such a start, and the
+// report that gives it back is of a later turn than that start, which has to run and be reported
+// before the answer reaches the machine: the stream behind the reports by a whole run more, under
+// which the first start after a take is not that take's turn however the turns are counted
+// (turnStarted). Anything that fails a check leaves the count not known, the take's anchor spent
+// either way, and the report of a later take's turn may place it.
+func (m *Machine) learnTurns(ctx context.Context, r RequestTurnOutcome) {
 	count := m.counted()
 	anchor := count.anchor
 	count.anchor = takeAnchor{}
@@ -705,9 +746,44 @@ func (m *Machine) learnTurns(r RequestTurnOutcome) {
 	if !connected || conn.Sequence() != anchor.conn || !alone || r.Sequence != anchor.reported+1 || r.Sequence < anchor.given {
 		return
 	}
-	count.ended += r.Sequence - anchor.given
+	offset := r.Sequence - anchor.given
+	count.ended += offset
 	count.take, count.known = r.Sequence, true
+	count.placed = placedCount{sequence: r.Sequence, offset: offset, conn: anchor.conn}
 	m.log.Info(turnsKnownAgainLine, "sequence", r.Sequence, "ended", count.ended)
+	state, answered := m.streaming(ctx, conn)
+	if !answered || state.Ask == "" {
+		m.log.Info(turnsPlacementTakenBackLine, "sequence", r.Sequence, "why", "the agent did not answer whether it is in a turn")
+		count.lose()
+		return
+	}
+	count.placed.ask = state.Ask
+}
+
+// checkPlacedCount checks a count a take's report placed (placedCount) at the worker stream's
+// delivery of the agent's answer to the ask the placement made, which comes behind every frame the
+// shim sent before that answer (StreamTurnAnswered); an answer to any other ask checks nothing.
+// The count stands where no start has come since the turn the daemon gave the take and the
+// take's connection is still the claim's; anything else takes it back (lose). A count of a
+// generation the claim has left is the next count's to drop (counted).
+func (m *Machine) checkPlacedCount(answer StreamTurnAnswered) {
+	count := &m.turns
+	placed := count.placed
+	if placed.ask == "" || answer.Ask != placed.ask || count.generation != m.claim.Generation {
+		return
+	}
+	conn, connected := m.deps.Conns.Conn(m.claim.Token)
+	if !connected || conn.Sequence() != placed.conn {
+		m.log.Info(turnsPlacementTakenBackLine, "sequence", placed.sequence, "why", "the take's connection is no longer the claim's")
+		count.lose()
+		return
+	}
+	if count.ended > placed.sequence || (count.ended == placed.sequence && m.claim.State == StateWorking) {
+		m.log.Info(turnsPlacementTakenBackLine, "sequence", placed.sequence, "why", "a turn started after the one given the take")
+		count.lose()
+		return
+	}
+	count.placed = placedCount{}
 }
 
 // newestReported is the newest sequence of the claim's generation its window of reports holds,

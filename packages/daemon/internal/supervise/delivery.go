@@ -906,20 +906,23 @@ func (m *Machine) putClaimAndPendingOwed(ctx context.Context) error {
 	return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
 }
 
-// streaming asks the agent whether a turn is in flight; answered is false when the agent could not
-// say (the ask failed or timed out). Its callers are the questions a restart leaves: over a claim
-// stored working (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch
-// waits for the answer (askRestoredTurn), which acts on the answer only as the worker stream
-// delivers it again behind the frames read before it (StreamTurnAnswered).
-func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, answered bool) {
+// streaming asks the agent whether a turn is in flight, and answers what it said with the id of
+// the ask (runtime.ConnState); answered is false when the agent could not say (the ask failed or
+// timed out). Its callers are the questions a restart leaves: over a claim stored working
+// (askTurnOver), and over one stored ready or idle whose stale-plugin relaunch waits for the
+// answer (askRestoredTurn), which acts on the answer only as the worker stream delivers it again
+// behind the frames read before it (StreamTurnAnswered); and the count of the process's turns a
+// take's report placed, which the delivery of the answer to its ask checks (learnTurns,
+// checkPlacedCount).
+func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (state runtime.ConnState, answered bool) {
 	asking, cancel := context.WithTimeout(ctx, m.deps.Timeouts.RPC)
 	defer cancel()
 	state, err := conn.GetState(asking)
 	if err != nil {
 		m.log.Warn("supervise: the agent could not say whether it is in a turn", "error", err)
-		return false, false
+		return runtime.ConnState{}, false
 	}
-	return state.IsStreaming, true
+	return state, true
 }
 
 // adopts is whether a take of d hands the claim's working copy the role's App identity first

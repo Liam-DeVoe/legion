@@ -104,10 +104,11 @@ func (h *harness) wantStillItsTurn(number uint64, putBacks int, why string) {
 }
 
 // restartedUnderALiveProcess is a claim whose process ran a task, reported as turn 1, then ran
-// before what the test adds, and a daemon restarted under that process, its shim connected again.
-func restartedUnderALiveProcess(t *testing.T, before func(h *harness)) *harness {
+// what before adds, and a daemon restarted under that process, its shim connected again; set
+// shapes the machine's deps, as newHarnessOf's do.
+func restartedUnderALiveProcess(t *testing.T, before func(h *harness), set ...func(*Deps)) *harness {
 	t.Helper()
-	h := newHarnessOf(t, queuedClaim(), currentPlugin)
+	h := newHarnessOf(t, queuedClaim(), append([]func(*Deps){currentPlugin}, set...)...)
 	h.manualTakes()
 	h.reach(StateReady)
 	h.takeRunsItsOwnTurn("the task before the restart", 1, false)
@@ -136,6 +137,8 @@ func nothingMore(*harness) {}
 //   - A start over a running turn (turnStartedWhileBusy), which says the end of the turn given the
 //     take was missed and the turn running now may be the take's own: the given turn's late report
 //     gives nothing back while the count is not known, and a later take's report places the count.
+//   - The agent's answer to the ask the placement makes, delivered behind the frames of the take's
+//     own turn, which shows no start after the turn given the take: the count stands.
 //
 // The negative controls: the head before this change, where a lost count stays lost for the rest
 // of the process's generation and no take is given its turn back again; a count placed by the
@@ -152,6 +155,12 @@ func TestAReportOfATakesOwnTurnMakesTheTurnCountKnownAgain(t *testing.T) {
 			h.wantTheRunGivenATakeGivenBack(3)
 		})
 	}
+	t.Run("after a daemon restart, the agent's answer behind the turn's frames", func(t *testing.T) {
+		h := restartedUnderALiveProcess(t, nothingMore)
+		h.takeRunsItsOwnTurn("the task after the restart", 2, false)
+		h.must(StreamTurnAnswered{Claim: h.token, Ask: h.conn.LastAsk()})
+		h.wantTheRunGivenATakeGivenBack(3)
+	})
 	for _, numbered := range []bool{false, true} {
 		name := map[bool]string{false: "after a turn ended before ready that its producer did not number",
 			true: "after a turn ended before ready that its producer numbered"}[numbered]
@@ -216,10 +225,28 @@ func TestAReportOfATakesOwnTurnMakesTheTurnCountKnownAgain(t *testing.T) {
 //     end seen as a turn never seen to begin, and a run of the host's own given the take: the
 //     connection the take was accepted on is gone, and the report places nothing. Placed from the
 //     turn given, the count is one turn low.
+//   - A late report of an earlier take of the number, the second wait having taken that take back
+//     and the worker having run its text after all, landing while the number's next take runs the
+//     turn given it. The report names the pending take's number and the sequence right after the
+//     window's newest, but the number was taken before, and it places nothing. A take of a number
+//     taken before, kept like a first one's, places the count one turn low.
+//   - The start of a turn that ended before the take, reported before it, seen after the take, and
+//     the report of the take's own turn ahead of that turn's start frame: nothing the machine has
+//     seen tells it from the turn given the take being the take's own, so the report places the
+//     count, and asks the agent whether it is in a turn. The answer comes behind the frames the
+//     shim sent before it, the take's own turn's start among them, and that start after the turn
+//     given the take takes the placement back; an answer to another ask, delivered before those
+//     frames, checks nothing. Kept, or taken as checked by that other answer, the count is one
+//     turn high.
+//   - An agent that does not answer that ask: nothing then says the placement held, so it is taken
+//     back at once, and the report of the run given the next take gives nothing back. A placement
+//     kept unconfirmed gives that take back.
 //
-// Every case passes at the head before this change but for its last step, since a count lost
-// there stays lost and no take is given its turn back again; each count placement named above
-// fails its case at the step it names.
+// Every case passes at the head before this change (8a51a149) but for its last step, since a
+// count lost there stays lost and no take is given its turn back again; each count placement
+// named above fails its case at the step it names. At the head that placed the count without
+// asking the agent (d7383c99), the case of the report ahead of its start frame fails at its last
+// step, and the case of the agent that does not answer where the next take is given back.
 func TestAReportPlacesNoTurnCountItCannotPlaceForCertain(t *testing.T) {
 	t.Run("a report of a turn that ended before the restart, sent again after it", func(t *testing.T) {
 		h := restartedUnderALiveProcess(t, func(h *harness) {
@@ -308,5 +335,55 @@ func TestAReportPlacesNoTurnCountItCannotPlaceForCertain(t *testing.T) {
 		h.mustQuiet(StreamTurnEnd{Claim: h.token})
 		h.reportOf(3, 0)
 		h.wantTheCountRightFrom(4)
+	})
+	t.Run("a late report of an earlier take of a number taken again", func(t *testing.T) {
+		h := restartedUnderALiveProcess(t, nothingMore, withWaits)
+		number := h.takeOf("a take the second wait gives back")
+		h.advance(turnStartBound)
+		h.wantCharges(WaitTurnStart)
+		if p := h.pending(); p.Number != number || p.taken() {
+			t.Fatalf("pending %+v after the second bound, want task %d taken back", p, number)
+		}
+		h.hostsRun()
+		h.mustTake()
+		h.must(StreamTurnStart{Claim: h.token})
+		h.reportOf(2, number)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the late report naming task %d, want it finished", p, number)
+		}
+		h.mustQuiet(StreamTurnEnd{Claim: h.token})
+		h.reportOf(3, number)
+		h.wantTheCountRightFrom(4)
+	})
+	t.Run("the start of a turn that ended before the take, seen after it, the take's own report ahead of its start frame", func(t *testing.T) {
+		h := restartedUnderALiveProcess(t, nothingMore)
+		h.reportOf(2, 0)
+		number := h.takeOf("the task after the restart")
+		h.hostsRun()
+		h.reportOf(3, number)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the report of the take's own turn, want it finished", p)
+		}
+		h.must(StreamTurnAnswered{Claim: h.token, Ask: "an earlier ask"})
+		h.hostsRun()
+		h.must(StreamTurnAnswered{Claim: h.token, Ask: h.conn.LastAsk()})
+		h.wantTheCountRightFrom(4)
+	})
+	t.Run("an agent that does not answer the ask a placement makes", func(t *testing.T) {
+		h := restartedUnderALiveProcess(t, nothingMore)
+		h.conn.FailGetState(errBoom)
+		h.takeRunsItsOwnTurn("the task after the restart", 2, false)
+		h.conn.FailGetState(nil)
+		number := h.takeOf("the next task")
+		h.hostsRun()
+		putBacks := len(h.logs.lines(notTheTakesTurnLine))
+		h.reportOf(3, 0)
+		h.wantStillItsTurn(number, putBacks, "after the report of the run given the take, the count unconfirmed,")
+		h.hostsRun()
+		h.reportOf(4, number)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("pending %+v after the report of the take's own turn, want it finished", p)
+		}
+		h.wantTheCountRightFrom(5)
 	})
 }

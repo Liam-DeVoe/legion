@@ -154,7 +154,7 @@ func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err != nil {
 		return runtime.ConnState{}, err
 	}
-	return runtime.ConnState{IsStreaming: streaming}, nil
+	return runtime.ConnState{IsStreaming: streaming, Ask: id}, nil
 }
 
 // streamingOf is what a get_state answer says: whether a turn is running, and an error where it
@@ -533,7 +533,7 @@ func (c *Conn) stateAnswered(response shimwire.Response) {
 			"claim", c.claim, "streaming", streaming)
 		return
 	}
-	c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming})
+	c.events.push(TurnAnswered{Claim: c.claim, Streaming: streaming, Ask: response.ID})
 }
 
 // stepArgsHash is the fingerprint of a call's arguments: the first eight bytes of their SHA-256,

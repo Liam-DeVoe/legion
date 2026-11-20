@@ -1899,6 +1899,12 @@ func (m *Machine) Handle(ctx context.Context, ev Event) error {
 	if token := claimOf(ev); token != m.claim.Token {
 		return fmt.Errorf("supervise: %T for claim %s reached the machine of %s", ev, token, m.claim.Token)
 	}
+	// The answer to a placed count's ask checks that count wherever the claim stands and whatever
+	// its row does with the answer's words: its place behind the frames before it is what the
+	// check reads (checkPlacedCount).
+	if answer, ok := ev.(StreamTurnAnswered); ok {
+		m.checkPlacedCount(answer)
+	}
 	// The write a decision owes is made before anything reads or writes the claim again: settle
 	// can retire a delivery, and the repair must write what the failed decision left.
 	m.repair(ctx)

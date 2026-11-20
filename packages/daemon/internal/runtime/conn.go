@@ -121,7 +121,12 @@ type Conns interface {
 	Conn(claim claim.Token) (Conn, bool)
 }
 
-// ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on.
+// ConnState is the agent's answer to `get_state`, reduced to the one field the daemon acts on,
+// and Ask, the id of the ask it answers, which the worker stream's event of that same answer names
+// too (stream.TurnAnswered): a caller holding the answer can tell that event from every other
+// answer's, and the stream delivers it behind every frame the shim sent before the answer. ""
+// where no ask went over a stream.
 type ConnState struct {
 	IsStreaming bool
+	Ask         string
 }

@@ -264,7 +264,7 @@ func TestEventsCarryTheTurnAndTheStateAnswerInWireOrder(t *testing.T) {
 	p.conn.Close()
 	want := []Event{
 		Hello{Claim: testClaim, Generation: testGeneration},
-		TurnAnswered{Claim: testClaim},
+		TurnAnswered{Claim: testClaim, Ask: request.ID},
 		TurnStart{Claim: testClaim},
 		// The length and the fingerprint of what the frame carried, and no argument text at all:
 		// `{"command":"echo hi"}` is 21 bytes, and the first eight of its SHA-256 are this.
@@ -318,7 +318,7 @@ func TestAGetStateAnswerReplayedOnANewConnectionIsNoTurnAnswered(t *testing.T) {
 		t.Fatalf("GetState on the new connection: %v", err)
 	}
 	replacement.conn.Close()
-	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnAnswered{Claim: testClaim, Streaming: true}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnAnswered{Claim: testClaim, Streaming: true, Ask: own.ID}, Closed{Claim: testClaim}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event on the new connection = %#v, want %#v: the replayed answer is no TurnAnswered", got, want)
 		}
@@ -359,7 +359,7 @@ func TestOnlyTheAnswerToAGetStateThisConnectionWaitsOnIsATurnAnswered(t *testing
 	p.send(answerState(t, abandoned))
 	p.conn.Close()
 
-	for _, want := range []Event{TurnAnswered{Claim: testClaim}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{TurnAnswered{Claim: testClaim, Ask: answered.ID}, Closed{Claim: testClaim}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event = %#v, want %#v: only the answer its request waited on is a TurnAnswered", got, want)
 		}
@@ -524,7 +524,7 @@ func TestAnOldWorkersPromptFramesAreDroppedQuietly(t *testing.T) {
 		t.Fatalf("GetState after the old frames: %v", err)
 	}
 	replacement.conn.Close()
-	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnAnswered{Claim: testClaim}, Closed{Claim: testClaim}} {
+	for _, want := range []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnAnswered{Claim: testClaim, Ask: request.ID}, Closed{Claim: testClaim}} {
 		if got := h.next(); got != want {
 			t.Fatalf("event on the replacement = %#v, want %#v", got, want)
 		}
@@ -573,8 +573,11 @@ func TestChunkSequencesInterleavedWithWholeFramesReassemble(t *testing.T) {
 	if !state.IsStreaming {
 		t.Fatal("GetState lost the chunked answer's isStreaming")
 	}
+	if state.Ask != request.ID {
+		t.Fatalf("GetState answered ask %q, want the id of the get_state it wrote, %q", state.Ask, request.ID)
+	}
 	want := []Event{TurnStart{Claim: testClaim}, TurnEnd{Claim: testClaim}, TurnStart{Claim: testClaim},
-		TurnAnswered{Claim: testClaim, Streaming: true}, TurnEnd{Claim: testClaim}}
+		TurnAnswered{Claim: testClaim, Streaming: true, Ask: request.ID}, TurnEnd{Claim: testClaim}}
 	var got []Event
 	for range want {
 		got = append(got, h.next())

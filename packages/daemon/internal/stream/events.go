@@ -48,10 +48,13 @@ type TurnEnd struct {
 // no daemon was attached among them, which the shim writes before any later frame — and the
 // supervisor reads it with those frames already applied. It is pushed only for a get_state the
 // connection it arrives on wrote and still waits on: an answer to an earlier connection's ask,
-// which the shim replays from its backlog, is none (Conn.stateAnswered).
+// which the shim replays from its backlog, is none (Conn.stateAnswered). Ask is the id of the
+// get_state it answers, which the asker's own answer names too (runtime.ConnState.Ask), so the
+// asker can tell this event from any other answer's.
 type TurnAnswered struct {
 	Claim     claim.Token
 	Streaming bool
+	Ask       string
 }
 
 // ToolStep is one tool call of the agent's turn beginning or ending
