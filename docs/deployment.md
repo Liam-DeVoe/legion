@@ -69,7 +69,7 @@ The accounts are the accounts of each secret's `github-owners` tag the daemon wo
       "accounts": ["example-org", "example-user"],
       "permissions": {
         "actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write",
-        "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "write", "workflows": "write"
+        "metadata": "read", "pull_requests": "write", "security_events": "read", "statuses": "read", "workflows": "write"
       },
       "value": "installations"
     }
@@ -93,7 +93,7 @@ The accounts are the accounts of each secret's `github-owners` tag the daemon wo
     "github": {
       "accounts": ["example-org", "example-user"],
       "permissions": {
-        "actions": "write", "attestations": "read", "checks": "write", "contents": "write", "issues": "write",
+        "actions": "write", "attestations": "read", "checks": "read", "contents": "write", "issues": "write",
         "metadata": "read", "pull_requests": "write", "security_events": "write", "statuses": "read"
       },
       "value": "installations"

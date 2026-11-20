@@ -117,28 +117,34 @@ type commandRun struct {
 	err           error
 }
 
-// tokenCommandField is the configuration key of role's token_command, the name its failures carry:
-// the one App's, `github_apps.implement`, whichever role asks, since one App serves every role.
-func tokenCommandField(AppRole) string {
-	return "github_apps.implement.token_command"
-}
+// tokenCommandField is the configuration key of the App's token_command, the name its failures
+// carry: the one App's, `github_apps.implement`, whichever set asks, since one App serves every
+// set.
+const tokenCommandField = "github_apps.implement.token_command"
+
+// everyInstallation is the request for the release of every installation the command may
+// release: no owner, and the write profile, as the implementer's set. The release is read for
+// the accounts it names and for one token to read the App's identity with (InstalledOwners,
+// anyInstallation), never cached as a lease nor handed to a role, so the set it names decides
+// no role's reach.
+var everyInstallation = mintRequest{set: SetImplementer}
 
 // runTokenCommand returns the release of app's token_command for the request's owner ("" for
 // every installation) and read, keyed by lowercased account login, from a run that outlives ctx
 // (commandRun): ctx ending first returns ErrCommandPending, transient. A release of every
-// installation records its accounts as the role's installations (recordOwners), the set a
+// installation records its accounts as the App's installations (recordOwners), the set a
 // narrowed run that fails is read against.
 //
 // The run is keyed by the request's own scope (leaseScope), the key its lease is cached under:
 // a read-only run must never answer a caller that asked for a write token, and one encoding of
 // a scope serves both.
 func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
-	role, owner := request.role, request.owner
+	owner := request.owner
 	key := request.scope()
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
-		return nil, fmt.Errorf("%s: the token manager is closed", tokenCommandField(role))
+		return nil, fmt.Errorf("%s: the token manager is closed", tokenCommandField)
 	}
 	run, ok := m.commands[key]
 	if !ok {
@@ -151,7 +157,7 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 			defer cancel()
 			run.installations, run.err = m.execTokenCommand(bounded, app, request)
 			if run.err == nil && owner == "" {
-				m.recordOwners(role, run.installations)
+				m.recordOwners(run.installations)
 			}
 			m.mu.Lock()
 			close(run.done)
@@ -168,7 +174,7 @@ func (m *Manager) runTokenCommand(ctx context.Context, app config.GitHubApp, req
 		m.forgetRun(key, run)
 		return run.installations, run.err
 	case <-ctx.Done():
-		return nil, &TransientError{Err: fmt.Errorf("%s for %q is still running after %v (a grant may wait on a person's approval): %w", tokenCommandField(role), owner, ctx.Err(), ErrCommandPending)}
+		return nil, &TransientError{Err: fmt.Errorf("%s for %q is still running after %v (a grant may wait on a person's approval): %w", tokenCommandField, owner, ctx.Err(), ErrCommandPending)}
 	}
 }
 
@@ -197,14 +203,15 @@ func (m *Manager) Close() {
 	m.runs.Wait()
 }
 
-// recordOwners records the accounts of a release of every installation as role's installations.
-func (m *Manager) recordOwners(role AppRole, installations map[string]releasedInstallation) {
+// recordOwners records the accounts of a release of every installation as the App's
+// installations.
+func (m *Manager) recordOwners(installations map[string]releasedInstallation) {
 	owners := make(map[string]string, len(installations))
 	for owner := range installations {
 		owners[owner] = owner
 	}
 	m.mu.Lock()
-	m.installations[role] = owners
+	m.installations = owners
 	m.mu.Unlock()
 }
 
@@ -215,7 +222,7 @@ func (m *Manager) recordOwners(role AppRole, installations map[string]releasedIn
 // printed no release is the configuration's answer. Its stderr reaches the daemon's and the error
 // with every GitHub token redacted.
 func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (map[string]releasedInstallation, error) {
-	field := tokenCommandField(request.role)
+	field := tokenCommandField
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(runCtx, "sh", "-c", app.TokenCommand)
@@ -414,8 +421,8 @@ const brokerNarrowingRefused = "the narrowing cannot be served"
 // ErrNarrowingRefused, the refusal a key-mode exchange answers a 422 with, and a caller that can
 // act on that reads it the same way in either mode (ErrNarrowingRefused).
 func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, request mintRequest) (Lease, error) {
-	role, owner := request.role, request.owner
-	notInstalled := fmt.Errorf("%w: the %s App's %s released no installation on %s", ErrNotInstalled, role, tokenCommandField(role), owner)
+	owner := request.owner
+	notInstalled := fmt.Errorf("%w: the App's %s released no installation on %s", ErrNotInstalled, tokenCommandField, owner)
 	installations, err := m.runTokenCommand(ctx, app, request)
 	if err != nil {
 		var transient *TransientError
@@ -425,12 +432,12 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 		case strings.Contains(err.Error(), brokerNoInstallation):
 			return Lease{}, fmt.Errorf("%w: %w", notInstalled, err)
 		case strings.Contains(err.Error(), brokerNarrowingRefused):
-			return Lease{}, fmt.Errorf("%w: the %s App's %s released no token for %s: %w",
-				ErrNarrowingRefused, role, tokenCommandField(role), owner, err)
+			return Lease{}, fmt.Errorf("%w: the App's %s released no %s token for %s: %w",
+				ErrNarrowingRefused, tokenCommandField, request.token(), owner, err)
 		}
 		m.mu.Lock()
-		known, recorded := m.installations[role]
-		_, listed := known[strings.ToLower(owner)]
+		recorded := m.installations != nil
+		_, listed := m.installations[strings.ToLower(owner)]
 		m.mu.Unlock()
 		if recorded && !listed {
 			return Lease{}, fmt.Errorf("%w: %w", notInstalled, err)
@@ -441,7 +448,7 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 	if !ok {
 		return Lease{}, notInstalled
 	}
-	identity, err := m.tokenIdentity(ctx, role, app.AppID, installation.token)
+	identity, err := m.tokenIdentity(ctx, app.AppID, installation.token)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -458,13 +465,13 @@ func (m *Manager) mintFromCommand(ctx context.Context, app config.GitHubApp, req
 // it is used for is read-only: the GraphQL viewer read that names the App's bot login and the GET
 // /apps/<slug> that checks the App's id (tokenIdentity), and the token is never cached as a lease
 // nor handed to a role.
-func (m *Manager) anyInstallation(ctx context.Context, role AppRole, app config.GitHubApp) (releasedInstallation, error) {
-	installations, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
+func (m *Manager) anyInstallation(ctx context.Context, app config.GitHubApp) (releasedInstallation, error) {
+	installations, err := m.runTokenCommand(ctx, app, everyInstallation)
 	if err != nil {
 		return releasedInstallation{}, err
 	}
 	if len(installations) == 0 {
-		return releasedInstallation{}, fmt.Errorf("%s released no installation of the %s App", tokenCommandField(role), role)
+		return releasedInstallation{}, fmt.Errorf("%s released no installation of the App", tokenCommandField)
 	}
 	owners := make([]string, 0, len(installations))
 	for owner := range installations {
@@ -477,8 +484,8 @@ func (m *Manager) anyInstallation(ctx context.Context, role AppRole, app config.
 // tokenIdentity is the bot identity of the App whose installation token token is, with no JWT:
 // verifyTokenApp checks the token is appID's App's and names its bot login, run for every token,
 // and GET /users/<login> gives the bot user's id for its noreply email, read once per App.
-func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token string) (GitIdentity, error) {
-	login, err := m.verifyTokenApp(ctx, role, appID, token)
+func (m *Manager) tokenIdentity(ctx context.Context, appID, token string) (GitIdentity, error) {
+	login, err := m.verifyTokenApp(ctx, appID, token)
 	if err != nil {
 		return GitIdentity{}, err
 	}
@@ -489,7 +496,7 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 		return GitIdentity{}, err
 	}
 	if identity.Name != login {
-		return GitIdentity{}, fmt.Errorf("the %s App's %s released a token that acts as %s, where the App acted as %s", role, tokenCommandField(role), login, identity.Name)
+		return GitIdentity{}, fmt.Errorf("the App's %s released a token that acts as %s, where the App acted as %s", tokenCommandField, login, identity.Name)
 	}
 	return identity, nil
 }
@@ -497,24 +504,24 @@ func (m *Manager) tokenIdentity(ctx context.Context, role AppRole, appID, token 
 // verifyTokenApp returns the bot login token acts as, refusing a token that is not the App appID's:
 // GraphQL's viewer names the bot login, `<slug>[bot]`, and GET /apps/<slug> must answer appID, so a
 // command that releases another App's token is refused rather than acted as.
-func (m *Manager) verifyTokenApp(ctx context.Context, role AppRole, appID, token string) (string, error) {
-	login, err := m.viewerLogin(ctx, role, token)
+func (m *Manager) verifyTokenApp(ctx context.Context, appID, token string) (string, error) {
+	login, err := m.viewerLogin(ctx, token)
 	if err != nil {
 		return "", err
 	}
 	slug, ok := strings.CutSuffix(login, "[bot]")
 	if !ok || slug == "" {
-		return "", fmt.Errorf("the %s App's %s released a token that acts as %s, not an App's bot", role, tokenCommandField(role), login)
+		return "", fmt.Errorf("the App's %s released a token that acts as %s, not an App's bot", tokenCommandField, login)
 	}
-	if err := m.checkAppID(ctx, role, slug, appID, token); err != nil {
+	if err := m.checkAppID(ctx, slug, appID, token); err != nil {
 		return "", err
 	}
 	return login, nil
 }
 
 // viewerLogin is the login GitHub's GraphQL viewer answers for token.
-func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (string, error) {
-	what := fmt.Sprintf("the %s App's bot login (GraphQL viewer)", role)
+func (m *Manager) viewerLogin(ctx context.Context, token string) (string, error) {
+	const what = "the App's bot login (GraphQL viewer)"
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+"/graphql", strings.NewReader(`{"query":"{viewer{login}}"}`))
 	if err != nil {
 		return "", err
@@ -546,8 +553,8 @@ func (m *Manager) viewerLogin(ctx context.Context, role AppRole, token string) (
 }
 
 // checkAppID reads GET /apps/<slug> and refuses an App whose id is not appID.
-func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, token string) error {
-	what := fmt.Sprintf("the %s App %s (GET /apps/%s)", role, slug, slug)
+func (m *Manager) checkAppID(ctx context.Context, slug, appID, token string) error {
+	what := fmt.Sprintf("the App %s (GET /apps/%s)", slug, slug)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, m.baseURL+"/apps/"+url.PathEscape(slug), nil)
 	if err != nil {
 		return err
@@ -575,7 +582,7 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 		return fmt.Errorf("read %s: GitHub answered no App id", what)
 	}
 	if id != appID {
-		return fmt.Errorf("the %s App's %s released a token of App %s (%s), not of the configured app_id %s", role, tokenCommandField(role), id, slug, appID)
+		return fmt.Errorf("the App's %s released a token of App %s (%s), not of the configured app_id %s", tokenCommandField, id, slug, appID)
 	}
 	return nil
 }
@@ -583,16 +590,16 @@ func (m *Manager) checkAppID(ctx context.Context, role AppRole, slug, appID, tok
 // installedFromCommand is InstalledOn in token mode: the App is installed on repo when the release
 // for repo's owner names an installation whose repositories (GET /installation/repositories, every
 // page) include repo. GET /repos/{owner}/{repo} would not do: an installation token reads any
-// public repository, installed or not. A cached lease GitHub answers 401 (an App uninstalled while
-// its token lived) is dropped and minted once again, so an uninstall reads as not installed rather
-// than an error until the lease expires.
-func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo ghrepo.Repository) (bool, error) {
+// public repository, installed or not. A cached read lease GitHub answers 401 (an App uninstalled
+// while its token lived) is dropped and minted once again, so an uninstall reads as not installed
+// rather than an error until the lease expires.
+func (m *Manager) installedFromCommand(ctx context.Context, repo ghrepo.Repository) (bool, error) {
 	for attempt := 0; ; attempt++ {
-		installed, refused, err := m.listInstallation(ctx, role, repo)
+		installed, refused, err := m.listInstallation(ctx, repo)
 		if !refused || attempt > 0 {
 			return installed, err
 		}
-		m.Forget(role, repo.Owner())
+		m.forget(leaseScope(true, "", repo.Owner()))
 	}
 }
 
@@ -614,13 +621,13 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // the mint itself meets is remembered as any mint's is: it is GitHub's answer of this moment,
 // which the bundles refreshing behind the check would otherwise ask for again at once, and the
 // next mapping read drops it again as this one did.
-func (m *Manager) listInstallation(ctx context.Context, role AppRole, repo ghrepo.Repository) (installed, refused bool, err error) {
-	m.forgetNarrowingRefusal(role, repo.Owner())
-	lease, err := m.ReadToken(ctx, role, repo.Owner())
+func (m *Manager) listInstallation(ctx context.Context, repo ghrepo.Repository) (installed, refused bool, err error) {
+	m.forgetNarrowingRefusal(repo.Owner())
+	lease, err := m.ReadToken(ctx, repo.Owner())
 	if errors.Is(err, ErrNotInstalled) {
 		return false, false, nil
 	}
-	what := fmt.Sprintf("read whether the %s App is installed on %s", role, repo)
+	what := fmt.Sprintf("read whether the App is installed on %s", repo)
 	if err != nil {
 		return false, false, fmt.Errorf("%s: %w", what, err)
 	}

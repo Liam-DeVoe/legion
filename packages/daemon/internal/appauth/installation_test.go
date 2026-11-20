@@ -44,7 +44,7 @@ func TestInstalledOnReadsTheRepositorysInstallationForEachApp(t *testing.T) {
 			tokens := New(config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 				Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
-			got, err := tokens.InstalledOn(context.Background(), Review, ghrepo.MustParse("acme/widgets"))
+			got, err := tokens.InstalledOn(context.Background(), ghrepo.MustParse("acme/widgets"))
 			if want := []string{"GET /repos/acme/widgets/installation"}; len(asked) != 1 || asked[0] != want[0] {
 				t.Fatalf("GitHub was asked %v, want %v", asked, want)
 			}
@@ -81,12 +81,12 @@ func TestAppLoginReadsTheAppsSlugUnderItsOwnJWT(t *testing.T) {
 	tokens := New(config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
 		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
 
-	if login, err := tokens.AppLogin(context.Background(), Review); err != nil || login != "legion-reviewer[bot]" {
+	if login, err := tokens.AppLogin(context.Background()); err != nil || login != "legion-reviewer[bot]" {
 		t.Fatalf("AppLogin = %q, %v; want legion-reviewer[bot]", login, err)
 	}
 	status = http.StatusBadGateway
 	var transient *TransientError
-	if _, err := tokens.AppLogin(context.Background(), Review); !errors.As(err, &transient) {
+	if _, err := tokens.AppLogin(context.Background()); !errors.As(err, &transient) {
 		t.Fatalf("AppLogin on GitHub's 502 = %v, want a transient error", err)
 	}
 }

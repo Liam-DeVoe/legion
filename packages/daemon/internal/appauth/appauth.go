@@ -1,4 +1,5 @@
-// Package appauth mints GitHub installation tokens for Legion's two GitHub Apps.
+// Package appauth mints GitHub installation tokens for Legion's one GitHub App: each role's write
+// token with that role's set (TokenSet), the read lease, and the daemon's own verdict token.
 package appauth
 
 import (
@@ -45,16 +46,14 @@ const refreshWindow = 20 * time.Minute
 // inside the hour an installation token lasts.
 const narrowingRefusalWindow = 5 * time.Minute
 
-// AppRole names the GitHub App a Legion role acts as.
-type AppRole string
+// ErrNoVerdictToken is VerdictToken's answer in token mode: the daemon holds no key, and no
+// profile a token_command names holds checks or statuses at write, so a daemon in token mode
+// mints no verdict token and writes no check.
+var ErrNoVerdictToken = errors.New("the App is in token mode, which mints no verdict token")
 
-const (
-	Implement AppRole = "implement"
-	Review    AppRole = "review"
-)
-
-// Roles is every App role, the Apps a Legion deployment configures one of each of.
-var Roles = []AppRole{Implement, Review}
+// errVerdictSet is Token's refusal of SetVerdict: the verdict token is the daemon's own, minted by
+// VerdictToken alone, so no caller that hands a role a token can hand it that one.
+var errVerdictSet = errors.New("the verdict set is minted only as the daemon's own verdict token (VerdictToken)")
 
 // GitIdentity is the bot identity that jj and git must use for work a role performs.
 type GitIdentity = runtime.GitIdentity
@@ -136,33 +135,37 @@ func readBody(response *http.Response, what string, limit int64) ([]byte, error)
 	return body, nil
 }
 
-// Tokens mints a GitHub installation token for an App on one owner account. Every token reaches
-// its owner's whole installation at the permissions asked for, and names no repository at all:
-// the owner alone keys its lease, its command run and its refusal memory (INFRA-2543).
+// Tokens mints the App's installation tokens on one owner account. Every token reaches its
+// owner's whole installation at the permissions asked for, and names no repository at all: the
+// owner alone, beside the token's set, keys its lease, its command run and its refusal memory.
 type Tokens interface {
-	// Token is the write token for owner: the App role's installation token on that account,
-	// holding the write permissions the App's roles use (writePermissions). It reaches every
-	// repository the account's installation holds, which the account chooses when it installs
-	// the App and the daemon narrows no further (INFRA-2543). An owner with no name is refused
-	// before anything is minted, since there is no account to mint on.
-	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
+	// Token is set's write token for owner: the App's installation token on that account,
+	// holding the set's permissions (writePermissions). It reaches every repository the
+	// account's installation holds, which the account chooses when it installs the App and the
+	// daemon narrows no further. An owner with no name is refused before anything is minted,
+	// since there is no account to mint on, and so is SetVerdict, which only VerdictToken mints.
+	Token(ctx context.Context, set TokenSet, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: readPermissions,
 	// which is contents, metadata, pull requests, issues, Actions, checks, commit statuses and
-	// attestations, each at read. Two callers ask for it and no role's bundle does: a
-	// controller, which works no repository and holds one for every owner its App is installed
-	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
-	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
-	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
-	// directories hold that owner's own lease at the role's permissions instead (Token,
-	// GitHubCredential). An App on token_command gets what its command's release of
-	// the read profile holds instead, which the deployment's profiles file decides and the
-	// broker cuts to what the installation holds; the read profile docs/deployment.md gives names
-	// readPermissions. With a key of its own the mint asks for what the installation is granted
-	// of readPermissions and leaves the rest out (exchangeGranted), so an installation whose
-	// account has not granted the App issues, Actions, checks, commit statuses or attestations
-	// gets a token without the ones it is not granted rather than nothing. An owner with no name
-	// is refused before anything is minted, as Token's is.
-	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
+	// attestations, each at read. It is the owner's one read lease, whichever set's caller asks:
+	// a controller, which works no repository and holds one for every owner the App is
+	// installed on (ControllerCredential), the Kubernetes runtime's provisioning token for the
+	// issue's own owner, which every issue pod's workspace-fetch and every repository cache
+	// clones with (implementTokens, internal/daemon), and every read the daemon makes of GitHub
+	// itself. A workflow role's directories hold that owner's own lease at the role's
+	// permissions instead (Token, GitHubCredential). An App on token_command gets what its
+	// command's release of the read profile holds instead, which the deployment's profiles file
+	// decides and the broker cuts to what the installation holds; the read profile
+	// docs/deployment.md gives names readPermissions. With a key of its own the mint asks for what
+	// the installation is granted of readPermissions and leaves the rest out (exchangeGranted), so
+	// an installation whose account has not granted the App issues, Actions, checks, commit
+	// statuses or attestations gets a token without the ones it is not granted rather than
+	// nothing. An owner with no name is refused before anything is minted, as Token's is.
+	ReadToken(ctx context.Context, owner string) (Lease, error)
+	// VerdictToken is the daemon's own token for owner, of SetVerdict: the one token that writes
+	// check runs and commit statuses, which no role is handed. It is minted with a key of the
+	// App's own alone; in token mode it is ErrNoVerdictToken, minting nothing.
+	VerdictToken(ctx context.Context, owner string) (Lease, error)
 }
 
 // Options makes a token manager testable. The zero value uses api.github.com, http.DefaultClient,
@@ -176,9 +179,10 @@ type Options struct {
 	Log        *slog.Logger
 }
 
-// Manager caches installation tokens by App and owner, and bot identities by App id. An App
-// configured with a token_command is in token mode (tokencommand.go): the Manager holds no key and
-// signs no JWT for it, and every lease comes from the command's release.
+// Manager caches installation tokens by set and owner, the owner's read lease by owner alone, and
+// the App's installations by owner. An App configured with a token_command is in token mode
+// (tokencommand.go): the Manager holds no key and signs no JWT for it, and every lease comes from
+// the command's release.
 type Manager struct {
 	githubApp config.GitHubApp
 	baseURL   string
@@ -187,17 +191,19 @@ type Manager struct {
 	stderr    io.Writer
 	log       *slog.Logger
 
-	mu                sync.Mutex
-	leases            map[scope]Lease
-	pending           map[scope]*pendingLease
-	installations     map[AppRole]map[string]string
+	mu      sync.Mutex
+	leases  map[scope]Lease
+	pending map[scope]*pendingLease
+	// installations holds the App's installation on each owner, by lowercased login, as the last
+	// discovery or release of every installation found them; nil until one has.
+	installations     map[string]string
 	identities        map[string]GitIdentity
 	pendingIdentities map[string]*pendingIdentity
-	// pendingInstallations holds, per App role, the installation read running for that App now,
-	// so overlapping reads share one (InstalledOwners). The entry is dropped the moment the
-	// read ends: nothing of the answer is kept, since the answer is a bundle's whole reach and
-	// must be GitHub's own at the build (credential.go's GitHubCredential).
-	pendingInstallations map[AppRole]*pendingInstallations
+	// pendingInstallations is the installation read running now, so overlapping reads share one
+	// (InstalledOwners), nil while none runs. It is dropped the moment the read ends: nothing of
+	// the answer is kept, since the answer is a bundle's whole reach and must be GitHub's own at
+	// the build (credential.go's GitHubCredential).
+	pendingInstallations *pendingInstallations
 	commands             map[scope]*commandRun
 	// keys holds each App private key parsed, by its PEM text (generateJWT).
 	keys map[string]*rsa.PrivateKey
@@ -208,9 +214,8 @@ type Manager struct {
 	// Forget of its owner.
 	refusals map[scope]refusedNarrowingAt
 
-	// saidShortfalls holds every shortfall already logged, each by the App role, the owner whose
-	// installation is granted less than the role's set asks for, and the shortfall itself
-	// (sayShortfalls).
+	// saidShortfalls holds every shortfall already logged, each by the owner whose installation
+	// is granted less than a set asks for and the shortfall itself (sayShortfalls).
 	saidShortfalls map[saidShortfall]bool
 
 	// root ends every token_command run on Close (stop), runs counts the runs still going, and
@@ -241,8 +246,8 @@ type pendingIdentity struct {
 	err      error
 }
 
-// pendingInstallations is one App's installation read in flight, and what it answered, for
-// every caller that joined it rather than reading GitHub beside it (InstalledOwners).
+// pendingInstallations is the App's installation read in flight, and what it answered, for every
+// caller that joined it rather than reading GitHub beside it (InstalledOwners).
 type pendingInstallations struct {
 	done   chan struct{}
 	owners []string
@@ -284,115 +289,148 @@ func New(app config.GitHubApp, options Options) *Manager {
 	}
 	root, stop := context.WithCancel(context.Background())
 	return &Manager{
-		root:                 root,
-		stop:                 stop,
-		githubApp:            app,
-		baseURL:              baseURL,
-		client:               client,
-		now:                  now,
-		stderr:               stderr,
-		log:                  log,
-		leases:               map[scope]Lease{},
-		pending:              map[scope]*pendingLease{},
-		installations:        map[AppRole]map[string]string{},
-		identities:           map[string]GitIdentity{},
-		pendingIdentities:    map[string]*pendingIdentity{},
-		pendingInstallations: map[AppRole]*pendingInstallations{},
-		commands:             map[scope]*commandRun{},
-		keys:                 map[string]*rsa.PrivateKey{},
-		refusals:             map[scope]refusedNarrowingAt{},
-		saidShortfalls:       map[saidShortfall]bool{},
+		root:              root,
+		stop:              stop,
+		githubApp:         app,
+		baseURL:           baseURL,
+		client:            client,
+		now:               now,
+		stderr:            stderr,
+		log:               log,
+		leases:            map[scope]Lease{},
+		pending:           map[scope]*pendingLease{},
+		identities:        map[string]GitIdentity{},
+		pendingIdentities: map[string]*pendingIdentity{},
+		commands:          map[scope]*commandRun{},
+		keys:              map[string]*rsa.PrivateKey{},
+		refusals:          map[scope]refusedNarrowingAt{},
+		saidShortfalls:    map[saidShortfall]bool{},
 	}
 }
 
-// Token returns the cached write lease for owner until fewer than twenty minutes remain
-// (refreshWindow), otherwise minting a fresh installation token on owner's installation with
-// the App role's write permissions (writePermissions). Concurrent requests for the same App and
-// owner share that one exchange. The lease reaches every repository that installation holds:
-// the account chooses those when it installs the App, and the daemon asks for no narrowing of
-// them (INFRA-2543). An owner with no name is no account to mint on: it is refused, and nothing
-// is minted.
-func (m *Manager) Token(ctx context.Context, role AppRole, owner string) (Lease, error) {
-	return m.lease(ctx, mintRequest{role: role, owner: owner, permissions: writePermissions[role]})
+// Token returns the cached write lease of set for owner until fewer than twenty minutes remain
+// (refreshWindow), otherwise minting a fresh installation token on owner's installation with the
+// set's permissions (writePermissions). Concurrent requests for the same set and owner share that
+// one exchange. The lease reaches every repository that installation holds: the account chooses
+// those when it installs the App, and the daemon asks for no narrowing of them. An owner with no
+// name is no account to mint on: it is refused, and nothing is minted. SetVerdict is refused
+// before anything is asked (errVerdictSet), since only VerdictToken mints it, and so is a set no
+// role has.
+func (m *Manager) Token(ctx context.Context, set TokenSet, owner string) (Lease, error) {
+	permissions, known := writePermissions[set]
+	switch {
+	case set == SetVerdict:
+		return Lease{}, errVerdictSet
+	case !known:
+		return Lease{}, fmt.Errorf("no role's token is of the set %q", set)
+	}
+	return m.lease(ctx, mintRequest{set: set, owner: owner, permissions: permissions})
 }
 
-// ReadToken is Token for a token narrowed to readPermissions, cached under a scope of its own,
-// so an owner's write and read tokens never stand in for each other. Each permission of the set
-// is asked for at read where the installation is granted it, and one it is granted none of is
-// left out (exchangeGranted). In token mode it is the command's release of the role's read
-// profile (TokenCommandReadOnly) instead, which the deployment's profiles file decides; the read
-// profile docs/deployment.md gives names this same set. A write request of the same owner is a
-// run of its own either way: it asks for no read-only release, so the two never stand in for
-// each other. An owner with no name is refused, and nothing is minted.
-func (m *Manager) ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error) {
-	return m.lease(ctx, mintRequest{role: role, owner: owner, read: true, permissions: readPermissions})
+// ReadToken is Token for a token narrowed to readPermissions, the owner's one read lease, cached
+// under a scope of its own that no set names, so an owner's write and read tokens never stand in
+// for each other. Each permission of the set is asked for at read where the installation is
+// granted it, and one it is granted none of is left out (exchangeGranted). In token mode it is
+// the command's release of the read profile (TokenCommandReadOnly) instead, which the
+// deployment's profiles file decides; the read profile docs/deployment.md gives names this same
+// set. A write request of the same owner is a run of its own either way: it asks for no read-only
+// release, so the two never stand in for each other. An owner with no name is refused, and
+// nothing is minted.
+func (m *Manager) ReadToken(ctx context.Context, owner string) (Lease, error) {
+	return m.lease(ctx, mintRequest{owner: owner, read: true, permissions: readPermissions})
 }
 
-// Forgetter drops the leases a token source holds for an App role and owner, so the next one is
+// VerdictToken is the write lease of SetVerdict for owner, served and minted as Token serves a
+// role's: the daemon's own token for the check runs and commit statuses it writes. A daemon in
+// token mode is answered ErrNoVerdictToken and runs no command for it: the command's profiles are
+// the roles' and the read lease's, and no profile holds checks or statuses at write.
+func (m *Manager) VerdictToken(ctx context.Context, owner string) (Lease, error) {
+	if m.githubApp.TokenCommand != "" {
+		return Lease{}, ErrNoVerdictToken
+	}
+	return m.lease(ctx, mintRequest{set: SetVerdict, owner: owner, permissions: writePermissions[SetVerdict]})
+}
+
+// Forgetter drops the leases a token source holds for a set and owner, so the next one is
 // minted: a token GitHub refused (401) is not served again from the cache.
 type Forgetter interface {
-	Forget(role AppRole, owner string)
+	Forget(set TokenSet, owner string)
 }
 
-// Forget drops both leases cached for role and owner, the write token's and the read token's,
-// and every narrowing refusal remembered for them (refusals): the owner is what a refused token
-// is known by, and a caller that met one holds no account of which of the two scopes it was, so
-// the next ask of either reaches GitHub.
-func (m *Manager) Forget(role AppRole, owner string) {
-	forgotten := strings.ToLower(strings.TrimSpace(owner))
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	maps.DeleteFunc(m.leases, func(key scope, _ Lease) bool {
-		return key.role == role && key.owner == forgotten
-	})
-	maps.DeleteFunc(m.refusals, func(key scope, _ refusedNarrowingAt) bool {
-		return key.role == role && key.owner == forgotten
-	})
+// Forget drops both leases a caller of set may hold for owner, set's write token and the owner's
+// read token, and every narrowing refusal remembered for them (refusals): the owner is what a
+// refused token is known by, and a caller that met one holds no account of which of the two
+// scopes it was, so the next ask of either reaches GitHub. Another set's lease of the owner is
+// kept: its caller meets its own refusal, and forgets it then.
+func (m *Manager) Forget(set TokenSet, owner string) {
+	m.forget(leaseScope(false, set, owner), leaseScope(true, "", owner))
 }
 
-// forgetNarrowingRefusal drops the narrowing refusal remembered for role's read lease on owner
-// (lease, narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It
-// is for the caller that knows that one memory is stale — the token-mode mapping check, which
-// asks whether the App's installation holds a repository and must have GitHub's answer rather
-// than the memory of a refusal met before an operator fixed the grant (listInstallation) —
-// where Forget, which drops every lease and every refusal of the owner, would throw away a
-// token that is good and make the owner's other scope mint again.
-func (m *Manager) forgetNarrowingRefusal(role AppRole, owner string) {
+// forget drops the lease and the narrowing refusal each of scopes holds.
+func (m *Manager) forget(scopes ...scope) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.refusals, leaseScope(true, role, owner))
+	for _, forgotten := range scopes {
+		delete(m.leases, forgotten)
+		delete(m.refusals, forgotten)
+	}
+}
+
+// forgetNarrowingRefusal drops the narrowing refusal remembered for owner's read lease (lease,
+// narrowingRefusalWindow), and nothing else: no lease, and no other scope's refusal. It is for
+// the caller that knows that one memory is stale — the token-mode mapping check, which asks
+// whether the App's installation holds a repository and must have GitHub's answer rather than
+// the memory of a refusal met before an operator fixed the grant (listInstallation) — where
+// forgetting the lease too would throw away a token that is good and make it mint again.
+func (m *Manager) forgetNarrowingRefusal(owner string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.refusals, leaseScope(true, "", owner))
 }
 
 // scope is one lease's identity, and the key every lease is cached, awaited and warned under:
-// which kind of token it is, the App role it is minted as, and the owner whose installation
-// mints it. Those three are the whole of what a lease may do, since a token reaches every
-// repository its own installation holds: a read lease must never be served to a caller that
-// asked for a write one, and no owner's token may stand in for another owner's.
+// which kind of token it is, the set a write token is minted with, and the owner whose
+// installation mints it. Those three are the whole of what a lease may do, since a token reaches
+// every repository its own installation holds: a read lease must never be served to a caller
+// that asked for a write one, no set's token may stand in for another set's, and no owner's
+// token may stand in for another owner's. A read lease names no set: it is the owner's one.
 type scope struct {
 	read  bool
-	role  AppRole
+	set   TokenSet
 	owner string
 }
 
-// leaseScope is the scope of role's lease on owner, read or write. The owner is compared
-// trimmed and lowercased, as GitHub matches an account's name, so two callers that spell one
-// account differently share the one lease rather than mint twice.
-func leaseScope(read bool, role AppRole, owner string) scope {
-	return scope{read: read, role: role, owner: strings.ToLower(strings.TrimSpace(owner))}
+// leaseScope is the scope of set's lease on owner, or of owner's read lease, whose set it drops.
+// The owner is compared trimmed and lowercased, as GitHub matches an account's name, so two
+// callers that spell one account differently share the one lease rather than mint twice.
+func leaseScope(read bool, set TokenSet, owner string) scope {
+	if read {
+		set = ""
+	}
+	return scope{read: read, set: set, owner: strings.ToLower(strings.TrimSpace(owner))}
 }
 
-// mintRequest is one ask for a lease, built by Token and ReadToken and carried whole through
-// the mint: the App role the token is minted as, the owner whose installation mints it, whether
-// it is the read token, and the permissions GitHub is asked for.
+// mintRequest is one ask for a lease, built by Token, ReadToken and VerdictToken and carried
+// whole through the mint: the set a write token is minted with (none for the read token), the
+// owner whose installation mints it, whether it is the read token, and the permissions GitHub is
+// asked for.
 type mintRequest struct {
-	role        AppRole
+	set         TokenSet
 	owner       string
 	read        bool
 	permissions map[string]string
 }
 
 // scope is the key the request's lease is cached and awaited under (leaseScope).
-func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) }
+func (r mintRequest) scope() scope { return leaseScope(r.read, r.set, r.owner) }
+
+// token is the request's token as a message names it: the read token, or the set's.
+func (r mintRequest) token() string {
+	if r.read {
+		return "read"
+	}
+	return string(r.set)
+}
 
 // lease serves the cached lease of the request's scope while more than refreshWindow remains,
 // and otherwise mints one with the permissions the request names, sharing one exchange among
@@ -428,7 +466,7 @@ func (r mintRequest) scope() scope { return leaseScope(r.read, r.role, r.owner) 
 func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error) {
 	request.owner = strings.TrimSpace(request.owner)
 	if request.owner == "" {
-		return Lease{}, fmt.Errorf("the %s App's token names no owner account to mint on", request.role)
+		return Lease{}, fmt.Errorf("the %s token names no owner account to mint on", request.token())
 	}
 	cacheKey := request.scope()
 	for {
@@ -509,14 +547,11 @@ func callerEnded(err error) bool {
 // again mints on its new installation. A configured installation answering 404 is not installed
 // either.
 func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) {
-	app, err := m.app(request.role)
-	if err != nil {
-		return Lease{}, err
-	}
+	app := m.githubApp
 	if app.TokenCommand != "" {
 		return m.mintFromCommand(ctx, app, request)
 	}
-	installation, err := m.installation(ctx, request.role, app, request.owner)
+	installation, err := m.installation(ctx, app, request.owner)
 	if err != nil {
 		return Lease{}, err
 	}
@@ -526,15 +561,15 @@ func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) 
 	}
 	lease, err := m.exchangeGranted(ctx, jwt, installation, request)
 	if errors.Is(err, errInstallationGone) && configuredInstallation(app, request.owner) == "" {
-		m.forgetInstallation(request.role, request.owner)
-		if installation, err = m.installation(ctx, request.role, app, request.owner); err != nil {
+		m.forgetInstallation(request.owner)
+		if installation, err = m.installation(ctx, app, request.owner); err != nil {
 			return Lease{}, err
 		}
 		lease, err = m.exchangeGranted(ctx, jwt, installation, request)
 	}
 	if errors.Is(err, errInstallationGone) {
-		m.forgetInstallation(request.role, request.owner)
-		return Lease{}, fmt.Errorf("%w: %s's installation %s on %s answers %w", ErrNotInstalled, request.role, installation, request.owner, err)
+		m.forgetInstallation(request.owner)
+		return Lease{}, fmt.Errorf("%w: the App's installation %s on %s answers %w", ErrNotInstalled, installation, request.owner, err)
 	}
 	if err != nil {
 		return Lease{}, err
@@ -549,27 +584,18 @@ func (m *Manager) mint(ctx context.Context, request mintRequest) (Lease, error) 
 	return lease, nil
 }
 
-// app is the App that mints for role: the one App, whichever role asks.
-func (m *Manager) app(role AppRole) (config.GitHubApp, error) {
-	switch role {
-	case Implement, Review:
-		return m.githubApp, nil
-	default:
-		return config.GitHubApp{}, fmt.Errorf("role_not_configured: %s", role)
-	}
-}
-
-func (m *Manager) installation(ctx context.Context, role AppRole, app config.GitHubApp, owner string) (string, error) {
+// installation is app's installation on owner: the one its configuration names, else the one
+// the Manager last found, else the one a discovery of every installation finds now. It is the
+// owner's alone, whichever set's token is minted on it.
+func (m *Manager) installation(ctx context.Context, app config.GitHubApp, owner string) (string, error) {
 	ownerKey := strings.ToLower(owner)
 	if installation := configuredInstallation(app, owner); installation != "" {
 		return installation, nil
 	}
 	m.mu.Lock()
-	if installations := m.installations[role]; installations != nil {
-		if installation := installations[ownerKey]; installation != "" {
-			m.mu.Unlock()
-			return installation, nil
-		}
+	if installation := m.installations[ownerKey]; installation != "" {
+		m.mu.Unlock()
+		return installation, nil
 	}
 	m.mu.Unlock()
 
@@ -578,16 +604,16 @@ func (m *Manager) installation(ctx context.Context, role AppRole, app config.Git
 		return "", err
 	}
 	m.mu.Lock()
-	if m.installations[role] == nil {
-		m.installations[role] = map[string]string{}
+	if m.installations == nil {
+		m.installations = map[string]string{}
 	}
 	for discoveredOwner, installation := range found {
-		m.installations[role][strings.ToLower(discoveredOwner)] = installation
+		m.installations[strings.ToLower(discoveredOwner)] = installation
 	}
-	installation := m.installations[role][ownerKey]
+	installation := m.installations[ownerKey]
 	m.mu.Unlock()
 	if installation == "" {
-		return "", fmt.Errorf("%w: %s not installed on %s", ErrNotInstalled, role, owner)
+		return "", fmt.Errorf("%w: the App is not installed on %s", ErrNotInstalled, owner)
 	}
 	return installation, nil
 }
@@ -602,12 +628,12 @@ func configuredInstallation(app config.GitHubApp, owner string) string {
 	return ""
 }
 
-// forgetInstallation drops the installation found for role on owner, for the next mint to look
-// for it again.
-func (m *Manager) forgetInstallation(role AppRole, owner string) {
+// forgetInstallation drops the installation found on owner, for the next mint to look for it
+// again.
+func (m *Manager) forgetInstallation(owner string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.installations[role], strings.ToLower(owner))
+	delete(m.installations, strings.ToLower(owner))
 }
 
 // errInstallationGone is a permissions read or a token exchange GitHub answers 404: the
@@ -646,11 +672,11 @@ var ErrNotInstalled = errors.New("github_app_not_installed")
 // interface of its own, as Tokens is, so that a test fake answers one of the two and a Source
 // is put together from the pair.
 type OwnerInstallations interface {
-	InstalledOwners(ctx context.Context, role AppRole) ([]string, error)
+	InstalledOwners(ctx context.Context) ([]string, error)
 }
 
 // Source is a daemon's GitHub App token source whole: the leases it mints (Tokens) and the
-// owner accounts each App is installed on (OwnerInstallations). A gh bundle is built from both,
+// owner accounts the App is installed on (OwnerInstallations). A gh bundle is built from both,
 // one directory per installed owner holding that owner's lease, so the two credentials and
 // every place the daemon hands its token source on take a Source (GitHubCredential,
 // ControllerCredential, internal/daemon's runtime factories, internal/api's Options.Tokens).
@@ -662,10 +688,10 @@ type Source interface {
 	OwnerInstallations
 }
 
-// InstalledOwners is the owner accounts role's App is installed on, lowercased and sorted, read
+// InstalledOwners is the owner accounts the App is installed on, lowercased and sorted, read
 // from GitHub at the moment of the call: GET /app/installations under the App's own JWT, every
 // page of it (discoverInstallations), or, in token mode, the accounts the command's release of
-// every installation names (runTokenCommand with no owner, which records them as this role's
+// every installation names (runTokenCommand with no owner, which records them as the App's
 // installations itself). An installation GitHub lists as suspended is none of them: GitHub
 // refuses every token of a suspended installation, so it is its own statement that the
 // installation serves nothing (discoverInstallations), and the secrets broker leaves one out of
@@ -675,12 +701,12 @@ type Source interface {
 // before, because its caller builds a bundle from the answer: an owner the account removed the
 // App from must stop minting at the next bundle, and one that installed it must mint at that
 // same bundle, with no cached set and no timer between the account's change and the role's
-// reach. What it read replaces the installation ids the Manager holds for the role, so a mint
-// that follows reaches the installation GitHub names now and an owner no longer listed is
+// reach. What it read replaces the installation ids the Manager holds, so a mint that follows
+// reaches the installation GitHub names now and an owner no longer listed is
 // looked for again rather than minted on a stale id.
 //
-// Reads of one App that overlap in time share one read, as concurrent reads of an App's
-// identity do (identity, pendingInstallations): the answer is a fact about the App and the
+// Reads that overlap in time share one read, as concurrent reads of the App's identity do
+// (identity, pendingInstallations): the answer is a fact about the App and the
 // moment, so the second caller is given what the first is reading rather than asking GitHub
 // the same question beside it. That is no cached set — nothing is held once the read ends, and
 // the next caller reads GitHub afresh — and it is what keeps the token-mode cost of a bundle
@@ -693,13 +719,13 @@ type Source interface {
 // among them, waits for it under its own context. Run under the first caller's context, an API
 // request that a client cancelled would end the read and hand `context canceled` to a launch
 // that joined it, failing a bundle over nothing that happened to the launch or to GitHub.
-func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
+func (m *Manager) InstalledOwners(ctx context.Context) ([]string, error) {
 	m.mu.Lock()
-	read, joined := m.pendingInstallations[role]
-	if !joined {
+	read := m.pendingInstallations
+	if read == nil {
 		read = &pendingInstallations{done: make(chan struct{})}
-		m.pendingInstallations[role] = read
-		go m.readSharedInstallations(context.WithoutCancel(ctx), role, read)
+		m.pendingInstallations = read
+		go m.readSharedInstallations(context.WithoutCancel(ctx), read)
 	}
 	m.mu.Unlock()
 	select {
@@ -710,8 +736,8 @@ func (m *Manager) InstalledOwners(ctx context.Context, role AppRole) ([]string, 
 	}
 }
 
-// installationReadLimit bounds the one installation read every overlapping caller of an App
-// shares (InstalledOwners), which no caller's own deadline bounds: longer than the thirty
+// installationReadLimit bounds the one installation read every overlapping caller shares
+// (InstalledOwners), which no caller's own deadline bounds: longer than the thirty
 // seconds a runtime gives a call (sandbox's apiTimeout), so a caller that joins late is still
 // answered, and short enough that a read GitHub never answers is dropped and the next caller
 // asks afresh rather than joining it for ever.
@@ -720,27 +746,24 @@ const installationReadLimit = time.Minute
 // readSharedInstallations makes the read the callers of InstalledOwners share and hands its
 // answer to every one of them through read. detached carries the values of the context that
 // started it and none of its cancellation.
-func (m *Manager) readSharedInstallations(detached context.Context, role AppRole, read *pendingInstallations) {
+func (m *Manager) readSharedInstallations(detached context.Context, read *pendingInstallations) {
 	bounded, cancel := context.WithTimeout(detached, installationReadLimit)
 	defer cancel()
-	owners, err := m.readInstalledOwners(bounded, role)
+	owners, err := m.readInstalledOwners(bounded)
 	m.mu.Lock()
 	read.owners, read.err = owners, err
-	delete(m.pendingInstallations, role)
+	m.pendingInstallations = nil
 	close(read.done)
 	m.mu.Unlock()
 }
 
-// readInstalledOwners is the read itself, made once for every caller of role's App whose call
-// overlaps it (InstalledOwners, readSharedInstallations).
-func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]string, error) {
-	app, err := m.app(role)
-	if err != nil {
-		return nil, err
-	}
+// readInstalledOwners is the read itself, made once for every caller whose call overlaps it
+// (InstalledOwners, readSharedInstallations).
+func (m *Manager) readInstalledOwners(ctx context.Context) ([]string, error) {
+	app := m.githubApp
 	var found map[string]string
 	if app.TokenCommand != "" {
-		released, err := m.runTokenCommand(ctx, app, mintRequest{role: role})
+		released, err := m.runTokenCommand(ctx, app, everyInstallation)
 		if err != nil {
 			return nil, err
 		}
@@ -748,8 +771,12 @@ func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]stri
 		for owner := range released {
 			found[owner] = owner
 		}
-	} else if found, err = m.discoverInstallations(ctx, app); err != nil {
-		return nil, err
+	} else {
+		discovered, err := m.discoverInstallations(ctx, app)
+		if err != nil {
+			return nil, err
+		}
+		found = discovered
 	}
 	installations := make(map[string]string, len(found))
 	owners := make([]string, 0, len(found))
@@ -759,7 +786,7 @@ func (m *Manager) readInstalledOwners(ctx context.Context, role AppRole) ([]stri
 		owners = append(owners, key)
 	}
 	m.mu.Lock()
-	m.installations[role] = installations
+	m.installations = installations
 	m.mu.Unlock()
 	slices.Sort(owners)
 	return owners, nil
