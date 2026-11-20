@@ -318,6 +318,19 @@ step_admission() {
         printf 'the decisions member of the decisions read, kept for one release (compat-objects)' ;;
     packages/dispatch/web/src/features/issue-page/useIssueTree.ts)
       [[ "$text" != *"[${quoted_word}, key]"* ]] || printf 'the query key of the Decisions read' ;;
+    # Main's new issue page frame (#4189): its keymap's Decisions tab, and the e2e rows that press
+    # the Decisions preset, read its address and list the views and shortcuts that name it. Each is
+    # admitted by its text, as #4196's are, so any other line of these files that spells the word
+    # is still a hit.
+    packages/dispatch/web/src/features/issue-page/useIssueKeymap.ts)
+      [[ "$text" != *"toggled(key, ${quoted_word}"* && "$text" != *"tab: ${quoted_word},"* ]] ||
+        printf 'the Decisions tab of the issue page'"'"'s keymap' ;;
+    packages/dispatch/e2e/issue-page-d.e2e.ts)
+      [[ "$text" != *"presetToggle(page, ${quoted_word})"* &&
+        "$text" != *"addressOf(key, ${quoted_word})"* &&
+        "$text" != *"[${dq}d${dq}, ${quoted_word}]"* &&
+        "$text" != *"[${dq}spec${dq}, ${dq}verification${dq}, ${dq}plan${dq}, ${quoted_word}]"* ]] ||
+        printf 'test material: the Decisions tab of the issue page' ;;
     packages/dispatch/web/src/features/refs/routes.ts) printf 'the dispatch://KEY/decisions route' ;;
     packages/contracts/src/legion-roles.ts)
       [[ "$text" != *"GATED_STEPS ="* ]] || printf 'GATED_STEPS, kept for one release (contract-read-side)' ;;

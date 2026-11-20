@@ -41,11 +41,13 @@ func readDecisionDocument(t *testing.T, database *store.Store, issueKey, slug st
 }
 
 // uploadAs uploads content as the issue's document name, as login, and fails unless the upload
-// is taken.
+// is taken. An upload over a document the issue already holds under name names the token of the
+// version it replaces, and a first upload names none (uploadBaseNamed).
 func uploadAs(t *testing.T, handler http.Handler, issueKey, name, content, login string) {
 	t.Helper()
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/artifacts", map[string]any{
-		"name": name, "content": content,
+	path := "/api/v1/issues/" + issueKey + "/artifacts"
+	response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
+		"name": name, "content": content, "precondition": uploadBaseNamed(t, handler, path, name),
 	}, login)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s as %s: status=%d body=%s", name, login, response.Code, response.Body.String())
@@ -297,9 +299,11 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	answerDecisionBlock(t, handler, askID, "alice", []string{"REST"}, "", nil)
 	expectRefusal(t, "uncertainty on the answered ask", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "asks.md", "content": ":::ask{#a1 urgency=\"med\" multiple=\"false\" uncertainty=\"low\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "asks.md"),
 	}, "alice"), http.StatusBadRequest, "INVALID_MARKDOWN", `attribute "uncertainty"`)
 	refusal := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
 		"name": "asks.md", "content": ":::ask{#a1 urgency=\"med\" multiple=\"false\" uncertainty=\"low\"}\nWhich transport?\n\n- REST: Plain HTTP\n- gRPC: Streaming\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", "asks.md"),
 	}, "alice")
 	for _, never := range []string{"alice", "answer", "content", "paragraph"} {
 		if strings.Contains(refusal.Body.String(), never) {
