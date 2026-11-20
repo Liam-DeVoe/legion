@@ -176,7 +176,7 @@ func TestASettlementFromARoomBehindTheHeadCatchesItUpAndTheNextSettlesBoth(t *te
 
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, 30*time.Second, "the settlement the catch-up armed to settle the document", func() bool {
+	waitFor(t, "the settlement the catch-up armed to settle the document", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
@@ -236,7 +236,7 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 	// reads it. The delay is written once, before the settlement it arms.
 	pair.taskA.settle = 20 * time.Millisecond
 	pair.taskA.scheduleSettle(pair.artifactID)
-	waitFor(t, wait, "the document whose room closed under its settlement's catch-up to settle", func() bool {
+	waitFor(t, "the document whose room closed under its settlement's catch-up to settle", func() bool {
 		owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 		return err == nil && !owed
 	})
@@ -323,7 +323,7 @@ func TestASettlementFromARoomBehindTheHeadKeepsItsRoomWithWorkInFlightOnIt(t *te
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the document to settle", func() bool {
+			waitFor(t, "the document to settle", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -486,7 +486,7 @@ func TestACloseOfAReplacedRoomLeavesTheRoomThatReplacedIt(t *testing.T) {
 			if _, err := joinedApplyOps(pair.taskA, pair.artifactID, insert, agent, nil); err != nil {
 				t.Fatalf("a write on the room that replaced the closed one: %v", err)
 			}
-			waitFor(t, 30*time.Second, "the document to settle on the room that replaced the closed one", func() bool {
+			waitFor(t, "the document to settle on the room that replaced the closed one", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -869,7 +869,7 @@ func TestACloseOfAReplacedRoomHoldsItAgainstTheIdleSweep(t *testing.T) {
 		defer state.mu.Unlock()
 		return len(state.connected)
 	}
-	waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+	waitFor(t, "the browser to join the document's room", func() bool {
 		return connected() == 1 && service.srv.GetDoc(artifactID) != nil
 	})
 	live := service.srv.GetDoc(artifactID)
@@ -972,7 +972,7 @@ func TestAWriteOpenedWhileASettlementRunsArmsItWhenItEnds(t *testing.T) {
 				}
 				end()
 			}
-			waitFor(t, 30*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), pair.database.Pool, pair.artifactID)
 				return err == nil && !owed
 			})
@@ -1014,7 +1014,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 			t.Cleanup(server.Close)
 			browser := connectPeer(t, server.URL, artifactID, "alice")
-			waitFor(t, 10*time.Second, "the browser to join the document's room", func() bool {
+			waitFor(t, "the browser to join the document's room", func() bool {
 				return service.srv.GetDoc(artifactID) != nil
 			})
 			editLiveTree(t, service, artifactID, replaceRun("before", "after"))
@@ -1054,7 +1054,7 @@ func TestAWriteOpenedAsASettlementStartsArmsItWhenItEnds(t *testing.T) {
 			}
 
 			start.fire(t, service, artifactID, browser)
-			waitFor(t, 10*time.Second, "the settlement the write took over to settle the document", func() bool {
+			waitFor(t, "the settlement the write took over to settle the document", func() bool {
 				owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 				return err == nil && !owed
 			})
@@ -2182,14 +2182,14 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the document's lock: %v", err)
 	}
-	waitFor(t, roomWait(t), "alice's first keystroke to be stored", func() bool {
+	waitFor(t, "alice's first keystroke to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "first keystroke")
 	})
 	if got := held.Load(); got != 1 {
 		t.Fatalf("%d appends were admitted on the folded history, want alice's first keystroke's alone", got)
 	}
 
-	waitFor(t, roomWait(t), "the room whose history was folded under it to be closed", func() bool {
+	waitFor(t, "the room whose history was folded under it to be closed", func() bool {
 		return service.srv.GetDoc(artifactID) != room
 	})
 	requireEnds(t, alice, "the room whose history was folded under it left alice's browser connected")
@@ -2198,11 +2198,11 @@ func TestARoomIsReloadedOnceAKeystrokeLandsOnAHistoryACompactionFolded(t *testin
 	// this browser's connect stores nothing to move that head on: the two meet. A room left on
 	// the folded history would never meet the head: no stored row at or below its cursor
 	// remains for a catch-up to read.
-	waitFor(t, roomWait(t), "the reloaded room to stand at the document's stored head", func() bool {
+	waitFor(t, "the reloaded room to stand at the document's stored head", func() bool {
 		return !roomBehind(t, service, artifactID)
 	})
 	typeOver(t, alice, "first keystroke", "second keystroke")
-	waitFor(t, roomWait(t), "alice's second keystroke to be stored", func() bool {
+	waitFor(t, "alice's second keystroke to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "second keystroke")
 	})
 	if got := held.Load(); got != 1 {

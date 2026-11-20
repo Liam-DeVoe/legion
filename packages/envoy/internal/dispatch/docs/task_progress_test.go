@@ -137,7 +137,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 
 	done := runTaskProgress(t, service)
-	waitFor(t, 20*time.Second, "the boot pass to give up on the held row", func() bool {
+	waitFor(t, "the boot pass to give up on the held row", func() bool {
 		return strings.Contains(logs.String(), "issue task progress reconciliation pass left drift")
 	})
 	if tasksDone, total, version := taskCount(t, database, free); tasksDone != 1 || total != 2 || version != 1 {
@@ -155,7 +155,7 @@ func TestTaskProgressLockedThroughTheBootPassIsCountedByARetry(t *testing.T) {
 	if err := writer.Rollback(ctx); err != nil {
 		t.Fatalf("release %s: %v", held, err)
 	}
-	waitFor(t, 10*time.Second, "a retry to count the released row", func() bool {
+	waitFor(t, "a retry to count the released row", func() bool {
 		_, _, version := taskCount(t, database, held)
 		return version == 1
 	})

@@ -991,7 +991,7 @@ func TestThreeCopiesOfARetractedAskShareTheOneAskTheFirstOpens(t *testing.T) {
 	var open []string
 	var shown map[string]string
 	pending := -1
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		open = openAsksUnder(t, service, "shared")
 		shown = map[string]string{}
@@ -1051,7 +1051,7 @@ func settlementBarrier(t *testing.T, service *Service, n int) func(string) {
 		mu.Lock()
 		arrived++
 		mu.Unlock()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(testdeadline.StartupBound(t))
 		for time.Now().Before(deadline) {
 			waiting, err := storetest.CountLockWaits(context.Background(), service.store, copyLockWait)
 			if err != nil {

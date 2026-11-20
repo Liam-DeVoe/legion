@@ -680,7 +680,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 		t.Fatalf("connect live document: response=%#v err=%v", response, err)
 	}
 	defer connection.Close()
-	waitFor(t, time.Second, "document peer connection", func() bool {
+	waitFor(t, "document peer connection", func() bool {
 		state := service.room(artifactID)
 		state.mu.Lock()
 		defer state.mu.Unlock()

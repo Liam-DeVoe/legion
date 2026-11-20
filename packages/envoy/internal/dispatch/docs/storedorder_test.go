@@ -626,7 +626,7 @@ func TestStoredOrderTwoBrowsersOutOfOrder(t *testing.T) {
 	before := head()
 	releaseFirst := holdPeerEdit(t, service, artifactID, &service.beforeObserveUpdate, replaceRun("Second.", "Second, bob."))
 	editAsPeer(t, service, artifactID, replaceRun("bob", "bob and carol"))
-	waitFor(t, roomWait(t), "the second peer's update to be stored", func() bool { return head() > before })
+	waitFor(t, "the second peer's update to be stored", func() bool { return head() > before })
 	releaseFirst()
 	assertStoredOrder(t, service, artifactID)
 }
@@ -746,7 +746,7 @@ func soakTyping(t *testing.T, service *Service, serverURL, artifactID string, ga
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitFor(t, "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})

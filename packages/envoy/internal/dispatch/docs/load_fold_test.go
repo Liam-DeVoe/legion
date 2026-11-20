@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A load of a log within foldBufferBytes reads its rows, ends its transaction and folds them
@@ -147,6 +148,10 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		}
 	}
 	ctx := context.Background()
+	// Every load below waits on Postgres's answers before it reaches its fold or its slot, so each
+	// wait for one ends at the test's deadline (testdeadline.Answered), not a fixed span.
+	answered, cancelAnswered := testdeadline.Answered(t, ctx)
+	defer cancelAnswered()
 
 	first := make(chan error, 1)
 	go func() {
@@ -155,7 +160,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}()
 	select {
 	case <-held:
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the first load never reached its fold")
 	}
 	type coldRead struct {
@@ -176,7 +181,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 	}()
 	// The holder committed its read before its fold, so the two transactions left open are the
 	// waiters', each past its read of the stored log and waiting for the slot.
-	waitFor(t, 30*time.Second, "both later loads to wait for the slot inside their read transactions", func() bool {
+	waitFor(t, "both later loads to wait for the slot inside their read transactions", func() bool {
 		return idleInTransaction(t, database) == 2
 	})
 	select {
@@ -193,7 +198,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("the waiter whose context ended returned %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the waiter whose context ended is still waiting for the slot")
 	}
 	select {
@@ -211,7 +216,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the first load: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the first load did not return once released")
 	}
 	select {
@@ -222,7 +227,7 @@ func TestABufferedFoldWaitsForASlotWithinItsContext(t *testing.T) {
 		if got := docMarkdown(read.loaded.Doc); got != "First.\n\nSecond.\n" {
 			t.Fatalf("the second load reads %q, want the stored document", got)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the second load did not proceed once the slot was given back")
 	}
 	if folds := waitedFolds.Load(); folds != 1 {
@@ -309,7 +314,7 @@ func roomLoadService(t *testing.T) (*Service, *PgVersioned, *roomDecodes) {
 	decodes := &roomDecodes{states: make(map[string][][]byte)}
 	service.bootstrapping = decodes.decoded
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
+		stop, cancel := testdeadline.Answered(t, context.Background())
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -446,6 +451,10 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			// The failed room's eviction and its recovery wait on Postgres's answers, so both end
+			// at the test's deadline (testdeadline.Answered).
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			artifactID := createDocument(t, service.store, "unloadable")
 			test.store(t, artifactID)
 			stored, err := versioned.Load(ctx, artifactID)
@@ -470,7 +479,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 					if room != artifactID {
 						t.Fatalf("access %d: failed room %s, want %s", access, room, artifactID)
 					}
-				case <-time.After(recoveryBound):
+				case <-answered.Done():
 					t.Fatalf("access %d: the room that cannot load never failed", access)
 				}
 				// The eviction waits here, so the failure is the one this access recorded.
@@ -493,9 +502,7 @@ func TestARoomWhoseHistoryDoesNotDecodeFailsFromTheRoomsOwnDecode(t *testing.T) 
 					t.Fatalf("access %d: a room that did not load is served", access)
 				}
 				release <- struct{}{}
-				recovered, cancel := context.WithTimeout(ctx, recoveryBound)
-				err = service.awaitRoomRecovery(recovered, artifactID)
-				cancel()
+				err = service.awaitRoomRecovery(answered, artifactID)
 				if err != nil {
 					t.Fatalf("access %d: the failed room's eviction: %v", access, err)
 				}

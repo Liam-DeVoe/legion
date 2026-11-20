@@ -117,7 +117,7 @@ func newReadPair(t *testing.T) readPair {
 	// Runs before the room sync stops and the services shut down: a catch-up held then would
 	// keep the lane, and so both, from returning.
 	t.Cleanup(gate.open)
-	waitFor(t, roomWait(t), "the reader's room to stand at the head", func() bool {
+	waitFor(t, "the reader's room to stand at the head", func() bool {
 		return !roomBehind(t, reader, artifactID)
 	})
 	return readPair{database: database, artifactID: artifactID, writer: writer, reader: reader, loads: loads, gate: gate}
@@ -239,7 +239,7 @@ func TestAReadOfARoomBehindTheStoredHeadReadsTheStoreAndOfACurrentOneReadsTheRoo
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitFor(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	before = pair.loads.loads.Load()
@@ -349,7 +349,7 @@ func TestVerifyMarkOnTheOtherProcessSeesAMarkTheWriterStored(t *testing.T) {
 	}
 
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitFor(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	warmed := make(chan struct{}, 1)
@@ -449,7 +449,7 @@ func TestTheTokenOfARoomBehindTheHeadHoldingItsOwnUpdateIsTheWholeDocuments(t *t
 	// stands is the one that token was taken over, and nothing else has written it.
 	land()
 	pair.gate.open()
-	waitFor(t, roomWait(t), "the reader's room to catch up", func() bool {
+	waitFor(t, "the reader's room to catch up", func() bool {
 		return !roomBehind(t, pair.reader, pair.artifactID)
 	})
 	outcome, err := joinedApplyOps(pair.reader, pair.artifactID, nil, actor, &model.EditPrecondition{Document: token})

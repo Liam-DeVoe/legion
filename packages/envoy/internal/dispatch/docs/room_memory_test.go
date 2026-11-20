@@ -142,7 +142,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 		connections = append(connections, socket.connection)
 		t.Cleanup(func() { _ = socket.connection.Close() })
 	}
-	waitFor(t, roomWait(t), "both sockets to join the loaded room", func() bool {
+	waitFor(t, "both sockets to join the loaded room", func() bool {
 		return service.srv.GetDoc(artifactID) != nil && registeredConnections(service) == 2
 	})
 
@@ -157,7 +157,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	for _, connection := range connections {
 		leaveDocument(connection)
 	}
-	waitFor(t, roomWait(t), "both sockets to be forgotten", func() bool {
+	waitFor(t, "both sockets to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
 	runtime.GC()

@@ -60,10 +60,9 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 		}()
 	}
 	var held []func()
-	waitFor(t, roomWait(t), "32 conditional edits admitted across both processes", func() bool {
+	waitFor(t, "32 conditional edits admitted across both processes", func() bool {
 		select {
 		case result := <-results:
-			// Task B's first edit takes its turn at once; every other one waits for a turn.
 			if result.err != nil {
 				t.Fatalf("a conditional edit within the cap: %v", result.err)
 			}

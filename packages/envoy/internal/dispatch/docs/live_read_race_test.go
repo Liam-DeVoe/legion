@@ -472,7 +472,7 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 		done.Wait()
 		client := peer.Doc.ClientID()
 		sent := peer.Doc.StateVector().Clock(client)
-		waitFor(t, 30*time.Second, "the room to apply the peer's last update", func() bool {
+		waitFor(t, "the room to apply the peer's last update", func() bool {
 			room := service.srv.GetDoc(artifactID)
 			return room == nil || room.StateVector().Clock(client) >= sent
 		})
@@ -497,7 +497,7 @@ func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID stri
 	case <-time.After(10 * time.Second):
 		t.Fatal("the peer sent no update")
 	}
-	waitFor(t, 10*time.Second, "the room to load", func() bool {
+	waitFor(t, "the room to load", func() bool {
 		return service.srv.GetDoc(artifactID) != nil
 	})
 	return peer.Doc.ClientID()

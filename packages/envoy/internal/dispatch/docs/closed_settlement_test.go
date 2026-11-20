@@ -264,7 +264,7 @@ func (f closedSettlementFixture) requireEnds(t *testing.T, peer *docstest.Peer, 
 // wait goes on through each retry until the retries end or fail the room.
 func (f closedSettlementFixture) waitForNoSettlement(t *testing.T) {
 	t.Helper()
-	waitFor(t, roomWait(t), "no settlement of the document to be armed or running", func() bool {
+	waitFor(t, "no settlement of the document to be armed or running", func() bool {
 		state := f.service.lockExistingState(f.artifactID)
 		if state == nil {
 			return true
@@ -627,7 +627,7 @@ func settleAfterTheRoomsPersistenceIsRefused(t *testing.T) {
 	}
 
 	f.resume(t)
-	waitFor(t, roomWait(t), "the settlement the resumption armed to take the document's lock", func() bool {
+	waitFor(t, "the settlement the resumption armed to take the document's lock", func() bool {
 		return locked.Load() > 0
 	})
 	f.waitForNoSettlement(t)

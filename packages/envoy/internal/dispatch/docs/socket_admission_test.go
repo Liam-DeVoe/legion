@@ -396,7 +396,7 @@ func TestTheConnectionAndRoomCapsCountWithoutScanning(t *testing.T) {
 	// The room cap: the 1,001st room is refused, while a live room still admits a socket.
 	refuseSocket(t, server.URL, spare[0], "the 1,001st room")
 	leaveDocument(admitSocket(t, server.URL, resident[0], "a live room while the room cap is reached"))
-	waitFor(t, roomWait(t), "the socket that left to be forgotten", func() bool {
+	waitFor(t, "the socket that left to be forgotten", func() bool {
 		return registeredConnections(service) == 0
 	})
 

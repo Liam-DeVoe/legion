@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The room cap counts live rooms, and the service forgets a document's state once its room has
@@ -51,7 +52,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	}
 	for batch := range slices.Chunk(openedIDs, 200) {
 		openInEditor(t, service, httpServer.URL, batch)
-		waitFor(t, 30*time.Second, "the rooms the editor opened to go idle", func() bool {
+		waitFor(t, "the rooms the editor opened to go idle", func() bool {
 			return len(service.srv.Rooms()) <= written
 		})
 	}
@@ -60,7 +61,7 @@ func TestDocumentsOpenAfterMoreThanTheRoomCapWereTouched(t *testing.T) {
 	} else {
 		leaveDocument(connection)
 	}
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) <= written
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -85,7 +86,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 			t.Fatalf("warm read of document %s: %v", id, err)
 		}
 	}
-	waitFor(t, 30*time.Second, "the rooms the API opened to go idle", func() bool {
+	waitFor(t, "the rooms the API opened to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	connection, err := dialDocument(httpServer.URL, untouched)
@@ -93,7 +94,7 @@ func TestRoomsTheAPIOpenedReleaseTheCapOnceIdle(t *testing.T) {
 		t.Fatalf("open a document nobody touched after %d were: %v, want it admitted", len(touched), err)
 	}
 	leaveDocument(connection)
-	waitFor(t, 30*time.Second, "the untouched document's room to go idle", func() bool {
+	waitFor(t, "the untouched document's room to go idle", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -133,7 +134,7 @@ func TestClosingAnIssueReleasesItsUnsettledDocuments(t *testing.T) {
 		t.Fatalf("close the documents' issue: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
-	waitFor(t, 30*time.Second, "the closed issue's rooms to close", func() bool {
+	waitFor(t, "the closed issue's rooms to close", func() bool {
 		return len(service.srv.Rooms()) == 0
 	})
 	waitForStateToFollowLiveRooms(t, service)
@@ -291,6 +292,8 @@ func appendThroughAPI(t *testing.T, service *Service, id string) {
 }
 
 // openInEditor opens each document as a browser does, waits for its room to be live, and leaves.
+// A room goes live once its load has read the document from Postgres, so each wait ends at the
+// test's deadline (testdeadline.StartupBound).
 func openInEditor(t *testing.T, service *Service, serverURL string, ids []string) {
 	t.Helper()
 	work := make(chan string)
@@ -306,7 +309,7 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 					failures <- fmt.Errorf("open document %s: %w", id, err)
 					continue
 				}
-				deadline := time.Now().Add(10 * time.Second)
+				deadline := time.Now().Add(testdeadline.StartupBound(t))
 				for service.srv.GetDoc(id) == nil && time.Now().Before(deadline) {
 					time.Sleep(time.Millisecond)
 				}
@@ -367,10 +370,12 @@ func leaveDocument(connection *gws.Conn) {
 // live rooms at most - room state for each live room and nothing else, and nothing in the maps that
 // last only while an operation runs - and fails naming what is left when that does not come. ygo
 // takes a room out of its map before the room's persistence worker drains and OnUnloadDocument
-// releases the state, so this holds a few milliseconds after the room count does.
+// releases the state, so this holds a few milliseconds after the room count does, or as long after
+// as the drain's Postgres writes take: the wait ends at the test's deadline
+// (testdeadline.StartupBound).
 func waitForStateToFollowLiveRooms(t *testing.T, service *Service) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		problems := perDocumentStateProblems(service)
 		if len(problems) == 0 {

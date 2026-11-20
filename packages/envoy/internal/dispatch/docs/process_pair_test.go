@@ -92,7 +92,7 @@ func (pair processPair) heldEditOnB(t *testing.T, connection uint64, actor model
 	pair.gateB.hold()
 	pair.taskB.addConnection(pair.artifactID, connection, actor)
 	editAsPeer(t, pair.taskB, pair.artifactID, edit)
-	waitFor(t, roomWait(t), "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
+	waitFor(t, "task B's append of the edit to wait at the gate", func() bool { return pair.gateB.waiting.Load() == 1 })
 }
 
 // leaveTaskABehind loads task A's room, then has a browser on task B edit the document: task A's

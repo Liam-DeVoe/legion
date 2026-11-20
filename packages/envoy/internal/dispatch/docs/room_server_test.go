@@ -12,6 +12,7 @@ import (
 	"github.com/reearth/ygo/provider/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A room's close gate leaves with the last close or repair that held it: the server keeps none
@@ -73,6 +74,10 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 		}
 	}
 	t.Cleanup(release)
+	// A settlement that waited for the close would wait for good, since the close is held until
+	// the wait below ends; one that refuses returns once Postgres has answered its reads.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	settled := make(chan struct{})
 	go func() {
 		defer close(settled)
@@ -80,7 +85,7 @@ func TestARepairRefusesRatherThanWaitsForACloseUnderWay(t *testing.T) {
 	}()
 	select {
 	case <-settled:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		release()
 		t.Fatal("the settlement waited for the close under way instead of refusing its repair")
 	}

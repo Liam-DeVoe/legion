@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // editNoticeRow is a document's pending edit notice as document_edit_notices holds it, with the
@@ -705,7 +706,7 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 			sent, err := service.sendDueEditNotices(store.WithTransactionTracking(context.Background()))
 			swept <- sweepResult{sent, err}
 		}()
-		deadline := time.Now().Add(10 * time.Second)
+		deadline := time.Now().Add(testdeadline.StartupBound(t))
 		for {
 			waiting, err := storetest.CountLockWaits(context.Background(), service.store, "%as owner_lock%")
 			if err != nil {
@@ -731,16 +732,18 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 	if bobVersion != aliceVersion+1 {
 		t.Fatalf("bob's settlement wrote version %d, want %d", bobVersion, aliceVersion+1)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case result := <-swept:
 		if result.err != nil || result.sent != 0 {
 			t.Fatalf("the sweep that met the settlement = %d sent, %v; want none sent, since the settlement moved the notice on", result.sent, result.err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the sweep that met the settlement never finished")
 	}
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(humanEdits(t, service.store, artifactID)) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("no notice went once the quiet time passed")

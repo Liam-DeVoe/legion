@@ -64,7 +64,7 @@ func TestTheExcerptLeaseHolderPassesOverDocumentsHoldingNewerContent(t *testing.
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: time.Hour})
 	})
 
-	waitFor(t, 20*time.Second, fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
+	waitFor(t, fmt.Sprintf("the document after %d documents holding newer content to be reconciled", newer),
 		func() bool { return !isOwed(t, database, readable) })
 	for _, document := range documents[:newer] {
 		if version := excerptVersionOf(t, database, document); version != nil {
@@ -94,7 +94,7 @@ func TestAStaleExcerptLeftByABuildThatStoresNoneIsMarkedAndCutAgain(t *testing.T
 	leases := excerptLeases(t, database)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 20*time.Second, "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
+	waitFor(t, "the excerpt version 1 left behind to be marked owed and cut again at version 2", func() bool {
 		version := excerptVersionOf(t, database, document)
 		return version != nil && *version == 2
 	})
@@ -347,7 +347,7 @@ func TestAFailingDocumentsExcerptsAreRetriedAtGrowingIntervals(t *testing.T) {
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 50 * time.Millisecond, retryBase: base})
 	})
 
-	waitFor(t, 15*time.Second, "the failing document's first attempt and three retries", func() bool {
+	waitFor(t, "the failing document's first attempt and three retries", func() bool {
 		return len(persistence.reads.attempts(failing)) >= 4
 	})
 	attempts := persistence.reads.attempts(failing)
@@ -376,7 +376,7 @@ func TestTwentyFailingDocumentsDoNotHoldBackATwentyFirstsExcerpts(t *testing.T) 
 		service.runReferenceExcerptReconciliation(ctx, leases, nil, excerptSchedule{minGap: 100 * time.Millisecond, retryBase: time.Hour})
 	})
 
-	waitFor(t, 10*time.Second, "the twenty-first document's excerpt", func() bool { return !isOwed(t, database, last) })
+	waitFor(t, "the twenty-first document's excerpt", func() bool { return !isOwed(t, database, last) })
 	time.Sleep(500 * time.Millisecond)
 	for _, document := range failing {
 		if attempts := persistence.reads.attempts(document); len(attempts) != 1 {
@@ -400,7 +400,7 @@ func TestTheExcerptReconciliationMakesNoStatementOnceDrained(t *testing.T) {
 	leases := excerptLeases(t, counted)
 	runExcerpts(t, func(ctx context.Context) { service.RunReferenceExcerptReconciliation(ctx, leases, nil) })
 
-	waitFor(t, 15*time.Second, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
+	waitFor(t, "every owed excerpt stored", func() bool { return len(owedMentions(t, database)) == 0 })
 	storetest.AwaitQuiet(t, counter, time.Second, 10*time.Second)
 	storetest.RequireNoStatements(t, counter, 3*time.Second, "the reconciliation with nothing owed")
 	if next := service.reconcileExcerptPass(context.Background(), referenceExcerptSchedule); !next.IsZero() {
@@ -445,7 +445,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the hub did not connect within 10s")
 	}
-	waitFor(t, 10*time.Second, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
+	waitFor(t, "the boot pass to store the excerpt", func() bool { return !isOwed(t, database, document) })
 	// The hub's signal after its LISTEN earns one more pass, no sooner than the gap after the
 	// boot pass began; after it the loop is idle.
 	time.Sleep(time.Until(started.Add(referenceExcerptSchedule.minGap + time.Second)))
@@ -478,6 +478,6 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 		if !isOwed(t, database, document) {
 			t.Fatalf("%s left nothing owed", name)
 		}
-		waitFor(t, 3*time.Second, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
+		waitFor(t, "the excerpt "+name+" left owed to be stored", func() bool { return !isOwed(t, database, document) })
 	}
 }

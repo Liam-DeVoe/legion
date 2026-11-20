@@ -140,7 +140,7 @@ func TestAnAnchoredCommentOnAClosedIssueWithNoRoomFailsNoRoom(t *testing.T) {
 		t.Fatalf("the document owes a settlement after the comment = %t (%v), want the pending-settlement row its write left", owed, err)
 	}
 	letSettle()
-	waitFor(t, roomWait(t), "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
+	waitFor(t, "the closed issue's settlement to commit, taking the document's pending-settlement row", owesNothing)
 	// A refusal counted as a failure failed the room on its third try, three settle delays after
 	// the first; this watches ten, and the failure count below catches even the first taken as a
 	// fault.

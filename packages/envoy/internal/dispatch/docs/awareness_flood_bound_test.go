@@ -40,7 +40,7 @@ func TestRepeatedAwarenessFloodsDoNotGrowARoomsAwarenessWithoutLimit(t *testing.
 	}
 
 	bound := 2 * maxAwarenessClientsPerRoom
-	waitFor(t, roomWait(t), "task A's relay to have sent what it relays of the frames", func() bool {
+	waitFor(t, "task A's relay to have sent what it relays of the frames", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == 0
 	})
 	onA, err := pair.taskA.heldAwarenessClients(pair.artifactID)

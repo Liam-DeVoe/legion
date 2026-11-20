@@ -177,7 +177,7 @@ func TestAWriteOnTheOtherProcessReachesThisProcessesBrowserWithoutAClose(t *test
 	if pair.taskA.srv.GetDoc(pair.artifactID) != room {
 		t.Fatal("task A's room was replaced rather than caught up")
 	}
-	waitFor(t, roomWait(t), "task A's room to stand at the head", func() bool {
+	waitFor(t, "task A's room to stand at the head", func() bool {
 		return !roomBehind(t, pair.taskA, pair.artifactID)
 	})
 	requireRoomStillWrites(t, pair.taskA, pair.artifactID, 3)
@@ -467,7 +467,7 @@ func TestACatchUpInsideThisProcessesOwnCommitWindowClosesNothing(t *testing.T) {
 		defer close(caught)
 		service.catchUps.catchUp(ctx, artifactID)
 	}()
-	waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
+	waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
 		return waitingAdvisoryLocks(t, database) > 0
 	})
 	if err := tx.Commit(ctx); err != nil {
@@ -524,7 +524,7 @@ func TestACatchUpInsideARepairingSettlementsCommitWindowClosesNothing(t *testing
 			defer close(caught)
 			service.catchUps.catchUp(context.Background(), artifactID)
 		}()
-		waitFor(t, roomWait(t), "the catch-up to confirm its verdict under the document's lock", func() bool {
+		waitFor(t, "the catch-up to confirm its verdict under the document's lock", func() bool {
 			return waitingAdvisoryLocks(t, database) > 0
 		})
 	}
@@ -671,7 +671,7 @@ func TestARoomLeftBehindWhileTheListenerWasDownIsCaughtUpOnTheReconnect(t *testi
 func waitForCatchUpsIdle(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	catchUps := service.catchUps
-	waitFor(t, roomWait(t), "the room's scheduled catch-up to run", func() bool {
+	waitFor(t, "the room's scheduled catch-up to run", func() bool {
 		catchUps.mu.Lock()
 		defer catchUps.mu.Unlock()
 		_, loading := catchUps.loading[artifactID]
@@ -713,7 +713,7 @@ func TestABurstOfBareAnnouncementsCostsOneCatchUp(t *testing.T) {
 			t.Fatalf("append as an old build: %v", err)
 		}
 	}
-	waitFor(t, roomWait(t), "the burst's announcements to queue on the lane", func() bool {
+	waitFor(t, "the burst's announcements to queue on the lane", func() bool {
 		lane.mu.Lock()
 		defer lane.mu.Unlock()
 		return len(lane.queue) >= burst

@@ -228,11 +228,11 @@ func TestQueuedBrowserUpdatesOfOneRoomCommitInOneTransactionOffTheSharedPool(t *
 	for keystroke := range queued {
 		typeInRoom(t, service, artifactID, 1, alice, appendBlocks(t, fmt.Sprintf("Keystroke %d.\n", keystroke)))
 	}
-	waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
+	waitFor(t, "the room's first append to wait for the document's lock", func() bool {
 		return waitingAdvisoryLocks(t, observer) > 0
 	})
 	unlock()
-	waitFor(t, roomWait(t), "every queued update to be stored", func() bool {
+	waitFor(t, "every queued update to be stored", func() bool {
 		return storedHead(t, observer, artifactID) >= before+queued
 	})
 	waitForLandedAppends(t, service, artifactID)
@@ -325,7 +325,7 @@ func storeCreditedUpdates(t *testing.T, service *Service, observer *store.Store,
 		}
 	}
 	if together {
-		waitFor(t, roomWait(t), "the room's first append to wait for the document's lock", func() bool {
+		waitFor(t, "the room's first append to wait for the document's lock", func() bool {
 			return waitingAdvisoryLocks(t, observer) > 0
 		})
 		unlock()
@@ -689,7 +689,7 @@ func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 		gate.let()
 
 		state := service.room(artifactID)
-		waitFor(t, roomWait(t), "every update but the retired instance's to be stored", func() bool {
+		waitFor(t, "every update but the retired instance's to be stored", func() bool {
 			state.mu.Lock()
 			defer state.mu.Unlock()
 			return len(state.updateClasses) == 1 && state.durableAppends.Load() == 1
@@ -1148,7 +1148,7 @@ func TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection(t *testing.
 	if held := appends.Stat().TotalConns(); held != 0 {
 		t.Fatalf("the room-appends pool holds %d connections after an unlock that answered false, want none: a connection whose locks are unknown went back to the pool", held)
 	}
-	waitFor(t, roomWait(t), "the backend of the append's connection to end with it", func() bool {
+	waitFor(t, "the backend of the append's connection to end with it", func() bool {
 		var running bool
 		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, backend.Load()).Scan(&running); err != nil {
 			t.Fatalf("read the state of the append backend: %v", err)
@@ -1370,7 +1370,7 @@ func TestARefusedRoomAppendsRollbackIsBoundedOnAHalfOpenLink(t *testing.T) {
 	}
 	// The connection the rollback's bound closed is destroyed rather than returned, which puddle
 	// does on a goroutine of its own, so the pool empties a moment after the call returns.
-	waitFor(t, roomWait(t), "the stuck connection to leave the room-appends pool", func() bool {
+	waitFor(t, "the stuck connection to leave the room-appends pool", func() bool {
 		return appends.Stat().TotalConns() == 0
 	})
 	close(reading)

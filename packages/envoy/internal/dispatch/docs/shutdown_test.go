@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A deploy usually finds someone with a document open, its tab connected to the room with what it
@@ -116,12 +117,14 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := browser.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	if err := browser.WaitForText(peerMarkdown, "before\n", testdeadline.StartupBound(t)); err != nil {
 		t.Fatal(err)
 	}
 	// A block with no id arms the room's settlement, which has to stamp one.
 	editLiveTree(t, service, artifactID, appendUnidentifiedBlocks(t, "added"))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Every wait of this test but the one past the drain budget below is for Postgres's answers,
+	// so it ends at the test's deadline (testdeadline.Answered), not at a fixed span.
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to reach persistence: %v", err)
@@ -134,13 +137,11 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 	browser.Close()
 	select {
 	case <-pause.held:
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("the settlement the browser's leaving owed never stamped the room")
 	}
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
+	go func() { shutdown <- service.Shutdown(ctx) }()
 	// Shutdown's own settlement of the room waits on the owner row the held one holds until the
 	// drain budget ends; a Shutdown still running a little after that is waiting on the held
 	// settlement.
@@ -156,7 +157,7 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 		if err != nil {
 			t.Fatalf("shutdown under the browser's settlement: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("Shutdown never returned once the settlement the browser's leaving started could go on")
 	}
 	// The stamp went with the shutdown's gate, so the document is left to resume, its edit stored.
@@ -183,7 +184,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	settleCurrentGeneration(t, service, held)
 	editLiveTree(t, service, quiet, replaceRun("quiet", "quiet, edited"))
 	waitForSettlementOwed(t, service, quiet)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	if err := service.waitForDurableAppends(ctx, quiet); err != nil {
 		t.Fatalf("wait for the quiet document's edit to be stored: %v", err)
@@ -192,7 +193,7 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 	editLiveTree(t, service, held, replaceRun("held", "held, edited"))
 	select {
 	case <-appends.entered:
-	case <-time.After(10 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("the held room's append never reached the store")
 	}
 
@@ -250,7 +251,11 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
-	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
+	// Every wait of this test but the sleep past the drain budget is for Postgres's answers, so it
+	// ends at the test's deadline (testdeadline), not at a fixed span.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	if err := editor.WaitForText(peerMarkdown, "before\n", testdeadline.StartupBound(t)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,25 +263,23 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	editLiveTree(t, service, artifactID, replaceRun("before", "first"))
 	select {
 	case <-first.entered:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the first append never reached the store")
 	}
-	if err := editor.WaitForText(peerMarkdown, "first\n", 10*time.Second); err != nil {
+	if err := editor.WaitForText(peerMarkdown, "first\n", testdeadline.StartupBound(t)); err != nil {
 		t.Fatal(err)
 	}
 
-	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancelShutdown()
 	shutdown := make(chan error, 1)
-	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	waitFor(t, 10*time.Second, "Shutdown to have scanned the room", func() bool {
+	go func() { shutdown <- service.Shutdown(answered) }()
+	waitFor(t, "Shutdown to have scanned the room", func() bool {
 		return service.shuttingDown(artifactID)
 	})
 
 	// Only now, deterministically after the scan, does a second write land - the already-connected
 	// editor's own keystroke, which Shutdown's inject refusal never reaches.
 	typeOver(t, editor, "first", "second")
-	waitFor(t, 10*time.Second, "both appends to be recorded as outstanding", func() bool {
+	waitFor(t, "both appends to be recorded as outstanding", func() bool {
 		return service.room(artifactID).durableAppends.Load() >= 2
 	})
 	// Both appends stay queued past the pre-fix 5 s drain budget, and land with time to spare
@@ -285,7 +288,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	first.let()
 	select {
 	case <-second.entered:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the second append never reached the store once the first let go")
 	}
 	second.let()
@@ -293,7 +296,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	var shutdownErr error
 	select {
 	case shutdownErr = <-shutdown:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("Shutdown did not return once both appends landed")
 	}
 	if shutdownErr != nil {
@@ -322,9 +325,9 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 	settleCurrentGeneration(t, service, artifactID)
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	waitForSettlementOwed(t, service, artifactID)
-	appendCtx, cancelAppend := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelAppend()
-	if err := service.waitForDurableAppends(appendCtx, artifactID); err != nil {
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	if err := service.waitForDurableAppends(answered, artifactID); err != nil {
 		t.Fatalf("wait for the edit to be stored: %v", err)
 	}
 
@@ -349,14 +352,14 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
 	select {
 	case <-entered:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the settlement never reached its reconcile hook")
 	}
 
 	var shutdownErr error
 	select {
 	case shutdownErr = <-shutdown:
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("Shutdown did not return once the render finished")
 	}
 	if shutdownErr != nil {
@@ -468,7 +471,7 @@ func typeOver(t *testing.T, peer *docstest.Peer, old, replacement string) {
 // waitForSettlementOwed waits for the document's pending-settlement row.
 func waitForSettlementOwed(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	waitFor(t, 10*time.Second, "the document to owe a settlement", func() bool {
+	waitFor(t, "the document to owe a settlement", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && owed
 	})
