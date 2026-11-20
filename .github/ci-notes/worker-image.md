@@ -15,8 +15,10 @@ side by side, so what the build can spend on them is the longest chain of stages
 which rule 22 of `.github/scripts/check-ci-filters.sh` counts: the plugin stage's chain, 2,485 s.
 That is the builder's pull of the Bun image, 180 s, what a healthy pull takes (PULL_SECONDS, in
 `.github/scripts/ci_network_installs.py`; the builder gives a FROM pull no bound of its own); the
-plugin stage's apt update and install, 245 s each (60 s bounds); its install of the whole root
-workspace, 965 s (the bun-image kind's 300 s bound); and two more bun installs, 425 s each (120 s).
+plugin stage's apt update and its packages' download, 245 s each (60 s bounds; the install from that
+download runs unwrapped, as every apt install here does, since unpacking is no network wait); its
+install of the whole root workspace, 965 s (the bun-image kind's 300 s bound); and two more bun
+installs, 425 s each (120 s). The build step's slowest green run below includes the unpacking.
 
 The build step took 1,183 s at its slowest of 9,989 green runs on pull requests from 2026-10-27 to
 2026-11-20, job 133793114356, and that job took 1,265 s, the slowest whole run of them. So the build

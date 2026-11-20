@@ -155,10 +155,13 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dca
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
 # apt-get update carries --error-on=any, so a mirror it could not read fails it (with the mirror's
-# words, which network-install.sh reads as a network fault) rather than exiting 0.
+# words, which network-install.sh reads as a network fault) rather than exiting 0. Only the
+# packages' download (--download-only) runs under network-install.sh's bound; the install from it
+# (--no-download) runs unwrapped, so no bound can end it while dpkg writes.
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
     network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only ca-certificates curl \
+    && apt-get install -y --no-install-recommends --no-download ca-certificates curl && rm -rf /var/lib/apt/lists/* \
     && groupadd -r envoy && useradd -r -g envoy envoy \
     && mkdir -p /home/envoy/.local/share/dispatch \
     && chown -R envoy:envoy /home/envoy

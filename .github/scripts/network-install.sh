@@ -70,12 +70,17 @@ NETWORK_FAULT='connection ?refused|connection ?reset|connectionclosed|econnrefus
 # release.yaml, to 2026-11-20 11:15Z), where a RUN's whole time bounds each install in it. A kind
 # named `<installer>-<what>` guards installs of that installer measured apart (rule 22 holds an
 # install to a kind of its own installer).
-#   apt         apt-get update and apt-get install. Slowest of 54 green steps (median 12 s): 25 s,
-#               claude-envoy's "Install zsh" in job 135990304720 of run 44646446447, whose update
-#               read 15.2 MB of package lists; of the Dockerfiles' apt RUNs: 28.3 s, the worker
-#               image's runtime-base RUN (two updates and two installs, run by 4 of the 40 green
-#               builds; the others took it from the cache) in job 136243259140. 2 × 28.3 s is
-#               56.6 s, so 60 s an attempt.
+#   apt         apt-get update, and apt-get install --download-only: an install's download alone.
+#               The install from what it downloaded (--no-download) reads no network and runs
+#               outside this script, since a bound that ended it while dpkg wrote would leave every
+#               later attempt failing on `dpkg was interrupted` (worker-image run 44765474341, whose
+#               runtime-base RUN downloaded 471 packages, 442 MB, in 21.4 s and was still unpacking
+#               when the bound ended it; check-ci-filters.sh's rule 22 refuses such a wrap). Slowest
+#               of 54 green steps (median 12 s): 25 s, claude-envoy's "Install zsh" in job
+#               135990304720 of run 44646446447, whose update read 15.2 MB of package lists, its
+#               install included; that 442 MB download, 21.4 s. 2 × 25 s is 50 s, so 60 s an attempt.
+#               The worker image's runtime-base RUN, its two installs included, took 28.3 s in the 4
+#               of 40 green builds that ran it, and bounds nothing now: its unpacking is no network wait.
 #   bun         bun install and bun add from the npm registry. Slowest of 499 green steps (median
 #               6 s): 55 s, proof-sdk-offline's cold install behind its fault proxy in job
 #               135990304816 of the same run; of the Dockerfiles' bun RUNs but the one below: 12.1 s,

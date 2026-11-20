@@ -3531,10 +3531,10 @@ check "names the update, the job and the step" \
 check "names the install too" "$(contains "$out" "runs \`apt-get install\` in step \"Lint everything\"")"
 check "says how to run it" "$(contains "$out" "Run it as \`.github/scripts/network-install.sh <kind> -- <command>\`")"
 
-echo "case: rule 22, the same install through network-install.sh"
+echo "case: rule 22, the same install through network-install.sh, its download wrapped and dpkg not"
 root=$(fixture network-wrapped)
 replace "$root/.github/workflows/ci.yaml" "        run: echo lint" \
-  $'        run: |\n          .github/scripts/network-install.sh apt -- sudo apt-get update\n          .github/scripts/network-install.sh apt -- sudo apt-get install -y tmux'
+  $'        run: |\n          .github/scripts/network-install.sh apt -- sudo apt-get update\n          .github/scripts/network-install.sh apt -- sudo apt-get install -y --download-only tmux\n          sudo apt-get install -y --no-download tmux'
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
@@ -3582,6 +3582,26 @@ lint_steps() {
 
 # refused_in <step> <install>: whether the check named that install in that step.
 refused_in() { contains "$out" "runs \`$2\` in step \"$1\": an install that waits on the network"; }
+
+echo "case: rule 22 refuses a wrapped apt install that runs dpkg, and an unwrapped one that downloads"
+root=$(fixture network-wrapped-dpkg)
+lint_steps "$root" \
+  "the whole install wrapped" ".github/scripts/network-install.sh apt -- sudo apt-get install -y tmux" \
+  "an upgrade wrapped" ".github/scripts/network-install.sh apt -- apt-get upgrade -y" \
+  "dpkg's half wrapped" ".github/scripts/network-install.sh apt -- apt-get install -y --no-download tmux" \
+  "the download wrapped, then a download" $'.github/scripts/network-install.sh apt -- apt-get install -y -d tmux\napt-get install -y tmux'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the whole install, and why" \
+  "$(contains "$out" "runs \`apt-get install\` through .github/scripts/network-install.sh in step \"the whole install wrapped\" without --download-only: the bound would end an attempt while dpkg writes")"
+check "names a wrapped upgrade" \
+  "$(contains "$out" "runs \`apt-get upgrade\` through .github/scripts/network-install.sh in step \"an upgrade wrapped\" without --download-only")"
+check "names dpkg's half wrapped" \
+  "$(contains "$out" "in step \"dpkg's half wrapped\" without --download-only")"
+check "names the install that still downloads after the wrapped -d" \
+  "$(refused_in "the download wrapped, then a download" "apt-get install")"
+check "passes the wrapped -d itself" \
+  "$(is "$(contains "$out" "through .github/scripts/network-install.sh in step \"the download wrapped, then a download\"")" false)"
 
 echo "case: rule 22 reads through sudo, env, an interpreter and an installer's own options"
 root=$(fixture network-spellings)
@@ -3953,7 +3973,8 @@ check "names the build step that has no limit of its own" \
 cat > "$root/docker/app.Dockerfile" <<'DOCKERFILE'
 FROM ghcr.io/example/base:1 AS build
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
-    network-install.sh apt -- apt-get update && network-install.sh apt -- apt-get install -y curl
+    network-install.sh apt -- apt-get update && network-install.sh apt -- apt-get install -y --download-only curl \
+    && apt-get install -y --no-download curl
 RUN echo built > /built
 FROM ghcr.io/example/base:1
 COPY --from=build /built /built

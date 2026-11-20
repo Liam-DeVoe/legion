@@ -236,11 +236,16 @@ WORKDIR /repo
 # download a curl makes carries a --max-time twice the slowest green run of its RUN: a mirror, a
 # registry or a release host that answers and then all but stops fails the build by name instead of
 # holding the job that builds it until its limit (check-ci-filters.sh's rule 22 reads this file;
-# each kind's bound is measured in network-install.sh's header).
+# each kind's bound is measured in network-install.sh's header). An apt install runs its download
+# alone under that bound (--download-only), and the install from it unwrapped (--no-download):
+# unpacking is no wait on the network, and a bound that ended it while dpkg wrote would leave every
+# later attempt failing on `dpkg was interrupted`, as worker-image run 44765474341 did.
 # hadolint ignore=DL3008
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
-    network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends jq python3 make g++ \
+    set -- jq python3 make g++ \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json bun.lock ./
 COPY patches patches
@@ -376,8 +381,10 @@ ARG JJ_TOOL
 ARG GH_TOOL
 # hadolint ignore=DL3008
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
-    network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends ca-certificates curl \
+    set -- ca-certificates curl \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
 # --max-time 60: this RUN took 4.3 s at its slowest of 40 green builds (job 136246740734).
 RUN set -eu; \
@@ -564,8 +571,10 @@ ARG GO_VERSION
 ARG GO_SHA256
 # hadolint ignore=DL3008
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
-    network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends ca-certificates curl unzip xz-utils \
+    set -- ca-certificates curl unzip xz-utils \
+    && network-install.sh apt -- apt-get update --error-on=any \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/*
 COPY packages/daemon/docker/language-servers/package.json packages/daemon/docker/language-servers/package-lock.json /opt/language-servers/
 # --max-time 120 on each download: this RUN took 43.2 s at its slowest of 40 green builds (job
@@ -873,12 +882,18 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # certificate left behind in the trust directory, which would otherwise dangle.
 ARG PGDG_KEY_SHA256
 # The key's curl carries --max-time 60: this RUN, both updates and both installs with it, took
-# 28.3 s at its slowest, in the 4 of 40 green builds that ran it (job 136243259140).
+# 28.3 s at its slowest, in the 4 of 40 green builds that ran it (job 136243259140). That figure is
+# no bound of the installs, whose unpacking is no network wait: each install runs its download alone
+# under network-install.sh's apt bound (--download-only; the second downloaded 471 packages, 442 MB,
+# in 21 s in worker-image run 44765474341) and then installs from it unwrapped (--no-download), held
+# by the build step's limit alone. Wrapping the whole install there let the bound end dpkg mid-way,
+# and the next attempt failed on `dpkg was interrupted`.
 # hadolint ignore=DL3008
 RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/local/bin/network-install.sh \
     install -d -m 0755 /etc/apt/keyrings \
     && network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends ca-certificates curl \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only ca-certificates curl \
+    && apt-get install -y --no-install-recommends --no-download ca-certificates curl \
     && curl -fsSL --max-time 60 -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc \
     && printf '%s  %s\n' "$PGDG_KEY_SHA256" /etc/apt/keyrings/pgdg.asc > /tmp/pgdg-key.sha256 \
     && sha256sum --check --strict /tmp/pgdg-key.sha256 \
@@ -889,7 +904,7 @@ RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/loca
       'Package: postgresql* libpq5' 'Pin: origin apt.postgresql.org' 'Pin-Priority: 600' \
       > /etc/apt/preferences.d/pgdg \
     && network-install.sh apt -- apt-get update --error-on=any \
-    && network-install.sh apt -- apt-get install -y --no-install-recommends bind9-dnsutils busybox ca-certificates chromium curl gcc git \
+    && set -- bind9-dnsutils busybox ca-certificates chromium curl gcc git \
       gstreamer1.0-libav gstreamer1.0-plugins-bad gstreamer1.0-plugins-base gstreamer1.0-plugins-good jq \
       libatk-bridge2.0-0t64 libatk1.0-0t64 libatomic1 libavif16 libc6-dev libcairo2 libdbus-1-3 libdrm2 \
       libegl1 libenchant-2-2 libepoxy0 libevdev2 libevent-2.1-7t64 libfontconfig1 libfreetype6 libgbm1 \
@@ -901,6 +916,8 @@ RUN --mount=type=bind,source=.github/scripts/network-install.sh,target=/usr/loca
       libxcomposite1 libxdamage1 libxkbcommon0 libxml2 libxslt1.1 netcat-openbsd openssh-client \
       postgresql-18 postgresql-18-pgvector postgresql-client-18 python3 python3-yaml redis-tools socat sqlite3 \
       tmux unzip util-linux wget \
+    && network-install.sh apt -- apt-get install -y --no-install-recommends --download-only "$@" \
+    && apt-get install -y --no-install-recommends --no-download "$@" \
     && rm -rf /var/lib/apt/lists/* /var/lib/postgresql /etc/postgresql \
       /etc/ssl/private/ssl-cert-snakeoil.key /etc/ssl/certs/ssl-cert-snakeoil.pem \
     && find /etc/ssl/certs -xtype l -delete \

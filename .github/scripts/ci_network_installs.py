@@ -41,6 +41,15 @@ APT = {"apt", "apt-get", "aptitude"}
 APT_VERBS = {"update", "install", "reinstall", "upgrade", "dist-upgrade", "full-upgrade", "build-dep", "source",
              "download"}
 APT_VALUE_OPTIONS = {"-o", "-c", "-t", "--option", "--config-file", "--target-release"}
+# The apt verbs that run dpkg after their download. Under NETWORK_INSTALL such a command may only
+# download (`--download-only`), and the install from what it downloaded runs unwrapped with
+# `--no-download`: a bound that ends an attempt while dpkg writes leaves the system "interrupted",
+# and every later attempt then fails on `dpkg was interrupted, you must manually run 'dpkg
+# --configure -a'`, as worker-image run 44765474341 did when its runtime-base RUN's 471 packages
+# (442 MB) downloaded in 21 s and dpkg was still unpacking them when the 60 s bound ended the
+# attempt. Unpacking is no wait on the network; the build step's own limit holds it.
+APT_DPKG_VERBS = {"install", "reinstall", "upgrade", "dist-upgrade", "full-upgrade", "build-dep"}
+APT_DOWNLOAD_ONLY = {"-d", "--download-only"}
 # Every other installer, by its command name: the verbs of it that install from the network, and
 # the options of it that take a value of their own and so may stand before the verb (`npm --prefix
 # dir ci`, `bun --cwd dir install`); a `+toolchain` word (`cargo +nightly install`) is an option.
@@ -225,6 +234,8 @@ def network_install(words: list) -> tuple[str, str] | None:
     rest = words[1:]
     if name in APT:
         verb = (_from_verb(rest, APT_VALUE_OPTIONS) or [""])[0]
+        if verb in APT_DPKG_VERBS and "--no-download" in rest:  # apt's own flag: no download at all
+            return None
         return (f"{name} {verb}", "apt") if verb in APT_VERBS else None
     if name == "wget":
         return ("wget", "wget") if _from_verb(rest, {"-O", "-o", "-P", "-e", "--output-document"}) else None
@@ -897,6 +908,14 @@ class NetworkInstalls:
                                       f"\"{site.label}\": that bound was measured on {kind}'s installs, and "
                                       f"`{install[0]}` is of kind '{install[1]}'")
                 name = command[0].rsplit("/", 1)[-1]
+                verb = (_from_verb(command[1:], APT_VALUE_OPTIONS) or [""])[0] if name in APT else ""
+                if verb in APT_DPKG_VERBS and not APT_DOWNLOAD_ONLY & set(command[1:]):
+                    self.refuse(site, f"runs `{name} {verb}` through {NETWORK_INSTALL} in step \"{site.label}\" "
+                                      f"without --download-only: the bound would end an attempt while dpkg "
+                                      f"writes, and every later attempt then fails on `dpkg was interrupted`. "
+                                      f"Wrap the download alone (`{name} {verb} --download-only …`), then install "
+                                      f"what it downloaded unwrapped (`{name} {verb} --no-download …`), which "
+                                      f"reads no network and is held by its step's limit")
                 docker = docker_command(name, command[1:]) if name == "docker" else None
                 if docker and docker.verb == "docker pull" and command[-1:]:
                     self.pulled.update(_values(command[-1], loops, known))
@@ -1133,7 +1152,9 @@ def check_network_installs(documents: dict, problems: list) -> None:
     but neither tries it again nor names what failed. A call of NETWORK_INSTALL passes when the
     resolver places it at the repository's own script (never by the name's suffix alone), names a
     kind its table bounds (`--bounds`) and wraps no install of another installer, whose bound was
-    not measured on it, and it stands in a loop whose iterations the rule can count. A shell script
+    not measured on it, and it stands in a loop whose iterations the rule can count. An apt install
+    under NETWORK_INSTALL must carry --download-only, with the install from what it downloaded run
+    unwrapped with --no-download, which is no install (APT_DPKG_VERBS says why). A shell script
     the resolver cannot place is refused by name, since the rule cannot read what it runs; one whose
     path after its first expansion names a shell script of the repository is read as that script.
 
