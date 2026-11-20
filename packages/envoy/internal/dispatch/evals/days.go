@@ -422,7 +422,11 @@ func standingParts(ctx context.Context, tx pgx.Tx, evalID string, keys []dayKey,
 // why a day's write finds what it leaves out so): as `r.id <> all($5)` in each day's read, every
 // reading was compared with the list, which a generic plan, knowing no value of it, cannot hash;
 // as a `not exists`, its generic plan was a nested-loop anti-join that runs the list again for
-// each reading, and its plan with the values hashed the list again for each key.
+// each reading, and its plan with the values hashed the list again for each key. Each reading is
+// then matched to its keys by series and by the day itself, the UTC midnight its measured_at falls
+// in, which every key's day is (dayKeysOf's measures.Midnight, or a date of eval_days): a hash
+// join keys on it, where a match on the range of each key's day tested each reading against every
+// key of its series.
 const standingPartsQuery = `
 	with ` + loggedSpans + `, k as (
 		select * from unnest($2::text[], $3::text[], $4::timestamptz[]) with ordinality as k(series, repo, day, at)
@@ -441,7 +445,7 @@ const standingPartsQuery = `
 	select k.at, r.value, coalesce(r.n, 1)::float8, r.measured_at, r.recorded_at, r.id::text
 	from standing
 	join eval_readings r on r.id = standing.id
-	join k on k.series = r.series and r.measured_at >= k.day and r.measured_at < k.day + interval '24 hours'
+	join k on k.series = r.series and k.day = date_trunc('day', r.measured_at, 'UTC')
 		and (k.repo = '' or r.attributes ->> 'repo' = k.repo)
 	order by k.at, r.recorded_at, r.id
 `

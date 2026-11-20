@@ -510,15 +510,8 @@ func TestEachDeletionOfStaleFactsReadsItsListOnce(t *testing.T) {
 				t.Fatalf("begin %s's transaction: %v", deletion.name, err)
 			}
 			defer tx.Rollback(ctx)
-			var raw []byte
-			if err := tx.QueryRow(ctx, "explain (format json) "+deletion.statement, deletion.arguments...).Scan(&raw); err != nil {
-				t.Fatalf("explain %s: %v", deletion.name, err)
-			}
-			valued := explaintest.OnePlan(t, raw)
-			generic := explaintest.GenericPlan(t, ctx, tx, "stale_deletion", deletion.statement, deletion.parameters, deletion.literals)
-			explaintest.RequireListReadOnce(t, valued, deletion.name+" with the values")
-			explaintest.RequireListReadOnce(t, generic, deletion.name+" under the generic plan")
-			t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", deletion.name, explaintest.Outline(t, valued), explaintest.Outline(t, generic))
+			explaintest.RequireStatementReadsListOnce(t, ctx, tx, deletion.name, deletion.statement, deletion.arguments,
+				deletion.parameters, deletion.literals)
 		})
 	}
 }

@@ -139,19 +139,28 @@ func (r *refresherRig) walkXmin(t *testing.T) string {
 	return xmin
 }
 
-// movedEvals is each eval with a row that appeared, went, or whose updated_at moved from before
-// to after: a row whose values moved.
-func movedEvals(before, after map[string]DayRow) []string {
-	moved := map[string]bool{}
+// movedRows is each row that appeared, went, or whose updated_at moved from before to after: a
+// row whose values moved, as after holds it, or as before held it where it went.
+func movedRows(before, after map[string]DayRow) []DayRow {
+	var moved []DayRow
 	for key, row := range after {
 		if old, held := before[key]; !held || !old.UpdatedAt.Equal(row.UpdatedAt) {
-			moved[row.EvalID] = true
+			moved = append(moved, row)
 		}
 	}
 	for key, row := range before {
 		if _, kept := after[key]; !kept {
-			moved[row.EvalID] = true
+			moved = append(moved, row)
 		}
+	}
+	return moved
+}
+
+// movedEvals is each eval with a row whose values moved from before to after (movedRows).
+func movedEvals(before, after map[string]DayRow) []string {
+	moved := map[string]bool{}
+	for _, row := range movedRows(before, after) {
+		moved[row.EvalID] = true
 	}
 	return slices.Sorted(maps.Keys(moved))
 }
@@ -369,10 +378,12 @@ func (r *refresherRig) keyedRead(t *testing.T, project, deployRepo string) []str
 // TestASettingsChangeThatMovesNoEvalWritesNothing: over a settled history, each change of a setting
 // no day row reads (the two workflow paths, the population rule's authors and excluded
 // repositories, the roll-up job), and a production job name no run holds, listed beside the one
-// that is, logs its settings change, and the pass after it writes no day row, member or stored
-// figure, logs no eval_days change, and begins no walk. The same settings saved again by another
-// person log no change at all (migration 20261120111107), and the pass after them writes nothing
-// either.
+// that is, logs its settings change, and the pass after it builds no delivery day (its report
+// holds none: the rewrite records there each day it builds and writes, as the walk does), writes
+// no day row, member or stored figure, logs no eval_days change, begins no walk, and leaves the
+// settings the rows stand built under agreeing with the new ones on every field a day row reads.
+// The same settings saved again by another person log no change at all (migration
+// 20261120111107), and the pass after them writes nothing either.
 func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 	r, deliveries := newSettingsRig(t, walkBatch)
 	settings := deliveries.Settings
@@ -395,13 +406,7 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 		{"the same settings saved by another person", func(*delivery.DeliverySettings) {}, implementer, false},
 	} {
 		change.change(&settings)
-		seq, walk := r.latestSeq(t), r.walkXmin(t)
-		rows := r.xmins(t, dayRowXmins)
-		members := r.xmins(t, memberXmins)
-		figures := map[string]string{}
-		for line, row := range r.storedFigures(t) {
-			figures[line] = row.xmin
-		}
+		seq, walk, before := r.latestSeq(t), r.walkXmin(t), r.writtenState(t)
 		r.putSettings(t, settings, change.actor)
 		changes, err := delivery.ChangesSince(t.Context(), r.database.Pool, seq, 100)
 		if err != nil {
@@ -412,26 +417,23 @@ func TestASettingsChangeThatMovesNoEvalWritesNothing(t *testing.T) {
 			t.Errorf("%s: a settings change logged is %t, want %t (%+v)", change.name, logged, change.logs, changes)
 		}
 
-		r.pass(t)
-		show := func(xmin string) string { return "written by " + xmin }
-		if differ := sameValues(r.xmins(t, dayRowXmins), rows, show); len(differ) > 0 {
-			t.Errorf("%s: the pass wrote day rows, first ones:\n\t%s", change.name, strings.Join(differ, "\n\t"))
+		report, _ := r.pass(t)
+		if built := builtDeliveryDays(report); len(built) > 0 {
+			t.Errorf("%s: the pass built the delivery days %v, want none", change.name, built)
 		}
-		if differ := sameValues(r.xmins(t, memberXmins), members, show); len(differ) > 0 {
-			t.Errorf("%s: the pass wrote members, first ones:\n\t%s", change.name, strings.Join(differ, "\n\t"))
-		}
-		after := map[string]string{}
-		for line, row := range r.storedFigures(t) {
-			after[line] = row.xmin
-		}
-		if differ := sameValues(after, figures, show); len(differ) > 0 {
-			t.Errorf("%s: the pass wrote stored figures, first ones:\n\t%s", change.name, strings.Join(differ, "\n\t"))
-		}
+		r.expectUnwritten(t, change.name, before)
 		if changed := r.evalDayChanges(t, seq); len(changed) > 0 {
 			t.Errorf("%s: the pass logged the eval_days changes %v, want none", change.name, changed)
 		}
 		if r.walkXmin(t) != walk {
 			t.Errorf("%s: the pass began the delivery walk again", change.name)
+		}
+		recorded, err := r.registry.readBuiltUnder(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if recorded == nil || !sameBuiltSettings(*recorded, settings) {
+			t.Fatalf("%s: the rows stand built under %+v, want the new settings, production jobs %v", change.name, recorded, settings.ProductionJobNames)
 		}
 	}
 }
@@ -566,10 +568,8 @@ func TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys(t *testing.
 		t.Error("the pass began the delivery walk again")
 	}
 	moved := map[string]int{}
-	for key, row := range rewriting.dayRows(t) {
-		if old, held := before[key]; !held || !old.UpdatedAt.Equal(row.UpdatedAt) {
-			moved[row.DeployRepo]++
-		}
+	for _, row := range movedRows(before, rewriting.dayRows(t)) {
+		moved[row.DeployRepo]++
 	}
 	if moved[deliveries.DeployRepo] == 0 || moved[deliveries.Repos[1]] == 0 || moved[checksOnly] != 0 {
 		t.Errorf("the pass moved the rows of each deploy repository %v, want some of %s's and %s's and none of %s's",
@@ -600,30 +600,8 @@ func builtDeliveryDays(report refreshed) []string {
 	return slices.Sorted(maps.Keys(days))
 }
 
-// rowsWritten is how many day rows appeared, went or had their updated_at moved from before to
-// after.
-func rowsWritten(before, after map[string]DayRow) int {
-	written := 0
-	for key, row := range after {
-		if old, held := before[key]; !held || !old.UpdatedAt.Equal(row.UpdatedAt) {
-			written++
-		}
-	}
-	for key := range before {
-		if _, kept := after[key]; !kept {
-			written++
-		}
-	}
-	return written
-}
-
-// dayRowWrites reads, by its key, the transaction that last wrote each day row and the row's
-// updated_at (xmins).
-const dayRowWrites = `select project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day::text,
-	xmin::text || ' at ' || updated_at::text from eval_days`
-
-// writtenState is the transaction that last wrote each day row (and the row's updated_at), each
-// member and each stored figures row, by its key: what a pass that writes nothing leaves as it was.
+// writtenState is the transaction that last wrote each day row, each member and each stored
+// figures row, by its key: what a pass that writes nothing leaves as it was.
 type writtenState struct {
 	rows, members, figures map[string]string
 }
@@ -634,7 +612,7 @@ func (r *refresherRig) writtenState(t *testing.T) writtenState {
 	for line, row := range r.storedFigures(t) {
 		figures[line] = row.xmin
 	}
-	return writtenState{rows: r.xmins(t, dayRowWrites), members: r.xmins(t, memberXmins), figures: figures}
+	return writtenState{rows: r.xmins(t, dayRowXmins), members: r.xmins(t, memberXmins), figures: figures}
 }
 
 // expectUnwritten checks that r holds every day row, member and stored figures row before held,
@@ -669,42 +647,6 @@ type deliveryState struct {
 func (r *refresherRig) deliveryState(t *testing.T) deliveryState {
 	t.Helper()
 	return deliveryState{rows: r.deliveryValues(t), members: r.memberLines(t), figures: deliveryFigureValues(r.storedFigures(t))}
-}
-
-// TestAProductionJobNameNoRunHoldsBuildsNoDay: over a settled history, a production job name no run
-// holds, listed beside the one that is, moves the production rule's names, and so the evals the
-// rule moves and production-deploy (settingsMoves), but no run's verdict and no deploy card's part.
-// The pass that reads it builds no delivery day, which its report says (the rewrite records there
-// each day it builds and writes, as the walk does), writes no day row, member or stored figure
-// (each as the transaction that last wrote it, and each day row's updated_at), logs no eval_days
-// change, and records the new settings as the ones the rows stand built under.
-func TestAProductionJobNameNoRunHoldsBuildsNoDay(t *testing.T) {
-	r, deliveries := newSettingsRig(t, walkBatch)
-	settings := deliveries.Settings
-	settings.ProductionJobNames = append(slices.Clone(settings.ProductionJobNames), "production-release / apply-v2")
-	slugs, _ := settingsMoves(deliveries.Settings, settings)
-	if len(slugs) == 0 {
-		t.Fatal("the name moves no eval by settingsMoves, and the check needs a change the rewrite answers")
-	}
-	seq, before := r.latestSeq(t), r.writtenState(t)
-	r.putSettings(t, settings, alice)
-	report, _ := r.pass(t)
-	if built := builtDeliveryDays(report); len(built) > 0 {
-		t.Errorf("the pass built the delivery days %v, want none", built)
-	}
-	r.expectUnwritten(t, "a production job name no run holds", before)
-	if changed := r.evalDayChanges(t, seq); len(changed) > 0 {
-		t.Errorf("the pass logged the eval_days changes %v, want none", changed)
-	}
-	recorded, err := r.registry.readBuiltUnder(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if recorded == nil || !sameBuiltSettings(*recorded, settings) {
-		t.Fatalf("the rows stand built under %+v, want the new settings, production jobs %v", recorded, settings.ProductionJobNames)
-	}
-	t.Logf("the change moves %v by settingsMoves; the pass built the delivery days %v and recorded the production jobs %v",
-		slugs, builtDeliveryDays(report), recorded.ProductionJobNames)
 }
 
 // The jobs and the step of the history a series of production rule changes runs over
@@ -764,13 +706,7 @@ func ruleChanges(t *testing.T, rng *rand.Rand, settings delivery.DeliverySetting
 	held := []string{settings.ProductionJobNames[0], ruleSecondJob}
 	steps := []string{settingsApplyStep, ruleSecondStep}
 	absent := func(listed, from []string) []string {
-		var missing []string
-		for _, name := range from {
-			if !slices.Contains(listed, name) {
-				missing = append(missing, name)
-			}
-		}
-		return missing
+		return slices.DeleteFunc(slices.Clone(from), func(name string) bool { return slices.Contains(listed, name) })
 	}
 	add := func(from []string) func(*delivery.DeliverySettings) bool {
 		return func(s *delivery.DeliverySettings) bool {
@@ -885,6 +821,7 @@ func TestASeededSeriesOfProductionRuleChangesRewritesWhatAWholeWalkWrites(t *tes
 	rewriting.expectSameAsWalk(t, "the first whole walk", walking)
 	series := ruleChanges(t, rand.New(rand.NewPCG(seed, 0)), deliveries.Settings)
 
+	walked := walking.deliveryState(t)
 	quiet := 0
 	for index, change := range series {
 		step := "no step"
@@ -892,23 +829,26 @@ func TestASeededSeriesOfProductionRuleChangesRewritesWhatAWholeWalkWrites(t *tes
 			step = "the step " + *change.settings.ProductionApplyStepName
 		}
 		what := fmt.Sprintf("change %d, %s (production jobs %q, %s)", index+1, change.kind, change.settings.ProductionJobNames, step)
-		walked := walking.deliveryState(t)
 		rewriting.putSettings(t, change.settings, alice)
 		walking.putSettings(t, change.settings, alice)
 		rows, state := rewriting.dayRows(t), rewriting.writtenState(t)
 		report, _ := rewriting.pass(t)
-		built, written := builtDeliveryDays(report), rowsWritten(rows, rewriting.dayRows(t))
+		built, written := builtDeliveryDays(report), len(movedRows(rows, rewriting.dayRows(t)))
 
 		walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
 		walking.settle(t)
 		rewriting.expectSameAsWalk(t, what, walking)
-		if reflect.DeepEqual(walking.deliveryState(t), walked) {
+		// Nothing writes the walking rig's rows between its walk of one change and the next change's
+		// settings, which write none.
+		now := walking.deliveryState(t)
+		if reflect.DeepEqual(now, walked) {
 			quiet++
 			if len(built) > 0 {
 				t.Errorf("%s: the whole walk holds what it held before, and the pass built the days %v", what, built)
 			}
 			rewriting.expectUnwritten(t, what, state)
 		}
+		walked = now
 		t.Logf("%s: the pass built %d days %v and wrote %d day rows", what, len(built), built, written)
 	}
 	if quiet == 0 {
@@ -961,21 +901,16 @@ func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToThe
 	if differ := sameValues(shipped, leadTimes(walking), rowFacts); len(differ) > 0 {
 		t.Errorf("the lead times' rows differ from the whole walk's, first ones:\n\t%s", strings.Join(differ, "\n\t"))
 	}
-	var first, last time.Time
+	var span daySpan
 	for _, row := range shipped {
-		if first.IsZero() || row.Day.Before(first) {
-			first = row.Day
-		}
-		if row.Day.After(last) {
-			last = row.Day
-		}
+		span = span.widen(row.Day)
 	}
-	if !measures.Midnight(last).Equal(refresherToday) {
-		t.Errorf("the lead times' rows end on %s, want today's zero rows, %s", last.Format(time.DateOnly), refresherToday.Format(time.DateOnly))
+	if !measures.Midnight(span.last).Equal(refresherToday) {
+		t.Errorf("the lead times' rows end on %s, want today's zero rows, %s", span.last.Format(time.DateOnly), refresherToday.Format(time.DateOnly))
 	}
 	rewriting.expectSameAsWalk(t, "the history's production job named", walking)
 	t.Logf("the lead times of %s hold %d rows from %s through %s; the pass built the days %v",
-		deliveries.DeployRepo, len(shipped), first.Format(time.DateOnly), last.Format(time.DateOnly), builtDeliveryDays(report))
+		deliveries.DeployRepo, len(shipped), span.first.Format(time.DateOnly), span.last.Format(time.DateOnly), builtDeliveryDays(report))
 }
 
 // TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites: two databases load
@@ -1013,7 +948,7 @@ func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t
 	if len(built) == 0 || built[0] < third {
 		t.Errorf("the pass built the days %v, want some and none before %s", built, third)
 	}
-	written := rowsWritten(before, rewriting.dayRows(t))
+	written := len(movedRows(before, rewriting.dayRows(t)))
 	walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
 	walking.settle(t)
 	rewriting.expectSameAsWalk(t, "the staging gate renamed to a job some push runs hold", walking)

@@ -356,12 +356,14 @@ func upsert(ctx context.Context, q Querier, project, build string, rows []Row) (
 
 // Each deletion below finds its stale rows as the stored keys except the computed ones (`gone`),
 // materialized, so the set operation runs once whatever plan the statement is given and reads
-// each side once, and deletes or stamps each by its primary key (staleStatement). Written as
-// `not (issue_key = any($n))`, the test compared each stored row with the whole computed list: a
-// plan with the values hashes the list, and the generic plan a statement pgx caches can settle on
-// after its fifth run cannot, so a whole pass of a project of INFRA's 13,000 issues compared each
-// of its rows with up to 13,000 keys. TestEachDeletionOfStaleFactsReadsItsListOnce holds each to
-// its plan.
+// each side once, and deletes or stamps each by its primary key (staleFactsStatement,
+// staleFilingsStatement). Written as `not (issue_key = any($n))`, the filter compared each stored
+// row with the whole computed list: a plan with the values hashes the list, and the generic plan a
+// statement pgx caches can settle on after its fifth run cannot, so a whole pass of a project of
+// INFRA's 13,000 issues compared each of its rows with up to 13,000 keys.
+// TestEachDeletionOfStaleFactsReadsItsListOnce holds each to its plan. Each statement spells its
+// table in its own text: the census of item-row writers reads a write's table there, and refuses
+// one whose table a value fills (api's TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus).
 
 // deleteStaleRows deletes the stored rows of the stated keys that computed holds no row for, and
 // answers the keys it deleted. It is the deletion of a pass that computed a set of keys: the
@@ -372,20 +374,21 @@ func deleteStaleRows(ctx context.Context, q Querier, write ProjectWrite, compute
 	if len(write.Stated) == 0 {
 		return nil, nil
 	}
+	args := []any{write.Project, write.Stated, computed}
 	if write.Yielded {
-		return deleteRows(ctx, q, write.Project, staleRowsStatement(true), write.Project, write.Stated, computed, write.Build)
+		args = append(args, write.Build)
 	}
-	return deleteRows(ctx, q, write.Project, staleRowsStatement(false), write.Project, write.Stated, computed)
+	return deleteRows(ctx, q, write.Project, staleRowsStatement(write.Yielded), args...)
 }
 
 // staleRowsStatement is deleteStaleRows' statement, the stamp where yielded: the rows of project
 // $1 among the stated keys $2 that the computed keys $3 hold no row for, stamped with the build $4.
 func staleRowsStatement(yielded bool) string {
-	return staleStatement(`with gone as materialized (
+	return staleFactsStatement(`with gone as materialized (
 		select issue_key from issue_facts where project_key = $1 and issue_key = any($2)
 		except
 		select * from unnest($3::text[]) as computed(issue_key)
-	)`, "issue_facts", yielded, "$4") + ` returning f.issue_key`
+	)`, yielded, "$4") + ` returning f.issue_key`
 }
 
 // deleteStaleProjectRows deletes the stored rows of the project that computed holds no row for,
@@ -396,36 +399,37 @@ func staleRowsStatement(yielded bool) string {
 // stands. A Yielded write stamps those rows with its build instead, and answers the keys it
 // stamped (ProjectWrite.Yielded).
 func deleteStaleProjectRows(ctx context.Context, q Querier, write ProjectWrite, computed []string) ([]string, error) {
+	args := []any{write.Project, computed}
 	if write.Yielded {
-		return deleteRows(ctx, q, write.Project, staleProjectRowsStatement(true), write.Project, computed, write.Build)
+		args = append(args, write.Build)
 	}
-	return deleteRows(ctx, q, write.Project, staleProjectRowsStatement(false), write.Project, computed)
+	return deleteRows(ctx, q, write.Project, staleProjectRowsStatement(write.Yielded), args...)
 }
 
 // staleProjectRowsStatement is deleteStaleProjectRows' statement, the stamp where yielded: the
 // rows of project $1 whose key names an issue of the project and that the computed keys $2 hold
 // no row for, stamped with the build $3.
 func staleProjectRowsStatement(yielded bool) string {
-	return staleStatement(`with gone as materialized (
+	return staleFactsStatement(`with gone as materialized (
 		select f.issue_key from issue_facts f
 		where f.project_key = $1
 		  and exists (select 1 from issues where issues.project_key = $1 and issues.key = f.issue_key)
 		except
 		select * from unnest($2::text[]) as computed(issue_key)
-	)`, "issue_facts", yielded, "$3") + ` returning f.issue_key`
+	)`, yielded, "$3") + ` returning f.issue_key`
 }
 
-// staleStatement is the statement, headed by gone, the CTE of the stale keys, that deletes each
-// row of table (issue_facts or issue_filings) of project $1 that gone names, or where yielded
-// stamps each that holds another build with the build the parameter build names.
-func staleStatement(gone, table string, yielded bool, build string) string {
+// staleFactsStatement is the statement, headed by gone, the CTE of the stale keys, that deletes
+// each issue_facts row of project $1 that gone names, or where yielded stamps each that holds
+// another build with the build the parameter build names.
+func staleFactsStatement(gone string, yielded bool, build string) string {
 	if yielded {
 		return gone + `
-	update ` + table + ` f set written_build = ` + build + ` from gone
+	update issue_facts f set written_build = ` + build + ` from gone
 	where f.project_key = $1 and f.issue_key = gone.issue_key and f.written_build <> ` + build
 	}
 	return gone + `
-	delete from ` + table + ` f using gone
+	delete from issue_facts f using gone
 	where f.project_key = $1 and f.issue_key = gone.issue_key`
 }
 
@@ -775,20 +779,26 @@ func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) erro
 
 // staleFilingsStatement is deleteStaleFilings' statement, the stamp where yielded: the filings of
 // project $1 that the computed filings $2 do not hold, of the stated filed issues $3 where stated
-// and of every filed issue otherwise, stamped with the build that follows them.
+// and of every filed issue otherwise, stamped with the build that follows them, each deleted or
+// stamped by its primary key as staleFactsStatement writes an issue_facts row.
 func staleFilingsStatement(stated, yielded bool) string {
+	filter, build := "", "$3"
 	if stated {
-		return staleStatement(`with gone as materialized (
-		select issue_key from issue_filings where project_key = $1 and issue_key = any($3)
-		except
-		select * from unnest($2::text[]) as kept(issue_key)
-	)`, "issue_filings", yielded, "$4")
+		filter, build = " and issue_key = any($3)", "$4"
 	}
-	return staleStatement(`with gone as materialized (
-		select issue_key from issue_filings where project_key = $1
+	gone := `with gone as materialized (
+		select issue_key from issue_filings where project_key = $1` + filter + `
 		except
 		select * from unnest($2::text[]) as kept(issue_key)
-	)`, "issue_filings", yielded, "$3")
+	)`
+	if yielded {
+		return gone + `
+	update issue_filings f set written_build = ` + build + ` from gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key and f.written_build <> ` + build
+	}
+	return gone + `
+	delete from issue_filings f using gone
+	where f.project_key = $1 and f.issue_key = gone.issue_key`
 }
 
 // ReadFilingsIn answers the stored filings a Legion session of the project made from from up to

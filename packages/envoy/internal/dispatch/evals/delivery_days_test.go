@@ -513,12 +513,14 @@ func TestTheUnownedP0RowIsTheCountAtItsLastWrite(t *testing.T) {
 // write's values and under the generic plan a statement pgx caches can settle on after its fifth
 // run, which estimates every list at 10 rows: the list runs under no SubPlan, no nested loop runs
 // it again for each row of its other side, and the filter is a SetOp Except over the list or a
-// hash or merge anti-join. The day is past work_mem, as one of INFRA's is: 80,000 items across 40
-// deploy repositories and 80,000 rows written through WriteProjectDay, and 80,000 readings of a
-// logged eval on the same day, the three tables analyzed. Each statement is explained with the
-// arrays a second write of the day sends, one item, one row and one reading fewer than stored, in
-// a transaction prepared as its write prepares it, and then with literals for its generic plan,
-// which reads none of them.
+// hash or merge anti-join. standingPartsQuery's generic plan also matches each reading to its keys
+// by their day, as a hash or merge join on it or an index condition, rather than testing each
+// reading against every key of its series. The day is past work_mem, as one of INFRA's is: 80,000
+// items across 40 deploy repositories and 80,000 rows written through WriteProjectDay, and 80,000
+// readings of a logged eval on the same day, the three tables analyzed. Each statement is
+// explained with the arrays a second write of the day sends, one item, one row and one reading
+// fewer than stored, in a transaction prepared as its write prepares it, and then with literals
+// for its generic plan, which reads none of them.
 //
 // The test judges the plan and not the clock, which a loaded runner would fail; k20 measures the
 // write's time on the build farm. That measurement is what this test stands for: written as
@@ -617,6 +619,9 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 		lists                []string
 		arguments            []any
 		parameters, literals []string
+		// joinedOn is a key the generic plan matches rows by (explaintest.RequireJoinedOn), none
+		// where empty.
+		joinedOn string
 	}{
 		{
 			name: "leftDaysOwedStatement", statement: leftDaysOwedStatement, lists: []string{"given"},
@@ -639,7 +644,7 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 				"array['acme/repo-00000']", "'test-build'", "'computation'", "array['acme/deploy-00']"},
 		},
 		{
-			name: "zeroStaleSettingsDaysStatement", statement: zeroStaleSettingsDaysStatement, lists: []string{"held"},
+			name: "zeroStaleSettingsDaysStatement", statement: zeroStaleSettingsDaysStatement,
 			settings: []string{"set local plan_cache_mode = force_custom_plan"},
 			arguments: []any{[]string{"EVAL"}, []time.Time{day}, projects, evals, series, repos, days, evalIDs, testBuild, writerComputation,
 				rowDeployRepos, deployRepos},
@@ -649,7 +654,10 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 				"array['acme/deploy-00']", "array['acme/deploy-00']"},
 		},
 		{
-			name: "standingPartsQuery", statement: standingPartsQuery,
+			// The generic plan matches each reading to its keys by a hash join whose Hash Cond is
+			// the series and the day, (date_trunc('day', r.measured_at, 'UTC') = k.day); the plan
+			// with the values, of one key, reads it on the outer side of a nested loop.
+			name: "standingPartsQuery", statement: standingPartsQuery, joinedOn: "k.day",
 			arguments:  []any{evalID, []string{standingKey.series}, []string{standingKey.repo}, []time.Time{standingKey.day}, written},
 			parameters: []string{"text", "text[]", "text[]", "timestamptz[]", "text[]"},
 			literals: []string{"'" + evalID + "'", "array['minutes']", "array['']", "array[" + date + "]::timestamptz[]",
@@ -667,15 +675,11 @@ func TestEachFilterOfWhatADayNoLongerHoldsReadsItsListOnce(t *testing.T) {
 					t.Fatalf("%s: %v", setting, err)
 				}
 			}
-			var raw []byte
-			if err := tx.QueryRow(ctx, "explain (format json) "+filter.statement, filter.arguments...).Scan(&raw); err != nil {
-				t.Fatalf("explain %s: %v", filter.name, err)
+			_, generic := explaintest.RequireStatementReadsListOnce(t, ctx, tx, filter.name, filter.statement, filter.arguments,
+				filter.parameters, filter.literals, filter.lists...)
+			if filter.joinedOn != "" {
+				explaintest.RequireJoinedOn(t, generic, filter.name+" under the generic plan", filter.joinedOn)
 			}
-			valued := explaintest.OnePlan(t, raw)
-			generic := explaintest.GenericPlan(t, ctx, tx, "filter_"+strings.ToLower(filter.name), filter.statement, filter.parameters, filter.literals)
-			explaintest.RequireListReadOnce(t, valued, filter.name+" with the values", filter.lists...)
-			explaintest.RequireListReadOnce(t, generic, filter.name+" under the generic plan", filter.lists...)
-			t.Logf("%s, with the values:\n%s\nunder the generic plan:\n%s", filter.name, explaintest.Outline(t, valued), explaintest.Outline(t, generic))
 		})
 	}
 

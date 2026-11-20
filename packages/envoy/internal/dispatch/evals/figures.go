@@ -684,6 +684,11 @@ func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, e
 // own, and a quantile selects its ranks across those lists (SortedSamples' Quantile, At and kth)
 // with indexes of its own; and each fold writes only the statistics it makes (writable).
 func (w *figureWrites) addGroup(group *figureGroup, ranges []rangeFigureKey, days []dayFigureKey, workers int) {
+	if group == nil {
+		w.goneRanges = append(w.goneRanges, ranges...)
+		w.goneDays = append(w.goneDays, days...)
+		return
+	}
 	type fold struct {
 		figures []byte
 		oldest  time.Time
@@ -691,16 +696,14 @@ func (w *figureWrites) addGroup(group *figureGroup, ranges []rangeFigureKey, day
 		held    bool
 	}
 	folds := make([]fold, len(ranges)+len(days))
-	if group != nil {
-		foldEach(len(folds), workers, func(index int) {
-			one := &folds[index]
-			if index < len(ranges) {
-				one.figures, one.oldest, one.held = group.rangeFigure(ranges[index].days, ranges[index].end)
-				return
-			}
-			one.figures, one.stamp, one.held = group.dayFigure(days[index-len(ranges)].day)
-		})
-	}
+	foldEach(len(folds), workers, func(index int) {
+		one := &folds[index]
+		if index < len(ranges) {
+			one.figures, one.oldest, one.held = group.rangeFigure(ranges[index].days, ranges[index].end)
+			return
+		}
+		one.figures, one.stamp, one.held = group.dayFigure(days[index-len(ranges)].day)
+	})
 	for index, target := range ranges {
 		if one := folds[index]; one.held {
 			w.ranges = append(w.ranges, rangeFigureRow{rangeFigureKey: target, key: group.key, figures: one.figures, oldest: one.oldest})
@@ -828,7 +831,7 @@ const figureChunk = 5000
 
 // sortByKey sorts each of w's lists in the byte order of its rows' keys, the order writeFigures
 // sends them in.
-func (w figureWrites) sortByKey() {
+func (w *figureWrites) sortByKey() {
 	slices.SortFunc(w.ranges, func(a, b rangeFigureRow) int { return compareRangeKeys(a.rangeFigureKey, b.rangeFigureKey) })
 	slices.SortFunc(w.goneRanges, compareRangeKeys)
 	slices.SortFunc(w.days, func(a, b dayFigureRow) int { return compareDayFigureKeys(a.dayFigureKey, b.dayFigureKey) })
