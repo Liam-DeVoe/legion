@@ -592,7 +592,7 @@ the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
 After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
-It polls that read for 5 seconds, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
+It waits for that read through `lib/proof-wait.sh`'s `wait_for` (which [`lib/rig.sh`](#librigsh) sources), which gives up 30 s before the proof's guard, because the daemon sets the latch on a goroutine of its own that starts when the serving goroutine does, so `/healthz` can be answered in the instant before it runs;
 a daemon that answers `/healthz` and never latches fails the run all the same.
 It is read at the first boot and again after the restart, never at one of them alone:
 the latch is one-way and the booting process's own, so every start begins unlatched, and `/healthz` is answered whether or not the latch was set — a daemon that answers `/healthz` while it never latches is the state this read catches, at either boot.
@@ -3813,7 +3813,7 @@ Each item below names an observation, then what it judges; an item that names no
 - `negative no-repo <KEY>`
 
   `.issues | has(<KEY>)` is `false` (refusing outright, never vacuously passing, when `.issues` is not even an object), Dispatch's own `.resolved_repo` is still `null`, and the **latest** repository note among the messages claiming the daemon's actor (`{kind:"session", id:"legion-daemon:<PROJECT>"}`) is the exact no-repository admission refusal, word for word, with the daemon's outbox marker
-  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:76`, `packages/daemon/internal/record/outbox.go:71-73,104-106`).
+  — `"Legion did not admit this issue: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name) and move it to todo again.\n\n<!-- legion-outbox:<id> -->"` (`packages/daemon/internal/workflow/repository.go:42,89,114`, `packages/daemon/internal/record/outbox.go:240-249,267-270`).
   Dispatch takes a bearer session's actor id from the request body (`packages/envoy/internal/dispatch/api/server.go`, `bearerSessionActor`), so the note shows what Dispatch holds, never who posted it;
   what shows the daemon declined the issue is its own state read.
 
@@ -4935,8 +4935,8 @@ LEGION_OMP_PATH=/opt/omp/bin/omp bash scripts/e2e/refusal-fallback-omp.sh     # 
 ```
 
 dispatch://INFRA-956's live proof that a Legion worker a provider refused stays off that model for the whole of the plugin's cooldown and goes back to it when the cooldown ends (its R1).
-It is a script of its own because the window it measures is longer than any CI job holds:
-Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `ci.yaml`'s pi-legion job has `timeout-minutes: 10`, so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour.
+It is a script of its own because the window it measures does not fit in the CI job that runs this plugin's tests:
+Oh My Pi's own floor for suppressing a model whose error it cannot classify is five minutes, the plugin's cooldown here is ten, and `.github/workflows/ci-job-pi-legion.yaml`'s pi-legion job gives its own suite up to the whole of its 45 minutes (`timeout-minutes: 45`, the sum of its steps and guards), so the only way to see that nothing goes back at the five-minute mark and something does after the tenth is to spend the quarter of an hour in a run of its own.
 It runs on any Linux host with `bash`, `bun` (after `bun install` at the checkout's root) and `go`, which builds the one server it starts — no PostgreSQL, no Docker, no kube context and no tmux, so a Legion pod, a devbox and a runner holding the pinned binary all run it.
 `LEGION_OMP_PATH` is required and names the Oh My Pi every pane runs, an absolute executable, as for [`provider-error-retry.sh`](#provider-error-retrysh), and the script prints which build it ran.
 It reaches no network:

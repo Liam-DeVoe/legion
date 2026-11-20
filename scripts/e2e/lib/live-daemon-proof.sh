@@ -5,7 +5,8 @@
 # a base branch's required checks. Sourced by the entry script, never run. The entry script sets
 # `set -euo pipefail` and
 # root, the checkout it sources this file from, sets the run's guard once, at its head, with
-# lib/rig.sh's `proof_guard <seconds>` and the reading of it beside the number, and calls
+# lib/proof-wait.sh's `proof_guard <seconds>` (which lib/rig.sh sources) and the reading of it
+# beside the number, and calls
 # live_daemon_proof as its last command.
 # busy-relaunch-delivery.sh's negative control calls it instead in a subshell of its own whose root
 # is a `git archive` of the base commit, so this run's EXIT trap is that subshell's and the script
@@ -25,11 +26,11 @@
 # line tells that case apart, and names libpq and the package to install. The status does not:
 # the helper answers every refusal with one status, so a status of its own here would need this
 # file to read the helper's wording, or to ask for libpq a second time. broker starts that
-# nats-server with JetStream on a port the kernel picks, and waits for it through lib/rig.sh's
-# wait_for, which gives up 30 s before the guard's deadline. driver builds the daemon package's
-# `-tags e2e` test binary. proof runs the one test TEST against them, with the time left before
-# the guard's deadline as the driver's -test.timeout, so its testwait waits give up when the
-# shell's would, and holds that it passed.
+# nats-server with JetStream on a port the kernel picks, and waits for it through
+# lib/proof-wait.sh's wait_for, which gives up 30 s before the guard's deadline. driver builds
+# the daemon package's `-tags e2e` test binary. proof runs the one test TEST against them, with
+# the time left before the guard's deadline as the driver's -test.timeout, so its testwait waits
+# give up when the shell's would, and holds that it passed.
 #
 # SLUG names the run's own files: the work directory legion-e2e-SLUG.<pid>.* under TMPDIR (or /tmp
 # when it is unset), which holds the broker's store and the driver binary SLUG.test and is removed
@@ -42,9 +43,9 @@
 
 # shellcheck source-path=SCRIPTDIR source=transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
-# lib/rig.sh holds proof_guard and wait_for, the run's guard and its one wait, and sources
-# lib/loopback-dsn.sh, which holds require_loopback_dsn, the guard prerequisites reads
-# LEGION_TEST_PG_DSN with. It reads this file's work, evidence, note and fail.
+# lib/rig.sh sources lib/proof-wait.sh, which holds proof_guard and wait_for, the run's guard and
+# its one wait, and lib/loopback-dsn.sh, which holds require_loopback_dsn, the guard
+# prerequisites reads LEGION_TEST_PG_DSN with. It reads this file's work, evidence, note and fail.
 # shellcheck source-path=SCRIPTDIR source=rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
 
@@ -131,7 +132,7 @@ live_daemon_proof() {
 
   begin prerequisites
   [ -n "$proof_deadline_ms" ] ||
-    fail "the entry script set no guard: it calls lib/rig.sh's proof_guard <seconds> before live_daemon_proof"
+    fail "the entry script set no guard: it calls lib/proof-wait.sh's proof_guard <seconds> (through lib/rig.sh) before live_daemon_proof"
   [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
     refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
   for tool in go awk python3; do

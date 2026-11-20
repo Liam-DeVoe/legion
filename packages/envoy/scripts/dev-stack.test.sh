@@ -74,6 +74,20 @@ readonly temporary_dir
 readonly fake_bin_dir="${temporary_dir}/bin"
 mkdir -p "$fake_bin_dir"
 
+# The test's one guard and its one wait, scripts/e2e/lib/proof-wait.sh's proof_guard and
+# wait_held, the returning form of wait_for, since each caller says what a wait's end means for
+# its case (fail, below, ends the test). It ends at once where its fact can no longer come and
+# otherwise 30 s before the guard, and keeps its last poll in work. Guard 220 s: at least twice
+# this test's longest run beside 8 busy loops on 2 CPUs, 93 s (builds Job d2-devstack, two runs,
+# no gVisor, 2026-11-19), plus the wait's 30 s margin. Its longest green run on CI was 17 s (run
+# 44607131679), over the 20 newest green merge-group runs of ci.yaml that ran its step up to
+# 2026-11-19 (runs 44508510162 to 44607131679).
+work=$temporary_dir
+note() { echo "$*"; }
+# shellcheck source=scripts/e2e/lib/proof-wait.sh
+source "${project_root}/scripts/e2e/lib/proof-wait.sh"
+proof_guard 220
+
 # The Postgres server every instance below is told to use. Nothing connects to it: the fake psql
 # answers every call.
 readonly admin_url='postgres://tester:s3cret@127.0.0.1:5999/postgres?sslmode=disable'
@@ -84,6 +98,8 @@ readonly admin_url_no_query=${admin_url%%\?*}
 readonly server_url=${admin_url%/postgres*}
 
 declare -a instance_pid=()
+# The pid of the run writing each log, which the ready wait reads to end at once where it exited.
+declare -A pid_of_log=()
 cleanup() {
   # Best-effort: if an assertion fails mid-test, leave no dev-stack.sh instance, and no stub it
   # started, running.
@@ -106,6 +122,9 @@ trap cleanup EXIT
 cat >"${fake_bin_dir}/psql" <<'EOF'
 #!/usr/bin/env bash
 printf 'psql %s\n' "$*" >>"${DEV_STACK_TEST_PSQL_CALL_FILE:?}"
+# The password psql was handed in its environment, a line a call: dev-stack.sh keeps it out of
+# psql's arguments (server_psql), which the line above records.
+printf '%s\n' "${PGPASSWORD-}" >>"${DEV_STACK_TEST_PSQL_CALL_FILE}.pgpassword"
 if [[ "$*" == *"select current_database()"* ]]; then
   url=$1 query=""
   [[ "$url" == *\?* ]] && query=${url#*\?}
@@ -418,6 +437,7 @@ run_instance() {
   shift 4
   : >"$log_file"
   : >"$psql_call_file"
+  : >"${psql_call_file}.pgpassword"
   : >"$curl_call_file"
   if [[ -n "${DEV_STACK_TEST_GO_CALL_FILE:-}" ]]; then
     : >"$DEV_STACK_TEST_GO_CALL_FILE"
@@ -432,31 +452,38 @@ run_instance() {
     DEV_STACK_TEST_GO_CALL_FILE="${DEV_STACK_TEST_GO_CALL_FILE:-}" \
     bash "$driver" --database-url "$admin_url" "$@" >"$log_file" 2>&1 &
   instance_pid[which]=$!
+  pid_of_log[$log_file]=$!
 }
 
-wait_for_ready() {
-  local log_file="$1"
-  for _ in $(seq 1 150); do
-    grep -q 'dev-stack: ready\.' "$log_file" 2>/dev/null && return 0
-    sleep 0.1
-  done
+# stack_ready <log>: whether the run writing log printed its ready line, for wait_held; a run
+# that exited never will.
+stack_ready() {
+  grep -q 'dev-stack: ready\.' "$1" 2>/dev/null && return 0
+  kill -0 "${pid_of_log[$1]}" 2>/dev/null || wait_impossible="the run exited before it was ready"
   return 1
 }
 
-# Waits up to 15 s for instance <n> to exit by itself and sets the global "exited_status" to its
-# exit status. A run meant to stop that is still running then went on serving: it is killed and
-# "exited_status" stays 0, which each caller reads as the failure, so the wait is bounded and
-# reports that case rather than hanging.
+# wait_for_ready <log>: whether the run writing log reached ready, through the test's one wait.
+# It returns rather than ending the test, since its caller prints the run's log first.
+wait_for_ready() {
+  wait_held "the run writing $1 to reach ready" stack_ready "$1"
+}
+
+# instance_exited <n>: whether instance n has exited, for wait_held.
+instance_exited() { ! kill -0 "${instance_pid[$1]}" 2>/dev/null; }
+
+# Waits for instance <n> to exit by itself and sets the global "exited_status" to its exit status.
+# A run meant to stop that is still running when the wait ends, 30 s before the test's guard, went
+# on serving: it is killed and "exited_status" stays 0, which each caller reads as the failure; the
+# line printed then says that the wait gave up, so that 0 is not read as the run's own status.
 exited_status=0
 wait_for_exit() {
   local n="$1"
   local pid="${instance_pid[$n]}"
   exited_status=0
-  for _ in $(seq 1 150); do
-    kill -0 "$pid" 2>/dev/null || break
-    sleep 0.1
-  done
+  wait_held "instance $n to exit" instance_exited "$n" || true
   if kill -0 "$pid" 2>/dev/null; then
+    echo "dev-stack.test: instance $n is still running ($wait_gave_up), so the test kills it and its status reads 0" >&2
     kill -TERM "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
   else
@@ -504,7 +531,7 @@ assert_instance_ready() {
   local label="$1" log_file="$2" psql_call_file="$3" curl_call_file="$4" query="${5-?sslmode=disable}"
   if ! wait_for_ready "$log_file"; then
     cat "$log_file" >&2
-    fail "$label never reached ready"
+    fail "$label never reached ready: $wait_gave_up"
   fi
   work_dir="$(work_dir_of "$log_file")"
   [[ -n "$work_dir" && -d "$work_dir" ]] || fail "$label named no work directory"
@@ -667,6 +694,12 @@ assert_instance_ready() {
   created="$(created_databases "$psql_call_file")"
   [[ "$created" == "dev_stack_broker_${run_suffix} dev_stack_dispatch_${run_suffix} " ]] ||
     fail "$label created '$created', not one broker and one Dispatch database of its own"
+  # No psql call holds the server's password in its arguments, where `ps -ww` shows it; each was
+  # handed it in PGPASSWORD alone.
+  ! grep -qF 's3cret' "$psql_call_file" ||
+    fail "$label handed psql the server's password in its arguments: $(grep -F 's3cret' "$psql_call_file" | head -n 1)"
+  [[ "$(sort -u "${psql_call_file}.pgpassword")" == "s3cret" ]] ||
+    fail "$label did not hand every psql call the server's password in PGPASSWORD: $(sort -u "${psql_call_file}.pgpassword" | tr '\n' ' ')"
   grep -qF "fake broker: database=${server_url}/dev_stack_broker_${run_suffix}${broker_query} issuer=" "${work_dir}/logs/broker.log" ||
     fail "$label did not point its broker at its own database with pool_max_conns=10: $(grep 'fake broker: database' "${work_dir}/logs/broker.log")"
   grep -qF "fake dispatch: database=${server_url}/dev_stack_dispatch_${run_suffix}${query} server-url=" "${work_dir}/logs/dispatch.log" ||
@@ -998,7 +1031,24 @@ for pair in "DEV_STACK_CALLOUT=1" "NATS_AUTH=broker" "DEV_STACK_NATS_SERVICE_TOK
     fail "the --callout run exported ${pair%%=*}=$(exported "$log1" "${pair%%=*}"), not ${pair#*=}"
 done
 kill -TERM "$second_broker_port"
-sleep 1
+# That the stack outlives its second broker is an absence, read through the stack's own loop:
+# dev-stack.sh's `wait -n` lists every process the stack stops on and its one-second ticker, and
+# not the second broker. Once the broker is gone, a ticker the loop starts after the one that was
+# running then shows the loop went past a `wait -n` that the broker's end would have ended, had
+# the broker been on that list (the later action's effect, in place of a fixed second).
+broker_gone() { ! kill -0 "$1" 2>/dev/null; }
+wait_for "the --callout run's second broker to go" broker_gone "$second_broker_port"
+stack_ticker() { pgrep -P "$1" -xf 'sleep 1' || true; }
+ticker_after() {
+  local now
+  now="$(stack_ticker "$1")"
+  [[ -n "$now" && "$now" != "$2" ]] && return 0
+  kill -0 "$1" 2>/dev/null || wait_impossible="the --callout run stopped when its second broker did"
+  return 1
+}
+ticker_then="$(stack_ticker "${instance_pid[1]}")"
+wait_for "the --callout run's loop to start a ticker after ${ticker_then:-the one it had}" \
+  ticker_after "${instance_pid[1]}" "$ticker_then"
 kill -0 "${instance_pid[1]}" 2>/dev/null || fail "the --callout run stopped when its second broker did"
 if grep -q 'a process of this stack stopped' "$log1"; then
   fail "the --callout run stopped when its second broker did"
@@ -1009,13 +1059,16 @@ fi
 # socket. The old process of each is gone and the new one runs, serving the port the old one did,
 # its predecessor's log is kept beside its own, the stack stays up, and each restart says so
 # naming the URL every client was told.
-# wait_for_line FILE TEXT waits up to 15 s for a line of FILE holding TEXT.
-wait_for_line() {
-  for _ in $(seq 1 150); do
-    grep -qF -- "$2" "$1" 2>/dev/null && return 0
-    sleep 0.1
-  done
+# wait_for_line FILE TEXT waits through the test's one wait for a line of FILE holding TEXT, and
+# returns rather than ending the test, since its callers print the run's log first; the wait ends
+# at once where the run that writes FILE, instance 1, has exited.
+log_holds() {
+  grep -qF -- "$2" "$1" 2>/dev/null && return 0
+  kill -0 "${instance_pid[1]}" 2>/dev/null || wait_impossible="the run exited"
   return 1
+}
+wait_for_line() {
+  wait_held "a line of $1 holding '$2'" log_holds "$1" "$2"
 }
 # The pid a restart line names as the new process: "(pid <old> -> <new>)".
 restarted_pid_in() { sed -n "s/^dev-stack: $2 restarted (pid [0-9]* -> \([0-9]*\)) .*/\1/p" "$1" | head -n1 || true; }

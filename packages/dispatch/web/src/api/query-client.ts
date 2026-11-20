@@ -184,8 +184,8 @@ export class DispatchQueryClient extends QueryClient {
  * flight was asked before this write, so it answers the state the write replaces, and its answer
  * would put that state back when it lands: a mark's answer that clears an unread count would be
  * undone by the count a read asked before the mark brings (`storeAgentState`, `unread.ts`). So the
- * read is cancelled first, in the same synchronous step as the write, as `askSignInAgain` and the
- * board's moves (`board-moves.ts`) cancel theirs: TanStack's cancel takes effect at once, and puts
+ * read is cancelled first, in the same synchronous step as the write, as the board's moves
+ * (`board-moves.ts`) cancel theirs: TanStack's cancel takes effect at once, and puts
  * back the state from before that read, which the write then replaces. Nothing runs between the
  * two. A refetch `DispatchQueryClient` held behind the cancelled read (`#refetch`) starts only once
  * that read has settled, after this write, so it asks for the state the write is of. An awaited

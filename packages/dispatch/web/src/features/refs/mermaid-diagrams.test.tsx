@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, jest, spyOn, test } from "bun:test";
 import type { MermaidDrawing } from "@legion/proof-editor/mermaid";
 import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { settled } from "@legion/test-fixtures/wait";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { waitFor, within } from "@testing-library/react";
+import { act, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -107,6 +108,8 @@ describe("Mermaid diagrams", () => {
   });
 
   afterEach(() => {
+    // A row on the fake clock that the command's guard ended never reached its `realClock`.
+    jest.useRealTimers();
     resetMermaidDiagrams();
     globalThis.Worker = pageWorker;
   });
@@ -628,7 +631,12 @@ describe("Mermaid diagrams", () => {
     }
   });
 
+  // The limit is the page's own timer, armed as the source is posted to the worker, so the row
+  // holds the clock: a millisecond short of the 50 ms the worker still draws, and at them it is
+  // stopped and the source refused.
   test("a source the worker has not drawn within the time limit is refused, and a fresh worker draws the next", async () => {
+    await warmMarkdownRenderer();
+    jest.useFakeTimers();
     resetMermaidDiagrams(50);
     const draw = spyOn(mermaidRenderer, "renderMermaidMarkup");
     FakeWorker.answer = (request) =>
@@ -637,7 +645,18 @@ describe("Mermaid diagrams", () => {
       <MarkdownBody markdown={`Big:\n\n${fence("sequenceDiagram\n  Stuck->>Bob: Hi")}`} />
     );
     try {
-      await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
+      await turnsUntil(
+        "the stuck source to be posted to the worker",
+        () => FakeWorker.sent.some((sent) => sent.includes("Stuck")),
+        { each: () => act(() => jest.advanceTimersByTime(1)) }
+      );
+      await tick(48, 1);
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([false]);
+      expect(figuresIn(view.container)).toEqual([]);
+      await tick(0);
+      // Terminating the worker is what stops a real layout.
+      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true]);
+      expect(figuresIn(view.container)).toHaveLength(1);
       const [figure] = figuresIn(view.container);
       expect(figure.querySelector('[role="status"]')?.textContent).toBe(
         "Unable to render Mermaid diagram: it did not finish within 0.05 seconds"
@@ -646,8 +665,6 @@ describe("Mermaid diagrams", () => {
       const source = figure.querySelector<HTMLDetailsElement>("details.dispatch-mermaid-source");
       expect(source?.open).toBe(true);
       expect(source?.querySelector("pre code")?.textContent).toContain("Stuck->>Bob: Hi");
-      // Terminating the worker is what stops a real layout.
-      expect(FakeWorker.created.map((worker) => worker.terminated)).toEqual([true]);
 
       view.rerender(<MarkdownBody markdown={fence("sequenceDiagram\n  Alice->>Bob: After")} />);
       await waitFor(() =>
@@ -661,6 +678,7 @@ describe("Mermaid diagrams", () => {
       expect(drawn.some((drawnSource) => drawnSource.includes("Stuck"))).toBe(false);
     } finally {
       draw.mockRestore();
+      realClock();
       view.unmount();
     }
   });

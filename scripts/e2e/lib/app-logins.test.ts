@@ -411,13 +411,17 @@ describe("app-logins.ts", () => {
   // The drain bound must not count this process's own blocked writes, which the relay's
   // synchronous writer holds for as long as a caller stays behind. Each shape here is one group
   // whose stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and
-  // whose token command writes one 300,008-byte line, its newline left to a descendant half a
-  // second later: the relay issues that line in a single write, far larger than the 64 KiB pipe,
-  // and it blocks until the reader wakes. The row checks that each shape still ends on the token
-  // command's own verdict: the failing one on its exit 3 and the stderr quoted in it, the
-  // succeeding one on the release it printed and its exit 0.
+  // whose token command writes one 300,008-byte line, its newline left to a descendant that
+  // writes it only once the command has exited and the run has reaped it (`kill -0` answers for
+  // a zombie, so the loop ends at the reap): the relay issues that line in a single write, far
+  // larger than the 64 KiB pipe, and it blocks after the exit, until the reader wakes. A
+  // newline that came before the exit would block the run before it read the exit, and the
+  // row would then pass on a line already whole, whatever the bound counts. The row checks that
+  // each shape still ends on the token command's own verdict: the failing one on its exit 3 and
+  // the stderr quoted in it, the succeeding one on the release it printed and its exit 0.
   test("a reader that falls behind still gets the token command's own verdict", async () => {
-    const held = "printf 'denied-%0300000d' 0 >&2; (sleep 0.5; printf '\\n' >&2) &";
+    const held =
+      "printf 'denied-%0300000d' 0 >&2; (while kill -0 $$ 2>/dev/null; do sleep 0.1; done; printf '\\n' >&2) &";
     const succeeding = join(dir, "behind-succeeding.json");
     // Both shapes at once, so the row costs one stall rather than two.
     const stalled = (command: string, out: string) => {

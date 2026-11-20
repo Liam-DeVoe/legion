@@ -52,6 +52,7 @@ import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { appendResult, readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
+import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings";
 import { machineID } from "@legion/envoy-client/machine";
 import {
   renderSessionAnswers,
@@ -94,6 +95,7 @@ import {
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { holdDeadlines } from "@legion/test-fixtures/held-deadlines";
 import { recordTimers } from "@legion/test-fixtures/timer-record";
@@ -106,6 +108,7 @@ import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
 import { resetEnvoySessionsForTests } from "../src/envoy-session";
 import { REPLAY_DELIVERED_ENTRY, REPLAY_STATE_ENTRY } from "../src/missed-messages";
+import { HOST_SHUTDOWN_HANDLER_MS, SHUTDOWN_DEADLINE_MS } from "../src/session-shutdown";
 import { followBoundMs, startTradeBoundMs } from "../src/start-bound";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 import { runSessionPod } from "../test/session-pod-report";
@@ -22129,6 +22132,35 @@ console.log(JSON.stringify(args));
     ]);
   });
 
+  /**
+   * Runs `shutdown` on Bun's fake clock, moved a millisecond a turn, until it settles, and answers
+   * when it began and how far the clock had moved when it settled. The handler's waits are its own
+   * timers, so the reading is theirs to the millisecond however loaded the machine, while the
+   * stand-ins answer on turns of the real event loop. The clock stops at the host's limit
+   * (`HOST_SHUTDOWN_HANDLER_MS`, past which Oh My Pi abandons the handler), and a handler still
+   * running there reads as that limit.
+   */
+  const shutdownOnFakeClock = async (
+    shutdown: () => Promise<unknown> | undefined
+  ): Promise<{ readonly began: number; readonly tookMs: number }> => {
+    jest.useFakeTimers();
+    try {
+      const began = Date.now();
+      let done = false;
+      void shutdown()?.then(() => {
+        done = true;
+      });
+      await turnsUntil(
+        "the session_shutdown handler to settle, or the clock to reach the host's limit",
+        () => done || Date.now() - began >= HOST_SHUTDOWN_HANDLER_MS,
+        { each: () => jest.advanceTimersByTime(1) }
+      );
+      return { began, tookMs: done ? Date.now() - began : HOST_SHUTDOWN_HANDLER_MS };
+    } finally {
+      jest.useRealTimers();
+    }
+  };
+
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
     globalThis.fetch = standInFetch(async (input, init) =>
       responseWithRegistration(input, init, [])
@@ -22140,11 +22172,14 @@ console.log(JSON.stringify(args));
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_shutdown"));
 
     natsState.drainHangs = true;
-    const startedAt = Date.now();
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
+    const { tookMs } = await shutdownOnFakeClock(() =>
+      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+    );
 
-    // OMP kills shutdown handlers at 2s; the bounded drain must finish first.
-    expect(Date.now() - startedAt).toBeLessThan(1_900);
+    // The drain never ends, so the handler ends at its own deadline, which falls inside the time
+    // Oh My Pi gives it.
+    expect(tookMs).toBeGreaterThanOrEqual(SHUTDOWN_DEADLINE_MS);
+    expect(tookMs).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
   });
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
@@ -22246,10 +22281,14 @@ console.log(JSON.stringify(args));
     const requests: string[] = [];
     const registration = Promise.withResolvers<Response>();
     let registrations = 0;
+    let deletedAt: number | undefined;
     globalThis.fetch = standInFetch(async (input, init) => {
       const path = new URL(input.toString()).pathname;
       requests.push(`${init?.method ?? "GET"} ${path}`);
-      if (path === "/v1/sessions/ses_shutdown") return response({});
+      if (path === "/v1/sessions/ses_shutdown") {
+        deletedAt ??= Date.now();
+        return response({});
+      }
       if (path === "/v1/interests/subscribe") {
         registrations += 1;
         // The session's own start registers as usual; the one the tool below sends never answers.
@@ -22266,17 +22305,19 @@ console.log(JSON.stringify(args));
     const subscribing = fixture.tools
       .find((tool) => tool.name === "envoy_subscribe")
       ?.execute("", { topics: ["notifications.github.sjawhar.legion.pr.1.>"] });
-    // Real time: the registration has to be on the wire before the shutdown starts waiting it out.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // The registration has to be on the wire before the shutdown starts waiting it out.
+    await until("the tool's registration on the wire", () => registrations === 2);
 
-    const startedAt = Date.now();
-    await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
-    const elapsed = Date.now() - startedAt;
+    const { began, tookMs } = await shutdownOnFakeClock(() =>
+      fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"))
+    );
 
     // The DELETE is on the wire at all, which the five-second settle inside a one-second deadline
-    // never managed, and the handler is still done inside the 2 s OMP gives it.
+    // never managed: it goes once the shutdown's settle bound has passed, and the handler is done
+    // inside the time Oh My Pi gives it.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
-    expect(elapsed).toBeLessThan(1_900);
+    expect((deletedAt ?? Number.NaN) - began).toBeGreaterThanOrEqual(SHUTDOWN_SETTLE_MS);
+    expect(tookMs).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
 
     registration.resolve(
       response({

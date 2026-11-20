@@ -1,7 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 
 // The deadline every wait of `./wait` ends by, and the marks `./row-deadline` takes to set it. This
-// module is no export of the package: a test reaches it only through those two and `./fake-clock`.
+// module is no export of the package: a test of another package reaches it only through those two
+// and `./fake-clock`.
 
 /** Bun's own `--timeout` when a `bun test` command line sets none (`bun test --help`). */
 const BUN_DEFAULT_GUARD_MS = 5_000;

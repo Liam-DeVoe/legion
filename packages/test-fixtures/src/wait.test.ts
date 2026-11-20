@@ -1,8 +1,15 @@
-import { expect, jest, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { quiet, settled, span, timeLeft, until } from "./wait";
 
 // What each wait does inside a row of its own. Where a wait ends against a row's guard is
 // `row-deadline.test.ts`'s, which runs rows under a guard of their own.
+
+// A row that holds Bun's fake clock and is ended by the command's guard (a `span` whose refusal
+// regressed waits a timer the held clock never fires) never reaches its own `finally`, so the real
+// clock comes back here too: every later row's waits refuse under a fake one.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 const NO_DURATION = "No wait takes a duration: each ends at its row's deadline";
 const ADVANCE = "Advance the fake clock to the moment the fact happens";

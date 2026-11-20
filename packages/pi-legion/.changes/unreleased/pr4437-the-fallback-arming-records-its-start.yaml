@@ -1,0 +1,4 @@
+kind: Changed
+body: |-
+  The model fallback's arming records `armedAt`, the moment its wait counts from, in the entry it
+  stores in the session's transcript, and a resumed session reads it back.

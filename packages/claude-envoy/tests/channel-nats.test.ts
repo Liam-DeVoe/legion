@@ -34,6 +34,9 @@ const unresolved = (host: string): Error =>
 
 const servers: { stop: (closeActive?: boolean) => void }[] = []
 afterEach(() => {
+  // A fake clock left behind stops the timers of every row after this one; a row the command's
+  // guard ended never reached its own `finally`, so the real clock comes back here too.
+  jest.useRealTimers()
   // A spy a row left, a failed one's included, wraps nothing of the next row.
   mock.restore()
   forgetBrokerClients()
@@ -339,7 +342,6 @@ test("dialChannelNats runs no keeper and no follow for a connection with no brok
     expect(fake.reconnects()).toBe(0)
     opened.stop()
   } finally {
-    // A fake clock left behind stops the timers of every row after this one.
     jest.useRealTimers()
   }
 })

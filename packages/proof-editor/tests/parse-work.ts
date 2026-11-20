@@ -2,7 +2,7 @@
  * The work a parse does, counted, for the rows that hold a heavy body's parse to a cost in
  * proportion to its length.
  *
- * A row reads its counts around one parse (packages/proof-editor/AGENTS.md, "The dependency
+ * A row reads its counts around one parse (the patches that count are below, "The dependency
  * patches"). The patches of `micromark` and `micromark-core-commonmark` count into one registry,
  * `workCounts()` of `micromark-core-commonmark` (`patches/micromark-core-commonmark@2.0.3.patch`,
  * `lib/work-counts.js`, which micromark's patched modules count into too), each counter by its
@@ -56,6 +56,80 @@
  *   tokenizer hands its events on through the Proxy itself (`document.resolveAll`, set below on
  *   micromark's own initializer): the steps go to subtokenize until `postprocessedEvents` moves,
  *   which is the moment `postprocess` hands them to the compile, and to the compile after it.
+ *
+ * The dependency patches. Five of the root `package.json`'s `patchedDependencies` entries are the
+ * parsers this package reads markdown with and the proof marks' transform, patched so that a body
+ * costs time in proportion to its length rather than to its square (sjawhar/legion#2519). Each
+ * patch leaves the package's output as it was, and each of the four parser patches patches both
+ * `lib/` and `dev/lib/`, because Vite resolves the `development` export condition. What each makes
+ * linear, and what it counts:
+ *
+ * - `micromark@4.0.2`: `lib/initialize/document.js`'s lazy-line test. `writeToChild` scanned every
+ *   event of the child flow backwards on each lazy line; it now scans forward from a watermark of
+ *   events already ended at or before the line's start, which can never be open across this line or
+ *   a later one, since that offset only grows while one child flow lives and an end is never unset.
+ *   The watermark is dropped when the event below it is no longer the one it was (a resolver
+ *   rewrites events), for a new child flow, and at the end of input. The patch counts each event
+ *   the test reads (`lazyLine`). `lib/initialize/text.js`'s two text resolvers: `resolveAllText`,
+ *   which merges a line's runs of data, and `resolveAllLineSuffixes`, which puts in a token for the
+ *   spaces that end a line, each spliced the paragraph's events once a run or a line, shifting
+ *   every event after it; each now builds the events in one pass, and the patch counts the events,
+ *   chunks and spaces they read and every event they copy or write back (`textResolve`). It also
+ *   counts, in `lib/create-tokenizer.js`'s `go`, each code a tokenizer hands a state (`tokenizer`),
+ *   the events each tokenizer's resolvers hand on (`resolvedEvents`), and the events `postprocess`
+ *   hands on once `micromark-util-subtokenize` is done (`postprocessedEvents`): those make nothing
+ *   linear, and are counts the rows below read. Every count goes into `micromark-core-commonmark`'s
+ *   registry (`countWork`), which this package imports from that package's entry.
+ * - `micromark-core-commonmark@2.0.3`: `lib/label-end.js`. The scan for an opening `[` resumes
+ *   where the scan of the previous `]` stopped and then goes on below the label start that `]`
+ *   balanced, rather than walking every event again on each `]`; and the definition lookup is
+ *   skipped outright where the document defines nothing, and otherwise bails, without serializing
+ *   the label, once the label holds more characters that are not markdown whitespace than the
+ *   longest defined identifier. The patch counts each event the scan reads and each label character
+ *   the lookup counts or serializes (`labelEndScan`). It also counts the events each resolver
+ *   reads: attention, label end, ATX heading, setext underline and code text, each `splice` counted
+ *   from its own arguments (`spliceCounted`: each event it removes or puts in, and each event after
+ *   them it shifts); and, for content, the events `micromark-util-subtokenize` hands back.
+ *   `lib/attention.js`'s resolver spliced each emphasis or strong it matched into the paragraph's
+ *   whole list of events, shifting every event after it, and searched every event before a closer
+ *   for its opener; it now puts each match in place at the end of the events it has resolved, and
+ *   searches a stack of the openers still open per marker from the lowest one a closer of the same
+ *   kind could still take (cmark's `openers_bottom`), with the same matches as before
+ *   (`attention`). 2.0.4 keeps the same backward scan (`lib/attention.js:43-46`).
+ *   `lib/work-counts.js` holds every count of this patch and of `micromark@4.0.2`'s in one
+ *   registry, by name, and the package's entry exports it as `workCounts()` and `workCount(name)`.
+ *   `lib/list.js` takes a list item's blank-line continuation without asking `blankLine` whether
+ *   the line is blank: that continuation opens with `effects.check(blankLine, …)`, and where the
+ *   line is already over (the code is a line ending or the end of the document, which is what a
+ *   line of only spaces and tabs is once the continuations above have taken their indentation), the
+ *   answer is yes and the check's store and restore are work for nothing. Every open list item runs
+ *   it once per blank line, so a body of D nested items and N blank lines runs D*N of them: on 50
+ *   nested items and 32 KB of blank lines, about two fifths of what micromark spent.
+ * - `micromark-extension-gfm-footnote@2.1.0`: `lib/syntax.js`'s call scan, the same backwards walk.
+ *   Footnote definitions are flow constructs, so they are all known before text is tokenized: with
+ *   none defined the walk is skipped, and otherwise it resumes where the previous `]`'s walk
+ *   stopped.
+ * - `mdast-util-from-markdown@2.0.3`: `lib/index.js`'s `prepareList`, which spliced each list
+ *   item's enter and its exit into the whole event array and so moved everything after them once
+ *   per item. It now records where each one goes and `compile` rebuilds the events once, the sort
+ *   being stable so an inner item's exit stays before an outer item's.
+ * - `proof-sdk@./proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz` (`proof-sdk-upstream`, the
+ *   committed tarball, whose pin stays as it is): `src/formats/remark-proof-marks.ts`, the
+ *   `remarkProofMarks` transform every headless parse runs. `normalizeSplitProofSpans` spliced each
+ *   child inside an open `<span data-proof>` out of its parent, and `visit` spliced a block's whole
+ *   span in place, each shifting every later child; and `visit` converted the legacy HTML
+ *   formatting of every proof span of a node's whole subtree again at each level of its walk. The
+ *   children are now read once and written back once, and each level converts only its own spans'
+ *   children: a paragraph of 500 spans side by side read 47.59 times the transform's steps for 8
+ *   times the spans before (1,053 at 7, 50,113 at 62) and reads them in proportion now. The patch
+ *   is written against the fork's own `src/`, to go to sjawhar/proof-sdk as it is.
+ *
+ * `micromark-extension-gfm-footnote@2.1.0` is held by nothing here: neither
+ * `tests/heavy-bodies.test.ts` nor `tests/nested-directive.test.ts` has a footnote shape. To check
+ * that a row still catches the defect it guards, put a patch's scan back in a copy of the installed
+ * file and run the row. Bun runs `lib/` (the default export condition), and the installed file is a
+ * hard link into Bun's install cache, so put the copy in place with `mv` rather than edit the file,
+ * and put the patched file back the same way.
  *
  * What a count cannot see: work a stage does on a copy of its own (subtokenize's `SpliceBuffer`
  * splices, a transform's clone of a node), on the input string, or on a structure that is the

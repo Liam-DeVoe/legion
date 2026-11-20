@@ -50,7 +50,7 @@
 # them give every server they start a database of the run's own through exec_run_database below,
 # in the connection string the helper rebuilds and libpq reads back inside it.
 #
-# The other two read the DSN a second time, with pgx. lib/two-builds.sh:284, which starts both
+# The other two read the DSN a second time, with pgx. lib/two-builds.sh:286, which starts both
 # servers of dispatch-two-builds.sh and of dispatch-search-two-builds.sh, gives Dispatch the
 # caller's raw DSN, and Dispatch opens its pool from that text with pgxpool.ParseConfig
 # (packages/envoy/internal/dispatch/store/store.go:58). Two facts keep those two safe. The

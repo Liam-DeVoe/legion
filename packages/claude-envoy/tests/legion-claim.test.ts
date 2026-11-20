@@ -772,11 +772,25 @@ test("a prompt submitted before the boot registered its step takes no name, the 
 test("a pane that submits no prompt takes its name at the bound its environment sets", async () => {
   // A role the daemon brought back with no task of its own starts no turn, and the bound is what
   // keeps it from staying unaddressable: it claims anyway, and the lane kept for it is handed
-  // over then. This case submits no prompt at all.
-  const pane = await registeredPane({ env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "5" } })
+  // over then. This case submits no prompt at all. The boot's own record says the bound it armed
+  // is the 5 ms the environment set and that the bound's timer took the name; that the timer
+  // fires at the delay it records is the core's, held on a fake clock in pi-shared's
+  // `legion-claim-core.test.ts`.
+  const record = join(await tempDir(), "claim-record.jsonl")
+  const pane = await registeredPane({
+    env: { LEGION_CLAIM_FIRST_TURN_BOUND_MS: "5", LEGION_CLAIM_RECORD_FILE: record },
+  })
   await pane.claim.claimed
   expect(pane.remembered).toEqual([String(registeredClaim["claimToken"])])
   expect(pane.stops()).toBe(0)
+  const steps = (await readFile(record, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line): unknown => JSON.parse(line))
+  expect(steps).toEqual([
+    { armed: expect.any(Number), boundMs: 5 },
+    { claimedBy: "bound", at: expect.any(Number) },
+  ])
 })
 
 test("a bound this pane's environment states badly is warned about on the pane's own log line", async () => {

@@ -1336,6 +1336,9 @@ test("a request another copy of the extension read no text for is not read again
 // copy B passes it on with no read of its own.
 const stateRoots: string[] = [];
 afterEach(() => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here too, before the next row.
+  jest.useRealTimers();
   for (const root of stateRoots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 

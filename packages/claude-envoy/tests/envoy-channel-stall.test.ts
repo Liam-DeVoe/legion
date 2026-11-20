@@ -1,3 +1,10 @@
+// The NATS stall rows of claude-envoy, which run only with LEGION_E2E_ENVOY_STACK=1 (CI's
+// envoy-session-stall job), in the package script's second command, whose --timeout bounds every
+// wait. The real channel server registers against a listener built from packages/envoy, and the
+// proxy freezes its NATS path; the freeze and what it checks are `runFreezeScenario`, which
+// pi-envoy's stall row runs too, and the settings that keep that recovery inside the spec's minute
+// are held by envoy-client's src/__tests__/nats-stall.test.ts. A session whose first redial hung
+// still exits on SIGTERM through its own shutdown: status 0, and its registry entry gone.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"

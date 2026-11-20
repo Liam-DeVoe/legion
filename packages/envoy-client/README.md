@@ -12,13 +12,17 @@ history before that and stops where the fragments begin.
 
 `bun run test` runs two `bun test` commands, each with the row-deadline preload
 (`--preload @legion/test-fixtures/row-deadline`) and one `--timeout`, the command's guard. No row
-or hook carries a limit of its own: a wait of `@legion/test-fixtures/wait` (`until`, `settled`)
-ends before the guard of the command that runs it, with a failure that names what it waited for,
-and it cannot read a row's own number. The second command runs the files whose rows take far
-longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the two `*.live.test.ts` suites,
-`dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts` and `askgate-record.test.ts`; the first
-runs every other file. The guards are 30000 and 120000 ms, each at least twice the slowest row or
-hook its command ran under 8 busy loops on 2 CPUs; `package.json`'s `"//"` note gives each reading.
+carries a limit of its own: a wait of `@legion/test-fixtures/wait` (`until`, `settled`) ends before
+the guard of the command that runs it, with a failure that names what it waited for, and it cannot
+read a row's own number. One hook does: `nats-credential.test.ts`'s `beforeAll`, one Go build of
+natsd and calloutd with no shared wait in it, keeps `BUILD_GUARD_MS` (300000 ms), the measured
+process run `docs/testing.md` lets a hook guard itself. The second command runs the files whose
+rows take far longer than the rest: `nats-stall.test.ts`, `nats-auth.test.ts`, the two
+`*.live.test.ts` suites, `dispatch-askgate.test.ts`, `dispatch-who-waits.test.ts`,
+`askgate-record.test.ts`, `broker-credential-signins.test.ts`, `dispatch-write-outcomes.test.ts`
+and `nats-credential.test.ts`; the first runs every other file. The guards are 30000 and
+120000 ms, each at least twice the slowest row or hook its command ran under 8 busy loops on
+2 CPUs; `package.json`'s `"//"` note gives each reading, and the hook's.
 
 Bun reads the guard from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
 preload that calls `jest.setTimeout` governs the first test file of a run only, and

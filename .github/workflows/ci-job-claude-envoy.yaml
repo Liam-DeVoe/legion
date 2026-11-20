@@ -32,7 +32,8 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
     # steps at their longest, 50 s, 4 s of its clock over them, and its test step's longest, 104 s,
-    # plus the package script's two guards, 15 s and 120 s: 293 s in all.
+    # plus the package script's three guards, 17 s, 120 s and 300 s (the third runs codex-real
+    # alone, which skips here): 595 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -22,7 +22,8 @@
 # libpq for, so the run needs psql and python3 with libpq beside tmux. The daemon is handed that
 # database in LEGION_POSTGRES_DSN, in its own environment alone: legion.yaml names no
 # postgres_dsn, and no variable of this shell holds the URI. Its guard is proof_guard's below, and
-# every wait goes through lib/rig.sh's wait_for, which gives up 30 s before it.
+# every wait goes through lib/proof-wait.sh's wait_for (which lib/rig.sh sources), which gives up
+# 30 s before it.
 set -euo pipefail
 
 pid=

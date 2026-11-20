@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { symlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { LegionActivityRequest } from "@legion/contracts/legion-api";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
@@ -15,6 +16,12 @@ import {
   runLegionPane,
   type TranscriptRecord,
 } from "@legion/pi-shared/test/omp-harness";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  TIMER_RECORD_FILE,
+  TIMER_RECORD_ROOTS,
+  type TimerStep,
+} from "@legion/test-fixtures/timer-record";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -247,7 +254,37 @@ interface PaneOptions
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
   readonly openAskQuestions?: readonly string[];
+  /** Where the pane keeps the tests' record of the timers its plugins arm, each with its delay and
+   *  the line that armed it (`@legion/test-fixtures/timer-record`); no record unless given. */
+  readonly timerRecord?: string;
 }
+
+/** The plugins' own sources, the roots the timer record places an arming under. */
+const PANE_ROOTS = [
+  import.meta.dir,
+  path.resolve(import.meta.dir, "../src"),
+  path.resolve(import.meta.dir, "../../pi-shared/src"),
+  path.resolve(import.meta.dir, "../../pi-envoy/extensions"),
+  path.resolve(import.meta.dir, "../../pi-envoy/src"),
+  path.resolve(import.meta.dir, "../../envoy-client/src"),
+];
+
+/** Where a case keeps its pane's timer record. */
+const timerRecordDirectory = temporaryDirectories("legion-phase-stall-timers");
+
+/** The line of pi-shared's phase reminder that arms its timer (`armReminder`'s `deps.armTimer`),
+ *  as the timer record names the place of an arming, `<file>:<line>`: the first frame of the
+ *  plugins' own code the arming's stack shows, past the host's. */
+const ARM_TIMER_LINE = (() => {
+  const file = path.resolve(import.meta.dir, "../../pi-shared/src/phase-reminder.ts");
+  const lines = readFileSync(file, "utf8").split("\n");
+  const arming = (line: string) => line.includes("deps.armTimer(");
+  const index = lines.findIndex(arming);
+  if (index === -1 || lines.filter(arming).length !== 1) {
+    throw new Error(`${file} arms its reminder at no one deps.armTimer call`);
+  }
+  return `${file}:${index + 1}`;
+})();
 
 /**
  * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
@@ -279,11 +316,22 @@ async function stallPane(
       legion: options.legion,
       settledWhen: options.settledWhen,
       selfCheck: options.selfCheck,
+      // The record's module first, so it holds every timer the plugins arm.
+      extensions:
+        options.timerRecord === undefined
+          ? []
+          : [Bun.resolveSync("@legion/test-fixtures/timer-record-preload", import.meta.dir)],
       env: {
         ...PANE_IDENTITY,
         // The daemon puts the project token on every pane, and the architect notice's role topic
         // is built from it (`roleToken`).
         ...(options.legion === false ? {} : { LEGION_PROJECT: "stall" }),
+        ...(options.timerRecord === undefined
+          ? {}
+          : {
+              [TIMER_RECORD_FILE]: options.timerRecord,
+              [TIMER_RECORD_ROOTS]: PANE_ROOTS.join(":"),
+            }),
         ...options.env,
       },
       prepare: async ({ workspace, bin }) => {
@@ -517,6 +565,7 @@ test.skipIf(skip)(
     const seen: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
     // The quiet wait a WAITING line buys.
     const waitMs = 1_500;
+    const timerRecord = path.join(timerRecordDirectory(), "timer-record.jsonl");
     const pane = await stallPane(
       run,
       [
@@ -532,6 +581,7 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
+        timerRecord,
         // The reminder comes on the pane's own timer once the wait is over, after its run has
         // settled, so the run ends on the turn the completion leads to, which closed the phase.
         settledWhen: {
@@ -552,10 +602,21 @@ test.skipIf(skip)(
     );
     const [waitingTurn = -1, reminderTurn = -1] = modelRequests;
     const between = seen.slice(waitingTurn + 1, reminderTurn);
-    // The WAITING line bought the wait: the settle that read it armed the reminder that long
-    // ahead, and reported the wake at once (`session_stop` in extensions/legion.ts). Read on the
-    // pane's own clock, the report's moment and the wake it names are the wait apart, less the
-    // little the pane did between arming and reporting.
+    // The WAITING line bought the wait: the settle that read it armed the reminder's timer
+    // (`armReminder`, pi-shared's phase-reminder.ts) for the wait, which the pane's own record of
+    // its timers holds with the delay it chose, and reported the wake at once (`session_stop` in
+    // extensions/legion.ts), which therefore lies no further ahead of the report than the wait.
+    const timerSteps = (await readFile(timerRecord, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line): TimerStep => JSON.parse(line));
+    const reminderDelays = timerSteps.flatMap((step) =>
+      "timer" in step && step.from === ARM_TIMER_LINE ? [step.delayMs] : []
+    );
+    expect(
+      reminderDelays,
+      `the timers armed at ${ARM_TIMER_LINE}; the pane's whole record: ${JSON.stringify(timerSteps.filter((step) => !("fired" in step)))}`
+    ).toContain(waitMs);
     const armedAt = between.findIndex(
       (request) =>
         request.path === ACTIVITY_ROUTE &&
@@ -564,7 +625,6 @@ test.skipIf(skip)(
     expect(armedAt).toBeGreaterThanOrEqual(0);
     const armed = LegionActivityRequest.parse(between[armedAt]?.body).activity;
     const armedFor = Date.parse(armed.phase.nextReminderAt ?? "") - Date.parse(armed.at);
-    expect(armedFor).toBeGreaterThanOrEqual(waitMs - 100);
     expect(armedFor).toBeLessThanOrEqual(waitMs);
     // No turn started while it ran: the reminder's own record check (a read of the daemon's state)
     // is the first thing the pane did once its timer fired, and the reminder's turn came after it.

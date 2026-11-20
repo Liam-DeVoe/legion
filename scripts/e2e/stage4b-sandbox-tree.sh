@@ -535,7 +535,7 @@ pool_two_pods_per_instance() {
 # Prints nothing when there is none, when the cluster cannot be read, or when its jq itself fails
 # (guarded, never the ERR trap: set -E inherits it into a command substitution, so an unguarded
 # failure here would print a FAIL line from inside a check this hook is trying to end BLOCKED;
-# lib/rig.sh:137-139 guards pgrep the same way).
+# lib/rig.sh:316-318,325 guards pgrep the same way).
 limit_pending() {
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get pods -l "legion.dev/project=$run_label,$1" -o json >"$work/limit-pods.json" || return 0
   kubectl --context "$operator" -n "$namespace" --request-timeout=20s get events --field-selector involvedObject.kind=Pod -o json >"$work/limit-events.json" || return 0
@@ -587,13 +587,13 @@ limit_pending() {
 # outlive the pod by the cluster's event TTL, so this still finds it once the pod itself is gone.
 # Prints nothing when there is none, when a read fails, or when its jq itself fails (guarded,
 # never the ERR trap: set -E inherits it into a command substitution, so an unguarded failure here
-# would print a FAIL line from inside a check this hook is trying to end BLOCKED; lib/rig.sh:137-139
-# guards pgrep the same way). Reads the live pod watch the way it already reads the daemon log,
-# one JSON value a line with a failed parse skipped, not slurped as one JSON document: watch_raw
-# appends each event with one printf, a pod object larger than the stdio buffer can go out in more
-# than one write, and a read that falls between those writes would otherwise see a torn last
-# object and fail the whole read — a real capacity case reading FAIL for a reason that has nothing
-# to do with capacity.
+# would print a FAIL line from inside a check this hook is trying to end BLOCKED;
+# lib/rig.sh:316-318,325 guards pgrep the same way). Reads the live pod watch the way it already
+# reads the daemon log, one JSON value a line with a failed parse skipped, not slurped as one JSON
+# document: watch_raw appends each event with one printf, a pod object larger than the stdio buffer
+# can go out in more than one write, and a read that falls between those writes would otherwise
+# see a torn last object and fail the whole read — a real capacity case reading FAIL for a reason
+# that has nothing to do with capacity.
 limit_pending_exhausted() {
   local key value has_value=true
   case $1 in

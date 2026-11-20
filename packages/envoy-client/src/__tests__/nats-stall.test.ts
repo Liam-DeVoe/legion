@@ -157,14 +157,18 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
         expect(redials[stalledRedials]?.subscribedAt).toBeDefined();
         // nats.js abandons a dial after its 20 s timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
-        // connection, so its close is the client's.
-        for (const hung of redials.slice(0, stalledRedials)) {
+        // connection, so its close is the client's. It comes at the give-up, which is before the
+        // redial after it: nats.js closes the transport of the dial it gave up on before its dial
+        // loop dials again (`protocol.js`, `dial`'s catch, then `dodialLoop`), so a socket closed
+        // at any later moment is closed after the proxy accepted that next redial.
+        for (const [index, hung] of redials.slice(0, stalledRedials).entries()) {
           await until("the client to close the socket of the redial it gave up on", () => {
             return hung.closedAt !== undefined;
           });
           console.log(
             `nats-stall row ${slug.toUpperCase()} hung redial: accepted ${((hung.acceptedAt - frozenAt) / 1000).toFixed(1)} s after the freeze, closed ${(((hung.closedAt ?? Number.NaN) - hung.acceptedAt) / 1000).toFixed(1)} s after it was accepted`
           );
+          expect(hung.closedAt).toBeLessThanOrEqual(redials[index + 1]?.acceptedAt ?? Number.NaN);
         }
       } finally {
         await client.close();

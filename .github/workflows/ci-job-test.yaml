@@ -269,9 +269,15 @@ jobs:
     # The census step and its strace install below came after that reading, and add their guard,
     # 5 s, and an apt install to it. So did main's two private-name harnesses and the plan ratings
     # read test's typecheck, whose longest green times up to 2026-11-19T20:18Z were 8 s, 39 s and
-    # 4 s (runs 44598057379 and 44602677244). Thirty minutes leaves a slow runner room and still
-    # fails a hung harness inside the hour.
-    timeout-minutes: 30
+    # 4 s (runs 44598057379 and 44602677244). Five shell harnesses of this job set a guard of
+    # their own since, each waiting through scripts/e2e/lib/proof-wait.sh and each read beside 8
+    # busy loops in builds Jobs d2-fixed and d3-fixed-a (the reading is beside each guard): the tool
+    # fetch helper's 840 s, the tool copy filler's 400 s, the machine watch's 80 s, the browser
+    # sampler's 60 s and the priorities seed check's 100 s, which counted as steps with no guarded
+    # command before and now add their guards, 1,480 s: with the rest, 716 + 5 + 51 + 1,480 =
+    # 2,252 s, or 38 minutes, and the strace install's apt run. Forty minutes leaves a slow runner
+    # room and still fails a hung harness inside the hour.
+    timeout-minutes: 40
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -297,8 +303,9 @@ jobs:
       #
       # Each bare `bun test` step of this job loads the row-deadline preload and sets its one guard,
       # --timeout, at least twice the slowest row or hook its command ran under 8 busy loops on
-      # 2 CPUs in a builds Job at 61b66deb (two runs); the reading is beside each. Here 2,992.78 ms,
-      # "scripts/build-inputs.txt matches every file the build reads".
+      # 2 CPUs in a builds Job (two runs); the reading, and the Job and commit it was read at, are
+      # beside each. Here 2,992.78 ms at 61b66deb, "scripts/build-inputs.txt matches every file the
+      # build reads".
       - name: Check the Claude Code plugin's build input list covers what the build reads
         run: bun test --preload @legion/test-fixtures/row-deadline --timeout 10000 tests/build-inputs.test.ts
         working-directory: packages/claude-envoy
@@ -597,6 +604,12 @@ jobs:
       # reader that falls behind before the exit does not buy an escaped descendant a second
       # stall", 13,192.88 ms), which the 60000 ms it had before held only 1.86 times; this job
       # restores no Go cache at all, so the build here may be colder than that.
+      # Read again at the round-3 class-search tree (main 46c275dcba with #4437's head e9d8f5075f
+      # and its uncommitted fixes), with main's new files step-records-read.test.ts and
+      # nats-connect-failure.test.ts and its new rows, under the same load (two runs in builds Job
+      # d2-c9-tj, 2026-11-19): the command passed in 479 s and 360 s, and its slowest row was that
+      # same app-logins.test.ts row, 13,092.34 ms and 13,103.02 ms, which 65000 holds 4.96 times.
+      # Bun prints no hook times, so held-port.test.ts's beforeAll was not read again there.
       # Before this guard the step ran on Bun's default of 5000 ms, which killed
       # scripts/e2e/lib/smoke-cleanup.test.ts's smoke-main-clean teardown row at 8.3 s in
       # merge-group run 43708116445 (#4046's queue run, at e21be234).

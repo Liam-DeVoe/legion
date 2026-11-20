@@ -67,9 +67,9 @@ expect.extend(reportableJestDomMatchers());
 // `bun test --timeout 200`. So a row's own deadline takes the flag's place whether it is larger
 // or smaller, and the waits below, which read the flag, would then end by a deadline the row
 // does not have. That is why no row or hook under `web/src` sets one, nor calls
-// `setDefaultTimeout`: a grep of its test files finds none in this tree, where
-// `MarkdownBody.test.tsx` (40 s) and `fixture-table-readings.test.ts` (30 s,
-// `WHOLE_TABLE_TIMEOUT_MS`) set theirs on main and wait on their facts here instead. In
+// `setDefaultTimeout`: a grep of its test files finds none in this tree. `MarkdownBody.test.tsx`
+// (40 s) and `fixture-table-readings.test.ts` (30 s, `WHOLE_TABLE_TIMEOUT_MS`) set theirs up to
+// commit 46c275dcba; each now waits on its facts instead. In
 // `e2e/__tests__` a row's or a hook's own limit is a call of `rowLimit` of
 // `e2e/__tests__/bounded-subprocess.ts`, read from the bounds of the children and the polls it
 // waits for, or a number with its reason on the line directly above it: `e2e/row-limits.ts`

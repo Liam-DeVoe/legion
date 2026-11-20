@@ -1,4 +1,4 @@
-import { expect, jest, test } from "bun:test"
+import { afterEach, expect, jest, test } from "bun:test"
 import { readFileSync } from "node:fs"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -70,6 +70,12 @@ async function onFakeClock(run: () => Promise<void>): Promise<void> {
     jest.useRealTimers()
   }
 }
+
+// A row the command's guard ends while `run` awaits never reaches `onFakeClock`'s `finally`, so
+// the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers()
+})
 
 /** Lets every microtask queued so far run: a macrotask comes after all of them, and
  *  `setImmediate` is one Bun's fake timers leave on the real event loop. */

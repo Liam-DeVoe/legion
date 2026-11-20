@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { until } from "@legion/test-fixtures/wait";
 import {
   exportJjSessionAttribution,
@@ -604,6 +606,9 @@ describe("userConfigChain", () => {
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
   afterEach(async () => {
+    // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+    // `finally`, so the real clock comes back here too, before the next row.
+    jest.useRealTimers();
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   });
   // The wrapper's pidfile and the kernel reaping its child are external OS state, which Bun's
@@ -631,6 +636,47 @@ describe("userConfigChain", () => {
     });
   }
 
+  /**
+   * Runs `call` on Bun's fake clock and moves the clock a millisecond a turn until `call` settles,
+   * answering how far it moved; at `capMs` it stops and answers the cap. The call's bound is its
+   * own timer, which only this clock moves, while jj runs in real time beside it, so a call that
+   * waits for jj rather than for its timer reads as the cap however loaded the machine. `ready`,
+   * where given, is waited for on turns of the real event loop before the clock first moves.
+   */
+  async function settlesAfterMs(
+    call: () => Promise<unknown>,
+    capMs: number,
+    ready: () => boolean = () => true
+  ): Promise<number> {
+    jest.useFakeTimers();
+    try {
+      const began = Date.now();
+      let done = false;
+      const end = () => {
+        done = true;
+      };
+      void call().then(end, end);
+      await turnsUntil("the jj wrapper to be ready", ready);
+      await turnsUntil(
+        "the call to settle, or the fake clock to reach its cap",
+        () => done || Date.now() - began >= capMs,
+        { each: () => jest.advanceTimersByTime(1) }
+      );
+      return Date.now() - began;
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+
+  /** Whether the wrapper has written its child's pid to `pidFile`. */
+  function pidWritten(pidFile: string): boolean {
+    try {
+      return readFileSync(pidFile, "utf8").trim() !== "";
+    } catch {
+      return false;
+    }
+  }
+
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");
     expect(await userConfigChain(5_000, env)).toBe("/u/a.toml:/u/b.toml");
@@ -641,12 +687,17 @@ describe("userConfigChain", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env: exported,
-      resolveBase: () => userConfigChain(200, env),
-    });
-    expect(Date.now() - started).toBeLessThan(5_000);
+    // The call ends at its own 200 ms timer, never at jj's 30 s.
+    const tookMs = await settlesAfterMs(
+      () =>
+        exportJjSessionAttribution(ROOT_ID, dir, {
+          env: exported,
+          resolveBase: () => userConfigChain(200, env),
+        }),
+      5_000
+    );
+    expect(tookMs).toBeGreaterThanOrEqual(200);
+    expect(tookMs).toBeLessThan(5_000);
     expect(exported.JJ_CONFIG).toBeUndefined();
   });
 
@@ -654,11 +705,17 @@ describe("userConfigChain", () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
     const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
+    // The wrapper waits for its child, so the call ends at its own 200 ms timer, which kills the
+    // group; the clock moves only once the wrapper has written the child's pid.
+    const tookMs = await settlesAfterMs(
+      () => userConfigChain(200, env),
+      5_000,
+      () => pidWritten(pidFile)
+    );
     const pid = await pidFrom(pidFile);
     try {
-      expect(Date.now() - started).toBeLessThan(5_000);
+      expect(tookMs).toBeGreaterThanOrEqual(200);
+      expect(tookMs).toBeLessThan(5_000);
       expect(await stops(pid)).toBe(true);
     } finally {
       try {

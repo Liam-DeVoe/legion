@@ -22,6 +22,7 @@ import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   temporaryDirectories,
@@ -29,6 +30,7 @@ import {
 } from "@legion/test-fixtures/temporary-directories";
 import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
 import type { DispatchSession } from "../../src/dispatch-session";
+import { HOST_SHUTDOWN_HANDLER_MS } from "../../src/session-shutdown";
 import * as core from "./askgate-core";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -86,6 +88,10 @@ const snapshotDirs = () =>
  */
 const callEnders: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here first: the ends below, and every later row, run
+  // on it.
+  jest.useRealTimers();
   for (const end of callEnders.splice(0)) await end();
 });
 
@@ -393,6 +399,32 @@ function bind(opts: BindOptions = {}): BoundGate {
     event: (name: string, payload: Record<string, unknown> = {}) =>
       handlers.get(name)?.({ type: name, ...payload }, ctx),
   };
+}
+
+/**
+ * Runs `g`'s `session_shutdown` on Bun's fake clock, moved a millisecond a turn, and answers how
+ * far the clock had moved when the handler settled. The shutdown's waits are the gate's own
+ * timers, so the reading is theirs to the millisecond, however loaded the machine. The clock stops
+ * at the host's cap (`HOST_SHUTDOWN_HANDLER_MS`, past which Oh My Pi seals the session), and a
+ * handler still running there reads as the cap.
+ */
+async function shutdownTakesMs(g: BoundGate): Promise<number> {
+  jest.useFakeTimers();
+  try {
+    const began = Date.now();
+    let done = false;
+    void g.event("session_shutdown")?.then(() => {
+      done = true;
+    });
+    await turnsUntil(
+      "the shutdown handler to settle, or the clock to reach the host's cap",
+      () => done || Date.now() - began >= HOST_SHUTDOWN_HANDLER_MS,
+      { each: () => jest.advanceTimersByTime(1) }
+    );
+    return done ? Date.now() - began : HOST_SHUTDOWN_HANDLER_MS;
+  } finally {
+    jest.useRealTimers();
+  }
 }
 
 /**
@@ -1124,21 +1156,39 @@ describe("breaker (test 7)", () => {
 
 describe("fail-open", () => {
   test("timeout (test 8): the call runs within the deadline, the model call is aborted, and what it billed is recorded", async () => {
-    const signals: AbortSignal[] = [];
-    const g = bind({
-      env: { OMP_ASKGATE_TIMEOUT_MS: "50" },
-      complete: (req) => {
-        signals.push(req.signal);
-        return untilAborted(req);
-      },
-    });
-    const started = Date.now();
-    const timedOut = await g.device("t1", "dispatch_comment", COMMENT);
-    expect(timedOut?.block).toBeUndefined();
-    expect(timedOut?.additionalContext).toContain("The call ran unreviewed.");
-    expect(Date.now() - started).toBeLessThan(1000);
-    expect(signals[0].aborted).toBe(true);
-    expect(g.entries).toMatchObject([{ decision: "allow", outcome: "timeout", usage: PARTIAL }]);
+    // The deadline is the gate's own timer, so the row holds the clock: the model call still runs
+    // a millisecond short of the 50 ms the gate armed, and is aborted at them.
+    jest.useFakeTimers();
+    try {
+      const signals: AbortSignal[] = [];
+      const g = bind({
+        env: { OMP_ASKGATE_TIMEOUT_MS: "50" },
+        complete: (req) => {
+          signals.push(req.signal);
+          return untilAborted(req);
+        },
+      });
+      const answer: { done: boolean; result?: Result } = { done: false };
+      void g.device("t1", "dispatch_comment", COMMENT).then((result) => {
+        answer.result = result;
+        answer.done = true;
+      });
+      await turnsUntil("the gate's model call to start", () => signals.length > 0);
+      jest.advanceTimersByTime(49);
+      await turn();
+      expect(signals[0].aborted).toBe(false);
+      expect(answer.done).toBe(false);
+      jest.advanceTimersByTime(1);
+      expect(signals[0].aborted).toBe(true);
+      await turnsUntil("the gate to answer the call it gave up on", () => answer.done);
+      expect(answer.result?.block).toBeUndefined();
+      expect(answer.result?.additionalContext).toContain("The call ran unreviewed.");
+      expect(g.entries).toMatchObject([
+        { decision: "allow", outcome: "timeout", usage: PARTIAL, deadlineMs: 50 },
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
   test("three consecutive failures halt the gate for the session with one notice", async () => {
     const g = bind({ env: { OMP_ASKGATE_TIMEOUT_MS: "20" }, complete: untilAborted });
@@ -1712,9 +1762,7 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    const began = Date.now();
-    await g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    expect(await shutdownTakesMs(g)).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
     await gated;
   });
@@ -3282,14 +3330,27 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
     );
   });
   test("the runner kills a dry-run that outlives its limit", async () => {
-    const began = Date.now();
-    const result = await core.spawnDryRun("sleep 5", {
-      cwd: work,
-      env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: work },
-      timeoutMs: 100,
-    });
-    expect(result.timedOut).toBe(true);
-    expect(Date.now() - began).toBeLessThan(2_000);
+    // The limit is the runner's own timer, so the row holds the clock and moves it the 100 ms the
+    // run was given: the child, a five-second `sleep`, then ends by the kill, with no exit code of
+    // its own, where one the kill missed would end by itself and exit 0.
+    jest.useFakeTimers();
+    try {
+      const ran: { result?: core.DryRunResult } = {};
+      void core
+        .spawnDryRun("sleep 5", {
+          cwd: work,
+          env: { ...bunCacheOff, PATH: process.env.PATH ?? "", HOME: work },
+          timeoutMs: 100,
+        })
+        .then((result) => {
+          ran.result = result;
+        });
+      jest.advanceTimersByTime(100);
+      await turnsUntil("the dry-run's child to end", () => ran.result !== undefined);
+      expect(ran.result).toMatchObject({ timedOut: true, exitCode: null });
+    } finally {
+      jest.useRealTimers();
+    }
   });
   test("a subagent's dispatch command is never reviewed or recorded, and gets an argv-only marker", async () => {
     const g = bind({ env: STUB, cwd: work, kind: "sub" });
@@ -6892,9 +6953,7 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    const began = Date.now();
-    await shut.g.event("session_shutdown");
-    expect(Date.now() - began).toBeLessThan(1_500);
+    expect(await shutdownTakesMs(shut.g)).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },

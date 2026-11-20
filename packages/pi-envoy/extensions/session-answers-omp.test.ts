@@ -37,6 +37,14 @@ import { settled } from "@legion/test-fixtures/wait";
 // harness, its deliveries and its restart: the `delivered:` line src/card-age.ts adds to a card
 // keeps its bytes across a resume. LEGION_TEST_OMP names the binary, as in
 // dispatch-first-omp.test.ts. A run without one skips, except on GitHub Actions.
+//
+// Case (f): a route that never answers holds no request past the session's own deadline: the
+// request goes out while the read is still held, and names the deadline it waited. No case's
+// verdict reads a clock: what each request waited on is the order the stand-in saw the requests
+// in, what the request carries, and the session's own record of each wait it armed
+// (`session.waits`: how it ended and the delay it armed, which case (f) reads). The cases read
+// `Date.now()` only to date items, to set a read's `since`, as the render's `now` and to name a
+// file.
 const omp = process.env.LEGION_TEST_OMP;
 const onActions = process.env.GITHUB_ACTIONS === "true";
 /** The Dispatch token the session is handed. */

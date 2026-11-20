@@ -460,6 +460,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+  // `finally`, so the real clock comes back here first, before the removals below and the next row.
+  jest.useRealTimers();
   globalThis.fetch = originalFetch;
   // OMP's `session_shutdown` removes each envoy instance from the process-wide interface's
   // role-claim bridge; this suite binds a fixture per test and never shuts it down, so it clears

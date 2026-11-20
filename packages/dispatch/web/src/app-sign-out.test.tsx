@@ -1,4 +1,5 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -23,6 +24,12 @@ import { plainWrite, writesOf } from "./features/writes/write-store";
 // suspended resource outside `act`. So the module is loaded here, with the test file, and no row
 // starts or waits for it.
 import "./features/margin/Margin";
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
 const about = (field: string, login: string) => expect.objectContaining({ [field]: login });
@@ -781,9 +788,17 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
+    // The tab that missed the last question is taken for gone, so this one waits for no answer
+    // window: it is asked on the other two tabs' answers alone, which cross a real channel the
+    // held clock does not pace. So the row turns the real event loop with the clock where it is; a
+    // question that waited for the silent tab again would wait for a timer this clock never fires.
     const started = Date.now();
     await user.click(screen.getByRole("button", { name: "Sign out" }));
-    await waitFor(() => expect(app.asked).toHaveLength(2));
+    await act(async () => {
+      await turnsUntil("the second question, asked on the two answering tabs' answers", () => {
+        return app.asked.length === 2;
+      });
+    });
     expect(Date.now() - started).toBeLessThan(OTHER_TABS_ANSWER_MS);
     expect(app.asked[1]).toBe(`Sign out and discard ${named}?${listed}`);
 
@@ -832,7 +847,15 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
     await waitFor(() => expect(attempts.length).toBeGreaterThan(0));
 
     signer.say({ signingOut: "alice" });
+    // The app hears it over a real channel the held clock does not pace, so the row turns the real
+    // event loop with the clock where it is until the hold is taken: the lease is armed at `said`,
+    // not at whichever poll of a wait first saw the hold.
     const said = Date.now();
+    await act(async () => {
+      await turnsUntil("the app to hold alice's writes for the other tab's sign-out", () => {
+        return writesOf(app.queryClient).heldSignOut("alice") !== undefined;
+      });
+    });
     await screen.findByText("CORE-1 set to done — Waiting for a sign-out in another tab");
     const made = attempts.length;
     await tick(4_000);

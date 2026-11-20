@@ -178,6 +178,15 @@ export function recordTimers(
  * Installs the record as the preload does, when `env` names a file (`TIMER_RECORD_FILE`) and the
  * program's roots (`TIMER_RECORD_ROOTS`): each step is appended to the file as one JSON line. A
  * write that fails is dropped, so the record never changes what the program does.
+ *
+ * The writer is `@legion/envoy-client/json-line-record`'s `jsonLineRecord` written again, and the
+ * copy stays: that one shared form sits in `@legion/envoy-client` because the program seams that
+ * write it ship there, and a shipped package cannot import this private one. This package depends
+ * on no workspace package, and every other Bun package of `packages/` devDepends on it. An import
+ * of `jsonLineRecord` here would make it depend on `@legion/envoy-client`, and through that on
+ * `@legion/contracts` and `@legion/broker-client`: a cycle with each of the three. The writer could
+ * be shared only from a package of its own, published as a runtime dependency of
+ * `@legion/envoy-client`, for one write that drops its failure.
  */
 export function recordTimersFromEnvironment(env: Record<string, string | undefined>): void {
   const file = env[TIMER_RECORD_FILE];

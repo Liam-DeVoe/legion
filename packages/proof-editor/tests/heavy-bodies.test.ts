@@ -18,9 +18,9 @@
  *    count, the resolvers', subtokenize's, the extensions', the compile's, each transform's and
  *    Milkdown's runner calls among them, grown no faster than the shape's growing dimension from
  *    an eighth of it to the full size. The one shape the default mode refuses is counted the same
- *    way and then asked for its refusal at both sizes. Which dependency patch holds which shape,
- *    and what each shape reads with that patch's scan put back, is in
- *    packages/proof-editor/AGENTS.md.
+ *    way and then asked for its refusal at both sizes. Which dependency patch counts what, and
+ *    how to put a patch's scan back to see a row catch it, is in tests/parse-work.ts, "The
+ *    dependency patches".
  * 2. The nesting bound, at the boundaries the document service draws them at
  *    (`maxNesting`, packages/envoy/internal/dispatch/pmdoc/nesting.go: a quote, a list, a list
  *    item, a typed block and a footnote definition each count one). A list opener opens a list and

@@ -1057,7 +1057,7 @@ jobs:
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources, the helpers the rig runs, and
               # the two plugin manifests it copies with jq into the plugins its home holds
-              # (stage1-skeleton.sh:312-313).
+              # (stage1-skeleton.sh:313-314).
               - 'scripts/e2e/stage1-skeleton.sh'
               - 'scripts/e2e/lib/rig.sh'
               - 'scripts/e2e/lib/proof-wait.sh'
@@ -1374,6 +1374,8 @@ jobs:
               - 'scripts/semantic-line-breaks.guides.test.ts'
               # The checker the test spawns (its :9 and :16).
               - 'scripts/semantic-line-breaks.ts'
+              # The checker's :39 imports its exit helper.
+              - 'packages/envoy-client/src/process-exit.ts'
               # The three guides of its GUIDES list (:12), read by two of its three tests.
               - 'AGENTS.md'
               - 'scripts/e2e/README.md'
@@ -1502,16 +1504,20 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-tools.test.sh'
               - '.github/scripts/ci-tools.sh'
-              # :525-532 reads every row of this repository's own manifest.
+              # :1545-1554 reads every row of this repository's own manifest.
               - '.github/ci-tools.yaml'
+              # :100 sources the harness's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
             mirror_ci_tools_test: &mirror_ci_tools_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/mirror-ci-tools.test.sh'
               - '.github/scripts/mirror-ci-tools.sh'
-              # :357 symlinks in the fetch helper the filler sources.
+              # :443 symlinks in the fetch helper the filler sources.
               - '.github/scripts/ci-tools.sh'
+              # :78 sources the harness's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
             check_ci_tools_test: &check_ci_tools_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1527,9 +1533,10 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/ci-tools-proof.test.sh'
               - '.github/scripts/ci-tools-proof.sh'
-              # ci-tools-proof.sh:379 sources the fetch helper, so every case of the harness
-              # reads it.
+              # ci-tools-proof.sh:386 sources the fetch helper, and :406 the rig's guard and its
+              # one wait, so every case of the harness reads both.
               - '.github/scripts/ci-tools.sh'
+              - 'scripts/e2e/lib/proof-wait.sh'
             check_action_pins_test: &check_action_pins_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1687,6 +1694,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/dispatch-browser-samples.test.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
+              # :43 sources the harness's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
             race_memory_test: &race_memory_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1699,6 +1708,8 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/disk_watch.test.sh'
               - '.github/scripts/disk_watch.py'
+              # :43 sources the harness's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
             # The one harness of the job outside .github/scripts: it carries its own helpers
             # and sources no test-lib.sh.
             priorities_seed_check_test: &priorities_seed_check_test
@@ -1706,6 +1717,8 @@ jobs:
               - '.github/workflows/ci-job-test.yaml'
               - 'scripts/priorities-seed-check.test.sh'
               - 'scripts/priorities-seed-check.sh'
+              # :134 sources the test's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
             check_ci_filters_test: &check_ci_filters_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -2434,7 +2447,7 @@ jobs:
               - 'packages/pi-envoy/**'
               # src/skills-guard.test.ts:29,318 spawns packages/claude-envoy/scripts/build.ts and
               # asserts an exact file list over the tree it writes, so this job reads that whole
-              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-44) that
+              # package and the one entry of its BUNDLE_ENTRYPOINTS (scripts/build.ts:39-48) that
               # lives outside it. A spawn carries no import, so no derivation of this repository
               # sees the reach: both patterns are hand-kept, with their declared reads in
               # ci_job_reads.py.
@@ -3393,6 +3406,11 @@ jobs:
               # pattern is needed through transport.ts (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
+              # e2e-local.sh:320 sources the run's guard and its one wait, and e2e-local.test.sh:32
+              # the test's; the Bun driver of e2e-local.sh's acks wait (:771) imports
+              # @legion/test-fixtures/wait, which reads ./deadline beside it.
+              - 'scripts/e2e/lib/proof-wait.sh'
+              - 'packages/test-fixtures/src/**'
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
               - 'packages/envoy/internal/testnats/*'
@@ -3581,8 +3599,8 @@ jobs:
               - 'packages/broker-client/src/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
-              # src/__tests__/delivery.test.ts:17 and dispatch-text.test.ts:127 read the first,
-              # dispatch-config.test.ts:5 the second.
+              # src/__tests__/delivery.test.ts:21-22 and dispatch-text.test.ts:127 read the first,
+              # dispatch-config.test.ts:6 the second.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
               # src/__tests__/transport.test.ts:9.
@@ -3699,6 +3717,8 @@ jobs:
               # the step before it runs (packages/envoy/** names both too).
               - 'packages/envoy/scripts/database-skips.sh'
               - 'packages/envoy/scripts/database-skips.test.sh'
+              # scripts/callout-check.sh:67 sources the check's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
               # internal/dispatch/testlimits/testlimits_test.go holds this script's
               # max_connections to testlimits.ServerConnections.
               - 'packages/daemon/docker/legion-testpg'
@@ -5003,6 +5023,8 @@ jobs:
               - '.github/scripts/check-ci-tools.sh'
               - '.github/scripts/ci-tools-proof.sh'
               - '.github/scripts/ci-fault-proxy.py'
+              # ci-tools-proof.sh:406 sources the rig's guard and its one wait.
+              - 'scripts/e2e/lib/proof-wait.sh'
               # The two jobs read the machine they run on with it.
               - '.github/scripts/disk_watch.py'
               - '.github/actions/install-crane/**'

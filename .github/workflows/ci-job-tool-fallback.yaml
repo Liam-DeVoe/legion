@@ -46,8 +46,10 @@ jobs:
     # honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of
     # which took more than a second (1), the bytes the installs and the sixteen cases move, over
     # npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the
-    # readings, the `ladder-report` step, the stop-fault step and the report (1).
-    # That is 12, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
+    # readings, the `ladder-report` step, the stop-fault step and the report (1). The origin's
+    # and the fault's starts each wait for their server's port through
+    # scripts/e2e/lib/proof-wait.sh under a guard of their own, 60 s each (2).
+    # That is 14, and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the
     # limit carries ten minutes over the sum.
     # This budget replaces 65 minutes with a limit of 75, and 45 of those 65 were the twenty-one
     # steps whose primary the fault holds, allowed at 126 s each. That 126 s is what a negative
@@ -96,7 +98,7 @@ jobs:
     # out.`; and the `outcome=failure` the caller's later steps read was measured in job
     # 129872208213, where a later step printed `steps.<id>.outcome`. The runner is about
     # twelve seconds late, so a bound is a ceiling and not a stopwatch.
-    timeout-minutes: 22
+    timeout-minutes: 24
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -232,6 +234,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/jj-primary.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the jj-primary case
@@ -515,17 +518,18 @@ jobs:
           # Each install's own window: from its own mark to the mark of the install after it,
           # and for the last of them to this step's own time. No install here may reach the
           # seconds .github/scripts/ci-tools-proof.sh holds every timed install to, which
-          # this step reads from that script rather than writing the number again: the rig holds
-          # the sixteen corrupted cases below to that same bound, and a bound written in two
-          # places is a bound that drifts, with the job then refusing two different things.
-          # INSTALL_BOUND in that script is where the number lives, and the comment on it says
-          # why it is the number it is. A window also names the install that hung.
-          # A mark this step cannot read as a number is refused before any arithmetic, the way
-          # `report` refuses a case whose mark holds no `started=`: a window read with no clock
-          # is exactly the window the clock exists to catch, so it may not pass quietly. Left to
-          # the arithmetic below, an empty mark reads as a large negative number, which is under
-          # the bound, and then stops the loop on the empty operand with the step exiting 0 and
-          # seven of the eight windows never read.
+          # this step reads from that script rather than writing the number again, since a bound
+          # written in two places is a bound that drifts. INSTALL_BOUND in that script is where
+          # the number lives, and the comment on it says why it is the number it is. A window
+          # also names the install that hung. These eight run the merge base's actions, whose
+          # ci-tools.sh writes no end record, so the clock is what this step has; the sixteen
+          # corrupted cases below run this tree's actions, and `report` reads the record each
+          # of their installs writes as its last act (CI_TOOLS_PROOF_ENDED) instead.
+          # A mark this step cannot read as a number is refused before any arithmetic: a window
+          # read with no clock is exactly the window the clock exists to catch, so it may not pass
+          # quietly. Left to the arithmetic below, an empty mark reads as a large negative number,
+          # which is under the bound, and then stops the loop on the empty operand with the step
+          # exiting 0 and seven of the eight windows never read.
           # A bound this step cannot read is refused too, for a different reason, since the step
           # would fail either way: driven with the guard taken out, an empty bound leaves
           # `[ "$seconds" -lt "" ]` failing on every window, so all eight land in `slow` and the
@@ -691,6 +695,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/crane-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -707,6 +712,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-crane
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/crane-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the crane-second-source case
@@ -721,6 +727,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/changie-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -736,6 +743,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-changie
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/changie-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the changie-second-source case
@@ -763,6 +771,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-jj
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/jj-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the jj-second-source case
@@ -796,6 +805,8 @@ jobs:
         continue-on-error: true
         timeout-minutes: 11
         uses: ./.github/actions/setup-bun
+        env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/bun-primary.ended
 
       - name: Read the bun-primary case
         run: .github/scripts/ci-tools-proof.sh report bun-primary --outcome ${{ steps.bun-primary.outcome }} --row bun-linux-x64 --expect-source github-release
@@ -817,6 +828,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/setup-bun
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/bun-second-source.ended
           CI_TOOLS_NPM_BASE: ${{ steps.origin.outputs.npm }}
 
       - name: Read the bun-second-source case
@@ -834,6 +846,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/elan-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
@@ -853,6 +866,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-elan
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/elan-second-source.ended
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the elan-second-source case
@@ -871,6 +885,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/uv-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
@@ -902,6 +917,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-uv
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/uv-second-source.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
       - name: Read the uv-second-source case
@@ -917,6 +933,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-docker-primary.ended
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
@@ -935,6 +952,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-docker-plugin
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-docker-second-source.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
 
       - name: Read the pulumi-docker-second-source case
@@ -955,6 +973,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-cli-primary.ended
           CI_TOOLS_URL_BASE: ${{ steps.origin.outputs.url }}
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 
@@ -974,6 +993,7 @@ jobs:
         timeout-minutes: 11
         uses: ./.github/actions/install-pulumi
         env:
+          CI_TOOLS_PROOF_ENDED: ${{ runner.temp }}/ci-tools-proof/pulumi-cli-second-source.ended
           CI_TOOLS_URL_BASE: http://127.0.0.1:1
           CI_TOOLS_GITHUB_BASE: ${{ steps.origin.outputs.github }}
 

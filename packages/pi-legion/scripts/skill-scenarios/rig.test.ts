@@ -1284,8 +1284,11 @@ describe("require_superpowers", () => {
   });
 });
 
-// launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// launch with a stand-in tmux that starts the pane's command only once launch has looked at the
+// pane's output for the first time, as a real tmux server starts it after `new-session` has
+// returned, and a stand-in mise that prints the omp command line it was given. The gate is a
+// FIFO: the pane's command waits to read it, and the stand-in `sleep`, launch's pause after each
+// look, opens it at its first call; the script opens it at the end where launch never paused.
 describe("launch", () => {
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
   // once, and extra omp arguments placed anywhere but after the prompt.
@@ -1304,10 +1307,11 @@ describe("launch", () => {
       { mode: 0o755 }
     );
     const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+tmux() { case $1 in new-session) (read -r _ <"$R/pane-gate" && bash -c "\${@: -1}") & ;; esac; }
+open_gate() { if [ -p "$R/pane-gate" ]; then echo looked >"$R/pane-gate"; rm -f "$R/pane-gate"; fi; }
+sleep() { open_gate; command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nmkfifo "$R/pane-gate"\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"\nopen_gate`,
       [run],
       { PATH: `${bin}:${childEnv.PATH}` }
     );

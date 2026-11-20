@@ -176,9 +176,10 @@ let code = -1;
 let stderr = "";
 let printed: string[] = [];
 
-// Creating the database, writing the fixture and spawning the script take longer than Bun's
-// default five seconds whenever the server answers slowly, so the command that runs this file
-// sets a --timeout of its own.
+// Creating the database, writing the fixture and spawning the script are this file's slowest
+// work. The command that runs it (.github/workflows/ci-job-sessions-script.yaml) holds this hook
+// to its one guard, --timeout 5000, Bun's default, which is at least twice the hook's slowest
+// reading under 8 busy loops on 2 CPUs, 2,197.48 ms, written beside that command.
 beforeAll(async () => {
   database = await ownDatabase("legion_message_wait");
   const sessions = new SQL(database.url);

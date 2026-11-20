@@ -40,7 +40,10 @@ The helpers:
 One exception holds no shared state.
 The `-omp` suites share one NATS server, which `LEGION_TEST_NATS_URL` names.
 That server runs without JetStream, so no suite can leave a stream on it, and each relay subject carries its session's own id.
-CI's NATS services run so.
+CI's NATS services run so: the `pi-legion` job starts its `nats` service that way (`.github/workflows/ci-job-pi-legion.yaml`).
+A role or a person that runs the `-omp` suites starts that server from a `nats-server` binary under `$TMPDIR`, without JetStream (`nats-server -p <port>`, no `-js`), and stops it by its PID when the run is over.
+They pass the suites the flags of their package's `test` script, as R5 says: for `packages/pi-legion`, its second `bun test` command's two `--preload`s and its `--timeout`.
+Its `./test/omp-logs.ts` preload gives Oh My Pi's logger a log directory the run owns, where a run without it writes and prunes the caller's own `~/.omp/logs` (dispatch://INFRA-3314).
 
 ### R2: the shared wait holds no number of its own
 
@@ -124,7 +127,8 @@ No verdict holds an elapsed time, two readings of a clock subtracted, to a bound
 The readings a decision itself used may be held to that decision's own rule, which no load can break: pi-envoy's card wake records the moment each hold's decision read and the moment it counted the cap from, and no hold read at or past its cap (`controller-start-omp.test.ts`).
 A lower bound, that the program waited at least its delay, may read the program's own record of when it acted, since load can only lengthen the wait.
 A pattern the product runs over text it does not control is held to a linear match by recheck's automaton checker, which reads the pattern, not a time: envoy-client's `src/__tests__/excerpt-patterns.test.ts` reads `EXCERPT_PATTERNS` and pi-legion's `src/capability-report-patterns.test.ts` reads every pattern `cleanDetail` runs (`CLEAN_DETAIL_PATTERNS`).
-Each reads a pattern in the row where the check takes a moment, and otherwise from its recorded verdicts beside it (`*.recheck.json`), which `bun run analyze:patterns` in that package writes again after a pattern changes; the row holds each recorded pattern to its source.
+Each reads a pattern in the row where the check takes a moment, and otherwise from its recorded verdicts beside it (`*.recheck.json`), which `bun run analyze:patterns` in that package writes again after a pattern changes; the row holds each recorded pattern to its source, so until that command has run, the row of the changed pattern fails.
+Each analysis the command runs may take up to 300 s of one CPU (`ANALYSIS_BUDGET_MS`, `packages/envoy-client/test/pattern-analysis.ts`).
 
 A Bun test drives Bun's fake timers (`jest.useFakeTimers()`) where the code runs in the test's own process.
 
@@ -171,7 +175,9 @@ No helper sets a timeout of its own, but for these, each of which states its bou
 
 - Go's `testwait`, whose `Eventually` waits a minute or the binary's own deadline less a second, and whose `WithinPolling` takes a bound of its own ("The fixtures a test takes rather than copies" below).
 
-- `packages/dispatch/e2e/__tests__/bounded-subprocess.ts`, whose `whether` and `eventually` waits end at `bounds.short` (60,000 ms) and whose `rowLimit` is the one third argument a row of that directory gives `test`, the sum of the bounds it names; `row-limits.test.ts` holds that rule, and `web/src/__tests__/setup.ts` says why the dashboard's own rows set none.
+- `packages/dispatch/e2e/__tests__/bounded-subprocess.ts`, whose `whether` and `eventually` waits end at `bounds.short` (60,000 ms) and whose `rowLimit` is the one third argument a row of that directory's test files gives `test` itself, the sum of the bounds it names; `row-limits.test.ts` holds that rule over those files, and `web/src/__tests__/setup.ts` says why the dashboard's own rows set none.
+
+- `packages/dispatch/e2e/__tests__/outside-path-reach-fixtures.ts`, a module the outside-path reach rows of that directory import, whose `row` and `probingRow` give `test` a third argument of their own, 60,000 ms and 435,000 ms, each with its reading beside it; `row-limits.test.ts` reads the test files alone, so it does not read these two.
 
 - the Bun hooks and rows that hold one measured download or process run, below.
 
@@ -285,6 +291,13 @@ A Bun test waits and is guarded as R2 and R5 above say:
 - A row that reads a deadline the code arms with `AbortSignal.timeout` holds it through `@legion/test-fixtures/held-deadlines`: `holdDeadlines(ms)` holds every deadline of that length the code arms until the row ends them (`end`, or `letGo`, after which one of that length is the real one), and `restore` puts the real `AbortSignal.timeout` back.
   So the row reads what the code did up to its own bound and at it, in that order, and a deadline the code armed at another length is never held: a row that waits for the held one to be armed fails at its deadline, naming the wait.
 
+- A secret a test hands a client (a token in an environment variable, a capability or a boot token in a file, a Dispatch bearer) is `fixtureSecret(prefix)` of `@legion/test-fixtures/fixture-secret`, random as a real secret is.
+  The clients print every line scrubbed of each secret they hold (`@legion/contracts/held-secrets`), so a fixture spelled from words takes those words out of the lines the test reads, and the test waits for words that never show.
+  A package's `fixture-secrets.test.ts` refuses such a fixture in its files (`wordBuiltFixtureSecrets`).
+
+- A row that reads a file a live process appends to, such as the transcript of a pane it drives, reads it through `@legion/test-fixtures/transcript-lines`.
+  `completeLines` and `writtenLines` leave out a last line the writer has not finished, and `endsWhole` says whether a read ends on a finished line, so a poll answers "not yet" rather than parsing half a line.
+
 - Every `bun test` command loads the row-deadline preload, `--preload @legion/test-fixtures/row-deadline`.
   It marks the start of each row, the end of each row's body, the end of each row and the start of a run, so each wait of a row ends before the row's guard, and so does a wait in a `beforeAll` or in a row's first `afterEach`.
   A hook that no mark directly precedes counts from an earlier mark, so its waits end earlier than its own clock would allow, never later (`packages/test-fixtures/src/row-deadline.ts`).
@@ -292,9 +305,14 @@ A Bun test waits and is guarded as R2 and R5 above say:
 
 - A command sets one guard, its `--timeout`.
   A row or a hook sets no timeout of its own, neither a third argument to `test` or `beforeAll` nor a `setDefaultTimeout`, because the shared wait reads the command's guard and not a row's.
-  The exceptions R5 allows are a row of `packages/dispatch/e2e/__tests__` that states its limit through `bounded-subprocess.ts`'s `rowLimit`, and a hook or a row whose work is one measured download or one measured process run with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image and each of its rows that runs a judge holds that judge's `docker run`:
+  The exceptions are a row of `packages/dispatch/e2e/__tests__` that states its limit through `bounded-subprocess.ts`'s `rowLimit` or through `outside-path-reach-fixtures.ts`'s `row` and `probingRow`, and a hook or a row whose work is one measured download or one measured process run with no shared wait in it, as the judge-omp `beforeAll` of `packages/pi-legion/scripts/skill-scenarios/rig.test.ts` pulls the judges' image and each of its rows that runs a judge holds that judge's `docker run`:
   such a hook or row takes a guard of its own, at least twice its slowest reading on a machine that runs the suite (CI's, or a dev box's), and the `"//"` note of its package's `package.json`, where the command's guards are written, gives that number with the readings and their runs.
   A file whose rows need a much larger guard than the rest runs in a second `bun test` command of the same script, with its own `--timeout` and the same preload, as `packages/pi-envoy`'s `-omp` files do.
+
+The Bun tests under `scripts/`, which is no workspace, each run as their CI step runs them: `bun test --preload @legion/test-fixtures/row-deadline --timeout <guard> <path>`, with the guard that step passes, which the step's comment gives with its reading.
+`ci-job-test.yaml` runs eight of them, one step each and in this order: `scripts/third-party-notices.test.ts`, `scripts/semantic-line-breaks.test.ts`, `scripts/priorities-seed.test.ts` and `scripts/bun-cache-census.test.ts` (5000 each), `scripts/semantic-line-breaks.guides.test.ts` (35000), `scripts/dispatch` (15000), `scripts/approval-eval` (5000) and `scripts/e2e/lib` (65000).
+The guides' layout check, `scripts/semantic-line-breaks.guides.test.ts`, runs there only when its `guide_layout` filter matched, and the census test skips its rows where `strace` is missing, which that job installs for it.
+`scripts/conflicts` (5000) runs in `ci-job-conflicts-script.yaml` instead, after that job's biome and tsc steps over the same directory, `scripts/sessions` (5000) in `ci-job-sessions-script.yaml`, and `ci-job-lint.yaml` runs `scripts/e2e/lib/nats-image.test.ts` (5000) once more on its own.
 
 These rules are how a file leaves nothing behind:
 
@@ -364,6 +382,7 @@ These rules are how a file leaves nothing behind:
   it prints one line naming the missing programs and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test would print that line per test.
   A suite that needs a service does the same with the variable that names it, and makes a database of its own rather than reading the one it finds (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`).
   One that needs both builds the two halves into a single list and prints one line, rather than calling `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+  A Bun suite takes its database of its own from `@legion/test-fixtures/postgres`: `ownDatabase(prefix)` makes one on the server `LEGION_TEST_PG_DSN` names and returns its URL and its `drop`.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns, not once the whole start has succeeded:
   a start that throws half-way has already made the container (`startNats` in `scripts/e2e/lib/nats-stream.test.ts`).
