@@ -6047,6 +6047,232 @@ check "refuses the guard whose variable is counted up after it, by name" \
 check "passes the guard of a loop counting in a variable of its own" \
   "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 2)"
 
+# A loop's sleep is priced where the bare word `sleep` opens it and each of its arguments is a
+# literal number, with an optional `s`, `m`, `h` or `d`, decimals included: the arguments are
+# summed, as GNU sleep sums them, and the total is rounded up to a whole second (sleep_form;
+# dispatch://INFRA-1545, round 45). Until round 45 only `sleep <digits>` was priced, and each sleep
+# below was charged 0 s. Each step runs r44-fetch.sh, 300 s, in three passes. `sleep 5m`, `sleep
+# 100s 200` and `sleep 299.9` each sleep 300 s a pass, 299.9 rounded up: 3 x 300 + 3 x 300 =
+# 1800 s, which `timeout-minutes: 29`, 1740 s, does not exceed, and the key that holds it is 31.
+# `sleep 0.05h` sleeps 180 s a pass, 900 + 540 = 1440 s, which `timeout-minutes: 24`, 1440 s, does
+# not strictly exceed. `sleep 0.001d` sleeps 86.4 s, charged 87 s a pass, 900 + 261 = 1161 s,
+# over `timeout-minutes: 19`, 1140 s; and `sleep 0.4 0.4` sleeps 0.8 s, charged 1 s a pass,
+# 900 + 3 = 903 s, over `timeout-minutes: 15`, 900 s, where rounding each argument up would
+# charge 906 s and rounding down 900 s. The last-pass guard reads a sleep in minutes as round 44
+# reads one in seconds: 3 x 300 + 2 x 300 = 1500 s, which `timeout-minutes: 25`, 1500 s, does not
+# strictly exceed. `sleep 5m` under the 31 minutes its refusal advises passes.
+echo "case: r45 a sleep's seconds are read in each unit, summed and rounded up to a whole second"
+root=$(fixture r45-sleep-units)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep five minutes
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 5m
+          done
+      - name: Sleep a suffixed count and a bare one
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 100s 200
+          done
+      - name: Sleep a decimal of seconds
+        timeout-minutes: 29
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 299.9
+          done
+      - name: Sleep a decimal of hours
+        timeout-minutes: 24
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 0.05h
+          done
+      - name: Sleep a decimal of days
+        timeout-minutes: 19
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 0.001d
+          done
+      - name: Sleep two decimals whose sum is under a second
+        timeout-minutes: 15
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 0.4 0.4
+          done
+      - name: Skip the last pass's sleep in minutes
+        timeout-minutes: 25
+        run: |
+          for attempt in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            [ "$attempt" = 3 ] || sleep 5m
+          done
+      - name: Sleep five minutes under the key the refusal advises
+        timeout-minutes: 31
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 5m
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+for r45_sleep in "Sleep five minutes	29	1740	1800	31" \
+  "Sleep a suffixed count and a bare one	29	1740	1800	31" \
+  "Sleep a decimal of seconds	29	1740	1800	31" \
+  "Sleep a decimal of hours	24	1440	1440	25" \
+  "Sleep a decimal of days	19	1140	1161	20" \
+  "Sleep two decimals whose sum is under a second	15	900	903	16" \
+  "Skip the last pass's sleep in minutes	25	1500	1500	26"; do
+  IFS=$'\t' read -r r45_step r45_minutes r45_key r45_figure r45_advised <<<"$r45_sleep"
+  check "charges '$r45_step' $r45_figure s" \
+    "$(contains "$out" "step '$r45_step' carries .timeout-minutes: $r45_minutes., $r45_key s, and its own retries take $r45_figure s to exhaust")"
+  check "advises '$r45_step' $r45_advised minutes" \
+    "$(contains "$out" "step '$r45_step' carries .*write .timeout-minutes: $r45_advised. or more")"
+done
+check "passes the five minutes under 31 minutes" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 7)"
+
+# A sleep in a loop whose passes this check reads, around a fetch, that this check cannot price
+# is refused by name, with a reason true of the form it is written in and a cure (sleep_form,
+# SLEEP_FORM_REFUSAL, SLEEP_FUNCTION_REFUSAL; dispatch://INFRA-1545, round 45). Until round 45
+# each was charged 0 s with nothing said: three passes of r44-fetch.sh, 300 s, each sleeping
+# 300 s, wait 1800 s in bash and were charged 900 s. A sleep behind `command` or `timeout` is a
+# command those words open; one in the body of a function the loop calls runs at each call, and
+# this check charges a loop only the sleeps written inside it; `+300` carries a sign; and
+# `"$wait"` is filled in as the step runs. Each step runs under 60 minutes, which no figure of
+# these reaches, so each refusal is by name. The cure, `sleep 300` in the loop's body, is charged
+# 1800 s, which `timeout-minutes: 31`, 1860 s, exceeds.
+echo "case: r45 a sleep in a priced loop that this check cannot price is refused by name, and its cure passes"
+root=$(fixture r45-sleep-refusals)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep behind command
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            command sleep 300
+          done
+      - name: Sleep behind timeout
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            timeout 900 sleep 300
+          done
+      - name: Sleep in a function the loop calls
+        timeout-minutes: 60
+        run: |
+          nap() { sleep 300; }
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            nap
+          done
+      - name: Sleep a signed count
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep +300
+          done
+      - name: Sleep the count a variable holds
+        timeout-minutes: 60
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep "$wait"
+          done
+      - name: Sleep the literal count the refusals advise
+        timeout-minutes: 31
+        run: |
+          for pass in 1 2 3; do
+            .github/scripts/r44-fetch.sh
+            sleep 300
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses the sleep behind command by name, with the bare sleep as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=12::step 'Sleep behind command' of job 'build' writes .command sleep 300. in the loop opened on line 10, and a fetch, or a call of a script that fetches, is in that loop\..* Here the word that opens the command is .command., not .sleep., so this check charges this sleep nothing\. Write the sleep as a command of its own that .sleep. opens, its seconds literal numbers, such as .sleep 300.")"
+check "refuses the sleep behind timeout by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=19::step 'Sleep behind timeout' of job 'build' writes .timeout 900 sleep 300. in the loop opened on line 17,.* Here the word that opens the command is .timeout., not .sleep.")"
+check "refuses the sleep in the function the loop calls by name, with the sleep in the loop as its cure" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=24::step 'Sleep in a function the loop calls' of job 'build' writes .sleep 300. in the body of the function .nap., which a call in the loop opened on line 25 runs, and a fetch, or a call of a script that fetches, is in that loop\. Bash runs the sleep at each call of .nap.,.* Write the sleep in the loop's body, where .nap. is called")"
+check "refuses the signed count by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=34::step 'Sleep a signed count' of job 'build' writes .sleep +300. in the loop opened on line 32,.* Its argument .+300. is written with a sign, which this check does not read as seconds.* Write its seconds as literal numbers")"
+check "refuses the variable's count by name" \
+  "$(contains "$out" "::error file=.github/workflows/case.yaml,line=41::step 'Sleep the count a variable holds' of job 'build' writes .sleep \"\$wait\". in the loop opened on line 39,.* Its seconds are written as an expansion, which is filled in only as the step runs.* Write its seconds as literal numbers")"
+check "passes the literal count under 31 minutes" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 5)"
+
+# A sleep outside every loop that holds a fetch stays as it was before round 45: charged nothing
+# and refused nothing, whatever its form (dispatch://INFRA-1545, round 45). The first step sleeps
+# before and after its one fetch, in forms a loop around a fetch has refused since round 45, and
+# calls a function that sleeps; the second sleeps in those forms in a loop beside the fetch that
+# holds none, and in a `while` poll, as the tree's readiness loops of `sleep 0.1` do. Each step
+# is charged its fetch alone, 300 s, which `timeout-minutes: 6`, 360 s, exceeds.
+echo "case: r45 a sleep outside a loop that holds a fetch is neither charged nor refused"
+root=$(fixture r45-sleep-outside)
+cp "$work/r44-T13-trailing-sleep/.github/scripts/r44-fetch.sh" "$root/.github/scripts/"
+chmod +x "$root/.github/scripts/r44-fetch.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Sleep before and after the one fetch
+        timeout-minutes: 6
+        run: |
+          nap() { sleep "$wait"; }
+          sleep "$wait"
+          command sleep 300
+          sleep 5m
+          .github/scripts/r44-fetch.sh
+          nap
+          sleep infinity
+      - name: Sleep in loops beside the fetch that hold none
+        timeout-minutes: 6
+        run: |
+          nap() { sleep 5m; }
+          .github/scripts/r44-fetch.sh
+          for pass in 1 2 3; do
+            sleep "$wait"
+            command sleep 300
+            nap
+          done
+          while [ ! -s ready ]; do
+            sleep 0.1
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+check "refuses nothing" "$(is "$(printf '%s\n' "$out" | grep -c '^::error')" 0)"
+
 # Two paths reaching one file with the same product of loop factors are both charged, each run
 # with the waits of the loops around it (dispatch://INFRA-1545, round 37; until then the file
 # was charged once, through the path whose loops waited longer). The step runs pa.sh and pz.sh
