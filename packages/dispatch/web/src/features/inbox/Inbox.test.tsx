@@ -4628,6 +4628,94 @@ test("in the reading column, a question withdrawn under the reader's focus hands
   }
 });
 
+// The reader's Snooze pick in the column's head, with the page's focus rescue mounted as the app
+// shell mounts it (`RescuedMain`). The write lands, the deferred question leaves the list, and the
+// column is drawn again for the next one, whose answer is a text box. The column's question went,
+// so the Inbox hands the focus to the new column's own focus stop, with no scroll, and the rescue
+// does not take the next question's controls for what the press drew in the Snooze's place: its
+// answer box there would take the reader's next `j` as text. From the stop `j` and `k` step the
+// selection and Enter opens the selected question's answer box, as they do from the page.
+test("a Snooze pick in the column's head hands the focus to the next question's focus stop, and j, k and Enter answer from there", async () => {
+  const user = userEvent.setup();
+  const narrow = widenToReadingPane();
+  const rows = [
+    inboxIssue("ask-a", "CORE-1", "Which approach?"),
+    inboxIssue("ask-b", "CORE-2", "Which format?"),
+    inboxIssue("ask-c", "CORE-3", "Which owner?"),
+  ];
+  let served: InboxRow[] = rows;
+  const getInbox = spyOn(api, "getInbox").mockImplementation(async () => served);
+  const snoozeAsk = answerAskSnoozes().mockImplementation(async (id, { snoozed_until: until }) => {
+    served = served.map((row) => (row.id === id ? { ...row, snoozed_until: until } : row));
+    return { snoozed_until: until };
+  });
+  const getAsk = mockAskReads(rows);
+  const getIssue = mockIssueReads();
+  // Every element scrolled into view: the list keeps the selected row in sight as the selection
+  // moves (`pane-selection.ts`), and nothing else is to scroll.
+  const scrolled: Element[] = [];
+  const scrolls = spyOn(Element.prototype, "scrollIntoView").mockImplementation(function (
+    this: Element
+  ) {
+    scrolled.push(this);
+  });
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <RescuedMain>
+            <Inbox />
+          </RescuedMain>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+
+  try {
+    const pane = await screen.findByTestId("inbox-pane");
+    expect(selectedIds()).toEqual(["ask-a"]);
+    const snooze = within(pane).getByLabelText("Snooze CORE-1: Which approach?");
+    act(() => snooze.focus());
+    await afterRescue();
+
+    await user.selectOptions(snooze, "tomorrow");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+    expect(snoozeAsk).toHaveBeenCalledTimes(1);
+    expect(rowIds()).toEqual(["ask-b", "ask-c"]);
+    const answer = within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer");
+    await afterRescue();
+
+    const scroller = () => screen.getByTestId("inbox-pane-scroller");
+    expect(scroller()).toHaveFocus();
+    expect(answer).not.toHaveFocus();
+    expect(scrolled.filter((element) => element.closest("[data-inbox-row]") === null)).toEqual([]);
+
+    await user.keyboard("j");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-c"]));
+
+    await user.keyboard("l");
+    expect(scroller()).toHaveFocus();
+    await user.keyboard("k");
+    await waitFor(() => expect(selectedIds()).toEqual(["ask-b"]));
+
+    await user.keyboard("l");
+    expect(scroller()).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(within(screen.getByTestId("inbox-pane")).getByLabelText("Your answer")).toHaveFocus();
+  } finally {
+    view.unmount();
+    narrow();
+    scrolls.mockRestore();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    getIssue.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
 /** Where a question the column holds past its row stood in the list, and where each key goes
  *  from there: the step starts from the place that row held, so `k` never skips the row above
  *  it and `j` never doubles back up the list. A step off either end of the list moves nothing,

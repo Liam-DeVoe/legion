@@ -19,6 +19,7 @@ import { controlPadding } from "../../components/control-names";
 import { DisplayMenu, type DisplayMenuSection } from "../../components/DisplayMenu";
 import { EmptyState } from "../../components/EmptyState";
 import { type FilterChip, filterChips } from "../../components/filter-chips";
+import { focusLost, SHOWN_ITEM_ATTRIBUTE } from "../../components/focus-place";
 import { heldPress } from "../../components/held-press";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { MultiSelect } from "../../components/MultiSelect";
@@ -1188,9 +1189,16 @@ export function Inbox({
    *  question the column shows. */
   const paneReturn = useRef<string | null>(null);
   /** The question the column was showing when this component last looked, which is how the
-   *  layout effect below tells a commit that changed it from one that did not. Nothing else
-   *  writes it, so the record itself still names a row and nothing more. */
+   *  layout effect below tells a commit that changed it from one that did not, and what the
+   *  column's noted focus is told to be in (`paneFocus`). Nothing else writes it, so the record
+   *  itself still names a row and nothing more. */
   const shownQuestion = useRef<string | undefined>(undefined);
+  /** The element in the column that holds the focus, and the question the column showed as it
+   *  took it: what the column's own hand-off reads once a commit has taken that element away
+   *  (below `paneScroller`). Noted by the document's `focusin` below, and forgotten wherever the
+   *  focus lands outside the column and wherever it leaves the column for nothing
+   *  (`forgetPaneReturn`), so a reader who left the column is owed no hand-off. */
+  const paneFocus = useRef<{ element: Element; question: string | undefined } | null>(null);
   // The column shows another question, so the record is spent: the row it names belongs to a
   // question the reader has been carried off, whichever route carried them. Read after every
   // commit, as the selection's own settling is (`pane-selection.ts`), and dropped here rather
@@ -1225,7 +1233,9 @@ export function Inbox({
   // a link in the drawn document, the scroller `l` focuses as it writes the record - lands
   // inside the wrapper and changes nothing, so the key's own `focusin` cannot undo it, and
   // Escape's `run` reads the record before it focuses the row, so the drop that press makes
-  // takes nothing it still needs.
+  // takes nothing it still needs. The same listener notes the element the focus lands on inside
+  // the column for the column's own hand-off (`paneFocus`), and forgets it wherever the focus
+  // lands outside.
   //
   // One listener for this component's life, not one put up and taken down around each record:
   // the record is a ref precisely so that `l` commits nothing, so there is no render to hang a
@@ -1234,12 +1244,18 @@ export function Inbox({
   // effect has nothing to depend on: it binds once on mount, unbinds on unmount, and no render
   // in between churns it.
   useEffect(() => {
-    const dropWhereFocusLands = () => {
+    const followFocus = () => {
       // `focusin` fires once the focus has landed, so the document already names where.
-      if (paneRef.current?.contains(document.activeElement) !== true) paneReturn.current = null;
+      const focused = document.activeElement;
+      if (focused !== null && paneRef.current?.contains(focused) === true) {
+        paneFocus.current = { element: focused, question: shownQuestion.current };
+        return;
+      }
+      paneReturn.current = null;
+      paneFocus.current = null;
     };
-    document.addEventListener("focusin", dropWhereFocusLands);
-    return () => document.removeEventListener("focusin", dropWhereFocusLands);
+    document.addEventListener("focusin", followFocus);
+    return () => document.removeEventListener("focusin", followFocus);
   }, []);
   /** The drop a focus that lands nowhere makes, which is the half of fact (b) no `focusin`
    *  reports: React's `onBlur` bubbles from the column's descendants, so a reader whose control
@@ -1250,10 +1266,12 @@ export function Inbox({
    *  none, because those two nulls mean opposite things: a window or tab blur moves no focus and
    *  keeps the record, while a focus that left for the body drops it. The routes out that land
    *  on a node are this handler's too, an event before the listener above reads them, so what
-   *  needs it is only the focus that lands nowhere. */
+   *  needs it is only the focus that lands nowhere. The column's noted focus (`paneFocus`) is
+   *  dropped with the record, here as in the listener above. */
   const forgetPaneReturn = (event: FocusEvent<HTMLDivElement>) => {
     if (!event.currentTarget.contains(event.relatedTarget ?? document.activeElement)) {
       paneReturn.current = null;
+      paneFocus.current = null;
     }
   };
   /** The row Escape returns the focus to from inside the column: the row `l` recorded, else the
@@ -1315,6 +1333,35 @@ export function Inbox({
    *  is rendered. */
   const paneScroller = () =>
     paneRef.current?.querySelector<HTMLElement>(PANE_SCROLLER_SELECTOR) ?? null;
+  // The column's own hand-off, for the focus its question took with it. A press in the head that
+  // takes away the question the column shows - its Snooze, Assign to me under the Unassigned
+  // filter, a thread's Dismiss - and a question the server takes away under the reader's focus
+  // both take the selected row off the list: the column goes with it, in a commit that draws
+  // none, and the selection's settling hands the next row the selection on the layout lane, so
+  // the column is drawn again for that row in the same task (`pane-selection.ts`). The focus the
+  // column held has fallen to the body, and what now stands where it was is the next question,
+  // not what the reader pressed for: the page's rescue would land on that question's answer box,
+  // which takes their next key as text. So the focus goes to the column's own focus stop, with no
+  // scroll, whoever caused the loss, as AskCard hands it there for a form it loses
+  // (`handOffFocus`), and `j`, `k` and Enter answer from there as they do from the body. On the
+  // layout lane too, in the commit that draws the column again, so it runs before the rescue's
+  // check a frame later, which then finds the focus placed. A focus the column lost while it
+  // still shows the same question - an editor a press opened in place - is the rescue's, and so
+  // is one that has gone somewhere by then. `focusLost`, not the body alone, since Firefox and
+  // WebKit still name the removed element as focused until their next rendering update.
+  useLayoutEffect(() => {
+    const noted = paneFocus.current;
+    if (noted === null || noted.element.isConnected) return;
+    const stop = paneScroller();
+    const lost = focusLost();
+    // The commit that takes the question off the list draws no column; while the list holds a
+    // row to hand the selection to, the commit the selection's settling makes draws it.
+    if (stop === null && lost && paneShown && presented.current.length > 0) return;
+    paneFocus.current = null;
+    if (stop !== null && lost && paneSelection.id !== noted.question) {
+      stop.focus({ preventScroll: true });
+    }
+  });
   /** Where the answer keys - Enter and 1-9 - act: the selected question's own card, not the
    *  whole column. The column of a question written as a decision block draws the whole live
    *  document, and `ProofDocument` hosts an answerable card for every open block of it
@@ -1389,12 +1436,16 @@ export function Inbox({
       // focus - the card's own `Ask back instead` or an option inside the column, a row's owner
       // link, a band's fold, the bulk-snooze bar, a filter control - and the registry's handler
       // calls `preventDefault` for every binding that fires, so a binding that claimed the key
-      // there would press nothing. It fires from a row itself, and with the focus on nothing
-      // (`document.body`), where a reader who has pressed no key yet stands. `h` stands down
+      // there would press nothing. It fires from a row itself, with the focus on nothing
+      // (`document.body`), where a reader who has pressed no key yet stands, and from the
+      // column's own focus stop, where the column's hand-off puts a focus its question took with
+      // it, so the key opens the question shown next as it would from the body. `h` stands down
       // inside an ask card for the same reason (`outsideAskCard`).
       when: () =>
         paneShown
-          ? (focusedRow() !== null || document.activeElement === document.body) &&
+          ? (focusedRow() !== null ||
+              document.activeElement === document.body ||
+              document.activeElement === paneScroller()) &&
             (inAnswerHand("[data-ask-answer]") !== null ||
               inAnswerHand(NOTE_DISCLOSURE_SELECTOR) !== null)
           : inAnswerHand("[data-ask-answer]") !== null,
@@ -2219,8 +2270,16 @@ export function Inbox({
                       onWidthChange={setPaneWidth}
                       width={paneWidth}
                     />
+                    {/* The column names the question it shows, by which the page's rescue tells
+                        the next question drawn here from what a press drew in its place
+                        (`SHOWN_ITEM_ATTRIBUTE`). */}
                     {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only reads where the focus has already gone, so the column needs no role of its own. */}
-                    <div className="min-h-0 min-w-0" onBlur={forgetPaneReturn} ref={holdPane}>
+                    <div
+                      className="min-h-0 min-w-0"
+                      {...{ [SHOWN_ITEM_ATTRIBUTE]: rowId(subject) }}
+                      onBlur={forgetPaneReturn}
+                      ref={holdPane}
+                    >
                       <ReadingPane
                         onAnswered={recordAnswered}
                         onSnoozeLive={onSnoozeLive}

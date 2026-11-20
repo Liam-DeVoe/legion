@@ -5,7 +5,7 @@ import { KeymapProvider } from "../features/shell/KeymapProvider";
 import { PANEL_ATTRIBUTE, useKeymap } from "../features/shell/keymap";
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
-import { useFocusRescue } from "./focus-place";
+import { SHOWN_ITEM_ATTRIBUTE, useFocusRescue } from "./focus-place";
 import { ROW_MARKER_ATTRIBUTE } from "./row-marker";
 
 // The page's focus rescue, read in happy-dom with the page built by hand. A focused element taken
@@ -1646,6 +1646,103 @@ test("a control replaced by content holding a form hands the focus to the form's
           else replace();
           await settled();
           expect(first).toHaveFocus();
+          expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+        });
+      }
+    }
+  });
+});
+
+/** A region drawn for one item, as the Inbox draws its reading column: marked with the item it
+ *  shows (`SHOWN_ITEM_ATTRIBUTE`), holding the item's answer form first - its text box and its
+ *  Send - and then its Snooze. */
+interface ItemRegion {
+  readonly answer: HTMLTextAreaElement;
+  readonly region: HTMLElement;
+  readonly snooze: HTMLButtonElement;
+}
+
+/** The region drawn for `item` (`ItemRegion`), not yet in the page. */
+function itemRegion(item: string): ItemRegion {
+  const region = document.createElement("div");
+  region.setAttribute(SHOWN_ITEM_ATTRIBUTE, item);
+  const form = document.createElement("form");
+  const answer = document.createElement("textarea");
+  answer.setAttribute("aria-label", `Your answer to ${item}`);
+  form.append(answer);
+  buttonIn(form, "Send");
+  region.append(form);
+  return { answer, region, snooze: buttonIn(region, `Snooze ${item}`) };
+}
+
+/** The reader's `press` on the Snooze of the region drawn for item `one`, in the main content
+ *  between Before and After, whose commit takes that region away and draws `drawn` in its place:
+ *  with the `focusout` Chromium fires for the Snooze, or with none, as Firefox and WebKit. */
+function snoozeAway(
+  press: (element: Element) => void,
+  withFocusout: boolean,
+  drawn: ItemRegion
+): void {
+  const { buttons, main } = mainOf("Before", "After");
+  const after = buttons[1] as HTMLButtonElement;
+  const shown = itemRegion("one");
+  main.insertBefore(shown.region, after);
+  shown.snooze.focus();
+  press(shown.snooze);
+  const redraw = () => {
+    shown.region.remove();
+    main.insertBefore(drawn.region, after);
+  };
+  if (withFocusout) lose(shown.snooze, redraw);
+  else redraw();
+}
+
+// A press that takes away the item its region shows - Snooze in the head of the Inbox's reading
+// column - and a commit that draws the region again in its place for the next item, its answer
+// form first. What stands where the pressed control stood is the next item of the same column,
+// not what the press drew there, so the rescue lands in no control of that form, whose text box
+// would take the reader's next key as text: the loss is answered as where nothing new stands, and
+// the focus walks back by count. By a pointer press and by Enter, with Chromium's `focusout` and
+// without.
+test("a press that takes away the item its region shows lands in no form of the next item drawn in its place", async () => {
+  // Where each press landed, and where it belongs.
+  const landed: Record<string, string> = {};
+  const belongs: Record<string, string> = {};
+  for (const [by, press] of Object.entries(PRESSES)) {
+    for (const withFocusout of [true, false]) {
+      const named = `by ${by}, ${withFocusout ? "with" : "without"} a focusout`;
+      await withRescue(async () => {
+        const drawn = itemRegion("two");
+        snoozeAway(press, withFocusout, drawn);
+        await settled();
+        const form = drawn.region.querySelector("form");
+        landed[named] =
+          form?.contains(document.activeElement) === true
+            ? `in the next item's form, on ${focusedName()}`
+            : document.activeElement === document.body
+              ? "on the page"
+              : "on a control outside the next item's form";
+      });
+      belongs[named] = "on a control outside the next item's form";
+    }
+  }
+  expect(landed).toEqual(belongs);
+});
+
+// The same press with the region drawn again for the same item - a form opened in place, an edit
+// mode - is what the press drew where its control stood: the focus lands on the form's first
+// control, focused with no scroll, as for any control replaced by content holding a form (aj). By
+// a pointer press and by Enter, with Chromium's `focusout` and without.
+test("a press whose region is drawn again for the same item hands the focus to its form's first control, scrolling nothing", async () => {
+  await scrollingNothing(async () => {
+    for (const press of Object.values(PRESSES)) {
+      for (const withFocusout of [true, false]) {
+        await withRescue(async () => {
+          const drawn = itemRegion("one");
+          const focus = spyOn(drawn.answer, "focus");
+          snoozeAway(press, withFocusout, drawn);
+          await settled();
+          expect(drawn.answer).toHaveFocus();
           expect(focus).toHaveBeenCalledWith({ preventScroll: true });
         });
       }

@@ -13,16 +13,18 @@ import { ROW_SELECTOR } from "./row-marker";
  * rule, `ROW_SELECTOR`. A loss is the reader's while a press of theirs is still live on the lost
  * control, inside any row around it, or inside the dialog, panel or selection bar it was lost from
  * (`causedByReader`). A loss the reader caused lands on what their press drew in the control's
- * place, else on the same control in the row that moved up into that place, else on that row's
- * first control, else on the control now at its place or the nearest one before it. A loss they
- * did not cause leaves the focus on the body, as the page did before it had a rescue, and scrolls
- * nothing, save that an open modal dialog takes it as its own stop and that a control that comes
- * back while the focus is still on the body - disabled and enabled again within the rescue's wait,
- * or hidden and drawn again by its first check - gets it back (`leaveUncaused`). A loss of a
- * control the reader had scrolled out of their sight scrolls nothing and focuses no control
- * (`outOfSight`): the focus stays on the body, except in a dialog or a panel, which takes it
- * itself, for a loss the reader caused, and in an open modal dialog, whose own stop takes it, for
- * one they did not (`leaveUnseen`).
+ * place - a form opened there, an edit mode - and never on the next item of the same list or
+ * column shown there, as the Inbox's reading column is drawn again for the next question
+ * (`SHOWN_ITEM_ATTRIBUTE`); else on the same control in the row that moved up into that place,
+ * else on that row's first control, else on the control now at its place or the nearest one
+ * before it. A loss they did not cause leaves the focus on the body, as the page did before it
+ * had a rescue, and scrolls nothing, save that an open modal dialog takes it as its own stop and
+ * that a control that comes back while the focus is still on the body - disabled and enabled
+ * again within the rescue's wait, or hidden and drawn again by its first check - gets it back
+ * (`leaveUncaused`). A loss of a control the reader had scrolled out of their sight scrolls
+ * nothing and focuses no control (`outOfSight`): the focus stays on the body, except in a dialog
+ * or a panel, which takes it itself, for a loss the reader caused, and in an open modal dialog,
+ * whose own stop takes it, for one they did not (`leaveUnseen`).
  */
 
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
@@ -762,10 +764,10 @@ function rowPlacesOf(element: Element, region: Element): RowPlace[] {
  *  from the reader (`taken`: the element was disabled, hidden or taken away) rather than the
  *  reader moving off it, whether the reader left it (`left`), and - in a dialog - the loss the
  *  dialog was opened from (`opener`): the place the focus left for it, or null for a dialog the
- *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals
- *  and no row places (`UNPLACED`): the hand-off reads only its element, region, place, path and
- *  opener. Nor does a loss the reader did not cause, which holds no place either (-1): it is
- *  answered without any of them (`leaveUncaused`). */
+ *  focus entered from the body. A loss kept only as a dialog's opener holds no spots, no arrivals,
+ *  no item and no row places (`UNPLACED`): the hand-off reads only its element, region, place,
+ *  path and opener. Nor does a loss the reader did not cause, which holds no place either (-1):
+ *  it is answered without any of them (`leaveUncaused`). */
 interface Loss {
   /** The elements the page added from the moment the element went until the loss is answered,
    *  noted into it while its check or its wait is out - none the page only moved, which stood in
@@ -775,6 +777,11 @@ interface Loss {
   readonly caused: boolean;
   readonly element: HTMLElement;
   readonly index: number;
+  /** The item the element was in (`itemOf`), read as the loss is noted, as its row places are,
+   *  and null where it was in none and where nothing reads it (`UNPLACED`): what tells the next
+   *  item shown where the element stood from what the reader's press drew there
+   *  (`controlsInPlace`). */
+  readonly item: string | null;
   /** Whether the reader left the element (`record`): the focus went to nothing from it while it
    *  was enabled and drawn, and it still stood in the page so once the event that moved the focus
    *  had run. Set in a microtask after the loss, long before its check, which then does nothing. */
@@ -795,10 +802,11 @@ interface Loss {
   readonly taken: boolean;
 }
 
-/** What a loss holds where nothing reads where its element stood: no arrivals, no row places and
- *  no spots (`Loss`). */
-const UNPLACED: Pick<Loss, "arrived" | "rowPlaces" | "spots"> = {
+/** What a loss holds where nothing reads where its element stood: no arrivals, no item, no row
+ *  places and no spots (`Loss`). */
+const UNPLACED: Pick<Loss, "arrived" | "item" | "rowPlaces" | "spots"> = {
   arrived: null,
+  item: null,
   rowPlaces: [],
   spots: [],
 };
@@ -928,22 +936,52 @@ function formIn(elements: readonly Element[]): Element | null {
   return null;
 }
 
-/** The controls of what now stands where `loss`'s element left the page, among `drawn`, in the
- *  order the focus is offered them: those of a `<form>` there first - the editor a press opened in
- *  the control's place, as Change answer and Add a priority open theirs - so that a header the new
- *  content repeats above the form is not taken for the place, then the rest. None where nothing
- *  new stands there (`standingAt`). The place is the nearest of the loss's spots whose node has
- *  gone while the parent it stood in is still in the region: the element's own spot, or that of
- *  the parent it went with. There is none while the element and every parent of it are still in
- *  the page - a control disabled, hidden or moved. Only what arrived counts: a row that moved up
- *  into the place of a row taken away stood in the page before the loss, so it is nothing new
- *  there, and `controlsOfRowMovedUp` answers for it instead. None either for a loss that notes no
- *  arrivals (`UNPLACED`). */
+/** The attribute that names the item a region shows, by its row's id. The Inbox writes it on its
+ *  reading column, which it draws again for the next question when a press takes away the one it
+ *  shows: what then stands where the pressed control stood is the next item shown there, not
+ *  what the press drew in its place (`controlsInPlace`). The rescue alone reads it. */
+export const SHOWN_ITEM_ATTRIBUTE = "data-shown-item";
+
+/** An element that names the item it shows (`SHOWN_ITEM_ATTRIBUTE`). */
+const SHOWN_ITEM = `[${SHOWN_ITEM_ATTRIBUTE}]`;
+
+/** The item `element` is in: the one the nearest element around it, itself included, names
+ *  (`SHOWN_ITEM_ATTRIBUTE`), else null. An element taken away with the region it was in still has
+ *  that region around it, so a removed element is read the same way. */
+function itemOf(element: Element): string | null {
+  return element.closest(SHOWN_ITEM)?.getAttribute(SHOWN_ITEM_ATTRIBUTE) ?? null;
+}
+
+/** Whether any of `elements`, itself or an element inside it, names another item than `item`. */
+function showsAnother(elements: readonly Element[], item: string | null): boolean {
+  for (const element of elements) {
+    const marked = [...element.querySelectorAll(SHOWN_ITEM)];
+    if (element.matches(SHOWN_ITEM)) marked.push(element);
+    if (marked.some((each) => each.getAttribute(SHOWN_ITEM_ATTRIBUTE) !== item)) return true;
+  }
+  return false;
+}
+
+/** The controls of what the reader's press drew where `loss`'s element left the page, among
+ *  `drawn`, in the order the focus is offered them: those of a `<form>` there first - the editor a
+ *  press opened in the control's place, as Change answer and Add a priority open theirs - so that
+ *  a header the new content repeats above the form is not taken for the place, then the rest.
+ *  None where nothing new stands there (`standingAt`). None either where what stands there names
+ *  another item than the one the element was in (`showsAnother`): that is the next item of the
+ *  same list or column shown in the place, as the Inbox's reading column is drawn again for the
+ *  next question once a press takes away the one it showed, and not what the press drew there,
+ *  and the column hands the focus to its own stop itself (`Inbox.tsx`). The place is the nearest
+ *  of the loss's spots whose node has gone while the parent it stood in is still in the region:
+ *  the element's own spot, or that of the parent it went with. There is none while the element
+ *  and every parent of it are still in the page - a control disabled, hidden or moved. Only what
+ *  arrived counts: a row that moved up into the place of a row taken away stood in the page
+ *  before the loss, so it is nothing new there, and `controlsOfRowMovedUp` answers for it
+ *  instead. None either for a loss that notes no arrivals (`UNPLACED`). */
 function controlsInPlace(loss: Loss, drawn: readonly HTMLElement[]): HTMLElement[] {
   const spot = loss.spots.find((each) => goneFrom(each, loss.region));
   if (spot === undefined || loss.arrived === null) return [];
   const standing = standingAt(spot, loss.arrived);
-  if (standing.length === 0) return [];
+  if (standing.length === 0 || showsAnother(standing, loss.item)) return [];
   const controls = drawn.filter((control) => standing.some((each) => each.contains(control)));
   const form = formIn(standing);
   if (form === null) return controls;
@@ -1021,7 +1059,8 @@ function focusNoScroll(target: HTMLElement): boolean {
  *  their press drew in its place - the focus lands on that first: on the first control of a
  *  `<form>` there, the editor the press opened in the control's place, else on the first control
  *  of what stands there (`controlsInPlace`), focused with no scroll, since it stands where the
- *  reader was. Where nothing new stands there and the press took away a row the element was in,
+ *  reader was, but never on the next item of the same list or column shown there. Where nothing
+ *  new stands there, or only that next item, and the press took away a row the element was in,
  *  the focus lands on the same control in the row that now stands at that row's place - the row
  *  that stood right after it, moved up - so the reader can go on, else on that row's first control
  *  (`controlsOfRowMovedUp`), and that control is scrolled into view (`land`). Only where no row
@@ -1097,13 +1136,14 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * `focusout`, the last record that took it - its parent and its siblings at that moment, since a
  * control the batch moved first was taken from there - is that spot, with the spots read as the
  * element took the focus behind it for a record whose parent has gone too. It holds each row around
- * the element, and the element's place among that row's controls (`rowPlacesOf`), read then too,
- * since the element has gone by the time the loss is answered. From the loss on, while its check or
- * its wait is out, the page's watcher notes every element the page adds (`arrived`), but none it
- * only moves - a keyed node React moves with `insertBefore`, which one batch reports as its removal
- * and its addition, stood in the page before; for a loss read off a removal, the batch that took
- * the element counts from that last record on. A loss the reader did not cause is answered without
- * any of these (`leaveUncaused`), so none of them is read for it. The focus moving from one control
+ * the element, and the element's place among that row's controls (`rowPlacesOf`), and the item the
+ * element was in (`itemOf`), read then too, since the element has gone by the time the loss is
+ * answered. From the loss on, while its check or its wait is out, the page's watcher notes every
+ * element the page adds (`arrived`), but none it only moves - a keyed node React moves with
+ * `insertBefore`, which one batch reports as its removal and its addition, stood in the page
+ * before; for a loss read off a removal, the batch that took the element counts from that last
+ * record on. A loss the reader did not cause is answered without any of these
+ * (`leaveUncaused`), so none of them is read for it. The focus moving from one control
  * to another in the same region is no loss. Nor is the reader leaving a control: their Enter that
  * commits a field with the page's own `blur()`, or their click on the page's text, sends the focus
  * to nothing from a control still enabled and drawn, and the focus stays where that left it. Such a
@@ -1133,7 +1173,12 @@ function handOn(loss: Loss, main: HTMLElement | null): void {
  * place, as Change answer and Add a priority do - the form's first control takes the focus, so
  * that a header the new content repeats above the form is not taken for the place; else the
  * first control of what stands there does. It is focused with no scroll, since it stands where
- * the reader was. Where nothing new stands there and the press took away a row the element was in -
+ * the reader was. That is for what the press itself drew there - a form opened in place, an edit
+ * mode - and never for the next item of the same list or column shown in its place: what stands
+ * there naming another item than the one the element was in (`SHOWN_ITEM_ATTRIBUTE`), as the
+ * Inbox's reading column does once it is drawn again for the next question, takes nothing - the
+ * column hands the focus to its own stop itself - and the loss is answered as where nothing new
+ * stands. Where nothing new stands there and the press took away a row the element was in -
  * with rows nested, the outermost that went, as an Inbox row with the ask card it holds - the row
  * that stood right after that row has moved up into its place, the same element, so nothing new
  * there, and the same control in it takes the focus, at the lost one's place among the row's
@@ -1381,6 +1426,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         ? {
             ...fields,
             arrived: new Set<Node>(),
+            item: itemOf(element),
             rowPlaces: rowPlacesOf(element, region),
             spots: spotsOf(element, region),
           }
@@ -1438,6 +1484,7 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
         ...fields,
         arrived,
         index,
+        item: itemOf(held.element),
         rowPlaces: rowPlacesOf(held.element, held.region),
         spots: removal === undefined ? held.spots : [removal.spot, ...held.spots],
       };

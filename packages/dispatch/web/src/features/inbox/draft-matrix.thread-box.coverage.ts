@@ -362,6 +362,14 @@ export const coverage: readonly CoverageEntry[] = [
   ...answers("Inbox | - | form | if (shownQuestion.current === paneSelection.id) return …", {
     reason: REASONS[13],
   }),
+  ...answers(
+    "Inbox | - | form | if (stop === null && lost && paneShown && presented.current.length > 0) return …",
+    { reason: REASONS[13] }
+  ),
+  ...answers(
+    "Inbox | - | form | if (stop !== null && lost && paneSelection.id !== noted.question)",
+    { reason: REASONS[13] }
+  ),
   ...answers("Inbox | - | form | (paneShown) ? …", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | if (paneShown && focusInPane())", { reason: REASONS[13] }),
   ...answers("Inbox | - | form | (id === undefined) ? …", { reason: REASONS[13] }),
