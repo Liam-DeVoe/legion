@@ -711,18 +711,20 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 }
 
 // graphArmCount guards that the census reads every arm. It is the arm list of
-// 20261116140008_graph_edges_item_block_tuples, the last migration to restate graph_edges: the 27
+// 20261120090001_graph_edges_identity_mentions, the last migration to restate graph_edges: the 27
 // arms 20261105014808 restated it with, the comment answers arm among them, the one arm over the
 // store's current tuples 20261109215947 adds, the arm over a message's reply to a message's block
 // that 20261116114517 adds, the two arms over a comment's reply to a comment's block and to an
-// ask's part that 20261116124448 adds, and the one arm over every item's blocks, a comment's, a
-// message's and an ask's, that 20261116140008 adds; 20261116094101 adds none. Each of the fifteen
+// ask's part that 20261116124448 adds, the one arm over every item's blocks, a comment's, a
+// message's and an ask's, that 20261116140008 adds, and the identity arm over a mention of a
+// person, a session or a role that 20261120090001 adds; 20261116094101 adds none. Each of the fifteen
 // arms over a kind the store now writes answers only the rows of its table that name no node,
 // each of the five over what a comment answers only the rows whose pointers are no tuples, and the
 // refs arm only the rows that hold no tuples_stored; the seed names the node of every row it
 // writes but an ask's and an ask follower's, states every comment's pointers and every item's
-// citations, so an arm of those may answer nothing here (armGatedPerRow).
-const graphArmCount = 32
+// citations, so an arm of those may answer nothing here (armGatedPerRow). The identity arm answers
+// the first message's mention of a session (messageMention), which the item index states.
+const graphArmCount = 33
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -750,7 +752,7 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	}
 	arms := strings.Split(definition, "UNION ALL")
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261116124448 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d migration 20261120090001 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}

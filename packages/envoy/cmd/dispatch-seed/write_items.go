@@ -640,11 +640,7 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 		for index := from; index < to; index++ {
 			message := r.plan.messages[index]
 			row := rows[index-from]
-			mention := ""
-			if message.MentionTo >= 0 {
-				mention = r.plan.mentionText(message.MentionTo, message.MentionNth)
-			}
-			body := r.plan.itemBody(r.random, message.Blocks, mention, itemBodyBytes)
+			body := r.plan.itemBody(r.random, message.Blocks, r.plan.messageMention(index), itemBodyBytes)
 			var inReplyTo, repliesTo, nodeKind, nodeAddress *string
 			if row.InReplyTo != "" {
 				inReplyTo = &row.InReplyTo
@@ -696,25 +692,12 @@ func (r *seedRun) writeMessages(ctx context.Context) error {
 			}
 			mentions.add(message.ID, text.Refs(located), message.CreatedAt)
 		}
-		if from == 0 && to > 0 {
-			r.addSessionMention(mentions)
-		}
 		cited, err := mentions.write(ctx, tx)
 		if err != nil {
 			return err
 		}
 		return stateAtSentinel(ctx, tx, graphstore.Uncaused{Tuples: cited})
 	})
-}
-
-// addSessionMention adds the one mention whose target is a session, out of the first message, to
-// the first batch's mentions. `session` is a node kind refs/graph.go's nodeRegistry resolves, but
-// text/refs.go's grammar names no session, so no body can write this row: a build that addressed
-// sessions would write it, and the backlink count reads `refs` for every kind the registry
-// resolves, so the data set holds one. It is the first message's citation like any other.
-func (r *seedRun) addSessionMention(mentions *mentionRows) {
-	mentions.addTarget(r.plan.messages[0].ID, refs.Target{Kind: graphstore.KindSession, ID: r.plan.sessions[0]},
-		r.plan.messages[0].CreatedAt)
 }
 
 // mentionRows collects the `refs` rows one batch of items writes. The targets are read out of

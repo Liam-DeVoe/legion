@@ -138,7 +138,7 @@ func TestTheSeedsObjectNodeWritesTakeTheStoreLockOrder(t *testing.T) {
 			}
 		}
 		f.run.plan.messages = []messagePlan{message(2), message(1)}
-		// The first batch of messages writes the one mention of a session (writeSessionMention).
+		// The first message's body names the one session the seed mentions (messageMention).
 		f.run.plan.sessions = []string{"seed-lock-session"}
 		nodes := make([]graphstore.Node, len(f.run.plan.messages))
 		for index, planned := range f.run.plan.messages {
