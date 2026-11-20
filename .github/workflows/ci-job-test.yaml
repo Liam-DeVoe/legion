@@ -130,6 +130,10 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
         type: string
         required: true
+      check_workflow_files_test:
+        description: "ci.yaml's needs.changes.outputs.check_workflow_files_test: check-workflow-files.test.sh and what it tests."
+        type: string
+        required: true
       check_private_names_test:
         description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
         type: string
@@ -261,7 +265,7 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # No step here carries a -timeout of its own any more: the two go test steps that did, and
     # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
-    # left is the Bun install, the Claude Code plugin build, the thirty-nine shell-script harnesses
+    # left is the Bun install, the Claude Code plugin build, the forty-three shell-script harnesses
     # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
     # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
     # about six times that, which leaves a slow runner room and still fails a hung harness inside
@@ -399,6 +403,10 @@ jobs:
       - name: Test the action pin check
         if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
         run: .github/scripts/check-action-pins.test.sh
+
+      - name: Test the workflow file check
+        if: inputs.changes-result != 'success' || inputs.check_workflow_files_test == 'true'
+        run: .github/scripts/check-workflow-files.test.sh
 
       - name: Test the private-name check
         if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
