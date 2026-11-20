@@ -370,3 +370,81 @@ func TestASettleAndAReleaseWriteOnAContextTheirCallerCannotCancel(t *testing.T) 
 		}
 	})
 }
+
+// Two sweeps at once over the same passed rows wait on no row. Sweep A runs the sweep's statement
+// in a transaction that stays open, so it holds the two passed rows it deleted. A granted claim of
+// a third pair then runs its own sweep (ClaimAcrossProcesses, sweepCommitPullReadsSQL) while A
+// holds them. The sweep skips each row another statement holds, so the claim answers with no
+// backend of the database waiting on a lock, and A's rows are A's to delete. A sweep that locked
+// the rows it reads without skipping them would wait on A's transaction for as long as A lasted,
+// and every granted claim behind it with it. The claim runs on its own goroutine; the test reads
+// pg_stat_activity until the claim answers or a backend waits on a lock, so no time decides it.
+func TestTwoSweepsAtOnceOverOnePassedRowWaitOnNoRow(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	now := time.Now()
+	passed := now.Add(-time.Hour)
+	for _, sha := range []string{"e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1", "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"} {
+		if _, err := pool.Exec(ctx, `insert into commit_pull_reads (repo, sha, not_before) values ('acme/widgets', $1, $2)`, sha, passed); err != nil {
+			t.Fatalf("store the passed claim of %s: %v", sha, err)
+		}
+	}
+	sweepA, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sweepA.Rollback(context.Background()) }()
+	deleted, err := sweepA.Exec(ctx, sweepCommitPullReadsSQL, now)
+	if err != nil {
+		t.Fatalf("sweep A: %v", err)
+	}
+	if deleted.RowsAffected() != 2 {
+		t.Fatalf("sweep A deleted %d rows, want the 2 passed ones", deleted.RowsAffected())
+	}
+
+	var reads CommitPullReads
+	type claimed struct {
+		granted bool
+		err     error
+	}
+	answer := make(chan claimed, 1)
+	claimCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	go func() {
+		granted, err := reads.ClaimAcrossProcesses(claimCtx, pool, "acme/widgets", "e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3", now)
+		answer <- claimed{granted, err}
+	}()
+	waitsOnALock := func() int {
+		var count int
+		if err := pool.QueryRow(ctx, `
+			select count(*) from pg_stat_activity
+			where datname = current_database() and wait_event_type = 'Lock'
+		`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	var got *claimed
+	for got == nil {
+		select {
+		case answer := <-answer:
+			got = &answer
+		case <-time.After(20 * time.Millisecond):
+			if waiting := waitsOnALock(); waiting > 0 {
+				t.Fatalf("the claim's sweep waits on a lock while sweep A holds the passed rows (%d backends waiting): it locks rows another sweep holds rather than skipping them", waiting)
+			}
+		}
+	}
+	if got.err != nil || !got.granted {
+		t.Fatalf("the claim of a third pair while sweep A held the passed rows = %v, %v; want granted", got.granted, got.err)
+	}
+	if err := sweepA.Commit(ctx); err != nil {
+		t.Fatalf("sweep A's commit: %v", err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `select count(*) from commit_pull_reads where not_before < $1`, now).Scan(&left); err != nil {
+		t.Fatal(err)
+	}
+	if left != 0 {
+		t.Errorf("%d passed rows are left after both sweeps, want none", left)
+	}
+}
