@@ -246,7 +246,6 @@ func (e *Engine) endRun(ctx context.Context, tx pgx.Tx, issue string, place reco
 	if !start.StartedAt.IsZero() {
 		write.StartedAt = new(start.StartedAt)
 	}
-	write.Session, write.Model, write.Report, write.PlanRating = nil, nil, nil, nil
 	write.EndedAt, write.Result, write.ReturnedTo = new(e.now()), new(string(end.Result)), end.ReturnedTo
 	if end.Report != "" {
 		write.Report = new(end.Report)
