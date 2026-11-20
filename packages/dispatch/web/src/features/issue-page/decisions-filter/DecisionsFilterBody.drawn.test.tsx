@@ -25,7 +25,6 @@ import { NoTooltips } from "../NoTooltips";
 import { OutlineRequestProvider } from "../outline-request";
 import { KEY_REPORTS } from "../page-structure";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   EMPTY_STATE_LINES,
@@ -294,7 +293,7 @@ function renderBody(
         {...(waitingPress === undefined ? {} : { waitingPress })}
       />
     ) : null;
-    const staged = stage ? <ViewStage view="decisions">{list}</ViewStage> : list;
+    const staged = stage ? <ViewStage>{list}</ViewStage> : list;
     return (
       <MemoryRouter>
         <QueryClientProvider client={client}>
@@ -333,7 +332,7 @@ function words(element: Element | null | undefined): string | null {
  *  which a reader tells the two reads' lines apart. */
 const REFUSED_READ_WORDS = {
   asks: STATE_LINES.asks_unreadable,
-  decisions: ANSWER_LINES.decisions_unreadable,
+  decisions: STATE_LINES.issue_decisions_unreadable,
 } as const;
 
 /** The page's line for a failed read that the body draws for `read`, found by what it says, as

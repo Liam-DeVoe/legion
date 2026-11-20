@@ -31,7 +31,6 @@ import { threadMarks } from "../outline-thread-read";
 import { useOutlineWriter } from "../outline-writer";
 import { authorText, pageChrome } from "../page-structure";
 import {
-  ANSWER_LINES,
   CONTROL_LABELS,
   DECISIONS_WORDS,
   isReader,
@@ -854,7 +853,7 @@ type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number
  *  this until the body has a line for it. */
 const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   asks: STATE_LINES.asks_unreadable,
-  decisions: ANSWER_LINES.decisions_unreadable,
+  decisions: STATE_LINES.issue_decisions_unreadable,
 };
 
 /** The row that holds the list's one tab stop, which `passFocus` and the foot's leave look for
