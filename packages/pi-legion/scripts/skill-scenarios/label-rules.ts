@@ -11,6 +11,10 @@ export interface Entry {
   readonly at?: Tree;
   readonly cut?: string;
   readonly keep?: string;
+  /** For a `cut` that puts the old words back: words of the old sentence that the label's checkout
+   * must hold in this file. A label that deletes the sentence instead measures no control, since
+   * nothing then tells its agent the old rule (rule-search.ts `cut`). */
+  readonly restore?: string;
 }
 
 export interface Rule {
@@ -129,6 +133,8 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "That answer leaves out a pass at another commit",
     cut: "Restore the old later-fail rule.",
+    restore:
+      "on a check with no `ci_check` a fail recorded after a pass leaves that pass standing until someone retracts it",
   },
   {
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
@@ -139,6 +145,7 @@ const ENTRIES_LATER_FAIL: readonly Entry[] = [
     file: "packages/daemon/internal/prompts/roles/core/reviewer.md",
     has: "A pass and a fail at one head, from any role, leave that head not known",
     cut: "Restore the prior CI-only rule.",
+    restore: "A pass and a fail from CI at one head leave no pass standing there.",
   },
   {
     file: "packages/daemon/internal/prompts/roles/reviewer.md",

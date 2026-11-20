@@ -156,7 +156,9 @@ export function headSentences(
 /** The search of a label's own checkout: `checkout` is `head`, a tree at head, with the label's
  * cuts applied. Each sentence that the head's search cuts must be gone from `checkout`, and each hit
  * there must be a sentence that the head's search keeps, unchanged, or the label's form of a
- * sentence that a `cut` entry of either tree matches. */
+ * sentence that a `cut` entry of either tree matches. A `cut` entry with `restore` words, whose
+ * sentence the head holds, puts the old rule back: the label's checkout must hold a sentence of its
+ * file with those words, or the label deleted the rule where it was to restore it. */
 export function searchCut(checkout: string, head: string, label: string): Outcome {
   const rule = RULES[label];
   if (rule === undefined) throw new Error(`no rule for the label ${label}`);
@@ -170,8 +172,16 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
   let hits = 0;
   let cut = 0;
   let keep = 0;
+  const restored = new Set<Entry>();
   for (const file of texts.files) {
     const all = sentences(file, readFileSync(path.join(checkout, file), "utf8"));
+    for (const entry of rule.entries)
+      if (
+        entry.file === file &&
+        entry.restore !== undefined &&
+        all.some((sentence) => sentence.text.includes(entry.restore ?? "\u0000"))
+      )
+        restored.add(entry);
     const words = new Set(all.map((sentence) => sentence.text));
     for (const sentence of cuts.get(file) ?? [])
       if (words.has(sentence.text))
@@ -192,7 +202,10 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
         continue;
       }
       const owner = rule.entries.find(
-        (entry) => entry.cut !== undefined && ownersOf([entry], file, sentence).length === 1
+        (entry) =>
+          entry.cut !== undefined &&
+          (ownersOf([entry], file, sentence).length === 1 ||
+            (entry.file === file && sentence.text.includes(entry.restore ?? "\u0000")))
       );
       if (owner !== undefined) {
         cut++;
@@ -204,6 +217,15 @@ export function searchCut(checkout: string, head: string, label: string): Outcom
         `${label}: ${where} states the rule, or may, and is neither a sentence the head's search keeps, unchanged, nor the label's form of a cut: ${short}`
       );
     }
+  }
+  for (const entry of rule.entries) {
+    const cutAtHead = (cuts.get(entry.file) ?? []).some((sentence) =>
+      sentence.text.includes(entry.has ?? "\u0000")
+    );
+    if (entry.restore !== undefined && cutAtHead && !restored.has(entry))
+      faults.push(
+        `${label}: the cut of "${entry.has}" in ${entry.file} restores the old rule ("${entry.restore}"), and the label's checkout holds no sentence with those words there: it deleted the rule instead`
+      );
   }
   if (texts.files.length === 0) faults.push(`${label}: UNKNOWN: read no text of the ${rule.role}`);
   if (cuts.size === 0)

@@ -118,37 +118,64 @@ describe("rule-search", () => {
       expect(search(dir, tree, label).faults).toEqual([]);
     });
 
+    /** The entries of the label that put old words back, whose sentence the head holds. */
+    const restoresAt = (head: string) => {
+      const cuts = [...headSentences(head, label).cuts.entries()];
+      return (RULES[label]?.entries ?? []).filter(
+        (entry) =>
+          entry.restore !== undefined &&
+          cuts.some(
+            ([file, list]) =>
+              file === entry.file && list.some((s) => s.text.includes(entry.has ?? "\u0000"))
+          )
+      );
+    };
+    /** A copy of `head` with each sentence the head's search cuts deleted, or, where its entry
+     * restores old words and `restore` is set, replaced by them. */
+    const ablate = (head: string, restore: boolean) => {
+      const ablated = copy();
+      for (const [file, cut] of headSentences(head, label).cuts) {
+        let text = readFileSync(path.join(ablated, file), "utf8");
+        for (const sentence of cut) {
+          const words = new RegExp(
+            sentence.text
+              .split(" ")
+              .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+              .join("\\s+")
+          );
+          expect(words.test(text)).toBe(true);
+          const entry = RULES[label]?.entries.find(
+            (e) =>
+              e.file === file && e.cut !== undefined && sentence.text.includes(e.has ?? "\u0000")
+          );
+          text = text.replace(words, restore && entry?.restore ? `${entry.restore}.` : "");
+        }
+        writeFileSync(path.join(ablated, file), text);
+      }
+      return ablated;
+    };
+
     test.if(tree === "head")(
-      `${label}: cut, the head taken for the label's checkout fails once for each sentence its search cuts`,
+      `${label}: cut, the head taken for the label's checkout fails once for each sentence its search cuts, and once for each restore`,
       () => {
         const dir = copy();
         const count = [...headSentences(dir, label).cuts.values()].flat().length;
         expect(count).toBeGreaterThan(0);
         const faults = searchCut(dir, dir, label).faults;
-        expect(faults).toHaveLength(count);
-        for (const fault of faults) expect(fault).toContain("is not applied");
+        const restores = restoresAt(dir).length;
+        expect(faults).toHaveLength(count + restores);
+        expect(faults.filter((fault) => fault.includes("is not applied"))).toHaveLength(count);
+        expect(faults.filter((fault) => fault.includes("deleted the rule instead"))).toHaveLength(
+          restores
+        );
       }
     );
 
     test.if(tree === "head")(
-      `${label}: cut, a copy with each sentence the head's search cuts deleted is clean, and the rule planted in it fails`,
+      `${label}: cut, a copy with each sentence the head's search cuts deleted or restored is clean, and the rule planted in it fails`,
       () => {
         const head = copy();
-        const ablated = copy();
-        for (const [file, cut] of headSentences(head, label).cuts) {
-          let text = readFileSync(path.join(ablated, file), "utf8");
-          for (const sentence of cut) {
-            const words = new RegExp(
-              sentence.text
-                .split(" ")
-                .map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-                .join("\\s+")
-            );
-            expect(words.test(text)).toBe(true);
-            text = text.replace(words, "");
-          }
-          writeFileSync(path.join(ablated, file), text);
-        }
+        const ablated = ablate(head, true);
         expect(searchCut(ablated, head, label).faults).toEqual([]);
         // A cut can take a link with it, so the plant goes in the first of its texts the copy reads.
         const read = roleTexts(ablated, role).files;
@@ -159,6 +186,21 @@ describe("rule-search", () => {
         expect(faults).toHaveLength(1);
         expect(faults[0]).toContain(`${file}:`);
         expect(faults[0]).toContain("nor the label's form of a cut");
+      }
+    );
+
+    // Catches: a label that deletes a sentence it is to restore in its old words, so nothing tells
+    // its agent the old rule and its control cannot score below head (the fifth round's
+    // ablate-later-fail scored 5/5, as head did).
+    test.if(tree === "head")(
+      `${label}: cut, a copy that deletes each sentence it is to restore fails once for each`,
+      () => {
+        const head = copy();
+        const restores = restoresAt(head);
+        const faults = searchCut(ablate(head, false), head, label).faults;
+        expect(faults).toHaveLength(restores.length);
+        for (const [index, entry] of restores.entries())
+          expect(faults[index]).toContain(`restores the old rule ("${entry.restore}")`);
       }
     );
   }
