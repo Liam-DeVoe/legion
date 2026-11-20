@@ -286,13 +286,16 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 	if !s.restrictedDecisionAllowed(w, r, client, actor, decision.Code) {
 		return
 	}
-	subject, generation, err := s.approverStanding(r, actor)
+	account, generation, err := s.approverStanding(r, actor)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	if subject != "" && s.deps.SignInIssuer != "" {
-		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, subject
+	if account.subject != "" && s.deps.SignInIssuer != "" {
+		decision.ApproverIssuer, decision.ApproverSubject = s.deps.SignInIssuer, account.subject
+		if account.issuer != "" {
+			decision.ApproverIssuer = account.issuer
+		}
 	}
 	decision.ApproverSessionGeneration = &generation
 	body, err := client.Approve(r.Context(), r.PathValue("id"), decision)
@@ -300,10 +303,11 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 }
 
 // approverStanding reads again whether a decision's caller (an approve's or a deny's), actor as
-// actingPerson resolved it, still holds the address, and answers the Google account its own
-// credential is bound to ("" for none, credentialSubjectSQL) and the address's session generation
-// (user_sessions.generation, 0 when it holds none), in one statement, so the generation is the one
-// the check of the caller saw:
+// actingPerson resolved it, still holds the address, and answers the account its own credential is
+// bound to (credentialAccount: the `sub`, "" for none, credentialSubjectSQL, and its issuer as
+// people.sub_issuer spells it, "" for Dispatch's sign-in issuer and the outside origin for a
+// restricted member's passkey) and the address's session generation (user_sessions.generation, 0
+// when it holds none), in one statement, so the generation is the one the check of the caller saw:
 //
 //   - a cookie: refused once the login's session generation is another; its account is the
 //     address's recorded `sub`, the cookie's own while the generation stands;
@@ -315,6 +319,10 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 //     before people recorded the address's, or within brokerCredentialMargin after), as its
 //     admission is, however long its client held the body back. Its account is the one its own
 //     credential records at the broker (BrokerAdmittedSubject).
+//
+// Each account the statement binds is the address's recorded one, since each that is not is
+// refused in that same statement, so its issuer is the one people records with it
+// (people.sub_issuer), which the approve names it under.
 //
 // A credential that records no account, made after the recording, is bound to the address's
 // account (credentialSubjectSQL). The read runs in a transaction of its own after the address's
@@ -328,7 +336,7 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // and for a broker token the refusal its admission would name (brokerReplacedRefusal:
 // BROKER_TOKEN_RECORDS_NO_ACCOUNT, BROKER_TOKEN_NOT_ACTIVE or BROKER_ACCOUNT_NOT_SIGNED_IN), read
 // in the same statement; a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
-func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
+func (s *server) approverStanding(r *http.Request, actor model.Actor) (account credentialAccount, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
 	if actor.Act != nil && actor.Act.TokenID != "" {
@@ -336,9 +344,9 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	}
 	broker := s.mintBrokerCaller(r, actor)
 	var cookieGone, tokenGone, brokerReplaced, brokerNamed bool
-	unread := func(err error) (string, int64, error) {
+	unread := func(err error) (credentialAccount, int64, error) {
 		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
-		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+		return credentialAccount{}, 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
 			"whether this caller may still decide could not be read; try again in a minute")
 	}
 	tx, err := s.deps.Store.Pool.Begin(r.Context())
@@ -353,23 +361,30 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		select exists (select 1 from user_sessions where login = $2::text and generation <> $3::bigint),
 			exists (select 1 from agent_tokens left join people on people.email = canonical_login(agent_tokens.owner)
 				where agent_tokens.id = $4::uuid and (agent_tokens.revoked_at is not null or `+tokenAccountReplaced("$7::boolean")+`)),
-			`+brokerAccountReplaced("$5::text", "$6::text", "$9::boolean", "$8::timestamptz", "$7::boolean")+`,
+			`+brokerAccountReplaced("$5::text", "$6::text", "$10::text", "$9::boolean", "$8::timestamptz", "$7::boolean")+`,
 			`+brokerAccountNamed("$5::text", "$6::text")+`,
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$6::text", "$7::boolean", "$8::timestamptz")+`, ''),
+			coalesce((select sub_issuer from people where email = $1::text), ''),
 			coalesce((select generation from user_sessions where login = $1::text), 0)
-	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign).
-		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation); err != nil {
+	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign, broker.issuer).
+		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &account.subject, &account.issuer, &generation); err != nil {
 		return unread(err)
 	}
 	switch {
 	case cookieGone:
-		return "", 0, identity.ErrNoIdentity
+		return credentialAccount{}, 0, identity.ErrNoIdentity
 	case tokenGone:
-		return "", 0, errTokenRevoked()
+		return credentialAccount{}, 0, errTokenRevoked()
 	case brokerReplaced:
-		return "", 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
+		return credentialAccount{}, 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
 	}
-	return subject, generation, nil
+	return account, generation, nil
+}
+
+// credentialAccount is the account a decision's caller's credential is bound to
+// (approverStanding): its `sub`, "" for none, and its issuer as people.sub_issuer spells it.
+type credentialAccount struct {
+	subject, issuer string
 }
 
 // restrictedDecisionAllowed answers whether an approve or a deny may go on to the broker: at once

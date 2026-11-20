@@ -82,10 +82,11 @@ func newOutsideSignIn(t *testing.T, overrides map[string]string) *outsideSignIn 
 }
 
 // router is the router main serves for boot over the server's one database, its sessions
-// included, as main's are (store.NewPgSessionStore).
+// included, as main's are (store.NewPgSessionStore), at the canonical origin every request of these
+// tests names (http://dispatch.test), the one a second origin is the second of.
 func (s *outsideSignIn) router(t *testing.T, boot bootConfig) http.Handler {
 	t.Helper()
-	return routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), People: s.people, Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool)})
+	return routerFor(t, boot, routes.AppContextOptions{SignIn: signInFlow(boot), People: s.people, Store: s.database, Sessions: store.NewPgSessionStore(s.database.Pool), ServerURL: "http://dispatch.test"})
 }
 
 // listOn names principal, of kind, on project key's access list as its owner does.

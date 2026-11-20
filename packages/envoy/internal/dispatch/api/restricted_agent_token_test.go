@@ -41,7 +41,9 @@ type restrictedTokenRig struct {
 	server   *server
 }
 
-func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
+// newRestrictedTokenRig builds the rig, each of configure applied to Dispatch's options (a row
+// that needs passkey sign-in on sets its outside origin).
+func newRestrictedTokenRig(t *testing.T, configure ...func(*testServerOptions)) restrictedTokenRig {
 	t.Helper()
 	access := projectaccesstest.NewServer(t,
 		map[string]projectaccesstest.Row{"ACC": {Visibility: "private", Owner: "alice", Listed: []string{accessErin}}},
@@ -50,7 +52,7 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 	client := brokertest.NewClient(t, broker.URL, strings.TrimPrefix(broker.URL, "http://"))
 	client.DPoP, client.UIToken = brokerclient.NewDPoPTransport, broker.UIToken
 	dispatchAccount := accountTokenFile(t, broker.UIToken)
-	served, database, registered := newRegisteredAccessServer(t, testServerOptions{
+	options := testServerOptions{
 		signInOutside: true,
 		brokerTokens: func(database *store.Store) *brokertoken.Verifier {
 			verifier, err := brokertoken.New(brokertoken.Options{
@@ -63,7 +65,11 @@ func newRestrictedTokenRig(t *testing.T) restrictedTokenRig {
 			return verifier
 		},
 		agentSecretsURL: broker.URL, agentSecretsTokenFile: dispatchAccount,
-	})
+	}
+	for _, apply := range configure {
+		apply(&options)
+	}
+	served, database, registered := newRegisteredAccessServer(t, options)
 	if listed := dispatchRequest(t, served, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
 		t.Fatalf("alice names erin on ACC's list: status=%d body=%s", listed.Code, listed.Body.String())
 	}

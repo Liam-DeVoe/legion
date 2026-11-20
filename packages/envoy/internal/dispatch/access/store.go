@@ -143,6 +143,12 @@ func readProjectWritten(ctx context.Context, q Querier, key string) (model.Proje
 	return readProject(ctx, q, key, `p.key = $1`, key)
 }
 
+// ReadProjectWritten is readProjectWritten for an owner's write of the api package that changes no
+// list (api.resetProjectAccessPerson): the project's access as tx left it, after the owner's check.
+func ReadProjectWritten(ctx context.Context, tx pgx.Tx, key string) (model.ProjectAccess, error) {
+	return readProjectWritten(ctx, tx, key)
+}
+
 // readProject reads the access of the one project where names, with args, or ErrProjectNotFound.
 func readProject(ctx context.Context, q Querier, key, where string, args ...any) (model.ProjectAccess, error) {
 	var access model.ProjectAccess

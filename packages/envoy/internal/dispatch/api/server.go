@@ -185,6 +185,16 @@ type Deps struct {
 	// sign-in records no account (a Cognito pool's group, cmd/dispatch's accountIssuer) or that
 	// signs nobody in.
 	SignInIssuer string
+	// Passkeys is the restricted members' passkeys and their owners' links (store.PgPasskeys),
+	// under the outside origin (Passkeys.Issuer), where passkey sign-in is on (cmd/dispatch:
+	// DISPATCH_SIGNIN_PASSKEY=1); nil where it is off. An owner makes a link and resets a person
+	// only where it is set (project_access.go), and a broker token whose account is a passkey's
+	// is held to it as one of the sign-in issuer's is (brokerTokenSubject).
+	Passkeys *store.PgPasskeys
+	// WorkspaceAddress reports whether an email is on a domain of the company's Workspace
+	// (identity.PasskeyRule.WorkspaceAddress), set with Passkeys: no link is made for such an
+	// address, and the owner's access answer lists none as invitable.
+	WorkspaceAddress func(email string) bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -323,6 +333,10 @@ type DepsInput struct {
 	// SignInIssuer is the issuer people sign in through; see Deps.SignInIssuer. NewDeps spells it as
 	// oidc.CanonicalIssuer does.
 	SignInIssuer string
+	// Passkeys is the passkey store where passkey sign-in is on; see Deps.Passkeys.
+	Passkeys *store.PgPasskeys
+	// WorkspaceAddress is set with Passkeys; see Deps.WorkspaceAddress.
+	WorkspaceAddress func(email string) bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -443,6 +457,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
 		SignInIssuer:           signInIssuer,
+		Passkeys:               input.Passkeys,
+		WorkspaceAddress:       input.WorkspaceAddress,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,

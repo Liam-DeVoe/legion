@@ -37,7 +37,7 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. |
 | A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents, which sees only the public projects; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
-| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
+| Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. `DISPATCH_SIGNIN_OUTSIDE=1` lets the people a project names sign in from outside the domain with a Google account, or `DISPATCH_SIGNIN_PASSKEY=1` with a passkey, and `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` names the organization's other domains, whose addresses only its own accounts sign in with. [Signing people in](#signing-people-in) covers all of it. |
 | The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. `DISPATCH_OUTSIDE_ORIGIN` is a second address, for people from outside ([People from outside the domain](#people-from-outside-the-domain)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
@@ -850,6 +850,25 @@ list; Dispatch refuses to start with any other. A request to that host is answer
 address: the sign-in comes back to `<DISPATCH_OUTSIDE_ORIGIN>/auth/callback`, which the Google
 client lists as a second redirect URI, and a write from a page there must come from that address.
 A link to a Dispatch page written on either address opens on the address the reader is on.
+
+### People from outside with a passkey
+
+`DISPATCH_SIGNIN_PASSKEY=1`, set instead of `DISPATCH_SIGNIN_OUTSIDE=1` (Dispatch refuses to start
+with both), lets a person from outside sign in with a passkey and no Google account at all. It needs
+`DISPATCH_SIGNIN_DOMAIN` and `DISPATCH_OUTSIDE_ORIGIN`: Google then signs in your own people alone,
+and a person from outside signs in only at the outside address, where Dispatch serves no Google
+sign-in. A project's owner puts the person's email on the project's access list, then makes an
+invitation link for them on the project's **Access** tab and hands it over however they like. The
+link works once, within 24 hours, for that person only, and making a new one ends the old one. With
+it the person enrolls a passkey on their own device, and from then on signs in with that passkey.
+The owner sees on the Access tab when each passkey was enrolled, so a link someone else used first
+shows up there. **Reset** ends the person's sign-in, deletes their passkeys and the machine logins
+they approved at the secrets broker, and keeps them on the list, so they enroll again with a new
+link. Taking the person off the last list that names them does the same at once, and Dispatch also
+checks at least hourly, as above. No link is made for an address on a domain the organization owns
+(`DISPATCH_SIGNIN_DOMAIN`, a domain `DISPATCH_SIGNIN_WORKSPACE_DOMAINS` lists, or a subdomain of
+one): list every domain the organization owns there. Turning the setting off signs every such
+person out at their next request, and stops their agent tokens as above.
 
 ## Behind Identity-Aware Proxy
 

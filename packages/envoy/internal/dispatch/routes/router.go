@@ -80,6 +80,10 @@ type AppContext struct {
 	// answer 503.
 	SignIn     *oidc.CodeFlow
 	SignInRule identity.SignInRule
+	// Passkeys runs a restricted member's passkey ceremonies at OutsideOrigin (cmd/dispatch:
+	// DISPATCH_SIGNIN_PASSKEY=1); nil where passkey sign-in is off, which mounts none of them
+	// (routes/passkey.go).
+	Passkeys *identity.Passkeys
 	// InsecureCookie drops the Secure attribute from every cookie the router sets, for browsers
 	// reaching Dispatch over plain http (cmd/dispatch: DISPATCH_INSECURE_COOKIE).
 	InsecureCookie bool
@@ -125,6 +129,10 @@ type AppContextOptions struct {
 	Store          *store.Store
 	AgentTokens    *auth.SharedAgentTokens
 	DefaultProject string
+	// Passkeys is the passkey ceremonies where passkey sign-in is on, nil where it is off; the API
+	// is handed their store and their rule's check of a Workspace address (api.DepsInput.Passkeys,
+	// WorkspaceAddress). See AppContext.Passkeys.
+	Passkeys *identity.Passkeys
 	// NewIssueLabel and NewIssueSession configure the issue the search bar files from a person's
 	// typed words (cmd/dispatch: DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION); empty
 	// where the deployment configured neither. See api.DepsInput.
@@ -251,6 +259,14 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		}
 		origins = []string{canonical.Scheme + "://" + canonical.Host, outsideOrigin}
 	}
+	if opts.Passkeys != nil && outsideOrigin == "" {
+		return nil, fmt.Errorf("BuildAppContext: Passkeys needs an OutsideOrigin, the only origin a passkey signs in at")
+	}
+	var passkeyStore *store.PgPasskeys
+	var workspaceAddress func(string) bool
+	if opts.Passkeys != nil {
+		passkeyStore, workspaceAddress = opts.Passkeys.Store(), opts.Passkeys.WorkspaceAddress
+	}
 	apiDeps, err := api.NewDeps(api.DepsInput{
 		Store:                  opts.Store,
 		Identity:               opts.Identity,
@@ -280,6 +296,8 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
 		SignInIssuer:           opts.SignInIssuer,
+		Passkeys:               passkeyStore,
+		WorkspaceAddress:       workspaceAddress,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -316,6 +334,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		OutsideOrigin:  outsideOrigin,
 		SignIn:         opts.SignIn,
 		SignInRule:     opts.SignInRule,
+		Passkeys:       opts.Passkeys,
 		InsecureCookie: opts.InsecureCookie,
 		devSignInHost:  devSignInHost,
 		origins:        origins,
@@ -396,9 +415,10 @@ func mount(ctx *AppContext, mux *http.ServeMux) (*router, api.Background) {
 	none := []readclass.Class{readclass.None}
 	// Every route the server itself answers writes one access-log line (accesslog.Handler); the
 	// dashboard's own files, served by staticHandler, write none.
-	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.authStart))
-	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.authCallback))
+	readclass.Handle(mux, none, "GET /auth/start", accesslog.HandlerFunc("/auth/start", r.googleSignInHere(r.authStart)))
+	readclass.Handle(mux, none, "GET /auth/callback", accesslog.HandlerFunc("/auth/callback", r.googleSignInHere(r.authCallback)))
 	readclass.Handle(mux, none, "POST /auth/logout", accesslog.HandlerFunc("/auth/logout", r.authLogout))
+	r.mountPasskeys(mux)
 	// The signed-in person's own login, member kind and the event log's head, which names no row.
 	readclass.Handle(mux, []readclass.Class{readclass.Caller}, "GET /auth/whoami", accesslog.HandlerFunc("/auth/whoami", r.authWhoami))
 	// A repository's GitHub state, hidden where a project the person does not see owns the
@@ -637,7 +657,7 @@ type whoamiAnswer struct {
 // IDENTITY_UNAVAILABLE, never a whoami without it, so a restricted member is never shown a full
 // member's rail. A router with no Store, a test's, reads none.
 func (r *router) authWhoami(w http.ResponseWriter, req *http.Request) {
-	email, ok := r.login(w, req)
+	email, ok := r.loginSigningIn(w, req, r.whoamiSignIn(req))
 	if !ok {
 		return
 	}
@@ -716,9 +736,15 @@ var repositoryVisibleQuery = `select ` + refs.RepositoryClause("$2", "$1")
 // login is the signed-in person the request's cookie names, and the caller its access-log line
 // names: the /auth routes and the GitHub proxy resolve their caller here and nowhere else.
 func (r *router) login(w http.ResponseWriter, req *http.Request) (string, bool) {
+	return r.loginSigningIn(w, req, "")
+}
+
+// loginSigningIn is login, whose 401 names signIn as the way req's origin signs a person in
+// (identity.WriteErrorSigningIn); "" names none.
+func (r *router) loginSigningIn(w http.ResponseWriter, req *http.Request, signIn string) (string, bool) {
 	login, err := r.ctx.Identity.Login(req)
 	if err != nil {
-		identity.WriteError(w, err)
+		identity.WriteErrorSigningIn(w, err, signIn)
 		return "", false
 	}
 	accesslog.Note(req.Context(), accesslog.KindUser, login)

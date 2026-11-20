@@ -92,6 +92,11 @@ type testServerOptions struct {
 	// is Deps.RestrictedAdmission, which a restricted member's tokens are held to. False is the
 	// deployment that does not, whose server holds no such rule.
 	signInOutside bool
+	// passkeyIssuer is a deployment whose people from outside sign in with a passkey
+	// (DISPATCH_SIGNIN_PASSKEY=1) at this outside origin: Deps.Passkeys over the server's database,
+	// recording each passkey's subject under it, and the rule's check of a Workspace address
+	// (testOutsideRule's). Empty is the deployment with passkey sign-in off.
+	passkeyIssuer string
 	// privateProjects and busProjects are Deps.PrivateProjects and Deps.BusProjects: the projects
 	// the deployment has provisioned as private, and the private-projects record's writer. Nil
 	// and nil are the deployment that names no private project.
@@ -328,6 +333,8 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		OIDCAccounts:          options.oidcAccounts,
 		AccessAccounts:        options.accessAccounts,
 		SignInIssuer:          options.signInIssuer,
+		Passkeys:              passkeysOf(options.passkeyIssuer, database.Pool),
+		WorkspaceAddress:      workspaceAddressOf(options.passkeyIssuer, database.Pool),
 		RestrictedAdmission:   restrictedAdmissionOf(options.signInOutside, database.Pool),
 		PrivateProjects:       options.privateProjects,
 		BusProjects:           options.busProjects,
@@ -384,6 +391,24 @@ func restrictedAdmissionOf(signInOutside bool, pool *store.Pool) identity.Restri
 		return nil
 	}
 	return testOutsideRule(pool)
+}
+
+// passkeysOf is Deps.Passkeys for a deployment whose people from outside sign in with a passkey at
+// issuer, the outside origin, over pool; nil for none.
+func passkeysOf(issuer string, pool *store.Pool) *store.PgPasskeys {
+	if issuer == "" {
+		return nil
+	}
+	return store.NewPgPasskeys(store.NewPgPeopleStore(pool, auth.SingleSigningKey("passkey test key"), nil), issuer)
+}
+
+// workspaceAddressOf is Deps.WorkspaceAddress beside passkeysOf: the passkey rule's check over
+// testOutsideRule; nil with passkey sign-in off.
+func workspaceAddressOf(issuer string, pool *store.Pool) func(string) bool {
+	if issuer == "" {
+		return nil
+	}
+	return identity.PasskeyRule{OutsideRule: testOutsideRule(pool)}.WorkspaceAddress
 }
 
 // waitBackgroundOf waits out served's background work at a test's end. A test that has already
