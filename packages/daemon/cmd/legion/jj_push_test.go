@@ -2220,6 +2220,30 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	}
 }
 
+// rolePushStartedRows are the pushes that a jj command starts, each sending @-, a commit the other
+// role made and the implementer described: `jj util exec` runs the inner jj by PATH, which finds
+// the form's jj first on PATH.
+func rolePushStartedRows() []rolePushRow {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	return []rolePushRow{
+		{name: "jj util exec -- jj git push --bookmark", args: []string{"util", "exec", "--", "jj", "git", "push", "--bookmark", "legion/K-1"}, setup: func(f *rolePushFixture) rolePushWant {
+			c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+			f.bookmark("legion/K-1", c.commit)
+			return rolePushSends("legion/K-1", c, "implementer", impl)
+		}},
+	}
+}
+
+// A push that a jj command starts is a push of its own, and the step runs before it. Under the
+// tmux form the inner jj of `jj util exec -- jj git push …` is the pane's jj, and its environment
+// holds the loop guard's chain that the outer command's legion jj set, which lists the real jj: a
+// re-entry to pickAfter, as a push that a host's jj wrapper brings back is. The remote gets the
+// trailer's author, and the step prints the rewrite.
+func TestAPushThatAJJCommandStartsRunsTheStep(t *testing.T) {
+	t.Parallel()
+	rolePushRun(t, rolePushStartedRows())
+}
+
 // rolePushOption is one option of the `Options:` section of `jj git push --help`: its short and
 // long names, either of which may be "".
 type rolePushOption struct{ short, long string }
@@ -2278,7 +2302,7 @@ func rolePushHelpOptions(help string) []rolePushOption {
 // out, ahead of its setup (rolePushCannotReadIDRows' setups answer theirs, each a --named).
 func rolePushEveryArgument() []string {
 	var words []string
-	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushUntouchedRows()} {
+	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushUntouchedRows(), rolePushStartedRows()} {
 		for _, row := range rows {
 			words = append(words, row.args...)
 		}

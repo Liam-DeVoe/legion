@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -36,12 +38,34 @@ one jj metaedit --update-author for each role. It prints one line for each commi
 // wrappedJJAt is legion jj's loop guard's variable, as wrappedGitAt is legion git's: a chain of
 // jj programs (wrapperChain). Each run of `legion jj` sets it in the environment of every jj it
 // runs, the step's own commands and the jj it replaces itself with: to the chain pickAfter gives
-// (--after), or to the real jj alone (--real). A legion jj that finds it set is not the first of
-// its chain, and runs no step: a host's jj wrapper that runs jj by PATH came back into the pane's
-// jj, a controller started from a pane has two Legion bin directories on PATH, or a command of
-// the step came back. Its name starts with neither LEGION_ nor JJ_: fixtureenv drops both
-// prefixes, and jj reads JJ_ variables of its own.
+// (--after), or to the real jj alone (--real). It decides which jj a legion jj --after runs
+// (pickAfter), and not whether the step runs. A jj that a jj command starts, such as the inner jj
+// of `jj util exec -- jj git push`, finds it set by the outer command's legion jj, listing the
+// real jj, which is on PATH: to pickAfter that is a re-entry, as is a push that a host's jj
+// wrapper running jj by PATH brings back into the pane's jj. Only the first needs the step, and
+// wrappedJJStepped tells the two apart. Its name starts with neither LEGION_ nor JJ_: fixtureenv
+// drops both prefixes, and jj reads JJ_ variables of its own.
 const wrappedJJAt = "WRAPPED_JJ_AT"
+
+// wrappedJJStepped is the variable that marks a push whose step has run: a legion jj that ran the
+// step before a push, or printed the line of a table it cannot use, sets it to the digest of the
+// words it runs that push with (jjStepped), in the environment of that push alone. A legion jj
+// whose push's own words have that digest runs no step: it is the same push, come back through a
+// host's jj wrapper that runs jj by PATH, or through a second Legion bin directory on PATH, as a
+// controller started from a pane has. Every other push runs the step, a push that a jj command
+// starts among them. The step's own commands are no pushes the step runs before (jjPush.steps),
+// so they need no mark. A host's jj wrapper that changes the words makes the step run once more,
+// before the words that wrapper runs; that is harmless, since the step is idempotent: its second
+// run finds nothing to change. Its name starts with neither LEGION_ nor JJ_, as wrappedJJAt's
+// does.
+const wrappedJJStepped = "WRAPPED_JJ_STEPPED"
+
+// jjStepped is the value of wrappedJJStepped for a push of words: the hex of the SHA-256 of the
+// words joined by NUL, which no word holds.
+func jjStepped(words []string) string {
+	sum := sha256.Sum256([]byte(strings.Join(words, "\x00")))
+	return hex.EncodeToString(sum[:])
+}
 
 // runJJ is `legion jj`. Both of Legion's jj wrappers run it: the pod's /opt/legion/bin/jj
 // (packages/daemon/docker/jj) hands it each `jj git push` with --real /usr/local/bin/jj after its
@@ -50,14 +74,17 @@ const wrappedJJAt = "WRAPPED_JJ_AT"
 // signals' actions as runGit does (startWrapper), chooses the jj to run (pickAfter for --after),
 // runs the author step before a push (jjStep), and replaces itself with that jj (execWrapped), so
 // a stop of the process group and its budgets reach jj as before. A command that is no push, a
-// push the step leaves alone (readJJPush), a run that finds wrappedJJAt set, and a process with
-// no table (runtime.RoleIdentitiesVariable unset, as a controller's is) run that jj at once, with
-// nothing printed and no other process started. A table that is set but cannot be used
+// push the step leaves alone (readJJPush), a process with no table (runtime.RoleIdentitiesVariable
+// unset, as a controller's is), and a push whose wrappedJJStepped is the digest of its own words
+// (jjStepped), the same push come back after its step, run that jj at once, with nothing printed
+// and no other process started. A table that is set but cannot be used
 // (runtime.ReadRoleIdentities) prints one line, and then runs the same. After a step that
 // changes nothing more (errJJAsWritten), past a dry run it cannot read or a metaedit that jj
 // refuses because the commit it would make exists already (jjStep.metaedit), the push gets the
 // role's own words, but for a commit id whose commit a metaedit of the step moved
-// (jjPush.withRevisions).
+// (jjPush.withRevisions). The push that runs after the step, or after the line of a table it
+// cannot use, gets wrappedJJStepped set to the digest of the words it runs with; the step's own
+// commands do not.
 //
 // An interrupt or a terminate ends legion jj where it stands. The step's own commands are
 // children in this process's group, so a signal sent to the group ends them too, and the push
@@ -67,10 +94,9 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		return status
 	}
 	jjArgs := args[3:]
-	marker, chained := os.LookupEnv(wrappedJJAt)
 	next, chain := args[1], wrapperChain{ran: []string{args[1]}}
 	if args[0] == "--after" {
-		pick, err := pickAfter("jj", args[1], os.Getenv("PATH"), marker)
+		pick, err := pickAfter("jj", args[1], os.Getenv("PATH"), os.Getenv(wrappedJJAt))
 		if err != nil {
 			fmt.Fprintf(stderr, "legion jj: %v\n", err)
 			return 127
@@ -80,13 +106,13 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 	env := withVariable(os.Environ(), wrappedJJAt, chain.String())
 	push := readJJPush(jjArgs)
 	value, set := os.LookupEnv(runtime.RoleIdentitiesVariable)
-	if chained || !push.steps() || !set {
+	if !push.steps() || !set || os.Getenv(wrappedJJStepped) == jjStepped(jjArgs) {
 		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
 	}
 	table, why := runtime.ReadRoleIdentities(value)
 	if why != "" {
 		fmt.Fprintf(stderr, "legion jj: %s is %s; the push runs with no author step\n", runtime.RoleIdentitiesVariable, why)
-		return execWrapped("legion jj", next, jjArgs, env, nil, stderr)
+		return execWrapped("legion jj", next, jjArgs, withVariable(env, wrappedJJStepped, jjStepped(jjArgs)), nil, stderr)
 	}
 	step := &jjStep{push: push, next: next, env: env, table: table, stderr: stderr}
 	err := step.rewrite()
@@ -100,7 +126,8 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion jj: %v\n", err)
 		return 1
 	}
-	return execWrapped("legion jj", next, push.withRevisions(step.ids, errors.Is(err, errJJAsWritten)), env, nil, stderr)
+	words := push.withRevisions(step.ids, errors.Is(err, errJJAsWritten))
+	return execWrapped("legion jj", next, words, withVariable(env, wrappedJJStepped, jjStepped(words)), nil, stderr)
 }
 
 // jjPush is a jj command line as legion jj reads it (readJJPush).

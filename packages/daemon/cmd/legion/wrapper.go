@@ -106,9 +106,10 @@ type wrapperPick struct {
 	// run is the program it replaces itself with, and chain the loop guard's value run gets.
 	run   string
 	chain wrapperChain
-	// reentry is whether this run came back through a host's wrapper that an earlier run of the
-	// chain chose. Such a run adds nothing: the first run of the chain did what Legion's wrapper
-	// adds (a commit's trailers, a push's author step).
+	// reentry is whether this run came back through a program that an earlier run of the chain
+	// chose, a host's wrapper among them. `legion git` adds nothing to such a run's commit: the
+	// first run of the chain added its trailers. `legion jj` does not read it for its step, since a
+	// jj that a jj command starts is a re-entry too (wrappedJJStepped decides that step).
 	reentry bool
 	// after is each program of the name on PATH after the first entry that is the wrapper's own
 	// directory, in PATH order: the ones it may run, and the ones the helper is chosen from.
