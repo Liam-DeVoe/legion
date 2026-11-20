@@ -532,6 +532,7 @@ func (s *server) routes() []route {
 		{"POST /legion/v1/controller/secret", s.controllerSecret},
 		{"POST /legion/v1/controller/github-credential", s.controllerGitHubCredential},
 		{"POST /legion/v1/handoff/complete", s.handoffComplete},
+		{"POST /legion/v1/review-verdict", s.reviewVerdict},
 		{"POST /legion/v1/issues/status", s.issueStatus},
 		{"POST /legion/v1/claims/fresh-session", s.claimFreshSession},
 		{"POST /legion/v1/claims/compact", s.claimCompact},

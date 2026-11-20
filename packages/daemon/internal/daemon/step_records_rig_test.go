@@ -274,7 +274,7 @@ func (r *stepRecordsRig) implement() {
 }
 
 // testCompletion is the tester's completion of a round it passes.
-var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Verdict: "pass"}
+var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Verdict: "pass", Commit: stepRecordsHead}
 
 // test is one round of the tester, which passes.
 func (r *stepRecordsRig) test() {

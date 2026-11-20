@@ -667,7 +667,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 			t.Fatalf("mint the grant the tester completes with: %v", err)
 		}
 		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass",
-			Verdict: "pass", HandoffID: handoff, HandoffVersion: version})
+			Verdict: "pass", Commit: "c0ffee00000000000000000000000000000000aa", HandoffID: handoff, HandoffVersion: version})
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -115,7 +115,8 @@ test("the phase ops' fields, as a host declares them, are every field of every o
       issue: { type: "string" },
       since: { type: "string" },
       summary: { type: "string" },
-      verdict: { enum: ["pass", "pending", "fail"] },
+      verdict: { enum: ["pass", "pending", "fail", "approve", "changes"] },
+      testedCommit: { type: "string" },
       wake_at: { type: "string" },
       plan_rating: { type: "integer", minimum: 1, maximum: 5 },
       plan_reason: { type: "string" },
@@ -185,7 +186,11 @@ test("each op refuses its arguments whole before any daemon request, naming ever
     ],
     [
       { op: "handoff_complete", summary: "x", verdict: "maybe" },
-      "handoff_complete's verdict is pass, pending or fail",
+      "handoff_complete's verdict is pass, pending, fail, approve or changes",
+    ],
+    [
+      { op: "handoff_complete", summary: "x", verdict: "approve", testedCommit: " " },
+      "handoff_complete requires testedCommit",
     ],
     [
       { op: "handoff_complete", summary: "x", verdict: "pending", wake_at: " " },
@@ -297,6 +302,64 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
     verdict: "pass",
     ...REPORT,
   });
+});
+
+// The reviewer ends its review with its own verdict, approve or changes, on the head its review
+// record names, and names in testedCommit the commit of the tester's pass that verdict carries to
+// that head; the tool posts the verdict and testedCommit as given, beside the record and the head
+// the pane found for the reviewer's phase.
+test("handoff_complete takes a reviewer's verdict approve, with testedCommit", async () => {
+  const reviewer: ClaimCapability = {
+    ...implementer,
+    sessionID: "ses_reviewer",
+    role: "reviewer",
+    claimToken: "legion-legion-legion-208-reviewer",
+  };
+  const tested = "7".repeat(40);
+  const { ops, routes, posted, lookups } = runtime(reviewer, stateAtPhase("reviewing"));
+  await expect(
+    executePhaseOp(ops, {
+      op: "handoff_complete",
+      summary: "Reviewed; no finding stands.",
+      verdict: "approve",
+      testedCommit: tested,
+    })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(lookups).toEqual(["reviewing reviewer"]);
+  expect(routes).toEqual(["/legion/v1/state", "/legion/v1/grants", "/legion/v1/handoff/complete"]);
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Reviewed; no finding stands.",
+    verdict: "approve",
+    testedCommit: tested,
+    ...REPORT,
+  });
+
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "The parser breaks.", verdict: "changes" })
+  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  expect(posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "The parser breaks.",
+    verdict: "changes",
+    ...REPORT,
+  });
+});
+
+// One description serves every role, so it says who sends which verdict word, and what the
+// daemon refuses of a verdict.
+test("the description says who sends which verdict word, and testedCommit's", () => {
+  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
+  for (const words of [
+    "`verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes",
+    "approve: the head you reviewed may merge; changes: it needs changes",
+    "`testedCommit`, from the reviewer alone",
+    "REVIEWER_VERDICT_REQUIRED",
+    "VERDICT_COMMIT_REQUIRED",
+    "VERDICT_ROLE_FORBIDDEN",
+  ]) {
+    expect(description).toContain(words);
+  }
 });
 
 // The agent that does the retro rates the plan the issue ran in the completion that ends the
@@ -592,7 +655,7 @@ test("a root architect's handoff_complete is refused as unavailable before its o
   }
   await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
     new Error(
-      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason; ${refusal}`
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason; ${refusal}`
     )
   );
   expect(root.routes).toEqual([]);
@@ -615,7 +678,7 @@ test("a field an op does not take is refused naming the fields the op takes", as
     ],
     [
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, plan_rating, plan_reason',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, testedCommit, wake_at, plan_rating, plan_reason',
     ],
   ] as const;
   for (const [input, message] of refusals) {
@@ -815,6 +878,12 @@ test("each wrong shape of a check report is refused before any call, nothing min
       { op: "handoff_complete", summary: "Looked." },
       "handoff_complete on a production check names a verdict of pass, pending or fail",
     ],
+    // approve and changes are the reviewer's verdict on a phase completion, never a look's.
+    [
+      check.ops,
+      { op: "handoff_complete", summary: "Looked.", verdict: "approve" },
+      "handoff_complete on a production check names a verdict of pass, pending or fail, not approve, which is the reviewer's verdict on a phase completion",
+    ],
     [
       check.ops,
       { op: "handoff_complete", summary: "Looked.", verdict: "pending" },
@@ -866,7 +935,7 @@ test("pending is a production check's verdict: a phase completion naming it is r
     executePhaseOp(ops, { op: "handoff_complete", summary: "Waiting.", verdict: "pending" })
   ).rejects.toThrow(
     new Error(
-      "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+      "handoff_complete's verdict on a phase completion is the tester's pass or fail or the reviewer's approve or changes; pending is a production check's"
     )
   );
   expect(routes).toEqual(["/legion/v1/state"]);

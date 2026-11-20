@@ -138,7 +138,7 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 		t.Fatalf("the tester took entry %d, want the start's %d", second, secondStart.Entry)
 	}
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass on the fix", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}))
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Reviewing)
 	testers := 0
 	for _, fact := range facts.recorded() {
@@ -268,7 +268,7 @@ func TestACompletionIsHeldToItsEntryOnlyWhenBothSidesNameOne(t *testing.T) {
 				takeTask(t, h, tester.token, "outbox:77", "test it again", tc.serving, 1)
 			}
 			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+				Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if tc.refused {
 				message := refused(t, recorder, http.StatusConflict, "HANDOFF_STALE_ENTRY")
 				for _, want := range tc.says {
@@ -339,7 +339,7 @@ func TestAHeldPhasesRetryKeepsTheEntryItsWorkerStillServes(t *testing.T) {
 	// The relaunched worker finishes the task it held, and its completion is applied: the issue
 	// moves on to reviewing, and the workflow saw exactly that one tester completion.
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
-		HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
+		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}))
 	assertIssuePhase(t, h, phase.Reviewing)
 	testers := 0
 	for _, fact := range facts.recorded() {

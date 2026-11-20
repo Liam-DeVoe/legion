@@ -4,6 +4,7 @@ import {
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
   LEGION_PLAN_REASON_MAX,
+  LEGION_REVIEWER_VERDICTS,
   LegionInstant,
   type LegionIssue,
   type LegionPhase,
@@ -181,11 +182,18 @@ export const PhaseOpArguments = z.discriminatedUnion(
       issue: z
         .string({ error: "handoff_complete's issue is an issue key, as LEGION-208 is" })
         .optional(),
+      // The tester's pass or fail and the reviewer's approve or changes on a phase completion,
+      // and pass, pending or fail on a production check's report; which role sends which word
+      // is the daemon's to hold (VERDICT_ROLE_FORBIDDEN, REVIEWER_VERDICT_REQUIRED).
       verdict: z
-        .enum(["pass", "pending", "fail"], {
-          error: "handoff_complete's verdict is pass, pending or fail",
+        .enum(["pass", "pending", "fail", ...LEGION_REVIEWER_VERDICTS], {
+          error: "handoff_complete's verdict is pass, pending, fail, approve or changes",
         })
         .optional(),
+      // The reviewer's alone (VERDICT_ROLE_FORBIDDEN from any other role): the commit of the
+      // tester's pass its verdict carries to the head its record names, under the daemon's own
+      // name for it.
+      testedCommit: requiredString("handoff_complete", "testedCommit").optional(),
       wake_at: nextLook.optional(),
       plan_rating: planRating.optional(),
       plan_reason: planReason.optional(),
@@ -333,9 +341,14 @@ export function legionToolDescription(host: {
     "the daemon accepts a completion only from the role working the issue's current phase, " +
     "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
-    "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
-    "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow). " +
+    "architect), `verdict` on a phase completion is the tester's pass|fail and the reviewer's approve|changes (approve: the head you " +
+    "reviewed may merge; changes: it needs changes), each on the head your record names, and `testedCommit`, from the reviewer alone, " +
+    "names the commit of the tester's pass that the reviewer's verdict carries to that head, where no commit since that one changes code " +
+    "that runs. The daemon refuses a verdict from any other role there and a testedCommit from any role but the reviewer " +
+    "(VERDICT_ROLE_FORBIDDEN), a tester's or a reviewer's verdict with no head (VERDICT_COMMIT_REQUIRED), and a reviewer's word that " +
+    "is neither approve nor changes (REVIEWER_VERDICT_REQUIRED). `verdict` is pass|pending|fail on a production check report (pending: " +
+    "production does not carry the merge yet, or carries it with a requirement only the deploy can show still unobserved and a look " +
+    "still to follow). " +
     "A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
     "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
@@ -748,6 +761,9 @@ async function completeHandoff(
   // path.
   // The report's own refusals apply while the record shows the check it is of: the state carries
   // that object only while the check is open. A refusal here posts nothing and mints nothing.
+  // testedCommit is sent as given on either: the daemon refuses it from every role but the
+  // reviewer, which reports on no check (VERDICT_ROLE_FORBIDDEN).
+  const tested = args.testedCommit === undefined ? {} : { testedCommit: args.testedCommit };
   const record = recordFrom(await daemon.state(), claim.issue);
   if (record.phase === "done") {
     const check = record.check;
@@ -755,6 +771,11 @@ async function completeHandoff(
       if (args.verdict === undefined) {
         throw new Error(
           "handoff_complete on a production check names a verdict of pass, pending or fail"
+        );
+      }
+      if ((LEGION_REVIEWER_VERDICTS as readonly string[]).includes(args.verdict)) {
+        throw new Error(
+          `handoff_complete on a production check names a verdict of pass, pending or fail, not ${args.verdict}, which is the reviewer's verdict on a phase completion`
         );
       }
       // The check records the role that works it, and takes a report from that role alone, as
@@ -787,13 +808,14 @@ async function completeHandoff(
       grantId: await mintClaimGrant(daemon, claim),
       summary: args.summary,
       verdict: args.verdict ?? "",
+      ...tested,
       ...(args.wake_at === undefined ? {} : { wakeAt: args.wake_at }),
       ...rating,
     });
   }
   if (args.verdict === "pending") {
     throw new Error(
-      "handoff_complete's verdict is pass or fail on a phase completion; pending is a production check's"
+      "handoff_complete's verdict on a phase completion is the tester's pass or fail or the reviewer's approve or changes; pending is a production check's"
     );
   }
   // The daemon refuses a phase completion that carries a wake (CHECK_WAKE_UNEXPECTED); this says
@@ -810,6 +832,7 @@ async function completeHandoff(
     grantId: await mintClaimGrant(daemon, claim),
     summary: args.summary,
     verdict: args.verdict ?? "",
+    ...tested,
     ...report,
     ...rating,
   });
