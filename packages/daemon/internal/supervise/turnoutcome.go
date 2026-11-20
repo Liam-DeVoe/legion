@@ -8,7 +8,9 @@ import (
 
 // TurnOutcome is one turn of a claim's agent as the backend's producer reported it when that turn
 // ended: the launch generation it ran at, the producer's own sequence within that generation,
-// whether the provider refused the turn, and what the provider said about a refusal.
+// whether the provider refused the turn, and what the provider said about a refusal. The daemon
+// keeps each outcome as a record and fails no claim from it: a report carries no HTTP status, so
+// the prompt result decides whether a provider error fails the claim (providerErrored).
 //
 // The producer is the one counter. Oh My Pi's turns are reported by pi-legion's agent_end hook and
 // Claude Code's by the Claude bridge, each over POST /legion/v1/claims/turn-outcome; the turn's end
@@ -92,9 +94,9 @@ func (c Claim) LastRefusal() string {
 // produced them and a claim leaves a session only by forgetting it.
 func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 
-// turnOutcome records the turn its producer reported and derives the claim's trailing run of
-// refused turns from the window that leaves. The report carries no HTTP status, so it cannot
-// decide whether the provider error can clear. The prompt result makes that decision.
+// turnOutcome keeps the turn its producer reported as a record, and derives the claim's trailing
+// run of refused turns from the window that leaves for the readers of that record. It fails no
+// claim, refused or not, however long the run.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	m.recordTurnOutcome(TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Refused: r.Refused, Message: r.Message})

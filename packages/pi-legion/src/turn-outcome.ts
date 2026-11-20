@@ -7,8 +7,8 @@ import type { AgentEndEvent } from "@legion/pi-shared/pi-types";
 /**
  * The Oh My Pi half of the turn-outcome report. Every turn this pane ends — one the model
  * answered, and one the provider refused — is reported to the daemon over HTTP, under a sequence
- * this plugin counts itself. The daemon keeps the report as diagnostic state. It does not fail a
- * claim from it: the prompt result carries the provider's HTTP status, and that result decides.
+ * this plugin counts itself. The daemon keeps each outcome as a record and fails no claim from
+ * it: the prompt result carries the provider's HTTP status, and that result decides.
  *
  * The count is this producer's alone. It is not the daemon's turn ordinal and not
  * `supervise.StreamTurnEnd`'s: two counters would drift the moment one of them missed an end, and
