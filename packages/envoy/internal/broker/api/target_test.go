@@ -7,7 +7,9 @@ package api_test
 
 import (
 	"crypto/ecdsa"
+	"encoding/json"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -203,5 +205,51 @@ func TestAReleaseOfATargetOutsideItsProfileIs400TargetRefused(t *testing.T) {
 	}
 	if minted := s.take(); len(minted) != 0 {
 		t.Fatalf("the minter was asked %d times for a target outside its profile; want never", len(minted))
+	}
+}
+
+// TestTheValuesAnswerConfirmsTheTargetItReleased: POST /v1/grants/{id}/values answers the grant's
+// target as its request signed it, in "locations": one https://github.com/<account> for the
+// account form, or one https://github.com/<account>/<repository> for each repository, sorted, and
+// no "locations" for a grant with no target. A client that signed a target reads it back here,
+// since a broker from before locations reads the signed object without refusing the field it does
+// not know and releases the whole profile; an answer without the target it sent says so.
+func TestTheValuesAnswerConfirmsTheTargetItReleased(t *testing.T) {
+	s := newTargetServer(t)
+	for _, row := range []struct {
+		name      string
+		locations []string // as signed
+		want      []string // as answered; nil for no "locations" key
+	}{
+		{"the account form", []string{"https://github.com/ada"}, []string{"https://github.com/ada"}},
+		{"repositories, signed out of order", []string{"https://github.com/ada/proofs", "https://github.com/ada/lean"}, []string{"https://github.com/ada/lean", "https://github.com/ada/proofs"}},
+		{"no target", nil, nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			status, body := s.request(t, "PROOFS_READ", map[string]any{"request": signTargetRequest(t, s.key, s.URL, "PROOFS_READ", row.locations...)})
+			created := decode[wireCreateRequestResponse](t, body)
+			if status != http.StatusOK || created.GrantID == nil {
+				t.Fatalf("POST /v1/requests for PROOFS_READ %v = %d %s, want an automatic grant", row.locations, status, body)
+			}
+			status, body = s.values(t, *created.GrantID, nil)
+			if status != http.StatusOK {
+				t.Fatalf("POST values = %d %s, want 200", status, body)
+			}
+			var raw map[string]json.RawMessage
+			if err := json.Unmarshal(body, &raw); err != nil {
+				t.Fatalf("the values answer %s: %v", body, err)
+			}
+			encoded, set := raw["locations"]
+			if row.want == nil {
+				if set {
+					t.Fatalf("a grant with no target answered locations %s; want no key", encoded)
+				}
+				return
+			}
+			var got []string
+			if !set || json.Unmarshal(encoded, &got) != nil || !slices.Equal(got, row.want) {
+				t.Fatalf("the values answer's locations = %s (set %v); want %q", encoded, set, row.want)
+			}
+		})
 	}
 }

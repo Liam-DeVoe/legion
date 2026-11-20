@@ -15,7 +15,9 @@ body: |-
   values answer names what the cut left out (`github_left_out`) and an empty cut sends nothing. A
   token GitHub answers with a permission or a level past the request is refused and revoked,
   `metadata: read` included: GitHub grants that with every installation token, so a GitHub
-  profile must name `metadata: read` and the profiles file refuses one that does not. A
+  profile must name `metadata: read` and the profiles file refuses one that does not. The values
+  answer of `POST /v1/grants/{id}/values` carries the grant's target in `locations`, as the
+  request signed it and sorted, and leaves the key out for a grant with no target. A
   `value: token` profile whose account resolves to more than one installation is refused before
   any token is minted. A Google or Azure profile of another name mints under its source's
   binding. A request may narrow a profile to one account or to repositories of it with RFC 9396

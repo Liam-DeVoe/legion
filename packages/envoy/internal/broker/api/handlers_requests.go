@@ -295,6 +295,12 @@ type grantValuesResponse struct {
 	// lower level, which the token holds at that level instead. Absent when no cut left anything
 	// out.
 	GitHubLeftOut map[string]map[string][]string `json:"github_left_out,omitempty"`
+	// The grant's target as its request signed it: one https://github.com/<account> for the
+	// account form, or one https://github.com/<account>/<repository> for each repository, sorted.
+	// Absent when the grant has no target. A client that signed a target compares it with this,
+	// since a broker from before targets reads the signed object without refusing the field and
+	// releases the whole profile.
+	Locations []string `json:"locations,omitempty"`
 	// How to reach the values this release did not hand over: the names the airlock holds back
 	// are not in "values" at all, and this says where the proxy that holds them is. Absent when
 	// no granted name is behind the airlock, which is every release of a broker with no rules
@@ -526,7 +532,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if values == nil {
 		values = map[string]string{}
 	}
-	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubLeftOut: release.GitHubLeftOut}
+	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubLeftOut: release.GitHubLeftOut, Locations: release.Locations}
 	if release.Airlock != nil {
 		answer.Airlock = &airlockRelease{
 			ProxyURL:      release.Airlock.ProxyURL,

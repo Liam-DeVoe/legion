@@ -155,6 +155,26 @@ func (d AuthorizationDetail) Target() (account string, repositories []string) {
 	return account, slices.Compact(repositories)
 }
 
+// Locations is the target account and repositories as the request signed them, Target's inverse:
+// one https://github.com/<account> for the account form, or one
+// https://github.com/<account>/<repository> for each repository, in repository order, and nil for
+// no target (account ""). A release answers it from what request_secrets recorded of the target,
+// so a client that signed a target reads back the one the broker applied.
+func Locations(account string, repositories []string) []string {
+	if account == "" {
+		return nil
+	}
+	if len(repositories) == 0 {
+		return []string{gitHubLocationPrefix + account}
+	}
+	sorted := slices.Sorted(slices.Values(repositories))
+	locations := make([]string, 0, len(sorted))
+	for _, repository := range slices.Compact(sorted) {
+		locations = append(locations, gitHubLocationPrefix+account+"/"+repository)
+	}
+	return locations
+}
+
 // MaxTargetLocations is the most entries one detail's locations hold: one for each repository of
 // its target, as many as a GitHub profile's token names (secrets.MaxNarrowedRepositories).
 const MaxTargetLocations = 100

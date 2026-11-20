@@ -111,13 +111,19 @@ const GrantChainInvalidMessage = "broker: a grant's approval chain does not veri
 
 // Release is one release of a grant: the values the session may hold, when the grant expires,
 // when the grant holds a name behind the airlock, how to reach the proxy that holds the rest,
-// and, for each github-app profile whose permissions the cut to what an installation holds left
-// something out of, each entry it left out, by profile name and account (secrets.Minted.LeftOut).
+// for each github-app profile whose permissions the cut to what an installation holds left
+// something out of, each entry it left out, by profile name and account (secrets.Minted.LeftOut),
+// and the target the grant's request signed, as record.Locations builds it back from what
+// request_secrets recorded.
 type Release struct {
 	Values        map[string]string
 	Expires       *time.Time
 	Airlock       *AirlockRelease                // nil when no granted name is behind the airlock
 	GitHubLeftOut map[string]map[string][]string // nil when no cut left anything out
+	// Locations is the grant's target as its request signed it, nil for a grant with no target.
+	// A request that signs a target names one secret alone (record.validateDetails), so one
+	// granted name holds it.
+	Locations []string
 }
 
 // grantRelease is a live grant as checkRelease found it: the enrollment that holds it, the
@@ -309,7 +315,7 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 		}
 		values[released.name] = released.value
 	}
-	release := Release{Values: values, Expires: checked.expires, GitHubLeftOut: leftOut}
+	release := Release{Values: values, Expires: checked.expires, GitHubLeftOut: leftOut, Locations: grantLocations(checked.granted)}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
 			m.giveBack(ctx, read)
@@ -331,6 +337,18 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, call
 	}
 	m.giveBack(ctx, heldBack(read))
 	return release, nil
+}
+
+// grantLocations is the target granted names recorded, as the request signed it
+// (record.Locations), and nil when none recorded one. Only a request of one name signs a target,
+// so the first name that holds one holds the grant's.
+func grantLocations(granted []requestedSecret) []string {
+	for _, g := range granted {
+		if g.targetAccount != "" {
+			return record.Locations(g.targetAccount, g.targetRepositories)
+		}
+	}
+	return nil
 }
 
 // readValue is one granted name's value and, for a minted type, when that value stops working,

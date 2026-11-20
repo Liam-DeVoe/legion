@@ -694,7 +694,10 @@ The broker evaluates every name
   it holds no more than the request asked, for every profile, and gives back one that holds more
   (`502 MINT_FAILED`). A target is an entry of the signed request's `locations`, so the record a
   person approves holds it and the approval page prints it beside the profile's source,
-  permissions, accounts, repositories and proxy hosts, and a Google profile's scopes. A target
+  permissions, accounts, repositories and proxy hosts, and a Google profile's scopes. The values
+  answer carries the grant's target back in `locations`, as the request signed it and sorted, and
+  leaves the key out for a grant with no target, so a client that signed a target can see that the
+  broker applied it. A target
   outside the profile, a target on a name with no `github` block, and no target on a
   `value: token` profile of more than one account are refused `400 TARGET_REFUSED` before anybody
   is asked, naming the profile's accounts and repositories. An approval given after a profiles

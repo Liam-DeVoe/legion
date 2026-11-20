@@ -276,7 +276,8 @@ func TestARequestRefusesALocationThatIsNoGitHubTarget(t *testing.T) {
 
 // TestATargetIsReadBackFromItsLocations: a verified request keeps the locations it signed, and
 // Target reads them as the one account and its repositories, sorted and each once, or as no target
-// for a detail that signs none.
+// for a detail that signs none; Locations builds the signed locations back from what Target read,
+// sorted and each once, which is what a release answers.
 func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 	key, _ := proof.NewKey()
 	now := time.Now()
@@ -285,10 +286,11 @@ func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 		locations    []string
 		account      string
 		repositories []string
+		rebuilt      []string
 	}{
-		{"no target", nil, "", nil},
-		{"an account", []string{"https://github.com/example-org"}, "example-org", nil},
-		{"repositories of one account", []string{"https://github.com/example-org/proofs", "https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org", []string{"lean", "proofs"}},
+		{"no target", nil, "", nil, nil},
+		{"an account", []string{"https://github.com/example-org"}, "example-org", nil, []string{"https://github.com/example-org"}},
+		{"repositories of one account", []string{"https://github.com/example-org/proofs", "https://github.com/example-org/lean", "https://github.com/example-org/proofs"}, "example-org", []string{"lean", "proofs"}, []string{"https://github.com/example-org/lean", "https://github.com/example-org/proofs"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			compact, err := Sign(key, "https://secrets.test", []AuthorizationDetail{targetDetail(row.locations...)}, "read", "", nil, now)
@@ -305,6 +307,9 @@ func TestATargetIsReadBackFromItsLocations(t *testing.T) {
 			account, repositories := obj.Details[0].Target()
 			if account != row.account || !slices.Equal(repositories, row.repositories) {
 				t.Fatalf("Target() = %q, %q; want %q, %q", account, repositories, row.account, row.repositories)
+			}
+			if rebuilt := Locations(account, repositories); !slices.Equal(rebuilt, row.rebuilt) {
+				t.Fatalf("Locations(Target()) = %q, want %q", rebuilt, row.rebuilt)
 			}
 		})
 	}
