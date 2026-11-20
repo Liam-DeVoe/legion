@@ -61,10 +61,10 @@ function dockerListingNone(): string {
   }
   return noContainers;
 }
-// check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
-// answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
-// Its walks are held to what is left of the row's limit (proc_walk_deadline).
-function check(root: string, bin = "") {
+// check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given and the
+// variables ENV, and answers its status and what its `fail` said (a driver's fail, here one that
+// prints and returns). Its walks are held to what is left of the row's limit (proc_walk_deadline).
+function check(root: string, bin = "", env: Record<string, string> = {}) {
   const ran = Bun.spawnSync(
     [
       "bash",
@@ -73,6 +73,7 @@ function check(root: string, bin = "") {
     ],
     {
       env: {
+        ...env,
         PATH: `${bin}${bin ? ":" : ""}${dockerListingNone()}:${process.env.PATH ?? ""}`,
         proc_root: root,
         ...walkDeadlineEnv(rowStarted),
@@ -103,7 +104,9 @@ test.skipIf(skip)(
       for (const pid of [byArgs, byEnv, byCwd]) expect(said).toContain(`process ${pid}, `);
       for (const pid of [live, none]) expect(said).not.toContain(`process ${pid}, `);
       // Each leftover is named by its command line, read inside the walk's bound with its start.
-      expect(said).toContain(`process ${byArgs}, bash -c sleep 60; : bash ${runDir} (kill ${byArgs})`);
+      expect(said).toContain(
+        `process ${byArgs}, bash -c sleep 60; : bash ${runDir} (kill ${byArgs})`
+      );
       expect(said).toContain(`process ${byCwd}, sleep 60 (kill ${byCwd})`);
       expect(said).toEndWith("status 1\n");
     } finally {
@@ -116,6 +119,80 @@ test.skipIf(skip)(
     }
   }
 );
+
+// A process whose main thread exits while another thread runs on reads Z in its stat, as a zombie
+// does, and is still there: it holds its files, its ports and its locks. Once its main thread has
+// gone, its own entry shows no command line, environment or working directory (they are the
+// thread group's, read through a thread that still runs), so the check can only meet one that it
+// named while its main thread ran, and then find that thread gone when it reads the leftover's
+// stat. A grep first on PATH stands in for that moment: after the grep of the command lines, it
+// lets the leftover's main thread exit and waits until its stat reads Z. Such a leftover is named.
+// The control: one whose last thread exits there, a zombie with no other thread, is not.
+const mainThreadExitsOnGo = (end: string) => `import ctypes, os, sys, threading, time
+threading.Thread(target=time.sleep, args=(60,), daemon=True).start()
+while not os.path.exists(sys.argv[1]): time.sleep(0.01)
+${end}`;
+function goOnGrep() {
+  const bin = mkdtempSync(join(dir, "grep-go-"));
+  writeFileSync(
+    join(bin, "grep"),
+    `#!/bin/bash
+command -p grep "$@"
+status=$?
+case " $* " in
+  *" -asHozE "*)
+    if [ ! -e "$GO" ]; then
+      : >"$GO"
+      for _ in $(seq 1 500); do
+        state=$(sed 's/.*) //' "/proc/$LEFTOVER/stat" 2>/dev/null | cut -d' ' -f1)
+        [ "$state" != Z ] && [ -e "/proc/$LEFTOVER" ] || break
+        sleep 0.01
+      done
+    fi
+    ;;
+esac
+exit "$status"
+`,
+    { mode: 0o755 }
+  );
+  return bin;
+}
+for (const [name, end, named] of [
+  [
+    "a leftover whose main thread exits while another thread runs is named",
+    "ctypes.CDLL(None).pthread_exit(None)",
+    true,
+  ],
+  [
+    "a leftover that exits whole, a zombie with no other thread, is not named",
+    "os._exit(0)",
+    false,
+  ],
+] as const) {
+  test.skipIf(skip || Bun.which("python3") === null)(name, async () => {
+    const gone = goneDriver();
+    const runDir = mkdtempSync(`/tmp/${prefix}.${gone}.`);
+    const go = join(mkdtempSync(join(dir, "go-")), "go");
+    try {
+      const leftover = await sleeper({
+        argv: ["python3", "-c", mainThreadExitsOnGo(end), go, runDir],
+      });
+      const r = check(procRootOf(dir, [leftover]), goOnGrep(), {
+        GO: go,
+        LEFTOVER: String(leftover),
+      });
+      expect(r.err).toBe("");
+      if (named) {
+        expect(r.out).toContain(`process ${leftover}, `);
+        expect(r.out).toEndWith("status 1\n");
+      } else {
+        expect(r.out).toBe("status 0\n");
+      }
+    } finally {
+      Bun.spawnSync(["rm", "-rf", runDir]);
+    }
+  });
+}
 
 test.skipIf(skip)(
   "starts no program for each process it reads: the working directories it needs are read by one find",

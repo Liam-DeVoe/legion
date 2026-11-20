@@ -154,7 +154,13 @@ beforeEach(() => {
 // every process the row recorded so far and this test process, so a row's time is its own and not
 // the host's process count. ROOT, when given, is that root instead. Each walk is held to what is
 // left of the row's LIMIT (proc_walk_deadline).
-function harnessCommand(work: string, body: string, path: string, procRoot: string, limit?: number) {
+function harnessCommand(
+  work: string,
+  body: string,
+  path: string,
+  procRoot: string,
+  limit?: number
+) {
   return {
     argv: ownGroup([
       "bash",
@@ -395,6 +401,65 @@ test.skipIf(skip)(
       expect(r.out).toBe("held_only_by 2\n");
       expect(readFileSync(join(work, "held.err"), "utf8")).toMatch(
         /^listening_holders: find exited 124 reading \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\)$/m
+      );
+    } finally {
+      listener.stop(true);
+    }
+  }
+);
+
+test.skipIf(skip)(
+  "listening_holders asks the kernel for the one port, and ends at its caller's bound where that answer is held past it",
+  () => {
+    // listening_holders read the inode from /proc/net/tcp and tcp6, a walk of every TCP socket of
+    // the machine that no bound held. It asks ss for the one port now (a sock_diag request the
+    // kernel filters), held to what is left of this row's limit: an ss that fails says so, with
+    // 2, never as a port nothing listens on, and an ss first on PATH that runs for 70 s ends at
+    // the bound, named, with 2 (last, since it spends the rest of the row's bound). The control is
+    // the real ss, which names this test process as the holder.
+    const work = join(dir, "slow-ss");
+    mkdirSync(work);
+    const slow = join(dir, "slow-ss-bin");
+    const broken = join(dir, "broken-ss-bin");
+    mkdirSync(slow);
+    mkdirSync(broken);
+    writeFileSync(join(slow, "ss"), "#!/bin/sh\nexec sleep 70\n", { mode: 0o755 });
+    writeFileSync(
+      join(broken, "ss"),
+      "#!/bin/sh\necho 'cannot open netlink socket' >&2\nexit 1\n",
+      {
+        mode: 0o755,
+      }
+    );
+    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      const port = listener.port;
+      const root = procRootOf(dir, [process.pid]);
+      const real = harness(work, `listening_holders ${port}`, "", root);
+      expect(real).toEqual({ code: 0, out: `${process.pid}\n`, err: "" });
+      const failed = harness(
+        work,
+        `st=0; listening_holders ${port} || st=$?; echo "st $st"`,
+        broken,
+        root
+      );
+      expect(failed).toEqual({
+        code: 0,
+        out: "st 2\n",
+        err: `listening_holders: ss exited 1: cannot open netlink socket, so the socket listening on port ${port} was not looked for\n`,
+      });
+      const held = harness(
+        work,
+        `st=0; listening_holders ${port} || st=$?; echo "st $st"`,
+        slow,
+        root
+      );
+      expect(held.out).toBe("st 2\n");
+      expect(held.err).toMatch(
+        new RegExp(
+          `^listening_holders: ss had not ended after [0-9.]+s \\(proc_walk_deadline, its caller's bound\\), so the socket listening on port ${port} was not looked for$`,
+          "m"
+        )
       );
     } finally {
       listener.stop(true);

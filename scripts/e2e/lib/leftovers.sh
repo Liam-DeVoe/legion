@@ -46,20 +46,24 @@ leftover_owner() {
 # are read by one grep for each xargs batch of them all, and the working directories of the
 # processes neither names a run in by one `find` for them all; the processes of this pid namespace
 # are told by one `find` before them, and each leftover's start and command line by one grep after.
-# So the walk starts no program for each process, reads no file of a process in this shell, and
-# each of its four parts is held to what is left of one bound (proc_walk_until, lib/process-tree.sh):
-# a /proc entry that never answers its reader, which held this check for ever, ends it there,
-# named. A proc root that lists no process at all (an empty tmpfs where /proc should be), a walk
-# past its bound, and a grep or a `find` that failed, a signal ended or that is too old to read
-# -files0-from (findutils before 4.9), are reported through `fail`, naming them, with status 2: a
-# walk that read nothing found no leftover only because it saw nothing. A working directory this
-# user may not read, another user's process's, or one whose process ended during the walk, is no
-# complaint (proc_walk_complaint).
+# A leftover whose main thread is a zombie is gone only when its task directory lists no thread but
+# that one: a process whose main thread exited while another thread runs on is still there, and
+# still holds its files, its ports and its locks, so one more `find` lists those leftovers'
+# threads. So the walk starts no program for each process, reads no file of a process in this
+# shell, and each of its five parts is held to what is left of one bound (proc_walk_until,
+# lib/process-tree.sh): a /proc entry that never answers its reader, which held this check for
+# ever, ends it there, named. A proc root that lists no process at all (an empty tmpfs where /proc
+# should be), a walk past its bound, and a grep or a `find` that failed, a signal ended or that is
+# too old to read -files0-from (findutils before 4.9), are reported through `fail`, naming them,
+# with status 2: a walk that read nothing found no leftover only because it saw nothing. A working
+# directory this user may not read, another user's process's, or one whose process ended during the
+# walk, is no complaint (proc_walk_complaint).
 refuse_leftovers() {
   local prefix=$1 proc=${proc_root:-/proc} name owner created p path target since boot ticks i
-  local err complaint status=0 until bound record text file pid part
+  local err complaint status=0 until bound record text file pid part what
   local -a leftover_list=() entries=() undecided=() cwd_links=() named=() files=() ours=() fields=()
-  local -A owner_of=() started=() args_of=()
+  local -a zombies=() threads=()
+  local -A owner_of=() started=() args_of=() zombie_start=()
   boot=$(awk '$1 == "btime" { print $2 }' /proc/stat)
   ticks=$(getconf CLK_TCK)
   while read -r name; do
@@ -82,18 +86,19 @@ refuse_leftovers() {
     fail "refuse_leftovers: no file to keep find's complaints in, so whether an earlier $prefix run left processes running was not read"
     return 2
   }
-  # The four parts, in order: which processes are of this pid namespace, then their command lines
+  # The five parts, in order: which processes are of this pid namespace, then their command lines
   # and environments, then the working directories of those that named no run, then each
-  # leftover's stat and command line. Each is a walk under timeout, which leads a process group of
-  # its own, ends what it started at the bound, and exits 124 then; `|| exit` keeps the walk's
-  # status for the wait, and keeps a caller's ERR trap (`set -E`) from firing inside the
-  # substitution for the batches every walk has with no match, and for the unreadable entries
-  # every find meets.
-  for part in namespace named cwd leftover; do
+  # leftover's stat and command line, then the threads of each leftover whose main thread is a
+  # zombie. Each is a walk under timeout, which leads a process group of its own, ends what it
+  # started at the bound, and exits 124 then; `|| exit` keeps the walk's status for the wait, and
+  # keeps a caller's ERR trap (`set -E`) from firing inside the substitution for the batches every
+  # walk has with no match, and for the unreadable entries every find meets.
+  for part in namespace named cwd leftover threads; do
     case $part in
       named) [ "${#ours[@]}" -gt 0 ] || continue ;;
       cwd) [ "${#undecided[@]}" -gt 0 ] || continue ;;
       leftover) [ "${#owner_of[@]}" -gt 0 ] || continue ;;
+      threads) [ "${#zombies[@]}" -gt 0 ] || continue ;;
     esac
     bound=$(proc_walk_bound "$until") || {
       rm -f -- "$err"
@@ -117,8 +122,8 @@ refuse_leftovers() {
         mapfile -d '' -t named < <(printf '%s\0' "${files[@]}" |
           LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHozE "/tmp/$prefix\\.[0-9]+\\." || exit)
         ;;
-      # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
       cwd)
+        # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
         mapfile -d '' -t cwd_links < <(printf '%s\0' "${undecided[@]}" |
           LC_ALL=C timeout -k 5 "$bound" find -files0-from - -maxdepth 0 -printf '%p\0%l/\0' 2>"$err" || exit)
         ;;
@@ -129,6 +134,12 @@ refuse_leftovers() {
         for p in "${!owner_of[@]}"; do files+=("$p/stat" "$p/cmdline"); done
         mapfile -d '' -t named < <(printf '%s\0' "${files[@]}" |
           LC_ALL=C timeout -k 5 "$bound" xargs -0 grep -asHz '' || exit)
+        ;;
+      # The task directory of each leftover whose main thread is a zombie: one entry a thread.
+      threads)
+        # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
+        mapfile -d '' -t threads < <(printf '%s/task\0' "${zombies[@]}" |
+          LC_ALL=C timeout -k 5 "$bound" find -files0-from - -mindepth 1 -maxdepth 1 -printf '%p\0' 2>"$err" || exit)
         ;;
     esac
     wait "$!" || status=$?
@@ -143,7 +154,10 @@ refuse_leftovers() {
       *)
         complaint=$(proc_walk_complaint "$err" "$proc") || complaint=
         [ "$status" -le 1 ] || complaint=${complaint:-"find ended with status $status and printed nothing"}
-        [ -z "$complaint" ] || complaint="find exited $status reading the $([ "$part" = cwd ] && echo 'working directories' || echo 'pid namespaces') under $proc: $complaint"
+        what='pid namespaces'
+        [ "$part" != cwd ] || what='working directories'
+        [ "$part" != threads ] || what='threads of the zombie leftovers'
+        [ -z "$complaint" ] || complaint="find exited $status reading the $what under $proc: $complaint"
         ;;
     esac
     if [ -n "$complaint" ]; then
@@ -172,8 +186,9 @@ refuse_leftovers() {
         done
         ;;
       # A record is `$proc/<pid>/<file>:<text>`; the pid's directory holds no `/`. The stat's
-      # fields after the command name, which may hold `) `, give the state and the start; a
-      # zombie has no start, and no leftover is a zombie.
+      # fields after the command name, which may hold `) `, give the state and the start. A dead
+      # task (X) is no leftover, and a zombie main thread is one only while another thread is
+      # listed (the threads part).
       leftover)
         for record in ${named[@]+"${named[@]}"}; do
           text=${record#"$proc"/}
@@ -183,10 +198,26 @@ refuse_leftovers() {
           text=${text#*:}
           if [ "$file" = stat ]; then
             read -r -a fields <<<"${text##*) }"
-            [ "${fields[0]-}" = Z ] || started[$pid]=${fields[19]-}
+            case ${fields[0]-} in
+              Z)
+                zombies+=("$proc/$pid")
+                zombie_start[$pid]=${fields[19]-}
+                ;;
+              X) ;;
+              *) started[$pid]=${fields[19]-} ;;
+            esac
           else
             args_of[$pid]+="${args_of[$pid]+ }$text"
           fi
+        done
+        ;;
+      # Each thread a task directory lists, `$proc/<pid>/task/<tid>`: a thread other than the main
+      # one is a process still there.
+      threads)
+        for record in ${threads[@]+"${threads[@]}"}; do
+          text=${record#"$proc"/}
+          pid=${text%%/*}
+          [ "${text##*/}" = "$pid" ] || started[$pid]=${zombie_start[$pid]-}
         done
         ;;
     esac

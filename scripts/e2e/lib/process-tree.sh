@@ -480,10 +480,10 @@ proc_walk_complaint() {
 }
 
 # A walk of every process of a proc root (procs_naming's grep of every <pid>/environ,
-# listening_holders' find of every <pid>/fd in lib/rig.sh, refuse_leftovers' in lib/leftovers.sh and
-# stop_agent_daemons' in parked-decision-devbox.sh, proc_children's pgrep where /proc has no
-# children file) is held to its caller's own bound: with none, a /proc entry that never answers its
-# reader, such as the environment of a process whose memory map stays locked (a FIFO stands in for
+# listening_holders' find of every <pid>/fd in lib/rig.sh, refuse_leftovers' in lib/leftovers.sh,
+# proc_children's pgrep where /proc has no children file) is held to its caller's own bound: with
+# none, a /proc entry that never answers its reader, such as the environment of a process whose
+# memory map stays locked (a FIFO stands in for
 # one in the rows), held the run's sweep, a check of a port, or the exit that runs them, for ever.
 # The bound is the time left of what the caller waits on, never a floor of the walk's own: a walk's
 # cost is the machine's share of a CPU, which a loaded devbox cuts to a few percent (load 7,626 on
@@ -495,9 +495,9 @@ proc_walk_complaint() {
 #   - proc_walk_default, 60 s, is the bound where the caller sets none, taken from the walk that has
 #     a waiter: wait_for_run_processes (parked-decision-devbox.sh) gives every process of the run
 #     600 s to end and polls run_processes at least 10 times in them, so a walk past 60 s runs that
-#     wait past its own deadline. The run's sweep, held_only_by, refuse_leftovers,
-#     stop_agent_daemons and the skill-scenario rig's stop_env_processes run in drivers that hold no
-#     clock of their own, and take the same bound: what each guards is a step of one of those runs.
+#     wait past its own deadline. The run's sweep, held_only_by, refuse_leftovers and the
+#     skill-scenario rig's stop_env_processes run in drivers that hold no clock of their own, and
+#     take the same bound: what each guards is a step of one of those runs.
 # A walk still running at its bound is ended with what it started, prints the bound it ended at
 # (proc_walk_bound_name), and fails with 2. These functions start no program.
 proc_walk_default=60

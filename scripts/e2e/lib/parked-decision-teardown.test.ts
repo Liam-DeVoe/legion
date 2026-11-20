@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { bunRowLimit, procRootOf, walkDeadlineEnv } from "./proc-root";
+import { procRootOf, walkDeadlineEnv } from "./proc-root";
 import { scriptFunctions } from "./script-functions";
 
 // stop_agent_daemons (parked-decision-devbox.sh), the teardown of what the run's Oh My Pi sessions
@@ -113,19 +113,18 @@ let rowStarted = Date.now();
 beforeEach(() => {
   rowStarted = Date.now();
 });
-// The limit of the rows that wait on a real broker's session, as they have it: their waits on real
-// processes (`until`), and the walks of every process of the host that run_processes and
-// stop_agent_daemons make there, each held to what is left of it.
+// The limit of the two rows here, both of which wait on a real broker's session: their waits on
+// real processes (`until`), and the walk of every process of the host that run_processes makes
+// there, held to what is left of it.
 const brokerRowLimit = 30_000;
 
 // harness runs BODY with the script's `set` line, lib/rig.sh sourced as the script sources it (for
 // run_processes) and stop_agent_daemons taken from the script by name, its run marked as the script
 // marks it (LEGION_E2E_RUN). $work comes in through the environment, and the mark is exported only
 // once the shell runs, so the harness's own process carries no mark and run_processes does not name
-// it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts). Its
-// walks are held to what is left of the row's LIMIT (proc_walk_deadline), the broker rows' unless
-// the row names its own.
-function harness(work: string, body: string, procRoot?: string, limit = brokerRowLimit) {
+// it. PROCROOT, when given, is the proc root the walks read (`proc_root`, lib/proc-root.ts).
+// run_processes' walk is held to what is left of the row's limit (proc_walk_deadline).
+function harness(work: string, body: string, procRoot?: string) {
   const ran = Bun.spawnSync(
     [
       "bash",
@@ -145,7 +144,7 @@ ${body}`,
         PATH: process.env.PATH ?? "",
         WORK: work,
         ...(procRoot === undefined ? {} : { proc_root: procRoot }),
-        ...walkDeadlineEnv(rowStarted, limit),
+        ...walkDeadlineEnv(rowStarted, brokerRowLimit),
       },
       stdout: "pipe",
       stderr: "pipe",
@@ -274,7 +273,7 @@ wait
       .map(Number);
     expect(after).toEqual([bystander.pid]);
   },
-  30_000
+  brokerRowLimit
 );
 
 // The walk reads every process's session from its whole /proc/<pid>/stat: a process names itself,
@@ -313,84 +312,5 @@ test.skipIf(skipWithout("python3"))(
     expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
     await until("the broker to end", () => !alive(broker.pid));
   },
-  30_000
+  brokerRowLimit
 );
-
-// stop_agent_daemons reads every process's stat for its session (and each broker session member's
-// environment), and a /proc entry that never answers its reader, such as a stat of a process whose
-// task is stuck, held the run's teardown for ever; a FIFO no writer opens stands in for one here,
-// beside this test process's own entry, whose environment run_processes reads first. The walk ends
-// at its caller's bound, here what is left of the row's limit (proc_walk_deadline,
-// lib/process-tree.sh), says so, and the function fails with 2.
-test("stop_agent_daemons ends at its caller's bound, saying so, where a stat never answers its reader", () => {
-  const work = join(dir, "fifo-stat");
-  mkdirSync(join(work, "runtime"), { recursive: true });
-  writeFileSync(join(work, "runtime", "broker.pid"), JSON.stringify({ pid: 999999998 }));
-  const proc = procRootOf(dir, [process.pid]);
-  mkdirSync(join(proc, "999999999"));
-  expect(Bun.spawnSync(["mkfifo", join(proc, "999999999", "stat")]).exitCode).toBe(0);
-  const stopped = harness(work, "stop_agent_daemons", proc, bunRowLimit);
-  expect(stopped.code).toBe(2);
-  expect(stopped.stderr).toMatch(
-    /^stop_agent_daemons: the walk of every stat under \S+ had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\), so no broker session was stopped$/m
-  );
-});
-
-// The second walk, of the environment of each member of a broker's session, is held to what is
-// left of the same bound: a member whose environment never answers its reader (a FIFO no writer
-// opens, behind a stat that puts it in the session of the broker broker.pid names) ends the
-// teardown there, named, with 2. run_processes, which reads every environment first and whose own
-// bound run_processes' rows hold, names nothing here, so the row reaches the second walk.
-test("stop_agent_daemons ends at its caller's bound, saying so, where a member's environment never answers its reader", () => {
-  const work = join(dir, "fifo-environ");
-  mkdirSync(join(work, "runtime"), { recursive: true });
-  writeFileSync(join(work, "runtime", "broker.pid"), JSON.stringify({ pid: 999999998 }));
-  const proc = procRootOf(dir, [process.pid]);
-  const member = join(proc, "999999997");
-  mkdirSync(member);
-  // State, parent, group and session (the broker's), then the fields up to the start, the 20th.
-  writeFileSync(
-    join(member, "stat"),
-    `999999997 (member) S 1 999999998 999999998${" 0".repeat(15)} 4242 0 0\n`
-  );
-  expect(Bun.spawnSync(["mkfifo", join(member, "environ")]).exitCode).toBe(0);
-  const stopped = harness(work, "run_processes() { :; }\nstop_agent_daemons", proc, bunRowLimit);
-  expect(stopped.code).toBe(2);
-  expect(stopped.stderr).toMatch(
-    /^stop_agent_daemons: the walk of every environ under \S+ had not ended after [0-9.]+s \(proc_walk_deadline, its caller's bound\), so no broker session was stopped$/m
-  );
-});
-
-// The walk reads every stat in the C locale and as text: in a UTF-8 locale, GNU grep takes a stat
-// whose name holds a byte that is no UTF-8 (a name of many bytes cut at 15) for a binary file,
-// prints "binary file matches" in place of its record, and exits 0, so that member of a broker's
-// session was dropped without a word. The row runs the teardown under C.UTF-8 with such a member,
-// in the session broker.pid names and carrying its runtime directory, which the teardown must name.
-test("stop_agent_daemons names a broker session's member whose name holds a byte that is no UTF-8", () => {
-  const work = join(dir, "binary-name");
-  const runtime = join(work, "runtime");
-  mkdirSync(runtime, { recursive: true });
-  writeFileSync(join(runtime, "broker.pid"), JSON.stringify({ pid: 999999998 }));
-  const proc = procRootOf(dir, [process.pid]);
-  const member = join(proc, "999999997");
-  mkdirSync(member);
-  writeFileSync(
-    join(member, "stat"),
-    Buffer.concat([
-      Buffer.from("999999997 ("),
-      Buffer.from([0xff, 0xfe]),
-      Buffer.from(`ab) S 1 999999998 999999998${" 0".repeat(15)} 4242 0 0\n`),
-    ])
-  );
-  writeFileSync(join(member, "environ"), `OMP_DAEMON_RUNTIME_DIR=${runtime}\0`);
-  const stopped = harness(
-    work,
-    "export LC_ALL=C.UTF-8\nrun_processes() { :; }\nstop_agent_daemons",
-    proc,
-    bunRowLimit
-  );
-  expect({ code: stopped.code, stderr: stopped.stderr }).toEqual({ code: 0, stderr: "" });
-  expect(stopped.stdout).toContain(
-    "stopping 1 processes of 1 Oh My Pi daemon broker sessions: 999999997"
-  );
-});

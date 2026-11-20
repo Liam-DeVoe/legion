@@ -193,17 +193,20 @@ writes its own pid (`echo $$ >FILE`) as its first act.
 
 A test judges that such a process has ended by the process's own state, never by whether
 anything has reaped it: `processEnded` of `@legion/test-fixtures/process-state` reads a
-`/proc/<pid>/stat` whose state is `Z` or `X`, or no entry at all, as ended, and asks signal 0 only
-on a host with no `/proc`. Where the test runner is PID 1 of its PID namespace, as `bun test` is
-in a container with no init, nothing reaps a process whose parent has exited: its zombie stays,
-and signal 0 still reaches it.
+`/proc/<pid>/stat` whose state is `X`, or `Z` with no thread but the main one in its task
+directory, or no entry at all, as ended, and asks signal 0 only on a host with no `/proc`. Where the
+test runner is PID 1 of its PID namespace, as `bun test` is in a container with no init, nothing
+reaps a process whose parent has exited: its zombie stays, and signal 0 still reaches it. A process
+whose main thread exited while another thread runs on reads `Z` too, and is still there: it still
+holds its files, its ports and its locks.
 
 A daemon Go test reads the same through `internal/testproc`: `Children` (the children of every
-thread, `task/<tid>/children`), `Descendants` and `Ended` (no entry, or state `Z` or `X`). Where no
-known process leads to the one it asks about, `testproc.Matching` walks every process's command
-line on a goroutine of its own and answers when the caller's context ends, with an error that
-names the bound by the context's cause. The e2e shell helpers take the same rule from
-`scripts/e2e/lib/process-tree.sh`'s `proc_children` and `proc_walk_until` (`scripts/e2e/README.md`).
+thread, `task/<tid>/children`), `Descendants` and `Ended` (no entry, state `X`, or `Z` with no
+other thread listed). Where no known process leads to the one it asks about, `testproc.Matching`
+walks every process's command line on a goroutine of its own and answers when the caller's
+context ends, with an error that names the bound by the context's cause. The e2e shell helpers
+take the same rule from `scripts/e2e/lib/process-tree.sh`'s `proc_children` and `proc_walk_until`
+(`scripts/e2e/README.md`).
 
 Where a test or its helper must still find processes it cannot name by pid, as the kill of
 `packages/dispatch/e2e/__tests__/bounded-subprocess.ts` finds what a child left by the token in

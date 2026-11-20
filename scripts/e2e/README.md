@@ -589,7 +589,7 @@ Everything the run takes is its own, so two runs on one box
   and on the devbox path the container `legion-e2e-pg-<pid>`.
 
 After each healthy start the run checks that the socket the daemon serves on is held by the daemon's and the keeper's processes alone (`held_only_by`:
-the socket's inode from the `LISTEN` row of `/proc/net/tcp`, its holders from `/proc/*/fd`):
+the socket's inode from the kernel's answer for that one port (`ss -H -ltne 'sport = :PORT'`), its holders from `/proc/*/fd`):
 a copy that leaked into the daemon's tmux server, a pane or a `legion` CLI call would keep the port listening after the daemon stops.
 
 After each healthy start the run also reads `GET /readyz` and requires 200, the daemon's own account of having reached serving (the `servingLatch` the boot sets once its runtime is built, its launcher acceptor installed and the goroutine that serves this API begun), over a route that carries no token and reads no database.
@@ -6349,10 +6349,11 @@ Each item below names a function, then what it does.
 - `listening_holders PORT`
 
   prints the pid of every process holding the one socket listening on PORT:
-  its inode from the `LISTEN` row of `/proc/net/tcp` and `/proc/net/tcp6`, its holders from `/proc/*/fd`.
+  its inode from the kernel's answer for that one port (`ss -H -ltne 'sport = :PORT'`, one sock_diag request the kernel filters), its holders from `/proc/*/fd`.
+  A read of `/proc/net/tcp` and `tcp6`, which it made before, is a walk of every TCP socket of the machine (about 40,000 lines on a loaded devbox), which at a few percent of one CPU used up the caller's bound before the walk of the processes began.
   The shell's glob hands every `/proc/<pid>/fd` to `find` on stdin, never as its arguments, which past ARG_MAX (about 80,000 processes) could not start, and the empty answer read as no holder.
   An fd directory this user may not read, or whose process ended during the walk, is none of the answer; any other complaint of the walk's prints and fails with 2.
-  The walk is held to what is left of its caller's bound (`proc_walk_until`, [`lib/process-tree.sh`](#libprocess-treesh)); one still running then is ended, named, and fails with 2, so a check of a port never waits on a process's descriptors for ever.
+  `ss` and the walk are each held to what is left of its caller's bound (`proc_walk_until`, [`lib/process-tree.sh`](#libprocess-treesh)); one still running then is ended, named, and fails with 2, so a check of a port never waits on the kernel's table or a process's descriptors for ever, and an `ss` that is missing or fails is reported with 2, never read as a port nothing listens on.
   It fails when no socket, or more than one, listens on PORT
 
 - `held_only_by PORT PID…`
@@ -6450,12 +6451,12 @@ and an entry read through `tr | grep -q` under `pipefail` reads as absent whenev
 It needs nothing of its caller's.
 Its walks of every process (`procs_naming`) read `${proc_root:-/proc}` ([`lib/proc-root.ts`](#libproc-rootts)) and hand the entries to `grep` through `xargs` in calls that fit ARG_MAX, and [`lib/rig.sh`](#librigsh)'s `listening_holders` and [`lib/leftovers.sh`](#libleftoverssh)'s `refuse_leftovers` hand them to `find` on stdin (`-files0-from -`), which needs GNU findutils 4.9 or later: on an older `find` (4.8, Ubuntu 22.04's) both always exit 2.
 Both read their `find`'s stderr with `proc_walk_complaint ERRFILE PROC`, which prints its first line that is neither an entry of PROC this user may not read nor one whose process ended during the walk, and fails when there is none.
-`procs_naming` and `listening_holders` hold their walk to what is left of their caller's bound (`proc_walk_until` and `proc_walk_bound`), and so do `refuse_leftovers` (below), the parked-decision proof's `stop_agent_daemons`, whose reads of every command line, environment and stat go through one `grep` for each `xargs` batch, and `proc_children`'s `pgrep` where `/proc` has no children file.
+`procs_naming` and `listening_holders` hold their walk to what is left of their caller's bound (`proc_walk_until` and `proc_walk_bound`), and so do `refuse_leftovers` (below) and `proc_children`'s `pgrep` where `/proc` has no children file.
 The caller's bound is `proc_walk_deadline`, the moment its own bound ends in seconds since the epoch (a test row sets it to the end of its limit, `walkDeadlineEnv` in [`lib/proc-root.ts`](#libproc-rootts)), and where the caller sets none, `proc_walk_default`, 60 s, a tenth of `wait_for_run_processes`' 600 s, which polls `run_processes` at least 10 times.
 No floor of the walk's own holds it: a loaded devbox gives a process a few percent of one CPU, where a floor measured on a quieter share ended walks its caller's bound still held.
-A walk still running at its bound is ended with what it started and fails with 2, naming the bound (`proc_walk_bound_name`), so a `/proc` entry that never answers its reader, such as the environment of a process whose memory map stays locked, ends the run's sweep, the skill-scenario rig's `stop_env_processes` at a run's exit, Stage 1's `held_only_by`, a stage's check for leftovers and the parked-decision proof's teardown by name, where it held them for ever.
+A walk still running at its bound is ended with what it started and fails with 2, naming the bound (`proc_walk_bound_name`), so a `/proc` entry that never answers its reader, such as the environment of a process whose memory map stays locked, ends the run's sweep, the skill-scenario rig's `stop_env_processes` at a run's exit, Stage 1's `held_only_by` and a stage's check for leftovers by name, where it held them for ever.
 Every read of a process's file those walks make is inside that bound, a match's second read included: `procs_naming` reads each match's stat, environment and stat again in one more `grep`, and `refuse_leftovers` each leftover's stat and command line, and tells this pid namespace's processes by one `find` of their namespace links.
-A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an unreadable `/proc/net/tcp`, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
+A walk or a read that cannot see the processes it reads says why and fails with 2, never reads as none: a proc root that lists no process, an `xargs` or a `find` a signal ended, an `ss` that is missing or fails, and a Linux `/proc` with no `self` (an empty tmpfs mounted there, `proc_unreadable`), where `proc_children`, `proc_descendants`, `stop_tree`, `kill_frozen`, `kill_held` and the sweep fail with 2.
 
 ```sh
 . "$root/scripts/e2e/lib/process-tree.sh"     # sourced, never run
@@ -6715,7 +6716,8 @@ The check fails, through the caller's `fail`, naming each container and process 
 A driver counts as alive only while its pid is a live, non-zombie process that started no later than the container or process it would own, since pids are reused.
 Only processes in the caller's own pid namespace are read, since a pid means nothing across namespaces (an agent box's run is its own).
 What a live run started is left alone, since Stages 2 and 3 take no lock and two lanes may run one at once.
-It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)): which processes are of this pid namespace through one `find` of their namespace links, each one's command line and environment through one `grep` for each `xargs` batch, the working directories of the processes neither names a run in through one `find`, and each leftover's stat and command line through one more `grep`, so it starts no program for each process and reads no process's file in the shell; all four are held to what is left of one bound, its caller's (`proc_walk_until`, [`lib/process-tree.sh`](#libprocess-treesh)), so an entry that never answers its reader ends the check there, named, with 2.
+It reads `${proc_root:-/proc}` (a test points `proc_root` at a proc root of its own, [`lib/proc-root.ts`](#libproc-rootts)): which processes are of this pid namespace through one `find` of their namespace links, each one's command line and environment through one `grep` for each `xargs` batch, the working directories of the processes neither names a run in through one `find`, each leftover's stat and command line through one more `grep`, and the threads of each leftover whose main thread is a zombie through one more `find`, so it starts no program for each process and reads no process's file in the shell; all five are held to what is left of one bound, its caller's (`proc_walk_until`, [`lib/process-tree.sh`](#libprocess-treesh)), so an entry that never answers its reader ends the check there, named, with 2.
+A leftover whose main thread is a zombie is gone only when its task directory lists no thread but that one: a process whose main thread exited while another thread runs on is still there, and still holds its files, its ports and its locks.
 A proc root that lists no process, a walk past its bound, and a `grep` or a `find` that failed, that a signal ended or that is too old for `-files0-from`, are reported through `fail`, naming them, with 2; a working directory of another user's process, or of one that ended during the walk, is no complaint ([`proc_walk_complaint`](#libprocess-treesh)).
 `lib/leftovers.test.ts` holds each, and the reading of each of the three places a process names its run
 

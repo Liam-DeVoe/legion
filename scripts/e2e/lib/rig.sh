@@ -183,53 +183,75 @@ port_answers() {
 }
 
 # listening_holders PORT prints, one per line in order, the pid of every process holding the one
-# socket that listens on PORT: its inode from the LISTEN row (state 0A) of /proc/net/tcp and
-# /proc/net/tcp6, and each process of `${proc_root:-/proc}` with a descriptor naming
-# socket:[<inode>] (the host's /proc, unless a test points proc_root at a proc root of its own,
-# scripts/e2e/lib/proc-root.ts). It fails with 1 when no socket listens on PORT, or more than one
-# does, and with 2, saying why, when /proc/net/tcp cannot be read, so an unread table is never
-# read as a port nothing listens on, and when the proc root lists no process at all.
+# socket that listens on PORT: its inode, which `ss -H -ltne 'sport = :PORT'` asks the kernel for
+# (one sock_diag request whose filter the kernel applies, so the answer is that port's sockets
+# alone), and each process of `${proc_root:-/proc}` with a descriptor naming socket:[<inode>] (the
+# host's /proc, unless a test points proc_root at a proc root of its own,
+# scripts/e2e/lib/proc-root.ts). A read of /proc/net/tcp and tcp6, which this did before, is a
+# walk of every TCP socket of the machine (about 40,000 lines on a loaded devbox), and at a few
+# percent of one CPU it used up the caller's bound before the walk of the processes began. It fails
+# with 1 when no socket listens on PORT, or more than one does, and with 2, saying why, when ss is
+# not installed or fails, so an unread table is never read as a port nothing listens on, and when
+# the proc root lists no process at all.
 # The shell's glob hands the <pid>/fd entries to find on stdin (-files0-from -), never as its
 # arguments: as arguments, past ARG_MAX (about 80,000 processes), find could not start, and the
 # `|| true` this had turned that E2BIG into no holder at all. An fd directory this user may not read
 # (another user's process) or whose process ended during the walk is none of the answer; any other
-# complaint of the walk's (proc_walk_complaint) prints and fails with 2, and so does a walk still
-# running at its caller's bound (proc_walk_until, lib/process-tree.sh), which is ended there.
+# complaint of the walk's (proc_walk_complaint) prints and fails with 2. ss and the walk are each
+# held to what is left of one bound, the caller's (proc_walk_until, lib/process-tree.sh), and one
+# still running there is ended and named, with 2.
 listening_holders() {
-  local proc=${proc_root:-/proc} inodes err status=0 complaint holder table until bound
-  local -a holders=() tables=() entries=()
-  for table in /proc/net/tcp /proc/net/tcp6; do
-    [ ! -e "$table" ] || tables+=("$table")
-  done
-  [ -r /proc/net/tcp ] || {
-    echo "listening_holders: /proc/net/tcp cannot be read, so the socket listening on port $1 was not looked for" >&2
+  local proc=${proc_root:-/proc} inodes err status=0 complaint holder until bound sockets
+  local -a holders=() entries=()
+  command -v ss >/dev/null || {
+    echo "listening_holders: ss (iproute2) is not installed, so the socket listening on port $1 was not looked for" >&2
     return 2
   }
-  inodes=$(awk -v port=":$(printf '%04X' "$1")" \
-    '$4 == "0A" && substr($2, length($2) - 4) == port { print $10 }' "${tables[@]}") || {
-    echo "listening_holders: awk could not read ${tables[*]}, so the socket listening on port $1 was not looked for" >&2
+  if ! until=$(proc_walk_until) || ! bound=$(proc_walk_bound "$until"); then
+    proc_walk_unbounded listening_holders "the socket listening on port $1 was not looked for"
+    return 2
+  fi
+  err=$(mktemp "${TMPDIR:-/tmp}/listening-holders.XXXXXX") || {
+    echo "listening_holders: no file to keep the complaints of ss and find in, so port $1 was not read" >&2
     return 2
   }
-  case "$inodes" in
-    '' | *[!0-9]*)
-      echo "listening_holders: $(wc -w <<<"$inodes") sockets listen on port $1, not one" >&2
-      return 1
-      ;;
-  esac
+  # `|| exit` keeps ss's status, and keeps a caller's ERR trap (`set -E`) from firing inside the
+  # substitution. timeout ends ss at the bound and exits 124 then.
+  status=0
+  sockets=$(timeout -k 5 "$bound" ss -H -ltne "sport = :$1" 2>"$err" || exit) || status=$?
+  if [ "$status" != 0 ]; then
+    if [ "$status" = 124 ]; then
+      complaint="ss had not ended after ${bound}s ($(proc_walk_bound_name))"
+    else
+      complaint="ss exited $status: $(tr '\n' ' ' <"$err")" complaint=${complaint% }
+    fi
+    rm -f -- "$err"
+    echo "listening_holders: $complaint, so the socket listening on port $1 was not looked for" >&2
+    return 2
+  fi
+  # One line a socket, its inode in the `ino:` field -e adds.
+  mapfile -t holders <<<"$sockets"
+  [ -n "$sockets" ] || holders=()
+  sockets=${#holders[@]} inodes=
+  [[ $sockets != 1 || ! ${holders[0]} =~ (^|[[:space:]])ino:([0-9]+) ]] || inodes=${BASH_REMATCH[2]}
+  holders=()
+  if [ -z "$inodes" ]; then
+    rm -f -- "$err"
+    echo "listening_holders: $sockets sockets listen on port $1, not one" >&2
+    return 1
+  fi
   entries=("$proc"/[0-9]*/fd)
   [ -e "${entries[0]}" ] || {
+    rm -f -- "$err"
     echo "listening_holders: $proc lists no process's fd directory, so the holders of port $1 were not read" >&2
     return 2
   }
-  err=$(mktemp "${TMPDIR:-/tmp}/listening-holders.XXXXXX") || {
-    echo "listening_holders: no file to keep find's complaints in, so $proc was not read" >&2
-    return 2
-  }
-  until=$(proc_walk_until) && bound=$(proc_walk_bound "$until") || {
+  bound=$(proc_walk_bound "$until") || {
     rm -f -- "$err"
     proc_walk_unbounded listening_holders "the holders of port $1 were not read"
     return 2
   }
+  status=0
   # shellcheck disable=SC2185 # find reads its paths from stdin (-files0-from -), not from argv
   # `|| exit` keeps the walk's status and keeps a caller's ERR trap (`set -E`) from firing inside
   # the substitution for the unreadable entries every walk meets. timeout leads a process group of
