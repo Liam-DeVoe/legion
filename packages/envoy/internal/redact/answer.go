@@ -206,15 +206,33 @@ func decodeText(err error, data []byte, t reflect.Type) string {
 	var typed *json.UnmarshalTypeError
 	switch {
 	case errors.As(err, &syntax):
-		return fmt.Sprintf("the answer is not JSON a %s decodes from (at byte %d)", t, syntax.Offset)
+		return fmt.Sprintf("the answer is not JSON that %s decodes from (at byte %d)", typeName(t), syntax.Offset)
 	case errors.As(err, &typed):
 		kind, _, _ := strings.Cut(typed.Value, " ")
-		return fmt.Sprintf("the answer's %s is a JSON %s, not the %s a %s holds there", member(typed.Field), kind, typed.Type, t)
+		return fmt.Sprintf("the answer's %s is a JSON %s where %s holds %s", member(typed.Field), kind, typeName(t), typeName(typed.Type))
 	}
 	if name := failingMember(data, t); name != "" {
-		return fmt.Sprintf("the answer's %q does not decode into the %s a %s holds there", name, fieldType(t, name), t)
+		return fmt.Sprintf("the answer's %q does not decode where %s holds %s", name, typeName(t), typeName(fieldType(t, name)))
 	}
-	return fmt.Sprintf("the answer does not decode into a %s", t)
+	return fmt.Sprintf("the answer does not decode into %s", typeName(t))
+}
+
+// typeName is how a message names a type: by its name, "a time.Time" or "a string", and an
+// anonymous struct as "the value", whose definition would be the whole of the message.
+func typeName(t reflect.Type) string {
+	switch {
+	case t == nil:
+		return "the value"
+	case t.Kind() == reflect.Pointer:
+		return typeName(t.Elem())
+	case t.Name() != "":
+		return "a " + t.String()
+	case t.Kind() == reflect.Slice:
+		return "a list"
+	case t.Kind() == reflect.Map:
+		return "an object"
+	}
+	return "the value"
 }
 
 // member is a decoded field's path as a message names it, "value" for the top level.
