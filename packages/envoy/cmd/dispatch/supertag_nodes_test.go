@@ -26,22 +26,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// typeMigrations are the files that write the type nodes, in the order the runner applies them:
-// the seed, then each migration that has changed a type since. The test runs them all a second
-// time, in that order and through the same path the migration runner runs each, to prove a second
-// run leaves the same nodes. The seed alone would not do: run again, it puts back the version and
-// the attributes it was written at, which every later type migration has moved on from.
-var typeMigrations = []string{
-	"../../internal/dispatch/store/migrations/20261109051232_graph_supertags.up.sql",
-	"../../internal/dispatch/store/migrations/20261113230000_graph_supertags_check_ci_check.up.sql",
-	"../../internal/dispatch/store/migrations/20261115130000_graph_supertags_element_versions.up.sql",
-	"../../internal/dispatch/store/migrations/20261116082319_graph_supertags_decision_reading.up.sql",
-	"../../internal/dispatch/store/migrations/20261116121500_issue_tree_query_supertags.up.sql",
-	// The lens_kind supertag and the attribute nodes of the types that declare no block type,
-	// each held to this file by requireStoreOnlyAttributesMatchTheirMigrations.
-	"../../internal/dispatch/store/migrations/20261116123354_lens_catalogue.up.sql",
-	"../../internal/dispatch/store/migrations/20261116163700_issue_tree_block_schema.up.sql",
-}
+// storeMigrations is the store's migrations directory, where each of store.TypeMigrations is read
+// from. The test runs them all a second time, in that order and through the same path the
+// migration runner runs each, to prove a second run leaves the same nodes. The seed alone would
+// not do: run again, it puts back the version and the attributes it was written at, which every
+// later type migration has moved on from.
+const storeMigrations = "../../internal/dispatch/store/migrations"
 
 // blockSchemaFile is the seed of the typed block types. It is read from disk rather than from
 // pmdoc, so what the store holds is compared with the file itself.
@@ -349,7 +339,7 @@ var storeOnlyAttribute = regexp.MustCompile(`\('([a-z_ ]+)', '([a-z_]+)', '([a-z
 // directions: each node's one tie is to the supertag its migration names it under, and it carries
 // the name, the store name (its own name, since none is a base attribute), the kind and the
 // position the migration gives it, and each attribute a migration declares is a node of the store.
-// A node no migration of typeMigrations declares fails, naming the node.
+// A node no migration of store.TypeMigrations declares fails, naming the node.
 func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeOnlyNode) {
 	t.Helper()
 	type declaration struct {
@@ -357,18 +347,18 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		position                        int
 	}
 	declared := map[string]declaration{}
-	for _, migration := range typeMigrations {
-		text, err := os.ReadFile(filepath.Clean(migration))
+	for _, name := range store.TypeMigrations {
+		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
 		if err != nil {
-			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+			t.Fatalf("read the type migration %s: %v", name, err)
 		}
 		for _, match := range storeOnlyAttribute.FindAllStringSubmatch(string(text), -1) {
 			position, err := strconv.Atoi(match[4])
 			if err != nil {
-				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], filepath.Base(migration), err)
+				t.Fatalf("read the position of %s/%s in %s: %v", match[1], match[2], name, err)
 			}
 			declared[match[1]+"/"+match[2]] = declaration{
-				supertag: match[1], name: match[2], kind: match[3], migration: filepath.Base(migration), position: position,
+				supertag: match[1], name: match[2], kind: match[3], migration: name, position: position,
 			}
 		}
 	}
@@ -381,7 +371,7 @@ func requireStoreOnlyAttributesMatchTheirMigrations(t *testing.T, nodes []storeO
 		held[node.ID] = true
 		want, ok := declared[node.ID]
 		if !ok {
-			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of typeMigrations declares", node.ID)
+			t.Errorf("the store holds attribute node %q of a type with no block type, which no type migration of store.TypeMigrations declares", node.ID)
 			continue
 		}
 		if tie := attribute.tie; tie.ToKind != schemanodes.KindSupertag || tie.ToID != want.supertag {
@@ -542,7 +532,7 @@ func (d *schemaDrift) report(t *testing.T) {
 	t.Errorf("pmdoc/schema/blocks.json and the store's type nodes disagree on %s%s. "+
 		"A change to pmdoc/schema/blocks.json needs a store migration of its own, like %s: "+
 		"it writes the node of each type or attribute the change adds or alters, with its tuples, and moves every block type's supertag node to the new version. "+
-		"Write one for this change and add it to typeMigrations in this file.",
+		"Write one for this change and add it to store.TypeMigrations (internal/dispatch/store/type_migrations.go).",
 		what, versions, typeMigrationExample)
 }
 
@@ -551,13 +541,13 @@ func (d *schemaDrift) report(t *testing.T) {
 func requireASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	before, beforeTuples := schemaRows(t, ctx, pool)
-	for _, migration := range typeMigrations {
-		text, err := os.ReadFile(filepath.Clean(migration))
+	for _, name := range store.TypeMigrations {
+		text, err := os.ReadFile(filepath.Join(storeMigrations, name))
 		if err != nil {
-			t.Fatalf("read the type migration %s: %v", filepath.Base(migration), err)
+			t.Fatalf("read the type migration %s: %v", name, err)
 		}
 		if _, err := pool.Exec(ctx, string(text)); err != nil {
-			t.Fatalf("run the type migration %s a second time: %v", filepath.Base(migration), err)
+			t.Fatalf("run the type migration %s a second time: %v", name, err)
 		}
 	}
 	after, afterTuples := schemaRows(t, ctx, pool)

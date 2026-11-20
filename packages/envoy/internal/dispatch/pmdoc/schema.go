@@ -21,7 +21,8 @@ import (
 // 20261113230000_graph_supertags_check_ci_check does: the server installs the store's types and
 // not this file's, so without one TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt fails and a
 // build made for the new version installs the old one. A new type migration also joins
-// typeMigrations in cmd/dispatch/supertag_nodes_test.go, which runs each a second time.
+// store.TypeMigrations (internal/dispatch/store/type_migrations.go), each of which cmd/dispatch's
+// TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt runs a second time.
 //
 //go:embed schema/blocks.json
 var blockSchemaJSON []byte
