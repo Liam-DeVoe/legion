@@ -248,8 +248,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "controller's report issue's icebox, because that issue holds no work. " +
   "The controller's replace_pod (issue) replaces the pod that runs the roles of an issue of its own project. The " +
   "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
-  "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
-  "roles said. A suspension by the operator, the controller or an architect over a role the round asks keeps the " +
+  "ready_for_update, and it replaces the pod once each role has answered, no turn runs and each role's report " +
+  "since its last turn names no running background work, or at the round's bound whatever the roles said. A " +
+  "suspension by the operator, the controller or an architect over a role the round asks keeps the " +
   "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
   "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
   "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
@@ -264,8 +265,9 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "that no claim records in time (POD_UPDATE_NOT_RECORDED), and answers 500 POD_UPDATE_FAILED where it cannot " +
   "read the claims back after the post: either round can still open, so read updateRound on the issue's claims " +
   "before you ask again. It refuses replace_pod while the project is paused (PROJECT_PAUSED, naming the pause that " +
-  "stands), and for a pod a pause still holds after the resume, until a role of that pod is running again " +
-  "(POD_HELD_BY_PAUSE); neither opens a round. " +
+  "stands), and for a pod a pause holds (POD_HELD_BY_PAUSE): the hold of a pause that began after the daemon read " +
+  "the project as running, or a hold the resume left on a pod until a role of that pod is running again; neither " +
+  "opens a round. " +
   "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
   "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
   "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +

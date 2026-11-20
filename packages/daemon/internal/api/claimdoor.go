@@ -66,14 +66,14 @@ type ClaimRequest struct {
 // TestEachDoorNamesTheStatesItsOwnPredicatesReach holds both fields to the predicates that
 // decide them.
 //
-// startsATurn is whether the operation starts the claim's session again — the resume and the
-// retry — which a paused project holds for every claim but the controller's. While the project
-// is paused such an operation is refused 409 PROJECT_PAUSED, with the pause that stands, after
-// the door and before anything is asked of the claim (refusedWhilePaused, claimEventOperation,
-// claimRetry), as the operator's resume and retry are: no claim operation undoes the pause,
-// which the project's resume alone lifts. The two recoveries meet the same refusal in the paths
-// they share with the operator's door (freshSession, compact), and leave it false here. The stop
-// and the suspension start nothing and are let through, as the operator's are.
+// No field says which operation a paused project refuses: each door that starts a turn refuses
+// it itself, 409 PROJECT_PAUSED with the pause that stands, after the door and before anything
+// is asked of the claim (refusedWhilePaused), as the operator's doors do. The resume refuses it in
+// its own event builder (claimResume), as the operator's resume does (resumeEvent), the retry
+// before its read of the claim's state (claimRetry), and the two recoveries in the paths they
+// share with the operator's door (freshSession, compact). No claim operation undoes the pause,
+// which the project's resume alone lifts. The stop and the suspension start nothing and are let
+// through, as the operator's are.
 type claimOp struct {
 	name                 string
 	invalidRole          string
@@ -81,7 +81,6 @@ type claimOp struct {
 	did                  string
 	refusesATurn         bool
 	controllerPassesHold bool
-	startsATurn          bool
 	cutsTheTurn          string
 	reaches              string
 	liveStates           string

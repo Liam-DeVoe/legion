@@ -2508,10 +2508,11 @@ package api
 // `POST /legion/v1/issues/pod-update` takes `api.PodUpdateRequest` (`grantId`, `issue`) and
 // opens the daemon's update round over that issue's pod as a drift opens one: each role of the
 // pod is asked to push its work and answer ready_for_update, and the pod is replaced once each
-// has answered or at the round's bound (`pod_update_grace_minutes`), whatever the pod's drift. The
-// round's reasons say the project's controller asked for the replacement, and the opening is
-// held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`, naming
-// `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
+// has answered, no turn runs and each role's report since its last turn names no running
+// background work, or at the round's bound (`pod_update_grace_minutes`), whatever the pod's
+// drift. The round's reasons say the project's controller asked for the replacement, and the
+// opening is held to the project's limits on openings as a drift's is (`409 POD_UPDATE_LIMITED`,
+// naming `pod_update_max_open_rounds` or `pod_update_rounds_per_minute`). It answers
 // `api.PodUpdateResponse`: the `round`, its `reasons`, and whether this request `opened` it, false
 // for a round already open over the pod, which it leaves as it stands. It takes a controller
 // grant alone (`403 CONTROLLER_REQUIRED`) and an issue key (`400 INVALID_ISSUE`); an issue of
@@ -2537,8 +2538,12 @@ package api
 // claim the pause stopped that such a suspension then takes over stays suspended by it at the
 // resume, and the resume brings back only what the pause stopped. `issues/pod-update` answers
 // 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything, and 409
-// `POD_HELD_BY_PAUSE` for a pod a pause still holds once the project runs, until a role of the
-// pod is live again; neither opens a round.
+// `POD_HELD_BY_PAUSE` for a pod a pause holds: the hold of a pause that began after that
+// `PROJECT_PAUSED` check read the project as running, or a hold the resume left on a pod until a
+// role of the pod is live again; neither opens a round. Every `PROJECT_PAUSED` sentence, those of
+// 178's routes included, now ends by naming what lifts the pause (server.go's pauseLifts): the
+// project's resume, as the controller's `resume` operation of its `legion` tool, which names no
+// issue, and the operator's `legion project resume`; the fixture `project-paused.json` carries it.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the

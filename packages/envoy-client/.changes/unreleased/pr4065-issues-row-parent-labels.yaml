@@ -1,5 +1,5 @@
 kind: Fixed
-body: '`dispatch issues` prints each issue''s parent (`child of <KEY>`) and its labels in the issue''s text row, as the command''s help says each row carries them, so a reader of the text tells the open roots from their children.'
+body: '`dispatch issues` prints each issue''s parent (`child of <KEY>`) and its labels in the issue''s text row, as the command''s help says each row carries them, so a reader of the text tells the open roots from their children. A label that holds `·`, `,` or a line break is printed quoted, so it cannot split the row or add a part to it.'
 time: 2026-11-20T13:39:07.000000000Z
 custom:
     Issue: pr4065

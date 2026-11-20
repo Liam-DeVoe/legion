@@ -823,7 +823,7 @@ func TestAnArchitectsResumeSuspendStopRetryAndFreshSessionRefuseAClaimTheDaemonS
 					string(token)+" is suspended by the daemon, not by an architect, and "+op.as.name+
 						" by the architect does not reach the daemon's suspension, so it is refused and nothing of the claim changed. "+
 						"The daemon's own rules start such a claim again — "+
-						"its issue's phase, or its role's next wake — and so do the controller's resume and the operator's")
+						"its issue's phase, or its role's next wake — and so do the controller's `resume_claim` and the operator's `legion claims resume`")
 			}
 			if got := h.stored(token); got.State != supervise.StateSuspended || got.SuspendedBy != supervise.SuspendedByDaemon || got.Session != "ses_implementer" {
 				t.Fatalf("the refused claim is %s suspended by %q on session %q, want it suspended by the daemon on ses_implementer",

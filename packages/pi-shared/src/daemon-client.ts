@@ -204,7 +204,8 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
   /** The controller's `replace_pod`: the daemon opens its update round over the pod `issue` runs
    * in, as a drift opens one. Each role of the pod is asked to push its work and answer
-   * `ready_for_update`, and the pod is replaced once each has answered or at the round's bound.
+   * `ready_for_update`, and the pod is replaced once each has answered, no turn runs and each
+   * role's report since its last turn names no running background work, or at the round's bound.
    * The answer is the round, its reasons, and whether this request opened it, false for a round
    * already open over the pod. Refused for an issue of another project or with no claim the
    * daemon supervises (`NO_CLAIM`), one whose claims run no worker in a pod (`NO_POD`), one whose
@@ -214,8 +215,9 @@ export interface LegionDaemonClient {
    * that waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues
    * opens nothing (`POD_UPDATE_BUSY`, 503), and its sentence names when to ask again; this client
    * reads no response header. While the project is paused it is refused (`PROJECT_PAUSED`, with
-   * the pause that stands), and so is a pod a pause still holds after the resume, until a role
-   * of the pod is live again (`POD_HELD_BY_PAUSE`). */
+   * the pause that stands), and so is a pod a pause holds (`POD_HELD_BY_PAUSE`): the hold of a
+   * pause that began after the daemon read the project as running, or a hold the resume left on a
+   * pod none of whose roles is live yet. */
   readonly issuePodUpdate: (
     input: z.input<typeof LegionPodUpdateRequest>
   ) => Promise<z.output<typeof LegionPodUpdateResponse>>;

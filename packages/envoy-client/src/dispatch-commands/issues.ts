@@ -562,6 +562,11 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
+/** What in a label can split an issue's one-line row or forge a part of it: the ` · ` that parts
+ *  the row, the `, ` that parts the labels, and a line break. Dispatch trims only a label's ends
+ *  (`normalizeIssueLabels`), so a label holding one is printed quoted, as JSON quotes it. */
+const LABEL_BREAKS_ROW = /[·,\r\n]/;
+
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
@@ -639,7 +644,9 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
                 // The help says each row carries its parent and labels: a root names no parent, so
                 // a reader of the text tells the open roots from their children.
                 (row.parent ? ` · child of ${row.parent}` : "") +
-                (row.labels.length === 0 ? "" : ` · labels ${row.labels.join(", ")}`) +
+                (row.labels.length === 0
+                  ? ""
+                  : ` · labels ${row.labels.map((label) => (LABEL_BREAKS_ROW.test(label) ? JSON.stringify(label) : label)).join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +

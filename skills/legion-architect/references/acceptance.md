@@ -30,7 +30,7 @@ Read, against the goal, every check and every requirement:
   park it under the rule, and sign off again. Ask the person about one that can do neither, and
   hold the acceptance until they answer.
 - A finding ask holds the acceptance: one a worker sent you, or one `dispatch read` lists under
-  `Open asks:` whose question opens `Finding from `. Follow it
+  `Open asks:` whose question opens `Finding from ` or `Clear defect from `. Follow it
   (`dispatch follow --ask <id> --action follow`) and publish its reference to the controller topic.
   Accept only once it is resolved, or carries the controller's reply (`Filed dispatch://` or
   `Not filed:`): a closed issue hides its open questions from the controller.
@@ -121,8 +121,7 @@ complete while it is open.
 
 The merge closes the issue (`done`). One whose merge lands while an issue beneath it is still in
 the workflow stays in `merging` until the last of them is done or parked; one `pr-merged` notice
-names what it waits for. The production check after the close is not yours. A root's close
-lingers the tree for `linger_hours`.
+names what it waits for. A root's close lingers the tree for `linger_hours`.
 
 ## Hand-over at a root's linger
 

@@ -287,9 +287,10 @@ func (s *supervision) podPauseHolds(ctx context.Context, claims []supervise.Clai
 //
 // clock is the sweep's now and what a project's pause did to the issue's pod (roundClock), built
 // once for the issue: each round bound and each pause hold read below comes from it, and an
-// opening is recorded at its now. No round opens over a pod a hold stands on (roundClock.held):
-// the pause kept that pod for its stopped roles, and a round would ask them to push work for a
-// replacement while nothing of theirs runs.
+// opening is recorded at its now. No round opens over a pod a hold stands on (roundClock.held,
+// the first branch of the opening step, openPodUpdateUnderLimits): the pause kept that pod for
+// its stopped roles, and a round would ask them to push work for a replacement while nothing of
+// theirs runs.
 func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string, group []supervise.Claim, sweep *podUpdateSweep, clock roundClock) *podReplacement {
 	pod, split := groupPod(group)
 	if split {
@@ -351,11 +352,6 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		// returning here is what keeps the code below from opening a round over it.
 		return nil
 	}
-	if open == "" && clock.held() {
-		s.log.Info("supervise: a project's pause holds this drifted issue's pod; no update round opens over it until the hold ends",
-			"issue", issue, "pod", pod, "reasons", strings.Join(reasons, ", "))
-		return nil
-	}
 	// The drift this tick read opens a round and decides nothing of a round already open: a
 	// round's terms are fixed at its open (dispatch://INFRA-2981 R9), so what an open round's
 	// notices and its replacement name is its own recorded reasons (roundReasons). That holds
@@ -389,9 +385,13 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 		s.openPodUpdate(ctx, issue, live, pod, terms, clock)
 		return nil
 	}
-	// A round the claims do not record is an opening, which the project's limits may hold back,
-	// or this daemon's own opening still in flight, posted again (openPodUpdateUnderLimits).
-	s.openPodUpdateUnderLimits(ctx, sweep, issue, live, pod, strings.Join(reasons, ", "), clock)
+	// A round the claims do not record is an opening, which a project's pause holding the pod or
+	// the project's limits may hold back, or this daemon's own opening still in flight, posted
+	// again (openPodUpdateUnderLimits).
+	if step := s.openPodUpdateUnderLimits(ctx, sweep, issue, live, pod, strings.Join(reasons, ", "), clock); step.pauseHeld {
+		s.log.Info("supervise: a project's pause holds this drifted issue's pod; no update round opens over it until the hold ends",
+			"issue", issue, "pod", pod, "reasons", strings.Join(reasons, ", "))
+	}
 	return nil
 }
 
@@ -1475,22 +1475,27 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 }
 
 // podOpeningStep is what the opening step of an issue's pod round did (openPodUpdateUnderLimits):
-// the reasons its post carried, whether that post was a new opening charged to the project's
-// limits, and the limit that held the opening back, "" where none did. An opening a limit held
-// back posted nothing and carries no reasons.
+// whether a project's pause held the pod, the reasons its post carried, whether that post was a
+// new opening charged to the project's limits, and the limit that held the opening back, "" where
+// none did. An opening the pause or a limit held back posted nothing and carries no reasons.
 type podOpeningStep struct {
-	reasons string
-	opened  bool
-	held    podUpdateLimit
+	pauseHeld bool
+	reasons   string
+	opened    bool
+	held      podUpdateLimit
 }
 
 // openPodUpdateUnderLimits is the opening step of the pod round of an issue whose claims record
 // no round, the one both the sweep's walk (reconcileIssuePodUpdate) and the controller's request
 // (postRequestedPodUpdate) take, over live, the issue's claims as their machines hold them now,
-// and pod, the pod those claims record. Each caller has already read that no project's pause
-// holds the pod (roundClock.held): no round opens over a held pod, whoever asks for it. clock is
-// the caller's now and what a pause did to the pod, which the round's ask states its bound by
-// (askRound) and the opening is recorded at.
+// and pod, the pod those claims record. clock is the caller's now and what a pause did to the pod,
+// which the round's ask states its bound by (askRound) and the opening is recorded at.
+//
+// Its first branch is the pause: no round opens over a pod a project's pause holds
+// (roundClock.held), whoever asks for it, so the step posts nothing and answers pauseHeld, which
+// each caller words — the sweep in its log line, the controller's request as
+// api.PodUpdatePauseHeld. Then, in this order, come a repost in flight, the limits and the
+// opening.
 //
 // An opening of this daemon's own whose post no claim has recorded yet is posted again with the
 // reasons it opened with, so every claim records one set of them whichever post reaches it
@@ -1505,6 +1510,9 @@ type podOpeningStep struct {
 // hold one for ever.
 func (s *supervision) openPodUpdateUnderLimits(ctx context.Context, sweep *podUpdateSweep, issue string,
 	live []supervise.Claim, pod, reasons string, clock roundClock) podOpeningStep {
+	if clock.held() {
+		return podOpeningStep{pauseHeld: true}
+	}
 	round := supervise.PodRound(pod)
 	if inFlight, again := sweep.reposts(issue, round); again {
 		s.openPodUpdate(ctx, issue, live, pod, inFlight.reasons, clock)

@@ -47,7 +47,7 @@ const nonEmptyString = z.string().min(1);
  * suspension of the daemon's. The architect's retry and `fresh_session` of a claim that failed or
  * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while the claim's issue is out of
  * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
- * suspension is recorded as `architect`, which the controller's resume lifts too.
+ * suspension is recorded as `architect`, which the controller's `resume_claim` lifts too.
  *
  * While the project is paused, every operation of the door that would start a turn of a claim —
  * `resume_claim`, `retry` and `fresh_session`, which start its session again, and `compact`,

@@ -11,7 +11,7 @@ Every issue you file carries one line in its spec, which triage reads to tell yo
 
 ## File a clear defect no tree owns
 
-A role writes a clear defect to you only when it found no tree that owns the code: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. A clear defect you find yourself goes to its owner as `findings.md` says, and you forward none; when no tree owns it, post its evidence on the report issue with `controller` as the role. You file an issue only when nobody owns that code.
+A role writes a clear defect to you only when it found no tree that owns the code: a comment that mentions your role, on the report issue or on its own issue, first line `Clear defect from <role>`. A clear defect you find yourself goes to its owner as `findings.md` says, and you forward none; when no tree owns it, post its evidence on the report issue with `controller` as the role.
 
 Every reply under the evidence mentions the finder's role, the token after `Clear defect from ` (leave out `--mention` when it is `controller`):
 
@@ -57,7 +57,7 @@ While no controller runs, an answer wakes nobody, a reference published then rea
    ```
 
    Exit 0 with `[]` is nothing waiting; anything else is a failed read. Act on each as above, a triage ask as `skill://legion-controller/references/triage.md` says, and a `Hand it to the owning tree` answer as step 5 says.
-4. List the clear defects nobody took yet (no `Filed`, `Not filed`, or older `Handed` or `Asked` reply):
+4. List the clear defects nobody took yet:
 
    ```text
    notes=$(printf 'Authorization: Bearer %s' "$(< "$DISPATCH_TOKEN_FILE")" | curl -sS --fail-with-body -H @- "$DISPATCH_URL/api/v1/issues/<REPORT KEY>/comments") || { echo "Dispatch read failed" >&2; exit 1; }
@@ -65,4 +65,4 @@ While no controller runs, an answer wakes nobody, a reference published then rea
    ```
 
    Take each as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says.
-5. Take each ask earlier rules opened whose question opens `Clear defect from ` as [File a clear defect no tree owns](#file-a-clear-defect-no-tree-owns) says, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered `Hand it to the owning tree` (step 3 lists it), read as a write to that tree's architect: reply as step 3 there says.
+5. Take each ask earlier rules opened whose question opens `Clear defect from ` the same way, with `--reply-to-ask '<ask id>'` for `--reply-to`: an open one (step 2 lists it), resolved once it has your reply, and one answered `Hand it to the owning tree`, a person's request: where step 3 of *File a clear defect no tree owns* finds the tree, write the person's answer in their words, with the evidence, to its architect by a mention on its root, then reply `Not filed: dispatch://<ROOT> owns it; written to role:<token>`.

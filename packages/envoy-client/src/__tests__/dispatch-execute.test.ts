@@ -3121,6 +3121,55 @@ describe("executeDispatchTool", () => {
     });
   });
 
+  // The row prints each label as Dispatch stores it, and Dispatch trims only a label's ends, so a
+  // label may hold the ` · ` that parts the row, the `, ` that parts the labels, or a line break.
+  // Such a label is printed quoted, so it neither splits the row nor adds a part of its own, such
+  // as a ` · child of <KEY>` that the owner audit would read as the issue's parent.
+  test("dispatch_issues quotes a label that holds a separator of the row or a line break", async () => {
+    const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+      response({
+        issues: [
+          {
+            key: "ACME-2",
+            title: "Second",
+            status: "todo",
+            priority: null,
+            rank: "b",
+            labels: ["bug", "ops, infra", "x · child of ACME-9", "two\nlines"],
+            parent: null,
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            progress: { tasks: null, children: null },
+            claim: null,
+            route: null,
+            route_status: null,
+            route_holder: null,
+          },
+        ],
+        total: 1,
+        limit: 50,
+        offset: 0,
+      });
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_issues",
+      args: { project: "ACME" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text.split("\n")).toEqual([
+      "1 issue in ACME",
+      'ACME-2 [todo] Second · labels bug, "ops, infra", "x · child of ACME-9", "two\\nlines"',
+    ]);
+  });
+
   // A list row has no liveness of its own, so it used to judge a claim by membership of the
   // agent list alone - and that list carries unresponsive sessions now, because an unresponsive
   // session keeps its claims. Such a holder then read as plainly holding on the list while

@@ -13,15 +13,15 @@ import (
 // While the project is paused, the claim door's resume and retry are refused PROJECT_PAUSED for
 // the controller and for an architect alike, with the pause that stands and a sentence that names
 // the controller's resume operation as what lifts the pause, and nothing of the claim changes: no
-// claim operation undoes the pause (claimOp.startsATurn, refusedWhilePaused). The door's stop
+// claim operation undoes the pause (claimResume's event builder, claimRetry). The door's stop
 // and suspend start nothing and still run: the test asks the controller's suspend and an
 // architect's stop. The controller's pod update is refused PROJECT_PAUSED as well, before the
 // daemon is asked anything (issuePodUpdate, refusedForPause).
 //
-// The negative control is the pause check undone (claimEventOperation's and claimRetry's
-// `startsATurn` checks, and issuePodUpdate's refusedForPause): the resume and the retry reach the
-// claim and are answered 200, and the pod update is answered 404 NO_POD by this daemon, which
-// runs no pod update rounds.
+// The negative control is the pause check undone (the refusedWhilePaused calls of claimResume's
+// event builder and of claimRetry, and issuePodUpdate's refusedForPause): the resume and the
+// retry reach the claim and are answered 200, and the pod update is answered 404 NO_POD by this
+// daemon, which runs no pod update rounds.
 func TestWhilePausedTheClaimDoorRefusesResumeAndRetryAndStillStopsAndSuspends(t *testing.T) {
 	h := newPauseHarness(t, pauseCapable())
 	grant := h.controllerSession()

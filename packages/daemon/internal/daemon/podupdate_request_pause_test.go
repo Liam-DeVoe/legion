@@ -11,15 +11,15 @@ import (
 )
 
 // A request for the replacement of a pod a project's pause holds opens no round, as the sweep
-// opens none over such a pod (reconcileIssuePodUpdate): the pause kept the pod and the work on its
-// disk for the roles it stopped. Here the pause has ended and its hold still stands, which the
-// resume leaves on a pod none of whose roles runs yet, and the route's own PROJECT_PAUSED check
-// therefore passes the request through. The daemon refuses it 409 POD_HELD_BY_PAUSE, naming the
-// pod, and posts nothing: no claim records a round, no opening is charged to the project's limits,
-// and no ask is queued.
+// opens none over such a pod (openPodUpdateUnderLimits, the opening step both take): the pause
+// kept the pod and the work on its disk for the roles it stopped. Here the pause has ended and its
+// hold still stands, which the resume leaves on a pod none of whose roles runs yet, and the
+// route's own PROJECT_PAUSED check therefore passes the request through. The daemon refuses it
+// 409 POD_HELD_BY_PAUSE, naming the pod, and posts nothing: no claim records a round, no opening
+// is charged to the project's limits, and no ask is queued.
 //
-// The negative control is postRequestedPodUpdate's hold check undone (clock.held()): the request
-// opens the round over the held pod and is answered 200.
+// The negative control is the opening step's pause branch undone (openPodUpdateUnderLimits's
+// clock.held()): the request opens the round over the held pod and is answered 200.
 func TestPodUpdateTheControllerAsksForOverAPodAPauseHoldsIsRefusedAndPostsNothing(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())

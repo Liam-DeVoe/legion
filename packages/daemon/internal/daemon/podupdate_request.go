@@ -25,10 +25,12 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 // (recordPodUpdateOpening), and carried from then on by the sweep alone. Its reasons say the
 // controller asked for it (requestedPodUpdateReasons). The sweep asks each role of the pod, at
 // the first sweep that reads the round recorded on its claim, to push its work and answer
-// ready_for_update (askRound), and replaces the pod once every role it asks has answered, or at
-// the round's bound whatever they said (completePodUpdate). No drift is needed for any of that: a
-// round open over the pod its claims record goes on, drift or no drift, until its pod is replaced
-// or gone (reconcileIssuePodUpdate).
+// ready_for_update (askRound), and replaces the pod once every role it asks has answered, no turn
+// runs and no claim with a process in the pod reports background work that runs or has sent no
+// report since its last turn started (roundEnd.holding), or at the round's bound whatever they
+// said (completePodUpdate). No drift is needed for any of that: a round open over the pod its
+// claims record goes on, drift or no drift, until its pod is replaced or gone
+// (reconcileIssuePodUpdate).
 //
 // It reads the issue as the sweep groups it — every claim of the issue that has not retired — and
 // answers, in this order:
@@ -52,14 +54,15 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //   - no claim the round could ask — none has a session, or every one that has has failed, so no
 //     claim would record the round: refused (api.PodUpdateNoPod).
 //   - a project's pause holds the issue's pod (store's project_pause_pod_holds, read as the
-//     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld), as the sweep opens no
-//     round over such a pod (reconcileIssuePodUpdate). The
-//     pause kept the pod and the work on its disk for its stopped roles, and a round would ask
-//     them to push for a replacement while nothing of theirs runs. The hold ends at the resume
-//     where a role of the pod is live, or once a role of the pod is ready again. While the
-//     project is paused the route refuses the request before it reaches the daemon (api's
-//     PROJECT_PAUSED), so this answers a pause that began after that read, and a hold the resume
-//     left on a pod none of whose roles is live yet.
+//     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld). No round opens over
+//     such a pod whoever asks for it, so the opening step the sweep and this request share
+//     answers that hold first (openPodUpdateUnderLimits), and this request words it. The pause
+//     kept the pod and the work on its disk for its stopped roles, and a round would ask them
+//     to push for a replacement while nothing of theirs runs. The hold ends at the resume where
+//     a role of the pod is live, or once a role of the pod is ready again. While the project is
+//     paused the route refuses the request before it reaches the daemon (api's PROJECT_PAUSED),
+//     so this answers a pause that began after that read, and a hold the resume left on a pod
+//     none of whose roles is live yet.
 //   - this daemon's own opening of the round still in flight, posted and not yet recorded by any
 //     claim: that opening, posted again with its own reasons, opened nothing new.
 //   - a limit of the project that holds the opening back, read as the sweep reads it, against a
@@ -170,12 +173,12 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)
 	}
 	clock := s.roundClockAt(now, holds[issue])
-	if clock.held() {
+	sweep := s.beginPodUpdateSweep(now, byIssue)
+	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, clock)
+	if step.pauseHeld {
 		return refusePodUpdate(api.PodUpdatePauseHeld,
 			"a project's pause holds the pod %s of %s: the pause kept the pod and the work on its disk for the roles it stopped, and no update round opens over it until the hold ends. The hold ends when the project is resumed with a role of the pod running, or when a role of the pod is ready again. Nothing was opened; ask again then", pod, issue)
 	}
-	sweep := s.beginPodUpdateSweep(now, byIssue)
-	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, clock)
 	if step.held != "" {
 		return refusePodUpdate(api.PodUpdateLimited, "%s", s.podUpdateLimitHolds(issue, step.held))
 	}

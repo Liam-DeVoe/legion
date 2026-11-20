@@ -44,8 +44,8 @@ Publish to no role topic while the restart runs: a message starts a turn that th
 Replace an issue pod only when a person asks or your deployment instructions name the case, never to reach one claim. Delete no issue pod or Sandbox with `kubectl`: its disk can hold unpushed work. `replace_pod` opens an update round: it asks each role to push, then replaces the pod.
 
 1. `legion({ op: "replace_pod", issue: "<KEY>" })`. A round already open is answered as it stands.
-2. On a refusal: `NO_CLAIM` or `NO_POD`, there is no pod to replace now; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
-3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round past its bound comes back as `update-stalled` (`skill://legion-controller/references/escalation.md`).
+2. On a refusal: `NO_CLAIM`, there is no pod to replace; `NO_POD`, ask again once a role runs in the pod; `POD_CHANGING` or `POD_UPDATE_LIMITED`, ask at a later wake; `POD_UPDATE_BUSY`, ask after a minute; `POD_UPDATE_NOT_RECORDED` or `POD_UPDATE_FAILED`, read `updateRound` on the issue's claims first; `PROJECT_PAUSED`, ask after the resume; `POD_HELD_BY_PAUSE`, ask once a role of the pod runs again.
+3. Read `read_state` with `issues: ["<KEY>"]`: the round is done when no claim shows `updateRound`. A round still held past its bound comes back as `update-stalled`, but one only architects' holds keep goes to those architects (`skill://legion-controller/references/escalation.md`).
 
 ## A re-run of a CI run
 
@@ -59,7 +59,7 @@ Your `gh` only reads: it holds the review App's read-only lease. This re-run and
    agent-secrets LEGION_IMPLEMENT_APP --reason '<the run, the failure, the issue>' --github-owner <owner> --github-repo <repo> --github-token -- sh -c 'printf "Authorization: Bearer %s\n" "$LEGION_IMPLEMENT_APP" | curl -fsS -X POST -H @- https://api.github.com/repos/<owner>/<repo>/actions/runs/<id>/rerun-failed-jobs'
    ```
 
-4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report, and ask no other session to re-run the run. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
+4. Read `gh run view <id> --repo <owner>/<repo> --json attempt,status`: the re-run started when `attempt` rose by one and `status` is `queued` or `in_progress`. Step 3's exit 77 with no `agent-secrets:` grant line is a denial, and its exit 22 is GitHub's refusal, whose status curl prints. Name a denial, or a 4xx such as a run that cannot be re-run, in the day's report. Run step 3 again only after a 5xx, once, at a later wake, and name a second failure there.
 
 ## A claim the operator holds
 
@@ -74,7 +74,7 @@ Your `gh` only reads: it holds the review App's read-only lease. This re-run and
 
 A decision only a person may make is a `dispatch ask`. Every other request goes to the session whose work it is, as a Dispatch comment on the owning issue that mentions its role, and to no other session, such as a person's chief of staff. A tree architect's token is `issues.<ROOT>.architect.locator.claim`, else `legion-<project>-<root key, lower case>-architect`.
 
-- Merge or queue a pull request: not yours. Write to the architect of the tree that owns it, which enqueues one that no merger merges. A merge only a person may schedule is a `dispatch ask`.
+- Merge or queue a pull request: not yours. Write to the architect of the tree that owns it, which enqueues one that no merger merges.
 - Cluster, cloud or CI: the restart, the re-run, the pod replacement and the reads above. Any other act (a quota, a pin, a Pulumi value) is a change of code: write it to the owning tree's architect, or file it as a clear defect no tree owns. An apply window is a `dispatch ask`.
 - Work, an investigation, a review, a decision or a status: read what you can reach yourself, and write the rest to its owner.
 - What another agent sent you: send no relay; that agent writes to the owner itself.

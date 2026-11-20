@@ -282,3 +282,50 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherLeakCheckManifest(t *t
 		t.Fatalf("the boot reconciliation logged %q matching leak-check warning(s), want one in %q", want, logs.String())
 	}
 }
+
+// A Sandbox whose labels name no kind (podKindOf) is held to no account, since no kind's account
+// is its own, and the sweep names it rather than adopting it. It is still warned of for every
+// other drift its owned pod holds: the leak-check manifest its pod runs is read from the Sandbox's
+// own record, whatever its labels say. So under a restart that moves both the account and the
+// manifest, the boot reconciliation gives such a pod the leak-check warning and no account
+// warning.
+func TestTheBootReconciliationWarnsOfTheLeakCheckOfAPodWhoseLabelsNameNoKind(t *testing.T) {
+	g := newRig(t, nil)
+	loc := g.spawn(workerSpec(t))
+	// The Sandbox keeps its pod and its record, and loses the label that names its kind.
+	s := g.sandbox(loc.Sandbox.Name)
+	if s == nil {
+		t.Fatalf("sandbox %s is absent", loc.Sandbox.Name)
+	}
+	delete(s.Labels, labelIssue)
+	if _, err := podKindOf(s.Labels); err == nil {
+		t.Fatalf("labels %v still name a pod kind, want none", s.Labels)
+	}
+	u, err := encodeSandbox(*s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.dyn.Tracker().Update(sandboxGVR, u, testNamespace); err != nil {
+		t.Fatal(err)
+	}
+	moved := leakguard.Setting{Repository: testLeakCheck.Repository, ManifestSHA256: strings.Repeat("7c", 32)}
+	logs := &lockedLog{}
+	r2 := secondRuntime(t, g, func(o *Options) {
+		o.Pod.ServiceAccount = otherAccount
+		o.LeakCheckSetting = moved
+		o.Log = slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	})()
+
+	// The sweep keeps a Sandbox whose labels name no kind, and says so.
+	if err := r2.ReconcileOrphans(g.ctx, nil, 0); err == nil || !strings.Contains(err.Error(), loc.Sandbox.Name) {
+		t.Fatalf("ReconcileOrphans = %v, want it to name %s, whose labels name no kind", err, loc.Sandbox.Name)
+	}
+	leak := "sandbox runtime: " + loc.Sandbox.Name + " runs leak check manifest " + testLeakCheck.ManifestSHA256 +
+		", the configured manifest is " + moved.ManifestSHA256 + "; its agents keep the held check until its update round replaces the pod"
+	if got := strings.Count(logs.String(), leak); got != 1 {
+		t.Errorf("the boot reconciliation logged %d leak-check warnings %q, want one, in %q", got, leak, logs.String())
+	}
+	if account := "sandbox runtime: " + loc.Sandbox.Name + " runs as ServiceAccount "; strings.Contains(logs.String(), account) {
+		t.Errorf("the boot reconciliation held %s, whose labels name no kind, to an account: %q", loc.Sandbox.Name, logs.String())
+	}
+}

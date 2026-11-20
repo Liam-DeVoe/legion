@@ -11,7 +11,7 @@ import (
 
 // Where the waiting line puts an issue whose work came back is shipped text, so the fragment is
 // read from the source it is declared in (record.WaitingLineBand) rather than written out again
-// here. Fourteen files carry the fifteen texts that state it — admit.go carries two — and the
+// here. Thirteen files carry the fourteen texts that state it — admit.go carries two — and the
 // eight of them that are files of packages/daemon are read here, one loop running
 // both checks over each: the fragment's presence, and the ban below. Presence reads the fragment
 // and nothing else: whether the sentence around it is true is a reader's to judge, never this
