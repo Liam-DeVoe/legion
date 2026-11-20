@@ -2202,6 +2202,21 @@ describe("dispatch result --project, as a CI job writes it", () => {
       return faked(handler, delay, ...rest);
     }) as unknown as typeof setTimeout;
     answersHeard = 0;
+    // Every real request of the call is counted while it is out (`nextTimers`): the write's own,
+    // the broker client's trades and the runner's token requests, all through the global fetch.
+    const realFetch = globalThis.fetch;
+    requestsOut = 0;
+    globalThis.fetch = Object.assign(
+      async (...args: Parameters<typeof fetch>) => {
+        requestsOut += 1;
+        try {
+          return await realFetch(...args);
+        } finally {
+          requestsOut -= 1;
+        }
+      },
+      { preconnect: realFetch.preconnect }
+    ) as typeof fetch;
     const heard = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const response = await fetch(input, init);
       answersHeard += 1;
@@ -2234,6 +2249,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         : { ...ran, ms };
     } finally {
       globalThis.setTimeout = faked;
+      globalThis.fetch = realFetch;
       jest.useRealTimers();
     }
   }
@@ -2245,6 +2261,31 @@ describe("dispatch result --project, as a CI job writes it", () => {
       const delay = await Promise.race([clock.ended.then(() => undefined), clock.timerSet(index)]);
       if (delay === undefined) return;
       if (delay !== DISPATCH_WRITE_RETRY.silenceMs) clock.advance(delay);
+    }
+  }
+
+  /** The real requests the call has out, which `onFakeClock` counts. */
+  let requestsOut = 0;
+
+  /**
+   * Moves the clock to each next timer the call and the broker client's retry loop have set, as
+   * real time reaches them, until the call ends, and only once no real request is out and the
+   * event loop has turned: the clock never runs ahead of a stand-in's answer. The call's waits (a
+   * write's pauses, a round's wait) and the loop's (its next trade) run side by side, which moving
+   * the clock over each wait in turn (`eachWait`) would add up. A row whose stand-in holds a
+   * request drives the clock itself.
+   */
+  async function nextTimers(clock: FakeClock): Promise<void> {
+    let over = false;
+    void clock.ended.then(() => {
+      over = true;
+    });
+    for (;;) {
+      await turns(20);
+      while (requestsOut > 0 && !over) await turns(20);
+      if (over) return;
+      if (jest.getTimerCount() === 0) throw new Error("the call waits on no timer and no request");
+      jest.advanceTimersToNextTimer();
     }
   }
 
@@ -2467,21 +2508,25 @@ describe("dispatch result --project, as a CI job writes it", () => {
   });
 
   // The control: a connection refused before any request went out reached nothing, so the write
-  // stored nothing, and the command prints the transport error and no write_outcome_unknown.
+  // stored nothing, and the command prints the transport error and no write_outcome_unknown. The
+  // write loop asks a refused connection again on its pacing (write-outcome.ts, `unreached`), so
+  // the row runs on the fake clock until the asking is spent.
   test("a write whose connection was refused prints no write_outcome_unknown", async () => {
     const closed = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() });
     const url = `http://127.0.0.1:${closed.port}`;
     closed.stop(true);
-    const { code, stdout, stderr } = await runJob(record, {
-      ...jobEnvironment(),
-      DISPATCH_URL: url,
-    });
+    const { code, stdout, stderr } = await onFakeClock(
+      record,
+      { ...jobEnvironment(), DISPATCH_URL: url },
+      undefined,
+      nextTimers
+    );
     expect({ code, stderr, unknown: stdout.includes("write_outcome_unknown") }).toEqual({
       code: 1,
       stderr: "",
       unknown: false,
     });
-    expect(stdout).toStartWith("ECONNREFUSED: ");
+    expect(stdout).toStartWith(`Dispatch at ${url} is unreachable: `);
     expect(written).toEqual([]);
   });
 
@@ -2527,25 +2572,27 @@ describe("dispatch result --project, as a CI job writes it", () => {
    *  (`onFakeClock`): no round starts later than `reserveMs` before `totalMs`. */
   const shortBound = (totalMs: number, reserveMs: number): ResultBound => ({ totalMs, reserveMs });
 
-  // Dispatch answers 201 only after it stored the result, and names the request's key back on it
-  // (`TestEveryKeyedAnswerNamesItsKey`), so a body lost after that status line is a landing whose
-  // answer was lost: the job prints landed_without_answer, which its reporter reads as stored, and
-  // exits 0, whether the body is cut, stalls until the bound (B4 of the review of 2f29345b8d, its
-  // two rows) or comes whole and is not the JSON it says it is. The stand-in Dispatch is a raw
-  // socket, so the status line and the first bytes of the body surely reach the job before the
-  // connection closes or goes silent. The stall is ended by the command's own bound, on the fake
-  // clock (`onFakeClock`), moved once the 201's headers came, since that bound is what the row tests.
+  // A 201 whose body does not come whole, as the JSON it says, is asked again under its key by the
+  // write table (write-outcome.ts: `body-broken`, `body-malformed`), since asked again Dispatch
+  // replays what it stored, or ends the call where the bound ends its read (`deadline-in-flight`).
+  // Here no ask fits in the short bound, so each ends as a write that may have stored:
+  // write_outcome_unknown, exit 1, naming what ended it: the body that broke off (its error's
+  // name), the 201 whose body is not the JSON it says, or the bound (B4 of the review of
+  // 2f29345b8d, its stall). The stand-in Dispatch is a raw socket, so the status line and the
+  // first bytes of the body surely reach the job before the connection closes or goes silent. The
+  // stall is ended by the command's own bound, on the fake clock (`onFakeClock`), moved once the
+  // 201's headers came, since that bound is what the row tests.
   const bodyStart = '{"id":"00000000-0000-4000-8000-';
   /** The `Idempotency-Key` a raw request carries, which a stand-in of Dispatch on a raw socket names
    *  back itself: `keyedLayer` wraps a fetch-shaped answer, and a socket gives none. */
   const keyOf = (request: Buffer): string =>
     /\r\nidempotency-key: *([^\r\n]*)/i.exec(request.toString("latin1"))?.[1]?.trim() ?? "";
-  for (const [name, length, close] of [
-    ["is cut", 400, true],
-    ["stalls past the bound", 400, false],
-    ["is not the JSON it says it is", bodyStart.length, false],
+  for (const [name, length, close, stall, ended] of [
+    ["is cut", 400, true, false, "Error"],
+    ["stalls past the bound", 400, false, true, "TimeoutError"],
+    ["is not the JSON it says it is", bodyStart.length, false, false, "HTTP_201"],
   ] as const) {
-    test(`a 201 whose body ${name} prints landed_without_answer and exits 0`, async () => {
+    test(`a 201 whose body ${name} prints write_outcome_unknown and exits 1`, async () => {
       let posts = 0;
       const lost = Bun.listen({
         hostname: "127.0.0.1",
@@ -2569,8 +2616,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
           { ...jobEnvironment(), DISPATCH_URL: `http://127.0.0.1:${lost.port}` },
           shortBound(1_000, 200),
           async (clock) => {
-            await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
-            clock.advance(1_000);
+            if (stall) {
+              await Promise.race([clock.ended, arrived(() => answersHeard >= 1)]);
+              clock.advance(1_000);
+            }
             await clock.ended;
           }
         );
@@ -2581,8 +2630,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
           posts,
           withinTheBound: ran.ms !== undefined && ran.ms <= 1_000,
         }).toEqual({
-          code: 0,
-          stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
+          code: 1,
+          stdout: `${JSON.stringify({ write_outcome_unknown: ended })}\n`,
           stderr: "",
           posts: 1,
           withinTheBound: true,
@@ -2627,18 +2676,29 @@ describe("dispatch result --project, as a CI job writes it", () => {
     return { seen, server };
   }
 
-  // A 201 whose body comes whole and still gives no stored result - a body that is no JSON under
-  // another type, an empty body, JSON of another shape (D-1 of the acceptance of 8ae6f5bcb4) and
-  // JSON null - is the same landing: the client reads a write's 2xx into the row its callers read
-  // (`dispatch-write-rows.ts`), and an answer that is not that row is ANSWER_LOST, which the
-  // reporter reads as stored. It printed `Cannot destructure property 'predicate' …` and exited 1.
-  for (const [name, type, body] of [
-    ["is no JSON, typed text/html", "text/html", "<html><body>not json</body></html>"],
-    ["is empty, typed JSON", "application/json", ""],
-    ["is the JSON {}", "application/json", "{}"],
-    ["is JSON null", "application/json", "null"],
+  // A 201 whose body comes whole and still gives no stored result. JSON of another shape (D-1 of
+  // the acceptance of 8ae6f5bcb4) and JSON null are a landing: the client reads a write's 2xx into
+  // the row its callers read (`dispatch-write-rows.ts`), and an answer the keyed layer gave that is
+  // not that row is ANSWER_LOST, which the reporter reads as stored. It printed `Cannot destructure
+  // property 'predicate' …` and exited 1. A body that is no JSON under another type, and an empty
+  // body, are no answer Dispatch writes to a keyed write (`WriteJSON`), so the write table ends the
+  // write on them as something in Dispatch's place answered (`foreign-2xx`): it may have stored,
+  // write_outcome_unknown, exit 1, naming the status.
+  const landed = `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`;
+  const unknown201 = `${JSON.stringify({ write_outcome_unknown: "HTTP_201" })}\n`;
+  for (const [name, type, body, code, stdout] of [
+    [
+      "is no JSON, typed text/html",
+      "text/html",
+      "<html><body>not json</body></html>",
+      1,
+      unknown201,
+    ],
+    ["is empty, typed JSON", "application/json", "", 1, unknown201],
+    ["is the JSON {}", "application/json", "{}", 0, landed],
+    ["is JSON null", "application/json", "null", 0, landed],
   ] as const) {
-    test(`a 201 whose whole body ${name} prints landed_without_answer and exits 0`, async () => {
+    test(`a 201 whose whole body ${name} prints ${code === 0 ? "landed_without_answer and exits 0" : "write_outcome_unknown and exits 1"}`, async () => {
       const { seen, server } = answeringWhole("201 Created", type, body);
       try {
         const ran = await onFakeClock(
@@ -2651,12 +2711,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
           stdout: ran.stdout,
           stderr: ran.stderr,
           posts: seen.posts,
-        }).toEqual({
-          code: 0,
-          stdout: `${JSON.stringify({ landed_without_answer: "ANSWER_LOST" })}\n`,
-          stderr: "",
-          posts: 1,
-        });
+        }).toEqual({ code, stdout, stderr: "", posts: 1 });
       } finally {
         server.stop(true);
       }
@@ -2891,8 +2946,9 @@ describe("dispatch result --project, as a CI job writes it", () => {
   }, 30_000);
 
   // The broker's rate limit refuses a trade before any work, and a job of many checks meets it
-  // with no fault of its own: the trade is asked again after the answer's Retry-After, and the
-  // result is stored once. Each wait is a second of the fake clock.
+  // with no fault of its own: the broker client's retry loop trades again after the answer's
+  // Retry-After (`BrokerRefusedError.retryAfterMs`), and the result is stored once. Each wait is a
+  // second of the fake clock, which moves to each next timer of the call and of the loop.
   test("a trade the broker's rate limit refuses is asked again after its Retry-After, and the result is stored", async () => {
     const answer = brokerAnswer;
     brokerAnswer = () => (trades.length <= 2 ? rateLimited("1") : answer());
@@ -2900,7 +2956,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       record,
       jobEnvironment(),
       shortBound(5_000, 1_000),
-      eachWait
+      nextTimers
     );
     expect({
       code,
@@ -2934,7 +2990,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         record,
         jobEnvironment(),
         shortBound(3_000, 500),
-        eachWait
+        nextTimers
       );
       expect({
         code,
@@ -2948,7 +3004,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         withinTheBound: true,
       });
       expect(stdout.split("\n")).toEqual([
-        "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later",
+        "the secrets broker's rate limit refused the trade, and the 3 s this command may take leave no time to ask again: the secrets broker refused this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint): HTTP 429 invalid_request: RATE_LIMITED: too many token requests; try again later, and the trade is being retried in the background",
         "",
       ]);
       expect(written).toEqual([]);
@@ -3005,8 +3061,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
   ];
 
   // Dispatch's check of the job's token answers before any handler runs, so a write it turns away
-  // did nothing, and a trade the broker does not answer stores nothing: each is asked again after
-  // the answer's Retry-After, or a second, as the broker's rate limit is, and one result is stored.
+  // did nothing, and a trade the broker does not answer stores nothing: each is asked again, and
+  // one result is stored. Dispatch's answers are asked again after their Retry-After, or a second;
+  // the broker's 503 when the broker client's retry loop trades again, on the Go client's
+  // schedule (`RETRY_FIRST_WAIT_MS`, jittered, then doubling), which the command's whole 60 s
+  // bound holds twice.
   test("a call Dispatch's token check or the broker turns away is asked again, and the result is stored", async () => {
     const defaults = { brokerAnswer, dispatchAnswer };
     for (const [name, setUp] of turnedAway) {
@@ -3018,8 +3077,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
       const { code, stdout, stderr, ms } = await onFakeClock(
         record,
         jobEnvironment(),
-        shortBound(5_000, 1_000),
-        eachWait
+        name.startsWith("the broker") ? undefined : shortBound(5_000, 1_000),
+        nextTimers
       );
       expect(
         {
@@ -3058,7 +3117,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
         record,
         jobEnvironment(),
         shortBound(3_000, 500),
-        eachWait
+        nextTimers
       );
       expect(
         {
@@ -3252,18 +3311,20 @@ describe("dispatch result --project, as a CI job writes it", () => {
 
   // The same at the real bound of 60 s, the case of the reviewer's B1 and the tester's D-C at
   // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
-  // call ends at its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s bound
-  // ends the first trade, which got no answer, and the call trades again after a second, so it is
-  // the call's bound that ends the second. It runs on the fake clock, moved only while the call
-  // waits on it: the call has not ended a moment before its 60 s, and has ended at them.
-  test("a broker that never answers the trade ends the call at the real 60 s bound", async () => {
+  // call ends inside its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s
+  // bound (`TRADE_ATTEMPT_MS`) ends the first trade, which got no answer, and the broker client's
+  // retry loop trades again on its schedule while the call asks again inside its bound; or the
+  // call's share of the bound (`credentialDeadline`) ends its wait on the trade still out. Both
+  // timers run on the fake clock, whose order at their edge Bun keeps only within a row run alone,
+  // so the row holds the line of either end: each names the trade. It runs on the fake clock,
+  // moved to each next timer once no real request is out but the held trade.
+  test("a broker that never answers the trade ends the call inside the real 60 s bound, naming the trade", async () => {
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const answer = brokerAnswer;
     brokerAnswer = async () => {
       await held;
       return answer();
     };
-    let before: number | undefined;
     try {
       const ran = await onFakeClock(record, jobEnvironment(), undefined, async (clock) => {
         let over = false;
@@ -3271,36 +3332,36 @@ describe("dispatch result --project, as a CI job writes it", () => {
           over = true;
         });
         await arrived(() => trades.length >= 1);
-        clock.advance(30_000);
-        // The trade's own bound ended the first trade, and the call waits a second to trade again.
-        let index = 0;
-        while ((await clock.timerSet(index)) !== 1_000) index++;
-        clock.advance(1_000);
-        await arrived(() => trades.length >= 2);
-        clock.advance(60_000 - 1 - clock.elapsed());
-        await Promise.race([clock.ended, turns(50)]);
-        before = over ? undefined : clock.elapsed();
-        clock.advance(1);
+        while (!over) {
+          // The loop has one trade out at a time, which the broker holds for good; the clock
+          // waits on any other request.
+          await turns(20);
+          while (requestsOut > 1 && !over) await turns(20);
+          if (over) return;
+          jest.advanceTimersToNextTimer();
+        }
       });
+      const namesTheTrade = [
+        "the secrets broker could not answer the trade, and the 60 s this command may take leave no time to ask again: the secrets broker did not answer the trade of this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) within 30 s",
+        "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: ",
+      ].some((line) => ran.stdout.startsWith(line));
       expect(
         {
           code: ran.code,
-          namesTheTrade: ran.stdout.startsWith(
-            "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: "
-          ),
+          namesTheTrade,
+          lines: ran.stdout.split("\n").length,
           sentToDispatch: written.length,
-          trades: trades.length,
-          runningAt: before,
-          endedAt: ran.ms,
+          traded: trades.length >= 1,
+          insideTheBound: ran.ms !== undefined && ran.ms >= 30_000 && ran.ms <= 60_000,
         },
         ran.stdout
       ).toEqual({
         code: 1,
         namesTheTrade: true,
+        lines: 2,
         sentToDispatch: 0,
-        trades: 2,
-        runningAt: 59_999,
-        endedAt: 60_000,
+        traded: true,
+        insideTheBound: true,
       });
     } finally {
       release();
@@ -3342,8 +3403,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
       cancel.abort();
       const left = await first;
       release();
+      // A's own end is told as the trade still unanswered (`TradeUnansweredError`, the broker
+      // client's `#stopped`), and the trade goes on for B.
       expect({ a: left, b: await second, trades: trades.length }).toEqual({
-        a: "AbortError",
+        a: "TradeUnansweredError",
         b: "answered",
         trades: 1,
       });
@@ -3498,8 +3561,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
       ],
       [
+        // The broker's description of a refusal it is not known to write is withheld
+        // (`BrokerRefusedError.said`, refusal-text.ts), so the value never reaches the output.
         "the broker's refusal",
-        "text",
+        "none",
         (value) => {
           brokerAnswer = () =>
             Response.json({ error: "invalid_grant", error_description: value }, { status: 400 });
@@ -3507,8 +3572,10 @@ describe("dispatch result --project, as a CI job writes it", () => {
         },
       ],
       [
+        // The refusal of an identity the machine cannot prove names the variable and the
+        // identities it takes, never the value it was given (environment.ts).
         "the machine identity of the environment",
-        "text",
+        "none",
         (value) => runJob(record, { ...jobEnvironment(), AGENT_SECRETS_MACHINE_IDENTITY: value }),
       ],
       [
