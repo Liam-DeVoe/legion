@@ -17,6 +17,12 @@
  *       [--request-log <file>] [--budget-usd <n>]
  *   bun scripts/skill-cuts/cli.ts count-sql --config <file> --store <db> --day <YYYY-MM-DD>
  *       [--hour <0-23>]
+ *   bun scripts/skill-cuts/cli.ts load --config <file> --key-file <file> --skill <dir>
+ *       [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir>
+ *       [--runs <n>] [--model <model>] [--thinking <level>] [--budget-usd <n>]
+ *       [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>]
+ *       [--scratch <dir>] [--models <models.yml>] [--omp <binary>] [--hint-model <model>]
+ *       [--omp-config <file>]... [--claude <binary>]
  *
  * **`behaviour`** runs R2's behaviour test of one skill: `--old` and `--new` are the skill's own
  * directories at the cut's base and in the cut, and `--cases` a case file of that skill (cases.ts,
@@ -64,15 +70,21 @@
  *
  * **`count-sql`** is countsql.ts's own command: it prints count.sql filled for one store and day.
  *
+ * **`load`** is load.ts's load test of R6 and R7: per task, the host's first request captured once
+ * and sent `--runs` times (LOAD_RUNS by default), each run's first assistant message read for a
+ * read of the skill, the loads and verdicts printed and saved under `--out`, which a run started
+ * again goes on from. The model is LOAD_MODEL and the thinking level LOAD_THINKING unless
+ * `--model` and `--thinking` say otherwise.
+ *
  * Each model request goes through the request log (`loggedGateway`): one JSON line per request,
- * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour`, and the `--out`
- * file's path with `.requests.jsonl` added for `read` and `control`), holding what the call was for,
- * the model, the thinking type and budget, max_tokens, the temperature, the effort, and the reply's
- * usage and dollars at list price; never the key and never a message's text.
+ * appended to `--request-log` (by default `<out>/requests.jsonl` for `behaviour` and `load`, and
+ * the `--out` file's path with `.requests.jsonl` added for `read` and `control`), holding what the
+ * call was for, the model, the thinking type and budget, max_tokens, the temperature, the effort,
+ * and the reply's usage and dollars at list price; never the key and never a message's text.
  *
  * Exit status: 0 done (a control held); 1 failed (a reader's every reply refused, a control that
- * did not hold, a call or an `--after-case` command that failed); 2 refused before any model call;
- * 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
+ * did not hold, a call, a load test's task or an `--after-case` command that failed); 2 refused
+ * before any model call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
  */
 import { createHash } from "node:crypto";
 import {
@@ -93,7 +105,7 @@ import { z } from "zod";
 import { MessagesApiError } from "../skill-scenarios/messages-api";
 import { type Arm, type ArmDirs, type ArmName, buildArm } from "./arms";
 import { type Capture, captureBody, capturePaths, gatewayHints } from "./capture";
-import { type Case, loadCases } from "./cases";
+import { type Case, loadCases, Thinking } from "./cases";
 import { loadConfig, type SkillCutsConfig } from "./config";
 import { ghSource, localSource } from "./context";
 import { main as countSqlMain } from "./countsql";
@@ -114,6 +126,7 @@ import {
   NOTHING_REPLY,
   newSeed,
 } from "./judge";
+import { Host, LOAD_MODEL, LOAD_THINKING, LoadRefused, LoadStopped, runLoad } from "./load";
 import {
   ATTACK_PLANTED_LINE,
   type Control,
@@ -135,6 +148,7 @@ import {
   isFlagged,
   isInformative,
   isLoss,
+  LOAD_RUNS,
   LOSS_GAP,
   MAX_EXTRA_RUNS,
   MAX_SCREENED_CASES,
@@ -1460,6 +1474,104 @@ async function behaviourCommand(argv: readonly string[], io: CliIo): Promise<num
   return EXIT.ok;
 }
 
+// `load`.
+
+const LOAD_USAGE = [
+  "usage: cli.ts load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir>",
+  `  [--runs <n, default ${LOAD_RUNS}>] [--model <model, default ${LOAD_MODEL}>] [--thinking <level, default ${LOAD_THINKING.omp} on omp, ${LOAD_THINKING.claude} on claude>]`,
+  "  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>]",
+  "  omp: [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]...",
+  "  claude: [--claude <binary>]",
+].join("\n");
+
+/** `skill-cuts load`: the load test of load.ts. */
+async function loadCommand(argv: readonly string[], io: CliIo): Promise<number> {
+  const values = parse(
+    argv,
+    {
+      ...GATEWAY_OPTIONS,
+      skill: { type: "string" },
+      name: { type: "string" },
+      tasks: { type: "string" },
+      host: { type: "string" },
+      profile: { type: "string" },
+      out: { type: "string" },
+      runs: { type: "string" },
+      model: { type: "string" },
+      thinking: { type: "string" },
+      models: { type: "string" },
+      omp: { type: "string" },
+      "hint-model": { type: "string" },
+      "omp-config": { type: "string", multiple: true },
+      claude: { type: "string" },
+      repos: { type: "string" },
+      "cache-dir": { type: "string" },
+      scratch: { type: "string" },
+    },
+    LOAD_USAGE
+  );
+  const given = required(
+    values,
+    ["config", "key-file", "skill", "tasks", "host", "profile", "out"],
+    LOAD_USAGE
+  );
+  const host = Host.safeParse(given.host);
+  if (!host.success) throw new Refused(`--host ${given.host} is no host: omp or claude`);
+  const thinking = Thinking.safeParse(values.thinking ?? LOAD_THINKING[host.data]);
+  if (!thinking.success) {
+    throw new Refused(
+      `--thinking ${values.thinking} is no thinking level: ${Thinking.options.join(", ")}`
+    );
+  }
+  if (values.runs !== undefined && !/^[1-9][0-9]*$/.test(values.runs)) {
+    throw new Refused(`--runs ${values.runs} is not a whole number of 1 or more`);
+  }
+  if (!statSync(given.skill, { throwIfNoEntry: false })?.isDirectory()) {
+    throw new Refused(`--skill ${given.skill} is not a directory`);
+  }
+  const config = loadConfig(given.config);
+  const { gateway } = openGateway({
+    config,
+    keyFile: given["key-file"],
+    budgetUsd: values["budget-usd"],
+    concurrency: values.concurrency,
+  });
+  const log = values["request-log"] ?? path.join(given.out, "requests.jsonl");
+  const result = await runLoad({
+    io,
+    host: host.data,
+    skillDir: given.skill,
+    skillDigest: textDigest(given.skill),
+    ...(values.name === undefined ? {} : { name: values.name }),
+    tasksFile: given.tasks,
+    profileFile: given.profile,
+    runs: values.runs === undefined ? LOAD_RUNS : Number(values.runs),
+    out: given.out,
+    model: values.model ?? LOAD_MODEL,
+    thinking: thinking.data,
+    gateway: loggedGateway(gateway, log, "load"),
+    hints: gatewayHints(loggedGateway(gateway, log, "hint")),
+    source: values.repos === undefined ? ghSource() : localSource(values.repos),
+    scratch: values.scratch ?? path.join(tmpdir(), "skill-cuts-scratch"),
+    cacheDir: values["cache-dir"] ?? path.join(tmpdir(), "skill-cuts-cache"),
+    omp: values.omp ?? "omp",
+    ...(values.models === undefined ? {} : { models: values.models }),
+    ...(values["hint-model"] === undefined ? {} : { hintModel: values["hint-model"] }),
+    configFiles: values["omp-config"] ?? [],
+    claude: values.claude ?? "claude",
+    requestLog: log,
+    memoryLimitBytes: MEMORY_LIMIT_BYTES,
+  });
+  io.out(
+    `load: done; the calls of this command cost $${gateway.spend().usd.toFixed(4)} at list price; request log ${log}\n`
+  );
+  if (result.failures.length === 0) return EXIT.ok;
+  io.err(
+    `load: ${result.failures.length} tasks or runs failed; run the command again to make what is missing`
+  );
+  return EXIT.failed;
+}
+
 // The command line.
 
 const USAGE = [
@@ -1468,6 +1580,7 @@ const USAGE = [
   "  read --prompt <name> --in <input.json> --out <answer.json> ...",
   "  control <map|attack|same-job|sentence> --in <input.json> --out <result.json> ...",
   "  count-sql --config <skill-cuts.json> --store <db> --day <YYYY-MM-DD> [--hour <0-23>]",
+  "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir> ...",
 ].join("\n");
 
 /** The command line. Returns the exit status (EXIT). */
@@ -1483,15 +1596,17 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
         return await controlCommand(rest, io);
       case "count-sql":
         return countSqlMain(rest, io);
+      case "load":
+        return await loadCommand(rest, io);
       default:
         throw new Refused(`no command ${JSON.stringify(command ?? "")}. ${USAGE}`);
     }
   } catch (error) {
-    if (error instanceof Refused) {
+    if (error instanceof Refused || error instanceof LoadRefused) {
       io.err(`skill-cuts: ${error.message}`);
       return EXIT.refused;
     }
-    if (error instanceof Stopped || error instanceof BudgetSpent) {
+    if (error instanceof Stopped || error instanceof LoadStopped || error instanceof BudgetSpent) {
       io.err(`skill-cuts: stopped: ${error.message}`);
       return EXIT.stopped;
     }

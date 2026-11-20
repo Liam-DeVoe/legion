@@ -378,12 +378,23 @@ function extensionErrors(profileDir: string, stderr: string): string[] {
   return errors;
 }
 
+/** What a capture reads of a case: its id, skill, model and thinking level, its context and
+ *  profile, and the session's digest. A load test's task (load.ts) is one of these too. */
+export type CaptureCase = Pick<
+  Case,
+  "id" | "skill" | "model" | "thinking" | "context" | "profile" | "sessionDigest"
+>;
+
 /**
  * Captures the request body of `c`'s arm `arm`, or reads back the capture saved already. Throws
  * when Oh My Pi fails or sends no turn, when a hint cannot be written, or when the body does not
  * list exactly the arm's installed skills under their hints.
  */
-export async function captureBody(c: Case, arm: Arm, options: CaptureOptions): Promise<Capture> {
+export async function captureBody(
+  c: CaptureCase,
+  arm: Arm,
+  options: CaptureOptions
+): Promise<Capture> {
   const files = capturePaths(options.outDir, c.id, arm.name);
   if (existsSync(files.body) && existsSync(files.record)) {
     return {

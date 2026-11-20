@@ -161,6 +161,9 @@ export interface ContextOptions {
   readonly root: string;
 }
 
+/** What a context reads of a case: its id, its context and its profile. */
+export type ContextCase = Pick<Case, "id" | "context" | "profile">;
+
 /** The hex SHA-256 of `parts`, each ended by a NUL, cut to 32 characters: a cache key. */
 export function cacheKey(...parts: string[]): string {
   const hash = createHash("sha256");
@@ -603,7 +606,7 @@ async function composeParts(
 /** The role prompt of `c`'s Legion context and its record: the parts Compose names at the commit
  *  of the plugin repository that holds PROMPTS_GO, joined as `ComposePrompt` joins them. */
 async function rolePrompt(
-  c: Case,
+  c: ContextCase,
   role: { readonly role: string; readonly isRoot: boolean },
   builds: Builds,
   options: ContextOptions
@@ -649,7 +652,7 @@ async function rolePrompt(
 
 /** Writes the context of `c`'s arm `arm` under `options.root`, replacing one written there. */
 export async function buildContext(
-  c: Case,
+  c: ContextCase,
   arm: Arm,
   options: ContextOptions
 ): Promise<CaseContext> {

@@ -79,15 +79,48 @@ bun scripts/skill-cuts/cli.ts count-sql --config <skill-cuts.json> --store <db> 
 Prints `count.sql` filled for one store and one UTC day (or hour), the same as
 `bun scripts/skill-cuts/countsql.ts`.
 
+### `load`
+
+```
+bun scripts/skill-cuts/cli.ts load --config <skill-cuts.json> --key-file <file> \
+  --skill <skill dir> [--name <name>] --tasks <tasks.jsonl> --host <omp|claude> \
+  --profile <profile.json> --out <dir> [--runs <n, default 3>] \
+  [--model <model, default anthropic/claude-sonnet-5-5>] \
+  [--thinking <level, default off on omp, auto (Claude Code's own) on claude>] \
+  [--budget-usd <n>] [--concurrency <n>] [--request-log <file>] \
+  [--repos <dir>] [--cache-dir <dir>] [--scratch <dir>] \
+  [--models <models.yml>] [--omp <binary>] [--hint-model <model>] [--omp-config <file>]... \
+  [--claude <binary>]
+```
+
+The load test of R6 and R7 (`load.ts`): whether the host's agent loads the skill for each task,
+given what the host lists for it. `--tasks` holds one task per line, `{id, text, label, source}`
+with `label` `need` or `near-miss` and `source` `written`, or `session` with its `store` and
+`pathHash`. `--profile` is the other skills installed beside it (the `Profile` of `cases.ts`, a
+`context`, and for Claude Code a `claude` plugin layout: `{marketplace, plugins: [{name, skills}],
+skillPlugin}`). `--name` tests the skill under another name: its frontmatter `name` and its
+directory's name change in a scratch copy, and nothing else that names the skill.
+
+Per task, the host's first request is captured once against a recorder (Oh My Pi through
+`capture.ts`, which lists the skill under the hint Oh My Pi has a model write; Claude Code with a
+scratch `CLAUDE_CONFIG_DIR` that installs the skills as local plugins), then sent `--runs` times.
+A run loads the skill when the first assistant message reads it (Oh My Pi: `read` of
+`skill://<name>` or its `SKILL.md`; Claude Code: `Skill` naming `<name>` or `<plugin>:<name>`, or
+`Read` of its `SKILL.md`), and never goes past that message. It prints each task's loads and
+verdict and the skill's verdict (`score.ts`), and writes `<out>/runs/<task>.jsonl` (one line per
+run), `<out>/captures/` and `<out>/summary.json`. A task whose run file is complete is skipped, so
+a run started again goes on from what was saved.
+
 ## The request log
 
-Each model request of `behaviour`, `read` and `control` adds one JSON line to the request log
-(`<out>/requests.jsonl` for `behaviour`, `<out file>.requests.jsonl` otherwise): what the call was
-for, the model, the thinking type and budget, `max_tokens`, the temperature, the effort, and the
-reply's usage and dollars at list price. It never holds the key or a message's text.
+Each model request of `behaviour`, `read`, `control` and `load` adds one JSON line to the request
+log (`<out>/requests.jsonl` for `behaviour` and `load`, `<out file>.requests.jsonl` otherwise):
+what the call was for, the model, the thinking type and budget, `max_tokens`, the temperature, the
+effort, and the reply's usage and dollars at list price. It never holds the key or a message's
+text.
 
 ## Exit status
 
 0 done (a control held); 1 failed (every reply of a reader refused, a control that did not hold, a
-call or an `--after-case` command that failed); 2 refused before any model call; 3 stopped (the
-budget is spent, or the peak memory passed 1 GiB).
+call, a load test's task or an `--after-case` command that failed); 2 refused before any model
+call; 3 stopped (the budget is spent, or the peak memory passed 1 GiB).
