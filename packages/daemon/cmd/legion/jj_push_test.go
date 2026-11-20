@@ -1435,6 +1435,26 @@ func TestACommitIDBesideARefusedNumberSendsTheRewrittenCommit(t *testing.T) {
 	})
 }
 
+// jj reads a string literal standing alone in a revset as a symbol, as it reads the bare word: a
+// quoted commit id, `"<C>"` or `'<C>'`, names the commit C. `jj git push -c "<C>"` of a commit the
+// step rewrites therefore names a commit the step rewrote, and the real push gets the new C: the
+// remote's commit has its trailer's author, and -c makes no bookmark on the old, hidden C, so no
+// change is divergent.
+func TestAQuotedCommitIDSendsTheRewrittenCommit(t *testing.T) {
+	t.Parallel()
+	impl, rev := rolePushImplementer, rolePushReviewer
+	for _, quote := range []string{`"`, `'`} {
+		t.Run(quote, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+				f.pushAndCheck([]string{"git", "push", "-c", quote + c.commit + quote}, rolePushSends("push-"+c.change[:12], c, "implementer", impl))
+			})
+		})
+	}
+}
+
 // rolePushRefusedRows are the pushes that make a bookmark of their own, -c and --named, of a
 // commit id: of @-, and of @- whose change is divergent (rolePushDivergentRefusedRow).
 func rolePushRefusedRows() []rolePushRow {
