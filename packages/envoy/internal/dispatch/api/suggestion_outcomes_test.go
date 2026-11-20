@@ -241,6 +241,33 @@ func (s idleSweep) passesUntil(t *testing.T, what string, holds func() bool) {
 	})
 }
 
+// awaitSafeHorizon is the safe horizon of the sweep's server once an observation taken during the
+// call is proven (safeHorizon), waited for as every wait on the horizon here is: the proof runs on
+// a goroutine of its own and the wait is the horizon's (horizontest.WaitInProcess), which fails at
+// once, naming the holder, on a hold in this test's own database that has stood
+// horizontest.OwnHoldBound, and waits out any other hold. what names what the row needs the
+// horizon for.
+func (s idleSweep) awaitSafeHorizon(t *testing.T, what string) int64 {
+	t.Helper()
+	proven := make(chan horizonProof, 1)
+	go func() {
+		safe, err := s.server.horizon().Await(t.Context())
+		proven <- horizonProof{safe: safe, err: err}
+	}()
+	proof := horizontest.WaitInProcess(t, what, proven, s.database)
+	if proof.err != nil {
+		t.Fatalf("await the safe horizon for %s: %v", what, proof.err)
+	}
+	return proof.safe
+}
+
+// horizonProof is what one await of the horizon answers: the safe horizon, or the error that
+// stopped the proof.
+type horizonProof struct {
+	safe int64
+	err  error
+}
+
 // idleSweepWhy is why a test of the idle sweep holds a span: a pass runs on the loop's own
 // goroutine once its timer fires, and nothing the loop keeps says that pass has ended.
 const idleSweepWhy = "the sweep's woken loop passes on its own goroutine and keeps no state that says a pass " +
@@ -304,10 +331,13 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // gap is the wake's, held to the gap, or a horizon's re-ask, and the row runs it in turn until one
 // holds for settle. Each move to such a pass moves the fake that judges settle a gap on, so the
 // row makes it only once the server's horizon is proven past every event committed before it
-// (safeHorizon): the pass it runs then reads the comment's event, and a re-ask comes only from a
-// write committed while a pass ran. A row that ran each re-ask at once would move the fake a gap
+// (awaitSafeHorizon): the pass it runs then reads the comment's event, and a re-ask comes only from
+// a write committed while a pass ran. A row that ran each re-ask at once would move the fake a gap
 // for each pass the horizon stood behind in real time, and once nine had passed the comment would
-// be past settle, judged alone, before any pass had read it.
+// be past settle, judged alone, before any pass had read it. That wait, and the one before each
+// page the row judges itself, is the horizon's: a hold of any length only delays it, and a hold in
+// this test's own database that has stood horizontest.OwnHoldBound fails the row at once, naming
+// the holder.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 10 * time.Second
 	fake := clocktest.New(time.Now().Truncate(time.Microsecond))
@@ -367,7 +397,7 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 		// The wake's pass, held to the gap, or a horizon's re-ask a gap later: run it once the horizon
 		// has passed every event committed so far, so the move does not age the comment for a pass
 		// that cannot read it.
-		safeHorizon(t, sweep.server)
+		sweep.awaitSafeHorizon(t, "the horizon to pass every event committed before the row runs the pass its loop holds")
 		sweep.clock.Set(armed[0])
 		return armed[0], false
 	})
@@ -393,7 +423,8 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	// the update's wake is held to the gap on that clock.
 	judgeAt := func(at time.Time) {
 		t.Helper()
-		if _, _, err := judgeSuggestionPageInTransaction(t.Context(), pool, safeHorizon(t, sweep.server), suggestionOutcomePage, settle, &at); err != nil {
+		safe := sweep.awaitSafeHorizon(t, fmt.Sprintf("the horizon to pass the update before a page is judged at %s", at))
+		if _, _, err := judgeSuggestionPageInTransaction(t.Context(), pool, safe, suggestionOutcomePage, settle, &at); err != nil {
 			t.Fatalf("judge a page at %s: %v", at, err)
 		}
 	}

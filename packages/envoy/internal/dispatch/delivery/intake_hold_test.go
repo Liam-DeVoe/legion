@@ -339,6 +339,34 @@ func bringTries(t *testing.T, tries *clocktest.Fake, start time.Time, n int) {
 	}
 }
 
+// awaitTakeOver waits for taken to report that the standby whose tries for the hold run on tries
+// has taken the durable over, and when the wait gives up prints failure's text. tries is a fake
+// only the row moves, which bringTries has left at a moment of the try grid, so the standby's next
+// try is armed one durableBindInterval past where tries stands, once the try before it has ended
+// (heldDurable.run). On each reading that finds the durable not yet taken, the row moves tries to
+// that try once the standby has armed it, and never further (clocktest.Fake.SetWhen). A try that
+// finds the durable still bound to the process that let go -- the server reports an unsubscribe a
+// moment after it has it -- stands by and arms the next, so the row waits for the take-over itself,
+// however many tries it takes, and not for one try to see it.
+//
+// The loop's checks and the hold's renewals and loss run on tries too (bringTries), and some of
+// their moments fall on a try's. A move to such a moment can come before the try is armed; the try
+// then fires as it is armed, a wait of zero, at the moment tries stands at, and the next move
+// waits for the moment after it.
+func awaitTakeOver(t *testing.T, tries *clocktest.Fake, taken func() bool, failure func() string) {
+	t.Helper()
+	waitFor(t, func() bool {
+		if taken() {
+			return true
+		}
+		tries.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+			next := now.Add(durableBindInterval)
+			return next, slices.ContainsFunc(armed, next.Equal)
+		})
+		return false
+	}, failure)
+}
+
 // startIntakeProcess runs a delivery intake as a process of its own on pool's database (a pool of
 // its own, storetest.SecondProcess) and natsURL's server, until the test ends or its stop is
 // called. Its GitHub answers every pull request 404 after counting it, which the intake logs and
@@ -399,12 +427,29 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 		intake.Run(runCtx)
 	}()
 	process.cancel = cancel
-	process.stop = sync.OnceFunc(func() {
+	// The stop is not a sync.OnceFunc: a give-up inside one ends the goroutine (runtime.Goexit) in
+	// the once, which sync.OnceFunc turns into a panic with a nil argument. cancel may be called
+	// again, and a second receive finds done closed.
+	process.stop = func() {
 		cancel()
-		testwait.Receive(t, "the intake's Run to return once its context ended", done)
-	})
+		testwait.Receive(failOnce{t}, "the intake's Run to return once its context ended", done)
+	}
 	t.Cleanup(process.stop)
 	return process
+}
+
+// failOnce is t for a wait that may run once t has already failed, as the stop a cleanup makes
+// after a row gave up does: a give-up fails t as Fatalf does while t has not failed, and is only
+// logged once it has, so a row that failed prints its own failure and not a second one.
+type failOnce struct{ *testing.T }
+
+func (t failOnce) Fatalf(format string, args ...any) {
+	t.Helper()
+	if t.Failed() {
+		t.Logf(format, args...)
+		return
+	}
+	t.T.Fatalf(format, args...)
 }
 
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
@@ -1080,10 +1125,9 @@ func TestAStandbyOfAnOlderGenerationLeavesANewerConsumerAlone(t *testing.T) {
 	if err := hold.Release(ctx); err != nil {
 		t.Fatalf("release the newer build's hold: %v", err)
 	}
-	// The standby's next try finds the hold released and takes the durable over.
-	tries.Advance(durableBindInterval)
+	// A try of the standby's that finds the hold released and the durable unbound takes it over.
 	var taken *natsgo.ConsumerInfo
-	waitFor(t, func() bool {
+	awaitTakeOver(t, tries, func() bool {
 		taken, err = publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && taken.PushBound && taken.Config.DeliverSubject != newer.DeliverSubject
 	}, func() string {
@@ -1163,9 +1207,8 @@ func TestANewBuildStandbyWaitsForABindingNoHoldRecorded(t *testing.T) {
 	if err := held.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe the previous build's process: %v", err)
 	}
-	// The standby's next try finds the durable unbound and takes it over.
-	tries.Advance(durableBindInterval)
-	waitFor(t, func() bool {
+	// A try of the standby's that finds the durable unbound takes it over.
+	awaitTakeOver(t, tries, func() bool {
 		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous.DeliverSubject
 	}, func() string {

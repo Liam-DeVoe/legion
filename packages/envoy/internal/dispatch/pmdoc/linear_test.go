@@ -286,8 +286,9 @@ const growthStep = 8
 // fast as growth itself, quadratic work about growth² - so growth must exceed linearSlack for
 // growth² to ever clear linearSlack*growth. This proves both directions with synthetic counts at
 // the exact growth (growthStep) and slack (linearSlack) every counted row uses, and the floor, the
-// ceiling and the bytes beside them. The verdict is countedVerdict's, without a *testing.T, so a
-// failing direction is provable without failing this test.
+// ceiling, the bytes and the two rules on a counter's wrap beside them. The verdict is
+// countedVerdict's, without a *testing.T, so a failing direction is provable without failing this
+// test.
 func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T) {
 	const small, full = 1000, growthStep * 1000
 	// A linear op counts 1,000 statements a character and allocates as many bytes; its reading is
@@ -327,6 +328,13 @@ func TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack(t *testing.T
 	unread := shape
 	unread.reading = countedReading{}
 	failsWith("a shape with no reading", unread, [2]counted{linear(small), linear(full)}, "no reading is recorded")
+	// A block counted 2^31 times fails its run, naming the block, though the work summed reads
+	// linear: the next size can wrap its counter. A larger size whose work is below the smaller's
+	// fails as the wrap it is.
+	busy := linear(small)
+	busy.busiest, busy.busiestBlock = countedBlockLimit, "example.com/synthetic/scan.go:10.2,12.3"
+	failsWith("a block counted 2^31 times", shape, [2]counted{busy, linear(full)}, "the block example.com/synthetic/scan.go:10.2,12.3 ran 2147483648 times")
+	failsWith("work that shrinks", shape, [2]counted{run(small, small*1000, 1000), run(full, small*1000-1, 8000)}, "a coverage counter that wrapped")
 	// Negative control: round 1-2's 2x step, the same slack, a quadratic count whose work a
 	// character the ceiling allows at both sizes. This must still pass the ratio (wrongly) - it is
 	// the historical defect growthStep's doc comment names, kept here so a future reader can run it

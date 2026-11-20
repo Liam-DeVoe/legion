@@ -672,14 +672,21 @@ func TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses(t *tes
 // take and not one lapse read, where a standby woken by events would put a write on duty_holds
 // for every event.
 //
-// The holder must hold throughout: a holder whose renewals go unconfirmed for TTL less Margin
-// (4 s at publisherHoldOptions) gives the hold up, and the standby then rightly takes it, which
-// this row would read as a take an event caused. The holder cannot be held on a fake as the
-// standby is: its hold lasts on the database's clock (duty's renewHold stamps now() + TTL), and
-// the outbox reads the hold's deadline against the wall clock (Publishing, scan), so a
-// renewal clock the row did not move in step with real time would stop the holder at once. The
-// row gives the publisher hold a TTL and Margin no run reaches instead, so the holder's hold ends
-// only when it is released, which the row never does while it counts.
+// The holder must hold throughout: a holder whose hold is lost gives it up, and the standby then
+// rightly tries it, which this row would read as a try an event caused. So the holder's hold runs
+// on a fake of its own (Outbox.holdClock, and its bus client's windows, bus.WithWindowClock), which
+// the row does not move while it counts: no renewal falls due, and the loss deadline, the take's
+// moment plus TTL less Margin, comes only when the row moves the fake to it, however slow the
+// machine. The hold lasts on the database's clock too, which no fake moves and which the holder
+// renews only as far as its fake moves, so the row gives the hold a TTL and Margin no run reaches:
+// its row cannot lapse there, and the holder's records, which check it there, are never refused.
+//
+// Once it has counted, the row brings the loss deadline itself. From then on the holder's renewals
+// go unanswered (unansweredRenewals), as a database too loaded to answer leaves them, so the move
+// that fires the next renewal moves the deadline no further. One tick of the fake short of the
+// deadline the holder still publishes and the standby has sent nothing; at it the holder's hold is
+// lost, the holder releases it, and the standby, woken by that release, tries the hold once. The
+// holder, whose NATS works, tries it again at once too, so either of them may take it.
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	saved := publisherHoldOptions
 	publisherHoldOptions.TTL, publisherHoldOptions.Margin = 24*time.Hour, time.Hour
@@ -688,9 +695,20 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	counter := &sendCounter{}
-	holder := startProcess(t, "holder", database, url, counter)
+	holderStart := time.Now()
+	holderClock := clocktest.New(holderStart)
+	renewals := &unansweredRenewals{}
+	holder := startProcessWith(t, "holder", database, url, counter, func(o *Outbox) {
+		o.holdClock = holderClock
+		o.deps.Store = &store.Store{Pool: storetest.Traced(t, o.deps.Store.Pool, renewals, nil)}
+	}, bus.WithWindowClock(holderClock))
 	testwait.Eventually(t, "the holder taking the publisher hold", holder.outbox.Publishing)
-
+	// The hold runs on the holder's fake, which has not moved: its loss deadline is the take's
+	// moment on it plus TTL less Margin.
+	lapse := holderStart.Add(publisherHoldOptions.TTL - publisherHoldOptions.Margin)
+	if got := holder.outbox.hold.Load().Deadline(); !got.Equal(lapse) {
+		t.Fatalf("the holder's hold has its loss deadline at %s, want %s on its fake: the take's moment plus TTL less Margin", got, lapse)
+	}
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
 		t.Fatalf("connect the standby's NATS client: %v", err)
@@ -754,7 +772,56 @@ func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
 		t.Fatalf("the standby sent %d takes of the publisher hold and %d reads of its lapse while the holder wrote 100 events, want none: nothing but a release, a lapse or its connection changing wakes it",
 			takes, reads)
 	}
+
+	// The holder's renewals go unanswered from here. One tick of its fake short of the loss
+	// deadline, a move that fires its next renewal, the hold is still the holder's, so nothing has
+	// released it and the standby has sent nothing.
+	renewals.unanswer()
+	takes, reads = len(tracer.matching("insert into duty_holds")), len(tracer.matching("from duty_holds where name"))
+	holderClock.Set(lapse.Add(-time.Nanosecond))
+	if !holder.outbox.Publishing() {
+		t.Fatalf("one tick short of its loss deadline %s on its fake the holder no longer publishes: its hold lapsed before its deadline", lapse)
+	}
+	if sentTakes, sentReads := len(tracer.matching("insert into duty_holds"))-takes, len(tracer.matching("from duty_holds where name"))-reads; sentTakes != 0 || sentReads != 0 {
+		t.Fatalf("one tick short of the holder's loss deadline the standby sent %d takes of the publisher hold and %d reads of its lapse, want none: the holder still held it",
+			sentTakes, sentReads)
+	}
+	// At the deadline the holder's hold is lost, the holder releases it, and the release wakes the
+	// standby, which tries the hold: it takes it, or, when the holder took it again first, reads its
+	// lapse and waits again.
+	holderClock.Set(lapse)
+	testwait.Eventually(t, "the standby trying the hold once the holder released the hold that lapsed at its deadline", func() bool {
+		// restingAt is read first, so the takes it is compared with are never older than it.
+		rested := restingAt.Load()
+		sent := int64(len(tracer.matching("insert into duty_holds")))
+		return sent > int64(takes) && (standby.Publishing() || rested == sent)
+	})
+	if tried := len(tracer.matching("insert into duty_holds")) - takes; tried != 1 {
+		t.Fatalf("the standby sent %d takes of the publisher hold once the holder released the hold that lapsed at its deadline, want one: the release wakes it once",
+			tried)
+	}
+	t.Logf("once the holder released the hold that lapsed at its deadline, the standby sent one take of it and %d reads of its lapse, and publishes: %t",
+		len(tracer.matching("from duty_holds where name"))-reads, standby.Publishing())
 }
+
+// unansweredRenewals is a pgx tracer that, once unanswer is called, holds every renewal of a hold
+// until that renewal's own context ends, as a database too loaded to answer leaves it: no renewal
+// is confirmed, so the hold's loss deadline stays where the last confirmed one left it. A renewal's
+// context ends at its bound on the hold's clock or when the hold is released (duty.Hold.renew).
+// Every other statement passes, the release among them.
+type unansweredRenewals struct{ on atomic.Bool }
+
+// unanswer holds every renewal sent from now on.
+func (u *unansweredRenewals) unanswer() { u.on.Store(true) }
+
+func (u *unansweredRenewals) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if u.on.Load() && strings.Contains(data.SQL, "update duty_holds set expires_at = now() + make_interval") {
+		<-ctx.Done()
+	}
+	return ctx
+}
+
+func (u *unansweredRenewals) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // fenceAfterFirstSend is a publisher hold whose deadline passes as the batch's first envelope is
 // sent, as a process that froze mid-batch past its deadline finds when it resumes.

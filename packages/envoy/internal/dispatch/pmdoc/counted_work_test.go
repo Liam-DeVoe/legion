@@ -47,10 +47,23 @@ import (
 // no such count sits on, called once for each piece of the input over the rest of it, is seen by
 // none of the three.
 //
-// The counters are 32 bits wide in each block, and a block run 2^32 times or more in one run reads
-// less than it ran. No shape comes near: each readings line names the count of the busiest block
-// at each size, and a planted quadratic pass that did reach it fails the per-unit ceiling at the
-// smaller size first.
+// A block's counter is 32 bits wide, so a block run 2^32 times or more in one run reads only what
+// is left of its count past the last wrap, and the work summed from it is no count of the work at
+// all. The counts are read from the counters the run itself writes (-test.gocoverdir), through go
+// tool covdata textfmt, one line a block, and two rules fail a run that comes near a wrap, each
+// for its reason (countedVerdict):
+//
+//   - a block counted 2^31 times or more (countedBlockLimit) fails its run, naming the block: a
+//     shape's larger size holds growthStep times the smaller's units (alternatingBlocks four
+//     times), so a count past half the counter's range at one size can pass 2^32 at the next,
+//     and the sum is then no longer a count of the work;
+//   - a larger size whose work is below the smaller's fails: work that shrinks as the input grows
+//     is a counter that wrapped, not a reading.
+//
+// What neither sees is a block that wrapped at both sizes and reads below 2^31 at each: its
+// readings are then what is left of each count, and only the per-unit bounds can still catch it.
+// Each readings line names the busiest block's count at each size, and no fixed shape comes near
+// 2^31.
 
 // The environment TestCountedWorkOfOneShape reads: the row and the shape to run, the size to run it
 // at, and whether to run the op ("1") or only prepare its input ("0").
@@ -103,6 +116,10 @@ type countedReading struct{ past, most float64 }
 // either way asks for its readings to be taken again, from the readings line its row logs.
 const countedMargin = 4
 
+// countedBlockLimit is the count at which a block's counter, 32 bits wide, is half way to wrapping:
+// a block counted this often at one size can wrap at the next, so its run fails (countedVerdict).
+const countedBlockLimit = 1 << 31
+
 // countedWorkIsLinear counts shape's op at each of its two sizes (countedRun) and fails t at each
 // bound the counts break (countedVerdict), logging the readings either way.
 func countedWorkIsLinear(t *testing.T, row string, shape countedShape) [2]counted {
@@ -129,13 +146,14 @@ func countedWorkIsLinear(t *testing.T, row string, shape countedShape) [2]counte
 //   - each unit past the smaller size costs at least the shape's floor, a quarter of its reading,
 //     so the counters saw the op read every unit;
 //   - each unit costs at most the shape's ceiling at either size, four times its reading;
-//   - the bytes the op allocates grow no faster than linearSlack times the units either, and are
-//     not none: the copies the standard library makes, which the counters do not see, are seen
-//     here;
 //   - the bytes the standard library's searches read (searchedBytes), where the op's stage counts
 //     any, grow no faster than linearSlack times the units: a search asked again from each piece of
 //     the input over the rest of it, which the counters see as one statement a search, is seen
-//     here.
+//     here;
+//   - no block is counted countedBlockLimit times or more at either size, since past that the
+//     next size can wrap its 32-bit counter and the work summed from it is no longer a count;
+//   - the work at the larger size is not below the work at the smaller, since work that shrinks
+//     as the input grows is a counter that wrapped, not a reading.
 func countedVerdict(shape countedShape, runs [2]counted) (failures []string, readings string) {
 	small, large := runs[0], runs[1]
 	growth := float64(large.units) / float64(small.units)
@@ -152,6 +170,17 @@ func countedVerdict(shape countedShape, runs [2]counted) (failures []string, rea
 		large.units, shape.unit, large.work, byModuleText(large.byModule), perUnit[1], shape.unit,
 		ratio, growth, shape.unit, limit, past, shape.unit, small.units, floor, ceiling, shape.unit,
 		small.bytes, large.bytes, byteRatio, limit, small.stage, large.stage, small.busiest, large.busiest)
+	for _, run := range runs {
+		if run.busiest >= countedBlockLimit {
+			failures = append(failures, fmt.Sprintf("the block %s ran %d times at %d %ss, at or past 2^31: its counter is 32 bits "+
+				"wide, so the next size can wrap it, and the work summed from it is no longer a count", run.busiestBlock, run.busiest,
+				run.units, shape.unit))
+		}
+	}
+	if large.work < small.work {
+		failures = append(failures, fmt.Sprintf("the work falls from %d at %d %ss to %d at %d: work that shrinks as the input "+
+			"grows is a coverage counter that wrapped, not a reading", small.work, small.units, shape.unit, large.work, large.units))
+	}
 	if shape.reading.past <= 0 || shape.reading.most <= 0 {
 		failures = append(failures, fmt.Sprintf("no reading is recorded for this shape: set its reading from past and most "+
 			"in this line, {past: %.1f, most: %.1f}", past, max(perUnit[0], perUnit[1])))
@@ -258,11 +287,13 @@ func TestCountedWorkOfOneShape(t *testing.T) {
 }
 
 // countedBuild is the counted test binary, built once for the whole run (countedBinary) and removed
-// by TestMain once every row has run.
+// by TestMain once every row has run, and the go command that built it, which reads the counters
+// each run of it writes (countedChild).
 var countedBuild struct {
-	once sync.Once
-	dir  string
-	bin  string
+	once  sync.Once
+	dir   string
+	bin   string
+	goCmd string
 	// modules is the module of each package the binary counts, by its import path.
 	modules map[string]string
 	err     string
@@ -279,15 +310,16 @@ func TestMain(m *testing.M) {
 }
 
 // countedBinary is the path of this package's test binary built with Go's coverage counters in
-// every package pmdoc imports outside the standard library, and the module of each of those
-// packages. The first row to ask builds it; a build that failed fails every row that asks.
-func countedBinary(t *testing.T) (string, map[string]string) {
+// every package pmdoc imports outside the standard library, the go command that built it, and the
+// module of each of those packages. The first row to ask builds it; a build that failed fails
+// every row that asks.
+func countedBinary(t *testing.T) (bin, goCmd string, modules map[string]string) {
 	t.Helper()
 	countedBuild.once.Do(func() { buildCounted(t) })
 	if countedBuild.err != "" {
 		t.Fatal(countedBuild.err)
 	}
-	return countedBuild.bin, countedBuild.modules
+	return countedBuild.bin, countedBuild.goCmd, countedBuild.modules
 }
 
 func buildCounted(t *testing.T) {
@@ -328,7 +360,7 @@ func buildCounted(t *testing.T) {
 		countedBuild.err = err.Error()
 		return
 	}
-	countedBuild.bin, countedBuild.modules = bin, modules
+	countedBuild.bin, countedBuild.goCmd, countedBuild.modules = bin, goCmd, modules
 }
 
 // countedCommand runs name with args, and env added to the test's own, its output to one file read
@@ -367,9 +399,11 @@ type counted struct {
 	// work is the statements the op ran in the counted packages, and byModule the same by module.
 	work     int64
 	byModule map[string]int64
-	// busiest is the count of the block the op's run ran most often, preparing included: a count
-	// is 32 bits wide, so one near 2^32 would read less than it ran.
-	busiest int64
+	// busiest is the count of the block the op's run ran most often, preparing included, and
+	// busiestBlock that block, as the profile names it: a count is 32 bits wide, so one near 2^32
+	// would read less than it ran (countedBlockLimit).
+	busiest      int64
+	busiestBlock string
 	// bytes is what the op allocated on the heap (allocatedBy), and stage what the shape's stage
 	// counted of it.
 	bytes, stage uint64
@@ -394,11 +428,23 @@ func countedRun(t *testing.T, row string, shape countedShape, size int) counted 
 
 // countedChild runs shape at size in the counted test binary, with its op or without it, and reads
 // the statements the run counted, the units it says its input holds and the bytes its op allocated.
+// The counts are the ones the run writes to its coverage directory, read by go tool covdata
+// textfmt. covdata reads -i as a comma-separated list of directories, so that directory is one
+// under the counted binary's own (countedBuild.dir), whose name holds no comma: t.TempDir's is the
+// test's name, which a shape's name ("2,000 unclosed openers …") carries a comma into.
 func countedChild(t *testing.T, row string, shape countedShape, size int, op bool) counted {
 	t.Helper()
-	bin, modules := countedBinary(t)
-	dir := t.TempDir()
-	profile := filepath.Join(dir, "profile.txt")
+	bin, goCmd, modules := countedBinary(t)
+	coverDir, err := os.MkdirTemp(countedBuild.dir, "cover-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(coverDir); err != nil {
+			t.Errorf("remove a counted run's coverage directory: %v", err)
+		}
+	})
+	profile := filepath.Join(t.TempDir(), "profile.txt")
 	what := fmt.Sprintf("the counted run of %s at %d", shape.name, size)
 	opValue := "0"
 	if op {
@@ -408,8 +454,7 @@ func countedChild(t *testing.T, row string, shape countedShape, size int, op boo
 	}
 	out, err := countedCommand(t, what, []string{countedRowEnv + "=" + row, countedShapeEnv + "=" + shape.name,
 		countedSizeEnv + "=" + strconv.Itoa(size), countedOpEnv + "=" + opValue}, bin,
-		"-test.run=^TestCountedWorkOfOneShape$", "-test.gocoverdir="+t.TempDir(),
-		"-test.coverprofile="+profile)
+		"-test.run=^TestCountedWorkOfOneShape$", "-test.gocoverdir="+coverDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,14 +471,18 @@ func countedChild(t *testing.T, row string, shape countedShape, size int, op boo
 	if !found {
 		t.Fatalf("%s wrote no %q line; its output:\n%s", what, countedMark, out)
 	}
-	run.work, run.byModule, run.busiest = countedWork(t, profile, modules)
+	if _, err := countedCommand(t, "go tool covdata textfmt of "+what, nil, goCmd, "tool", "covdata", "textfmt",
+		"-i="+coverDir, "-o="+profile); err != nil {
+		t.Fatal(err)
+	}
+	run.work, run.byModule, run.busiest, run.busiestBlock = countedWork(t, profile, modules)
 	return run
 }
 
 // countedWork is the work a coverage profile in Go's text format counts: the statements of each
 // block times the times it ran, summed, in all and by the module of the block's package, and the
-// count of the block that ran most often.
-func countedWork(t *testing.T, profile string, modules map[string]string) (work int64, byModule map[string]int64, busiest int64) {
+// count of the block that ran most often, with that block.
+func countedWork(t *testing.T, profile string, modules map[string]string) (work int64, byModule map[string]int64, busiest int64, busiestBlock string) {
 	t.Helper()
 	data, err := os.ReadFile(profile)
 	if err != nil {
@@ -459,7 +508,9 @@ func countedWork(t *testing.T, profile string, modules map[string]string) (work 
 		}
 		work += stmts * count
 		byModule[module] += stmts * count
-		busiest = max(busiest, count)
+		if count > busiest {
+			busiest, busiestBlock = count, block
+		}
 	}
-	return work, byModule, busiest
+	return work, byModule, busiest, busiestBlock
 }
