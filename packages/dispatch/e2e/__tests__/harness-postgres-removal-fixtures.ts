@@ -433,33 +433,56 @@ export function clockOf(clock: string): { pid: number; forked: number; ticks: nu
 }
 
 /** The reader a row's sweep runs, the row's own or the start's (`statReader`), with its program
- *  behind a `bash` that writes to `starts`, each time the sweep starts it, the read and the top path
- *  it serves (`HOLDER_READ` of `e2e/harness-postgres-processes.ts`), and then runs it, so that the
- *  row counts the holder reads its sweep made (`Row.reads`); its mount table is the reader's own. */
+ *  behind a `bash` that writes to `starts`, each time the sweep starts it, its pid, the read and the
+ *  top path it serves (`HOLDER_READ` of `e2e/harness-postgres-processes.ts`), and to
+ *  `<starts>.<pid>` the paths it is asked, as the start writes them on its standard input, and
+ *  then runs it on those paths, so that the row counts the holder reads its sweep made
+ *  (`Row.reads`); its mount table is the reader's own. */
 function countedReader(starts: string, reader: StatReader = statReader): StatReader {
   const bash = Bun.which("bash");
-  if (bash === null) throw new Error("no bash on PATH to count the holder reads of a sweep");
+  // The sweep's own PATH may hold no program (`startSweep`), so the copy runs by its path.
+  const cat = Bun.which("cat");
+  if (bash === null || cat === null) {
+    throw new Error("no bash or cat on PATH to count the holder reads of a sweep");
+  }
   return {
     ...reader,
-    run: [bash, "-c", 'printf "%s\\n" "$HOLDER_READ" >>"$0"; exec "$@"', starts, ...reader.run],
+    run: [
+      bash,
+      "-c",
+      `printf "%s %s\\n" "$$" "$HOLDER_READ" >>"$0"; ${JSON.stringify(cat)} >"$0.$$"; exec "$@" <"$0.$$"`,
+      starts,
+      ...reader.run,
+    ],
   };
 }
 
 /** How many readers the sweep that ran `countedReader(starts)` started one after another: for
- *  each of its reads, the most readers one of its top paths started, since the top paths of a
- *  read start theirs at the same time, and a top path starts another only after one it waited on
- *  ran out its bound. A row's `reads` counts these, each of which may take `statStartMs` to start
- *  and `statMs` to read. */
+ *  each of its reads, the most readers that one of its top paths started, or that one path was
+ *  asked by, since the top paths of a read start theirs at the same time, a top path starts
+ *  another only after one it waited on ran out its bound, and a path is asked once in a read that
+ *  stops at a path that answers no stat. So a read that goes on past such a path is counted by the
+ *  paths it asks again, whatever it names itself. A row's `reads` counts these, each of which may
+ *  take `statStartMs` to start and `statMs` to read. */
 function readsMade(starts: string): number {
   const lines = existsSync(starts) ? readFileSync(starts, "utf8").split("\n").filter(Boolean) : [];
-  const perTop = new Map<string, number>();
-  for (const line of lines) perTop.set(line, (perTop.get(line) ?? 0) + 1);
-  const perRead = new Map<string, number>();
-  for (const [line, count] of perTop) {
-    const read = line.split(" ")[0] ?? "";
-    perRead.set(read, Math.max(perRead.get(read) ?? 0, count));
+  const perRead = new Map<string, { tops: Map<string, number>; paths: Map<string, number> }>();
+  for (const line of lines) {
+    const [pid = "", ...label] = line.split(" ");
+    const read = label[0] ?? "";
+    const counts = perRead.get(read) ?? { tops: new Map(), paths: new Map() };
+    const top = label.join(" ");
+    counts.tops.set(top, (counts.tops.get(top) ?? 0) + 1);
+    const asked = existsSync(`${starts}.${pid}`) ? readFileSync(`${starts}.${pid}`, "utf8") : "";
+    for (const path of new Set(asked.split("\0").filter(Boolean))) {
+      counts.paths.set(path, (counts.paths.get(path) ?? 0) + 1);
+    }
+    perRead.set(read, counts);
   }
-  return [...perRead.values()].reduce((sum, count) => sum + count, 0);
+  return [...perRead.values()].reduce(
+    (sum, { tops, paths }) => sum + Math.max(0, ...tops.values(), ...paths.values()),
+    0
+  );
 }
 
 /** A start's sweep running in a child with `tmp` for its `TMPDIR` and `empty`, a directory with no

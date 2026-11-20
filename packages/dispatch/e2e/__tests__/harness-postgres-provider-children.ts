@@ -543,13 +543,21 @@ export async function stopOwn(
 /** Why this machine refuses a stack a PID namespace of its own, or undefined where it gives one:
  *  that takes a privilege this file borrows with `sudo -n` (`unshare --pid`), since an
  *  unprivileged user namespace is not allowed everywhere. A refusal is one line on stderr, which
- *  names `file` and says that its two rows of such a stack skip. */
+ *  names `file` and says that its two rows of such a stack skip. The probe is one event of another
+ *  process, `sudo -n`, which asks for nothing and answers or refuses at once, so it waits as long
+ *  as a row waits for one such event (`claimEventMs`); one that has not answered by then is no
+ *  refusal, and it throws, naming the probe, rather than skip the rows under a load. */
 export function pidNamespaceRefusal(file: string): string | undefined {
   const probe = spawnSync("sudo", ["-n", "unshare", "--pid", "--fork", "--mount-proc", "true"], {
     encoding: "utf8",
-    timeout: 30_000,
+    timeout: claimEventMs,
   });
   if (probe.status === 0) return undefined;
+  if ((probe.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {
+    throw new Error(
+      `${file}: \`sudo -n unshare --pid\` neither answered nor refused within ${claimEventMs / 1000} s, the time a row waits for one event of another process, so this machine's answer is not known`
+    );
+  }
   const why = (probe.stderr || probe.error?.message || `exit ${probe.status}`)
     .trim()
     .split("\n")[0];
