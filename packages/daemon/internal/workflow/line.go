@@ -179,11 +179,11 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 }
 
 // WriteIssue writes issue (record.Store.PutIssue), and is the one write of an issue of the workflow
-// and of admission: no other code of either package calls a store's PutIssue (the scan of
-// TestEveryWriteOfAnIssueChecksItsPhaseAgainstItsTasksPlace). issues.phase and the place of the
-// run's task are two records of where the issue stands, and WriteIssue refuses a write in which
-// they disagree: the issue stands in the phase its task's place and state derive (issuePhaseOf), a
-// hold overlays that phase and names it (record.StandsAt), and a root that waits on a person
+// and of admission: no other code of either package calls a store's PutIssue. issues.phase and the
+// place of the run's task are two records of where the issue stands, and WriteIssue refuses a
+// write in which they disagree: the issue stands in the phase its task's place and state derive
+// (issuePhaseOf), a hold overlays that phase and names it (record.StandsAt), and a root that
+// waits on a person
 // before its first step stands in awaiting_person over the admitted of a task at no act. That root
 // stands there itself: no hold is from awaiting_person, which the issues table refuses
 // (issues_held_from_check), so a hold that names it is refused here too. It reads

@@ -51,9 +51,9 @@ func walkOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) Walk {
 }
 
 // An issue whose run has no plan rows walks today's line, phase.Order, and the table of that line
-// is today's (TestTableOfTodaysOrderIsTodaysTable): what an issue that ran before this release
-// walks. Plan rows of another run of the issue are not its run's. Once its run has rows, the
-// walk is theirs: the task, its steps, its line, and where the task stands.
+// is today's (TestAWalkWithNoPlanRowsMovesByTodaysTable): what an issue that ran before this
+// release walks. Plan rows of another run of the issue are not its run's. Once its run has rows,
+// the walk is theirs: the task, its steps, its line, and where the task stands.
 func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	pool := migratedPool(t)
 	engine := stepEngine(nil)

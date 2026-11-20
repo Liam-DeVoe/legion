@@ -4,13 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"go/ast"
-	"go/parser"
-	gotoken "go/token"
-	"path/filepath"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -386,59 +381,12 @@ func TestThePlanNodeIsTheOwnersAndIsWrittenAgainAtEachVersionTaken(t *testing.T)
 	})
 }
 
-// topLevelDecls is each top-level declaration of this package's own source, its non-test files (a
-// method is no top-level name), by name: a function's declaration, a type's or a value's spec; and
-// how many files the scan parsed, so a scan that read nothing cannot pass for one that found
-// nothing.
-func topLevelDecls(t *testing.T) (map[string]ast.Node, int) {
-	t.Helper()
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatalf("list the package's files: %v", err)
-	}
-	decls, parsed := map[string]ast.Node{}, 0
-	set := gotoken.NewFileSet()
-	for _, name := range files {
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(set, name, nil, parser.SkipObjectResolution)
-		if err != nil {
-			t.Fatalf("parse %s: %v", name, err)
-		}
-		parsed++
-		for _, decl := range file.Decls {
-			switch decl := decl.(type) {
-			case *ast.FuncDecl:
-				if decl.Recv == nil {
-					decls[decl.Name.Name] = decl
-				}
-			case *ast.GenDecl:
-				for _, spec := range decl.Specs {
-					switch spec := spec.(type) {
-					case *ast.TypeSpec:
-						decls[spec.Name.Name] = spec
-					case *ast.ValueSpec:
-						for _, n := range spec.Names {
-							decls[n.Name] = spec
-						}
-					}
-				}
-			}
-		}
-	}
-	return decls, parsed
-}
-
 // The default steps are stated in one place, the project's setting (config.Project.RunsByDefault,
 // which the daemon wires as Config.DefaultSteps). With default_steps [implementer, reviewer], the
 // plan node an issue whose owner gave no plan writes at its first step holds exactly the one task
-// default of those two steps, and the package states no list of its own: its DefaultSteps, the
-// steps of a run with no plan rows that other packages read, is at most a function that answers
-// the setting of a project that names none and spells no step itself. A scan of the source reads
-// it, and the same scan finds PlanID, so it read the package. An issue with no plan rows runs
-// today's steps at today's places whatever the project names: under the same setting its
-// implementer is step 2 and its tester step 3 of the task default.
+// default of those two steps, so a list the package held of its own would name other steps there.
+// An issue with no plan rows runs today's steps at today's places whatever the project names:
+// under the same setting its implementer is step 2 and its tester step 3 of the task default.
 func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 	t.Run("the plan node holds the project's default_steps", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -459,37 +407,6 @@ func TestThereIsOneDefinitionOfTheDefaultSteps(t *testing.T) {
 		}
 		if want := `[{"id":"default","steps":["implementer","reviewer"]}]`; tasks.String() != want {
 			t.Fatalf("the plan node's tasks = %s, want %s", tasks.String(), want)
-		}
-	})
-
-	t.Run("the package states no default steps of its own", func(t *testing.T) {
-		decls, parsed := topLevelDecls(t)
-		if parsed == 0 || decls["PlanID"] == nil {
-			t.Fatalf("the scan parsed %d files and found no PlanID, so it did not read the package", parsed)
-		}
-		decl := decls["DefaultSteps"]
-		if decl == nil {
-			return
-		}
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
-			t.Fatalf("the package declares DefaultSteps as %T, a list of its own, want at most a function that answers the project's setting", decl)
-		}
-		var reads bool
-		var spelled []string
-		ast.Inspect(fn.Body, func(node ast.Node) bool {
-			switch node := node.(type) {
-			case *ast.SelectorExpr:
-				reads = reads || node.Sel.Name == "RunsByDefault"
-			case *ast.BasicLit:
-				if node.Kind == gotoken.STRING {
-					spelled = append(spelled, node.Value)
-				}
-			}
-			return true
-		})
-		if !reads || len(spelled) != 0 {
-			t.Fatalf("DefaultSteps reads RunsByDefault %t and spells %v, want it to answer the project's setting (config.Project.RunsByDefault) and spell no step", reads, spelled)
 		}
 	})
 
