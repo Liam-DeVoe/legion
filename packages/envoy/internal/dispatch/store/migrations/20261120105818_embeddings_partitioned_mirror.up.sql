@@ -12,9 +12,17 @@
 -- runs between the copy reading it and the copy's insert committing: every write of a row lands
 -- after the copy of it, and so wins.
 --
--- A write of a row of a project with no partition fails here, as it fails on the partitioned
--- table after the swap: every project has one (20261120105330), so such a write names a project
--- that does not exist.
+-- A write of a row of a project with no partition first gives the project its partition, where
+-- the project exists (embeddings_ensure_project_partition, 20261120105330): a statement can
+-- write an item's row before the project it inserts beside it, and a project written with its
+-- table's triggers off has none. A row of a key no project holds is refused (SQLSTATE 23514), as
+-- it is on the partitioned table after the swap.
+--
+-- A write made as a replica (session_replication_role = replica) fires no ordinary trigger, so it
+-- is not carried over. No writer of Dispatch's writes so; a restore or a replication apply into
+-- this table during the copy would, and the swap then refuses wherever the two tables' counts
+-- differ. Firing these triggers ALWAYS would take an ALTER TABLE of embeddings, which the census
+-- does not admit over a table of its size.
 --
 -- What it costs. Each write of embeddings writes embeddings_partitioned too, its HNSW index
 -- included, for as long as the copy runs, which is the only time both tables are there.
@@ -38,6 +46,7 @@ begin
     end if;
     return null;
   end if;
+  perform embeddings_ensure_project_partition(new.project_key);
   if tg_op = 'UPDATE' then
     if old.project_key is null then
       update embeddings_partitioned

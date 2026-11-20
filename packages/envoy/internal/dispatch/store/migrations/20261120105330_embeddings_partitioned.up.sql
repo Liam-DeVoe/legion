@@ -145,7 +145,9 @@ select embeddings_add_project_partition(key) from projects order by key;
 
 -- A project inserted from here on gets its partition in the inserting transaction, whichever
 -- path inserts it: POST /api/v1/projects (api/projects.go) and every seed and test that writes
--- projects alike.
+-- projects alike. The trigger fires ALWAYS, so a session that writes as a replica
+-- (session_replication_role = replica, as a logical-replication apply or a restore does), whose
+-- writes fire no ordinary trigger, still gives each project its partition.
 create function projects_embeddings_partition() returns trigger
 language plpgsql as $$
 begin
@@ -156,6 +158,28 @@ $$;
 
 create trigger projects_embeddings_partition after insert on projects
   for each row execute function projects_embeddings_partition();
+alter table projects enable always trigger projects_embeddings_partition;
+
+-- embeddings_ensure_project_partition gives project p_key its partition before a row of it is
+-- written, where the project exists and the partition does not: a statement that inserts a
+-- project and an item of it at once can run the item's embeddings write first (a WITH query a
+-- statement does not read runs last), and a project inserted with its table's triggers off has
+-- none. A key no project holds gets no partition, so its row is refused (SQLSTATE 23514), as it
+-- must be. The writers that run outside a statement on the table they attach to call it:
+-- embeddings_mirror_to_partitioned, which attaches to embeddings_partitioned from a write of
+-- embeddings, and the enqueue functions the swap installs, which run from the owners' triggers.
+-- The label trigger cannot (embeddings_label_project_key_after_insert); the copy calls it for
+-- every project before it begins (store.partitionEmbeddings). It costs one catalog lookup where
+-- the partition is there.
+create function embeddings_ensure_project_partition(p_key text) returns void
+language plpgsql as $$
+begin
+  if p_key is not null and to_regclass('embeddings_project_' || lower(p_key)) is null
+     and exists (select 1 from projects where key = p_key) then
+    perform embeddings_add_project_partition(p_key);
+  end if;
+end;
+$$;
 
 -- embeddings_reader_partitions is the partitions a meaning search of the reader whose
 -- visibility argument is viewer (refs.VisibilityArg) reads, as the project keys of those
@@ -191,6 +215,13 @@ insert into embeddings_partitioned_copy default values;
 -- since the row is routed to the no-project partition before it runs and Postgres refuses a
 -- BEFORE trigger that moves a row to another partition, so this one moves the row by an UPDATE
 -- once it is in. The swap installs it.
+--
+-- It runs inside a statement that writes embeddings, where Postgres refuses an ATTACH PARTITION
+-- of embeddings (SQLSTATE 55006), so it cannot give a project its partition as the other writers
+-- do (embeddings_ensure_project_partition). A project without one is a project written with its
+-- table's triggers off, since the trigger on projects fires ALWAYS; the label then refuses the row
+-- with SQLSTATE 23514, as a row of a project with no partition is refused anywhere, and says how
+-- to give the project its partition.
 create function embeddings_label_project_key_after_insert() returns trigger
 language plpgsql as $$
 declare
@@ -199,6 +230,11 @@ begin
   if new.project_key is null then
     v_project := embeddings_owner_project_key(new.kind, new.id);
     if v_project is not null then
+      if to_regclass('embeddings_project_' || lower(v_project)) is null then
+        raise exception 'project % has no partition of embeddings, so % % cannot be stored under it', v_project, new.kind, new.id
+          using errcode = '23514',
+                hint = format('Give it one: select embeddings_add_project_partition(%L);', v_project);
+      end if;
       update embeddings set project_key = v_project
        where kind = new.kind and id = new.id and project_key is null;
     end if;
@@ -260,6 +296,7 @@ begin
     v_hash text := encode(sha256(convert_to(p_text, 'UTF8')), 'hex');
     v_project text := embeddings_owner_project_key(p_kind, p_id);
   begin
+    perform embeddings_ensure_project_partition(v_project);
     if v_project is not null then
       update embeddings set project_key = v_project where kind = p_kind and id = p_id and project_key is null;
     end if;
@@ -287,6 +324,7 @@ begin
     v_hash text := encode(sha256(convert_to(p_text, 'UTF8')), 'hex');
     v_project text := embeddings_owner_project_key(p_kind, p_id);
   begin
+    perform embeddings_ensure_project_partition(v_project);
     if v_project is not null then
       update embeddings set project_key = v_project where kind = p_kind and id = p_id and project_key is null;
     end if;

@@ -402,6 +402,96 @@ func TestEveryProjectHasItsPartitionAndARowOfNoProjectThatExistsIsRefused(t *tes
 	refused("after the swap")
 }
 
+// A project gets its partition however it is written: by a session that writes as a replica,
+// whose writes fire no ordinary trigger, and by a statement that inserts the project and an issue
+// of it at once, whose issue's embeddings row is written before the project's own trigger runs (a
+// WITH query the statement does not read runs last). In each, the issue's row lands in the
+// project's partition, before the swap and after it. A project written with its table's triggers
+// off has no partition at all: before the swap the copy gives it one, so its rows are copied, and
+// after the swap a row of it stored with no project is refused by the label trigger, which cannot
+// attach a partition inside the statement writing embeddings (SQLSTATE 55006), and names the
+// statement that gives it one.
+func TestAProjectWrittenAsAReplicaOrBesideItsIssueHasItsPartition(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 1)
+	write := func(project, partitioned string) {
+		t.Helper()
+		conn, err := database.Pool.Acquire(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Release()
+		if _, err := conn.Exec(ctx, `set session_replication_role = replica`); err != nil {
+			t.Fatalf("write as a replica: %v", err)
+		}
+		_, err = conn.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, 'Written as a replica', 'alice@d.example')`, project+"R")
+		if _, resetErr := conn.Exec(ctx, `reset session_replication_role`); resetErr != nil {
+			t.Fatal(resetErr)
+		}
+		if err != nil {
+			t.Fatalf("insert %sR as a replica: %v", project, err)
+		}
+		// Its partition is there before any row of it, so a row stored with no project and
+		// labelled by the label trigger, which cannot make one, still lands.
+		var partition *string
+		if err := database.Pool.QueryRow(ctx, `select to_regclass('embeddings_project_' || lower($1))::text`, project+"R").Scan(&partition); err != nil || partition == nil {
+			t.Errorf("%sR, written as a replica, has no partition before any row of it is written (%v)", project, err)
+		}
+		execAll(t, database,
+			fmt.Sprintf(`insert into issues (key, project_key, number, title, created_by, rank) values ('%[1]sR-1', '%[1]sR', 1, 'An issue', '{"kind":"user","id":"alice"}', 'a')`, project),
+			fmt.Sprintf(`with p as (insert into projects (key, name, default_assignee) values ('%[1]sS', 'Beside its issue', 'alice@d.example') returning key),
+				i as (insert into issues (key, project_key, number, title, created_by, rank) values ('%[1]sS-1', '%[1]sS', 1, 'An issue', '{"kind":"user","id":"alice"}', 'a') returning key)
+				select key from i`, project),
+		)
+		for _, key := range []string{project + "R", project + "S"} {
+			if stored := partitionOfIn(t, database, partitioned, key+"-1"); stored != "embeddings_project_"+strings.ToLower(key) {
+				t.Errorf("%s-1's embeddings row is stored in %s, want embeddings_project_%s", key, stored, strings.ToLower(key))
+			}
+		}
+	}
+	// triggersOff writes project and its first issue with every trigger of their tables off, as a
+	// restore that disables triggers does: no partition, and no embeddings row.
+	triggersOff := func(project string) {
+		t.Helper()
+		execAll(t, database,
+			`alter table projects disable trigger user`,
+			`alter table issues disable trigger user`,
+			fmt.Sprintf(`insert into projects (key, name, default_assignee) values ('%s', 'Triggers off', 'alice@d.example')`, project),
+			fmt.Sprintf(`insert into issues (key, project_key, number, title, created_by, rank) values ('%[1]s-1', '%[1]s', 1, 'An issue', '{"kind":"user","id":"alice"}', 'a')`, project),
+			`alter table issues enable trigger user`,
+			`alter table projects enable trigger user`,
+			`alter table projects enable always trigger projects_embeddings_partition`,
+		)
+	}
+
+	write("BEF", "embeddings_partitioned")
+	triggersOff("BEFT")
+	execAll(t, database,
+		`alter table embeddings disable trigger user`,
+		`insert into embeddings (kind, id, text_snapshot, content_hash, project_key) values ('issue', 'BEFT-1', 'An issue', 'h', 'BEFT')`,
+		`alter table embeddings enable trigger user`,
+	)
+	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+		t.Fatalf("partition embeddings over a project with no partition: %v", err)
+	}
+	if stored := partitionOf(t, database, "issue", "BEFT-1"); stored != "embeddings_project_beft" {
+		t.Errorf("BEFT-1, of a project written with its triggers off, is stored in %s after the swap, want embeddings_project_beft", stored)
+	}
+
+	write("AFT", "embeddings")
+	triggersOff("AFTT")
+	insert := `insert into embeddings (kind, id, text_snapshot, content_hash) values ('issue', 'AFTT-1', 'An issue', 'h')`
+	_, err := database.Pool.Exec(ctx, insert)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(pgErr.Hint, "embeddings_add_project_partition('AFTT')") {
+		t.Fatalf("a row of AFTT, a project with no partition, stored with no project = %v, want SQLSTATE 23514 naming embeddings_add_project_partition('AFTT')", err)
+	}
+	execAll(t, database, `select embeddings_add_project_partition('AFTT')`, insert)
+	if stored := partitionOf(t, database, "issue", "AFTT-1"); stored != "embeddings_project_aftt" {
+		t.Errorf("AFTT-1, labelled once its project has its partition, is stored in %s, want embeddings_project_aftt", stored)
+	}
+}
+
 // The two migrations take the census's size limit as their shapes say they must: the partitioned
 // table's migration locks no table above ACCESS SHARE but projects, and the mirror's is exempt
 // from the limit however large embeddings is. The limit is injected just above projects' size,

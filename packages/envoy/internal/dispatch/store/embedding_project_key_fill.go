@@ -363,11 +363,13 @@ const embeddingsPartitionedQuery = `select relkind = 'p' from pg_class where oid
 // their counts and rename, bounded by pgmigrate.LockTimeout while it waits for them. A swap that
 // waits longer is given up and answered as an error, which the runner tries again.
 //
-// A database whose embeddings is partitioned already costs one catalog read. The copy resumes
-// from its cursor (embeddings_partitioned_copy), so a process killed mid-copy costs the next try
-// the batch it was in. It logs as the labelling does: a line that it began and where from, one
-// every embeddingProjectKeyProgressEvery while it copies, one when the copy finished, and one
-// when embeddings is swapped, with how long the swap held the two tables.
+// A database whose embeddings is partitioned already costs one catalog read. Before it copies, it
+// gives every project that has none its partition (embeddings_ensure_project_partition): a
+// project written with its table's triggers off has none, and the copy of its rows would be
+// refused. The copy resumes from its cursor (embeddings_partitioned_copy), so a process killed
+// mid-copy costs the next try the batch it was in. It logs as the labelling does: a line that it
+// began and where from, one every embeddingProjectKeyProgressEvery while it copies, one when the
+// copy finished, and one when embeddings is swapped, with how long the swap held the two tables.
 func (s *Store) partitionEmbeddings(ctx context.Context) error {
 	partitioned, err := s.embeddingsPartitioned(ctx)
 	if err != nil {
@@ -382,6 +384,9 @@ func (s *Store) partitionEmbeddings(ctx context.Context) error {
 	if err := s.Pool.QueryRow(ctx, "select kind, id, done from embeddings_partitioned_copy").
 		Scan(&fromKind, &fromID, &done); err != nil {
 		return fmt.Errorf("read the embeddings partition copy's progress: %w", err)
+	}
+	if _, err := s.Pool.Exec(ctx, `select embeddings_ensure_project_partition(key) from projects order by key`); err != nil {
+		return fmt.Errorf("give every project its partition of embeddings before the copy: %w", err)
 	}
 	if !done {
 		started := time.Now()
