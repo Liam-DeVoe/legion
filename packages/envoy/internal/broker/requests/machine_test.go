@@ -1039,13 +1039,13 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 		// so that grant gets the default lifetime, which the older grant and the request after
 		// both get.
 		newerLifetime int
-		// handed is the grant the request after is handed back: "newer", "older", or "" for none,
-		// with the request pending.
-		handed string
+		// handedBack is the grant the request after is handed back: "newer", "older", or "" for
+		// none, with the request pending.
+		handedBack string
 	}{
 		{name: "the secret is the operator's again, which pauses the newer grant", owner: fixtureOperator},
-		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, handed: "newer"},
-		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handed: "older"},
+		{name: "the secret is shared, which pauses neither grant", owner: policy.OwnerShared, handedBack: "newer"},
+		{name: "the secret is the operator's again, which pauses a newer grant of another lifetime", owner: fixtureOperator, newerLifetime: 300, handedBack: "older"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
@@ -1071,10 +1071,10 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 			if again.GrantID != nil {
 				handed = "grant " + *again.GrantID
 			}
-			if want := map[string]string{"newer": newer, "older": older}[c.handed]; want != "" && (again.GrantID == nil || *again.GrantID != want) {
-				t.Fatalf("Create once %s = state %q with %s; want the %s grant %s handed back (older %s, newer %s)", c.name, again.State, handed, c.handed, want, older, newer)
+			if want := map[string]string{"newer": newer, "older": older}[c.handedBack]; want != "" && (again.GrantID == nil || *again.GrantID != want) {
+				t.Fatalf("Create once %s = state %q with %s; want the %s grant %s handed back (older %s, newer %s)", c.name, again.State, handed, c.handedBack, want, older, newer)
 			}
-			if c.handed == "" && (again.State != "pending" || again.GrantID != nil) {
+			if c.handedBack == "" && (again.State != "pending" || again.GrantID != nil) {
 				t.Fatalf("Create once %s = state %q with %s; want no grant handed back, neither the newer %s nor the older %s, and a request pending", c.name, again.State, handed, newer, older)
 			}
 			if release, err := m.Values(ctx, older, enr, nil, ReleaseCall{}); err != nil || release.Values["DEEL_API_KEY"] != "deel-v1" {
