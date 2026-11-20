@@ -1050,25 +1050,14 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, approver := newFixture(t)
 			ctx := context.Background()
-			grant := func(compact, decider string) string {
-				t.Helper()
-				req, err := m.Create(ctx, enr, compact, "", nil)
-				if err != nil || req.State != "pending" || req.RecordID == nil {
-					t.Fatalf("Create = %+v, %v; want a request pending on %s", req, err, decider)
-				}
-				dec, err := m.ApplyDecision(ctx, *req.RecordID, true, decider)
-				if err != nil || dec.GrantID == "" {
-					t.Fatalf("ApplyDecision by %s = %+v, %v; want a grant", decider, dec, err)
-				}
-				return dec.GrantID
-			}
-			older := grant(signRequest(t, m, key, "need it", "DEEL_API_KEY"), approver)
+			_, older := approvedGrant(t, m, testAudience, enr, key, approver, "DEEL_API_KEY")
 			retag(t, m, deel(otherPerson))
-			newerRequest := signRequest(t, m, key, "need it while alice owns it", "DEEL_API_KEY")
-			if c.newerLifetime != 0 {
-				newerRequest = signRequestFor(t, m, key, c.newerLifetime, "DEEL_API_KEY")
+			var newer string
+			if c.newerLifetime == 0 {
+				_, newer = approvedGrant(t, m, testAudience, enr, key, otherPerson, "DEEL_API_KEY")
+			} else {
+				_, newer = approvedRequest(t, m, enr, signRequestFor(t, m, key, c.newerLifetime, "DEEL_API_KEY"), otherPerson)
 			}
-			newer := grant(newerRequest, otherPerson)
 			if newer == older {
 				t.Fatalf("setup made one grant %s; want two", older)
 			}
