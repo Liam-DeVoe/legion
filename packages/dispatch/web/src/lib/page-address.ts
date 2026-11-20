@@ -17,13 +17,14 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
  * features `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`,
  * `artifacts`, `delivery`, `inbox`, `priorities`, `project` and `search` - that test refuses
  * `useSearchParams`, `useLocation`, React Router's own `<Navigate>` (a page there redirects
- * through `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` or the bare
- * `location`, and `history.pushState` or `history.replaceState`, so for those pages the address
- * is read and written here alone and there is one rule for how a parameter is read, how it is
- * written, and what happens to the browser's history when it changes. `features/architecture/`
- * is outside that list and still reads the router itself (`ArchitecturePage.tsx`'s own
- * `useSearchParams`); a page moved onto this module joins the list, and the next one is held to
- * it from its first line.
+ * through `AddressRedirect`), a hand-built `URLSearchParams`, a `navigate` or a `<Link>` to a
+ * query of the page's own, the browser's own location (`window.location`, the bare `location`
+ * and its other names), and `history.pushState` or `history.replaceState`, so for those pages
+ * the address is read and written here alone and there is one rule for how a parameter is read,
+ * how it is written, and what happens to the browser's history when it changes.
+ * `features/architecture/` is outside that list and still reads the router itself
+ * (`ArchitecturePage.tsx`'s own `useSearchParams`); a page moved onto this module joins the
+ * list, and the next one is held to it from its first line.
  *
  * This module is the machinery every page shares, and it imports nothing from `features/`. A
  * page's own grammar - its parameter names and the words they take - lives beside the page,
@@ -38,8 +39,9 @@ import { Navigate, useLocation, useNavigate, useSearchParams } from "react-route
  *   back through four picks, and a reader typing in a search box would otherwise push one entry
  *   per letter. Every write below passes `{ replace: true }`. The one way to push an entry is
  *   `useAddressNavigate`'s explicit `{ replace: false }`, for a move that has always pushed:
- *   picking an artifact's version, so Back returns to the version the reader came from, and the
- *   move off a document the reader has just removed.
+ *   picking an artifact's version, so Back returns to the version the reader came from, the
+ *   move off a document the reader has just removed, and taking off the List's chip of the
+ *   issues a link names (`only=`), so Back gives that narrowing back.
  * - **A parameter is absent until the reader sets it.** A control at its default writes nothing,
  *   so a shared link carries only what was changed and an address that arrives naming nothing is
  *   the page as it opens.

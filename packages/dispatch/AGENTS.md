@@ -28,6 +28,20 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 - Editor: never write a class into editor DOM (ProseMirror reads it as an edit); use `ProofEditorHandle` decorations. Fix editor gaps in `packages/proof-editor`.
 - Root `patches/` patch `@milkdown/plugin-clipboard`, `@milkdown/preset-gfm` and `prosemirror-tables` at one version each; Bun skips a stale patch silently.
+- Search, sort and filter controls: a page draws these, and `components/one-definition.test.ts` refuses its own.
+  - `components/ControlRow.tsx`: the one row a page's controls sit in.
+  - `components/SearchBox.tsx`: the search box of a list narrowed by typed words.
+  - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter.
+  - `components/DisplayMenu.tsx`: the display choices at the row's end.
+  - `components/ColumnFilter.tsx`: the filter on a table column's header.
+  - `components/ColumnsMenu.tsx`: which of a table's columns are shown.
+  - `components/SelectionBar.tsx`: the bar shown while rows are marked.
+  - `components/TableShell.tsx`: the markup of every table.
+  - `components/DataTable.tsx`: the table core, over TanStack Table.
+  - `components/Pager.tsx`: a table's pager.
+  - `components/Chip.tsx`: a narrowing that is on.
+- `lib/page-address.ts`: the one module that reads and writes a page's narrowing in the address.
+- `components/focus-place.ts`: the shell's one focus rescue; `components/row-marker.ts` says what it treats as a row.
 
 ## How an agent is shown
 

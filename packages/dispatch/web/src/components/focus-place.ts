@@ -6,6 +6,19 @@ import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { CONTROL } from "./control-names";
 import { ROW_SELECTOR } from "./row-marker";
 
+/**
+ * The page's focus hand-offs: `useFocusPlace`, a component's own hand-off for a control a press
+ * takes out of it, and `useFocusRescue`, the page's one rescue, mounted once in the app shell,
+ * for every loss of the focus no component's hand-off answered. A row is `row-marker.ts`'s one
+ * rule, `ROW_SELECTOR`. A loss is the reader's while a press of theirs is still live on the lost
+ * control, inside its row, or inside the dialog, panel or selection bar it was lost from
+ * (`causedByReader`). A loss the reader caused lands on what their press drew in the control's
+ * place, else on the same control in the row that moved up into that place, else on the control
+ * now at its place or the nearest one before it. A loss they did not cause takes that last walk
+ * alone, lands in no row and in no field that takes typed text, and scrolls nothing. A loss of a
+ * control the reader had scrolled out of their sight moves the focus nowhere (`outOfSight`).
+ */
+
 /** The form controls: the focus reaches one only while it is not `disabled` (`FOCUSABLE`), and a
  *  row holds one as a control either way (`ROW_CONTROL`). */
 const FORM_FIELDS = ["button", "textarea", "input", "select"];
