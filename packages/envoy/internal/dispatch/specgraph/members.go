@@ -34,7 +34,10 @@ import (
 //     the caller did not set as a value;
 //   - input:"zero: <reason>": its zero value is a value of the format, as the reason says, and a
 //     file that leaves it out sets that value, unless a rule of its type refuses that value where
-//     the derivation reads it, as Result.fault refuses a run of a check of the code with no commit;
+//     the derivation reads it, as Result.fault refuses a run of a check of the code with no commit.
+//     Each such member that a file can leave out moves no state toward true (the sweep, below); the
+//     others are the library's alone: Input.Files, Input.Approved, Input.Results, Approved.Nodes,
+//     Tie.Why, Tie.Known and Tie.Paths;
 //   - input:"one of <member>: <reason>": of it and the other member, exactly one is set, and the
 //     validation refuses neither and both, as the reason says.
 //

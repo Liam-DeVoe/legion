@@ -40,7 +40,9 @@ type citationFault struct {
 // [--allow-empty]": it names each program check of the spec files that CI refuses at the commit
 // (specgraph.Citations, R48), and answers 1 when it names one, 0 when none, and 2 for an input it
 // cannot read, a root that is not the top of its git clone (isCloneTop) or arguments it does not
-// take.
+// take. Each answer 2 but a --json file it cannot write comes before it writes that file, so a spec
+// file that does not parse, an input it cannot read and a --needs that does not name exactly the
+// jobs spec-citations needs write no --json file.
 func runCitations(args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("citations", flag.ContinueOnError)
 	dir := flags.String("dir", "", "the directory of spec files")

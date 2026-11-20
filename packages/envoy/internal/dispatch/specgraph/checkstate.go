@@ -184,8 +184,9 @@ const (
 //     pass and a failure on one such subject and one procedure make the state unknown", "a later
 //     pass does not end the report"). For each check, newest runs of two legs that disagree:
 //     unknown, disagree. A production check skips the first test: in each leg its newest run under
-//     S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is ordinary"). Then
-//     a newest run that could not run: unknown, could_not_run.
+//     S.Deploy decides, and a query or an agent of production has no legs, so its newest result
+//     under S.Deploy decides (R7: "A pass, then a failure, then a pass across deploys is
+//     ordinary"). Then a newest run that could not run: unknown, could_not_run.
 //  6. C has a time limit and its newest run that counts is older: unknown, expired.
 //  7. The newest failing example that counts: for a code check, one that counts at S as a run does
 //     (R8: it counts "only while no file that the test reads changed"); for a program check of

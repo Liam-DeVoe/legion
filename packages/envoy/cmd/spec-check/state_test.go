@@ -17,8 +17,11 @@ import (
 // want.txt: state prints want.txt byte for byte, exit 0 and nothing on stderr. The four of The Spec
 // (carry, one-commit-two-answers, earlier-text, wait-cycle) are among them, and the test fails when
 // one is missing; the others hold shapes that the sweep of specgraph reads. No flag of the test writes
-// want.txt, and a scenario with no want.txt fails the test, which would read nothing. The control
-// runs carry with no tie, so that no result carries: the comparison can fail.
+// want.txt, so a difference is a fault of the code or a question about the spec, and a scenario with
+// no want.txt fails the test, which would read nothing. The control runs carry with no tie, so that
+// no result carries: the comparison can fail. The refusal scenario is built so on purpose: a pass at
+// c1, and test-not-in-code at c2, which holds no result of the check and has the same tied files, so
+// c2 reads unknown (uncited) and m2, whose tree is c2's, reads true from c1.
 func TestScenarios(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
