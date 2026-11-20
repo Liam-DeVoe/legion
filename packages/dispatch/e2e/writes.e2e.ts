@@ -134,7 +134,11 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
     session
   );
 
-  const context = await asUser(browser, "alice");
+  // The pin is the reader's own, so the reader is a person of the row's own (`rowPerson`), whose
+  // page draws one Unpin: the Pinned tab's, for this pin. alice's sidebar draws the sessions the
+  // rows before this one pinned for her, each with an Unpin of its own.
+  const me = rowPerson("alice");
+  const context = await asUser(browser, me);
   const page = await context.newPage();
   await page.goto(`/issues/${issue.key}/conversation`);
   await page
@@ -158,7 +162,11 @@ test("a pre-fold comment lifecycle pin remains removable from Pinned", async ({ 
   if (lifecycle === undefined) {
     throw new Error("The resolved comment lifecycle event was not recorded.");
   }
-  await putIssueState(issue.key, { dismissed: [`pinned_items:event:${lifecycle.id}`] });
+  await putIssueState(
+    issue.key,
+    { dismissed: [`pinned_items:event:${lifecycle.id}`] },
+    { login: me }
+  );
 
   await page.goto(`/issues/${issue.key}`);
   await page.getByRole("tab", { name: "Pinned" }).click();

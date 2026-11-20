@@ -14,7 +14,7 @@ import {
 } from "./api";
 import { expectUncovered } from "./layout";
 import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED, WRITE_REFUSED_TEXT } from "./sends";
-import { expect, type Locator, type Page, rowKey, test } from "./test";
+import { expect, type Locator, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // The phone layout on every project: on a phone a comment's thread opens full-screen over the
@@ -1393,7 +1393,11 @@ test("on a phone, Jump to latest covers none of the issue's tabs, the controls a
     body: "Suggested replacement.",
     suggestion: { replace_with: "swift" },
   });
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts; alice's, which the rows before this one raise,
+  // took a second line, which moved the turns down and put the newest card's Accept and Reject
+  // under the pill as the band began. The pill stayed where the docked composer puts it.
+  const alice = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await alice.newPage();

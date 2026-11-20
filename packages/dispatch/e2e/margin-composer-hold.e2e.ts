@@ -16,7 +16,7 @@ import {
   WRITE_REFUSED,
   WRITE_REFUSED_TEXT,
 } from "./sends";
-import { expect, type Page, rowKey, test } from "./test";
+import { expect, type Page, rowKey, rowPerson, test } from "./test";
 import { asUser } from "./users";
 
 // The composer a selection-bar action opens holds a send's draft until the server answers, like
@@ -291,7 +291,11 @@ test("on a phone, a margin thread opened while the margin's send is out keeps th
     anchor: { artifact: "spec", quote: "fox" },
     body: "About the fox",
   });
-  const alice = await asUser(browser, "alice");
+  // The reader is a person of the row's own (`rowPerson`, e2e/test.ts). The phone's header draws
+  // the reader's Inbox and New replies counts; alice's, which the rows before this one raise,
+  // took a second line, which moved the document down and brought the selection bar under its
+  // text to rest on the composer's Send.
+  const alice = await asUser(browser, rowPerson("alice"));
 
   try {
     const page = await alice.newPage();
