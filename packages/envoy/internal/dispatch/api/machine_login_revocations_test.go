@@ -41,9 +41,6 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 	listing := func(logins ...string) string { return `{"credentials":[` + strings.Join(logins, ",") + `]}` }
 	after := login("cred-after", "2026-11-20T12:00:01Z", "")
 	service := login("cred-service", "2026-11-20T09:00:00Z", "legion-daemon")
-	revokes := func() []string {
-		return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
-	}
 	owed := store.OwedMachineLoginRevocation{Email: "erin@other.example", Generation: 1, RecordedAt: removal}
 	ctx := t.Context()
 
@@ -51,8 +48,8 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 	calls := 0
 	twoCalls := func() (bool, error) { calls++; return calls <= 2, nil }
 	revoked, err := revokeMachineLoginsOf(ctx, client, owed, twoCalls)
-	if !errors.Is(err, errRevocationWindowSpent) || revoked != 1 || !slices.Equal(revokes(), []string{"POST /v1/launcher-credentials/cred-1/revoke-by-approver"}) {
-		t.Fatalf("a claim that may send two calls revoked %d (%v), sending %v; want cred-1 alone and errRevocationWindowSpent", revoked, err, revokes())
+	if !errors.Is(err, errRevocationWindowSpent) || revoked != 1 || !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-1/revoke-by-approver"}) {
+		t.Fatalf("a claim that may send two calls revoked %d (%v), sending %v; want cred-1 alone and errRevocationWindowSpent", revoked, err, rig.revokes())
 	}
 
 	rig.routes = nil
@@ -60,8 +57,8 @@ func TestAMachineLoginPassRevokesWhatTheRemovalOwesWhileItsClaimMaySend(t *testi
 	always := func() (bool, error) { return true, nil }
 	revoked, err = revokeMachineLoginsOf(ctx, client, owed, always)
 	want := []string{"POST /v1/launcher-credentials/cred-2/revoke-by-approver", "POST /v1/launcher-credentials/cred-3/revoke-by-approver"}
-	if err != nil || revoked != 2 || !slices.Equal(revokes(), want) {
-		t.Errorf("the next claim revoked %d (%v), sending %v; want cred-2 and cred-3, and neither cred-after, issued after the removal, nor the service's", revoked, err, revokes())
+	if err != nil || revoked != 2 || !slices.Equal(rig.revokes(), want) {
+		t.Errorf("the next claim revoked %d (%v), sending %v; want cred-2 and cred-3, and neither cred-after, issued after the removal, nor the service's", revoked, err, rig.revokes())
 	}
 }
 
@@ -102,7 +99,7 @@ func TestAClaimedMachineLoginRevocationPastItsSendWindowSendsNoRevoke(t *testing
 	if !slices.Contains(rig.routes, list) {
 		t.Fatalf("the pass sent %v, want erin's list first: the claim was within its window then", rig.routes)
 	}
-	if revokes := slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") }); len(revokes) != 0 {
+	if revokes := rig.revokes(); len(revokes) != 0 {
 		t.Errorf("the pass sent %v after its claim aged past its window during the list, want no revoke", revokes)
 	}
 	if owed, _, err := store.NewMachineLoginRevocations(database.Pool).Owing(ctx, accessErin); err != nil || !owed {

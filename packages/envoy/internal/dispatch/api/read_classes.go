@@ -279,16 +279,14 @@ func (s *server) withinReadScope(route apiRoute, handler http.HandlerFunc) http.
 		if !ok {
 			return
 		}
-		switch {
-		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted && !atBrowser(r):
-			restrictedOwnLoginRefusal(w, route.Method, route.Pattern)
-			return
-		case ownLogin && reader.Viewer != nil && reader.Viewer.Restricted:
-		default:
-			if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
-				writeError(w, refused.code, http.StatusForbidden, refused.message)
+		if ownLogin && reader.Viewer != nil && reader.Viewer.Restricted {
+			if !atBrowser(r) {
+				restrictedOwnLoginRefusal(w, route.Method, route.Pattern)
 				return
 			}
+		} else if refused := deploymentReadRefusal(route.Method, route.Pattern, route.Reads, reader.Viewer); refused != nil {
+			writeError(w, refused.code, http.StatusForbidden, refused.message)
+			return
 		}
 		handler(w, r.WithContext(withReader(r.Context(), reader)))
 	}

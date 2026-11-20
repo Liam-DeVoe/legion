@@ -15,11 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 )
 
-// restrictedLifetime is the longest a restricted member's machine-login token lives, whatever
-// BROKER_ACCESS_TOKEN_SECONDS says: the bound on how long a person taken off a project's access
-// list keeps a token for it.
-const restrictedLifetime = exchange.RestrictedLifetime
-
 // edgeLiveCheck is how long after a token ends the edge listener closes a socket it opened: its
 // 20 s check of the token plus the 5 s its verifier keeps an answer (the relay socket's contract).
 const edgeLiveCheck = 25 * time.Second
@@ -96,7 +91,7 @@ func TestARestrictedMembersMachineTradeIsNamedToItsOneProject(t *testing.T) {
 		lifetime time.Duration
 		want     time.Duration
 	}{
-		{"BROKER_ACCESS_TOKEN_SECONDS at 3600", time.Hour, restrictedLifetime},
+		{"BROKER_ACCESS_TOKEN_SECONDS at 3600", time.Hour, exchange.RestrictedLifetime},
 		{"BROKER_ACCESS_TOKEN_SECONDS at 30", 30 * time.Second, 30 * time.Second},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -165,7 +160,7 @@ func TestAMachineTradeOfAPersonNotRestrictedKeepsThePersonScope(t *testing.T) {
 				status, body := f.machineTrade(t, machine, c.asked, key)
 				token := accessTokenOf(t, status, body)
 				f.introspectsProjects(t, token, oauthwire.ProjectScopePerson, c.want)
-				if got := expiresIn(t, body); got <= restrictedLifetime {
+				if got := expiresIn(t, body); got <= exchange.RestrictedLifetime {
 					t.Fatalf("a %s member's trade asking for %q expires_in %s, want the broker's own hour", kind, c.asked, got)
 				}
 			}

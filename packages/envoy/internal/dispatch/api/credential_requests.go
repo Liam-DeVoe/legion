@@ -102,7 +102,7 @@ func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecret
 	}
 	var looked wire.RecordResponse
 	own := json.Unmarshal(answer, &looked) == nil &&
-		looked.Kind == machineLoginKind && (looked.Service == nil || *looked.Service == "") &&
+		looked.Kind == machineLoginKind && namesNoService(looked.Service) &&
 		model.CanonicalLogin(looked.Approver) == login &&
 		(recordID == "" || looked.RecordID == recordID)
 	if !own {
@@ -111,6 +111,12 @@ func ownMachineLogin(w http.ResponseWriter, r *http.Request, client *agentsecret
 		return nil, false
 	}
 	return answer, true
+}
+
+// namesNoService reports whether a broker record's service field names no service, as a person's
+// own machine login does; a service's login, which anyone signed in may decide or revoke, names one.
+func namesNoService(service *string) bool {
+	return service == nil || *service == ""
 }
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
@@ -532,12 +538,13 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	login := model.CanonicalLogin(actor.ID)
 	if !restricted {
-		body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
+		body, err := client.MachineLogins(r.Context(), login)
 		relayBrokerResponse(w, body, err)
 		return
 	}
-	own, err := ownMachineLogins(r.Context(), client, model.CanonicalLogin(actor.ID))
+	own, err := ownMachineLogins(r.Context(), client, login)
 	if err != nil {
 		relayBrokerResponse(w, nil, err)
 		return
@@ -598,7 +605,7 @@ func ownMachineLogins(ctx context.Context, client *agentsecrets.Client, person s
 	}
 	own := []wire.LauncherCredentialResp{}
 	for _, login := range logins.Credentials {
-		if (login.Service == nil || *login.Service == "") && model.CanonicalLogin(login.ApprovedBy) == person {
+		if namesNoService(login.Service) && model.CanonicalLogin(login.ApprovedBy) == person {
 			own = append(own, login)
 		}
 	}

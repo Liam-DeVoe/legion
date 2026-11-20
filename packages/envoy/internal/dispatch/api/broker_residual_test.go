@@ -45,6 +45,11 @@ func (rig *fakeBrokerRig) decisions() int {
 	}))
 }
 
+// revokes is the "METHOD path" of each machine-login revoke the fake broker has been sent, in order.
+func (rig *fakeBrokerRig) revokes() []string {
+	return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
+}
+
 // TestARestrictedMemberNeverDecidesACredentialRequest holds the gate a broker token rests on. The
 // secrets broker names a machine login's token after the approver Dispatch sends on its approve
 // route, on Dispatch's word (TestDecisionsNameTheCallerNeverTheBrowsersApprover; the broker's
@@ -186,9 +191,6 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 	}
 	personal := decodeBody[agentTokenResponse](t, minted).Token
 	const list = "GET /v1/launcher-credentials"
-	revokes := func() []string {
-		return slices.DeleteFunc(slices.Clone(rig.routes), func(route string) bool { return !strings.HasSuffix(route, "/revoke-by-approver") })
-	}
 	revocations := store.NewMachineLoginRevocations(database.Pool)
 
 	seesACC := func() bool {
@@ -218,8 +220,8 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 		t.Fatalf("the revocation of erin's machine logins is owed %t (%v) after her removal, want owed", owed, err)
 	}
 	registered.revokeBrokerDebts(ctx)
-	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed || len(revokes()) != 0 {
-		t.Fatalf("after a pass with the broker down the revocation is owed %t (%v) and the broker was sent %v, want it owed and no revoke", owed, err, revokes())
+	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || !owed || len(rig.revokes()) != 0 {
+		t.Fatalf("after a pass with the broker down the revocation is owed %t (%v) and the broker was sent %v, want it owed and no revoke", owed, err, rig.revokes())
 	}
 
 	// The broker answers again; the claim's retry window is moved past, as its 30 s would.
@@ -232,8 +234,8 @@ func TestARemovalWhileTheBrokerIsDownIsPaidOnceItIsBack(t *testing.T) {
 	}
 	rig.routes = nil
 	registered.revokeBrokerDebts(ctx)
-	if !slices.Equal(revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
-		t.Errorf("the pass with the broker back revoked %v, want erin's own login alone", revokes())
+	if !slices.Equal(rig.revokes(), []string{"POST /v1/launcher-credentials/cred-erin/revoke-by-approver"}) {
+		t.Errorf("the pass with the broker back revoked %v, want erin's own login alone", rig.revokes())
 	}
 	if owed, _, err := revocations.Owing(ctx, accessErin); err != nil || owed {
 		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the broker confirmed it, want it settled", owed, err)
