@@ -1789,8 +1789,8 @@ jobs:
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
       # THE STACK'S POSTGRES IMAGE, PULLED HERE FOR THE SAME REASON. e2e/harness-pool.ts's
       # startStack starts the stack's PostgreSQL with a `docker run` of DISPATCH_E2E_PG_IMAGE, the
-      # digest the browser step below exports, and a pull the runner had not made yet counts
-      # inside that step's 4 minutes, which are for its rows. On #4129 (run 44215262087, job
+      # digest the browser steps below export, and a pull the runner had not made yet counts
+      # inside the first step's 4 minutes, which are for its rows. On #4129 (run 44215262087, job
       # 134503540243) the step spent 120 s before the stack's first output, and in job
       # 134507372389 (run 44211278336, head d7548e82, on a saturated runner fleet) 205 s, its
       # 4 minutes running out with the 13 rows it had reached all passing, where five green visual
@@ -1799,8 +1799,9 @@ jobs:
       # whole of what a cold runner adds: with the image already on the runner, the stack printed
       # its first line 1.4 to 1.7 s into the browser step (jobs 134739696645, 134948731616 and
       # 134757244369). The 4 minutes below are this job's head's derivation from that 205 s. The
-      # digest is the browser step's, written twice, and the two must stay the same: a pull of
-      # another digest here leaves that step to pull its own inside its budget again.
+      # digest is written three times, here and in the two browser steps (the normal order and
+      # the reverse), and the three must stay the same: a pull of another digest here leaves the
+      # browser steps to pull their own inside their budgets again.
       - name: Pull the stack's Postgres image
         timeout-minutes: 4
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
