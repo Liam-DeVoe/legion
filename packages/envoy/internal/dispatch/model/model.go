@@ -150,8 +150,19 @@ func (a Actor) Recorded() Actor {
 // claim's holder against a caller, and an event's actor against the claimant it names. Where
 // the credential itself must be told apart rather than the writer, SameCredential compares the
 // names too.
+//
+// A person's id is compared in its canonical form (sameLogin), on both sides: a stored login may
+// keep the case an earlier build wrote it in, and no backfill rewrites it, so a comment stored
+// under "Alice" is alice's still. Every other kind's id - a session's, a system writer's - is no
+// login, and is compared byte for byte.
 func (a Actor) SameAs(other Actor) bool {
-	return a.Kind == other.Kind && a.ID == other.ID
+	if a.Kind != other.Kind {
+		return false
+	}
+	if a.Kind == "user" {
+		return sameLogin(a.ID, other.ID)
+	}
+	return a.ID == other.ID
 }
 
 // SameCredential reports whether two actors are the one credential: the kind and the id SameAs
@@ -162,19 +173,37 @@ func (a Actor) SameAs(other Actor) bool {
 // service-account token is {Service: &subject}. Under SameAs any two personal tokens are one
 // writer, whoever owns them, and the shared token is every pod's token.
 //
+// Owner is a person's login, and is compared in its canonical form (sameLogin) on both sides,
+// as SameAs compares a person's id: a stored owner may keep the case an earlier build wrote it
+// in, so a going run asked under "Dana@Example.COM" is the run of the token whose owner now reads
+// dana@example.com. Service is a workload's subject, no login, and is compared byte for byte.
+//
 // Origin, Project, Act and Proven are not compared: they say where a write came from, who it acted
 // for and whether its credential proved its id, which two requests of one credential differ in,
 // so comparing them would call one credential two.
 func (a Actor) SameCredential(other Actor) bool {
-	return a.SameAs(other) && sameActorName(a.Owner, other.Owner) && sameActorName(a.Service, other.Service)
+	return a.SameAs(other) && sameActorName(a.Owner, other.Owner, sameLogin) && sameActorName(a.Service, other.Service, sameName)
 }
 
-// sameActorName compares one optional name of two actors: both unset, or both the same name.
-func sameActorName(left, right *string) bool {
+// sameActorName compares one optional name of two actors: both unset, or both set and the same
+// name as same compares them.
+func sameActorName(left, right *string, same func(left, right string) bool) bool {
 	if left == nil || right == nil {
 		return left == right
 	}
-	return *left == *right
+	return same(*left, *right)
+}
+
+// sameLogin reports whether two logins name one person: each is read in its canonical form
+// (CanonicalLogin), so two spellings that differ only in the case of their ASCII letters or in
+// the white space around them are one login.
+func sameLogin(left, right string) bool {
+	return CanonicalLogin(left) == CanonicalLogin(right)
+}
+
+// sameName reports whether two names are the one name, byte for byte.
+func sameName(left, right string) bool {
+	return left == right
 }
 
 // CanonicalLogin is the stored form of a person's email: trimmed, with its ASCII letters lowered
