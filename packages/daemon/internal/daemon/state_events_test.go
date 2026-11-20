@@ -663,7 +663,8 @@ func (r *admissionStateRig) running(t *testing.T, key, rank string) {
 func (r *admissionStateRig) mirror(t *testing.T, key, status string, waits ...string) {
 	t.Helper()
 	r.seed(t, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
-		return records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: key, Project: "LEGION", Status: status, Blockers: waits, Seq: 1})
+		return records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: 1,
+			Status: record.Carry(status), Parent: record.Carry(""), Blockers: record.Carry(waits)})
 	})
 }
 

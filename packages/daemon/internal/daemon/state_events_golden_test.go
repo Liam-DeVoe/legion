@@ -342,11 +342,11 @@ func TestStateEventsGolden(t *testing.T) {
 				return err
 			}
 		}
-		for _, mirrored := range []record.DispatchIssueRow{
-			{Key: "LEGION-2", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-8"}, Seq: 1},
-			{Key: "LEGION-3", Project: "LEGION", Status: "done", Blockers: []string{}, Seq: 1},
-			{Key: "LEGION-8", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 1},
-			{Key: "LEGION-9", Project: "LEGION", Status: "in_progress", Blockers: []string{}, Seq: 1},
+		for _, mirrored := range []record.DispatchReading{
+			{Key: "LEGION-2", Project: "LEGION", Seq: 1, Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{"LEGION-8"})},
+			{Key: "LEGION-3", Project: "LEGION", Seq: 1, Status: record.Carry("done"), Parent: record.Carry(""), Blockers: record.Carry([]string{})},
+			{Key: "LEGION-8", Project: "LEGION", Seq: 1, Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry([]string{})},
+			{Key: "LEGION-9", Project: "LEGION", Seq: 1, Status: record.Carry("in_progress"), Parent: record.Carry(""), Blockers: record.Carry([]string{})},
 		} {
 			if err := records.PutDispatchIssue(ctx, tx, mirrored); err != nil {
 				return err
@@ -371,8 +371,8 @@ func TestStateEventsGolden(t *testing.T) {
 		// phase and tree, its slot and its tree's lifecycle, and the block it changes.
 		{"a root is admitted", func(t *testing.T) {
 			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
-				if err := r.scoped.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: root.Key, Project: "LEGION", Status: "todo",
-					Blockers: []string{}, Seq: 1}); err != nil {
+				if err := r.scoped.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: root.Key, Project: "LEGION", Seq: 1,
+					Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{})}); err != nil {
 					return err
 				}
 				if err := r.scoped.PutIssue(ctx, tx, root); err != nil {
@@ -439,8 +439,8 @@ func TestStateEventsGolden(t *testing.T) {
 		}},
 		{"a blocker link moves what the waiting root is blocked by", func(t *testing.T) {
 			r.pass(t, func(ctx context.Context, tx pgx.Tx) error {
-				return r.scoped.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: "LEGION-2", Project: "LEGION", Status: "todo",
-					Blockers: []string{"LEGION-8", "LEGION-9"}, Seq: 2})
+				return r.scoped.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: "LEGION-2", Project: "LEGION", Seq: 2,
+					Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry([]string{"LEGION-8", "LEGION-9"})})
 			})
 		}},
 	}

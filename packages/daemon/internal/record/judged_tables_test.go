@@ -74,10 +74,13 @@ func TestAnAdmissionJudgementReadsOnlyTheJudgedTables(t *testing.T) {
 			LatestVersion: 1, ApprovedVersion: &approved}); err != nil {
 			return err
 		}
-		for _, mirrored := range []record.DispatchIssueRow{
-			{Key: child, Project: "LEGION", Status: "todo", Blockers: []string{blocker}, Seq: 2, ClaimedBy: "user:alice", ClaimSeq: 2, Parent: root},
-			{Key: grandchild, Project: "LEGION", Status: "todo", Seq: 3, Parent: child},
-			{Key: blocker, Project: "LEGION", Status: "in_progress", Seq: 4},
+		for _, mirrored := range []record.DispatchReading{
+			{Key: child, Project: "LEGION", Seq: 2, Status: record.Carry("todo"), Parent: record.Carry(root),
+				Blockers: record.Carry([]string{blocker}), ClaimedBy: "user:alice", ClaimSeq: 2},
+			{Key: grandchild, Project: "LEGION", Seq: 3, Status: record.Carry("todo"), Parent: record.Carry(child),
+				Blockers: record.Carry[[]string](nil)},
+			{Key: blocker, Project: "LEGION", Seq: 4, Status: record.Carry("in_progress"), Parent: record.Carry(""),
+				Blockers: record.Carry[[]string](nil)},
 		} {
 			if err := records.PutDispatchIssue(ctx, tx, mirrored); err != nil {
 				return err
