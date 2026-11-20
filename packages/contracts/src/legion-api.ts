@@ -1349,9 +1349,9 @@ export const LegionTurnOutcomeRequest = z.union([
 export type LegionTurnOutcomeRequestBody = z.output<typeof LegionTurnOutcomeRequest>;
 
 /** `claim.TurnOutcomeResponse`, the answer to a reported turn: `refusedRun` is the run of refused
- * turns the claim's reports now end with, and `failed` whether this report took that run to
- * `launch_failure_limit` and failed the claim. The producer acts on neither — its turn is over —
- * and logs them, which is where an operator sees the count that failed a claim being made. */
+ * turns the claim's retained reports end with, and `failed` whether the claim is failed after the
+ * report. A report never fails a claim by itself. The producer acts on neither — its turn is over
+ * — and logs them. */
 export const LegionTurnOutcomeResponse = z.object({
   refusedRun: z.number().int().nonnegative(),
   failed: z.boolean(),

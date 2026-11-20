@@ -21,10 +21,9 @@ func (h *harness) turnOutcome(req claim.TurnOutcomeRequest) (*httptest.ResponseR
 }
 
 // A session that holds its registration's secret reports each turn it ends on the claim's own
-// route, and the answer says what the daemon derived: the run of refused turns the reports now
-// end with, and whether this one failed the claim. Three refusals in a row fail it, with the
-// cause naming the provider and its last message.
-func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testing.T) {
+// route. The answer gives the run of refused turns the retained reports end with. Reports do not
+// fail the claim because they carry no HTTP status.
+func TestTheClaimsSecretReportsEveryTurnWithoutFailingTheClaim(t *testing.T) {
 	h := newHarness(t)
 	token, boot := h.launch("LEGION-208", claim.RoleArchitect)
 	registered := h.registered(boot, "ses_architect")
@@ -46,13 +45,12 @@ func TestTheClaimsSecretReportsEveryTurnAndARunOfRefusalsFailsTheClaim(t *testin
 	}
 
 	recorder, answer := report(4, claim.TurnRefused, "the provider refused the request")
-	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3, Failed: true}) {
-		t.Fatalf("the third refusal = %d %+v, want 200 with a run of 3 that failed the claim", recorder.Code, answer)
+	if recorder.Code != http.StatusOK || answer != (claim.TurnOutcomeResponse{RefusedRun: 3}) {
+		t.Fatalf("the third refusal = %d %+v, want 200 with a run of 3 and no failure", recorder.Code, answer)
 	}
 	stored := h.stored(token)
-	want := "the provider refused 3 turns in a row: the provider refused the request"
-	if stored.State != supervise.StateFailed || stored.Failure != want {
-		t.Fatalf("the claim is %s with failure %q, want failed with %q", stored.State, stored.Failure, want)
+	if stored.State == supervise.StateFailed || stored.Failure != "" {
+		t.Fatalf("the claim is %s with failure %q, want it not failed", stored.State, stored.Failure)
 	}
 }
 

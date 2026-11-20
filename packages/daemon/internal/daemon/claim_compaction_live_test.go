@@ -580,8 +580,13 @@ func (r *claimCompactionLive) controllerCompactsAndIsToldTwice() {
 	r.awaitReady(token)
 	r.awaitStartTaskAnswered(token)
 	r.answeredTurn(token, "WARM")
+	session := r.claim(token).Session
 	for run := 1; run <= 6; run++ {
 		r.erroredTurn(token, run)
+	}
+	if after := r.claim(token); after.State == string(supervise.StateFailed) || after.Session != session {
+		t.Fatalf("%s is %s in session %s after six refused 529 turns, want a live claim in session %s",
+			token, after.State, after.Session, session)
 	}
 	r.awaitControllerNotices(r.notice, 1)
 	told := r.controllerNotices(r.notice)

@@ -391,6 +391,7 @@ func (r *providerErrorLive) ladderWalks() {
 	t := r.t
 	token := r.token(r.ladder, claim.RolePlanner)
 	r.awaitReady(token)
+	session := r.claim(token).Session
 	marker, task := r.seededFor(r.ladder).marker, r.ladderTask
 	sent := []time.Time{r.awaitFirstSend(token, task)}
 	r.note("the daemon held the task %q for %s from the moment it booted and sent it at %s",
@@ -448,6 +449,9 @@ func (r *providerErrorLive) ladderWalks() {
 	}
 	if held.State == string(supervise.StateFailed) {
 		t.Fatalf("%s failed while the ladder ran: %+v", token, held)
+	}
+	if held.Session != session {
+		t.Fatalf("%s changed from session %s to %s while the 529 ladder ran", token, session, held.Session)
 	}
 	if issue := r.issue(r.ladder); issue.Phase == phase.Held {
 		t.Fatalf("%s was held while the ladder ran: %+v", r.ladder, issue)

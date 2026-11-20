@@ -1224,8 +1224,7 @@ func fillTable(t *builder) {
 	// report is the producer's HTTP call, which races the turn's end on the worker stream and the
 	// relaunch of a process that is coming up, and a report is about the provider rather than
 	// about where the claim stands.
-	t.row(onTurnOutcome, "record the turn's outcome; the claim fails once the provider's refusals reach the launch failure limit",
-		turnOutcome, []ClaimState{StateFailed}, live...)
+	t.row(onTurnOutcome, "record the turn's outcome as diagnostic state", turnOutcome, nil, live...)
 	t.ignore(onTurnOutcome, "no launch has minted a boot token", StateQueued)
 	t.ignore(onTurnOutcome, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onTurnOutcome, "the claim is suspended and its process stopped", StateSuspended)
@@ -2581,10 +2580,9 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
 // operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
 //
-// A retry that asks for a new session, and one of a claim whose provider refused the recorded
-// session out of its budget, forgets that session instead, so the launch spawns a fresh agent
-// (freshSession): relaunching a session every turn of which was refused would be refused again,
-// and the claim would fail its way through another budget having done nothing.
+// A retry that asks for a new session forgets the recorded session instead, so the launch spawns
+// a fresh agent (freshSession). A refused turn never asks for one: the provider-error ladder keeps
+// the claim in its session, and a new session is an operator's or the controller's choice.
 //
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
@@ -2603,7 +2601,7 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
-	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+	if fresh, why := freshSession(ev); fresh {
 		// A session the claim does not hold is left behind only once its role no longer leads
 		// to the process under it (mayForget); the retry is refused, and the claim left as it
 		// was, until then.
@@ -2612,8 +2610,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 		}
 		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
 			"refusedRun", m.claim.RefusedRun())
-		// The failure the claim carries is the fuller answer where it has one — it names how many
-		// turns the provider refused and what it said about the newest of them — and the retry's
+		// The failure the claim carries is the fuller answer where it has one, and the retry's
 		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
 		// stopped.
 		m.forgetSession(cmp.Or(m.claim.Failure, why))
@@ -2639,11 +2636,9 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // The daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's
 // role never changes, so the refusal cannot race the decision it guards.
 //
-// It relaunches the session the claim records, unless the retry asks for a new one
-// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
-// launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
-// because resuming a session whose turns the provider refused would be refused again. A launch
-// whose session no session store holds any more starts a fresh agent too (startFresh).
+// It relaunches the session the claim records unless the retry explicitly asks for a new session
+// (RequestOperatorRetry.FreshSession). A launch whose session no session store holds any more
+// starts a fresh agent too (startFresh).
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",

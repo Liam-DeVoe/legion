@@ -1,7 +1,6 @@
 package supervise
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -49,10 +48,9 @@ func TestTheRefusedRunIsTheSameWhateverOrderTheReportsArriveIn(t *testing.T) {
 	}
 }
 
-// A report that arrives after the next turn has already reported lands in its own place: the run
-// counts the turns, not the calls, so a late refusal of turn 2 beside refusals of 1 and 3 is the
-// third refusal in a row and fails the claim, exactly as the three in order would.
-func TestALateReportLandsInItsOwnPlaceAndFailsTheClaimAsAnInOrderOneWould(t *testing.T) {
+// A report that arrives after the next turn has already reported lands in its own place. It records
+// the provider's final refusal without failing the claim.
+func TestALateReportLandsInItsOwnPlaceWithoutFailingTheClaim(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	h.report(1, true, "first")
@@ -62,41 +60,37 @@ func TestALateReportLandsInItsOwnPlaceAndFailsTheClaimAsAnInOrderOneWould(t *tes
 
 	h.report(2, true, "second, reported late")
 
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row: third"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q: the newest refused report names the message, whichever arrived last", h.claim().Failure, want)
+	h.wantState(StateIdle)
+	h.wantRefusedRun(3)
+	if got := h.claim().LastRefusal(); got != "third" {
+		t.Fatalf("last refusal %q, want the newest turn's message", got)
 	}
 }
 
-// Three refused turns in a row fail the claim, with the cause naming the provider's refusal and
-// what it said about the newest of them. The process is let go, as every failure lets it go.
-func TestARunOfRefusedTurnsAtTheLimitFailsTheClaimNamingTheProvidersRefusal(t *testing.T) {
+// A run of refused turns is retained as a report, but it does not fail the claim or release its
+// process. The provider-error result decides whether the claim can continue.
+func TestARunOfRefusedTurnsAtTheLimitKeepsTheClaimWorking(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	limit := testLimits().LaunchFailures
 
-	for turn := 1; turn < limit; turn++ {
-		h.report(uint64(turn), true, "stopReason: error")
-		h.wantState(StateIdle)
+	for turn := 1; turn <= limit; turn++ {
+		h.report(uint64(turn), true, "the provider refused this turn")
 	}
-	h.report(uint64(limit), true, "the provider ended the turn with an error at 226k tokens of context")
 
-	h.wantState(StateFailed)
-	want := "the provider refused 3 turns in a row: the provider ended the turn with an error at 226k tokens of context"
-	if h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+	h.wantState(StateIdle)
+	h.wantRefusedRun(limit)
+	if stored := h.store.load(testToken); stored.State != StateIdle || stored.Failure != "" {
+		t.Errorf("stored claim = %s with failure %q, want an idle claim with no failure", stored.State, stored.Failure)
 	}
-	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Failure != want {
-		t.Errorf("stored claim = %s with failure %q, want the failure persisted", stored.State, stored.Failure)
-	}
-	if h.claim().Locator != nil {
-		t.Errorf("the failed claim still records %+v, want its process let go", h.claim().Locator)
+	if h.claim().Locator == nil {
+		t.Error("the claim lost its process after refused turns, want it kept")
 	}
 }
 
-// A refusal with no message still fails the claim at the limit, and says so rather than naming an
-// empty sentence.
-func TestARunOfSilentRefusalsFailsTheClaimSayingTheProviderSaidNothing(t *testing.T) {
+// A refusal with no message is also only a report. Its lack of text does not turn it into a
+// claim failure.
+func TestARunOfSilentRefusalsKeepsTheClaimWorking(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 
@@ -104,9 +98,10 @@ func TestARunOfSilentRefusalsFailsTheClaimSayingTheProviderSaidNothing(t *testin
 		h.report(uint64(turn), true, "")
 	}
 
-	h.wantState(StateFailed)
-	if want := "the provider refused 3 turns in a row, and said nothing about why"; h.claim().Failure != want {
-		t.Fatalf("failure %q, want %q", h.claim().Failure, want)
+	h.wantState(StateIdle)
+	h.wantRefusedRun(testLimits().LaunchFailures)
+	if h.claim().Failure != "" {
+		t.Fatalf("failure %q, want no failure", h.claim().Failure)
 	}
 }
 
@@ -144,10 +139,8 @@ func TestATurnWithNoReportCountsNothing(t *testing.T) {
 	h.wantRefusedRun(2)
 }
 
-// The run carries across generations, in generation order: a session the provider refused is
-// refused again when the daemon relaunches and resumes it, so the refusals of the relaunched
-// generation go on counting from the ones before it. The relaunch here registers the same session
-// the claim recorded, which is what a resume does.
+// The run carries across generations, in generation order. A relaunch resumes the recorded
+// session, and another refusal remains only a report.
 func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -163,36 +156,8 @@ func TestTheRefusedRunCarriesAcrossAGenerationThatResumesTheSameSession(t *testi
 
 	h.report(1, true, "refused in the resumed session too")
 
-	h.wantState(StateFailed)
-	if !strings.Contains(h.claim().Failure, "refused in the resumed session too") {
-		t.Fatalf("failure %q, want the resumed generation's own refusal named", h.claim().Failure)
-	}
-}
-
-// The retry of a claim the provider refused out of its budget starts a new session rather than
-// resuming the recorded one: the session every turn of which was refused would be refused again.
-// The claim spawns instead of resuming, and the new session starts with a fresh run.
-func TestTheRetryOfAClaimItsProviderRefusedStartsANewSession(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateIdle)
-	for turn := 1; turn <= testLimits().LaunchFailures; turn++ {
-		h.report(uint64(turn), true, "the provider refused the turn")
-	}
-	h.wantState(StateFailed)
-	spawns := len(h.calls("Spawn"))
-
-	h.must(RequestRetry{Claim: h.token})
-
-	h.wantState(StateLaunching)
-	h.wantCalls("Spawn", spawns+1)
-	h.wantCalls("Resume", 0)
-	if c := h.claim(); c.Session != "" || c.SessionFile != "" {
-		t.Errorf("the retried claim still records session %q (%s), want it started afresh", c.Session, c.SessionFile)
-	}
-	h.wantRefusedRun(0)
-	if kept := h.claim().TurnOutcomes; len(kept) != 0 {
-		t.Errorf("the retried claim keeps %+v, want the refused session's turns gone with it", kept)
-	}
+	h.wantState(StateReady)
+	h.wantRefusedRun(3)
 }
 
 // A retry that asks for a new session starts one whatever failed the claim, and a retry that asks
@@ -224,7 +189,7 @@ func TestARetryStartsANewSessionWhenItAsksAndResumesTheRecordedOneWhenItDoesNot(
 			h.must(tc.retry)
 
 			h.wantState(StateLaunching)
-			asked, _ := freshSession(tc.retry, Claim{}, 1)
+			asked, _ := freshSession(tc.retry)
 			if asked {
 				h.wantCalls("Spawn", spawns+1)
 				h.wantCalls("Resume", resumes)
@@ -291,10 +256,9 @@ func TestAReportOlderThanAFullWindowIsDropped(t *testing.T) {
 	}
 }
 
-// The reports survive a daemon restart: the run is derived from what the store holds, so a daemon
-// that restarts between the second refusal and the third fails the claim on the third, as the
-// daemon that saw all three would.
-func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
+// The reports survive a daemon restart. A later refusal remains a report and does not fail the
+// claim.
+func TestTheReportsSurviveARestartAndTheRunGoesOnWithoutFailingTheClaim(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	h.report(1, true, "refused")
@@ -304,5 +268,6 @@ func TestTheReportsSurviveARestartAndTheRunGoesOnFromThem(t *testing.T) {
 
 	h.wantRefusedRun(2)
 	h.report(3, true, "refused after the restart")
-	h.wantState(StateFailed)
+	h.wantState(StateIdle)
+	h.wantRefusedRun(3)
 }

@@ -244,10 +244,9 @@ func (s *server) exit(w http.ResponseWriter, r *http.Request) {
 }
 
 // turnOutcome is a producer reporting how one turn of its agent ended, clean or refused by the
-// provider, with its own sequence within the launch generation. The daemon keeps the report and
-// derives the claim's run of refused turns from the reports it holds (supervise's turnOutcome),
-// failing the claim once that run reaches the launch failure limit; the answer says what the run
-// now is and whether this report failed the claim.
+// provider, with its own sequence within the launch generation. The daemon keeps the report as
+// diagnostic state. The report carries no HTTP status, so it does not decide whether a provider
+// error can clear. The answer gives the run of refused reports and whether the claim is failed.
 //
 // The caller is the claim's, proved one of two ways. An Oh My Pi session's pi-legion holds the
 // registration's secret and names the claim with it, as the ready and the exit do. The Claude
@@ -287,10 +286,6 @@ func (s *server) turnOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	c := m.Claim()
 	run := c.RefusedRun()
-	if c.State == supervise.StateFailed {
-		s.log.Error("api: a claim's provider refused its turns out of their budget", "claim", token,
-			"generation", req.Generation, "sequence", req.Sequence, "refusedRun", run, "failure", c.Failure)
-	}
 	writeJSON(w, http.StatusOK, claim.TurnOutcomeResponse{RefusedRun: run, Failed: c.State == supervise.StateFailed})
 }
 

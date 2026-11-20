@@ -311,10 +311,9 @@ type Claim struct {
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
-	// reported, in (generation, sequence) order and bounded by the launch failure limit
-	// (recordTurnOutcome). They are the window RefusedRun derives the run of refused turns from,
-	// and they are persisted, so a daemon restart reads the run the reports before it left rather
-	// than starting the count again. They go with the session whose turns they are (freshRun).
+	// reported, in (generation, sequence) order. The launch failure limit supplies the existing
+	// bounded storage size. The reports are diagnostic state and do not decide a claim's state.
+	// They go with the session whose turns they are (freshRun).
 	TurnOutcomes []TurnOutcome
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster
@@ -3134,10 +3133,9 @@ func deathCause(observation runtime.Observation) string {
 
 // AbandonedSession is a session a claim stopped resuming: the id and transcript path it recorded
 // for it, why it was left behind, and when. Why is the sentence whoever abandoned it wrote — the
-// failure of a claim the provider refused out of its budget, the reason an operator's retry gave,
-// the runtime's account of a session no store holds — and it is what the agent that replaces the
-// session is told, so it reads the provider's own words for the refusal, the context size in them
-// included, rather than a sentence the daemon invented.
+// failure of the claim, the reason an operator's retry gave, the runtime's account of a session
+// no store holds — and it is what the agent that replaces the session is told, rather than a
+// sentence the daemon invented.
 type AbandonedSession struct {
 	Session     string    `json:"session"`
 	SessionFile string    `json:"sessionFile,omitempty"`

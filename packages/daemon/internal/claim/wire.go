@@ -175,11 +175,9 @@ func (r TurnOutcomeRequest) Caller() (TurnOutcomeCaller, bool) {
 	return r.AgentCaller, true
 }
 
-// TurnOutcomeResponse is what the daemon made of the report: the run of refused turns the claim's
-// reports now end with (RefusedRun), and whether this report took that run to the launch failure
-// limit and failed the claim. A producer acts on neither — its turn is over — but a pane's log
-// saying the daemon has counted three refusals in a row is the one place an operator sees the
-// count that failed the claim being made.
+// TurnOutcomeResponse is what the daemon made of the report. RefusedRun is diagnostic state from
+// the reports the claim retains. Failed says whether the claim is failed after the route processes
+// the report. A producer acts on neither because its turn is over.
 type TurnOutcomeResponse struct {
 	RefusedRun int  `json:"refusedRun"`
 	Failed     bool `json:"failed"`

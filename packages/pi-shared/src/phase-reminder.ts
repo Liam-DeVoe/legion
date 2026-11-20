@@ -474,14 +474,10 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same: the task the refused turn carried ended with it, the daemon counts the
-        // turn rather than failing the claim while the run is short of `launch_failure_limit`,
-        // and nothing else would wake this worker, so a single transient refusal would leave its
-        // issue idle. By the time the timer fires the daemon has had every refusal of the run
-        // reported (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
-        // and the record check the timer runs drops the reminder, which is what stops the
-        // reminding of a session the provider refuses for ever — the whole of
-        // dispatch://INFRA-264.
+        // all the same, because a turn no daemon task started has no other wake. The daemon does
+        // not fail the claim for a refused turn. A session the provider keeps refusing is reminded
+        // once per reminder delay, each reminder counts, and the architect is told once the count
+        // reaches its limit.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);

@@ -99,6 +99,76 @@ func TestAProviderErrorTurnKeepsItsTaskAndSendsItAgainOnAGrowingLadder(t *testin
 	}
 }
 
+// A provider error that can clear keeps the claim in its session however long the provider keeps
+// refusing turns. Each 529 returns the same task to the ladder. The controller gets one notice
+// when the sixth error arrives, but that notice does not end the run.
+func TestRefusedProviderErrorsThatCanClearHaveNoAttemptLimit(t *testing.T) {
+	var notices []Claim
+	h := workingClaim(t, func(d *Deps) {
+		d.ProviderErrorRunReached = func(c Claim, _ string) { notices = append(notices, c) }
+	})
+	session := h.claim().Session
+	sent := 1
+
+	for turn := range 25 {
+		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.report(uint64(turn+1), true, "the provider is overloaded")
+
+		if state := h.state(); state == StateFailed {
+			t.Fatalf("the claim failed after %d refused 529 turns: %q", turn+1, h.claim().Failure)
+		}
+		if got := h.claim().Session; got != session {
+			t.Fatalf("the claim changed session after %d refused 529 turns: got %q, want %q", turn+1, got, session)
+		}
+		// The sixth turn in a row is turn index 5: the controller is told then, and not before.
+		if want := min(max(turn-4, 0), 1); len(notices) != want {
+			t.Fatalf("the controller was told %d times after refused 529 turn %d, want %d", len(notices), turn+1, want)
+		}
+		if message := h.climbs(sent, promptRetryDelay(turn+1)); !strings.HasSuffix(message, providerErrorTaskText) {
+			t.Fatalf("the task after refused 529 turn %d was %q, want it sent again", turn+1, message)
+		}
+		sent++
+	}
+
+	if len(notices) != 1 {
+		t.Fatalf("the controller was told %d times over 25 refused 529 turns, want once", len(notices))
+	}
+	if notice := notices[0]; notice.Issue != "LEGION-209" || notice.Role != claim.RoleImplementer {
+		t.Errorf("the notice names %s of %s, want the implementer of LEGION-209", notice.Role, notice.Issue)
+	}
+	h.wantPrompts(26)
+}
+
+// A refused report can arrive before the prompt result that carries the HTTP status. A 400 still
+// fails the claim at once, because it is a provider error that cannot clear.
+func TestARefusedProviderErrorThatCannotClearFailsAtOnce(t *testing.T) {
+	h := workingClaim(t)
+	sent := 1
+	for turn := range 2 {
+		h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
+		h.report(uint64(turn+1), true, "the provider is overloaded")
+		h.climbs(sent, promptRetryDelay(turn+1))
+		sent++
+	}
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	delivery := h.pending().ID
+	h.report(3, true, "the provider rejected the request")
+	h.must(StreamPromptResult{
+		Claim: h.token, AgentInvoked: true, DeliveryID: delivery,
+		Error: "invalid_request_error", HTTPStatus: 400,
+	})
+
+	h.wantState(StateFailed)
+	if got := h.claim().FailureCause; got != CauseProviderError {
+		t.Fatalf("the failure cause is %q, want %q", got, CauseProviderError)
+	}
+	if want := "a provider error that cannot clear ended this claim's turn: a provider error (HTTP 400)"; h.claim().Failure != want {
+		t.Fatalf("the failure is %q, want %q", h.claim().Failure, want)
+	}
+	h.wantPrompts(3)
+}
+
 // promptRetryDelay is read by nothing else, and the step it is asked for comes from a persisted
 // count: an attempt a restart reads back past the ladder's top is still the top step. Attempts 29
 // to 31 are the ladder past the point where a shift of promptRetryFirst leaves int64: a wait the
