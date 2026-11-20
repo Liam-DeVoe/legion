@@ -73,6 +73,7 @@ import {
   partOf,
   plantsRoot,
   type Row,
+  type RowAnswer,
   removeInChild,
   rowMachine,
   rowMs,
@@ -896,6 +897,53 @@ test("v-no-leftover-postgres: a start whose docker rm of a dead stack's containe
     lines.mockRestore();
   }
 });
+
+// Each pause between two asks is cut to what is left of the bound (`within`), so a removal gives up
+// at its bound exactly, and also where the bound is no whole number of pauses: with an ask every
+// 7 s on the start's 600 s, the last pause is 5 s. The two rows above cannot see a pause that takes
+// its whole length, since 600 s is a whole number of their 5 s pauses; with 7 s such a pause runs
+// the removal 2 s past its bound, on a clock the row moves (`rowMachine`), and these rows fail.
+const inProgressRefusal = `Error response from daemon: removal of container ${standInId} is already in progress`;
+for (const [docker, answer, reason] of [
+  [
+    "never ends",
+    (args: readonly string[]): RowAnswer =>
+      args[0] === "ps" ? { after: 0, stdout: `${standInId}\n` } : "never",
+    "Docker did not end the removal within 600 s, while it answered each ask",
+  ],
+  [
+    "refuses as already in progress",
+    (args: readonly string[]): RowAnswer =>
+      args[0] === "rm"
+        ? { after: 0, stderr: `${inProgressRefusal}\n` }
+        : { after: 0, stdout: `${standInId}\n` },
+    `${inProgressRefusal}, and Docker still lists it 600 s after this start's removal began`,
+  ],
+] as const) {
+  test(`v-no-leftover-postgres: a start whose removal of a dead stack's container Docker ${docker}, asking every 7 s, gives the container up at 600 s exactly and no later, on a clock the row moves`, async () => {
+    const machine = rowMachine(answer);
+    const lines = spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const removal = await machine.drive(
+        removeContainer(standInId, undefined, { ...removalBounds, watchMs: 7_000 }, machine.machine)
+      );
+
+      expect({ removal, at: machine.machine.now() }).toEqual({
+        removal: { kind: "failed", reason },
+        at: 600_000,
+      });
+      // An ask every 7 s from the first pause, the last at 595 s, and then the last 5 s.
+      expect(
+        machine
+          .calls()
+          .filter((call) => call.args.startsWith("ps "))
+          .map((call) => call.at)
+      ).toEqual(Array.from({ length: 85 }, (_, index) => (index + 1) * 7_000));
+    } finally {
+      lines.mockRestore();
+    }
+  });
+}
 
 /** What the next row waits for (`Waits`): a child, a holder read, an `until`, and in its `finally`
  *  the bound of a removal, so its own limit is minutes. */
