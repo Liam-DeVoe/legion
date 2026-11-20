@@ -9,6 +9,7 @@ import {
   createIssueArtifact,
   createMessage,
   createProject,
+  documentBase,
   editArtifact,
   getArtifact,
   getAsk,
@@ -288,6 +289,8 @@ async function seedDemo(
     await createIssueArtifact("PANE-1", {
       content: version.markdown,
       name: ledgerName,
+      // Each upload replaces the spec, so it names the version it replaces (main's #3000).
+      precondition: await documentBase(spec("PANE-1")),
       summary: version.summary,
     });
   }
