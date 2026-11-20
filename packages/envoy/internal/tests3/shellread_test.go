@@ -100,9 +100,6 @@ type shellAssign struct {
 	line     int
 	function string
 	name     string
-	// value is the value of name=value; that of any other assignment is not literal, with the
-	// assignment as written as its source.
-	value shellWord
 	// node is the assignment where it is name=value, and nil for any other.
 	node *syntax.Assign
 }
@@ -265,7 +262,7 @@ func (r *shellRead) stmt(stmt *syntax.Stmt, s shellScope, before *syntax.Stmt) {
 			return
 		}
 		r.loops = append(r.loops, shellLoop{s.line(c), s.function, "for", before, c.Do, s.waiting})
-		r.assigns = append(r.assigns, shellAssign{s.line(c), s.function, iter.Name.Value, shellWord{text: "for", source: "for " + iter.Name.Value}, nil})
+		r.assigns = append(r.assigns, shellAssign{s.line(c), s.function, iter.Name.Value, nil})
 		for _, item := range iter.Items {
 			r.words(item, s.substitution())
 		}
@@ -305,11 +302,7 @@ func (r *shellRead) call(c *syntax.CallExpr, s shellScope, background bool) {
 	for _, a := range c.Assigns {
 		r.words(a, assigned)
 		if a.Name != nil {
-			value := shellWord{literal: true, single: true, word: &syntax.Word{}}
-			if a.Value != nil {
-				value = readWord(a.Value)
-			}
-			r.assigns = append(r.assigns, shellAssign{s.line(a), s.function, a.Name.Value, value, a})
+			r.assigns = append(r.assigns, shellAssign{s.line(a), s.function, a.Name.Value, a})
 		}
 	}
 	for _, w := range c.Args {
@@ -404,7 +397,7 @@ func (r *shellRead) words(node syntax.Node, s shellScope) {
 			r.arithmetic = append(r.arithmetic, shellArithmetic{s.line(n), n})
 		case *syntax.ParamExp:
 			if n.Param != nil && n.Exp != nil && (n.Exp.Op == syntax.AssignUnset || n.Exp.Op == syntax.AssignUnsetOrNull) {
-				r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, n.Param.Value, shellWord{text: printed(n), source: printed(n)}, nil})
+				r.assigns = append(r.assigns, shellAssign{s.line(n), s.function, n.Param.Value, nil})
 			}
 		case *syntax.ProcSubst, *syntax.ExtGlob, *syntax.BraceExp:
 			r.refuse(s.line(n), "holds a "+strings.TrimPrefix(fmt.Sprintf("%T", n), "*syntax.")+", a kind of shell this program does not read")

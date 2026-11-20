@@ -303,7 +303,7 @@ func TestEveryWaitAndCheckOfTheScriptHasACase(t *testing.T) {
 			{"an s3 call that turns curl's bound off", wait(`s3 10 "the bucket" -X PUT`, `s3 10 "the bucket" --max-time 0 -X PUT`), s3Curl + "--max-time"},
 			{"an s3 call that turns curl's bound off by -m", wait(`s3 10 "the bucket" -X PUT`, `s3 10 "the bucket" -m 0 -X PUT`), s3Curl + "-m"},
 			{"an s3 call that has curl try again", wait(`s3 10 "the bucket" -X PUT`, `s3 10 "the bucket" --retry 100000 --retry-all-errors -X PUT`), s3Curl + "--retry"},
-			{"s3 with seconds of its own", wait(`seconds=$1 what=$2`, `seconds=0 what=$2`), "s3 takes its seconds from other than its first argument"},
+			{"s3 with seconds of its own", wait(`seconds=$1 what=$2`, `seconds=0 what=$2`), shifts},
 			{"a wait with no deadline in the wait step", wait("deadline=$(( $(date +%s) + 60 ))\nuntil s3 15", "until s3 15"), noDue},
 			{"a wait in braces after its deadline", inWait("deadline=$(( $(date +%s) + 60 ))\n{ " + readyWait + "; }\n"), noDue},
 			{"a wait after && after its deadline", inWait("deadline=$(( $(date +%s) + 60 ))\n[ -d / ] && " + readyWait + "\n"), noDue},
@@ -671,9 +671,10 @@ func ruledCommand(name string) bool {
 // arithmetic as an expression and every shell reads the text of $x there, so either can assign
 // to deadline through a value; a wait inside another wait, which would set the deadline that
 // wait reads again on every pass; and an assignment to one of names, the words function takes
-// off its arguments (within's in the script, s3's in the steps), other than function's own first
-// statement, names[i]=$<i+1>: a later one, even of the same text, takes a word that is not the
-// call's, so no call's seconds say its bound, nor its message the message a case wants.
+// off its arguments (within's in the script, s3's in the steps), anywhere but in function's own
+// first statement: a later one, even of the same text, takes a word that is not the call's, so no
+// call's seconds say its bound, nor its message the message a case wants. That the first
+// statement sets names[i] to $<i+1> is takesArguments' rule, which every caller runs beside this.
 func ownFindings(read *shellRead, seconds func(*syntax.Word) bool, function string, names ...string) []shellRefusal {
 	ordinals := []string{"first", "second", "third"}
 	// first holds the assignments of function's first statement, the one place names are set.
@@ -716,7 +717,7 @@ func ownFindings(read *shellRead, seconds func(*syntax.Word) bool, function stri
 		switch {
 		case a.name == "deadline" && !statements[a.node]:
 			found = append(found, shellRefusal{a.line, "sets deadline other than right before its until, by deadline=$(( $(date +%s) + <seconds> )) alone, so the wait's end moves where its body reads it"})
-		case i >= 0 && (a.function != function || !first[a.node] || a.value.source != "$"+strconv.Itoa(i+1)):
+		case i >= 0 && (a.function != function || !first[a.node]):
 			found = append(found, shellRefusal{a.line, fmt.Sprintf("%s takes its %s from other than its %s argument: only its first statement sets it, to $%d, so a call's words may not be what it reads", function, a.name, ordinals[i], i+1)})
 		}
 	}
