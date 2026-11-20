@@ -233,8 +233,8 @@ func TestTheControllerIsToldOnceWhicheverReportOfARefusedTurnArrivesFirst(t *tes
 				h.climbs(sent, promptRetryDelay(turn+1))
 				sent++
 			}
-			if want := "6 turns in a row"; len(notices) != 1 || !strings.HasPrefix(notices[0], want) {
-				t.Fatalf("the controller was told %q, want one notice of %q", notices, want)
+			if want := "6 turns in a row on overloaded-model ended in a provider error (HTTP 529); the daemon keeps the task and sends it again every 10m0s at most"; len(notices) != 1 || notices[0] != want {
+				t.Fatalf("the controller was told %q, want one notice %q", notices, want)
 			}
 		})
 	}

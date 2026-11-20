@@ -3,7 +3,6 @@ package supervise
 import (
 	"fmt"
 	"strconv"
-	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -117,8 +116,9 @@ func TestATurnNoPromptRanThatIsRefusedWithAnErrorThatCanClearFailsNothingAndIsTo
 
 			h.wantState(StateIdle)
 			h.wantRefusedRun(25)
-			if want := "6 turns in a row ended in " + providerErrorCause(status); len(notices) != 1 || !strings.HasPrefix(notices[0], want) {
-				t.Fatalf("the controller was told %q, want one notice starting %q", notices, want)
+			want := "6 turns in a row ended in " + providerErrorCause(status) + "; the claim holds no task, so the daemon has nothing to send again"
+			if len(notices) != 1 || notices[0] != want {
+				t.Fatalf("the controller was told %q, want one notice %q", notices, want)
 			}
 		})
 	}

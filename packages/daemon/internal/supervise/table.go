@@ -2253,6 +2253,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		}
 		return m.stopAtResult(ctx)
 	}
+	m.refusalAwaitsResult = false
 	if m.claim.ProviderErrorRun != 0 {
 		m.log.Info("supervise: a turn of this task ended with no provider error; the run of provider errors is over",
 			"delivery", r.DeliveryID, "providerErrorRun", m.claim.ProviderErrorRun)

@@ -1301,6 +1301,14 @@ type Machine struct {
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
 	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst.
 	outstanding []string
+	// refusalAwaitsResult is a refused turn-outcome report that arrived while a prompt's result
+	// was still to come (turnOutcome's promptAwaited): the report counted the turn in the run of
+	// refused reports (Claim.RefusedRun) and left the decision and the controller's notice to the
+	// result, which names the model. The result's notice discounts that one count, so the turn
+	// is counted once whichever report came first (providerErrored); any result ends the mark, and
+	// so does a clean report. It is memory only, as outstanding is: a daemon restarted between
+	// the two reports finds no mark, and a run that this one turn took to six then goes untold.
+	refusalAwaitsResult bool
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either. On a working claim it is one of

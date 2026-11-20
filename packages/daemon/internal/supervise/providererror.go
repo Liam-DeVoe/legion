@@ -61,10 +61,16 @@ func promptRetryDelay(attempt int) time.Duration {
 //
 // The cause is named once here and handed to whoever writes it down, since one failed turn has
 // one cause and the words are the same in the claim's failure, in the prompt the task goes
-// behind and in the controller's notice.
+// behind and in the controller's notice. When this turn's own report came first and counted it
+// (Machine.refusalAwaitsResult), the run before the turn leaves that count out, so the notice goes
+// on the turn that takes the run to six whichever of the two reports came first.
 func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) error {
 	cause := providerErrorCause(r.HTTPStatus)
 	before := m.claim.errorRun()
+	if m.refusalAwaitsResult {
+		before = max(m.claim.ProviderErrorRun, m.claim.RefusedRun()-1)
+		m.refusalAwaitsResult = false
+	}
 	m.claim.ProviderErrorRun++
 	m.log.Warn("supervise: the turn this task's prompt ran ended in a provider error; the task is kept and sent again",
 		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
@@ -183,7 +189,8 @@ func providerErrorTask(cause string) string {
 // run back to zero, and only then can another notice go. It is the one exit from a run of such
 // turns, and it is a notice rather than a hold: R2 forbids an attempt limit. model is the model
 // the failed request went to, and is empty when the report named none (the turn-outcome report
-// names none).
+// names none). The notice says what the daemon does next: it sends the task again when the claim
+// holds one, and it has nothing to send when the run is of turns no daemon prompt ran.
 func (m *Machine) tellControllerOfProviderErrors(before int, model, cause string) {
 	run := m.claim.errorRun()
 	if before >= providerErrorRunTold || run < providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
@@ -193,8 +200,11 @@ func (m *Machine) tellControllerOfProviderErrors(before int, model, cause string
 	if model != "" {
 		on = " on " + model
 	}
-	reason := fmt.Sprintf("%d turns in a row%s ended in %s; the daemon keeps the task and sends it again every %s at most",
-		run, on, cause, promptRetryMax)
+	next := "the daemon keeps the task and sends it again every " + promptRetryMax.String() + " at most"
+	if m.claim.Pending == nil {
+		next = "the claim holds no task, so the daemon has nothing to send again"
+	}
+	reason := fmt.Sprintf("%d turns in a row%s ended in %s; %s", run, on, cause, next)
 	m.log.Warn("supervise: a run of turns that ended in a provider error; the controller is told",
 		"providerErrorRun", m.claim.ProviderErrorRun, "refusedRun", m.claim.RefusedRun(), "model", model, "reason", reason)
 	m.deps.ProviderErrorRunReached(m.current(), reason)

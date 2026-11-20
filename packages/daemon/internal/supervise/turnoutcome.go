@@ -141,8 +141,10 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // (promptAwaited) is that prompt's turn's, since the pinned Oh My Pi and the Claude bridge each
 // run one prompt at a time: the prompt's own result decides it (providerErrored), with what only
 // it carries — Oh My Pi's retryable flag, the model, and the task it takes back — so the report
-// leaves the decision to it rather than racing it. A report that arrives after that result finds
-// the decision made: a failed claim takes no report, and a status that can clear fails nothing.
+// leaves the decision and the controller's notice to it rather than racing it, and marks that it
+// has counted the turn (Machine.refusalAwaitsResult). A report that arrives after that result
+// finds the decision made: a failed claim takes no report, and a status that can clear fails
+// nothing.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
 	before := m.claim.errorRun()
@@ -150,12 +152,11 @@ func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	awaited := m.promptAwaited()
 	m.log.Info("supervise: a turn ended", "generation", r.Generation, "sequence", r.Sequence,
 		"refused", r.Refused, "httpStatus", r.HTTPStatus, "refusedRun", m.claim.RefusedRun(), "promptResultDecides", awaited)
-	if r.Refused {
+	m.refusalAwaitsResult = r.Refused && awaited
+	if r.Refused && !awaited {
 		m.tellControllerOfProviderErrors(before, "", providerErrorCause(r.HTTPStatus))
-		if !awaited {
-			if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
-				return err
-			}
+		if held, err := m.holdOnProviderError(ctx, r.HTTPStatus); held || err != nil {
+			return err
 		}
 	}
 	return m.persist(ctx)
