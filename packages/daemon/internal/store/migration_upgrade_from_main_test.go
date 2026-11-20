@@ -262,10 +262,11 @@ func TestADatabaseMainMigratedUpgradesWithEveryRowItHolds(t *testing.T) {
 	}
 }
 
-// mainsLatestMigration is the newest version main carries now, the conflict's second read and the
-// merge forward. A database a deployment of main migrated has recorded every embedded version up
-// to it but for the ones migrationsMainLacks names.
-const mainsLatestMigration = 20261119003157
+// mainsLatestMigration is the newest version main carries now, the sequence of each value of the
+// copy of Dispatch's issues (20261120055717), which touches no outbox_kind_check. A database a
+// deployment of main migrated has recorded every embedded version up to it but for the ones
+// migrationsMainLacks names.
+const mainsLatestMigration = 20261120055717
 
 // migrationsMainLacks are the versions this branch adds that a database at main's newest
 // migration (mainsLatestMigration) has not recorded: the unreachable claims' four, the fleet alert
@@ -397,11 +398,11 @@ const thisBranchsClaimSessions = 20261116144907
 
 // mainsNewestBefore4220 is the newest version a deployment of main before #4220 recorded, the update
 // ask's mark cutover, and mainsAfter4220 are the versions main took after it, which such a
-// deployment has not recorded either: the project pause's tables, the plan record's kind list and
-// the conflict's.
+// deployment has not recorded either: the project pause's tables, the plan record's kind list, the
+// conflict's and the sequence of each value of the copy of Dispatch's issues.
 const mainsNewestBefore4220 = 20261117200337
 
-var mainsAfter4220 = []int{20261115194357, 20261117023932, 20261119003157}
+var mainsAfter4220 = []int{20261115194357, 20261117023932, 20261119003157, 20261120055717}
 
 // A database a deployment of main before #4220 migrated has recorded every migration up to main's
 // newest then, 20261117200337, but claim_sessions, which is numbered below it, and this branch's
