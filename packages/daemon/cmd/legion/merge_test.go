@@ -354,8 +354,8 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 // of the working copy or of git's index when git runs in a git worktree, and
 // $GIT_DIR/info/attributes) and the machine's system attributes file. B3's history with
 // diff.algorithm=bogus in the repository's configuration gives B3's jj conflict at f, not exit 3:
-// merge-ort uses histogram whatever a configuration says, but git dies on a diff.algorithm it
-// cannot parse unless the list sets one.
+// merge-ort uses histogram whatever a configuration says, but git 2.47.3, the worker image's git,
+// dies on a diff.algorithm it cannot parse unless the list sets one. A newer git may not.
 func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 	t.Run("git's merge options", func(t *testing.T) {
 		r := newMergeRepo(t)
@@ -404,10 +404,17 @@ func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 		r := newMergeRepo(t)
 		r.contentConflict()
 		r.git("config", "diff.algorithm", "bogus")
-		// The control: git's own merge dies on the value.
+		// The control: git merge-tree without the list. git 2.47.3, the worker image's git, reads
+		// diff.algorithm and dies on the value (exit 128), so there the row also shows that the
+		// list's entry is what keeps the merge alive. A newer git may merge under the value (CI's
+		// git 2.56.1 gives B3's conflict, exit 1), and there the row logs one line and checks the
+		// merge alone. merge-tree's exit 0 and 1 are a merge, and every other status is a death.
 		args := []string{"git", "merge-tree", "--write-tree", r.id(mergeFirst), r.id("main")}
-		if out, err := r.fixture.Try(r.ws, args...); err == nil || !strings.Contains(out, "unknown value for config 'diff.algorithm': bogus") {
-			t.Fatalf("%s = %v, want git to die on diff.algorithm:\n%s", strings.Join(args, " "), err, out)
+		out, err := r.fixture.Try(r.ws, args...)
+		if exit, ok := err.(*exec.ExitError); err == nil || ok && exit.ExitCode() == 1 {
+			t.Logf("%s merges under diff.algorithm=bogus, so the row checks legion merge's merge alone", r.git("version"))
+		} else if !strings.Contains(out, "unknown value for config 'diff.algorithm': bogus") {
+			t.Fatalf("%s = %v, want a merge, or git to die on diff.algorithm:\n%s", strings.Join(args, " "), err, out)
 		}
 		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
 		if code != 1 {

@@ -16,5 +16,6 @@ body: |-
   configuration defines with an empty name (`merge..driver`). The repository's own attributes
   (`.gitattributes` and `$GIT_DIR/info/attributes`) and the machine's system attributes file
   still apply. The list also sets `diff.algorithm` to `histogram`. git's merge uses histogram
-  whatever a configuration says. The entry keeps a configured value that git cannot parse from
-  failing the merge.
+  whatever a configuration says. git 2.47.3, the worker image's git, reads `diff.algorithm` and
+  dies on a value it cannot parse. A newer git may not: git 2.56.1 merges under such a value, as
+  measured in CI. The entry keeps the merge from depending on which git runs.

@@ -303,6 +303,38 @@ func TestLegionMergeLeavesARolesCommitOnRootThatACarriersBookmarkNames(t *testin
 	}
 }
 
+// A carrier a killed run left that a tag makes immutable: a person or a tool ran `git tag` on it,
+// and jj's default immutable_heads() holds tags(). jj abandons no immutable commit, so the next
+// run of B1 keeps the carrier visible with its bookmark, and names the bookmark on stderr. The
+// carrier is the carriers' own author's and has no parent in the repository, so the reason says
+// that a legion merge wrote it and that it is immutable, not that a legion merge did not write it.
+func TestLegionMergeSaysAnImmutableLeftoverCarrierIsOneItWrote(t *testing.T) {
+	const bookmark = "legion-merge-default-0123456789abcdef-g"
+	r := newMergeRepo(t)
+	r.minimalCase(2)
+	carrier := r.writeCarrier(r.gitTree(mergeFirst, "main"), "a carrier a killed run in default left")
+	r.git("update-ref", "refs/heads/"+bookmark, carrier)
+	r.git("tag", "carrier-tag", carrier)
+	r.jj("git", "import")
+	if got := r.template(carrier, `self.contained_in("mutable()")`); got != "false" {
+		t.Fatalf("the tagged carrier %s reads mutable() %q, want it immutable", carrier, got)
+	}
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if code != 0 {
+		t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	r.wantMergeHolds(mergeFirst, "main", "f", "b\n")
+	if got := r.template(carrier, `hidden ++ " " ++ bookmarks`); got != "false "+bookmark {
+		t.Errorf("the tagged carrier %s reads %q, want it visible with its bookmark %s\nstderr:\n%s", carrier, got, bookmark, stderr)
+	}
+	if want := "legion merge: left the bookmark " + bookmark + " where it is, on commit " + carrier + ", which a legion merge wrote but which is immutable, so the run does not change it.\n"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
+	if untrue := "on commit " + carrier + ", which is not a commit a legion merge wrote."; strings.Contains(stderr, untrue) {
+		t.Errorf("stderr says %q of the carrier, which a legion merge wrote:\n%s", untrue, stderr)
+	}
+}
+
 // A bookmark of a carrier's shape under this workspace's prefix, on a commit of the repository
 // rather than on a carrier: a role's commit on base, or the first parent the run itself names. A
 // carrier has no parent in the repository, so nothing a carrier's removal does reaches the

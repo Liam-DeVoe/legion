@@ -21,9 +21,11 @@
 # merge-tree gets the option list `legion merge` gives it, in the same order (jjmerge's
 # mergeTreeOptions): git's merge options at their documented defaults, an empty merge.default,
 # which names no driver, core.attributesFile at /dev/null, and diff.algorithm at histogram.
-# merge-ort uses histogram whatever a configuration says, and the entry keeps a configured value
-# git cannot parse from failing the merge. So each file holds the merge that `legion merge`
-# reads, and a configuration could change it only as it changes that merge.
+# merge-ort uses histogram whatever a configuration says. git 2.47.3, the worker image's git,
+# reads diff.algorithm and dies on a value it cannot parse, and a newer git may not (2.56.1
+# merges, measured in CI). The entry keeps the merge from depending on that. So each file holds
+# the merge that `legion merge` reads, and a configuration could change it only as it changes
+# that merge.
 set -euo pipefail
 
 if [ $# -ne 1 ]; then

@@ -39,11 +39,12 @@ import (
 // git's index when git runs in a git worktree, and $GIT_DIR/info/attributes) and the machine's
 // system attributes file, as for any git merge in the repository. merge-ort, git's merge, uses
 // histogram whatever a configuration says (merge-ort.c's merge_start hardcodes it), so a
-// configured diff.algorithm changes no merge. git reads that value first, though
-// (merge-recursive.c's merge_recursive_config), and dies on one it cannot parse. The entry keeps
-// a configured value git cannot parse from failing the merge. The merge (mergeTree) and the
-// reading command (Comparison) both give git this list. A caller outside the package reads it
-// through MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
+// configured diff.algorithm changes no merge. git 2.47.3, the worker image's git, reads that
+// value first, though (merge-recursive.c's merge_recursive_config), and dies on one it cannot
+// parse. A newer git may not: git 2.56.1 merges under such a value, as CI measured. The entry
+// keeps the merge from depending on which git runs. The merge (mergeTree) and the reading
+// command (Comparison) both give git this list. A caller outside the package reads it through
+// MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
 var mergeTreeOptions = [...]string{
 	"-c", "merge.renames=true",
 	"-c", "merge.directoryRenames=conflict",

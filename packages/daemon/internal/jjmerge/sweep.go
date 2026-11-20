@@ -60,13 +60,14 @@ func (m *merger) own(run string) bool {
 // delete that bookmark, or hide a commit that a remote holds. A bookmark of a carrier's name on a
 // commit that is no carrier (notCarriers), a commit of the repository, makes that commit no
 // member: the commit, the bookmark and its git ref stay where they are, and the run names the
-// bookmark on stderr. One abandon takes the commits and their bookmarks together, so a run killed
-// after it still finds each carrier by its bookmark. Then remove deletes each bookmark of such a
-// run that jj still holds with no commit, and each git ref of such a run under refs/heads but a
-// kept bookmark's. ours is asked only of the run prefixes of names under bookmarkPrefix and of the
-// lines the commits carry. The bookmarks go through jj, which exports their removal in a
-// colocated workspace; deleting a git ref under jj is only for a ref jj never imported or does not
-// export.
+// bookmark on stderr. An immutable carrier stays the same way, since jj abandons no immutable
+// commit, and its line says that a legion merge wrote it. One abandon takes the commits and their
+// bookmarks together, so a run killed after it still finds each carrier by its bookmark. Then
+// remove deletes each bookmark of such a run that jj still holds with no commit, and each git
+// ref of such a run under refs/heads but a kept bookmark's. ours is asked only of the run
+// prefixes of names under bookmarkPrefix and of the lines the commits carry. The bookmarks go
+// through jj, which exports their removal in a colocated workspace; deleting a git ref under jj
+// is only for a ref jj never imported or does not export.
 func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge string) error {
 	out, err := m.jj(ctx, "bookmark", "list", "-T", `if(!remote, name ++ "\0" ++ if(normal_target, normal_target.commit_id()) ++ "\0")`, "glob:"+bookmarkPrefix+"*")
 	if err != nil {
@@ -95,7 +96,7 @@ func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge s
 		}
 		named[target] = append(named[target], name)
 	}
-	others, err := m.notCarriers(ctx, targets)
+	others, immutable, err := m.notCarriers(ctx, targets)
 	if err != nil {
 		return err
 	}
@@ -121,8 +122,12 @@ func (m *merger) remove(ctx context.Context, ours func(run string) bool, merge s
 		if slices.Contains(members, id) {
 			continue
 		}
+		why := "which is not a commit a legion merge wrote"
+		if slices.Contains(immutable, id) {
+			why = "which a legion merge wrote but which is immutable, so the run does not change it"
+		}
 		for _, name := range named[id] {
-			fmt.Fprintf(m.stderr, "legion merge: left the bookmark %s where it is, on commit %s, which is not a commit a legion merge wrote.\n", name, id)
+			fmt.Fprintf(m.stderr, "legion merge: left the bookmark %s where it is, on commit %s, %s.\n", name, id, why)
 		}
 		keptNames = append(keptNames, named[id]...)
 	}
@@ -182,21 +187,40 @@ func bookmarkRun(name string) (string, bool) {
 }
 
 // notCarriers is each commit of targets, the commits that a sweep's carrier bookmarks name, that
-// is not a carrier. git plumbing writes each carrier under carrierEmail, with no parent in the
-// repository or on another carrier, and the run gives each one its bookmark, so a carrier is a
-// mutable commit of that author whose every ancestor but jj's root() is a target too. A target
-// with an ancestor outside the targets and root() descends from a parent of a target that is
-// outside them, so one jj log reads every such target. The author tells a carrier from a commit
-// whose only parent is root(), which a person or a role can make too. A bookmark of a carrier's
-// name is on a commit that is not a carrier only where a person, a role or a tool put it, and an
-// abandon of that commit would lose the repository's own work, or a parent the run is about to
-// merge.
-func (m *merger) notCarriers(ctx context.Context, targets []string) ([]string, error) {
+// the sweep does not take for a carrier to abandon (others), and of those each carrier that is
+// immutable (immutable). git plumbing writes each carrier under carrierEmail, with no parent in
+// the repository or on another carrier, and the run gives each one its bookmark, so a carrier is a
+// commit of that author whose every ancestor but jj's root() is a target too. A target with an
+// ancestor outside the targets and root() descends from a parent of a target that is outside
+// them, so one jj log reads every such target. The author tells a carrier from a commit whose only
+// parent is root(), which a person or a role can make too. A bookmark of a carrier's name is on a
+// commit that is not a carrier only where a person, a role or a tool put it, and an abandon of
+// that commit would lose the repository's own work, or a parent the run is about to merge. jj
+// abandons no immutable commit, so a carrier that immutable_heads() holds, as a tag on it does,
+// stays too. Its bookmark's line on stderr says a legion merge wrote it, so the same jj log tells
+// the two apart: it prints each commit's id and whether it is no carrier, each ended by NUL.
+func (m *merger) notCarriers(ctx context.Context, targets []string) (others, immutable []string, err error) {
 	if len(targets) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	set := "(" + strings.Join(targets, " | ") + ")"
-	return m.list(ctx, fmt.Sprintf("%[1]s & ((parents(%[1]s) ~ %[1]s ~ root()):: | ~mutable() | ~author_email(exact:%[2]s))", set, workspace.JJString(carrierEmail)), "commit_id")
+	foreign := fmt.Sprintf("%[1]s & ((parents(%[1]s) ~ %[1]s ~ root()):: | ~author_email(exact:%[2]s))", set, workspace.JJString(carrierEmail))
+	out, err := m.jj(ctx, "log", "--no-graph", "-r", fmt.Sprintf("(%s) | (%s & ~mutable())", foreign, set), "-T",
+		`commit_id ++ "\0" ++ self.contained_in(`+workspace.JJString(foreign)+`) ++ "\0"`)
+	if err != nil {
+		return nil, nil, err
+	}
+	fields := nulFields(out)
+	if len(fields)%2 != 0 {
+		return nil, nil, fmt.Errorf("jj log printed %d fields, not commit and answer pairs: %q", len(fields), fields)
+	}
+	for i := 0; i < len(fields); i += 2 {
+		others = append(others, fields[i])
+		if fields[i+1] == "false" {
+			immutable = append(immutable, fields[i])
+		}
+	}
+	return others, immutable, nil
 }
 
 // marked is each mutable merge that carries the line of a run ours matches. Each commit a run
