@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -43,6 +44,7 @@ type connectOpts struct {
 	keptBuckets                 []string
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
+	windowClock                 clock.Clock
 	environment                 func(string) (string, bool)
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
@@ -110,6 +112,13 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 // waiting one. nil, the default, is time.Now.
 func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
+}
+
+// WithWindowClock sets the clock a publish window reads its deadline against and runs its probe's
+// flush timeout on (WindowUntil, window.Probe), so a test whose window deadline is a hold's on a
+// clocktest.Fake judges both on that fake. nil, the default, is the real clock.
+func WithWindowClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.windowClock = c })
 }
 
 // WithReplicas sets the deployment's replica count, ReplicasEnvVar, for the stream
@@ -281,6 +290,9 @@ type Client struct {
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
+	// windowClock is the clock a publish window reads its deadline against and times its probe on
+	// (WithWindowClock); nil is the real clock.
+	windowClock clock.Clock
 	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks
 	// at its context, as one that wakes the wait would be. It is nil outside tests: a test sets it
@@ -502,6 +514,7 @@ func newClient(urls []string, ownsStream bool, opts connectOpts) (*Client, error
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
+		windowClock:                 opts.windowClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		stopCh:                      make(chan struct{}),

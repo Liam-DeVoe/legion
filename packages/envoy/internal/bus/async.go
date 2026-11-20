@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -224,10 +225,10 @@ func (w *window) pin(wait time.Duration) error {
 	return nil
 }
 
-// expired answers ErrWindowDeadline once the window's deadline has passed, and nil before it or
-// when the window has none.
+// expired answers ErrWindowDeadline once the window's deadline has passed on the client's window
+// clock (WithWindowClock), and nil before it or when the window has none.
 func (w *window) expired() error {
-	if w.deadline != nil && !time.Now().Before(w.deadline()) {
+	if w.deadline != nil && !w.client.windowTime().Now().Before(w.deadline()) {
 		return fmt.Errorf("bus: %w", ErrWindowDeadline)
 	}
 	return nil
@@ -241,7 +242,7 @@ func (w *window) pinToSend() error {
 	if w.deadline == nil {
 		return w.pin(publishAcknowledgementTimeout)
 	}
-	remaining := time.Until(w.deadline())
+	remaining := w.deadline().Sub(w.client.windowTime().Now())
 	if remaining <= 0 {
 		return fmt.Errorf("bus: %w", ErrWindowDeadline)
 	}
@@ -250,6 +251,34 @@ func (w *window) pinToSend() error {
 		return err
 	}
 	return pinned
+}
+
+// windowTime is the clock the client's publish windows read their deadlines against and time
+// their probes on: WithWindowClock's, and the real clock when that set none.
+func (c *Client) windowTime() clock.Clock {
+	if c.windowClock == nil {
+		return clock.Real()
+	}
+	return c.windowClock
+}
+
+// unreportedDeadline is how far off WithShownDeadline shows nats.go a deadline that a clock's
+// context does not report.
+const unreportedDeadline = 24 * time.Hour
+
+// WithShownDeadline is ctx, a context a clock.Clock's WithTimeout or WithDeadline made, as
+// nats.go is to see it: ctx itself when ctx reports its deadline, and otherwise ctx under a
+// deadline unreportedDeadline off on the wall clock, with the function that releases that
+// deadline. nats.go refuses a flush whose context reports no deadline (nats.ErrNoDeadlineContext),
+// and bounds a JetStream call on such a context by a wait of its own on the wall clock. A
+// clocktest.Fake keeps its deadlines to itself, so nats.go is shown one it never meets, and the
+// fake's own end is what ends the call. The real clock reports its deadline, so production never
+// takes the second branch.
+func WithShownDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, reported := ctx.Deadline(); reported {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, time.Now().Add(unreportedDeadline))
 }
 
 // current reports whether the window's connection is connected and has not reconnected since the
@@ -532,15 +561,19 @@ func acknowledgement(reply *nats.Msg) (replyAck, bool) {
 }
 
 // Probe pins the window to the client's connection when nothing has yet, waiting up to timeout
-// for one, and flushes that connection within timeout. A flush that fails or runs out of time, and
-// a connection lost or reconnected since the window pinned it, answer an error wrapping
-// ErrUnavailable. After a window whose sends NATS did not acknowledge, it tells a connection that
-// is gone or silent from one whose server still answers.
+// for one, and flushes that connection within timeout on the window clock (WithWindowClock). A
+// flush that fails or runs out of time, and a connection lost or reconnected since the window
+// pinned it, answer an error wrapping ErrUnavailable. After a window whose sends NATS did not
+// acknowledge, it tells a connection that is gone or silent from one whose server still answers.
 func (w *window) Probe(timeout time.Duration) error {
 	if err := w.pin(timeout); err != nil {
 		return err
 	}
-	if err := w.conn.FlushTimeout(timeout); err != nil {
+	clocked, cancel := w.client.windowTime().WithTimeout(context.Background(), timeout)
+	defer cancel()
+	flush, cancelShown := WithShownDeadline(clocked)
+	defer cancelShown()
+	if err := w.conn.FlushWithContext(flush); err != nil {
 		return fmt.Errorf("bus: %w: the flush probe failed: %w", ErrUnavailable, err)
 	}
 	if !w.current() {
