@@ -223,14 +223,16 @@ type scratchReview struct {
 	CreatedAt time.Time    `json:"created_at"`
 }
 
-// personHandoverRig is one proof's rig: the scratch Dispatch, the daemon's configuration and
-// database, the daemon once booted (boot), the fake runtime it launches on, and the JSON log it
-// writes. The spec document every issue is created with gives its primary document a settled
-// version 1 to approve. architects keeps, by tree, the launch and the registered session of each
-// architect admit launched, which ready reports ready; tune, when set, adjusts the daemon's test
-// overrides at each boot, as a proof that holds the outbox or a registration sets them.
+// personHandoverRig is one proof's rig: the scratch Dispatch (dispatch, which a proof restarts
+// with other settings, and baseURL, where it serves), the daemon's configuration and database, the
+// daemon once booted (boot), the fake runtime it launches on, and the JSON log it writes. The spec
+// document every issue is created with gives its primary document a settled version 1 to approve.
+// architects keeps, by tree, the launch and the registered session of each architect admit
+// launched, which ready reports ready; tune, when set, adjusts the daemon's test overrides at each
+// boot, as a proof that holds the outbox or a registration sets them.
 type personHandoverRig struct {
 	t          *testing.T
+	dispatch   *scratchDispatch
 	baseURL    string
 	cfg        config.Config
 	pool       *store.Pool
@@ -299,7 +301,7 @@ func newPersonHandoverRigOn(t *testing.T, board scratchDispatchOptions, admissio
 	}
 	pool := store.NewPool(raw)
 	t.Cleanup(pool.Close)
-	return &personHandoverRig{t: t, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
+	return &personHandoverRig{t: t, dispatch: scratch, baseURL: baseURL, cfg: cfg, pool: pool, logs: &syncBuffer{}, github: blockersGitHub(t), architects: map[string]rigArchitect{}}
 }
 
 // boot starts the daemon on the rig's configuration and database, on a fresh fake runtime, its log

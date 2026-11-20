@@ -17,11 +17,14 @@ import (
 // whose process a retirement already stopped (relaunchRefused); the start that met it retries once
 // the cleanup confirmed and a fresh admission opened the next epoch.
 
-// revive binds an explicitly spawned, resumed or retried claim to the open tree epoch before
-// launching. In-lifetime recovery only rechecks the bound epoch (checkLaunch), so an old launch
-// cannot cross a cleanup confirmation into a later admission. exempt is whether the request that
-// asked for it is one the wake pacing never makes wait (exemptWake); every caller reads it from
-// its own event, so a request that carries no such field is paced.
+// revive binds an explicitly spawned, resumed or retried claim to its issue's open lifecycle
+// epoch before launching, and carries the epochs the admission bound into the claim the launch
+// rechecks: a claim a stop suspended and a return starts again binds the epoch the return's
+// promotion opened, not the one it bound before its stop. In-lifetime recovery only rechecks the
+// bound epoch (checkLaunch), so an old launch cannot cross a cleanup confirmation into a later
+// admission. exempt is whether the request that asked for it is one the wake pacing never makes
+// wait (exemptWake); every caller reads it from its own event, so a request that carries no such
+// field is paced.
 //
 // admitted, where a caller gives one, runs once the admission has bound the claim and before
 // anything else of the start: it is where a caller puts what it may change only for a claim
@@ -35,7 +38,7 @@ func (m *Machine) revive(ctx context.Context, exempt bool, admitted func()) erro
 	if err != nil {
 		return err
 	}
-	m.claim.TreeEpoch = bound.TreeEpoch
+	m.claim.TreeEpoch, m.claim.IssueEpoch = bound.TreeEpoch, bound.IssueEpoch
 	if admitted != nil {
 		admitted()
 	}

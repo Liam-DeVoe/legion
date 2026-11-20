@@ -480,9 +480,9 @@ func TestACheckLookRowOfALaterCheckEndsThatChecksLook(t *testing.T) {
 	}
 }
 
-// A row whose effect waits for a known moment (wait.Until: a lingering tree's close waiting for a
-// member's production check, bounded at a time the record holds) runs again at that moment rather
-// than on its backoff; a moment already past is the backoff's.
+// A row whose effect waits for a known moment (wait.Until: a production check's wake whose fact
+// waits, bounded at a time the record holds) runs again at that moment rather than on its backoff;
+// a moment already past is the backoff's.
 func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	for _, tc := range []struct {
@@ -496,8 +496,14 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
-			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.LingerClose{Generation: 1}, now))
-			waiting := &outboxFactHandler{err: wait.Until(tc.at, "tree LEGION-208 lingers past its deadline; member LEGION-209's production check is open")}
+			root := checkRoot()
+			putOutboxIssue(t, pool, records, root)
+			check := openCheck(root, "a1b2c3d4")
+			check.LookOpen = false
+			putProductionCheck(t, pool, records, check)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, root.Key, record.CheckWakeDue{Look: 1, OpenedAt: check.OpenedAt,
+				Reason: "the deploy has not carried the merge"}, now))
+			waiting := &outboxFactHandler{err: wait.Until(tc.at, "LEGION-208's production check waits for its bound")}
 			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{waiting}, log: quietLogger(), now: func() time.Time { return now }}
 
 			if err := runner.RunOnce(context.Background()); err != nil {
@@ -509,7 +515,7 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 			if err := pool.QueryRow(context.Background(), "select attempts, next_at, last_error from outbox").Scan(&attempts, &nextAt, &lastError); err != nil {
 				t.Fatalf("read the waiting row: %v", err)
 			}
-			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "production check is open") {
+			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "waits for its bound") {
 				t.Fatalf("retry = attempts=%d next_at=%s error=%q, want one attempt due at %s", attempts, nextAt, lastError, tc.want)
 			}
 		})

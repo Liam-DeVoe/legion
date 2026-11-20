@@ -1032,51 +1032,6 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 	}
 }
 
-func TestOutboxWorkspaceRemovalUsesDeterministicLocationAndReturnsFailure(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	// A workspace removal is the expiry of the tree's linger, so the tree lingers when it runs.
-	until := time.Now().Add(-time.Minute)
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 2, Status: "done", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, issue)
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	row := mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: issue.Generation}, time.Now())
-	var removed workspace.Workspace
-	var runner *outbox
-	runner = &outbox{
-		dispatchProject: "LEGION",
-		pool:            pool, records: records, supervisor: sup, project: "legion", log: quietLogger(),
-		stateDir: t.TempDir(),
-		remove: func(_ context.Context, got workspace.Workspace, store sync.Locker) error {
-			removed = got
-			// The removal is handed its repository's store lock, the one its provisions are, not
-			// held: workspace.Remove takes it, and lets it go before it deletes the workspace's files.
-			shared, release := runner.provisions.stores.take(got.Clone)
-			defer release()
-			if store != sync.Locker(shared) {
-				t.Errorf("the removal was handed store lock %p, want its repository's %p", store, shared)
-			} else if !shared.TryLock() {
-				t.Error("the removal was handed its repository's store lock held, want it free for workspace.Remove to take")
-			} else {
-				shared.Unlock()
-			}
-			return nil
-		},
-	}
-
-	if err := runner.execute(context.Background(), row); err != nil {
-		t.Fatalf("execute workspace removal: %v", err)
-	}
-	if want, _ := workspace.Location(runner.stateDir, ghrepo.MustParse(issue.Repo), row.Issue); removed != want {
-		t.Fatalf("removed workspace = %#v, want %#v", removed, want)
-	}
-
-	runner.remove = func(context.Context, workspace.Workspace, sync.Locker) error { return errors.New("remove failed") }
-	if err := runner.execute(context.Background(), row); err == nil || !strings.Contains(err.Error(), "remove failed") {
-		t.Fatalf("workspace removal failure = %v, want remove failure", err)
-	}
-}
-
 func TestOutboxSuperviseStartsResumesSuspendsStopsAndDeduplicatesDelivery(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -1379,69 +1334,6 @@ func TestAResumeStartHoldsBackItsTaskForTheTurnTheClaimIsWorking(t *testing.T) {
 	}
 	if got := machine.Claim(); got.State != supervise.StateWorking || got.Pending == nil || got.Pending.ID != "outbox:30" {
 		t.Fatalf("implementer after the resume start = %s holding %+v, want working on outbox:30", got.State, got.Pending)
-	}
-}
-
-// A linger's workspace removal waits until the close has retired every claim of the issue. A
-// worker whose release the runtime refused still runs in that workspace. The close reserved the
-// tree's cleanup before its release failed, so the tree's re-admission waits for that cleanup: the
-// removal of the ended linger then finishes without acting, and the retried close retires the
-// worker and confirms the cleanup, after which the tree's next run relaunches the retired worker
-// and provisions its workspace again.
-func TestAWorkspaceIsRemovedOnlyOnceTheCloseRetiredEveryClaim(t *testing.T) {
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	ctx := context.Background()
-	until := time.Now().Add(-time.Minute)
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LingerUntil: &until}
-	putOutboxIssue(t, pool, records, root)
-	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V"}
-	putOutboxIssue(t, pool, records, child)
-	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
-	token, err := claim.NewToken("legion", child.Key, claim.RoleTester)
-	if err != nil {
-		t.Fatal(err)
-	}
-	machine, _, err := sup.Create(ctx, supervise.Claim{Token: token, Project: "legion", Tree: root.Key, Issue: child.Key, Role: claim.RoleTester, State: supervise.StateQueued}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
-		t.Fatalf("launch the tester: %v", err)
-	}
-	rt.FailReleaseOf(token, errors.New("the pane did not exit"))
-	removals := 0
-	trees := outboxTreeStore(t, pool, root.Key)
-	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, trees: trees, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		remove: func(context.Context, workspace.Workspace, sync.Locker) error { removals++; return nil },
-	}
-	closeRow := mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "tree_close", Tree: root.Key, Role: claim.RoleTester, Generation: 1, Linger: 3}, time.Now())
-	removal := mustOutboxRow(t, child.Key, record.WorkspaceRemove{Linger: 3}, time.Now())
-
-	if err := runner.execute(ctx, closeRow); err == nil {
-		t.Fatal("the close with the release refused = nil, want the refusal so the row retries")
-	}
-	if err := runner.execute(ctx, removal); err == nil || removals != 0 {
-		t.Fatalf("the removal with the tester still %s = %v after %d removals, want it waiting for the close", machine.Claim().State, err, removals)
-	}
-	root.Generation, root.Phase, root.Status, root.LingerUntil = 4, phase.Admitted, "in_progress", nil
-	putOutboxIssue(t, pool, records, root)
-	if _, err := trees.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); !errors.Is(err, treelifecycle.ErrCleanupReserved) {
-		t.Fatalf("re-admission while the close's cleanup is reserved = %v, want the reservation's wait", err)
-	}
-	if err := runner.execute(ctx, removal); err != nil || removals != 0 {
-		t.Fatalf("the ended linger's removal = %v after %d removals, want it finished without acting", err, removals)
-	}
-	rt.FailReleaseOf(token, nil)
-	if err := runner.execute(ctx, closeRow); err != nil {
-		t.Fatalf("the reserved close retried after re-admission: %v", err)
-	}
-	if got := machine.Claim().State; got != supervise.StateRetired {
-		t.Fatalf("tester after the reserved close's retry = %s, want retired", got)
-	}
-	if opened, err := trees.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil || opened.Epoch != 2 {
-		t.Fatalf("re-admission once the cleanup confirmed = %+v, %v; want the tree's epoch 2", opened, err)
 	}
 }
 
@@ -2304,8 +2196,8 @@ func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *
 }
 
 // Under a runtime that provisions each claim's workspace in its own pod (C4), the daemon provisions
-// none and removes none: a start spawns the claim with no workspace on the host, a retired claim's
-// relaunch provisions nothing, and a tree's removal row finishes without acting.
+// none and removes none: a start spawns the claim with no workspace on the host, and a retired
+// claim's relaunch provisions nothing.
 func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -2329,19 +2221,10 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, start, time.Now())); err != nil {
 		t.Fatalf("start the architect: %v", err)
 	}
-	// The tree's linger expires: its close and its workspace removal run while it lingers.
-	until := time.Now().Add(-time.Minute)
-	issue.LingerUntil = &until
-	putOutboxIssue(t, pool, records, issue)
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "tree_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation, Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("close the tree: %v", err)
+	// The issue's close retires the claim, and a new run's start relaunches it.
+	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "issue_close", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}, time.Now())); err != nil {
+		t.Fatalf("close the issue: %v", err)
 	}
-	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, record.WorkspaceRemove{Linger: issue.Generation}, time.Now())); err != nil {
-		t.Fatalf("remove the workspace: %v", err)
-	}
-	// Re-admission ends the linger, and the retired architect is relaunched.
-	issue.LingerUntil = nil
-	putOutboxIssue(t, pool, records, issue)
 	if err := runner.execute(ctx, mustOutboxRow(t, issue.Key, start, time.Now())); err != nil {
 		t.Fatalf("relaunch the retired architect: %v", err)
 	}
@@ -2354,15 +2237,6 @@ func TestARuntimeThatProvisionsInItsPodsLeavesTheHostWithoutWorkspaces(t *testin
 	if _, err := os.Stat(filepath.Join(runner.stateDir, "workspaces")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the state directory has a workspaces directory (%v), want none", err)
 	}
-}
-
-func workspaceRemovals(t *testing.T, pool *store.Pool) int {
-	t.Helper()
-	var count int
-	if err := pool.QueryRow(context.Background(), `select count(*) from outbox where kind = 'workspace_remove'`).Scan(&count); err != nil {
-		t.Fatalf("count workspace removal rows: %v", err)
-	}
-	return count
 }
 
 // A re-admission starts the root's architect again. The linger suspended it, so the start normally

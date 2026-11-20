@@ -2724,7 +2724,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 	}); err != nil || !authorized {
 		return err
 	}
-	return r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod")
+	return r.podDeleted(ctx, row.Issue, "the issue's close, stop or production check deleted its pod")
 }
 
 // podDeleted ends the hold a project's pause has on issue's pod once a row has deleted that pod
