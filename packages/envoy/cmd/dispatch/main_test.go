@@ -1098,8 +1098,11 @@ func highestMigrationFile(t *testing.T) int {
 // legitimately empties that pool - writers queued on one issue's row lock hold theirs until
 // they commit - and a probe that queues behind them is read as a dead process: the ALB fails
 // it at five seconds, ECS replaces the task, and every in-flight request of every other client
-// is cancelled. The probe therefore takes its connection from a pool of its own, and the short
-// client timeout here is what tells a queued probe from an answered one. The shared pool here
+// is cancelled. The probe therefore takes its connection from a pool of its own. Here the
+// shared pool's connections are held until the test ends, so a probe that queued behind them
+// would answer 503 with db false once its own bound (store.healthProbeTimeout) ran out, which
+// the status check below fails; the request itself waits under the shared wait's context
+// (healthzWithin), so a slow answer on a loaded machine is no failure. The shared pool here
 // holds four connections: the property holds at any size, and holding all of production's
 // sixty-four while the other packages' tests share the server would push a default Postgres
 // past its hundred.
@@ -1123,11 +1126,9 @@ func TestHealthzAnswersWhileEveryPooledConnectionIsHeld(t *testing.T) {
 
 	server := httptest.NewServer(dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, nil))
 	defer server.Close()
-	client := &http.Client{Timeout: 3 * time.Second}
-	started := time.Now()
-	response, err := client.Get(server.URL + "/healthz")
+	response, err := healthzWithin(t, server.URL)
 	if err != nil {
-		t.Fatalf("health probe with every pooled connection held: %v (after %s)", err, time.Since(started))
+		t.Fatalf("health probe with every pooled connection held: %v", err)
 	}
 	defer response.Body.Close()
 	var health map[string]any

@@ -2,13 +2,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -94,13 +95,18 @@ func TestPprofServesTheIndexOnLoopbackAndStopsWithTheContext(t *testing.T) {
 	}
 
 	cancel()
-	testwait.Eventually(t, "the pprof listener to stop accepting connections once the shutdown context ended", func() bool {
-		conn, err := net.DialTimeout("tcp", bound.String(), 100*time.Millisecond)
-		if err != nil {
-			return true
+	// Each dial waits under the shared wait's context, so a dial a loaded machine answers late is
+	// waited for, and only a refusal reads as a listener that has stopped: any other answer, an
+	// accepted connection included, is the reading the wait prints.
+	dialing := testwait.Context(t)
+	var dialer net.Dialer
+	testwait.Until(t, "the pprof listener to refuse connections once the shutdown context ended", func() (string, bool) {
+		conn, err := dialer.DialContext(dialing, "tcp", bound.String())
+		if err == nil {
+			_ = conn.Close()
+			return "a dial was accepted", false
 		}
-		conn.Close()
-		return false
+		return err.Error(), errors.Is(err, syscall.ECONNREFUSED)
 	})
 }
 

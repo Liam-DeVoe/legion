@@ -350,13 +350,15 @@ const (
 )
 
 // sessionRig is the test's own NATS connection, the role-claim and session buckets it registers
-// sessions in, and the HTTP client it writes comments through.
+// sessions in, and the HTTP client it writes comments through, each write under writes, the shared
+// wait's context (testwait.Context), so a write a loaded machine answers late is waited for.
 type sessionRig struct {
 	natsURL  string
 	conn     *natsgo.Conn
 	roles    *envoystore.Registry
 	sessions *session.SessionRegistry
 	client   *http.Client
+	writes   context.Context
 }
 
 func newSessionRig(t *testing.T, natsURL string) *sessionRig {
@@ -381,7 +383,8 @@ func newSessionRig(t *testing.T, natsURL string) *sessionRig {
 		conn:     conn,
 		roles:    roles,
 		sessions: sessions,
-		client:   &http.Client{Transport: transport, Timeout: 30 * time.Second},
+		client:   &http.Client{Transport: transport},
+		writes:   testwait.Context(t),
 	}
 }
 
@@ -459,7 +462,7 @@ func (r *sessionRig) writeComment(p *dispatchProcess, key string, fields map[str
 	if err != nil {
 		return commentWrite{err: err}
 	}
-	request, err := http.NewRequest(http.MethodPost, p.url("/api/v1/issues/"+key+"/comments"), bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(r.writes, http.MethodPost, p.url("/api/v1/issues/"+key+"/comments"), bytes.NewReader(payload))
 	if err != nil {
 		return commentWrite{err: err}
 	}
@@ -558,7 +561,7 @@ func (f sessionFrame) eventRow(t *testing.T) int64 {
 func newTestSession(t *testing.T, rig *sessionRig, id string, subjects ...string) *testSession {
 	t.Helper()
 	s := &testSession{id: id, natsURL: rig.natsURL, subjects: subjects, taken: map[string]bool{}}
-	if err := s.connect(); err != nil {
+	if err := s.connect(t); err != nil {
 		t.Fatalf("connect session %s: %v", id, err)
 	}
 	t.Cleanup(func() {
@@ -569,19 +572,25 @@ func newTestSession(t *testing.T, rig *sessionRig, id string, subjects ...string
 	return s
 }
 
-// connect opens a connection with the session's subscriptions and makes it the session's.
-func (s *testSession) connect() error {
-	conn, err := natsgo.Connect(s.natsURL, natsgo.Timeout(time.Second))
-	if err != nil {
-		return err
-	}
+// connect opens a connection with the session's subscriptions and makes it the session's. Each
+// dial's own budget is nats.go's default, and a dial that fails is made again through the shared
+// wait, as testnats.Connect makes its dials; the flush of the subscriptions waits under the shared
+// wait's context.
+func (s *testSession) connect(t *testing.T) error {
+	t.Helper()
+	var conn *natsgo.Conn
+	testwait.Until(t, fmt.Sprintf("session %s's connection to NATS", s.id), func() (error, bool) {
+		var err error
+		conn, err = natsgo.Connect(s.natsURL)
+		return err, err == nil
+	})
 	for _, subject := range s.subjects {
 		if _, err := conn.Subscribe(subject, s.receive); err != nil {
 			conn.Close()
 			return fmt.Errorf("subscribe to %s: %w", subject, err)
 		}
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		conn.Close()
 		return fmt.Errorf("flush the subscriptions: %w", err)
 	}
@@ -593,12 +602,13 @@ func (s *testSession) connect() error {
 
 // reconnect drops the session's connection and opens a new one with the same subscriptions, as a
 // host whose connection broke does. A frame sent between the two reaches neither.
-func (s *testSession) reconnect() error {
+func (s *testSession) reconnect(t *testing.T) error {
+	t.Helper()
 	s.mu.Lock()
 	old := s.conn
 	s.mu.Unlock()
 	old.Close()
-	return s.connect()
+	return s.connect(t)
 }
 
 func (s *testSession) receive(msg *natsgo.Msg) {
@@ -756,7 +766,7 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 		t.Fatalf("subscribe to the role's topic: %v", err)
 	}
 	t.Cleanup(func() { _ = laneSub.Unsubscribe() })
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 	rig.registerHolder(t, outboxRoleLane, outboxRoleHolder)
@@ -850,12 +860,15 @@ func TestTheOutboxPublishesEachEventOnceAcrossBothProcesses(t *testing.T) {
 const (
 	// takeOverWithin bounds a take-over: from the moment the publisher is killed, cut off NATS or
 	// frozen, the other process takes the publisher hold, publishes its first batch and a session
-	// takes a comment written since, each within it. It is a service level read off this
-	// machine's clock across two child processes, with 2 s above the hold's own TTL and Margin
-	// (outbox.publisherHoldOptions, 6 s and 2 s), so only benchtime's timing lane holds a
-	// take-over, or a stretch with no publisher, to it; every run holds that the take-over
+	// takes a comment written since, each within it. It is the service level the product promises
+	// (outbox.publisherHoldOptions: "a process that is killed is replaced by a standby within 6 s
+	// of its last renewal"), with 2 s above the hold's own TTL and Margin (6 s and 2 s), read off
+	// this machine's clock across two child processes, so only benchtime's timing lane holds a
+	// take-over, or a stretch with no publisher, to it. Every run holds that the take-over
 	// happens, that no two processes publish at once and that sessions take each event once and
-	// in order.
+	// in order; and the standby's timer to the lapse of the hold it waits on, armed no later than
+	// the hold's TTL after the holder's last renewal, is held on a fake by
+	// outbox.TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses.
 	takeOverWithin = 10 * time.Second
 	// outboxDeliveryWithin bounds the wait for what a row wrote to reach every session it is
 	// addressed to.
@@ -895,13 +908,16 @@ func (r healthReport) String() string {
 	return fmt.Sprintf("outbox_publisher %v", *r.OutboxPublisher)
 }
 
-// healthClient is the client /healthz is read with: a process that does not answer within its
-// timeout is a failed read, not a stuck row.
-var healthClient = &http.Client{Timeout: 2 * time.Second}
-
-// readHealthReport reads the process's /healthz, whose body a 503 carries too.
-func (p *dispatchProcess) readHealthReport() (healthReport, error) {
-	response, err := healthClient.Get(p.url("/healthz"))
+// readHealthReport reads the process's /healthz, whose body a 503 carries too, under ctx: the
+// shared wait's (testwait.Context), so a probe a loaded machine answers late is waited for rather
+// than failed, and one that never answers ends at the wait's deadline. A wait that reads it on
+// every attempt makes ctx once, before the wait.
+func (p *dispatchProcess) readHealthReport(ctx context.Context) (healthReport, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
+	if err != nil {
+		return healthReport{}, err
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return healthReport{}, err
 	}
@@ -924,15 +940,16 @@ func (p *dispatchProcess) readHealthReport() (healthReport, error) {
 // publisher a stretch in which a publisher was already back.
 func waitForPublisher(t *testing.T, pair *dispatchPair) (*dispatchProcess, time.Time) {
 	t.Helper()
+	ctx := testwait.Context(t)
 	var publisher *dispatchProcess
 	var issued time.Time
 	testwait.Until(t, "one process of the pair to report outbox_publisher true", func() (string, bool) {
 		// Each read is bracketed from its own issue, since the two go out one after the other and
 		// the first one's answer can be a probe timeout later than the moment it was issued.
 		issuedA := time.Now()
-		a, errA := pair.a.readHealthReport()
+		a, errA := pair.a.readHealthReport(ctx)
 		issuedB := time.Now()
-		b, errB := pair.b.readHealthReport()
+		b, errB := pair.b.readHealthReport(ctx)
 		if errA == nil && errB == nil && a.publishing() != b.publishing() {
 			if a.publishing() {
 				publisher, issued = pair.a, issuedA
@@ -1516,12 +1533,12 @@ type publisherRead struct {
 	err     error
 }
 
-// readPublisher reads one process's /healthz, bracketed by the moments the read was issued and
-// answered. The two processes of a sample are read by one call of this each, so the two reads are
-// made the same way rather than written out twice.
-func readPublisher(process *dispatchProcess) publisherRead {
+// readPublisher reads one process's /healthz under ctx, bracketed by the moments the read was
+// issued and answered. The two processes of a sample are read by one call of this each, so the
+// two reads are made the same way rather than written out twice.
+func readPublisher(ctx context.Context, process *dispatchProcess) publisherRead {
 	read := publisherRead{bracket: readBracket{issued: time.Now()}}
-	read.report, read.err = process.readHealthReport()
+	read.report, read.err = process.readHealthReport(ctx)
 	read.bracket.answered = time.Now()
 	return read
 }
@@ -1545,10 +1562,10 @@ func (s publisherSample) at() time.Time {
 	return earliest
 }
 
-// sampleOutboxPublisher reads both processes' /healthz every 100 ms, the two at once, until stop
-// is closed. It returns a channel it closes once its first sample is taken, and the func that
-// waits for the last read and answers them all.
-func sampleOutboxPublisher(pair *dispatchPair, stop <-chan struct{}) (<-chan struct{}, func() []publisherSample) {
+// sampleOutboxPublisher reads both processes' /healthz every 100 ms, the two at once, each read
+// under ctx (readHealthReport), until stop is closed. It returns a channel it closes once its first
+// sample is taken, and the func that waits for the last read and answers them all.
+func sampleOutboxPublisher(ctx context.Context, pair *dispatchPair, stop <-chan struct{}) (<-chan struct{}, func() []publisherSample) {
 	started := time.Now()
 	first := make(chan struct{})
 	done := make(chan []publisherSample, 1)
@@ -1569,7 +1586,7 @@ func sampleOutboxPublisher(pair *dispatchPair, stop <-chan struct{}) (<-chan str
 			got := make([]publisherRead, len(processes))
 			var reads sync.WaitGroup
 			for i, process := range processes {
-				reads.Go(func() { got[i] = readPublisher(process) })
+				reads.Go(func() { got[i] = readPublisher(ctx, process) })
 			}
 			reads.Wait()
 			sample := publisherSample{after: time.Since(started), reads: make(map[*dispatchProcess]publisherRead, len(processes))}
@@ -1629,7 +1646,7 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	const samplingSpan = 12 * time.Second
 	pair := startOutboxPair(t)
 	stopSampling := make(chan struct{})
-	sampledOnce, samples := sampleOutboxPublisher(pair, stopSampling)
+	sampledOnce, samples := sampleOutboxPublisher(testwait.Context(t), pair, stopSampling)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	stop := scene.writeAtRate(t, 4, pair.a, pair.b)
 	// Deferred so that a t.Fatalf below - the wait for a publisher is one of the failures this
@@ -1671,20 +1688,20 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	_, sawPublisher := waitForPublisher(t, pair)
 	stop()
 
-	// now is the moment the lines below were read, which is how far a period still open runs. It
-	// is not what ends a stretch with no publisher: that is sawPublisher above, the moment the
-	// read that found a publisher was issued, which is before that read's own answer and before
-	// stop(), while now is after both.
-	now := time.Now()
 	// held and logged are each process's publishing periods and the lines they were read from,
 	// kept so that the assertions below and the failures they print work from one parse.
 	held := map[*dispatchProcess][]publishingPeriod{}
-	logged := map[*dispatchProcess][]outboxLine{}
+	logged := map[*dispatchProcess][]outboxLine{pair.a: pair.a.outboxLines(t), pair.b: pair.b.outboxLines(t)}
+	// now is a moment after the lines above were read, which is how far a period still open
+	// runs: every line they hold was written before it, so a batch logged in a period still open
+	// lies inside it. It is not what ends a stretch with no publisher: that is sawPublisher
+	// above, the moment the read that found a publisher was issued, which is before that read's
+	// own answer and before stop(), while now is after both.
+	now := time.Now()
 	owners := map[string]*dispatchProcess{}
 	batches := 0
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
-		lines := process.outboxLines(t)
-		logged[process] = lines
+		lines := logged[process]
 		instances := map[string]bool{}
 		for _, line := range lines {
 			// Only the four messages this row reads are kept, and every one of them carries its
@@ -1922,7 +1939,9 @@ func TestAKilledPublisherIsReplacedWithin10Seconds(t *testing.T) {
 
 // restartedPublishesWithin bounds how long a restarted process takes, from its registration, to
 // publish the events the process killed before it left unpublished: both on the database's clock,
-// and read in benchtime's timing lane alone.
+// and read in benchtime's timing lane alone, as takeOverWithin is (outbox.publisherHoldOptions'
+// promise; the standby's lapse timer on a fake is
+// outbox.TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses).
 const restartedPublishesWithin = 10 * time.Second
 
 // The only process is killed while its batch carrying comment 1 of an issue is in flight - its NATS
@@ -2194,8 +2213,9 @@ func TestAPublisherCutFromNATSHandsOverWithin10Seconds(t *testing.T) {
 	t.Run("silent cut", func(t *testing.T) {
 		publisher, _ := waitForPublisher(t, pair)
 		standby := pair.other(publisher)
+		reading := testwait.Context(t)
 		testwait.Eventually(t, "the standby reconnecting to NATS", func() bool {
-			report, err := standby.readHealthReport()
+			report, err := standby.readHealthReport(reading)
 			return err == nil && report.NATS != nil && *report.NATS
 		})
 
@@ -2280,8 +2300,9 @@ func TestAFrozenPublisherSendsNothingWhenItResumes(t *testing.T) {
 			t.Errorf("the resumed process logged %q: %s", line.message, line.text)
 		}
 	}
+	reading := testwait.Context(t)
 	for process, want := range map[*dispatchProcess]bool{publisher: false, standby: true} {
-		report, err := process.readHealthReport()
+		report, err := process.readHealthReport(reading)
 		if err != nil || report.publishing() != want {
 			t.Errorf("process %s's /healthz reads %v (%v), want outbox_publisher %v", pair.name(process), report, err, want)
 		}
@@ -2333,7 +2354,7 @@ func TestARoleHolderWhoseConnectionMovesGetsTheEventOnceAndInOrder(t *testing.T)
 		key := routedIssue(t, role)
 		first := writeComment(t, key, "Event N.")
 		testwait.Eventually(t, "the holder taking event N", takes(holder, first))
-		if err := holder.reconnect(); err != nil {
+		if err := holder.reconnect(t); err != nil {
 			t.Fatalf("reconnect the holder: %v", err)
 		}
 		second := writeComment(t, key, "Event N+1.")
@@ -2589,18 +2610,15 @@ func githubFakeAnswer(r *http.Request) (int, string) {
 	return http.StatusNotFound, `{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}`
 }
 
-// holdFirstDeliveryListing blocks the first listing until Release, the caller gives up, or
-// githubHoldCap passes, whichever comes first; every later listing is answered at once.
+// holdFirstDeliveryListing holds a listing until Release or until its caller gives up, by the
+// process's own bound on the call (githubapp.RequestTimeout) or its exit; a listing after Release
+// is answered at once. Nothing else ends the hold, so a slow step of the row while it holds
+// changes nothing of what the row reads, and startGitHubFake releases it when the test ends, so a
+// row that fails before it releases leaves no listing held.
 func (f *githubFake) holdFirstDeliveryListing(ctx context.Context) {
 	select {
 	case <-f.release:
-		return
-	default:
-	}
-	select {
-	case <-f.release:
 	case <-ctx.Done():
-	case <-time.After(githubHoldCap):
 	}
 }
 
@@ -2637,10 +2655,6 @@ func (f *githubFake) pullRequestFetches() int {
 	defer f.mu.Unlock()
 	return f.fetched
 }
-
-// githubHoldCap bounds the hold whatever the test does, well inside githubapp.RequestTimeout (20
-// s), so a row that fails before it releases leaves no request timing out.
-const githubHoldCap = 10 * time.Second
 
 // Release lets every held listing answer.
 func (f *githubFake) Release() { f.once.Do(func() { close(f.release) }) }
@@ -2838,14 +2852,15 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 
 // ───── a frozen holder ──────────────────────────────────────────────────────
 
-// frozenHolderResumedWindow is how long the row keeps publishing once the frozen process has
-// resumed: three of the intake's renewal intervals (delivery.intakeHoldRenew, 5 s), in which the
-// resumed intake's loop has run its hold renewal and its check of the durable
-// (delivery.heldDurable.check) three times over and its bind poll
-// (delivery.durableBindInterval, 2 s) seven times. Whatever a process that resumed holding
-// nothing would still do -- bind the durable, handle a message of it -- it has those loops'
-// turns to do it in, with messages arriving throughout.
-const frozenHolderResumedWindow = 3 * 5 * time.Second
+// frozenHolderResumedRounds is how many rounds of messages the row publishes once the frozen
+// process has resumed, each followed by a whole check of each durable by the resumed process's
+// intakes (delivery.heldDurable.check, every delivery.intakeHoldRenew, 5 s, its line
+// delivery.DurableChecked numbered per intake) that began after the round went out
+// (waitForPassAfter). Whatever a process that resumed holding nothing would still do -- bind the
+// durable, handle a message of it -- it has those loops' turns to do it in, with messages
+// arriving throughout, and the row knows each turn has passed from the process's own line rather
+// than from a span of the clock.
+const frozenHolderResumedRounds = 3
 
 // A process frozen with its NATS connection still open -- a long garbage collection pause, a
 // host that stops scheduling it, a pod whose node has stopped -- keeps every subscription it had
@@ -2865,7 +2880,7 @@ const frozenHolderResumedWindow = 3 * 5 * time.Second
 // What the freeze then shows, and a kill cannot, is the resumed process: it comes back with its
 // connection, its subscription and its own hold still in hand, and must do nothing with any of
 // them. GitHub-shaped messages are published in four rounds -- before the freeze, while the
-// holder is frozen, once the standby has taken over, and across frozenHolderResumedWindow after
+// holder is frozen, once the standby has taken over, and in frozenHolderResumedRounds rounds after
 // the resume -- and the row requires that the frozen process handled the first round and
 // nothing from the freeze on, that every message was handled exactly once across the two
 // processes (each process calls a GitHub of its own, so every handling is recorded with the
@@ -2889,6 +2904,9 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	envFor := func(process string) map[string]string {
 		env := githubAppEnv(t, fake.serve(t, process))
 		env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = (10 * time.Second).String()
+		// Each intake's check of its durable logs a numbered line at DEBUG, the turns of the
+		// resumed process's loops the row waits on.
+		env["DISPATCH_TEST_DEBUG_MESSAGES"] = delivery.DurableChecked
 		return env
 	}
 	pair.startEach(t, envFor("A"), envFor("B"))
@@ -2914,7 +2932,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	// The holder handles messages before it is frozen, so what the resumed process must not do
 	// is what it was doing until the freeze; and the durable is drained when the freeze comes,
 	// so no message is in a handler of the frozen process for the standby to handle again.
-	before := publishMergedPullRequests(t, js, run, 1, 2, 0)
+	before := publishMergedPullRequests(t, js, run, 1, 2)
 	waitForHandled(t, pair, fake, before)
 	requireHandledBy(t, pair, fake, before, frozen, "before the freeze")
 	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "before the freeze")
@@ -2947,7 +2965,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 
 	// Published at the frozen holder: NATS pushes them down its open connection, which reads
 	// nothing, and the take-over's recreated durable redelivers them to the standby.
-	whileFrozen := publishMergedPullRequests(t, js, run, 3, 3, 0)
+	whileFrozen := publishMergedPullRequests(t, js, run, 3, 3)
 	for _, durable := range deliveryDurables {
 		if holders[durable] != frozen {
 			continue
@@ -2959,7 +2977,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	}
 	requireOneHoldPerDurable(t, pair)
 	waitForHandled(t, pair, fake, whileFrozen)
-	afterTakeOver := publishMergedPullRequests(t, js, run, 6, 3, 0)
+	afterTakeOver := publishMergedPullRequests(t, js, run, 6, 3)
 	waitForHandled(t, pair, fake, afterTakeOver)
 	requireHandledBy(t, pair, fake, slices.Concat(whileFrozen, afterTakeOver), standby, "while the holder was frozen")
 
@@ -2970,7 +2988,18 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 	frozen.waitForLog(t, `msg="dispatch delivery: the intake's hold is lost; it stops delivering"`, "name="+bus.DispatchDeliveryDurable)
 	t.Logf("the resumed process reported its hold of %s lost %v after it resumed", bus.DispatchDeliveryDurable,
 		time.Since(resumedAt).Round(time.Millisecond))
-	afterResume := publishMergedPullRequests(t, js, run, 9, 6, frozenHolderResumedWindow/6)
+	var afterResume []int
+	for round := range frozenHolderResumedRounds {
+		checked := map[string]uint64{}
+		for _, durable := range deliveryDurables {
+			checked[durable] = passesLogged(t, frozen, `msg="`+delivery.DurableChecked+`"`, "name="+durable)
+		}
+		afterResume = append(afterResume, publishMergedPullRequests(t, js, run, 9+2*round, 2)...)
+		for _, durable := range deliveryDurables {
+			waitForPassAfter(t, frozen, fmt.Sprintf("the resumed process's check of %s", durable), checked[durable],
+				`msg="`+delivery.DurableChecked+`"`, "name="+durable)
+		}
+	}
 	waitForHandled(t, pair, fake, afterResume)
 	requireHandledBy(t, pair, fake, afterResume, standby, "after the frozen process resumed")
 
@@ -2997,7 +3026,7 @@ func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
 				durable, strings.Join(bound[boundBeforeFreeze[durable]:], "\n"), pair.buffers())
 		}
 		if subject, held := subjectsBeforeFreeze[durable]; held {
-			if subscribers := natsSubscribers(t, pair.natsServer, subject); len(subscribers) > 0 {
+			if subscribers := natsSubscribers(t, pair, subject); len(subscribers) > 0 {
 				t.Errorf("the deliver subject %s the frozen process had %s bound to is still subscribed by [%s] %v after it resumed; an intake that finds its hold lost drains its subscription (delivery.heldDurable.StopDelivering).\n%s",
 					subject, durable, strings.Join(subscribers, ", "), time.Since(resumedAt).Round(time.Millisecond), pair.buffers())
 			}
@@ -3153,14 +3182,9 @@ func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
 
 // publishMergedPullRequests publishes count GitHub-shaped messages, from pull request number
 // first on: each a merge of a pull request of acme/deploy by mergedPullRequestAuthor, on
-// notifications.github.acme.deploy.pr.<number>, holding a span of every before each after the
-// first. It answers the numbers it published. run is this run's own, since the notification stream
-// suppresses a repeat of a dedupe key for DeliveryDuplicateWindow and the row publishes against
-// a server a harness may keep between runs.
-//
-// The span spreads the messages across a window in which a process that must handle none of them
-// is given its loops' turns to misbehave: the resumed process of the frozen-holder row, which
-// records nothing for a turn it takes and handles nothing.
+// notifications.github.acme.deploy.pr.<number>. It answers the numbers it published. run is this
+// run's own, since the notification stream suppresses a repeat of a dedupe key for
+// DeliveryDuplicateWindow and the row publishes against a server a harness may keep between runs.
 //
 // The payload carries what Envoy's normalizer puts in a `pull_request` envelope
 // (contracts/normalize.go), head_repo above all: a merge whose head is named is a complete read
@@ -3169,15 +3193,10 @@ func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
 // (delivery.ListStalePullRequestHeads). A reconcile pass that did read one of these pull
 // requests again would read it through the very call that counts a handling here, and the row
 // would see it as a second handling of a message.
-func publishMergedPullRequests(t *testing.T, js natsgo.JetStreamContext, run string, first, count int, every time.Duration) []int {
+func publishMergedPullRequests(t *testing.T, js natsgo.JetStreamContext, run string, first, count int) []int {
 	t.Helper()
 	numbers := make([]int, 0, count)
 	for index := range count {
-		if index > 0 && every > 0 {
-			testwait.Span(t, every, "the messages arrive throughout the window the resumed process is watched in: it is "+
-				"a child process, so synctest does not reach it; it records no turn of its loops that did nothing, so no "+
-				"state says a turn has passed; and the standby, not the process watched, answers the next message")
-		}
 		number := first + index
 		id := fmt.Sprintf("frozen-holder-%s-%d", run, number)
 		payload, err := json.Marshal(map[string]string{
@@ -3373,8 +3392,9 @@ func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testi
 	}
 
 	proxy.Restore()
+	reading := testwait.Context(t)
 	testwait.Eventually(t, "the cut process's NATS connection coming back", func() bool {
-		report, err := holder.readHealthReport()
+		report, err := holder.readHealthReport(reading)
 		return err == nil && report.NATS != nil && *report.NATS
 	})
 	// The binding the two servers report is the one the process had before the cut: the same
@@ -3618,19 +3638,25 @@ func readDurableBinding(t *testing.T, pair *dispatchPair, js natsgo.JetStreamCon
 		t.Fatalf("read %s: %v", durable, err)
 	default:
 		binding.exists, binding.subject, binding.pushBound = true, info.Config.DeliverSubject, info.PushBound
-		binding.subscribers = natsSubscribers(t, pair.natsServer, info.Config.DeliverSubject)
+		binding.subscribers = natsSubscribers(t, pair, info.Config.DeliverSubject)
 	}
 	binding.hold = readDurableHold(t, pair.database, durable)
 	return binding
 }
 
-// natsSubscribers names every client connection the NATS server has a subscription to subject on,
-// from the server's own connection listing (/connz) rather than from what a process logged: a
-// second process delivering from a durable is a second connection here, whatever either wrote.
-func natsSubscribers(t *testing.T, server *testnats.Server, subject string) []string {
+// natsSubscribers names every client connection the pair's NATS server has a subscription to
+// subject on, from the server's own connection listing (/connz) rather than from what a process
+// logged: a second process delivering from a durable is a second connection here, whatever either
+// wrote. The read waits under the pair's shared-wait context (monitorReads), so a listing a loaded
+// machine answers late is waited for.
+func natsSubscribers(t *testing.T, pair *dispatchPair, subject string) []string {
 	t.Helper()
-	endpoint := server.MonitorURL() + "/connz?subs=1&limit=4096"
-	response, err := (&http.Client{Timeout: 10 * time.Second}).Get(endpoint)
+	endpoint := pair.natsServer.MonitorURL() + "/connz?subs=1&limit=4096"
+	request, err := http.NewRequestWithContext(pair.monitorReads, http.MethodGet, endpoint, nil)
+	if err != nil {
+		t.Fatalf("build GET %s: %v", endpoint, err)
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET %s: %v", endpoint, err)
 	}
@@ -3985,8 +4011,15 @@ func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) 
 // pass served (duty.Exclusive).
 func leasePeriodOf(t *testing.T, line string) string {
 	t.Helper()
+	return logAttributeOf(t, line, "period")
+}
+
+// logAttributeOf is the name= field of one whole slog text line, unquoted, and fails t when the
+// line carries none.
+func logAttributeOf(t *testing.T, line, name string) string {
+	t.Helper()
 	for _, match := range logAttribute.FindAllStringSubmatch(line, -1) {
-		if match[1] != "period" {
+		if match[1] != name {
 			continue
 		}
 		value := match[2]
@@ -3995,8 +4028,53 @@ func leasePeriodOf(t *testing.T, line string) string {
 		}
 		return value
 	}
-	t.Fatalf("a leased pass line carries no period=: %s", line)
+	t.Fatalf("a log line carries no %s=: %s", name, line)
 	return ""
+}
+
+// wholeLogLines is logLines with only the lines the process has finished writing: it is still
+// running while the test reads its output, and the last line can have been written only in part,
+// before the attributes a caller reads off it.
+func (p *dispatchProcess) wholeLogLines(parts ...string) []string {
+	var matched []string
+	for raw := range strings.Lines(p.Output.String()) {
+		if line, whole := strings.CutSuffix(raw, "\n"); whole && holdsAll(line, parts...) {
+			matched = append(matched, line)
+		}
+	}
+	return matched
+}
+
+// passesLogged is the highest pass= of the whole lines the process wrote holding every one of
+// parts, 0 for none: one loop's numbered pass lines (delivery.DurableChecked for one durable,
+// startup.AnnouncerPassed), which a process started with DISPATCH_TEST_DEBUG_MESSAGES naming them
+// writes at DEBUG, numbered from 1 in that process.
+func passesLogged(t *testing.T, process *dispatchProcess, parts ...string) uint64 {
+	t.Helper()
+	var highest uint64
+	for _, line := range process.wholeLogLines(parts...) {
+		pass, err := strconv.ParseUint(logAttributeOf(t, line, "pass"), 10, 64)
+		if err != nil {
+			t.Fatalf("read the pass number of %s: %v", line, err)
+		}
+		highest = max(highest, pass)
+	}
+	return highest
+}
+
+// waitForPassAfter waits for the process to log a pass of the loop whose lines parts match
+// numbered past since+1. since is the highest pass it had logged when the caller read it
+// (passesLogged), and the pass after that one may have been under way then, so the one after it
+// is the first that began after that moment: what the loop does in a whole pass after it is in
+// the process's output once this returns. A process that never logs it fails the wait, naming
+// the loop.
+func waitForPassAfter(t *testing.T, process *dispatchProcess, loop string, since uint64, parts ...string) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%s to log pass %d, the first to begin after pass %d was logged", loop, since+2, since),
+		func() (uint64, bool) {
+			logged := passesLogged(t, process, parts...)
+			return logged, logged >= since+2
+		})
 }
 
 // lockTables holds every table named in mode (`exclusive`, or `access exclusive`) in a transaction
@@ -4213,8 +4291,16 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 		t.Fatalf("release the cursor the passes are waiting on: %v", err)
 	}
 	// Both passes come out of the row in turn: the first judges every pending suggestion and sets
-	// the cursor, the second reads it set and finds its page empty.
-	testwait.Eventually(t, "the cursor the first pass out of the lock advanced", func() bool {
+	// the cursor, the second reads it set and finds its page empty. A pass judges a page only once
+	// the event horizon proves it (api/suggestion_outcomes.go), so the wait is a wait behind the
+	// horizon: it fails at once when either process's horizon names a hold in this test's own
+	// database (pollBehindHorizon on A, and B's own watch read on every attempt).
+	const advanced = "the cursor the first pass out of the lock advanced"
+	behindB := horizontest.NewWatch(pair.b.stallWarnings(), pair.b.database)
+	pair.a.pollBehindHorizon(t, advanced, func() bool {
+		if failure := behindB.Failure(advanced); failure != "" {
+			t.Fatalf("%s\nB's output:\n%s", failure, pair.b.Output.String())
+		}
 		var cursor *int64
 		if err := pair.database.Pool.QueryRow(context.Background(), `select event_id from suggestion_outcome_cursor`).Scan(&cursor); err != nil {
 			t.Fatalf("read the cursor: %v", err)
@@ -4241,19 +4327,19 @@ func TestTheSuggestionOutcomeSweepSerialisesOnTheCursorAcrossBothProcesses(t *te
 // list calls for one result", redeliver/sweep.go). So the GitHub fake's count of those listings
 // is what one sweep window cost the installation's rate limit, whichever process paid it.
 //
-// A period is a bucket of the tick's due time (duty.Exclusive, migration 0115), so both
-// processes are started inside one bucket on purpose: a second process whose first tick lands
-// past a bucket boundary is entitled to sweep, and this row is about the one that lands inside
-// the bucket its peer has already served. waitOutABucketBoundary is what keeps which of the two
-// this run gets from being luck.
+// A period is a bucket of the tick's due time (duty.Exclusive, migration 0115): a second process
+// whose first tick lands past a bucket boundary is entitled to sweep, and this row is about the
+// one that lands inside the bucket its peer has already served. Both processes run the sweep at
+// staggeredSweepPeriod, whose current bucket holds every tick the row makes, so which of the two
+// this run gets is neither luck nor a race of the two starts against the clock.
 func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	pair := newPair(t)
-	waitOutABucketBoundary(t, redeliver.Interval)
 	fake := startGitHubFake(t)
 	// Nothing is held here: this row is about two passes that never meet, so the first one must
 	// finish and give the lease back before the second process exists.
 	fake.Release()
 	env := githubAppEnv(t, fake.URL())
+	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = staggeredSweepPeriod.String()
 
 	pair.a = startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 		NATSURL: pair.nats, SigningKey: multiprocessSigningKey, Env: env,
@@ -4281,12 +4367,21 @@ func TestALeasedLoopRunsOnceAcrossAStaggeredStart(t *testing.T) {
 	}
 }
 
+// staggeredSweepPeriod is the webhook redelivery sweep's interval in
+// TestALeasedLoopRunsOnceAcrossAStaggeredStart (DISPATCH_TEST_REDELIVERY_INTERVAL), in place of
+// redeliver.Interval's two minutes. A period is a bucket of a tick's due time, floor(epoch /
+// period) (duty.Exclusive), and this one's first bucket runs from 1970 to 2084: both processes'
+// first ticks fall in that one bucket however long their starts take, and neither ticks again
+// while the row runs.
+const staggeredSweepPeriod = 1_000_000 * time.Hour
+
 // waitOutABucketBoundary returns with enough of period's current bucket left for a row to start
 // both processes and read their first ticks inside it. A period is floor(epoch / period) of a
 // tick's due time, on the clock of the process that ticks, so a row that straddles a boundary
-// watches a second process legitimately sweep rather than skip; this waits the boundary out
+// watches a second process legitimately pass in the next period; this waits the boundary out
 // instead, on the clock both processes share with this test (one host), and waits at most the
-// margin it needs.
+// margin it needs. Its one caller judges each period on its own
+// (requireLeasedOncePerPeriod), so a run whose starts outlast the margin still passes.
 func waitOutABucketBoundary(t *testing.T, period time.Duration) {
 	t.Helper()
 	// What one run of the row needs inside the bucket: two process starts and their first ticks.
@@ -4425,10 +4520,13 @@ func TestASessionMintedOnOneProcessAuthenticatesOnTheOtherUnderOneSigningKey(t *
 	}
 }
 
-// quickProcessHeartbeat is the registry pace every process of the row below runs at
-// (DISPATCH_TEST_PROCESS_HEARTBEAT) in place of production's five seconds: the live window stays
-// three beats of it (cmd/dispatch/main.go), so a refused process waits four seconds for its
-// refuser to lapse where a deployment's waits twenty, and the row waits no production period out.
+// quickProcessHeartbeat is the registry pace the pair of the row below runs at
+// (DISPATCH_TEST_PROCESS_HEARTBEAT) in place of production's five seconds, so each of its
+// processes stamps its row every second. The processes it refuses run at production's pace and so
+// judge the pair by production's live window (processes.LiveWindow, fifteen seconds), which only a
+// stall of the pair's heartbeat longer than that outlasts; at this pace they would judge it by a
+// window of three beats, three seconds, which a loaded machine's stall outlasts. Each of them
+// therefore waits that window and one heartbeat, twenty seconds, before it exits.
 const quickProcessHeartbeat = time.Second
 
 // The registry of live server processes refuses a process whose signing key set a live peer does
@@ -4440,22 +4538,21 @@ const quickProcessHeartbeat = time.Second
 // the pair never does. A process given the pair's key first and another second, the first step of
 // a rotation, starts beside them.
 func TestAProcessWhoseKeySetALivePeerDoesNotShareRefusesToStart(t *testing.T) {
-	// Every process here takes that pace, the pair included: the refusal stands only while the
-	// refusing process keeps heartbeating inside the window the refused one judges it by, and a
-	// pair beating slower than that window would lapse between beats and refuse nobody.
-	quick := map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()}
-	pair := startPair(t, quick)
+	// The pair beats at quickProcessHeartbeat, well inside the window the refused processes judge
+	// it by: the refusal stands only while the refusing process keeps heartbeating inside that
+	// window, and a pair beating slower than it would lapse between beats and refuse nobody.
+	pair := startPair(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": quickProcessHeartbeat.String()})
 	for _, refused := range []struct{ name, key string }{
 		{"a process carrying a key of its own", "a-key-of-its-own"},
 		{"a process with no key, which minted one in its data dir", ""},
 	} {
 		process := startDispatchProcessWith(t, pair.databaseURL(t),
-			dispatchOptions{NATSURL: pair.nats, SigningKey: refused.key, Env: quick})
+			dispatchOptions{NATSURL: pair.nats, SigningKey: refused.key})
 		requireRefusedToStart(t, process, refused.name)
 	}
 
 	rotating := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
-		NATSURL: pair.nats, SigningKey: multiprocessSigningKey + " a-key-of-its-own", Env: quick,
+		NATSURL: pair.nats, SigningKey: multiprocessSigningKey + " a-key-of-its-own",
 	})
 	rotating.waitHealthy(t)
 	var registered int
@@ -4487,7 +4584,15 @@ func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesi
 			_ = frozen.Cmd.Process.Signal(syscall.SIGCONT)
 		}
 	})
-	time.Sleep(processes.LiveWindow + 2*time.Second)
+	// The first process drops out of Live once its last heartbeat is older than the live window on
+	// the database's clock, which is the clock the second process's registration reads it by.
+	testwait.Until(t, "the frozen process's registry row to leave the live window", func() ([]processes.Process, bool) {
+		live, err := processes.Live(context.Background(), pair.database.Pool)
+		if err != nil {
+			t.Fatalf("read the live server processes: %v", err)
+		}
+		return live, len(live) == 0
+	})
 
 	other := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{NATSURL: pair.nats, SigningKey: "a-key-of-its-own"})
 	other.waitHealthy(t)
@@ -4496,15 +4601,24 @@ func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesi
 	}
 	resumed = true
 
+	// Each read of /healthz waits under the shared wait's context, so a process that still serves
+	// and answers late on a loaded machine reads as serving: only an exit, a connection it refuses
+	// or drops, or an answer other than 200 is a process that stopped. A read the context itself
+	// ended reads as serving, so the wait gives up rather than passing at its deadline.
+	reading := testwait.Context(t)
 	serving := func(p *dispatchProcess) bool {
 		select {
 		case <-p.Exited:
 			return false
 		default:
 		}
-		response, err := (&http.Client{Timeout: time.Second}).Get(p.url("/healthz"))
+		request, err := http.NewRequestWithContext(reading, http.MethodGet, p.url("/healthz"), nil)
 		if err != nil {
-			return false
+			t.Fatalf("build the /healthz read: %v", err)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return reading.Err() != nil
 		}
 		_ = response.Body.Close()
 		return response.StatusCode == http.StatusOK
@@ -4516,8 +4630,9 @@ func TestAProcessThatResumesBesideAPeerWhoseKeySetItDoesNotShareDoesNotServeBesi
 // requireRefusedToStart waits up to a minute for the process to exit, asking its /healthz all the
 // while, and requires that it exited 1 with the registry's refusal, never having answered /healthz
 // nor logged that it serves. A refused process waits its own run's live window and one heartbeat
-// for its refusers to lapse before it exits - 20 s at production's pace, four seconds at
-// quickProcessHeartbeat - so the minute here is a hang guard and not the period being waited out.
+// for its refusers to lapse before it exits - 20 s at production's pace, which every refused
+// process of this file runs at - so the minute here is a hang guard and not the period being
+// waited out.
 func requireRefusedToStart(t *testing.T, p *dispatchProcess, name string) {
 	t.Helper()
 	client := &http.Client{Timeout: time.Second}
@@ -4809,10 +4924,22 @@ const (
 	fleetBuildC2 = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
 )
 
-// fleetQuiet is how long a step that must announce nothing is watched: two passes of the
-// announcer (startup.Interval, five seconds) and a second more, so every live process has passed
-// at least once since the step and a pass that would announce has had its chance to.
-const fleetQuiet = 2*5*time.Second + time.Second
+// waitForAnnouncerPassesAfter waits until every one of processes has made a whole pass of its
+// build announcer that began after this call: each logs a numbered line for every pass
+// (startup.AnnouncerPassed, at DEBUG, which the processes of TestTwoProcessesAnnounceTheirBuildOnce
+// write), so once this returns, a pass that would announce after the step before it has had its
+// chance to, on every live process, and the stream read after it holds what it announced.
+func waitForAnnouncerPassesAfter(t *testing.T, processes ...*dispatchProcess) {
+	t.Helper()
+	line := `msg="` + startup.AnnouncerPassed + `"`
+	passed := make([]uint64, len(processes))
+	for i, process := range processes {
+		passed[i] = passesLogged(t, process, line)
+	}
+	for i, process := range processes {
+		waitForPassAfter(t, process, fmt.Sprintf("the build announcer of %s", process.url("")), passed[i], line)
+	}
+}
 
 // server.started goes out once each time every live process comes to serve one build, never per
 // process start: two processes stamped C1 put one envelope on the stream; B restarted on C1 puts
@@ -4827,6 +4954,7 @@ func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
 		t.Helper()
 		process := startDispatchProcessWith(t, pair.databaseURL(t), dispatchOptions{
 			NATSURL: pair.nats, SigningKey: multiprocessSigningKey, Binary: binary,
+			Env: map[string]string{"DISPATCH_TEST_DEBUG_MESSAGES": startup.AnnouncerPassed},
 		})
 		process.waitHealthy(t)
 		return process
@@ -4858,18 +4986,18 @@ func TestTwoProcessesAnnounceTheirBuildOnce(t *testing.T) {
 	waitForFleetCommit(t, fleetBuildC1, a, b)
 
 	b = replace(b, "B", c1)
-	time.Sleep(fleetQuiet)
+	waitForAnnouncerPassesAfter(t, a, b)
 	requireAnnouncements(t, announced(), fleetBuildC1)
 
 	b = replace(b, "B", c2)
-	time.Sleep(fleetQuiet)
+	waitForAnnouncerPassesAfter(t, a, b)
 	requireAnnouncements(t, announced(), fleetBuildC1)
 	waitForFleetCommit(t, fleetBuildC1, a, b)
 
 	a = replace(a, "A", c2)
 	waitForAnnouncements(t, announced, fleetBuildC1, fleetBuildC2)
 	waitForFleetCommit(t, fleetBuildC2, a, b)
-	time.Sleep(fleetQuiet)
+	waitForAnnouncerPassesAfter(t, a, b)
 	requireAnnouncements(t, announced(), fleetBuildC1, fleetBuildC2)
 }
 
@@ -6534,20 +6662,46 @@ func rebuildPath(artifactID string) string {
 	return "/api/v1/artifacts/" + artifactID + "/rebuild"
 }
 
-// resumedBetween is every time in [from, to) at which either process's settlement resumption armed
-// the document's owed settlement (the room-counters hook's settlement_resumptions), each named by
-// its process.
-func (p *dispatchPair) resumedBetween(t *testing.T, artifactID string, from, to time.Time) []string {
+// resumptionsByPeriod is every time either process's settlement resumption armed the document's
+// owed settlement (the room-counters hook's settlement_resumptions), each named by its process,
+// under the period of the pass that armed it, and how many of those times no logged pass places
+// yet. The period comes from the processes' own records, not from this test's clock: each pass of
+// the resumption logs, as it ends, the tick it was due at and the period that due falls in
+// ("leased pass ran", duty.Exclusive), and a process's ticks are SettlementResumeInterval apart
+// from its own start (duty.RunLeased), so an arming belongs to the logged pass of its process due
+// at or before it and less than an interval before it. A pass due at a period's end arms just
+// after the end, which a period read off the arming's own time would count in the next. An
+// arming whose pass has not logged yet is unplaced until it does.
+func (p *dispatchPair) resumptionsByPeriod(t *testing.T, artifactID string) (byPeriod map[time.Time][]string, unplaced int) {
 	t.Helper()
-	var resumed []string
+	byPeriod = map[time.Time][]string{}
 	for _, process := range []*dispatchProcess{p.a, p.b} {
-		for _, at := range process.roomCounters(t, artifactID).SettlementResumptions {
-			if !at.Before(from) && at.Before(to) {
-				resumed = append(resumed, p.name(process)+" at "+at.Format(time.RFC3339Nano))
+		type pass struct{ due, period time.Time }
+		var passes []pass
+		for _, line := range process.wholeLogLines(leaseRan, "lease=settlement-resumption") {
+			due, err := time.Parse(time.RFC3339Nano, logAttributeOf(t, line, "due"))
+			if err != nil {
+				t.Fatalf("read the due of a settlement-resumption pass: %v: %s", err, line)
 			}
+			period, err := time.Parse(time.RFC3339Nano, leasePeriodOf(t, line))
+			if err != nil {
+				t.Fatalf("read the period of a settlement-resumption pass: %v: %s", err, line)
+			}
+			passes = append(passes, pass{due: due, period: period})
+		}
+		for _, armed := range process.roomCounters(t, artifactID).SettlementResumptions {
+			made := slices.IndexFunc(passes, func(made pass) bool {
+				return !made.due.After(armed) && armed.Sub(made.due) < docs.SettlementResumeInterval
+			})
+			if made < 0 {
+				unplaced++
+				continue
+			}
+			period := passes[made].period
+			byPeriod[period] = append(byPeriod[period], p.name(process)+" at "+armed.Format(time.RFC3339Nano))
 		}
 	}
-	return resumed
+	return byPeriod, unplaced
 }
 
 // Spec item 6: a rebuild, the settlement resumption, the conditional-edit queue and a write to a
@@ -6609,30 +6763,42 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		`, artifactID); err != nil {
 			t.Fatalf("age the document's pending settlement: %v", err)
 		}
-		// A period is a bucket of the clock (duty.Exclusive, migration 0115), and the row is owed
-		// through the whole of the first bucket that starts after it aged: no settlement runs
-		// inside the row. Each process's resumption ticks once a minute from its own start, so
-		// each meets that bucket once; what this counts is how many of those meetings resumed it.
+		// A period is a bucket of a pass's due time (duty.Exclusive, migration 0115), and the
+		// document is owed from the moment it aged to the row's end: no settlement runs inside the
+		// row. Each process's resumption ticks once a minute from its own start, so each meets
+		// every period once and one of the two passes it; what this counts is how many of those
+		// meetings armed the document, each placed in its pass's period by the processes' own
+		// records (resumptionsByPeriod), which the resumption records as it arms the settlement,
+		// so the first is waited for.
 		period := docs.SettlementResumeInterval
-		start := time.Now().Truncate(period).Add(period)
-		end := start.Add(period)
-		t.Logf("counting the resumptions of the document in the period from %s to %s", start.Format(time.TimeOnly), end.Format(time.TimeOnly))
-		// The resumption the period owes is a fact of one process's tick, recorded as it arms the
-		// settlement (the room-counters hook), so it is waited for.
-		testwait.Until(t, fmt.Sprintf("a resumption of the document's owed settlement in the period from %s to %s", start.Format(time.TimeOnly), end.Format(time.TimeOnly)),
-			func() ([]string, bool) {
-				resumed := pair.resumedBetween(t, artifactID, start, end)
-				return resumed, len(resumed) > 0
+		first := testwait.Until(t, "a resumption of the document's owed settlement, placed in the period of the pass that armed it",
+			func() (time.Time, bool) {
+				byPeriod, _ := pair.resumptionsByPeriod(t, artifactID)
+				var earliest time.Time
+				for served := range byPeriod {
+					if earliest.IsZero() || served.Before(earliest) {
+						earliest = served
+					}
+				}
+				return earliest, !earliest.IsZero()
 			})
+		end := first.Add(period)
+		t.Logf("counting the resumptions of the document in the period from %s to %s", first.Format(time.TimeOnly), end.Format(time.TimeOnly))
 		testwait.Span(t, time.Until(end)+2*time.Second, "a second resumption inside the period is what must not "+
 			"come, and the other process's tick in it leaves no record that says so for certain: it logs a skip "+
 			"naming the period when it finds the period served, but one naming none when it finds the lease held, "+
 			"both are child processes so synctest does not reach them, and an action of the test's would arm a "+
 			"settlement rather than end the period. The span is the rest of the period and two seconds")
-		resumed := pair.resumedBetween(t, artifactID, start, end)
-		if len(resumed) != 1 {
-			t.Fatalf("the processes' settlement resumptions armed the document's owed settlement %d times in one %v period, want once across both processes:\n%s",
-				len(resumed), period, strings.Join(resumed, "\n"))
+		byPeriod := testwait.Until(t, "every arming of the document's owed settlement to be placed in the period of its pass",
+			func() (map[time.Time][]string, bool) {
+				byPeriod, unplaced := pair.resumptionsByPeriod(t, artifactID)
+				return byPeriod, unplaced == 0
+			})
+		for served, armings := range byPeriod {
+			if len(armings) != 1 {
+				t.Errorf("the processes' settlement resumptions armed the document's owed settlement %d times in the %v period from %s, want once across both processes:\n%s",
+					len(armings), period, served.Format(time.TimeOnly), strings.Join(armings, "\n"))
+			}
 		}
 	})
 
@@ -6830,6 +6996,7 @@ func requireAbandoned(t *testing.T, held ...heldRequest) {
 // listener does, for its third the registry read is answered with the session's record while the
 // send still meets that 503, and for its fourth it holds no session yet - the registry read and
 // the send answer "no live session", the live list is empty - and after that it answers as before.
+// Each phase ends on a fact the listener sees, never on a span of the clock (listenerTakeOver).
 type fakeListener struct {
 	server *httptest.Server
 
@@ -6839,11 +7006,8 @@ type fakeListener struct {
 	sessionLists int
 	answered     []listenerSendRecord
 	holds        map[listenerRoute]*listenerHold
-	// takeOverFrom is when the take-over began, zero when there is none; takeOverPhases is how
-	// long it refuses connections, answers 503 on every route, answers 503 on the send alone, and
-	// holds no session, in that order.
-	takeOverFrom   time.Time
-	takeOverPhases [4]time.Duration
+	// running is the take-over the listener is running, nil when there is none.
+	running *listenerTakeOver
 	// takeOverReads counts, by session id, the registry reads a take-over answered other than
 	// as the session's record.
 	takeOverReads map[string]int
@@ -6947,43 +7111,102 @@ const (
 	takeOverUnknown
 )
 
-// takeOver begins a take-over now: the listener refuses connections for refuse, then answers 503
-// on every route for starting, then on the send alone for handingOver, then holds no session for
-// unknown.
+// listenerTakeOver is a take-over's plan and where it stands. Each phase ends on a fact the
+// listener sees, never on a span of the clock, so a loaded machine that spaces a sender's tries
+// further apart meets every phase all the same: refusing ends once the listener has dropped
+// refused registry reads (a negative count refuses until endTakeOver), starting once it has
+// answered starting registry reads 503, handing-over once gated distinct send keys have met the
+// starting gate, and unknown once it has answered unknown registry reads with no session. Every
+// try of a sender reads the registry first, so a registry read is one try. A phase of no count is
+// passed over, and the take-over is over once its last phase ends.
+type listenerTakeOver struct {
+	refused, starting, gated, unknown int
+	phase                             listenerTakeOverPhase
+	// answered is how many registry reads the phase has answered; gatedKeys the send keys the
+	// handing-over phase has met.
+	answered  int
+	gatedKeys map[string]bool
+}
+
+// count is how many facts phase lasts for, 0 for a phase the take-over passes over.
+func (o *listenerTakeOver) count(phase listenerTakeOverPhase) int {
+	switch phase {
+	case takeOverRefusing:
+		return o.refused
+	case takeOverStarting:
+		return o.starting
+	case takeOverHandingOver:
+		return o.gated
+	case takeOverUnknown:
+		return o.unknown
+	}
+	return 0
+}
+
+// next moves the take-over to the first phase after its current one that lasts for anything, and
+// reports whether there is one: false is a take-over that is over.
+func (o *listenerTakeOver) next() bool {
+	for o.phase++; o.phase <= takeOverUnknown; o.phase++ {
+		if o.count(o.phase) != 0 {
+			o.answered = 0
+			return true
+		}
+	}
+	return false
+}
+
+// takeOver begins a take-over now: the listener refuses refused registry reads (a negative count
+// until endTakeOver), then answers starting registry reads 503 on every route, then answers 503 on
+// the send alone until gated distinct send keys have met it, then holds no session for unknown
+// registry reads.
 //
 // The handing-over phase is a replacement in which both listeners take requests behind the one
 // address: the registry read reaches the outgoing listener, which still holds the session, and
 // the send reaches its successor, still behind its starting gate (cmd/listener/main.go
 // startingGate). It is the one phase in which a send itself meets that gate, because every try
 // reads the registry before it sends.
-func (f *fakeListener) takeOver(refuse, starting, handingOver, unknown time.Duration) {
+func (f *fakeListener) takeOver(refused, starting, gated, unknown int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.takeOverFrom = time.Now()
-	f.takeOverPhases = [4]time.Duration{refuse, starting, handingOver, unknown}
+	takeOver := &listenerTakeOver{refused: refused, starting: starting, gated: gated, unknown: unknown, gatedKeys: map[string]bool{}}
+	if takeOver.next() {
+		f.running = takeOver
+	}
 }
 
 // endTakeOver ends the take-over at once, whatever phase it is in.
 func (f *fakeListener) endTakeOver() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.takeOverFrom = time.Time{}
+	f.running = nil
 }
 
-// takeOverPhase is the phase the take-over is in now.
-func (f *fakeListener) takeOverPhase() listenerTakeOverPhase {
+// takeOverPhaseOf is the phase the take-over answers r in, a send under key, and counts r against
+// that phase: the request that completes a phase's count is answered in that phase, and the next
+// one meets the phase after it.
+func (f *fakeListener) takeOverPhaseOf(r *http.Request, key string) listenerTakeOverPhase {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.takeOverFrom.IsZero() {
+	takeOver := f.running
+	if takeOver == nil {
 		return takeOverOver
 	}
-	elapsed := time.Since(f.takeOverFrom)
-	for index, phase := range []listenerTakeOverPhase{takeOverRefusing, takeOverStarting, takeOverHandingOver, takeOverUnknown} {
-		if elapsed -= f.takeOverPhases[index]; elapsed < 0 {
-			return phase
+	phase := takeOver.phase
+	ended := false
+	switch {
+	case phase == takeOverHandingOver:
+		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send" {
+			takeOver.gatedKeys[key] = true
+			ended = len(takeOver.gatedKeys) >= takeOver.gated
 		}
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/"):
+		takeOver.answered++
+		ended = takeOver.count(phase) > 0 && takeOver.answered >= takeOver.count(phase)
 	}
-	return takeOverOver
+	if ended && !takeOver.next() {
+		f.running = nil
+	}
+	return phase
 }
 
 // readsDuringTakeOver is how many registry reads of sessionID a take-over answered other than as
@@ -7017,7 +7240,13 @@ func (f *fakeListener) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	phase := f.takeOverPhase()
+	var sent struct {
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send" {
+		_ = json.Unmarshal(body, &sent)
+	}
+	phase := f.takeOverPhaseOf(r, sent.IdempotencyKey)
 	if phase != takeOverOver && phase != takeOverHandingOver &&
 		r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/v1/registry/") {
 		f.mu.Lock()
@@ -7037,12 +7266,8 @@ func (f *fakeListener) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	case takeOverHandingOver:
 		if r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send" {
-			var send struct {
-				IdempotencyKey string `json:"idempotency_key"`
-			}
-			_ = json.Unmarshal(body, &send)
 			f.mu.Lock()
-			f.gatedSends[send.IdempotencyKey]++
+			f.gatedSends[sent.IdempotencyKey]++
 			f.mu.Unlock()
 			answerStarting(w)
 			return
@@ -7443,9 +7668,17 @@ func requireWaitingOutTheTakeOver(t *testing.T, database *store.Store, listener 
 
 // quickTakeoverWindow is how long a sender keeps trying a listener being replaced in the subtest
 // that only waits that window out (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW), in place of the
-// twelve seconds a deployment runs (api's listenerTakeoverWindow). The subtests that drive a
-// take-over keep the twelve seconds: their senders' tries are paced against it.
+// twelve seconds a deployment runs (api's listenerTakeoverWindow).
 const quickTakeoverWindow = time.Second
+
+// heldTakeoverWindow is how long a sender keeps trying a listener being replaced in the subtests
+// that drive a take-over (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW): longer than any row runs, so a
+// sender tries until the take-over the fake runs has ended, however a loaded machine spaces its
+// tries, and no real timer of the sender's decides the row. The twelve seconds a deployment runs
+// (api's listenerTakeoverWindow) are held where their timer is reachable, on the server's fake
+// clock: api.TestAListenerTakeOverIsWaitedOutAndARefusalSettlesAtOnce and
+// api.TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry.
+const heldTakeoverWindow = time.Hour
 
 // While the active listener is replaced, its successor refuses connections, then answers 503
 // "service starting" - on every route, then on the send alone while the outgoing listener still
@@ -7462,17 +7695,21 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
 		// No attempt here is back-dated, so the delivery sweep owes none and only each request's
 		// own sender can deliver.
-		pair := startPair(t, listener.processEnv())
+		env := listener.processEnv()
+		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow.String()
+		pair := startPair(t, env)
 		project := uniqueProjectKey(t, "TKO")
 		pair.a.createProject(t, project, "Listener take-over")
 		issue, _ := pair.a.createIssueIn(t, project, "Mentioned during a take-over", "spec")
 
-		// A sender tries at once, then 0.25, 0.75, 1.75, 3.75, 5.75 and 7.75 s after its first try
-		// (takeoverRetry): from 1.75 s on its tries are two seconds apart plus each try's own time.
-		// The send-only 503 lasts 2.5 s, longer than that spacing, so at least one try of each
-		// sender meets it however late a loaded machine starts the tries; the take-over ends at
-		// 6 s, so the try that lands comes before the row's 10 s bound.
-		listener.takeOver(time.Second, time.Second, 2500*time.Millisecond, 1500*time.Millisecond)
+		// A sender tries at once, then 0.25, 0.75 and 1.75 s after its first try, and two seconds
+		// apart after that (takeoverRetry), each try reading the registry first. Each phase of the
+		// take-over ends on what the listener saw, not on the clock (listenerTakeOver): two
+		// registry reads refused, two answered 503, the send of each of the two deliveries met at
+		// the starting gate, and two registry reads answered with no session. So each sender meets
+		// the gate however a loaded machine spaces its tries, and the take-over ends inside
+		// heldTakeoverWindow.
+		listener.takeOver(2, 2, 2, 2)
 		direct, mention := sendDuringTakeOver(t, pair.a, pair.database, issue, "sent during a take-over")
 		requireDeliveredOnce(t, pair, listener, direct, mention)
 		for _, delivery := range []deliveryUnderTest{direct, mention} {
@@ -7492,8 +7729,10 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 		// successor answers "no live session" for a session it does not hold yet. This subtest
 		// waits that window out and nothing else, so its processes run it at quickTakeoverWindow
 		// (DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW) in place of the twelve seconds a deployment
-		// runs: what it is about is that the send settles queued once the window has passed, not
-		// how long the window is.
+		// runs: what it is about is that the send settles queued once the window has passed. How
+		// long it waits - one take-over window from its first try, and no more - is a timer of the
+		// sender's, held on the server's fake clock by
+		// api.TestAMessageToASessionNoStoreHoldsIsQueuedOneTakeOverWindowAfterItsFirstTry.
 		env := listener.processEnv()
 		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = quickTakeoverWindow.String()
 		pair := startPair(t, env)
@@ -7504,25 +7743,16 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 			t.Fatalf("JetStream context: %v", err)
 		}
 		head := streamHead(t, js)
-		started := time.Now()
 		var message model.Message
 		if err := json.Unmarshal(pair.a.call(t, http.MethodPost, "/api/v1/agents/never-known/messages",
 			`{"body":"To nobody","delivery":"steer"}`, http.StatusCreated), &message); err != nil {
 			t.Fatalf("decode the message: %v", err)
 		}
-		took := time.Since(started)
 		if len(message.Deliveries) != 1 || message.Deliveries[0].Attempt != 1 || message.Deliveries[0].State != "queued" ||
 			message.Deliveries[0].EnvelopeID == nil || message.Deliveries[0].Error != nil ||
 			message.Deliveries[0].SessionID != "never-known" {
 			t.Fatalf("deliveries = %#v, want attempt 1 queued for never-known, naming its envelope and no error",
 				message.Deliveries)
-		}
-		// How soon the send answers is a reading of this machine's clock against the take-over
-		// window's timer inside the child process, so only benchtime's timing lane holds it to a
-		// figure; that the send settles failed, one attempt with one receipt, is held on every run.
-		if os.Getenv(benchtime.TimingEnv) != "" && took > 15*time.Second {
-			t.Fatalf("the send to a session the listener never knows answered %v after it was made, want within 15s: "+
-				"it waits out the %v take-over window and settles queued", took, quickTakeoverWindow)
 		}
 		gone := messageDelivery("the message to nobody", message.ID+":steer")
 		if states := gone.attempts(t, pair.database); !slices.Equal(states, []string{"1:queued"}) {
@@ -7547,12 +7777,17 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 
 	t.Run("killed during the wait", func(t *testing.T) {
 		listener := startFakeListener(t, resumeSession)
-		pair := startPair(t, listener.quickSweepEnv())
+		env := listener.quickSweepEnv()
+		env["DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW"] = heldTakeoverWindow.String()
+		pair := startPair(t, env)
 		project := uniqueProjectKey(t, "TKK")
 		pair.a.createProject(t, project, "Killed during a take-over")
 		issue, _ := pair.a.createIssueIn(t, project, "Mentioned, then killed", "spec")
 
-		listener.takeOver(time.Hour, 0, 0, 0)
+		// The listener refuses every connection until the row ends the take-over, and the senders
+		// keep trying it for heldTakeoverWindow, so they are still waiting it out when A is killed
+		// however a loaded machine spaces their tries.
+		listener.takeOver(-1, 0, 0, 0)
 		direct, mention := sendDuringTakeOver(t, pair.a, pair.database, issue, "killed during a take-over")
 		requireWaitingOutTheTakeOver(t, pair.database, listener, direct, mention)
 		pair.a.kill(t)
@@ -7567,11 +7802,13 @@ func TestASendDuringAListenerTakeOverReachesItsSession(t *testing.T) {
 // heldRedeliveryProxy stands between the redelivery command and the GitHub webhook fake. It
 // forwards every call but the first redelivery request, which it holds and never forwards: held is
 // closed when that request arrives, and the hold ends when its caller goes away (a killed process)
-// or after githubHoldCap, answered 502 so a process that outlived it records a refusal.
+// or when the test ends (release), answered 502 so a process that outlived it records a refusal.
+// Nothing else ends it, so a slow step of the row while it holds changes nothing.
 type heldRedeliveryProxy struct {
-	server *httptest.Server
-	held   chan struct{}
-	once   sync.Once
+	server  *httptest.Server
+	held    chan struct{}
+	once    sync.Once
+	release chan struct{}
 }
 
 func startHeldRedeliveryProxy(t *testing.T, upstream string) *heldRedeliveryProxy {
@@ -7581,7 +7818,7 @@ func startHeldRedeliveryProxy(t *testing.T, upstream string) *heldRedeliveryProx
 		t.Fatalf("parse the GitHub fake's URL: %v", err)
 	}
 	forward := httputil.NewSingleHostReverseProxy(target)
-	proxy := &heldRedeliveryProxy{held: make(chan struct{})}
+	proxy := &heldRedeliveryProxy{held: make(chan struct{}), release: make(chan struct{})}
 	proxy.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/attempts") {
 			first := false
@@ -7592,7 +7829,7 @@ func startHeldRedeliveryProxy(t *testing.T, upstream string) *heldRedeliveryProx
 			if first {
 				select {
 				case <-r.Context().Done():
-				case <-time.After(githubHoldCap):
+				case <-proxy.release:
 					http.Error(w, `{"message":"held by the test"}`, http.StatusBadGateway)
 				}
 				return
@@ -7601,6 +7838,9 @@ func startHeldRedeliveryProxy(t *testing.T, upstream string) *heldRedeliveryProx
 		forward.ServeHTTP(w, r)
 	}))
 	t.Cleanup(proxy.server.Close)
+	// Registered after the server's close, so it runs first: the close waits for the held request
+	// to end.
+	t.Cleanup(func() { close(proxy.release) })
 	return proxy
 }
 
@@ -7624,10 +7864,7 @@ func startRedeliverWebhooks(t *testing.T, binary string, env map[string]string) 
 // by, through the test's own NATS client, so a row does not wait out a claim's deadline.
 func backDateRedeliveryClaim(t *testing.T, natsURL, guid string, by time.Duration) {
 	t.Helper()
-	nc, err := natsgo.Connect(natsURL)
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
+	nc := testnats.Connect(t, natsURL)
 	defer nc.Close()
 	js, err := nc.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -7938,8 +8175,10 @@ func TestAConfigurationWarningIsLoggedOnceAcrossTheProcesses(t *testing.T) {
 
 // architectureGitHub is the GitHub both processes' architecture syncs read: one repository whose
 // branch head the test moves, each commit answering its own architecture files, and every blob
-// read of one commit held until the test releases it, the caller gives up, or githubHoldCap
-// passes. Any other App call answers an empty list, as githubFake's do.
+// read of one commit held until the test releases it or the caller gives up, by the process's own
+// bound on the call (githubapp.RequestTimeout) or its exit. Nothing else ends the hold, so a slow
+// step of the row while it holds changes nothing, and the test's end releases it. Any other App
+// call answers an empty list, as githubFake's do.
 type architectureGitHub struct {
 	server      *httptest.Server
 	held        chan struct{}
@@ -8002,7 +8241,6 @@ func startArchitectureGitHub(t *testing.T, head string, commits map[string]map[s
 			select {
 			case <-fake.release:
 			case <-r.Context().Done():
-			case <-time.After(githubHoldCap):
 			}
 		}
 		if !ok {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 )
@@ -14,7 +15,8 @@ import (
 // do when a document loads for several people or every tab reconnects after a deploy. Bob on B
 // must see all five within a second, as a reader on A does. A room relaying only the newest of
 // its pending awareness changes loses the others until each reader's next heartbeat (15 s in
-// y-protocols), and these readers send none.
+// y-protocols), and these readers send none, so such a room never shows bob all five. The second
+// is held only in benchtime's timing lane (withinLive).
 func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SIM")
@@ -32,6 +34,7 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 			t.Fatalf("reader %d's cursor: %v", i, err)
 		}
 	}
+	placed := time.Now()
 	all := func(states map[uint64]json.RawMessage) bool {
 		for i := range readers {
 			if !holdsState(uint64(8000+i), cursorState(fmt.Sprintf("reader%d", i), i))(states) {
@@ -43,6 +46,7 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 	if err := carol.WaitForAwareness(t, all); err != nil {
 		t.Fatalf("carol on A did not see all five readers on A: %v", err)
 	}
+	withinLive(t, placed, "the five readers' cursors reaching carol on A")
 	if err := bob.WaitForAwareness(t, all); err != nil {
 		held := []uint64{}
 		for client := range bob.AwarenessStates() {
@@ -50,4 +54,5 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 		}
 		t.Fatalf("five readers on A placed their cursors at once: carol on A saw all five, bob on B holds only %v", held)
 	}
+	withinLive(t, placed, "the five readers' cursors reaching bob on B")
 }

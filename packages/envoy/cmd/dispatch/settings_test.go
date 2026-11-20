@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -2017,8 +2018,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=true: ListenerRosterUncached true, want only 1 to set it")
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ROSTER_UNCACHED": "1"}, "DISPATCH_TEST_HOOKS=1 required")
-			// Its reader: two agents lists within the copy's five seconds ask the listener twice
-			// with the copy off, once with it on.
+			// Its reader: two agents lists inside one stored answer's life ask the listener twice
+			// with the copy off, once with it on. The answer's life is an hour here
+			// (DISPATCH_TEST_ROUTE_ROSTER_TTL), so how long the two lists take decides nothing.
 			t.Run("router", func(t *testing.T) {
 				for value, want := range map[string]int32{"1": 2, "": 1} {
 					var calls atomic.Int32
@@ -2028,9 +2030,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}))
 					t.Cleanup(listener.Close)
 					router := routerFor(t, resolveWith(t, map[string]string{
-						"DISPATCH_TEST_HOOKS":           "1",
-						"DISPATCH_TEST_ROSTER_UNCACHED": value,
-						"ENVOY_URL":                     listener.URL,
+						"DISPATCH_TEST_HOOKS":            "1",
+						"DISPATCH_TEST_ROSTER_UNCACHED":  value,
+						"ENVOY_URL":                      listener.URL,
+						"DISPATCH_TEST_ROUTE_ROSTER_TTL": time.Hour.String(),
 					}), routes.AppContextOptions{Store: storetest.Open(t), Lifetime: t.Context()})
 					for range 2 {
 						response := httptest.NewRecorder()
@@ -2044,6 +2047,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}
 				}
 			})
+		},
+		"DISPATCH_TEST_DEBUG_MESSAGES": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.DebugMessages != nil {
+				t.Errorf("DISPATCH_TEST_DEBUG_MESSAGES unset: DebugMessages = %v, want none", boot.DebugMessages)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":          "1",
+				"DISPATCH_TEST_DEBUG_MESSAGES": " named line | another named line |",
+			})
+			if want := map[string]bool{"named line": true, "another named line": true}; !maps.Equal(boot.DebugMessages, want) {
+				t.Errorf("DISPATCH_TEST_DEBUG_MESSAGES: DebugMessages = %v, want %v", boot.DebugMessages, want)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_DEBUG_MESSAGES": "named line"}, "DISPATCH_TEST_HOOKS=1 required")
+			// Its reader: the handler main installs writes the named DEBUG lines and everything at
+			// INFO and above, and no other DEBUG line.
+			var written bytes.Buffer
+			logger := slog.New(debugMessagesHandler{Handler: slog.NewTextHandler(&written, nil), messages: boot.DebugMessages})
+			logger.Debug("named line", "pass", 1)
+			logger.Debug("an unnamed line")
+			logger.With("instance", "i1").Debug("another named line")
+			logger.Info("an info line")
+			for _, want := range []string{`level=DEBUG msg="named line" pass=1`, `level=DEBUG msg="another named line" instance=i1`, `level=INFO msg="an info line"`} {
+				if !strings.Contains(written.String(), want) {
+					t.Errorf("the handler wrote %q, want a line holding %q", written.String(), want)
+				}
+			}
+			if strings.Contains(written.String(), "an unnamed line") {
+				t.Errorf("the handler wrote %q, want no DEBUG line it was not named", written.String())
+			}
 		},
 		"DISPATCH_NEW_ISSUE_LABEL": func(t *testing.T) {
 			// The label an issue the bar files from a person's typed words carries, trimmed as

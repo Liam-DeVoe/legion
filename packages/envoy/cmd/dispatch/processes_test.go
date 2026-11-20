@@ -57,8 +57,12 @@ type dispatchPair struct {
 	// natsServer is the server nats names, for a row that reads the server's own connection
 	// listing rather than a client's view; nil for a pair started without one (startHookPair).
 	natsServer *testnats.Server
-	nats       string
-	proxies    map[*dispatchProcess]*testnats.Proxy
+	// monitorReads is the context a row reads natsServer's listings under: the shared wait's
+	// (testwait.Context) for the test that made the pair, made once, so a wait that reads them on
+	// every attempt makes no context of its own.
+	monitorReads context.Context
+	nats         string
+	proxies      map[*dispatchProcess]*testnats.Proxy
 }
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
@@ -75,7 +79,10 @@ func newPair(t *testing.T) *dispatchPair {
 func newPairOn(t *testing.T, database *store.Store) *dispatchPair {
 	t.Helper()
 	server, url := multiprocessNATS(t)
-	return &dispatchPair{database: database, natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
+	return &dispatchPair{
+		database: database, natsServer: server, monitorReads: testwait.Context(t), nats: url,
+		proxies: map[*dispatchProcess]*testnats.Proxy{},
+	}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned

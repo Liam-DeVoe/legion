@@ -295,10 +295,10 @@ func consumerBinding(t *testing.T, js natsgo.JetStreamContext, durable string) s
 const pullRequestMessages = 50
 
 // handOver is one stop of the process holding the events durable and the take-over that follows
-// it: which build stopped and which took over, when the stopping process had exited, the stream
-// sequence each of that half's messages was stored at, the sequence the durable delivered from
-// once the take-over had bound it, the messages the stopping process logged handing back, and
-// the durable's in-flight window.
+// it: which build stopped and which took over, when the stop was sent and when the stopping
+// process had exited, the stream sequence each of that half's messages was stored at, the
+// sequence the durable delivered from once the take-over had bound it, the messages the stopping
+// process logged handing back, and the durable's in-flight window.
 //
 // Those two last are what bound the messages a hand-over may have handled twice, and between
 // them they are the whole of it, since a message is delivered a second time only where the
@@ -319,9 +319,15 @@ const pullRequestMessages = 50
 // A take-over that binds the durable as it stands, which is what a build before holds does
 // when it finds it unbound, delivers nothing again: start is then past every sequence, and a
 // hand-back is the only repeat that half allows.
+//
+// The two moments are on the test's clock, as the fake's handlings are. The stopping process
+// handles nothing after it exits (at), and the taking process handles nothing of the durable
+// before the stop was sent (stopped): the intake releases its hold at the signal (main.go's
+// waitIntakes), so the take-over, and a message it delivers again, can come before the stopping
+// process has exited.
 type handOver struct {
 	stopping, taking string
-	at               time.Time
+	stopped, at      time.Time
 	sequences        map[int]uint64
 	start            uint64
 	handedBack       map[int]bool
@@ -340,7 +346,9 @@ func (h handOver) replayed(number int) bool {
 // publishAcrossStop publishes a merged pull request for each of numbers while holder delivers from
 // the events durable, stops holder gracefully once ten of them are handled, and waits for standby to
 // take both delivery durables over and for every one of numbers to be handled. It returns that
-// hand-over: its time is after holder's process exited, so every handling holder did is before it.
+// hand-over: its stop's time is before the signal, so the taking build handles nothing of the
+// durable before it, and its time is after holder's process exited, so every handling holder did
+// is before that.
 //
 // Nothing reads a durable from holder's stop until standby has bound it. A take-over of this
 // tree's deletes the durable and creates it again (delivery.takeOverConfig), so between those two
@@ -376,9 +384,10 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	}
 	before := deliverSubjectOf(t, js, bus.DispatchDeliveryDurable)
 	window := readBusSettings(t, js).Consumers[bus.DispatchDeliveryDurable].MaxAckPending
+	stopped := time.Now()
 	stop(t, holder)
 	over := handOver{
-		stopping: builds.buildName(holder), taking: builds.buildName(standby), at: time.Now(),
+		stopping: builds.buildName(holder), taking: builds.buildName(standby), stopped: stopped, at: time.Now(),
 		sequences: sequences, window: window,
 	}
 	t.Logf("stopped the %s with %d of %d pull requests handled", over.stopping, handledOf(), len(numbers))
@@ -596,7 +605,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 		case len(handlings) == 1 && found:
 		case len(handlings) == 2 && found && over.replayed(number) &&
 			handlings[0].build == over.stopping && handlings[0].at.Before(over.at) &&
-			handlings[1].build == over.taking && handlings[1].at.After(over.at):
+			handlings[1].build == over.taking && handlings[1].at.After(over.stopped):
 			repeats[over.stopping]++
 			again = append(again, fmt.Sprintf("#%d %v", number, handlings))
 		default:

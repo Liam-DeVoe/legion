@@ -130,6 +130,39 @@ func TestAProcessReportsASilentNATSCutWithinSeconds(t *testing.T) {
 	}
 }
 
+// The server's NATS clients are the ones that declare a silent cut lost within seconds: serverBus,
+// the options every NATS client of the server dials with (serverClient), carries
+// bus.WithSilentCutDetection, whose pings are tighter than nats.go's own. Without it /healthz
+// reads nats true for minutes into a silent cut, which TestAProcessReportsASilentNATSCut, waiting
+// through the shared wait, still passes, since how soon the cut is reported is held only in
+// benchtime's timing lane (TestAProcessReportsASilentNATSCutWithinSeconds). This is the row of
+// every run that fails on that defect: it reads the pings a connection dialled with serverBus
+// keeps against one dialled with the detection alone.
+func TestTheServersNATSClientsDetectASilentCut(t *testing.T) {
+	_, natsURL := testnats.Start(t)
+	noEnvironment := func(string) (string, bool) { return "", false }
+	dial := func(name string, options ...bus.DialOption) *natsgo.Conn {
+		t.Helper()
+		conn, err := bus.Dial(name, []string{natsURL}, noEnvironment, options...)
+		if err != nil {
+			t.Fatalf("dial NATS as %s: %v", name, err)
+		}
+		t.Cleanup(conn.Close)
+		return conn
+	}
+	server := dial("serverBus", serverBus()...)
+	detecting := dial("silent-cut-detection", bus.WithSilentCutDetection())
+	plain := dial("no-options")
+	if detecting.Opts.PingInterval == plain.Opts.PingInterval && detecting.Opts.MaxPingsOut == plain.Opts.MaxPingsOut {
+		t.Fatalf("bus.WithSilentCutDetection pings every %v with at most %d out, as a connection without it does, so this row would tell nothing",
+			detecting.Opts.PingInterval, detecting.Opts.MaxPingsOut)
+	}
+	if server.Opts.PingInterval != detecting.Opts.PingInterval || server.Opts.MaxPingsOut != detecting.Opts.MaxPingsOut {
+		t.Errorf("a connection dialled with serverBus pings every %v with at most %d out, want bus.WithSilentCutDetection's %v and %d: without it a silent cut reads as connected for minutes",
+			server.Opts.PingInterval, server.Opts.MaxPingsOut, detecting.Opts.PingInterval, detecting.Opts.MaxPingsOut)
+	}
+}
+
 // reportedSilentNATSCut freezes the NATS server under a process, leaving its TCP connection open
 // and answering nothing, and answers how long after the freeze /healthz first reported nats
 // false. It fails t if the process ever answers anything but 200 ok while the cut is on, and
@@ -234,12 +267,12 @@ func (p *dispatchProcess) startAgentView(t *testing.T) *gws.Conn {
 	return conn
 }
 
-// nextAgentViewFrame reads conn up to the next frame of its agent view, passing over heartbeats, and
-// fails the test when none arrives within ten seconds, so a view held open with nothing in it fails
-// rather than hangs.
-func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn) agentViewFrame {
+// nextAgentViewFrame reads conn up to the next frame of its agent view, passing over heartbeats,
+// and fails the test when none arrives by deadline, the shared wait's (testwait.Context; zero for
+// none), so a view held open with nothing in it fails rather than hangs.
+func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn, deadline time.Time) agentViewFrame {
 	t.Helper()
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(deadline)
 	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	for {
 		var frame agentViewFrame
@@ -256,7 +289,8 @@ func (p *dispatchProcess) nextAgentViewFrame(t *testing.T, conn *gws.Conn) agent
 func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 	t.Helper()
 	conn := p.startAgentView(t)
-	frame := p.nextAgentViewFrame(t, conn)
+	deadline, _ := testwait.Context(t).Deadline()
+	frame := p.nextAgentViewFrame(t, conn, deadline)
 	_ = conn.Close()
 	return frame
 }
@@ -266,10 +300,12 @@ func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 // requires a frame the session publishes on conn to reach that view.
 func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn) {
 	t.Helper()
+	ctx := testwait.Context(t)
+	deadline, _ := ctx.Deadline()
 	var view *gws.Conn
 	testwait.Eventually(t, "an agent view to open with the session's responder verdict", func() bool {
 		view = p.startAgentView(t)
-		frame := p.nextAgentViewFrame(t, view)
+		frame := p.nextAgentViewFrame(t, view, deadline)
 		if frame.Type == "agent" && frame.Event == "responder" {
 			return true
 		}
@@ -281,11 +317,11 @@ func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn
 	if err := conn.Publish(contracts.AgentStreamFramesSubject(streamedSessionID), []byte(frame)); err != nil {
 		t.Fatalf("publish the session's frame: %v", err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flush the session's frame: %v", err)
 	}
 	for {
-		got := p.nextAgentViewFrame(t, view)
+		got := p.nextAgentViewFrame(t, view, deadline)
 		if got.Type == "agent" && got.Event == "replay" {
 			continue
 		}

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // One tab on A sends a single awareness frame that names 2,048 clients, then leaves. A reader who
@@ -15,7 +17,10 @@ import (
 // the sockets of a process may hold (maxAwarenessClientsPerRoom), B's room is full of the frame's
 // clients, which stay there until they expire and their tombstones are purged (about 75 s, though
 // the flooding tab left at once), and B drops every client it has not seen before: the new reader
-// stays invisible on B for that long, while on A it is seen at once.
+// stays invisible on B for that long, while on A it is seen at once. The waits for the reader are
+// the shared wait, which would sit those 75 s out, so the row reads B's room itself before she
+// joins: it must hold an entry free for her. The second is held only in benchtime's timing lane
+// (withinLive).
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLD")
@@ -42,18 +47,29 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	}); err != nil {
 		t.Fatalf("the flooding tab's clients never left bob's view on B: %v", err)
 	}
+	// What lets B show a reader it has not seen is a free entry in its room: the bound counts the
+	// clients present and the tombstones of the ones that left (docs.RoomCounters.AwarenessClients),
+	// and a room the frame filled keeps those tombstones until they expire and are purged.
+	if held := pair.b.roomCounters(t, artifactID).AwarenessClients; held >= docs.MaxAwarenessClientsPerRoomForTest {
+		t.Fatalf("B's room holds %d awareness client entries once one tab's %d-client frame had left bob's view, at or past its bound of %d: "+
+			"it has no entry for a reader who joins now, who stays invisible on B until the tombstones expire and are purged",
+			held, invented, docs.MaxAwarenessClientsPerRoomForTest)
+	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
+	announced := time.Now()
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice, who joined A after the flood: %v", err)
 	}
+	withinLive(t, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A once one tab's %d-client awareness frame had left B's view, was seen by carol on A but not by bob on B: B's room still counts the frame's clients, the tombstones of the ones that left included, against its bound, and drops every client it has not seen before",
 			invented)
 	}
+	withinLive(t, announced, "alice's cursor reaching bob on B")
 }
 
 // The same flood, from a tab that stays: it keeps its 2,048 invented clients alive, re-announcing
@@ -62,7 +78,8 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 // she would be were all three on one process. With a room bound that counts every client a room
 // holds (maxAwarenessClientsPerRoom), A's room is full of the tab's clients, refuses alice's client
 // id, and never relays it: bob sees her only once the flooding tab stops re-announcing and its
-// clients expire.
+// clients expire. The row reads A's room before she joins - it must hold an entry free for her -
+// and the second is held only in benchtime's timing lane (withinLive).
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLL")
@@ -100,18 +117,26 @@ func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testi
 	}); err != nil {
 		t.Fatalf("none of the flooding tab's clients reached carol on A: %v", err)
 	}
+	if held := pair.a.roomCounters(t, artifactID).AwarenessClients; held >= docs.MaxAwarenessClientsPerRoomForTest {
+		t.Fatalf("A's room holds %d awareness client entries while one tab there keeps %d invented clients alive, at or past its bound of %d: "+
+			"it has no entry for a reader who joins now, and refuses her client id",
+			held, invented, docs.MaxAwarenessClientsPerRoomForTest)
+	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
+	announced := time.Now()
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice: %v", err)
 	}
+	withinLive(t, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A while one tab there kept %d invented awareness clients alive, was seen by carol on A but not by bob on B: A's room is full of that tab's clients and never relays hers",
 			invented)
 	}
+	withinLive(t, announced, "alice's cursor reaching bob on B")
 }
 
 // inventedState is the state a flooding tab gives each of the client ids it invents from first:

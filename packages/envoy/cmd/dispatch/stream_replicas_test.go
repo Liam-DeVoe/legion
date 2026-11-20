@@ -362,7 +362,17 @@ func TestTheDispatchPublishersKeeperRestoresALoweredStream(t *testing.T) {
 	lowered := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 	lowered.Replicas = 1
 	lowered.MaxBytes = bustest.StreamMaxBytes / 2
-	if _, err := js.UpdateStream(&lowered); err != nil {
+	// The lowering is sent once, on a JetStream context whose wait for the answer is the test
+	// binary's deadline (testnats.MaxWait), as Cluster.CreateStream sends a create: the stream's
+	// leader answers it, which on a loaded machine can outlast jetStreamWait, the bound of each
+	// request of cluster.JetStream's context.
+	operatorConn := testnats.Connect(t, cluster.URL())
+	t.Cleanup(operatorConn.Close)
+	operator, err := operatorConn.JetStream(testnats.MaxWait(t))
+	if err != nil {
+		t.Fatalf("open the operator's JetStream context: %v", err)
+	}
+	if _, err := operator.UpdateStream(&lowered); err != nil {
 		t.Fatalf("operator lowering: %v", err)
 	}
 	testwait.Until(t, "the keeper's pass to restore the lowered stream to the deployment's settings", func() (string, bool) {

@@ -22,7 +22,8 @@ import (
 // room a place for her: A refuses the clients its own sockets are allowed, and B's room, full of
 // the ones it was relayed, refuses her client id, so the reader carol sees on A is seen by nobody
 // on B. The room's bound is derived from those two caps instead
-// (MaxAwarenessClientsPerRoomForTest), and the entries the rooms track stay under it.
+// (MaxAwarenessClientsPerRoomForTest), and the entries the rooms track stay under it. The second
+// is held only in benchtime's timing lane (withinLive).
 func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "MNY")
@@ -75,13 +76,16 @@ func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t 
 	if err := alice.SetAwareness(aliceAwarenessClient, cursorState("alice", 0)); err != nil {
 		t.Fatalf("announce alice's cursor: %v", err)
 	}
+	announced := time.Now()
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice: %v", err)
 	}
+	withinLive(t, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A while %d sockets there each kept their %d awareness clients alive, was seen by carol on A but not by bob on B (bob holds %d clients): A's room bound is below what the sockets it admits may hold, so it refuses her client id and never relays it",
 			sockets, perSocket, len(bob.AwarenessStates()))
 	}
+	withinLive(t, announced, "alice's cursor reaching bob on B")
 
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
 		held := process.roomCounters(t, artifactID).AwarenessClients

@@ -177,6 +177,10 @@ type bootConfig struct {
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
 	ListenerRosterUncached bool
+	// DebugMessages are the DEBUG log messages this process writes beside everything it writes at
+	// INFO and above (debugMessagesHandler), nil for none; only DISPATCH_TEST_DEBUG_MESSAGES, under
+	// the test hooks, names any, for an end-to-end test that waits on a loop's pass lines.
+	DebugMessages map[string]bool
 	// EmbedderOff builds no embedder, whatever DISPATCH_EMBEDDER and the AWS SDK's own variables
 	// would have built: meaning search answers keyword-only and the embedding queue does nothing.
 	// Only DISPATCH_TEST_EMBEDDER_OFF=1, under the test hooks, sets it.
@@ -259,6 +263,9 @@ func main() {
 	if err != nil {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
+	}
+	if len(boot.DebugMessages) > 0 {
+		slog.SetDefault(slog.New(debugMessagesHandler{Handler: slog.Default().Handler(), messages: boot.DebugMessages}))
 	}
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
@@ -1366,6 +1373,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
 		}
+	}
+	if boot.DebugMessages, err = testHookMessages(env, "DISPATCH_TEST_DEBUG_MESSAGES", boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
 	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {

@@ -8,19 +8,14 @@ import (
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // issuerDownAudience is the audience the process verifies pods' service-account tokens for.
 const issuerDownAudience = "dispatch"
-
-// discoveryRetryWindow is how long a test waits for a process to discover an issuer that has begun
-// to answer: the background loop's longest wait between attempts (thirty seconds) and one attempt's
-// bound (ten seconds), with a margin.
-const discoveryRetryWindow = 45 * time.Second
 
 // A process started while both its sign-in issuer and its service-account token issuer are down
 // starts and serves: /healthz answers 200 with `signin` and `service_tokens` false, a shared agent
@@ -29,7 +24,10 @@ const discoveryRetryWindow = 45 * time.Second
 // discovers both in the background with no restart: /healthz reports both true, the JWT is served,
 // and a person signs in. Then a Google outage at the token endpoint does not sign that person out:
 // past the hour their page and API requests are answered 503 with the same cookie, and 200 again
-// once the issuer answers. Before INFRA-555 the boot exited when either discovery failed.
+// once the issuer answers. Before INFRA-555 the boot exited when either discovery failed. The
+// wait for the background discovery is the shared wait; the discovery's own schedule (README.md,
+// "Required configuration": it retries after one second, doubling to thirty) is held on a fake by
+// internal/oidc's TestTheBackgroundDiscoveryRetriesOnItsScheduleUntilTheIssuerAnswers.
 func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLater(t *testing.T) {
 	database := storetest.Open(t)
 	signInIssuer := oidctest.New(t)
@@ -110,12 +108,12 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 // bearerWhoami asks the process's API who token's bearer is, and answers the status and body.
 func bearerWhoami(t *testing.T, p *dispatchProcess, token string) (int, string) {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, p.url("/api/v1/whoami"), nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, p.url("/api/v1/whoami"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET /api/v1/whoami: %v", err)
 	}
