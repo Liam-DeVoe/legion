@@ -397,15 +397,22 @@ func namesIn(t *testing.T, dir string) []string {
 	return names
 }
 
+// pastBuild is a build time at minute 7 of hour on 2026-11-19, a day before these tests were
+// written: every install test but the one of build times ahead of the clock builds its indexes at
+// such a time, so the clock is past each of them, as it is past every index the builder publishes.
+func pastBuild(hour int) time.Time {
+	return time.Date(2026, time.November, 19, hour, 7, 0, 0, time.UTC)
+}
+
 // An index replaces what the folder holds where that is an older index, nothing, a file that is no
 // index, or a symlink, even one to a later index: a role can put a symlink there, so it is
 // replaced, never followed or written through. The index lands whole, as a regular file of mode
 // 0644, and nothing else is left in the folder.
 func TestInstallIndexReplacesAnOlderFile(t *testing.T) {
 	underUmask(t, 0o022)
-	older := builtIndex(time.Date(2026, time.November, 20, 9, 7, 0, 0, time.UTC), 1, 2)
-	newer := builtIndex(time.Date(2026, time.November, 20, 10, 7, 0, 0, time.UTC), 3, 4)
-	later := builtIndex(time.Date(2026, time.November, 20, 11, 7, 0, 0, time.UTC), 5, 6)
+	older := builtIndex(pastBuild(9), 1, 2)
+	newer := builtIndex(pastBuild(10), 3, 4)
+	later := builtIndex(pastBuild(11), 5, 6)
 	elsewhere := filepath.Join(t.TempDir(), "elsewhere")
 	if err := os.WriteFile(elsewhere, later, 0o644); err != nil {
 		t.Fatal(err)
@@ -462,13 +469,13 @@ func TestInstallIndexReplacesAnOlderFile(t *testing.T) {
 // An index does not replace one built at its own time or later: the folder keeps the index it
 // holds, and nothing else is left in it.
 func TestInstallIndexKeepsANewerFile(t *testing.T) {
-	arriving := builtIndex(time.Date(2026, time.November, 20, 9, 7, 0, 0, time.UTC), 1, 2)
+	arriving := builtIndex(pastBuild(9), 1, 2)
 	for _, tc := range []struct {
 		name string
 		held []byte
 	}{
-		{"a newer index", builtIndex(time.Date(2026, time.November, 20, 10, 7, 0, 0, time.UTC), 3, 4)},
-		{"an index of the same build time", builtIndex(time.Date(2026, time.November, 20, 9, 7, 0, 0, time.UTC), 5, 6)},
+		{"a newer index", builtIndex(pastBuild(10), 3, 4)},
+		{"an index of the same build time", builtIndex(pastBuild(9), 5, 6)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -493,7 +500,7 @@ func TestInstallIndexKeepsANewerFile(t *testing.T) {
 // A body that is no index is refused before anything is written, and an install whose rename
 // fails leaves no new file behind: what the folder held stays as it was.
 func TestInstallIndexRefusesAndLeavesNoNewFile(t *testing.T) {
-	index := builtIndex(time.Date(2026, time.November, 20, 9, 7, 0, 0, time.UTC), 1, 2)
+	index := builtIndex(pastBuild(9), 1, 2)
 	t.Run("a body that is no index", func(t *testing.T) {
 		dir := t.TempDir()
 		changed := slices.Clone(index)
@@ -522,6 +529,60 @@ func TestInstallIndexRefusesAndLeavesNoNewFile(t *testing.T) {
 			t.Fatalf("the directory where the index goes is %v (%v), want it as it was", info, err)
 		}
 	})
+}
+
+// The check reads an index built more than 10 minutes ahead of the clock as a header it cannot
+// read, so such an index is never installed and never kept: one built 11 minutes ahead is refused
+// before anything is written, with the current index the folder holds left as it was, and a held
+// index built a day ahead is no index, which a current one replaces. The control: an index built
+// 9 minutes ahead is installed. The build times are read off the clock, to the second, as the
+// builder writes them, so each case is as far ahead of InstallIndex's own reading of the clock as
+// its name says, less the moments between the two readings.
+func TestInstallIndexTakesNoIndexBuiltAheadOfTheClock(t *testing.T) {
+	underUmask(t, 0o022)
+	now := time.Now()
+	current := builtIndex(now, 1, 2)
+	for _, tc := range []struct {
+		name     string
+		held     []byte
+		arriving time.Time
+		// refused is the start of the refusal's cause, after the directory; empty is an install.
+		refused string
+	}{
+		{name: "a held index a day ahead, under a current one", held: builtIndex(now.Add(24*time.Hour), 3, 4), arriving: now},
+		{name: "an index 11 minutes ahead, over a current one", held: current, arriving: now.Add(11 * time.Minute),
+			refused: "the index's built_at " + now.Add(11*time.Minute).UTC().Format("2006-01-02T15:04:05Z") +
+				" is more than 10 minutes ahead of this machine's clock, "},
+		{name: "the control: an index 9 minutes ahead, over a current one", held: current, arriving: now.Add(9 * time.Minute)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sandbox-lines.idx")
+			if err := os.WriteFile(path, tc.held, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			arriving := builtIndex(tc.arriving, 5, 6)
+			replaced, err := InstallIndex(dir, arriving)
+			want := arriving
+			if tc.refused == "" {
+				if err != nil || !replaced {
+					t.Fatalf("InstallIndex = %v, %v; want it installed", replaced, err)
+				}
+			} else {
+				prefix := "the leak check index could not be installed in " + dir + ": " + tc.refused
+				if err == nil || replaced || !strings.HasPrefix(err.Error(), prefix) {
+					t.Fatalf("InstallIndex = %v, %v; want it refused with %q and the clock's reading", replaced, err, prefix)
+				}
+				want = tc.held
+			}
+			if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, want) {
+				t.Fatalf("the folder's index holds %d bytes (%v), want %d: the index InstallIndex should leave there", len(got), err, len(want))
+			}
+			if names := namesIn(t, dir); !slices.Equal(names, []string{"sandbox-lines.idx"}) {
+				t.Fatalf("the folder holds %q, want the index alone", names)
+			}
+		})
+	}
 }
 
 // The marker is an empty regular file of its own name in the folder, which MarkIndexPushed makes,

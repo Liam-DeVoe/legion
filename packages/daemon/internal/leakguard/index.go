@@ -57,6 +57,17 @@ const indexLine1 = "PUBLIC-LEAK-CHECK-INDEX 1\n"
 // check refuses any other shape of. time.Parse alone would take a one-digit hour.
 var indexBuiltAt = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`)
 
+// indexBuiltAtLayout is that shape as a layout of the time package, which reads and writes it.
+const indexBuiltAtLayout = "2006-01-02T15:04:05Z"
+
+// indexMaxAhead is how far after the clock an index's build time may be: the check's own
+// INDEX_MAX_AHEAD, 600 s. The check reads an index built further ahead as a header it cannot read,
+// since such a time would keep the index alive past the 6 hours after which it reads an index
+// UNKNOWN. So InstallIndex neither installs such an index nor keeps one against a later index: one
+// held would read UNKNOWN in every role of the pod, and keep out every index pushed after it,
+// until the clock came within this bound of its build time.
+const indexMaxAhead = 10 * time.Minute
+
 // Index is an index of sandbox lines ParseIndex read: Body the file whole, SHA256 the digest of its
 // list its header holds, and BuiltAt the build time its header holds.
 type Index struct {
@@ -111,7 +122,7 @@ func ParseIndex(body []byte) (Index, error) {
 	if format != 1 {
 		return Index{}, fmt.Errorf("the index is of format %d, not 1", format)
 	}
-	at, err := time.Parse("2006-01-02T15:04:05Z", builtAt)
+	at, err := time.Parse(indexBuiltAtLayout, builtAt)
 	if err != nil || !indexBuiltAt.MatchString(builtAt) {
 		return Index{}, fmt.Errorf("the index's built_at %q is not a UTC time YYYY-MM-DDTHH:MM:SSZ", builtAt)
 	}
@@ -266,12 +277,15 @@ func (s *IndexSource) get(ctx context.Context, token, what, target, accept strin
 }
 
 // InstallIndex installs body, an index (ParseIndex), as IndexFile in dir, the folder the check
-// reads it from, and answers whether it replaced what dir held there. It makes dir where it is
-// absent, mode 0755, and writes body to a new file beside the index,
-// `.sandbox-lines.idx.<random>.new`, mode 0644, synced to disk. It then renames that file over
-// IndexFile where what is there is no index, or an index built before body's: a reader finds the
-// old file or the new one, whole. An index there built at body's time or later is kept, so a push
-// that arrives late never puts an older index back.
+// reads it from, and answers whether it replaced what dir held there. It reads the clock once, and
+// refuses body where it was built more than indexMaxAhead after that reading, before it writes
+// anything. Otherwise it makes dir where it is absent, mode 0755, and writes body to a new file
+// beside the index, `.sandbox-lines.idx.<random>.new`, mode 0644, synced to disk. It then renames
+// that file over IndexFile where what is there is no index, an index built more than
+// indexMaxAhead after the clock's reading, or an index built before body's: a reader finds the old
+// file or the new one, whole. An index there built at body's time or later, and not ahead of the
+// clock past that bound, is kept, so of two calls made one after the other, a push that arrives
+// late never puts an older index back.
 //
 // The folder is one every role of the pod reads and the check in a role writes, so what is at
 // IndexFile is read as a role's file is read (rolefile.Read): a symlink, a fifo, anything else that
@@ -284,9 +298,15 @@ func InstallIndex(dir string, body []byte) (replaced bool, err error) {
 			err = fmt.Errorf("the leak check index could not be installed in %s: %w", dir, err)
 		}
 	}()
+	now := time.Now()
 	index, err := ParseIndex(body)
 	if err != nil {
 		return false, err
+	}
+	latest := now.Add(indexMaxAhead)
+	if index.BuiltAt.After(latest) {
+		return false, fmt.Errorf("the index's built_at %s is more than %d minutes ahead of this machine's clock, %s",
+			index.BuiltAt.UTC().Format(indexBuiltAtLayout), int(indexMaxAhead/time.Minute), now.UTC().Format(indexBuiltAtLayout))
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return false, err
@@ -303,7 +323,7 @@ func InstallIndex(dir string, body []byte) (replaced bool, err error) {
 	}()
 	path := filepath.Join(dir, IndexFile)
 	if held, err := rolefile.Read(path, maxIndexBytes); err == nil {
-		if kept, err := ParseIndex(held); err == nil && !kept.BuiltAt.Before(index.BuiltAt) {
+		if kept, err := ParseIndex(held); err == nil && !kept.BuiltAt.Before(index.BuiltAt) && !kept.BuiltAt.After(latest) {
 			return false, nil
 		}
 	}
