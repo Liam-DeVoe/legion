@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { SpecFormFinding, SpecFormRead, SpecFormTerm } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
@@ -23,6 +24,7 @@ import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
 // empty, since `listArtifacts` reads no issue.
 
 const makeDirectory = temporaryDirectories("dispatch-spec-form");
+const TOKEN = fixtureSecret("dsp");
 
 /** The person the stub's issues are assigned to. */
 const PERSON = "ana@example.com";
@@ -337,7 +339,7 @@ async function run(
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -780,7 +782,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
       sessionId: "ses-1",
       config: {
         url: `http://127.0.0.1:${server.port}`,
-        credential: bearerCredential("test-token"),
+        credential: bearerCredential(TOKEN),
       },
       env: {},
     }).catch((thrown: unknown) => thrown);

@@ -1920,11 +1920,9 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
-// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
-// control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
-test("the default shapes keep main's class strings", async () => {
+// Shared controls keep their established default classes. Approval reason fields grow with the
+// text a form refusal puts in them; their two intentional class changes are written out too.
+test("the default shapes keep established classes and growing approval reason fields", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
@@ -1976,7 +1974,7 @@ test("the default shapes keep main's class strings", async () => {
     "ApprovalChip request heading": "text-sm font-semibold text-slate-700 dark:text-slate-300",
     "ApprovalChip request label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "ApprovalChip request reason box":
-      "mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400",
+      "mt-1 block min-h-14! w-full rounded-lg border px-2 py-1 text-sm font-normal outline-none field-sizing-content max-h-[50vh] border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-900 dark:focus:border-sky-400",
     "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
     "ApprovalChip request Cancel":
       "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
@@ -2217,7 +2215,7 @@ test("the default shapes keep main's class strings", async () => {
     "AskCard handed on": null,
     "AskCard answer label": "sr-only",
     "AskCard answer box":
-      "block w-full rounded-lg px-3 py-2 font-normal outline-none border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
+      "block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none field-sizing-content max-h-[50vh] border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400",
     "AskCard Answer":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
     "AskCard Ask back":
@@ -4455,9 +4453,9 @@ function expectDisabledAsOnMain(control: HTMLElement): void {
 // Inside, Approve is `aria-disabled` in place of `disabled`, which drops the focus to the body in a
 // browser, so it keeps the focus, and a press sends no second approval, while the write is out and
 // while its read is. Once that read draws the approval approved, Approve leaves the page, and the
-// focus that fell with it goes to the chip that replaces it. Outside `NoTooltips` Approve is
-// `disabled` while the write alone is out, as on `main`: the focus falls to the body, and nothing
-// moves it.
+// focus that fell with it goes to the chip that replaces it. Outside `NoTooltips` Approve also
+// keeps the focus while its write is out, so a form refusal leaves the reader at the control
+// they pressed. It stops pending before the read, and its removal moves no focus to the chip.
 test("inside NoTooltips Approve pressed by Enter keeps the focus until the approval is read, then hands it to the chip", async () => {
   const user = userEvent.setup();
   const approved = doc(SPEC_ID, "spec.md", { latest_version: 2, state: "approved", version: 2 });
@@ -4476,15 +4474,10 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       await settleReads();
-      if (surface === "inside") {
-        expectRefusedHoldingFocus(approve);
-        await user.keyboard("{Enter}");
-        await settleReads();
-        expect(createArtifactReview).toHaveBeenCalledTimes(1);
-      } else {
-        expectDisabledAsOnMain(approve);
-        expect(document.activeElement).toBe(document.body);
-      }
+      expectRefusedHoldingFocus(approve);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
 
       // The approval lands, and the read after it is held.
       const answerReread = await landHeld(stubs.getArtifact, () =>
@@ -4500,7 +4493,7 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
       } else {
         // The write stopped pending as it landed, before its read.
         expect(approve.hasAttribute("disabled")).toBe(false);
-        expect(document.activeElement).toBe(document.body);
+        expect(document.activeElement).toBe(approve);
       }
 
       answerReread(approved);
@@ -4518,11 +4511,9 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
   }
 });
 
-// A refused approval leaves Approve on the page. Inside `NoTooltips` Approve held the focus all
-// along, since it was never `disabled`, keeps it once the write fails, and takes the next press,
-// which sends the approval again. Outside `NoTooltips` its `disabled` dropped the focus to the
-// body while the write was out, nothing moves it back, and Approve takes a press again, as on
-// `main`.
+// A refused approval leaves Approve on the page and keeps the focus on it on either surface.
+// This is also where a form refusal returns its findings; another press sends no duplicate
+// while the earlier write is out, and sends a new approval once that write has ended.
 test("inside NoTooltips Approve keeps the focus when its write fails and takes the next press", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -4540,19 +4531,17 @@ test("inside NoTooltips Approve keeps the focus when its write fails and takes t
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       await settleReads();
-      if (surface === "inside") expectRefusedHoldingFocus(approve);
-      else expectDisabledAsOnMain(approve);
+      expectRefusedHoldingFocus(approve);
 
       written.reject(new Error("the connection dropped"));
-      const refusal = surface === "inside" ? "aria-disabled" : "disabled";
+      const refusal = "aria-disabled";
       await waitFor(() => expect(approve.hasAttribute(refusal)).toBe(false));
       await settleReads();
       expect(approve.isConnected).toBe(true);
       expect(approve.hasAttribute("aria-disabled")).toBe(false);
       expect(approve.hasAttribute("disabled")).toBe(false);
-      expect(document.activeElement).toBe(surface === "inside" ? approve : document.body);
+      expect(document.activeElement).toBe(approve);
 
-      if (surface === "outside") approve.focus();
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
     } finally {

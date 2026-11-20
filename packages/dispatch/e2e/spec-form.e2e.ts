@@ -688,6 +688,7 @@ test("the Inbox card's reason field at 390 px shows a refusal of three findings 
       await expect(field).toHaveValue(/^Dispatch refused my approval/);
       // Each poll answers what it measured, so a failure names the heights it read.
       const measured = async () => {
+        // Each read is one sample of expect.poll below, which retries until the field fits.
         const fit = await field.evaluate(reasonFit);
         const shape =
           fit.held <= fit.shown
