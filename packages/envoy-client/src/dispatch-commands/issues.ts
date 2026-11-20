@@ -765,7 +765,7 @@ export async function resultsCommand(
   const results = await client.issueResults(issue, at, reading.cut);
   const checks = results.checks ?? [];
   return {
-    text: formatCheckResults(results, brief),
+    text: formatCheckResults(results, brief, reading.cut?.asOf),
     details: {
       issue,
       checks: checks.length,

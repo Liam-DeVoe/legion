@@ -26,7 +26,14 @@ export const LEFT_OUT = {
   blockPin: "the block at its pinned version",
   /** A comment's or message's blocks, which `GET /api/v1/comments/{id}/blocks` holds now only. */
   postBlock: "where the block starts and ends in its post",
+  /** The Inbox's `Later` band: the asks the person snoozed, which no event records. */
+  snoozes: "snoozes",
 } as const;
+
+/** What a read prints in place of a part or a field it left out at `asOf`, the cut. */
+export function leftOutAt(asOf: string): string {
+  return `left out at ${asOf}`;
+}
 
 /** Why `dispatch results` refuses `--at` with `--as-of`: `--at` compares each check with one
  *  commit through GitHub now, and a read at a cut reads nothing from GitHub. */
@@ -125,14 +132,15 @@ export class ReadCut implements AsOfRead {
   /** Records `part` (`LEFT_OUT`) as left out, and answers the row a section prints for it. */
   leave(part: string): string {
     this.#parts.add(part);
-    return `left out at ${this.asOf}`;
+    return leftOutAt(this.asOf);
   }
 
   /** `Left out at <cut>: <part>, …`: each part left out, then each absent field in words, each
-   *  once; undefined when nothing was left out. */
-  line(): string | undefined {
+   *  once, or `nothing`. A read at a cut always prints it, so its output names the cut it was
+   *  read at, a token's cut that replaced `--as-of` included. */
+  line(): string {
     const named = new Set([...this.#parts, ...[...this.#absent].map(absentFieldWords)]);
-    return named.size === 0 ? undefined : `Left out at ${this.asOf}: ${[...named].join(", ")}`;
+    return `Left out at ${this.asOf}: ${named.size === 0 ? "nothing" : [...named].join(", ")}`;
   }
 }
 
@@ -156,11 +164,10 @@ export async function readAtCut(session: SessionContext): Promise<Reading> {
   return { identity, cut: asOf === undefined ? undefined : new ReadCut(asOf) };
 }
 
-/** `result` with the cut's `Left out at` line before its text, where it left anything out. */
+/** `result` with the cut's `Left out at` line before its text, at a cut. */
 export function withLeftOut(
   result: DispatchToolResult,
   cut: ReadCut | undefined
 ): DispatchToolResult {
-  const line = cut?.line();
-  return line === undefined ? result : { ...result, text: `${line}\n${result.text}` };
+  return cut === undefined ? result : { ...result, text: `${cut.line()}\n${result.text}` };
 }

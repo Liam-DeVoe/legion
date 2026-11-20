@@ -105,7 +105,7 @@ export async function readCommand(
           ),
     ]);
     return {
-      text: messageSummary(thread, [...pictures.lines, ...graph]),
+      text: messageSummary(thread, [...pictures.lines, ...graph], cut?.asOf),
       details: {
         message: thread.message.id,
         ...(issueKey === null ? {} : { issue: issueKey }),
@@ -239,7 +239,7 @@ export async function readCommand(
       graphSections(client, commentRef, cut),
     ]);
     return {
-      text: commentSummary(comment, [...pictures.lines, ...graph]),
+      text: commentSummary(comment, [...pictures.lines, ...graph], cut?.asOf),
       details:
         ref.owner.kind === "project"
           ? { project: ref.owner.project }
@@ -301,7 +301,7 @@ export async function readCommand(
       graphSections(client, messageRef, cut),
     ]);
     return {
-      text: messageSummary(messageRead, [...pictures.lines, ...graph]),
+      text: messageSummary(messageRead, [...pictures.lines, ...graph], cut?.asOf),
       details: { issue: messageRead.message.issue_key },
       ...showImages(pictures),
     };
@@ -451,7 +451,8 @@ export async function readCommand(
       [...pictures.lines, ...graph],
       linkBase,
       coverage,
-      agents
+      agents,
+      cut?.asOf
     ),
     details: { issue: read.issue.key },
     ...showImages(pictures),

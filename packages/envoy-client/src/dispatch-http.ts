@@ -82,7 +82,12 @@ import {
   answerNotKept,
   DEFAULT_ISSUE_READ_EVENTS,
   DISPATCH_AS_OF_ABSENT_HEADER,
+  DISPATCH_AS_OF_FILLED_THROUGH_HEADER,
   DISPATCH_AS_OF_HEADER,
+  DISPATCH_AS_OF_NOT_SERVED,
+  DISPATCH_AS_OF_SEARCH_NOT_FILLED,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+  DISPATCH_INVALID_AS_OF,
   everyBuildReadsSearch,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
@@ -402,6 +407,34 @@ export class AsOfNotAnswered extends Error {
         "this Dispatch server is older than as_of, so it ignored the cut and answered the " +
         "present. Nothing of that answer was used."
     );
+  }
+}
+
+/**
+ * Dispatch's refusal of a read at a cut, in words: what the code means for the read, then
+ * Dispatch's own message. The code and the status stay the refusal's, so a reader that branches
+ * on the code reads it as before. A search that the keyword table does not reach yet names the
+ * time that the table reaches, which Dispatch sends in `Dispatch-As-Of-Filled-Through`. Undefined
+ * for every other refusal. `route` is the request as it was sent, and `cut` its `as_of`.
+ */
+function asOfRefusalWords(
+  refusal: DispatchServiceError,
+  route: string,
+  cut: string,
+  filledThrough: string | null
+): string | undefined {
+  const said = `Dispatch said: ${refusal.message}`;
+  switch (refusal.code) {
+    case DISPATCH_AS_OF_NOT_SERVED:
+      return `${route} gives no answer as of ${cut}: it holds no history, or it cannot read one of its parameters at a past time. ${said}`;
+    case DISPATCH_INVALID_AS_OF:
+      return `Dispatch cannot read ${cut} as a past time. Give one RFC 3339 time that is not later than the time on the server. ${said}`;
+    case DISPATCH_AS_OF_SEARCH_NOT_FILLED:
+      return `Dispatch cannot search as of ${cut} yet: its table of past text reaches ${filledThrough ?? "a time that it does not name"} only. Search as of that time or earlier, or search again later. ${said}`;
+    case DISPATCH_AS_OF_TOKEN_NOT_SERVED:
+      return `This token reads Dispatch as of ${cut}, and ${route} gives no answer as of that time: this Dispatch server answers no read at a past time there. ${said}`;
+    default:
+      return undefined;
   }
 }
 
@@ -2051,7 +2084,11 @@ export class DispatchClient {
     );
     return this.#noRoute(async () => {
       const response = await this.#send("GET", url, undefined, "*/*");
-      if (!response.ok) return this.#response<never>("GET", url, response);
+      if (!response.ok) {
+        return this.#response<never>("GET", url, response).catch((error: unknown) => {
+          throw this.#refusedAtCut(error, url, response, read.asOf);
+        });
+      }
       this.#answeredAtCut(url, response, read);
       return {
         mime: response.headers.get("Content-Type") ?? "application/octet-stream",
@@ -2322,14 +2359,37 @@ export class DispatchClient {
     read: AsOfRead,
     signal?: AbortSignal
   ): Promise<T> {
-    if (read.asOf === undefined) return this.#json("GET", path, undefined, query, signal);
-    const url = this.#url(path, query, read.asOf);
+    const asOf = read.asOf;
+    if (asOf === undefined) return this.#json("GET", path, undefined, query, signal);
+    const url = this.#url(path, query, asOf);
     return this.#noRoute(async () => {
       const response = await this.#send("GET", url, undefined, undefined, signal);
-      const payload = await this.#response<T>("GET", url, response);
+      const payload = await this.#response<T>("GET", url, response).catch((error: unknown) => {
+        throw this.#refusedAtCut(error, url, response, asOf);
+      });
       this.#answeredAtCut(url, response, read);
       return payload;
     }, signal);
+  }
+
+  /** `error` put in words where it is Dispatch's refusal of a read at the cut `asOf`
+   *  (`asOfRefusalWords`), and as it is otherwise. */
+  #refusedAtCut(
+    error: unknown,
+    url: string,
+    response: Response,
+    asOf: string | undefined
+  ): unknown {
+    if (asOf === undefined || !(error instanceof DispatchServiceError) || !error.fromDispatch) {
+      return error;
+    }
+    const words = asOfRefusalWords(
+      error,
+      `GET ${requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)}`,
+      asOf,
+      response.headers.get(DISPATCH_AS_OF_FILLED_THROUGH_HEADER)
+    );
+    return words === undefined ? error : new DispatchServiceError(error.code, error.status, words);
   }
 
   /**

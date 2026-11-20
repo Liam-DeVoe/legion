@@ -17,6 +17,7 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, dispatchWordsText, textHead } from "../ask-answer";
 import type { AsOfRead, DispatchClient } from "../dispatch-http";
 import { ownerTitle } from "../dispatch-owner";
+import { leftOutAt } from "./as-of";
 import type { ResolvedArtifact } from "./context";
 import { dispatchAnswered } from "./failures";
 import { linkFor } from "./links";
@@ -175,18 +176,22 @@ export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): str
  *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
  *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
  *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
- *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
-function openAskLine(ask: OpenAsk, linkBase: string | undefined): string {
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). At a cut (`asOf`) a
+ *  person that rests on a project default the records cannot give is left out. */
+function openAskLine(ask: OpenAsk, linkBase: string | undefined, asOf: string | undefined): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
+  const person = waitsOnPerson(ask) ?? (asOf === undefined ? "nobody" : `(${leftOutAt(asOf)})`);
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${person} · ${ask.question} · ${linkFor(ask.ref, linkBase)}`;
 }
 
 /** `dispatch open-asks` as text, each ask linked against `linkBase`, the base `linkBaseOf`
  *  answers (the command's own, or the Claude Code session hook's), or printed as its
- *  `dispatch://` reference where there is none (`linkFor`). */
+ *  `dispatch://` reference where there is none (`linkFor`). Each age is the server's, counted
+ *  from the cut (`asOf`) for a read at one. */
 export function formatOpenAsksSummary(
   response: OpenAsksResponse,
-  linkBase: string | undefined
+  linkBase: string | undefined,
+  asOf?: string
 ): string {
   const scope = "active open asks you authored on open issues and project documents";
   if (response.count === 0) {
@@ -198,22 +203,29 @@ export function formatOpenAsksSummary(
     `${response.count} unanswered ${response.count === 1 ? "ask" : "asks"} you authored on active issues and project documents.`,
     "",
     `Waiting on human (${waitingOnHuman.length}):`,
-    ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase)),
+    ...waitingOnHuman.map((ask) => openAskLine(ask, linkBase, asOf)),
     "",
     `Waiting on agent (${waitingOnAgent.length}):`,
-    ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase)),
+    ...waitingOnAgent.map((ask) => openAskLine(ask, linkBase, asOf)),
   ].join("\n");
 }
 /** A post as a read prints it: the deleted mark alone for a withdrawn post, else the body with
- *  the time of the last edit above it where the author replaced it. */
-function postBodyLines(post: {
-  readonly body: string;
-  readonly edited_at?: string | null;
-  readonly deleted_at?: string | null;
-  readonly deleted_by?: Actor | null;
-}): string[] {
+ *  the time of the last edit above it where the author replaced it. At a cut (`asOf`) a body the
+ *  records at the cut cannot give is left out. */
+function postBodyLines(
+  post: {
+    readonly body: string;
+    readonly edited_at?: string | null;
+    readonly deleted_at?: string | null;
+    readonly deleted_by?: Actor | null;
+  },
+  asOf?: string
+): string[] {
   if (post.deleted_at != null) return [deletedMark(post.deleted_at, post.deleted_by)];
-  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${post.body}`];
+  // A read at a cut leaves out the body of a post that was edited since and cut in its event.
+  const body: string | undefined = post.body;
+  const text = body === undefined && asOf !== undefined ? leftOutAt(asOf) : body;
+  return [...(post.edited_at == null ? [] : [`Edited: ${post.edited_at}`]), `Body: ${text}`];
 }
 
 /**
@@ -254,20 +266,21 @@ export function postHistorySummary(
 
 export function commentSummary(
   { comment, replies }: CommentRead,
-  graph: readonly string[]
+  graph: readonly string[],
+  asOf?: string
 ): string {
   const root = [
     `${comment.id} · ${actorText(comment.author)}`,
     ...anchorLines(comment),
-    ...replyBlockLines(comment),
-    ...postBodyLines(comment),
+    ...replyBlockLines(comment, asOf),
+    ...postBodyLines(comment, asOf),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
     ...anchorLines(reply),
-    ...replyBlockLines(reply),
+    ...replyBlockLines(reply, asOf),
     ...(reply.answers != null && reply.answers !== comment.id ? [`Answers: ${reply.answers}`] : []),
-    ...postBodyLines(reply),
+    ...postBodyLines(reply, asOf),
   ]);
   return [
     "Comment:",
@@ -286,8 +299,9 @@ export function commentSummary(
  *  words as they stand, and a read of the reply does not always print the parent's own
  *  `Edited:` line beside it (a comment's or message's read answers the post named and its
  *  replies, never the post it quotes). A comment or message that answers no block prints
- *  nothing. */
-function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
+ *  nothing. At a cut (`asOf`), whether the block was removed is left out where no event records
+ *  it. */
+function replyBlockLines(record: Pick<Comment, "reply_block">, asOf: string | undefined): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
   if (block.deleted_at != null) {
@@ -295,11 +309,14 @@ function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
       `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
     ];
   }
+  const removed: boolean | undefined = block.removed;
   return [
     withEditedMark(
-      block.removed
-        ? `Re: block ${block.block_id} (removed)`
-        : `Re: block ${block.block_id}: ${textHead(block.text)}`,
+      removed === undefined && asOf !== undefined
+        ? `Re: block ${block.block_id} (whether it was removed is ${leftOutAt(asOf)}): ${textHead(block.text)}`
+        : removed
+          ? `Re: block ${block.block_id} (removed)`
+          : `Re: block ${block.block_id}: ${textHead(block.text)}`,
       block.edited_at
     ),
   ];
@@ -346,17 +363,18 @@ export function positionText(block: BlockPath): string {
 
 export function messageSummary(
   { message, replies }: MessageRead,
-  graph: readonly string[]
+  graph: readonly string[],
+  asOf?: string
 ): string {
   const root = [
     `${message.id} · ${actorText(message.author)}`,
-    ...replyBlockLines(message),
-    ...postBodyLines(message),
+    ...replyBlockLines(message, asOf),
+    ...postBodyLines(message, asOf),
   ];
   const chain = (replies ?? []).flatMap((reply) => [
     `${reply.id} · ${actorText(reply.author)}`,
-    ...replyBlockLines(reply),
-    ...postBodyLines(reply),
+    ...replyBlockLines(reply, asOf),
+    ...postBodyLines(reply, asOf),
   ]);
   return [
     "Message:",
@@ -409,7 +427,7 @@ export async function openAnchoredThreads(
       `ask ${ask.id} · ${actorText(ask.author)} · ${ask.created_at}`,
       ...anchorLines(ask),
       `Question: ${ask.question}`,
-      ...threadReplyLines(askReplies.get(ask.id) ?? []),
+      ...threadReplyLines(askReplies.get(ask.id) ?? [], at.asOf),
     ].join("\n")
   );
   const byId = new Map(comments.map((comment) => [comment.id, comment]));
@@ -429,18 +447,18 @@ export async function openAnchoredThreads(
     [
       `comment ${root.id} · ${actorText(root.author)} · ${root.created_at}`,
       ...anchorLines(root),
-      ...postBodyLines(root),
-      ...threadReplyLines(replies.get(root.id) ?? []),
+      ...postBodyLines(root, at.asOf),
+      ...threadReplyLines(replies.get(root.id) ?? [], at.asOf),
     ].join("\n")
   );
   return [...askThreads, ...commentThreads];
 }
 
 /** A thread's replies as dispatch_doc_read prints them under their ask or root comment. */
-function threadReplyLines(replies: readonly Comment[]): string[] {
+function threadReplyLines(replies: readonly Comment[], asOf: string | undefined): string[] {
   return replies.flatMap((reply) => [
     `reply ${reply.id} · ${actorText(reply.author)} · ${reply.created_at}`,
-    ...postBodyLines(reply),
+    ...postBodyLines(reply, asOf),
   ]);
 }
 

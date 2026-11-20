@@ -19,12 +19,13 @@ import { actorText, deletedMark, withEditedMark } from "../actor-text";
 import { askAnswerText, textHead } from "../ask-answer";
 import type { DispatchClient } from "../dispatch-http";
 import { humanEditHead } from "../human-edit";
-import { LEFT_OUT, type ReadCut } from "./as-of";
+import { LEFT_OUT, leftOutAt, type ReadCut } from "./as-of";
 import { approvalLine, documentListLines } from "./document-targets";
 import { linkFor } from "./links";
 
-/** The Components line of an issue read: the effective set with where it came from. */
-function componentsLine(components: IssueComponents): string {
+/** The Components line of an issue read: the effective set with where it came from. At a cut
+ *  (`asOf`) the set is left out: it is read from the component model now. */
+function componentsLine(components: IssueComponents, asOf: string | undefined): string {
   const ids = components.ids ?? [];
   const unknown = components.unknown ?? [];
   const inherited =
@@ -32,13 +33,14 @@ function componentsLine(components: IssueComponents): string {
   const retired = unknown.length === 0 ? "" : ` (retired: ${unknown.join(", ")})`;
   switch (components.mode) {
     case "explicit":
+      if (asOf !== undefined) return `Components: ${leftOutAt(asOf)}${inherited}`;
       return `Components: ${ids.length === 0 ? "none live" : ids.join(", ")}${inherited}${retired}`;
     case "none":
       return `Components: none — ${components.reason ?? ""}${inherited}`;
     case "inherit":
       return "Components: unassigned";
     default:
-      return `Components: ${components.mode}${inherited}${retired}`;
+      return `Components: ${components.mode}${inherited}${asOf === undefined ? retired : ""}`;
   }
 }
 
@@ -83,9 +85,16 @@ function advancesLine(issue: { readonly advances?: readonly IssueAdvance[] | nul
 export function claimText(
   claim: IssueClaim,
   agents: LiveAgents | undefined,
-  read: ClaimHolderLiveness = {}
+  read: ClaimHolderLiveness = {},
+  asOf?: string
 ): string {
   const titles = agents?.titles;
+  // At a cut (`asOf`) whether a session holds the claim now is left out: neither the registry
+  // nor the holder's liveness is read, and no word of the present is printed.
+  if (asOf !== undefined) {
+    const marker = claim.actor.kind === "session" ? ` · liveness ${leftOutAt(asOf)}` : "";
+    return `${actorLabel(claim.actor, titles)} since ${claim.at}${marker}`;
+  }
   const liveness = holderLiveness(claim, agents, read);
   const holding = claimHolds(claim, titles, liveness);
   const takeableAt = claimTakeableAt(liveness);
@@ -220,10 +229,18 @@ export function routeHeldBySession(issue: RoutedIssue): boolean {
  * - so it names the state rather than reading as unreachable. An `unknown` route says why from
  * `route_status_reason`: a listener whose agent list is refilling did answer and will judge it
  * in a moment, while one that is unreachable (or a server too old to give a reason) did not
- * answer at all.
+ * answer at all. At a cut (`asOf`) whether it reaches anyone is left out: it is read from the
+ * listener's session list now.
  */
-export function routeText(issue: RoutedIssue, titles?: ReadonlyMap<string, string>): string {
+export function routeText(
+  issue: RoutedIssue,
+  titles?: ReadonlyMap<string, string>,
+  asOf?: string
+): string {
   if (issue.route === null) return "none";
+  if (asOf !== undefined) {
+    return `${issue.route} (whether it reaches anyone is ${leftOutAt(asOf)})`;
+  }
   const holder = issue.route_holder ?? null;
   const reach: Record<IssueRouteStatus, string> = {
     live:
@@ -298,6 +315,8 @@ export function olderServerWarnings(issue: {
   ];
   return warnings.length === 0 ? {} : { warnings };
 }
+/** An issue read as `dispatch read` prints it. At a cut (`asOf`) the fields of the present it
+ *  cannot give, its route's reach, its claim's liveness and its component set, read as left out. */
 export function issueSummary(
   issue: IssueDetails,
   events: readonly DispatchEvent[],
@@ -305,7 +324,8 @@ export function issueSummary(
   graph: readonly string[],
   linkBase: string | undefined,
   coverage: IssueCoverage | string,
-  agents?: LiveAgents
+  agents?: LiveAgents,
+  asOf?: string
 ): string {
   const asks = issue.open_asks ?? [];
   const labels = issue.labels ?? [];
@@ -330,12 +350,12 @@ export function issueSummary(
     `Link: ${linkFor(`/issues/${encodeURIComponent(issue.key)}`, linkBase)}`,
     `Status: ${issue.status}`,
     `Assignee: ${issue.assignee ?? "unassigned"}`,
-    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue)}`,
+    `Claimed by: ${issue.claim === null ? "nobody" : claimText(issue.claim, agents, issue, asOf)}`,
     ...(issue.priority === null ? [] : [`Priority: P${issue.priority}`]),
     `Labels: ${labels.length === 0 ? "none" : labels.join(", ")}`,
-    componentsLine(issue.components),
+    componentsLine(issue.components, asOf),
     advancesLine(issue),
-    `Route: ${routeText(issue, agents?.titles)}`,
+    `Route: ${routeText(issue, agents?.titles, asOf)}`,
     repositoryLine(issue),
     `Progress: ${progressText(issue.progress, ", ") || "none"}`,
     ...(specApproval === undefined

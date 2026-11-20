@@ -286,15 +286,19 @@ export function renderSessionAnswers(
 }
 
 /** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the
- *  per-request list's item format and with no cap, or a line saying there is none. */
+ *  per-request list's item format and with no cap, or a line saying there is none. A list read at
+ *  a cut (`cut`, RFC 3339) counts the 72 hours back from that cut, and says so. */
 export function renderSessionAnswersList(
   items: readonly SessionAnswer[],
-  options: { readonly now: number | Date }
+  options: { readonly now: number | Date } | { readonly cut: string }
 ): string {
-  const shown = withinWindow(items, Number(options.now));
-  if (shown.length === 0) return "No person wrote to this session in the last 72 hours.";
+  const now = "cut" in options ? Date.parse(options.cut) : Number(options.now);
+  const window =
+    "cut" in options ? `in the 72 hours before ${options.cut}` : "in the last 72 hours";
+  const shown = withinWindow(items, now);
+  if (shown.length === 0) return `No person wrote to this session ${window}.`;
   return [
-    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session in the last 72 hours, newest first, word for word:`,
+    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session ${window}, newest first, word for word:`,
     ...shown.map(renderSessionAnswerItem),
   ].join("\n\n");
 }

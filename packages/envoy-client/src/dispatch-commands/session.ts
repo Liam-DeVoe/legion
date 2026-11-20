@@ -11,7 +11,7 @@ import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-htt
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
 import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
-import { LEFT_OUT } from "./as-of";
+import { LEFT_OUT, leftOutAt } from "./as-of";
 import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
 
@@ -37,8 +37,14 @@ export async function answersCommand(
     }
     throw error;
   }
+  // At a cut the window is the 72 hours before it, as the server reads it (decision 12 of
+  // dispatch://INFRA-4620): nothing the list prints counts from this machine's clock.
+  const cut = reading.cut?.asOf;
   return {
-    text: renderSessionAnswersList(response.items ?? [], { now: Date.now() }),
+    text: renderSessionAnswersList(
+      response.items ?? [],
+      cut === undefined ? { now: Date.now() } : { cut }
+    ),
     details: { session: sessionId, since: response.since, total: response.total },
   };
 }
@@ -173,10 +179,15 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  * Which band a row sits in: the page's `sectionOf` (`.../features/inbox/sections.ts`). A snooze
  * the person set wins over everything, because deferring an ask is them saying it does not need
  * them now; every other row sits under whose turn it is. A row the Inbox lists without a turn
- * belongs to no band, as on the page, and so is listed under no heading.
+ * belongs to no band, as on the page, and so is listed under no heading. At a cut no snooze is
+ * known (`snoozes` false), so every row sits under whose turn it is.
  */
-function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
-  if (inboxSnoozed(row, now)) return "later";
+function inboxSection(
+  row: InboxRow,
+  now: number,
+  snoozes: boolean
+): "agent" | "human" | "later" | undefined {
+  if (snoozes && inboxSnoozed(row, now)) return "later";
   const waiting = row.waiting_on;
   return waiting === "agent" || waiting === "human" ? waiting : undefined;
 }
@@ -330,16 +341,22 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  *
  * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
  * requests first, then the expired ones nobody has dismissed.
+ *
+ * Every band and age counts from `at`: the present, or the cut (`asOf`) the Inbox was read at.
+ * At a cut no event records a snooze, so `Later` is left out and each row it would hold sits
+ * under whose turn it is.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
   threads: readonly MyReplyRow[] | undefined,
   requests: readonly CredentialPendingRow[] | undefined,
-  now: number
+  at: { readonly now: number } | { readonly asOf: string }
 ): string {
+  const now = "asOf" in at ? Date.parse(at.asOf) : at.now;
+  const snoozes = !("asOf" in at);
   const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
   for (const row of rows) {
-    const section = inboxSection(row, now);
+    const section = inboxSection(row, now, snoozes);
     if (section !== undefined) sections[section].push(row);
   }
   return [
@@ -349,8 +366,9 @@ function formatInboxSummary(
     `Waiting on agents ${sections.agent.length}`,
     ...sections.agent.map(inboxAskLine),
     "",
-    `Later ${sections.later.length}`,
-    ...sections.later.map(inboxAskLine),
+    ...("asOf" in at
+      ? [`Later ${leftOutAt(at.asOf)}`]
+      : [`Later ${sections.later.length}`, ...sections.later.map(inboxAskLine)]),
     // A band read at a cut from a route that holds no history is left out whole, and the
     // `Left out at` line names it.
     ...(threads === undefined
@@ -386,6 +404,7 @@ export async function inboxCommand(
   if (cut !== undefined) {
     cut.leave(LEFT_OUT.unreadThreads);
     cut.leave(LEFT_OUT.credentialRequests);
+    cut.leave(LEFT_OUT.snoozes);
   }
   let rows: InboxRow[];
   try {
@@ -409,7 +428,12 @@ export async function inboxCommand(
       ? undefined
       : (sideRead(await unread, "unread threads", warnings)?.rows ?? []);
   return {
-    text: formatInboxSummary(rows, threads, requests, Date.now()),
+    text: formatInboxSummary(
+      rows,
+      threads,
+      requests,
+      cut === undefined ? { now: Date.now() } : { asOf: cut.asOf }
+    ),
     details: {
       viewer,
       asks: rows.length,

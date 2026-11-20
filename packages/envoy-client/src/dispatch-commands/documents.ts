@@ -29,6 +29,7 @@ import {
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { leftOutAt } from "./as-of";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -190,8 +191,14 @@ async function listDocumentBlocks(
         ? `${points.slice(0, BLOCK_OPENING_CHARS).join("")}…`
         : flat;
     const { comments, asks } = block.references;
+    // At a cut a block's token is left out, and so is the id of an untyped block of a version no
+    // index holds: neither prints as a value, nor as "no token".
+    const id: string | undefined = block.id;
+    const shownId = id === undefined && at.asOf !== undefined ? `(id ${leftOutAt(at.asOf)})` : id;
+    const token =
+      block.token ?? (at.asOf === undefined ? "no token" : `token ${leftOutAt(at.asOf)}`);
     lines.push(
-      `${indent}${block.id} ${block.type} (${block.token ?? "no token"}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
+      `${indent}${shownId} ${block.type} (${token}; ${comments} comment${comments === 1 ? "" : "s"}, ${asks} ask${asks === 1 ? "" : "s"}): ${opening}`
     );
     // Every pointer a typed block holds, in the order its type declares them: a reader follows
     // these between documents, and a `block[]` attribute a type declares later must not go
