@@ -373,15 +373,18 @@ export type InboundDispatchEvent = z.output<typeof DispatchEventSchema>;
  *  written: `trees` alone is left out, of every frame but a reply to `Dispatch-Trees: 1` and a
  *  `/ws/live` frame. The payload is read by its type's own schema. */
 const eventFields = {
-  id: z.number().int(),
-  issue_key: z.string().nullable(),
+  /** The event log's row id (events.id, a bigserial), above 0. */
+  id: z.number().int().positive(),
+  issue_key: z.string().min(1).nullable(),
   artifact_id: z.string().nullable(),
   project: z.string(),
-  seq: z.number().int(),
-  type: z.string(),
+  /** The event's place in its owner's log (the insert takes the owner's last_seq and 1), above 0. */
+  seq: z.number().int().positive(),
+  type: z.string().min(1),
   actor: ActorSchema,
   notify: z.boolean(),
-  created_at: z.string(),
+  /** The insert's own time, which Go writes as RFC 3339 (model.Event.CreatedAt). */
+  created_at: z.string().min(1),
   payload: z.record(z.string(), z.unknown()),
   trees: z.record(z.string(), DisplayTreeSchema).optional(),
 };
@@ -394,4 +397,12 @@ export const EventSchema = z.strictObject(eventFields).readonly();
  *  and `quiet`, which the outbox writes on every copy it publishes. */
 export const PublishedEventSchema = z
   .strictObject({ ...eventFields, quiet: z.boolean() })
+  .readonly();
+
+/** One issue event (`issue.*`) as Dispatch's outbox publishes it on its issue's topic:
+ *  `PublishedEventSchema` with `issue_key` the issue's own key, never null - an issue owns the
+ *  event, and the Legion daemon refuses an issue event with no issue key. Each field keeps the
+ *  shared definition of `eventFields`. */
+export const PublishedIssueEventSchema = z
+  .strictObject({ ...eventFields, issue_key: eventFields.issue_key.unwrap(), quiet: z.boolean() })
   .readonly();

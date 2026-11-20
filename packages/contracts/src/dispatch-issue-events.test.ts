@@ -12,10 +12,10 @@ import {
   IssueComponentsSchema,
   IssueEventPayloadSchema,
   IssueReleasedEventPayloadSchema,
-  PublishedEventSchema,
+  PublishedIssueEventSchema,
   WrittenIssueEventPayloadSchema,
 } from "./dispatch-api";
-import { EnvelopeSchema } from "./envelope";
+import { IssueEventEnvelopeSchema } from "./envelope";
 import { ExampleWalk, type Form, type WalkedExample, type Wider } from "./example-walk.testing";
 import { objectSchema, objectShape } from "./schema-inspection.testing";
 
@@ -93,7 +93,7 @@ const NEVER: Record<string, Record<string, string>> = {
  *  schema made loose fails here by its name. */
 const LOOSE: Record<string, string> = {
   envelope:
-    "EnvelopeSchema reads every producer's envelope, and a field added to it is one every reader takes without knowing it (envelope.ts): it drops a key it does not declare, and the test's read of each example (toEqual) holds the example to the declared keys",
+    "IssueEventEnvelopeSchema is EnvelopeSchema's, which reads every producer's envelope, and a field added to it is one every reader takes without knowing it (envelope.ts): it drops a key it does not declare, and the test's read of each example (toEqual) holds the example to the declared keys",
 };
 
 /** The token reasons of an actor's absent keys (api.brokerTokenActor): a broker-issued token names
@@ -270,19 +270,20 @@ const P0 =
  */
 const WIDER: Wider = [
   {
-    "envelope.payload": { absent: OMITTED("listenerwire.Envelope.Payload") },
-    "event.issue_key": { null: OWNERLESS },
     "event.artifact_id": { string: DOCUMENTLESS },
     "event.payload.*": {
-      any: "PublishedEventSchema reads the payload as a map of any value; the schema of the event's type reads it (PAYLOADS), and the walk holds that schema's forms",
+      any: "PublishedIssueEventSchema reads the payload as PublishedEventSchema does, a map of any value; the schema of the event's type reads it (PAYLOADS), and the walk holds that schema's forms",
     },
     "frame.issue_key": { null: OWNERLESS },
     "frame.artifact_id": {
-      absent: TOLERANT("DispatchEventSchema", "the event's artifact_id (PublishedEventSchema)"),
+      absent: TOLERANT(
+        "DispatchEventSchema",
+        "the event's artifact_id (PublishedIssueEventSchema)"
+      ),
       string: DOCUMENTLESS,
     },
     "frame.project": {
-      absent: TOLERANT("DispatchEventSchema", "the event's project (PublishedEventSchema)"),
+      absent: TOLERANT("DispatchEventSchema", "the event's project (PublishedIssueEventSchema)"),
     },
     "frame.actor.id": {
       absent: TOLERANT("DispatchEventSchema", "the actor's id (ActorSchema, model.Actor.ID)"),
@@ -349,13 +350,9 @@ const WIDER: Wider = [
     "components.inherited_from",
     "components.reason",
     "components.unknown[]",
-    "envelope.payload",
     "envelope.source_session",
     "event.artifact_id",
-    "event.created_at",
-    "event.issue_key",
     "event.project",
-    "event.type",
     "external link.kind",
     "external link.url",
     "frame.actor.id",
@@ -364,11 +361,9 @@ const WIDER: Wider = [
     "frame.issue_key",
     "frame.project",
     "frame.type",
-    "issue.claimed payload.key",
     "issue.claimed payload.repo",
     "issue.claimed payload.resolved_repo",
     "issue.claimed payload.status",
-    "issue.released payload.key",
     "issue.released payload.repo",
     "issue.released payload.resolved_repo",
     "issue.released payload.status",
@@ -387,9 +382,7 @@ const WIDER: Wider = [
     "issue.updated payload.changed[]",
     "issue.updated payload.closed_at",
     "issue.updated payload.created_at",
-    "issue.updated payload.key",
     "issue.updated payload.labels[]",
-    "issue.updated payload.parent",
     "issue.updated payload.primary_artifact_id",
     "issue.updated payload.project",
     "issue.updated payload.rank",
@@ -406,22 +399,18 @@ const WIDER: Wider = [
     "origin.pane",
     "origin.session_title",
     "origin.tmux",
-    "session actor.id",
     "session actor.owner",
     "session actor.project",
     "session actor.service",
     "system actor.id",
     "user actor.id",
   ].map((place) => ({ [place]: { "empty string": NO_LENGTH } })),
-  // Every whole number of these schemas: none states a sign but the revision, which no example
-  // holds below one.
-  ...[
-    "envelope.issued_at",
-    "event.id",
-    "event.seq",
-    "issue.updated payload.number",
-    "issue.updated payload.last_seq",
-  ].map((place) => ({ [place]: { zero: NO_SIGN, negative: NO_SIGN } })),
+  // Every whole number of these schemas: none states a sign but the event's id and seq and the
+  // envelope's time, which the event log and every producer keep above 0, and the revision, which
+  // no example holds below one.
+  ...["issue.updated payload.number", "issue.updated payload.last_seq"].map((place) => ({
+    [place]: { zero: NO_SIGN, negative: NO_SIGN },
+  })),
   { "issue.updated payload.advances_revision": { negative: NO_SIGN } },
 ].reduce<Record<string, Partial<Record<Form, string>>>>((wider, table) => {
   for (const [place, forms] of Object.entries(table)) wider[place] = { ...wider[place], ...forms };
@@ -434,83 +423,41 @@ const GO_ZERO =
   "encoding/json reads a null, or a key the event leaves out, into the daemon's Go string, list, struct or time as its zero value, and the daemon judges no such value there; Dispatch writes the field on every event, never null, and the schema refuses both";
 const OLDER_CLAIM =
   "the daemon reads an issue event with no claim as one retained from a Dispatch older than claims, which says nothing of the claim (dispatchIssuePayload.Claim, issueEventClaim); Dispatch writes the claim on every issue event";
-const EVERY_EVENT = (field: string, refusal: string) =>
-  `the event schema reads every event the API serves and states ${field} as no more than its type; the daemon refuses an issue event whose ${refusal} (decodeDispatchIssueEvent), which Dispatch never writes`;
 
 /**
- * Each form on which a schema that reads a place an example holds and the Legion daemon's decoder
- * disagree - the schema taking it and the decoder refusing it, or the other way - by the place, as
- * WIDER names it (`<place> @ <path>` for one path of a place), then the form, with the reason.
- * Every other form must be taken by both or by neither (`daemonAgreement`, against the decoder's
- * own verdicts in daemon-verdicts.json): so a schema that starts taking a value the daemon
- * refuses - a refinement dropped, a coercion, a fallback - fails here by its place, and so does a
- * decoder that starts taking or refusing a form the schema does not. A place where the decoder
- * takes every form a value holds is one the daemon reads nothing of, and is held by WIDER alone. Each entry is
- * one of three kinds: the decoder takes a Go zero value (a null, a key left out) the schema
- * refuses (`GO_ZERO`); the schema reads more events, or more producers' envelopes, than the
- * daemon's issue events and states no rule the daemon applies; or the daemon reads a value an
- * older Dispatch left out.
+ * Each form the Legion daemon's decoder takes where a producer's schema refuses it, at a place an
+ * example holds, by the place as WIDER names it (`<place> @ <path>` for one path of a place), then
+ * the form, with the reason: rule 2 of `daemonAgreement`. Rule 1 has no table: a producer's schema
+ * (`IssueEventEnvelopeSchema`, `PublishedIssueEventSchema`, each payload's) never takes a form
+ * the decoder refuses (daemon-verdicts.json, which the daemon's
+ * TestTheDaemonDecoderTakesWhatItsVerdictsSay holds to its decoder), so a refinement dropped, a
+ * coercion or a fallback fails by its place whatever its spelling, and so does a decoder that
+ * starts refusing a form a schema takes. Each entry here is a rule stricter than the decoder that
+ * every producer keeps: the decoder reads a Go zero value (a null, a key the event leaves out) the
+ * schema refuses (`GO_ZERO`), or reads a value an older Dispatch left out. A place where the
+ * decoder takes every form is one the daemon reads nothing of (its own walk test holds which it
+ * reads), and is held by WIDER alone.
  */
 const DAEMON: Wider = {
   "envelope.issued_at": {
-    zero: "EnvelopeSchema reads every producer's envelope and states a whole number; the daemon refuses an envelope whose issued_at is 0 as one with none (envoyEnvelope.valid), and the outbox writes the time it publishes",
+    negative:
+      "the daemon refuses only an issued_at of 0 (envoyEnvelope.valid); every producer stamps a time after 1970, which the schema holds above 0",
   },
-  "envelope.payload": {
-    absent:
-      "EnvelopeSchema reads every producer's envelope, whose payload_ref may stand in for the payload; the daemon refuses an envelope whose payload is no JSON (envoyEnvelope.valid), and the outbox writes every issue event's text there",
-    "empty string":
-      "EnvelopeSchema reads every producer's envelope, whose payload_ref may stand in for the payload; the daemon refuses an envelope whose payload is no JSON (envoyEnvelope.valid), and the outbox writes every issue event's text there",
-  },
-  "event.id": {
-    zero: EVERY_EVENT("the id", "id is not above 0"),
-    negative: EVERY_EVENT("the id", "id is not above 0"),
-  },
-  "event.seq": {
-    zero: EVERY_EVENT("the seq", "seq is not above 0"),
-    negative: EVERY_EVENT("the seq", "seq is not above 0"),
-  },
-  "event.type": { "empty string": EVERY_EVENT("the type", "type is empty") },
-  "frame.type": { "empty string": EVERY_EVENT("the type", "type is empty") },
-  "event.issue_key": {
-    null: OWNERLESS,
-    "empty string": EVERY_EVENT("the issue key", "issue_key is no issue key"),
-  },
-  "frame.issue_key": {
-    null: OWNERLESS,
-    "empty string": EVERY_EVENT("the issue key", "issue_key is no issue key"),
-  },
-  "event.created_at": {
-    absent: GO_ZERO,
-    null: GO_ZERO,
-    "empty string":
-      "the schema states the time as a string of no format; the daemon decodes it into a time.Time, which refuses one that is no RFC 3339 time, and Go writes its own time (model.Event.CreatedAt)",
-  },
-  "event.payload.*": {
-    any: "PublishedEventSchema reads the payload as a map of any value; the schema of the event's type reads each key, and DAEMON holds that schema's forms to the decoder's",
-  },
+  "event.created_at": { absent: GO_ZERO, null: GO_ZERO },
   "event.actor": { absent: GO_ZERO, null: GO_ZERO },
   "frame.actor": { absent: GO_ZERO, null: GO_ZERO },
   "frame.actor.kind": { absent: GO_ZERO, null: GO_ZERO },
   "frame.actor.id": { null: GO_ZERO },
   "session actor.kind": { absent: GO_ZERO, null: GO_ZERO, "empty string": GO_ZERO },
-  "session actor.id": { absent: GO_ZERO, null: GO_ZERO },
-  "session actor.id @ event.payload.claim.actor.id": {
+  "session actor.id": {
+    absent: GO_ZERO,
+    null: GO_ZERO,
     "empty string":
-      "the daemon takes a claim whose actor has no id as one naming no actor, which it records as unknown (issueEventClaim); the actor schema states no length for the id, and Dispatch writes a claim's holder",
+      "the daemon reads the event's actor only to ask whether it is a session other than its own (decodeDispatchEvent), so it takes an empty id; every session actor Dispatch records names its session (bearerSessionActor refuses an empty one), which the schema holds",
   },
   "user actor.kind": { absent: GO_ZERO, null: GO_ZERO, "empty string": GO_ZERO },
   "user actor.id": { absent: GO_ZERO, null: GO_ZERO },
-  "issue.updated payload.key": {
-    "empty string":
-      "the daemon requires the payload's key to be its event's issue key (decodeDispatchEvent); the schema reads the issue's key as any string (issueFields.key)",
-  },
-  "issue.updated payload.parent": {
-    absent: GO_ZERO,
-    string:
-      "the daemon refuses a parent that is no issue key (decodeDispatchEvent), where the schema reads any string (issueFields.parent); Dispatch writes an issue's key",
-    "empty string":
-      "the daemon refuses a parent that is no issue key (decodeDispatchEvent), where the schema reads any string (issueFields.parent); Dispatch writes an issue's key",
-  },
+  "issue.updated payload.parent": { absent: GO_ZERO },
   "issue.updated payload.resolved_repo": {
     absent:
       "the daemon reads an event with no resolved_repo as one retained from a Dispatch older than it, and decodes it with its repository missing (decodeDispatchEvent); Dispatch writes it on every issue event",
@@ -533,6 +480,24 @@ const DAEMON: Wider = {
   "issue.updated payload.labels[]": { null: GO_ZERO },
   "issue.updated payload read.labels[]": { null: GO_ZERO },
   "issue.updated payload.blocked_by[]": { null: GO_ZERO },
+};
+
+/**
+ * Each form a reader's schema - the frame's tolerant `DispatchEventSchema` and the tolerant
+ * `IssueEventPayloadSchema`, which read every event a reader of the bus takes, not only the
+ * daemon's issue events - takes at a place an example holds where the daemon's decoder refuses
+ * it, with the reason the reader takes it: rule 2 of `daemonAgreement`, for readers.
+ */
+const READER_WIDER: Wider = {
+  "frame.type": {
+    "empty string":
+      "the frame's reader takes any event's header so a valid frame is not discarded; the daemon refuses an issue event with no type, which PublishedIssueEventSchema refuses too",
+  },
+  "frame.issue_key": {
+    null: OWNERLESS,
+    "empty string":
+      "the frame's reader takes any event's header so a valid frame is not discarded; the daemon refuses an issue event with no issue key, which PublishedIssueEventSchema refuses too",
+  },
 };
 
 /**
@@ -563,8 +528,8 @@ const CLOSED: readonly string[] = [
  *  a reader's schema has a name of its own, so a WIDER reason for what a tolerant reader takes
  *  never excuses the same form in the written schema (the walk refuses one name for two). */
 const LABELS = new Map<unknown, string>([
-  [objectSchema(EnvelopeSchema, "EnvelopeSchema"), "envelope"],
-  [objectSchema(PublishedEventSchema, "PublishedEventSchema"), "event"],
+  [objectSchema(IssueEventEnvelopeSchema, "IssueEventEnvelopeSchema"), "envelope"],
+  [objectSchema(PublishedIssueEventSchema, "PublishedIssueEventSchema"), "event"],
   [objectSchema(DispatchEventSchema, "DispatchEventSchema"), "frame"],
   [
     objectSchema(WrittenIssueEventPayloadSchema, "WrittenIssueEventPayloadSchema"),
@@ -641,10 +606,15 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
     const path = new URL(`../../daemon/internal/intake/testdata/dispatch/${file}`, import.meta.url);
     const envelope = JSON.parse(await Bun.file(path).text());
     // The envelope schema keeps only what it declares, so an undeclared key is dropped here.
-    const readEnvelope = parsed(EnvelopeSchema, envelope, `${file}'s envelope`, walk.problems);
+    const readEnvelope = parsed(
+      IssueEventEnvelopeSchema,
+      envelope,
+      `${file}'s envelope`,
+      walk.problems
+    );
     if (readEnvelope !== undefined) expect(readEnvelope).toEqual(envelope);
     const event = JSON.parse(envelope.payload);
-    const readEvent = parsed(PublishedEventSchema, event, `${file}'s event`, walk.problems);
+    const readEvent = parsed(PublishedIssueEventSchema, event, `${file}'s event`, walk.problems);
     if (readEvent !== undefined) expect(readEvent).toEqual(event);
     // A reader of the bus takes the frame by its tolerant schema, the payload by its type's own.
     const frame = parsed(DispatchEventSchema, event, `${file}'s frame`, walk.problems);
@@ -657,8 +627,8 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
     const written = payload.written as z.core.$ZodType;
     const readPayload = parsed(written, event.payload, `${file}'s payload`, walk.problems);
     if (readPayload !== undefined) expect(readPayload).toEqual(event.payload);
-    walk.walk(EnvelopeSchema, envelope, example, "envelope", "envelope", strict);
-    walk.walk(PublishedEventSchema, event, example, "event", "event", strict);
+    walk.walk(IssueEventEnvelopeSchema, envelope, example, "envelope", "envelope", strict);
+    walk.walk(PublishedIssueEventSchema, event, example, "event", "event", strict);
     walk.walk(DispatchEventSchema, event, example, "event", "frame", reader);
     walk.walk(written, event.payload, example, "event.payload", `${event.type} payload`, strict);
     if (payload.read !== undefined) {
@@ -691,6 +661,6 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
     "../../daemon/internal/intake/testdata/dispatch/daemon-verdicts.json",
     import.meta.url
   );
-  walk.daemonAgreement(JSON.parse(await Bun.file(verdicts).text()), DAEMON);
+  walk.daemonAgreement(JSON.parse(await Bun.file(verdicts).text()), DAEMON, READER_WIDER);
   expect(walk.problems).toEqual([]);
 });

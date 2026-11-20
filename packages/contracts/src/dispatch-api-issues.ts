@@ -101,8 +101,13 @@ export interface IssueClaimLiveness {
   readonly takeable_at: string | null;
 }
 
+/** An issue's key as Dispatch writes it: its project's key, then `-` and the issue's number
+ *  (issues.key). The Legion daemon refuses an issue event whose parent has any other form
+ *  (claim.IsIssueKey). */
+const ISSUE_KEY_FORM = /^[A-Z][A-Z0-9]*-[0-9]+$/;
+
 export const issueFields = {
-  key: z.string(),
+  key: z.string().min(1),
   project: z.string(),
   number: z.number().int(),
   title: z.string(),
@@ -110,7 +115,8 @@ export const issueFields = {
   priority: IssuePrioritySchema.nullable(),
   rank: z.string(),
   labels: z.array(z.string()),
-  parent: z.string().nullable(),
+  /** The parent issue's key (issues.parent_key, which references issues(key)); null for a root. */
+  parent: z.string().regex(ISSUE_KEY_FORM).nullable(),
   /** Issue keys this issue waits on, of any project, sorted. */
   blocked_by: z.array(z.string()),
   /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the

@@ -148,8 +148,10 @@ interface PlaceRow {
   readonly place: string;
   readonly example: string;
   readonly path: string;
-  /** Whether the place is a key an object's schema declares, which can be left out. */
-  readonly key: boolean;
+  /** A key an object's schema declares (which can be left out), another value, or a map's value. */
+  readonly kind: "key" | "value" | "map";
+  /** Whether a reader's schema (a tolerant walk) reads the place, rather than a producer's. */
+  readonly reader: boolean;
   readonly taken: Set<Form>;
 }
 
@@ -223,6 +225,8 @@ export class ExampleWalk {
   private readonly looseUsed = new Set<string>();
   /** The unions a member of which no value could be built for, each reported once. */
   private readonly unbuilt = new Set<string>();
+  /** Whether the walk under way is a reader's (tolerant), for the rows it records. */
+  private reading = false;
 
   constructor(private readonly rules: WalkRules) {}
 
@@ -244,6 +248,7 @@ export class ExampleWalk {
     mode: WalkMode
   ): void {
     const where = `${example.name} ${path}`;
+    this.reading = mode.tolerant;
     const place = this.rules.labels.get(objectSchema(schema, where)) ?? name;
     const take = (probe: unknown) => takes(schema, probe);
     this.record(
@@ -290,7 +295,8 @@ export class ExampleWalk {
             `${name}[]`,
             example,
             `${path}[]`,
-            built
+            built,
+            "value"
           );
           value.forEach((item, index) => {
             this.visit(node.element, item, example, `${path}[${index}]`, `${name}[]`, mode, built);
@@ -307,7 +313,8 @@ export class ExampleWalk {
               `${name}.*`,
               example,
               `${path}.${key}`,
-              built
+              built,
+              "map"
             );
             this.visit(node.value, entry, example, `${path}.${key}`, `${name}.*`, mode, built);
           }
@@ -558,7 +565,7 @@ export class ExampleWalk {
     taken: ReadonlySet<Form>,
     built: Form | undefined,
     held: readonly Form[],
-    row: "key" | "value" | "none"
+    row: "key" | "value" | "map" | "none"
   ): void {
     const forms = this.placeForms(place);
     for (const form of taken) forms.taken.add(form);
@@ -572,7 +579,8 @@ export class ExampleWalk {
       place,
       example: example.name,
       path: at,
-      key: row === "key",
+      kind: row,
+      reader: this.reading,
       taken: new Set<Form>(),
     };
     this.rows.set(key, entry);
@@ -631,7 +639,8 @@ export class ExampleWalk {
     place: string,
     example: WalkedExample,
     path: string,
-    built: boolean
+    built: boolean,
+    row: "value" | "map"
   ): void {
     const where = `${example.name} ${path}`;
     this.record(
@@ -641,7 +650,7 @@ export class ExampleWalk {
       takenForms(take, items),
       this.builtForm(element, take, where, place),
       built ? [] : items.map(formOf),
-      built ? "none" : "value"
+      built ? "none" : row
     );
     this.readSet(element, place, where, (outside) => takes(element, outside));
   }
@@ -781,19 +790,30 @@ export class ExampleWalk {
   }
 
   /**
-   * Adds a problem for each form at a place an example holds - each value a walk read there, the
-   * walk's start among them - on which the schema reading it and the daemon's decoder disagree,
-   * the schema taking it and the decoder not or the decoder taking it and the schema not, and
-   * `differ` gives no reason; for each `differ` entry no such disagreement used; for each such
-   * place the verdicts hold no row for; and for each row of the verdicts no walk compared. The
-   * verdicts' probes must be `FORM_PROBES`, so both sides asked the same values. A place where the
-   * decoder takes every form a value holds is one it reads nothing of, and is compared with
-   * nothing; a key left out is compared at a key alone, since a list's element and a map's value
-   * cannot be. `differ` names a place as `widenings` does, or as `<place> @ <path>` for one path of
-   * it; its `any` entry answers for every form a schema that takes any value takes and the
-   * decoder refuses.
+   * Holds each place an example holds - each value a walk read there, the walk's start among
+   * them - to the daemon's verdicts at that example's path, by the rule of the two directions:
+   *
+   * 1. A producer's schema (one a strict walk reads) never takes a form the daemon's decoder
+   *    refuses. No table excuses it: the schema is tightened, or the producer that writes the form
+   *    is fixed.
+   * 2. Where the decoder takes a form the schema refuses - a JSON null or a key left out read as an
+   *    empty Go value, a value at a field the decoder only reads loosely - `differ` names the form
+   *    with the reason, a rule stricter than the decoder that every producer keeps. A reader's
+   *    schema (one a tolerant walk reads), which reads more than the daemon's issue events, gets
+   *    the same treatment for the forms it takes and the decoder refuses: `readerWider` names each.
+   *
+   * A problem is added for each disagreement neither rule allows, for each table entry no
+   * disagreement used, for each such place the verdicts hold no row for, and for each row of the
+   * verdicts no walk compared. The verdicts' probes must be `FORM_PROBES`, so both sides asked the
+   * same values. A place where the decoder takes every form a value holds is one it reads nothing
+   * of (the daemon's own walk test holds which fields it reads), and is compared with nothing; a key
+   * left out is compared at a key alone, since a list's element cannot be one; and a map's values
+   * are compared where the schema of the event's type declares each key (`PublishedEventSchema`'s
+   * payload is a map of any value the type's own schema reads). A table names a place as
+   * `widenings` does, or as `<place> @ <path>` for one path of it; a `readerWider` entry `any`
+   * answers for every form a reader that takes any value takes there.
    */
-  daemonAgreement(daemon: DaemonVerdicts, differ: Wider): void {
+  daemonAgreement(daemon: DaemonVerdicts, differ: Wider, readerWider: Wider): void {
     const shown = (probes: Readonly<Record<string, readonly unknown[]>>) =>
       JSON.stringify(Object.entries(probes).sort(([a], [b]) => a.localeCompare(b)));
     if (shown(daemon.probes) !== shown(FORM_PROBES)) {
@@ -803,9 +823,18 @@ export class ExampleWalk {
     }
     const compared = new Set<string>();
     const used = new Set<string>();
+    const lookup = (table: Wider, name: string, row: PlaceRow, form: Form) =>
+      [`${row.place} @ ${row.path}`, row.place].flatMap((key) => {
+        if (table[key]?.[form] !== undefined) return [`${name} ${key} ${form}`];
+        if (form !== "absent" && row.taken.has("any") && table[key]?.any !== undefined) {
+          return [`${name} ${key} any`];
+        }
+        return [];
+      })[0];
     for (const row of [...this.rows.values()].sort((a, b) =>
       `${a.example} ${a.path} ${a.place}`.localeCompare(`${b.example} ${b.path} ${b.place}`)
     )) {
+      if (row.kind === "map") continue;
       const at = `${row.example} ${row.path}`;
       const verdict = daemon.verdicts[at];
       if (verdict === undefined) {
@@ -817,33 +846,40 @@ export class ExampleWalk {
       compared.add(at);
       const decoded = new Set<string>(verdict);
       if (VALUE_FORMS.every((form) => decoded.has(form))) continue;
-      for (const form of row.key ? ["absent" as const, ...VALUE_FORMS] : VALUE_FORMS) {
+      for (const form of row.kind === "key" ? ["absent" as const, ...VALUE_FORMS] : VALUE_FORMS) {
         const schema = row.taken.has(form) || (form !== "absent" && row.taken.has("any"));
         if (schema === decoded.has(form)) continue;
-        const named = [`${row.place} @ ${row.path}`, row.place].flatMap((key) => {
-          if (differ[key]?.[form] !== undefined) return [`${key} ${form}`];
-          if (schema && row.taken.has("any") && differ[key]?.any !== undefined) {
-            return [`${key} any`];
-          }
-          return [];
-        })[0];
+        if (schema && !row.reader) {
+          this.problems.push(
+            `the schema of ${row.place} takes ${described(form)} at ${row.example}'s ${row.path}, which the daemon's decoder refuses: a producer's schema never takes what the daemon refuses`
+          );
+          continue;
+        }
+        const named = schema
+          ? lookup(readerWider, "READER", row, form)
+          : lookup(differ, "DAEMON", row, form);
         if (named !== undefined) {
           used.add(named);
           continue;
         }
         this.problems.push(
           schema
-            ? `the schema of ${row.place} takes ${described(form)} at ${row.example}'s ${row.path}, which the daemon's decoder refuses, and DAEMON gives no reason`
+            ? `the reader's schema of ${row.place} takes ${described(form)} at ${row.example}'s ${row.path}, which the daemon's decoder refuses, and READER_WIDER gives no reason`
             : `the daemon's decoder takes ${described(form)} at ${row.example}'s ${row.path}, which the schema of ${row.place} refuses, and DAEMON gives no reason`
         );
       }
     }
-    for (const [place, forms] of Object.entries(differ)) {
-      for (const form of Object.keys(forms)) {
-        if (!used.has(`${place} ${form}`)) {
-          this.problems.push(
-            `DAEMON names ${place} ${form}, where the schema and the daemon's decoder do not differ`
-          );
+    for (const [name, table] of [
+      ["DAEMON", differ],
+      ["READER", readerWider],
+    ] as const) {
+      for (const [place, forms] of Object.entries(table)) {
+        for (const form of Object.keys(forms)) {
+          if (!used.has(`${name} ${place} ${form}`)) {
+            this.problems.push(
+              `${name === "DAEMON" ? "DAEMON" : "READER_WIDER"} names ${place} ${form}, where the schema and the daemon's decoder do not differ that way`
+            );
+          }
         }
       }
     }
