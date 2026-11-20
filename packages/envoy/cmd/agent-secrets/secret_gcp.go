@@ -449,17 +449,16 @@ var formWatchesSignals atomic.Int32
 // is gcloud's own, so nothing else is in it, and while a process is left in it its id names no
 // other group.
 //
-// TestGcloudRunRecordedWatchesAndHoldsTheLockAcrossTheWholeStart holds this order statement by
-// statement, and TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary.
+// TestGcloudSignInEndedByASignalKillsGcloudsChild sends a signal at each boundary: the moment
+// gcloud has started (startGcloud), and at that last kill.
 func runRecorded(cmd *exec.Cmd) error {
 	stop := watchSignalsWhileGcloudRuns()
 	defer stop()
 	runningGcloud.Lock()
-	if err := cmd.Start(); err != nil {
+	if err := startGcloud(cmd); err != nil {
 		runningGcloud.Unlock()
 		return err
 	}
-	reachedGcloudStep(gcloudStarted)
 	pid := cmd.Process.Pid
 	runningGcloud.pids[pid] = true
 	runningGcloud.Unlock()
@@ -471,15 +470,26 @@ func runRecorded(cmd *exec.Cmd) error {
 	return err
 }
 
+// startGcloud starts cmd and reaches the gcloudStarted step the moment the start has returned,
+// so that step is the first moment gcloud runs, wherever runRecorded takes runningGcloud and arms
+// its watch around the call.
+func startGcloud(cmd *exec.Cmd) error {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	reachedGcloudStep(gcloudStarted)
+	return nil
+}
+
 // gcloudStep names a step of runRecorded at which a test can act (atGcloudStep).
 type gcloudStep string
 
-// gcloudStarted: gcloud runs, runningGcloud is still held, and gcloud's pid is not yet recorded.
+// gcloudStarted: gcloud runs, and its pid is not yet recorded (startGcloud).
 const gcloudStarted gcloudStep = "started"
 
 // atGcloudStep, where a test sets it, runs at each step runRecorded reaches (gcloudStep), so the
-// test can send a signal at exactly that step (TestGcloudSignInEndedByASignalKillsGcloudsChild).
-// It is nil outside such a test.
+// test can see what a signal at exactly that step would find, and send one there
+// (TestGcloudSignInEndedByASignalKillsGcloudsChild). It is nil outside such a test.
 var atGcloudStep func(gcloudStep)
 
 // reachedGcloudStep runs atGcloudStep for step, where a test has set it.

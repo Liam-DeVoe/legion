@@ -282,8 +282,11 @@ const gcloudSignalAt = "AGENT_SECRETS_GCLOUD_SIGNAL_AT"
 type gcloudRaise string
 
 const (
-	// raiseAtStart is the gcloudStarted step: gcloud has started, runningGcloud is held, and its
-	// pid is not yet recorded. The step returns once the signal is sent, so the start goes on.
+	// raiseAtStart is the gcloudStarted step: gcloud has started and its pid is not yet recorded.
+	// The helper first reads whether runningGcloud is free there, which a signal's kill
+	// (killRunningGcloud) would then take at once and find no gcloud in, and writes "held" or
+	// "free" to the file "start-lock" beside its pid file. The step returns once the signal is
+	// sent, so the start goes on.
 	raiseAtStart gcloudRaise = "start"
 	// raiseAtLastKill is the kill of what is left of gcloud's group once gcloud has been waited for
 	// (killGroupLeft): the first signal sent to a group (signalGroup), which is never sent, so only
@@ -327,9 +330,18 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 	switch at := gcloudRaise(os.Getenv(gcloudSignalAt)); at {
 	case raiseAtStart:
 		atGcloudStep = func(step gcloudStep) {
-			if step == gcloudStarted {
-				raise(at)
+			if step != gcloudStarted {
+				return
 			}
+			lock := "held"
+			if runningGcloud.TryLock() {
+				runningGcloud.Unlock()
+				lock = "free"
+			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(pidFile), "start-lock"), []byte(lock), 0o600); err != nil {
+				fmt.Println("RAISE", err)
+			}
+			raise(at)
 		}
 	case raiseAtLastKill:
 		// The kill that is held is the first of the call; the end the interrupt makes sends its
@@ -371,10 +383,10 @@ func TestGcloudSignInSignalHelper(t *testing.T) {
 // The last two rows have the helper send itself the interrupt at that place, rather than this test
 // from outside, so it comes there and at no other moment: a watch not yet armed at that step, or
 // stopped before that kill, meets it unarmed, the interrupt's default action ends agent-secrets
-// with gcloud's group running, and the row fails every time. A step holds only the point it is at,
-// so the order of the statements around it - the watch armed first and stopped last, and the lock
-// held from before the start until the pid is recorded - is held by
-// TestGcloudRunRecordedWatchesAndHoldsTheLockAcrossTheWholeStart.
+// with gcloud's group running, and the row fails every time. At the start the row also requires
+// what that signal's kill finds there (killRunningGcloud): runningGcloud still held by the start,
+// so the kill waits for gcloud's pid to be recorded and then kills its group. A lock taken only
+// once the start has returned would be free there, and the kill would find no gcloud recorded.
 func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 	for _, row := range []struct {
 		name, last string
@@ -445,6 +457,11 @@ func TestGcloudSignInEndedByASignalKillsGcloudsChild(t *testing.T) {
 			if row.at != "" {
 				if raised, err := os.ReadFile(filepath.Join(dir, "raised")); err != nil || gcloudRaise(raised) != row.at {
 					t.Fatalf("the helper did not send its interrupt at %q (%q, %v); it said %q", row.at, raised, err, out.String())
+				}
+			}
+			if row.at == raiseAtStart {
+				if lock, err := os.ReadFile(filepath.Join(dir, "start-lock")); err != nil || string(lock) != "held" {
+					t.Fatalf("runningGcloud was %q the moment gcloud had started (%v); want it held by the start, so a signal then waits for gcloud's pid to be recorded rather than finding no gcloud to kill: %q", lock, err, out.String())
 				}
 			}
 			status := helper.ProcessState.Sys().(syscall.WaitStatus)
