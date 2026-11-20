@@ -19,7 +19,10 @@ inputs:
       constant in it whose value is an image, as `packages/envoy/internal/testnats/nats.go Image`.
     required: true
   images:
-    description: More images to pull, one per line, as a job's build reads from a Dockerfile.
+    description: >-
+      More images to pull, one per line: the FROM images of the Dockerfiles the job builds after
+      this step, the same bytes. check-ci-filters.sh's rule 22 fails a list that leaves out a FROM
+      image of those builds, or names one none of them uses.
     required: false
     default: ""
 runs:

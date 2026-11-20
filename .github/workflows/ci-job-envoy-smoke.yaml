@@ -56,7 +56,8 @@ jobs:
       # docker/Dockerfile, written out below) is pulled first, for the reason
       # .github/actions/pull-test-images gives. The FROM images are written out, not read from the
       # Dockerfile at run time, so check-ci-filters.sh's rule 22 counts each pull, and the build
-      # below finds each in the daemon's store and pulls none itself.
+      # below finds each in the daemon's store and pulls none itself. Rule 22 holds the list to the
+      # Dockerfile's FROM lines: a pin changed in one place alone fails it by name.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
