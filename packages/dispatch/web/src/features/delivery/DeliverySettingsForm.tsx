@@ -14,6 +14,7 @@ import {
   settingsMonoInput,
   settingsSubmitButton,
 } from "../settings/classes";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
@@ -179,6 +180,7 @@ function DeliverySettingsFields({
   const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
   // The form shows its own refusal, under the fields it was refused over.
   const save = useKeyedWrite({
+    method: "PUT",
     write: (input: DeliverySettingsInput, bounds) => api.putDeliverySettings(input, bounds),
     inline: true,
     label: () => "Delivery settings saved",
@@ -364,8 +366,16 @@ function DeliverySettingsFields({
       </form>
       {save.isError ? (
         <div className="mt-4">
+          {/* A save the reader stopped may have been made, and the form's button is a press of
+              its own: it sends what the fields hold then. */}
           <QueryError
-            message={apiErrorMessage(save.error, "Couldn't save the delivery settings.")}
+            message={
+              save.error instanceof SendStoppedError
+                ? stoppedWriteNote("the delivery settings", "saved", {
+                    anew: "Save delivery settings sends what the form holds now.",
+                  })
+                : apiErrorMessage(save.error, "Couldn't save the delivery settings.")
+            }
           />
         </div>
       ) : null}
