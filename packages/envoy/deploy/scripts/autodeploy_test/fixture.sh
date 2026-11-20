@@ -1,11 +1,13 @@
 # shellcheck shell=bash disable=SC2034 # the case groups beside this file read what it sets
 # The deployer suite's fixture, which autodeploy_test.sh sources before the case groups beside
 # it: a scratch tree, the stand-ins the deployer runs on its PATH (docker, jj, curl, date, sleep,
-# timeout, and psql and pg_dump inside the database clients' container), and the helpers each case
-# reads its result with. Every case begins with case_begin and fresh_env.
+# timeout, mv, rm, and psql and pg_dump inside the database clients' container), and the helpers
+# each case reads its result with. Every case begins with case_begin and fresh_env.
 
 root=$(mktemp -d)
-trap 'rm -rf "$root"' EXIT
+# A case may leave compose/ unwritable (AUTODEPLOY_TEST_ENV_UNWRITABLE_ON_STOP below), which rm
+# would then fail on.
+trap 'chmod -R u+w "$root" 2>/dev/null; rm -rf "$root"' EXIT
 # The repository the walk and the order reads run against: a real jj repository (repo_init),
 # which only the order reads reach.
 repo="$root/repo"
@@ -32,9 +34,11 @@ clock_base=2000000000
 # The deployer under test: the script beside this directory, or AUTODEPLOY_SUITE_DEPLOYER, a copy
 # a check of the suite itself runs it against (a mutant, say).
 deployer_script=${AUTODEPLOY_SUITE_DEPLOYER:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/autodeploy.sh}
-# The real timeout, date and jj, which the stand-ins below hand calls to.
+# The real timeout, date, mv, rm and jj, which the stand-ins below hand calls to.
 real_timeout=$(command -v timeout)
 real_date=$(command -v date)
+real_mv=$(command -v mv)
+real_rm=$(command -v rm)
 if ! real_jj=$(command -v jj); then
   printf '%s\n' 'jj is not installed here (.github/actions/install-jj installs it in CI): the order reads run the real jj' >&2
   exit 1
@@ -82,6 +86,7 @@ repo_init() {
 repo_init
 
 fresh_env() {
+  chmod -R u+w "$compose"
   cat >"$compose/.env" <<EOF
 ENVOY_IMAGE_TAG=old-image
 DATABASE_URL=${1:-"$(url_with_credential "$encoded_password" "$default_database_target")?sslmode=require"}
@@ -92,7 +97,7 @@ EOF
   # it was.
   seq 1 112 >"$schema"
   rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key" "$schema.refused" "$schema.pulled" \
-    "$schema.passes" "$manifests" "$manifests.hung" "$failed_record"
+    "$schema.passes" "$schema.stepped" "$schema.moves" "$manifests" "$manifests.hung" "$failed_record"
   touch "$schema.running"
   : >"$log"
   : >"$argv"
@@ -175,12 +180,19 @@ EOF
 #
 # `compose up` with ENVOY_IMAGE_TAG set starts that tag as the candidate, which it records in
 # $AUTODEPLOY_TEST_SCHEMA.candidate; an `up` without it, the rollback's, starts the deployed tag
-# again. A container run (the database clients) never answers with
-# AUTODEPLOY_TEST_RUN_HANG_AFTER_UP=1 once a candidate was started; a pull fails with
-# AUTODEPLOY_TEST_PULL_FAIL=1, the first pull alone with AUTODEPLOY_TEST_PULL_FAIL_ONCE=1, and never
-# answers with AUTODEPLOY_TEST_PULL_HANG=1; a stop never answers with AUTODEPLOY_TEST_STOP_HANG=1.
-# With AUTODEPLOY_TEST_KEY_HELD_AFTER_STOP=<n>, the stop leaves the migration key held for <n> more
-# tries (`always`: for every try), as a migration the stopped image sent still runs.
+# again. With AUTODEPLOY_TEST_UP_KILLS_PASS=1 (and AUTODEPLOY_TEST_UP_TAKES unset, so that the
+# deployer's pass is this stand-in's parent) the candidate's `up` sends SIGTERM to the pass, as a
+# pass that dies between the candidate's start and its result. A container run (the database
+# clients) never answers with AUTODEPLOY_TEST_RUN_HANG_AFTER_UP=1 once a candidate was started; a
+# pull fails with AUTODEPLOY_TEST_PULL_FAIL=1, the first pull alone with
+# AUTODEPLOY_TEST_PULL_FAIL_ONCE=1, and never answers with AUTODEPLOY_TEST_PULL_HANG=1; a stop never
+# answers with AUTODEPLOY_TEST_STOP_HANG=1. With AUTODEPLOY_TEST_CLOCK_STEP=pull:<s>, the pass's
+# clock moves on <s> seconds as the first pull that succeeded returns, as a clock that steps or a
+# host that stalls would, past the bounds the deploy's steps were given. With
+# AUTODEPLOY_TEST_KEY_HELD_AFTER_STOP=<n>, the stop leaves the migration key held for <n> more
+# tries (`always`: for every try), as a migration the stopped image sent still runs; with
+# AUTODEPLOY_TEST_ENV_UNWRITABLE_ON_STOP=1 it leaves compose/ and its .env unwritable, as a full
+# or read-only disk would, so the rollback cannot write its tag back.
 cat >"$bin/docker" <<'EOF'
 #!/usr/bin/env bash
 held_migration_commits() {
@@ -265,6 +277,10 @@ case "$1" in
         if [[ "${AUTODEPLOY_TEST_PULL_HANG:-}" == 1 ]]; then
           exec /bin/sleep 3600
         fi
+        if [[ "${AUTODEPLOY_TEST_CLOCK_STEP:-}" == pull:* && ! -e "$AUTODEPLOY_TEST_SCHEMA.stepped" ]]; then
+          touch "$AUTODEPLOY_TEST_SCHEMA.stepped"
+          advance "${AUTODEPLOY_TEST_CLOCK_STEP#pull:}"
+        fi
         ;;
       *" up "*)
         if [[ -n "${ENVOY_IMAGE_TAG:-}" ]]; then
@@ -272,6 +288,9 @@ case "$1" in
           printf '%s\n' "$ENVOY_IMAGE_TAG" >"$AUTODEPLOY_TEST_SCHEMA.candidate"
           if [[ -n "${AUTODEPLOY_TEST_MIGRATE_TO:-}" ]]; then
             printf '%s\n' "$AUTODEPLOY_TEST_MIGRATE_TO" >>"$AUTODEPLOY_TEST_SCHEMA"
+          fi
+          if [[ "${AUTODEPLOY_TEST_UP_KILLS_PASS:-}" == 1 ]]; then
+            kill -TERM "$PPID"
           fi
         else
           held_migration_commits
@@ -293,6 +312,9 @@ case "$1" in
         if [[ "${AUTODEPLOY_TEST_CLOCK_BREAKS_ON_STOP:-}" == 1 ]]; then
           printf 'broken\n' >"$AUTODEPLOY_TEST_CLOCK"
         fi
+        if [[ "${AUTODEPLOY_TEST_ENV_UNWRITABLE_ON_STOP:-}" == 1 ]]; then
+          chmod a-w "$COMPOSE_DIR/.env" "$COMPOSE_DIR"
+        fi
         if [[ "${AUTODEPLOY_TEST_STOP_LEAVES_RUNNING:-}" != 1 ]]; then
           rm -f "$AUTODEPLOY_TEST_SCHEMA.running"
         fi
@@ -312,12 +334,18 @@ esac
 EOF
 # curl answers /healthz 200 with NATS connected, but for a candidate with
 # AUTODEPLOY_TEST_CANDIDATE_NATS set, which it reports as `nats`. A candidate's /healthz takes the
-# seconds AUTODEPLOY_TEST_HEALTH_TAKES gives of the pass's clock, and one that takes its --max-time
-# or more is ended at it, as curl ends it (exit 28). /auth/start redirects to the wrong origin,
-# which fails the deploy's origin check, unless AUTODEPLOY_TEST_ORIGIN_OK=1. Every request records
-# the bound it was given (--max-time) in the bounds log, as `curl <path>`.
+# seconds AUTODEPLOY_TEST_HEALTH_TAKES gives of the pass's clock, and its /auth/start those
+# AUTODEPLOY_TEST_ORIGIN_TAKES gives; one that takes its --max-time or more is ended at it, as curl
+# ends it (exit 28). With AUTODEPLOY_TEST_CLOCK_STEP=healthy:<s>, the pass's clock moves on <s>
+# seconds at the candidate's first good /healthz answer (NATS connected or turned off). /auth/start
+# redirects to the wrong origin, which fails the deploy's origin check, unless
+# AUTODEPLOY_TEST_ORIGIN_OK=1. Every request records the bound it was given (--max-time) in the
+# bounds log, as `curl <path>`.
 cat >"$bin/curl" <<'EOF'
 #!/usr/bin/env bash
+advance() {
+  printf '%s\n' "$(($(<"$AUTODEPLOY_TEST_CLOCK") + $1))" >"$AUTODEPLOY_TEST_CLOCK"
+}
 max=
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
@@ -329,19 +357,29 @@ case "$*" in
   *"/auth/start"*) path=/auth/start ;;
 esac
 printf '%s %s curl %s\n' "${max:-none}" "$(<"$AUTODEPLOY_TEST_CLOCK")" "$path" >>"$AUTODEPLOY_TEST_BOUNDS"
-takes=${AUTODEPLOY_TEST_HEALTH_TAKES:-}
-if [[ "$path" == /healthz && -n "$takes" && -e "$AUTODEPLOY_TEST_SCHEMA.candidate" ]]; then
+takes=
+if [[ -e "$AUTODEPLOY_TEST_SCHEMA.candidate" ]]; then
+  case "$path" in
+    /healthz) takes=${AUTODEPLOY_TEST_HEALTH_TAKES:-} ;;
+    /auth/start) takes=${AUTODEPLOY_TEST_ORIGIN_TAKES:-} ;;
+  esac
+fi
+if [[ -n "$takes" ]]; then
   if [[ -n "$max" ]] && ((takes >= max)); then
-    printf '%s\n' "$(($(<"$AUTODEPLOY_TEST_CLOCK") + max))" >"$AUTODEPLOY_TEST_CLOCK"
+    advance "$max"
     exit 28
   fi
-  printf '%s\n' "$(($(<"$AUTODEPLOY_TEST_CLOCK") + takes))" >"$AUTODEPLOY_TEST_CLOCK"
+  advance "$takes"
 fi
 case "$path" in
   /healthz)
     nats=true
     if [[ -e "$AUTODEPLOY_TEST_SCHEMA.candidate" ]]; then
       nats="${AUTODEPLOY_TEST_CANDIDATE_NATS:-true}"
+      if [[ "$nats" != false && "${AUTODEPLOY_TEST_CLOCK_STEP:-}" == healthy:* && ! -e "$AUTODEPLOY_TEST_SCHEMA.stepped" ]]; then
+        touch "$AUTODEPLOY_TEST_SCHEMA.stepped"
+        advance "${AUTODEPLOY_TEST_CLOCK_STEP#healthy:}"
+      fi
     fi
     printf '{"ok":true,"db":true,"nats":%s}' "$nats"
     ;;
@@ -371,6 +409,30 @@ moved=$(<"$AUTODEPLOY_TEST_CLOCK")
 if [[ "$moved" =~ ^[0-9]+$ && "$1" =~ ^[0-9]+$ ]]; then
   printf '%s\n' "$((moved + $1))" >"$AUTODEPLOY_TEST_CLOCK"
 fi
+EOF
+# mv and rm hand every call to the real ones, but for those onto the deployer's record of failed
+# deploys: with AUTODEPLOY_TEST_RECORD_MOVES=<n>, the first <n> moves of a file onto the record
+# succeed and every later one fails, as a disk that filled up between two writes would (each is
+# counted in $AUTODEPLOY_TEST_SCHEMA.moves); with AUTODEPLOY_TEST_RECORD_RM_FAILS=1, its removal
+# fails.
+cat >"$bin/mv" <<'EOF'
+#!/usr/bin/env bash
+if [[ -n "${AUTODEPLOY_TEST_RECORD_MOVES:-}" && "${!#}" == */failed-deploy ]]; then
+  printf 'move\n' >>"$AUTODEPLOY_TEST_SCHEMA.moves"
+  if (($(wc -l <"$AUTODEPLOY_TEST_SCHEMA.moves") > AUTODEPLOY_TEST_RECORD_MOVES)); then
+    printf 'mv: cannot move to %s: No space left on device\n' "${!#}" >&2
+    exit 1
+  fi
+fi
+exec "$AUTODEPLOY_TEST_REAL_MV" "$@"
+EOF
+cat >"$bin/rm" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${AUTODEPLOY_TEST_RECORD_RM_FAILS:-}" == 1 && "${!#}" == */failed-deploy ]]; then
+  printf "rm: cannot remove '%s': Permission denied\n" "${!#}" >&2
+  exit 1
+fi
+exec "$AUTODEPLOY_TEST_REAL_RM" "$@"
 EOF
 # timeout records the bound each call of the deployer is given, one `<seconds> <clock> <call>`
 # line in $AUTODEPLOY_TEST_BOUNDS: `manifest <tag>`, `compose <command>`, `run` (a database client
@@ -615,9 +677,14 @@ cat >"$tools/pg_dump" <<'EOF'
 printf 'pg_dump %s\n' "$*" >>"$AUTODEPLOY_TEST_ARGV"
 source "$AUTODEPLOY_TEST_TOOLS/libpq.sh"
 connection_password pg_dump "$@" || exit 1
+# The backup takes the seconds AUTODEPLOY_TEST_BACKUP_TAKES gives of the pass's clock.
+if [[ -n "${AUTODEPLOY_TEST_BACKUP_TAKES:-}" ]]; then
+  printf '%s\n' "$(($(<"$AUTODEPLOY_TEST_CLOCK") + AUTODEPLOY_TEST_BACKUP_TAKES))" >"$AUTODEPLOY_TEST_CLOCK"
+fi
 printf 'backup'
 EOF
-chmod +x "$bin/jj" "$bin/date" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$tools/timeout" "$tools/psql" "$tools/pg_dump"
+chmod +x "$bin/jj" "$bin/date" "$bin/docker" "$bin/curl" "$bin/sleep" "$bin/timeout" "$bin/mv" "$bin/rm" "$tools/timeout" \
+  "$tools/psql" "$tools/pg_dump"
 
 # deployer runs the deployer with the stand-ins first on PATH and its arguments: deploy_once is one
 # pass, as `--once`, and the continuous loop is the deployer with none. Each run is under the real
@@ -630,6 +697,7 @@ deployer() {
     AUTODEPLOY_TEST_TOOLS="$tools" AUTODEPLOY_TEST_PASSWORD="${test_password-$password}" REPO="$repo" COMPOSE_DIR="$compose" \
     AUTODEPLOY_TEST_MANIFESTS="$manifests" AUTODEPLOY_TEST_MANIFEST_LOG="$manifest_log" \
     AUTODEPLOY_TEST_REAL_TIMEOUT="$real_timeout" AUTODEPLOY_TEST_REAL_DATE="$real_date" \
+    AUTODEPLOY_TEST_REAL_MV="$real_mv" AUTODEPLOY_TEST_REAL_RM="$real_rm" \
     AUTODEPLOY_TEST_REAL_JJ="$real_jj" JJ_CONFIG="$jj_config" \
     AUTODEPLOY_TEST_BOUNDS="$bounds_log" AUTODEPLOY_TEST_CLOCK="$clock" AUTODEPLOY_TEST_CLOCK_BASE="$clock_base" \
     BACKUPS="$backups" COMPOSE_PROJECT=dispatch-test IMAGE=example.test/dispatch \

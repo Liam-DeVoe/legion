@@ -14,13 +14,15 @@ COMPOSE_ENV="$COMPOSE_DIR/.env"
 #
 #   <commit> <state> <the backup taken before that deploy>
 #
-# where <state> is `rolled-back`, the previous image serves again, or `stopped`: the rollback was
-# refused or failed, or the pass ended between the new image's start and its result, and Dispatch
-# is left for a person. A pass deploys no commit that a rolled-back line names, nor any ancestor of
-# one: only a newer published commit. A stopped line ends the continuous loop, and while it is
-# there no pass deploys anything. prune_backups keeps every backup the file names. The deployer
-# removes the file after a deploy succeeds; a person removes it to let the deployer deploy a
-# recorded commit again, or to start again after a stop.
+# where <state> is `rolled-back`, the image failed and the previous image serves again, or
+# `stopped`: the rollback was refused or failed, or the pass ended between the new image's start
+# and its result, or the record could not be rewritten after that result, and Dispatch is left for
+# a person. A pass deploys no commit that a rolled-back line names, nor any ancestor of one: only a
+# newer published commit. A deploy the pass's deadline cut, rather than the image failing it, is
+# rolled back and its line taken out, so the next pass deploys it again. A stopped line ends the
+# continuous loop, and while it is there no pass deploys anything. prune_backups keeps every backup
+# the file names. The deployer removes the file after a deploy succeeds; a person removes it to let
+# the deployer deploy a recorded commit again, or to start again after a stop.
 FAILED_DEPLOY="$BACKUPS/failed-deploy"
 # MIGRATION_KEY is the advisory lock key Dispatch's migration runner holds for each migration
 # (internal/dispatch/store/store.go, migrationLockKey; store's deployer_key_test.go holds the two
@@ -39,11 +41,12 @@ SCHEMA_READ_DEADLINE="${SCHEMA_READ_DEADLINE:-60}"
 # is given the time it leaves, so a call that answers slowly is waited for, and only one that has
 # not answered when the pass's time is spent is stopped, named as having run out the pass's
 # deadline. Every step of a deploy keeps ROLLBACK_RESERVE of that time for the deploy's rollback
-# (deploy_bound), and every step of the rollback takes what is left. Three steps of a deploy keep
-# a bound of their own, each cut to what the pass leaves after that reserve: PULL_BOUND, UP_BOUND
-# and the health check's HEALTH_BOUND. The deadline is the pass's and not the poll's: a deploy's
-# rollback comes after those three, so a deadline as short as POLL would leave every slow deploy's
-# rollback no time, and the rollback would be refused.
+# (deploy_bound), and every step of the rollback takes what is left. Four steps of a deploy keep a
+# bound of their own, each cut to what the pass leaves after that reserve: PULL_BOUND, UP_BOUND,
+# the health check's HEALTH_BOUND and the origin check's ORIGIN_BOUND; a deploy starts only where
+# the pass leaves all four and the reserve (PASS_DEADLINE_MINIMUM, deploy_gate). The deadline is
+# the pass's and not the poll's: a deploy's rollback comes after those steps, so a deadline as short
+# as POLL would leave every slow deploy's rollback no time, and the rollback would be refused.
 PASS_DEADLINE="${PASS_DEADLINE:-3600}"
 # PULL_BOUND is the pull's own bound. A pull that runs it out changes nothing: the previous image
 # still serves, and the next pass pulls again.
@@ -58,11 +61,15 @@ HEALTH_TRIES=30
 HEALTH_INTERVAL=3
 HEALTH_REQUEST_BOUND=3
 HEALTH_BOUND=$((HEALTH_TRIES * (HEALTH_INTERVAL + HEALTH_REQUEST_BOUND)))
+# ORIGIN_BOUND is the origin check's bound: one request through curl to Dispatch's own /auth/start
+# on 127.0.0.1, the same kind of call as one health request, to the same local Dispatch, so it has
+# the same bound. No log of an origin check by a deployer on a host has timed one; the lines that
+# name it are this deployer's suite's, whose stand-in answers at once.
+ORIGIN_BOUND=$HEALTH_REQUEST_BOUND
 # ROLLBACK_RESERVE is the time of the pass every step of a deploy leaves for the deploy's rollback:
 # the rollback's health check's HEALTH_BOUND, the one step of a rollback with a bound of its own.
 # So a deploy whose steps run until the pass is nearly spent, a health check that fails late among
-# them, still leaves its rollback that time, and a deploy the pass has no more than that time left
-# for does not start.
+# them, still leaves its rollback that time.
 ROLLBACK_RESERVE=$HEALTH_BOUND
 
 case "$#" in
@@ -91,13 +98,16 @@ for setting in POLL PASS_DEADLINE SCHEMA_READ_DEADLINE; do
     exit 2
   fi
 done
-# The pass's deadline leaves a rollback its time: a pass whose deploy steps each run out their own
-# bound still has ROLLBACK_RESERVE left, the rollback's health check. The rollback's other steps
-# have no bound of their own and share it.
-PASS_DEADLINE_MINIMUM=$((PULL_BOUND + UP_BOUND + HEALTH_BOUND + ROLLBACK_RESERVE))
+# PASS_DEADLINE_MINIMUM is what a deploy needs of the pass: each of its steps' own bound, and its
+# rollback's ROLLBACK_RESERVE, the rollback's health check (the rollback's other steps have no
+# bound of their own and share it). A deploy starts only where the pass leaves that much
+# (deploy_gate), so no step of a deploy is cut below its own bound unless the clock moves on past
+# those bounds (a step that overran, a clock that stepped), and a step the pass cut even then is not
+# recorded as a failure of the image (failed_deploy). A PASS_DEADLINE below it could deploy nothing.
+PASS_DEADLINE_MINIMUM=$((PULL_BOUND + UP_BOUND + HEALTH_BOUND + ORIGIN_BOUND + ROLLBACK_RESERVE))
 if ((PASS_DEADLINE < PASS_DEADLINE_MINIMUM)); then
-  printf 'PASS_DEADLINE is %ss, below the %ss a pass needs: %ss for its deploy steps (the pull %ss, the up %ss, the health check %ss) and %ss for its rollback'"'"'s health check; not starting\n' \
-    "$PASS_DEADLINE" "$PASS_DEADLINE_MINIMUM" "$((PULL_BOUND + UP_BOUND + HEALTH_BOUND))" "$PULL_BOUND" "$UP_BOUND" "$HEALTH_BOUND" "$ROLLBACK_RESERVE" >&2
+  printf 'PASS_DEADLINE is %ss, below the %ss a pass needs: %ss for its deploy steps (the pull %ss, the up %ss, the health check %ss, the origin check %ss) and %ss for its rollback'"'"'s health check; not starting\n' \
+    "$PASS_DEADLINE" "$PASS_DEADLINE_MINIMUM" "$((PULL_BOUND + UP_BOUND + HEALTH_BOUND + ORIGIN_BOUND))" "$PULL_BOUND" "$UP_BOUND" "$HEALTH_BOUND" "$ORIGIN_BOUND" "$ROLLBACK_RESERVE" >&2
   exit 2
 fi
 
@@ -160,6 +170,21 @@ deploy_bound() {
     left=$2
   fi
   printf '%s\n' "$left"
+}
+
+# deploy_gate <step> <previous> answers whether the pass leaves PASS_DEADLINE_MINIMUM before <step>
+# of a deploy (its start, or its pull), so that every step after it gets its own bound and the
+# rollback its reserve. Where it does not, it logs one line naming what the pass leaves and that
+# minimum, and fails: nothing is recorded, <previous> still serves, and the next pass starts with
+# the whole deadline.
+deploy_gate() {
+  local now left
+  now=$(clock "$1 could start; $2 still serves") || return 1
+  left=$((pass_deadline - now))
+  if ((left < PASS_DEADLINE_MINIMUM)); then
+    log "the pass leaves $((left > 0 ? left : 0))s, less than the ${PASS_DEADLINE_MINIMUM}s a deploy needs (PASS_DEADLINE_MINIMUM: its steps' own bounds and the ${ROLLBACK_RESERVE}s of its rollback), before $1 could start; $2 still serves, and the next pass starts with the whole deadline"
+    return 1
+  fi
 }
 
 # bound_note <status> [own] prints, for a call `timeout` stopped (status 124), the words that say
@@ -504,6 +529,25 @@ record_failed() {
   fi
 }
 
+# unrecord_failed <commit> takes <commit>'s line out of FAILED_DEPLOY, through a file written beside
+# it and renamed over it, and removes the file where no line is left. It logs a write that failed
+# and fails.
+unrecord_failed() {
+  local others=""
+  [[ -e "$FAILED_DEPLOY" ]] || return 0
+  if ! others=$(awk -v commit="$1" '$1 != commit' "$FAILED_DEPLOY"); then
+    log "could not read $FAILED_DEPLOY to take the deploy of $1 out of it"
+    return 1
+  fi
+  if [[ -z "$others" ]]; then
+    rm -f -- "$FAILED_DEPLOY" && return 0
+  elif printf '%s\n' "$others" >"$FAILED_DEPLOY.new" && mv -f -- "$FAILED_DEPLOY.new" "$FAILED_DEPLOY"; then
+    return 0
+  fi
+  log "could not take the deploy of $1 out of $FAILED_DEPLOY"
+  return 1
+}
+
 # stopped_commit prints the commit of FAILED_DEPLOY's first stopped line, and nothing where it holds
 # none or there is no such file.
 stopped_commit() {
@@ -540,6 +584,9 @@ skips_failed() {
   return 1
 }
 
+# oauth_redirect_uri <origin> <port> <bound> prints the redirect_uri Dispatch's /auth/start on
+# <port> names for <origin>, asked once and bounded at <bound> seconds, and fails with curl's status
+# where curl fails (28: it had not answered by <bound>).
 oauth_redirect_uri() {
   local origin="$1"
   local port="$2"
@@ -554,23 +601,33 @@ oauth_redirect_uri() {
 # each try a wait of HEALTH_INTERVAL s and a request bounded at HEALTH_REQUEST_BOUND s (HEALTH_BOUND
 # at most), to answer 200 with NATS connected, or turned off (`nats` null). It is the deploy's
 # health limit, and it asks Dispatch, not Docker. Each try is cut to what <bounder> (deploy_bound
-# for a deploy's check, pass_bound for a rollback's) leaves, and the check fails at the try that
-# has no time left, so a deploy's check that fails still leaves its rollback ROLLBACK_RESERVE.
+# for a deploy's check, pass_bound for a rollback's) leaves, so a deploy's check still leaves its
+# rollback ROLLBACK_RESERVE. It answers 0 for a healthy answer, 1 when every try had its own bound
+# and none answered so, a failure of the image, and 2 when the pass cut the check: <bounder> had no
+# time left for a try (and said so), or a try given less than HEALTH_REQUEST_BOUND ran out what it
+# was given (named here). The caller then knows a check the pass cut from one the image failed.
 # Dispatch serves while NATS is down or refuses its credential, so a 200 alone
 # would keep an image whose NATS connection fails; reading `nats` rolls such an image back, as when
 # Dispatch exited at boot without NATS. A NATS outage fails the previous image's check too.
 wait_for_health() {
   local port="$1"
   local bounder="$2"
-  local attempt bound wait
+  local attempt bound wait request answer status
   for ((attempt = 0; attempt < HEALTH_TRIES; attempt++)); do
     bound=$("$bounder" "try $((attempt + 1)) of the health check of $3 could start" "$((HEALTH_INTERVAL + HEALTH_REQUEST_BOUND))") ||
-      return 1
+      return 2
     wait=$((bound > HEALTH_INTERVAL ? HEALTH_INTERVAL : bound - 1))
     sleep "$wait"
-    if curl -sf --max-time "$((bound - wait))" "http://127.0.0.1:$port/healthz" |
-      python3 -c 'import json, sys; sys.exit(json.load(sys.stdin).get("nats") is False)' 2>/dev/null; then
+    request=$((bound - wait))
+    status=0
+    answer=$(curl -sf --max-time "$request" "http://127.0.0.1:$port/healthz") || status=$?
+    if ((status == 0)) &&
+      python3 -c 'import json, sys; sys.exit(json.load(sys.stdin).get("nats") is False)' <<<"$answer" 2>/dev/null; then
       return 0
+    fi
+    if ((status == 28 && request < HEALTH_REQUEST_BOUND)); then
+      log "try $((attempt + 1)) of the health check of $3 had not answered in the ${request}s the pass left it, less than its own ${HEALTH_REQUEST_BOUND}s"
+      return 2
     fi
   done
   return 1
@@ -581,14 +638,19 @@ wait_for_health() {
 # pass's deadline leaves: Dispatch is down until it returns, and a Docker that starts a container
 # slowly still answers, so a bound of its own would only turn a slow rollback into one a person
 # finishes. A rollback that fails returns 3: Dispatch is left for a person, and its line says that
-# $previous may be started again by hand, since the schema is still its own.
+# $previous may be started again by hand, since the schema is still its own. That includes a tag it
+# could not write back to compose/.env, which it names, rather than leave set -e to end the pass
+# with sed's own status, which a reader of the status would take for another case.
 rollback() {
   local previous="$1"
   local dispatchPort="$2"
   local bound
   local status=0
   local by_hand="so Dispatch is left for a person: the applied migrations are still the ones $previous runs against, so it may be started again by hand"
-  sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$previous|" "$COMPOSE_ENV"
+  if ! sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$previous|" "$COMPOSE_ENV"; then
+    log "could not write ENVOY_IMAGE_TAG=$previous into $COMPOSE_ENV for the rollback, $by_hand"
+    return 3
+  fi
   bound=$(pass_bound "the rollback's docker compose up of $previous could start, $by_hand") || return 3
   compose "$bound" up -d --no-deps dispatch || status=$?
   if ((status != 0)); then
@@ -662,20 +724,32 @@ roll_back_or_stop() {
   rollback "$previous" "$dispatchPort"
 }
 
-# failed_deploy <sha> <previous> <baseline> <port> <dump> answers a deploy that started $sha and
-# failed. FAILED_DEPLOY already records $sha as stopped (deploy writes it before the start), so a
-# pass that dies inside the rollback leaves the loop stopped rather than starting $sha again. It
-# rolls back, and a rollback that restored $previous records the failure as rolled-back, and the
-# pass fails with 1: no later pass deploys $sha again. A rollback refused or failed returns 3,
-# which ends the continuous loop, and so does a record it could not rewrite, which still says
-# stopped. Its callers run it as a command of its own, never in a condition, and so does it run
-# roll_back_or_stop: set -e then stays on inside both, and a refusal ends the pass at once with its
-# status.
+# failed_deploy <sha> <previous> <baseline> <port> <dump> <why> answers a deploy that started $sha
+# and did not succeed. <why> is `failed`, a failure of the image, or `cut`: a step the pass's
+# deadline cut rather than the image failing it (deploy says which). FAILED_DEPLOY already records
+# $sha as stopped (deploy writes it before the start), so a pass that dies inside the rollback
+# leaves the loop stopped rather than starting $sha again. It rolls back. Once the rollback restored
+# $previous, a failure is recorded as rolled-back, and no later pass deploys $sha again; a cut takes
+# $sha's line out instead, and the next pass deploys it with the whole deadline. Either way the pass
+# fails with 1. A rollback refused or failed returns 3, which ends the continuous loop. A record it
+# could not rewrite after a rollback that restored $previous still says stopped: that returns 4,
+# which ends the loop too, with a line saying that $previous serves. Its callers run it as a command
+# of its own, never in a condition, and so does it run roll_back_or_stop: set -e then stays on
+# inside both, and a refusal ends the pass at once with its status.
 failed_deploy() {
+  local unwritten="the rollback restored $2, which serves, but $FAILED_DEPLOY could not be rewritten, and still records the deploy of $1 as stopped, so the deployer stops: delete $FAILED_DEPLOY once it can be written to, to start the deployer again"
   roll_back_or_stop "$1" "$2" "$3" "$4"
+  if [[ "$6" == cut ]]; then
+    if ! unrecord_failed "$1"; then
+      log "$unwritten"
+      return 4
+    fi
+    log "the pass's deadline cut the deploy of $1, not a failure of the image; $2 serves again, and the next pass deploys $1 with the whole deadline"
+    return 1
+  fi
   if ! record_failed "$1" rolled-back "$5"; then
-    log "$FAILED_DEPLOY still records the deploy of $1 as stopped, so the deployer stops"
-    return 3
+    log "$unwritten (the next pass then deploys $1 again, since no record says it failed)"
+    return 4
   fi
   return 1
 }
@@ -699,6 +773,7 @@ deploy() {
   local now
   local read_end
   local read_ended
+  local why
 
   previous=$(deployed_tag)
   origin=$(env_value DISPATCH_SERVER_URL)
@@ -717,10 +792,10 @@ deploy() {
   fi
   dispatchPort=$(env_value DISPATCH_PORT)
   dispatchPort="${dispatchPort:-8766}"
-  # A deploy starts only where the pass leaves more than ROLLBACK_RESERVE: one with no more than
-  # that left would start an image whose rollback the pass has no time for. Nothing has changed
-  # yet, and the next pass starts with the whole deadline.
-  deploy_bound "the deploy of $sha could start; $previous still serves" >/dev/null || return 1
+  # A deploy starts only where the pass leaves PASS_DEADLINE_MINIMUM (deploy_gate): one with less
+  # would start steps the pass could cut below their own bounds. Nothing has changed yet, and the
+  # next pass starts with the whole deadline.
+  deploy_gate "the deploy of $sha" "$previous" || return 1
   # The read before the deploy ends at SCHEMA_READ_DEADLINE, or where the deploy's own steps must
   # end (deploy_bound), whichever comes first.
   now=$(clock "the schema read could start; not deploying $sha") || return 1
@@ -764,6 +839,10 @@ deploy() {
     return 1
   fi
   prune_backups
+  # The backup has no bound of its own but what the pass leaves, so the pass is read again before
+  # the pull: a backup that took long would leave the steps after it less than their own bounds. The
+  # deploy then waits for the next pass, and the backup is kept as any other.
+  deploy_gate "the pull of $sha" "$previous" || return 1
   bound=$(deploy_bound "the pull of $sha could start; $previous still serves" "$PULL_BOUND") || return 1
   compose_with_tag "$sha" "$bound" pull -q dispatch || status=$?
   if ((status != 0)); then
@@ -774,44 +853,76 @@ deploy() {
   # From the start of $sha until its result, FAILED_DEPLOY records it as stopped: a pass that ends
   # anywhere in between, by a failure no line of this script names, leaves the deployer stopped,
   # since what runs is then not known. The result rewrites the record: removed after a deploy that
-  # succeeds, rolled-back after a rollback that restored $previous.
+  # succeeds, rolled-back after a rollback that restored $previous, and taken out after the rollback
+  # of a deploy the pass cut.
   if ! record_failed "$sha" stopped "$dump"; then
     log "not deploying $sha, since $FAILED_DEPLOY could not record its start; $previous still serves"
     return 1
   fi
+  # Each step from here on is cut by the pass, not failed by the image, where its bounder had no time
+  # left for it, or its call ran out a bound below the step's own (only a clock that moved on past
+  # the steps' bounds can do that, after deploy_gate): failed_deploy then records nothing.
   compose_with_tag "$sha" "$bound" up -d --no-deps dispatch || status=$?
   if ((status != 0)); then
     log "compose up failed for $sha$(bound_note "$status" "$UP_BOUND")"
-    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump"
+    why=failed
+    ((status != 124 || bound >= UP_BOUND)) || why="cut"
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" "$why"
     return
   fi
-  if ! wait_for_health "$dispatchPort" deploy_bound "$sha"; then
-    log "deployed $sha but /healthz did not answer 200 with NATS connected in the tries its health check had (at most $HEALTH_TRIES, ${HEALTH_INTERVAL} s apart)"
-    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump"
+  wait_for_health "$dispatchPort" deploy_bound "$sha" || status=$?
+  if ((status == 2)); then
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" cut
+    return
+  fi
+  if ((status != 0)); then
+    log "deployed $sha but /healthz did not answer 200 with NATS connected in its $HEALTH_TRIES tries, ${HEALTH_INTERVAL} s apart"
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" failed
     return
   fi
   expected="$origin/auth/callback"
-  if bound=$(deploy_bound "the origin check of $sha could start"); then
-    redirect=$(oauth_redirect_uri "$origin" "$dispatchPort" "$bound") || redirect="(no answer: status $?)"
+  why=failed
+  if bound=$(deploy_bound "the origin check of $sha could start" "$ORIGIN_BOUND"); then
+    redirect=$(oauth_redirect_uri "$origin" "$dispatchPort" "$bound") || status=$?
+    if ((status == 28 && bound < ORIGIN_BOUND)); then
+      log "the origin check of $sha had not answered in the ${bound}s the pass left it, less than its own ${ORIGIN_BOUND}s"
+      why="cut"
+    elif ((status == 28)); then
+      redirect="(no answer in its own ${ORIGIN_BOUND}s: curl status 28)"
+    elif ((status != 0)); then
+      redirect="(no answer: curl status $status)"
+    fi
   else
-    redirect="(no origin check: the pass had no time left for it)"
+    why="cut"
+  fi
+  if [[ "$why" == cut ]]; then
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" cut
+    return
   fi
   if [[ "$redirect" != "$expected" ]]; then
     log "deployed $sha but the OAuth redirect_uri is '$redirect', expected '$expected' - login would break"
-    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump"
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" failed
     return
   fi
   if ! sed -i -E "s|^ENVOY_IMAGE_TAG=.*|ENVOY_IMAGE_TAG=$sha|" "$COMPOSE_ENV"; then
     log "could not persist deployed tag $sha"
-    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump"
+    failed_deploy "$sha" "$previous" "$baseline" "$dispatchPort" "$dump" failed
     return
   fi
   log "deployed $sha ($(jj -R "$REPO" log -r "$sha" --no-graph -T 'description.first_line()' | cut -c1-90)); login origin $origin verified; backup $dump"
+  # The record holds $sha's own stopped line, written before its start, and may hold the failed
+  # deploys of older commits, whose backups the prune kept. A success removes it, so those may be
+  # pruned again; only they are worth a line. A record it could not remove still says stopped, and
+  # stops the deployer with 4, as a record a rollback could not rewrite does.
   if [[ -e "$FAILED_DEPLOY" ]]; then
-    if rm -f -- "$FAILED_DEPLOY"; then
+    status=0
+    awk -v commit="$sha" '$1 != commit { found = 1 } END { exit !found }' "$FAILED_DEPLOY" || status=$?
+    if ! rm -f -- "$FAILED_DEPLOY"; then
+      log "deployed $sha, which serves, but could not remove $FAILED_DEPLOY, which still records its deploy as stopped, so the deployer stops: delete $FAILED_DEPLOY to start it again"
+      return 4
+    fi
+    if ((status != 1)); then
       log "removed $FAILED_DEPLOY: $sha deployed, so the backups taken before the failed deploys it recorded may be pruned"
-    else
-      log "could not remove $FAILED_DEPLOY after $sha deployed; remove it by hand"
     fi
   fi
 }
@@ -846,15 +957,17 @@ commit_order() {
 # an ancestor is named on one line with the deployed commit and nothing is deployed, and an order
 # jj cannot read fails the pass, since a deploy needs the answer `newer`, not the absence of
 # `older`. It deploys nothing FAILED_DEPLOY says failed (skips_failed), and nothing at all while
-# that file holds a stopped deploy: it then fails with 3.
+# that file holds a stopped deploy: it then fails with 5, a status of its own, so the loop's line can
+# tell a pass that found the record stopped from one that stopped it. Its line cannot tell what left
+# the record so, and names every case; the log of the pass that wrote it says which.
 run_once() {
   local sha status deployed order now stopped
   now=$(clock "the pass could start") || return 1
   pass_deadline=$((now + PASS_DEADLINE))
   stopped=$(stopped_commit) || stopped=
   if [[ -n "$stopped" ]]; then
-    log "$FAILED_DEPLOY records that the deploy of $stopped left Dispatch for a person, and forward recovery is required: deploying nothing until a person deletes $FAILED_DEPLOY"
-    return 3
+    log "$FAILED_DEPLOY records the deploy of $stopped as stopped: its rollback was refused or failed, or its pass ended before its result, or the record could not be rewritten after its result; the log of the pass that deployed it says which, and what serves. Deploying nothing until a person deletes $FAILED_DEPLOY"
+    return 5
   fi
   if sha=$(newest_published_main); then
     deployed=$(deployed_tag)
@@ -899,16 +1012,30 @@ fi
 # The continuous loop runs each pass as a process of its own, a --once run, so a pass ends under
 # set -e as one run does, and a failed pass ends that process alone: it has logged its one named
 # line, the loop logs that it failed, and the next pass tries again after POLL. A `run_once ||`
-# here would turn set -e off inside every pass. A pass whose rollback was refused or failed ends
-# with 3, or leaves a stopped line in FAILED_DEPLOY, and the loop then stops: it starts nothing
-# again, and a person recovers forward.
+# here would turn set -e off inside every pass. The loop stops, with 3 and one line saying why,
+# after a pass that ended with 3, a rollback refused or failed, and after any pass that leaves a
+# stopped line in FAILED_DEPLOY: with 4, a record that could not be rewritten after the pass's
+# result; with 5, a record that was stopped before the pass started; with any other status, a pass
+# that ended between an image's start and its result. It starts nothing again, and a person
+# recovers. It reads 4 and 5 only beside a stopped line, since a command that fails under set -e
+# can end a pass with any status.
 log "autodeploy started; deployed=$(deployed_tag)"
 while true; do
   status=0
   "$BASH" "$0" --once || status=$?
   stopped=$(stopped_commit 2>/dev/null) || stopped=
-  if ((status == 3)) || [[ -n "$stopped" ]]; then
-    log "the pass ended with status $status after a deploy${stopped:+ of $stopped} whose rollback did not restore the previous image, and forward recovery is required (the line above names why; $FAILED_DEPLOY records the deploy): the deployer stops, and deploys nothing until a person deletes $FAILED_DEPLOY"
+  why=
+  if ((status == 3)); then
+    why=" after a deploy${stopped:+ of $stopped} whose rollback did not restore the previous image, and forward recovery is required (the line above names why; $FAILED_DEPLOY records the deploy)"
+  elif [[ -n "$stopped" ]]; then
+    case "$status" in
+      4) why=": $FAILED_DEPLOY could not be rewritten after the deploy of $stopped, and still records it as stopped, though Dispatch serves (the lines above say which image; delete the file once it can be written to)" ;;
+      5) why=": $FAILED_DEPLOY already recorded the deploy of $stopped as stopped when the pass started (the line above says what may have left it so)" ;;
+      *) why=" between the start of $stopped and its result, which $FAILED_DEPLOY records as stopped, so what runs is not known" ;;
+    esac
+  fi
+  if [[ -n "$why" ]]; then
+    log "the pass ended with status $status$why: the deployer stops, and deploys nothing until a person deletes $FAILED_DEPLOY"
     exit 3
   fi
   ((status == 0)) || log "the pass failed (exit $status); the next pass starts in ${POLL}s"

@@ -38,16 +38,17 @@ if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init '
 fi
 
 # A new image that serves with its NATS connection failing (`nats` false) fails the health check
-# and is rolled back, as when Dispatch exited at boot without NATS; one with NATS turned off
-# (`nats` null) passes it and goes on to the origin check.
+# in its 30 tries, is rolled back, as when Dispatch exited at boot without NATS, and is recorded as
+# rolled-back; one with NATS turned off (`nats` null) passes it and goes on to the origin check.
 case_begin 'a candidate whose NATS connection fails'
 fresh_env
 if output=$(AUTODEPLOY_TEST_CANDIDATE_NATS=false deploy_once); then
   fail 'deployer kept an image whose NATS connection failed'
 fi
-if [[ "$output" != *"did not answer 200 with NATS connected"*"rolling back to old-image"* ]] ||
-  [[ "$output" == *"OAuth redirect_uri"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
-  fail 'deployer did not roll back an image whose /healthz reported nats false'
+if [[ "$output" != *"did not answer 200 with NATS connected in its 30 tries"*"rolling back to old-image"* ]] ||
+  [[ "$output" == *"OAuth redirect_uri"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]] ||
+  [[ $(cut -d' ' -f1,2 "$failed_record") != 'new-image rolled-back' ]]; then
+  fail 'deployer did not roll back an image whose /healthz reported nats false, or did not record it as rolled-back'
 fi
 case_begin 'a candidate with NATS turned off'
 fresh_env
@@ -172,6 +173,21 @@ no_secret 'the unreadable schema'
 if [[ "$output" != *"could not read the schema version"*"status 2"*"refusing to roll back to old-image"*"; new-image is stopped, and whether it changed the applied migrations is not known"* ]] ||
   [[ $(grep -c ' up ' "$log") -ne 1 ]]; then
   fail 'deployer rolled back without knowing the schema version'
+fi
+
+# A rollback that cannot write the previous tag back to compose/.env (here the stop leaves compose/
+# unwritable) is a rollback that failed: it names the file and the tag, starts nothing, and the
+# pass ends with 3, as for any rollback that failed, not with sed's own status, which the loop
+# would read as another case.
+case_begin 'a rollback that cannot write the previous tag back'
+fresh_env
+status=0
+output=$(AUTODEPLOY_TEST_ENV_UNWRITABLE_ON_STOP=1 deploy_once) || status=$?
+chmod -R u+w "$compose"
+if ((status != 3)) ||
+  [[ "$output" != *"rolling back to old-image"*"could not write ENVOY_IMAGE_TAG=old-image into $compose/.env for the rollback, so Dispatch is left for a person: the applied migrations are still the ones old-image runs against, so it may be started again by hand"* ]] ||
+  [[ $(grep -c ' up ' "$log") -ne 1 ]] || [[ $(cut -d' ' -f1,2 "$failed_record") != 'new-image stopped' ]]; then
+  fail "a rollback that could not write the previous tag back ended the pass with status $status (3 wanted), was not named, started anything, or did not leave new-image recorded as stopped"
 fi
 
 # A schema version it cannot read before a deploy stops the deploy before anything changes.
