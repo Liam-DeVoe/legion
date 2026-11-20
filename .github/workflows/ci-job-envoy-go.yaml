@@ -37,7 +37,8 @@ jobs:
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
     # plain race-impossible step's five 10-minute runs, which is 51; after that step's measured
     # 5 minutes (about 2 before the API's and delivery's xid window tests joined it, which took
-    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s) the unit step's
+    # 134 s and 4 s on a two-vCPU pod; the auth service's restart storm adds 17 s, and the API's
+    # claim model is not among them, running in envoy-go-claim-model) the unit step's
     # own 20 is 26; after the unit step, which runs strictly fewer packages than the 35 minutes it
     # measured before the race lane's left it and so cannot exceed that, the store-form count's
     # own 5 is 46 (two packages, which go test starts at once with -p at least 2, so its -timeout
@@ -117,11 +118,13 @@ jobs:
       # seeds and fewer edits under it (raceEnabled), so this is their full-size run. So is the
       # NATS auth service's restart storm's: five hundred connections, two hundred under the
       # detector (raceEnabled), whose instrumentation makes each in-process connect several times
-      # the cost (natscallout's race_disabled_test.go says why). The API's
-      # seven source guards, and one_expression_guard_test.go beside them, carry that tag too and
-      # are deliberately not here: they read the module's source, the text-check job runs their
-      # fifteen tests by name, and ci_job_reads.py's TEXT_CHECK_TESTS leaves exactly those out of
-      # this step rather than have each of them run twice. It comes before the unit step for the
+      # the cost (natscallout's race_disabled_test.go says why). The API's mention sender claim
+      # model is out of the race build too, and runs in a job of its own, envoy-go-claim-model;
+      # the API's eight source guards, and one_expression_guard_test.go beside them, carry that
+      # tag as well and are deliberately not here: they read the module's source, the text-check
+      # job runs their seventeen tests by name, and ci_job_reads.py's CLAIM_MODEL_TESTS and
+      # TEXT_CHECK_TESTS leave exactly those tests out of this step rather than have each of them
+      # run twice. It comes before the unit step for the
       # reason the API package's own run did: run beside the other package binaries,
       # its Postgres-backed tests and the room-memory measurements queue their per-test database
       # cleanup on the service's one checkpointer, and the API's live-feed and delivery-hub tests
@@ -165,10 +168,11 @@ jobs:
       # it, so a run here would ask nothing of it, and
       # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
       # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
-      # are built from the same list.
+      # are built from the same list. So are the backend count's four tests of cmd/agent-secrets,
+      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -179,7 +183,8 @@ jobs:
       # ./internal/broker/api/. This step runs only those tests in only those two packages (-run,
       # under backend-count.sh's own 5-minute -timeout, which the budget above counts) and counts
       # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
-      # neither package, reads aws=0 and fails, as the verification's check c8 requires.
+      # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
+      # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
@@ -210,10 +215,11 @@ jobs:
       # package's test binary, and the packages run several at a time, so one that starts late
       # ends up to 20 minutes after its own start: the step's own limit of 30 minutes leaves a
       # package that starts within the first 10 its whole -timeout, and so its dump. Measured in
-      # that same job, before cmd/broker joined this step: 355 s for the step.
+      # that same job, before cmd/broker joined this step: 355 s for the step. Its --skip leaves
+      # out the backend count's test of ./internal/broker/api/, which the count step above runs.
       - name: Count the database broker suites' skips
         timeout-minutes: 30
-        run: packages/envoy/scripts/database-skips.sh --timeout 20m
+        run: packages/envoy/scripts/database-skips.sh --timeout 20m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$'
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.
       - name: Vet agentloop's live proof (no model call)

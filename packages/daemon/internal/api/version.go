@@ -21,8 +21,7 @@ package api
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
-// and the plugin's field together. The same commit also writes this bump into the contract
-// history of `packages/pi-legion/AGENTS.md` as the last bump.
+// and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
 // disagrees with this constant.
 //
@@ -2382,4 +2381,75 @@ package api
 // 153 (#4115), 154 (#3659), 155 (#4273), 156 (#4065), 157 (#2230 and #3993), 158 (#4017, #4173,
 // #4180 and #4193) and 159 (#4049 and #4175), so 160 is still the lowest number above main's 152
 // that no open head declares.)
-const DaemonAPIVersion = 160
+//
+// 168: the completion that ends the retro rates the plan the issue ran. `POST
+// /legion/v1/handoff/complete` (`api.HandoffCompleteRequest`, contracts'
+// `LegionHandoffCompleteRequest`) takes two optional fields: `planRating`, a whole number from 1
+// (the plan cost the work) to 5 (the plan fit the work), and `planReason`, why, in one to 2,000
+// characters counted as Unicode code points and not all blank, the two together
+// (`PLAN_RATING_INPUT`). The agent that does the retro gives them, so the completion that ends the
+// retro takes them, and every other completion and a production check's report are refused them
+// (`PLAN_RATING_UNEXPECTED`). Which completion ends the retro the workflow judges where it ends
+// it, on the issue as the completion's own transaction reads it (`TriggerRetroCompleted`), and its
+// own refusals, a held issue's 409 among them, come first. A claim whose plugin declared this
+// contract or a later one must rate (`PLAN_RATING_REQUIRED`), so a plugin built from this commit
+// sends both on its retro; a plugin below it never sends them, and its retro, where the daemon
+// serves its claim (`staleClaim`: a claim in a turn, in an update round, with no plugin install,
+// or on a daemon that relaunches onto no plugin), completes with no rating
+// (`api.PlanRatingContract`).
+// Every refusal is a 400 that records nothing, so the same completion, corrected, is taken: the
+// route writes `PLAN_RATING_INPUT` and a report's `PLAN_RATING_UNEXPECTED` before the fact is
+// applied, and the workflow refuses the rest with the fact left unspent (`intake.Result.Unspent`).
+// The route hands the two to the workflow on the completion's fact as one value
+// (`intake.HandoffComplete.PlanRating`), beside whether the claim must rate (`MustRate`).
+// `readBody` refuses an unknown field, so a plugin sending them to a daemon below 168 would have
+// every retro refused; the bump is why the two never meet. No shape of `GET /legion/v1/state`
+// moves, so no caller is served a narrower one.
+// The decoder of every request body (`decodeJSON`) also refuses a body any string of which, a
+// member's name and an earlier copy of a repeated member included, holds U+0000, which
+// PostgreSQL's text and jsonb cannot hold: 400 `invalid request body` naming the string's place and
+// where in it the character stands (`unstorableJSON`), or first the stale-caller 409 where the
+// route can name a stale caller (`readBody`'s identity check), as for any body that does not
+// decode. A route that stored such a string answered 500 before, and one that only compared it
+// took it; every route now refuses it before it reads the body.
+// (This entry takes 168, the lowest number above main's 160 that no open pull request declared
+// when the merge of 2026-11-19 brought main in at c70a80228d: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head for each of the 235 open pull requests, made between
+// 2026-11-19T08:26:23Z and 08:26:52Z, found each of 161 to 166 declared, 167 declared by #4030,
+// #4485, #4493 and this change's own head before this merge, and nothing above 167. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line.)
+//
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+const DaemonAPIVersion = 178

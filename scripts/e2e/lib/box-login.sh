@@ -13,10 +13,11 @@ box_login_lock_file=${box_login_lock_file:-/tmp/legion-e2e-box-login.$(id -u).lo
 #
 # take_box_login_lock — takes a non-blocking flock on $box_login_lock_file. The stage proofs call it
 # first, before they make a work directory or start anything, so a refused run leaves nothing. The
-# lock is held on a file descriptor of the calling shell for the rest of its life, and by every
-# process it starts that keeps that descriptor, so a pane or daemon a run leaves behind still holds
-# it. A run whose lock is taken fails at once, naming the holder the lock file records (its pid and
-# command, or that it has exited and a process it started still holds the lock).
+# lock is held on a file descriptor of the calling shell (box_login_lock_fd) until the run's teardown
+# gives it up once every process of the run is gone (stop_box_login_run), or the shell exits, and by
+# every process it starts that keeps that descriptor, so a pane or daemon a run leaves behind still
+# holds it. A run whose lock is taken fails at once, naming the holder the lock file records (its
+# pid and command, or that it has exited and a process it started still holds the lock).
 #
 # Why one at a time: two runs at once would double the panes refreshing one login and race each
 # other's teardown against it; one at a time keeps a run's load on the operator's login bounded and
@@ -43,33 +44,43 @@ take_box_login_lock() {
   printf '%s %s\n' "$$" "$(ps -o args= -p "$$" 2>/dev/null || echo "$0")" >"$file"
 }
 
-# lib/wait-gone.sh, beside this file, holds the stop below.
-# shellcheck source-path=SCRIPTDIR source=wait-gone.sh
-. "$(dirname -- "${BASH_SOURCE[0]}")/wait-gone.sh"
+# lib/process-tree.sh, beside this file, holds the sweep the teardown below runs, and lib/wait-gone.sh,
+# which it sources, the wait for the lock.
+# shellcheck source-path=SCRIPTDIR source=process-tree.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/process-tree.sh"
 
-# box_login_stop_grace is how long stop_box_login_processes waits after its SIGTERM, in seconds.
+# box_login_stop_grace is how long, in seconds, a box-login run's teardown gives its processes after
+# SIGTERM before SIGKILL (stop_box_login_run).
 box_login_stop_grace=10
-# stop_box_login_processes PID… — stop_gone (lib/wait-gone.sh): SIGTERM to every PID, a wait of at
-# most box_login_stop_grace seconds for all of them to be gone, then SIGKILL to those still there
-# and a wait until 10 s past the grace, naming any still there then. A pane's Oh My Pi in the middle
-# of a token refresh gets the time to write the rotated token back to the operator's database
-# before it goes; a plain SIGKILL could leave the database with a refresh token that is already
-# spent. Each pane, and each process a pane started, holds the box-login lock it inherited until it
-# has exited, so the next box-login run's take_box_login_lock would meet one still ending. A caller
-# that holds the lock itself (take_box_login_lock left box_login_lock_fd open) is done with the
-# box-login route once it stops the panes: the stop closes the caller's descriptor first, and then
-# waits for the lock itself to be free (`lock:FILE`), which a process that holds the inherited
-# descriptor and is not among the PIDs would otherwise keep from the next run unseen. Returns 0 once
-# every PID is gone and the lock free, 1 when one is still there at the deadline: every caller is a
-# teardown, which goes on, and the next run's take_box_login_lock names the holder if it stays.
-stop_box_login_processes() {
-  local -a lock=()
-  if [ -n "${box_login_lock_fd:-}" ]; then
-    exec {box_login_lock_fd}>&-
-    box_login_lock_fd=
-    lock=("lock:$box_login_lock_file")
+# stop_box_login_run DIR is a box-login run's teardown of its processes, DIR its scratch directory:
+# stop_marked_processes DIR box_login_stop_grace (lib/process-tree.sh), SIGTERM to each process of
+# the run and up to box_login_stop_grace seconds for all of them to go, then SIGKILL to those still
+# there and a wait until each is gone. A pane's Oh My Pi in the middle of a token refresh gets the
+# time to write the rotated token back to the operator's database before it goes; a plain SIGKILL
+# could leave the database with a refresh token that is already spent. Only then, with every pane
+# and the tmux server it stopped gone, does the run give up its lock: it closes the descriptor
+# take_box_login_lock left open (box_login_lock_fd), so a second box-login run is refused until the
+# first run's last process is gone, and then waits until 10 s from the close for the lock itself to
+# be free (`lock:FILE`, lib/wait-gone.sh), which a process that inherited the descriptor and carries
+# no mark of the run would keep from the next run unseen. A tmux pane holds no copy of the
+# descriptor (the tmux server does, and the sweep ends it), so the lock alone could not tell that
+# the panes were gone: the order is what keeps the next run out. A second run that takes the lock in
+# the moment between the close and that read is read as a holder still there and named. Returns
+# stop_marked_processes's status when it is not 0 (2 when the run's processes could not be read, 1
+# when one is still there, each named), else 1 when the lock is still held at its deadline (named),
+# else 0.
+stop_box_login_run() {
+  local status=0 closed
+  stop_marked_processes "$1" "$box_login_stop_grace" || status=$?
+  [ -n "${box_login_lock_fd:-}" ] || return "$status"
+  exec {box_login_lock_fd}>&-
+  box_login_lock_fd=
+  closed=${EPOCHREALTIME//[!0-9]/}
+  if ! wait_gone "$((EPOCHSECONDS + 10))" "lock:$box_login_lock_file"; then
+    wait_gone_name "close of the run's own descriptor" "$closed"
+    [ "$status" != 0 ] || status=1
   fi
-  stop_gone "$box_login_stop_grace" "$((EPOCHSECONDS + box_login_stop_grace + 10))" "$@" ${lock[@]+"${lock[@]}"}
+  return "$status"
 }
 
 # unlink_box_login_db AGENT_DIR — removes AGENT_DIR/agent.db when it is a symlink (the link

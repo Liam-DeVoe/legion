@@ -1,16 +1,15 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
-import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { expectSameElements } from "../../__tests__/same-elements";
 import { answerThreadReads } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
@@ -22,97 +21,21 @@ import type {
   Comment,
   CreateCommentInput,
 } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
+import {
+  answeredAsk,
+  firstAnswer,
+  installAskCardApiMocks,
+  renderCard,
+  thread,
+} from "./ask-card-fixture";
 import { ThreadBody } from "./ThreadBody";
 
-let whoAmI: Mock<typeof api.whoAmI>;
-let getReferences: Mock<typeof api.getReferences>;
-let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
-
-beforeEach(() => {
-  whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
-    event_head: "0",
-    kind: "user",
-    login: "alice",
-  });
-  getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: [],
-    node: graphNode({ id: "ask-1", kind: "ask" }),
-  });
-  // Every card with an issue names who the ask reaches, which reads the issue's subscribers;
-  // nobody is subscribed here, so the card lists its followers alone.
-  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
-});
-
-afterEach(() => {
-  whoAmI.mockRestore();
-  getReferences.mockRestore();
-  getIssueSubscribers.mockRestore();
-  jest.useRealTimers();
-});
-
-const firstAnswer: AskAnswer = {
-  at: "2026-10-08T01:00:00Z",
-  selected: ["Ship"],
-  text: "First note",
-  user: "alice",
-};
-
-function answeredAsk(overrides: Partial<Ask> = {}): Ask {
-  return {
-    anchor: null,
-    answer: firstAnswer,
-    artifact_id: null,
-    asked_of: null,
-    asked_of_at: null,
-    asked_of_by: null,
-    author: { id: "session-1", kind: "session" },
-    block_id: null,
-    created_at: "2026-10-08T00:00:00Z",
-    edited_at: null,
-    id: "ask-1",
-    issue_key: "CORE-1",
-    kind: "question",
-    multiple: false,
-    opened_event_id: 1,
-    options: [{ label: "Ship" }, { label: "Hold" }],
-    question: "Which release path?",
-    state: "answered",
-    urgency: "med",
-    waiting_on: "human",
-    ...overrides,
-  };
-}
-
-function thread(ask: Ask, answers: AskAnswer[] = ask.answer === null ? [] : [ask.answer]): AskRead {
-  return {
-    answers,
-    ask,
-    claimant: null,
-    edits: [],
-    followers: [],
-    replies: [],
-    route: null,
-    route_status: null,
-    route_holder: null,
-    route_status_reason: null,
-  };
-}
-
-function renderCard(node: ReactNode) {
-  const queryClient = new QueryClient({
-    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
-  });
-  const view = render(
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>{node}</QueryClientProvider>
-    </MemoryRouter>
-  );
-  return { queryClient, view };
-}
+installAskCardApiMocks();
 
 test("the answerer can change an answer and sees both answers immediately", async () => {
   const user = userEvent.setup();
@@ -221,7 +144,8 @@ test("a stale change says the answer changed", async () => {
 
   try {
     await user.click(await view.findByRole("button", { name: "Change answer" }));
-    await user.click(view.getByRole("radio", { name: "Hold" }));
+    // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    await user.click(await view.findByRole("radio", { name: "Hold" }));
     await user.click(view.getByRole("button", { name: "Save answer" }));
     expect(
       await view.findByText("The answer changed since you opened it; here is the current one.")
@@ -253,7 +177,8 @@ for (const [code, message] of [
     );
     try {
       await user.click(await view.findByRole("button", { name: "Change answer" }));
-      await user.click(view.getByRole("radio", { name: "Hold" }));
+      // "Hold" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+      await user.click(await view.findByRole("radio", { name: "Hold" }));
       await user.click(view.getByRole("button", { name: "Save answer" }));
       expect(await view.findByText(message)).toBeTruthy();
       // The refusal meets the same send again, so the form it was sent from closes.
@@ -273,7 +198,8 @@ test("mode change opens the seeded form only when the viewer can change the answ
   try {
     expect(await editable.view.findByRole("button", { name: "Save answer" })).toBeTruthy();
     expect(editable.view.queryByText(/Answered by/)).not.toBeInTheDocument();
-    const ship = editable.view.getByRole("radio", { name: "Ship" }) as HTMLInputElement;
+    // "Ship" is a Markdown label (`MarkdownBody`), unnamed until the lazy Markdown engine loads.
+    const ship = (await editable.view.findByRole("radio", { name: "Ship" })) as HTMLInputElement;
     expect(ship.checked).toBe(true);
   } finally {
     editable.view.unmount();
@@ -359,11 +285,13 @@ function askReply(id: string, createdAt: string): Comment {
 /** An answered ask with two replies, unread for alice on CORE-1, rendered with time and the
  *  screen in the test's hands: the replies follow the first answer, or precede `answer` when one
  *  is given. */
-function renderUnreadAsk(props: {
+async function renderUnreadAsk(props: {
   markRead: boolean;
   thread: "inline" | "collapsed";
   answer?: AskAnswer;
 }) {
+  // A reply is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads in real time.
+  await warmMarkdownRenderer();
   jest.useFakeTimers();
   const screen = installIntersectionObserver();
   const mark = answerThreadReads().mockResolvedValue(undefined);
@@ -406,11 +334,11 @@ function renderUnreadAsk(props: {
 
 for (const shape of ["inline", "collapsed"] as const) {
   test(`with markRead, the ${shape} thread is marked read once its newest reply is on screen`, async () => {
-    const card = renderUnreadAsk({ markRead: true, thread: shape });
+    const card = await renderUnreadAsk({ markRead: true, thread: shape });
     try {
       const newest = (await card.view.findByText("Reply reply-2")).closest("li");
       if (newest === null) throw new Error("expected the newest reply's item");
-      expect(card.screen.observed()).toEqual([newest]);
+      expectSameElements(card.screen.observed(), [newest]);
       await dwellOn(card.screen, newest);
       expect(card.mark.mock.calls).toEqual([
         ["ask-1", { read_through: "2026-10-08T04:00:00.5Z" }, keyedAttempt],
@@ -421,10 +349,10 @@ for (const shape of ["inline", "collapsed"] as const) {
   });
 
   test(`without markRead, the ${shape} thread watches nothing`, async () => {
-    const card = renderUnreadAsk({ markRead: false, thread: shape });
+    const card = await renderUnreadAsk({ markRead: false, thread: shape });
     try {
       await card.view.findByText("Reply reply-2");
-      expect(card.screen.observed()).toEqual([]);
+      expect(card.screen.observed().length).toBe(0);
       expect(card.mark).not.toHaveBeenCalled();
     } finally {
       card.cleanup();
@@ -441,11 +369,11 @@ test("an answer given after every reply is what the mark watches and reads throu
     text: "Wait for the fix.",
     user: "bob@example.com",
   };
-  const card = renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
+  const card = await renderUnreadAsk({ answer, markRead: true, thread: "collapsed" });
   try {
     const record = await card.view.findByTestId("ask-ask-1");
     await card.view.findByText("Reply reply-2");
-    expect(card.screen.observed()).toEqual([record]);
+    expectSameElements(card.screen.observed(), [record]);
     await dwellOn(card.screen, record);
     expect(card.mark.mock.calls).toEqual([["ask-1", { read_through: answer.at }, keyedAttempt]]);
   } finally {
@@ -501,6 +429,9 @@ function mockVersions(versions: Record<number, string>) {
 // unmounts stays in the shared document; these tests read their own card alone (`within`).
 for (const variant of ["full", "compact"] as const) {
   test(`a ${variant} approval card names the earlier approval and diffs the two versions only when asked`, async () => {
+    // The question is read in the commit that mounts the card, which only a loaded engine draws
+    // (`MarkdownBody`): the first body of a file takes the asynchronous path.
+    await warmMarkdownRenderer();
     const user = userEvent.setup();
     const ask = approvalAsk(earlierApproval);
     const getArtifactVersion = mockVersions({ 11: "Before\n", 12: "After\n" });

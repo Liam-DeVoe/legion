@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { DISPATCH_EVENT_BODY_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
@@ -6,10 +6,14 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { ApiError, api, type DeclineAskInput } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, type DeclineAskInput, NetworkError } from "../../api/client";
 import type { Ask, AskRead } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 
 let whoAmI: Mock<typeof api.whoAmI>;
@@ -202,7 +206,8 @@ test("a declined ask shows Declined and the person's note, and offers no decline
     const record = await card.findByTestId("ask-ask-1");
     expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
     expect(record.textContent).toContain("alice declined to answer");
-    expect(record.textContent).toContain(note);
+    // The note is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    await waitFor(() => expect(record.textContent).toContain(note));
     // Dispatch's own words are the asking agent's to read, never the browser's.
     expect(record.textContent).not.toContain("The person chose not to answer");
     expect(card.queryByRole("button", { name: "Decline to answer" })).not.toBeInTheDocument();
@@ -239,7 +244,8 @@ test("a decline sends the person's note and closes the question", async () => {
     await waitFor(() => expect(sent).toEqual([{ note }]));
     const record = await card.findByTestId("ask-ask-1");
     expect(within(record).getByTestId("ask-resolution-badge").textContent).toBe("Declined");
-    expect(record.textContent).toContain(note);
+    // The note is Markdown (`MarkdownBody`), empty until the lazy Markdown engine loads.
+    await waitFor(() => expect(record.textContent).toContain(note));
     expect(card.queryByRole("dialog")).not.toBeInTheDocument();
   } finally {
     view.unmount();
@@ -327,5 +333,43 @@ test("a decline out keeps its dialog through Escape and the backdrop, and shows 
     expect(card.getByRole("dialog", { name: "Decline to answer" })).toBeTruthy();
   } finally {
     view.unmount();
+  }
+});
+
+// A decline the reader stopped may have been made: the dialog says so, and that its button is a
+// press of its own, rather than a failure it cannot know of.
+test("a decline the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const open = openAsk();
+  const { queryClient, view } = renderCard(
+    <AskCard
+      ask={open}
+      declineAsk={() =>
+        Promise.reject(new NetworkError("/api/v1/asks/ask-1/decline", new TypeError("Failed")))
+      }
+      getAskThread={async () => thread(open)}
+      initialThread={thread(open)}
+    />
+  );
+  const card = within(view.container);
+  try {
+    // The who-am-I read settles here, in a wait that moves the held clock inside `act`. The
+    // button below is found at once, and the wait for it ends before the read's answer lands,
+    // which would then update the card outside `act`.
+    await waitFor(() => expect(queryClient.getQueryState(["whoami"])?.status).toBe("success"));
+    await user.click(await card.findByRole("button", { name: "Decline to answer" }));
+    const dialog = card.getByRole("dialog", { name: "Decline to answer" });
+    await user.click(within(dialog).getByRole("button", { name: "Decline to answer" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your decline", "made", {
+        anew: "Pressing Decline to answer again sends a new decline.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
   }
 });
