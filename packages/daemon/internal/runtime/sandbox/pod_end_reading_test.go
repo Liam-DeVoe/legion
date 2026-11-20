@@ -327,9 +327,10 @@ func TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason(t *testing.T) {
 // makes (setMode), and the relabel of a Sandbox an issue's old tree left Running, which suspends
 // it in the relabel's own patch (ensureSandbox). A launch whose pod is not live enough to
 // displace, the suspension of a failed launch and a repository cache's own end their pod through
-// setMode's patch; it and the relabel take their suspending operation from one place
-// (suspending), which writes the record, so that none of them can end a pod without one. The
-// record is consumed by the end it was written for, so the runtime holds none afterwards.
+// the patch setMode sends, the first two under the act they pass (suspendOver); it and the relabel
+// take their suspending operation from one place (suspending), which writes the record, so that
+// none of them can end a pod without one. The record is consumed by the end it was written for, so
+// the runtime holds none afterwards.
 func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 	t.Run("a suspending patch of the sandbox", func(t *testing.T) {
 		g := runningIssuePod(t)
@@ -438,9 +439,9 @@ func TestTheDaemonsOwnEndOfAPodIsObservedAsItsOwn(t *testing.T) {
 // would be continued uncharged whenever the two came together: a task that fills its own disk, the
 // kubelet's `Evicted` with no DisruptionTarget condition, or a pod a node keeps refusing,
 // UnexpectedAdmissionError, would be relaunched pod after pod for ever. The words the end was read
-// from are kept for the pod's line, and no caller is answered with them. What the cluster says
-// ended the pod is read first, and is an end from outside it with a deletion timestamp beside it
-// as without one.
+// from are kept on its record, though an end read neither way writes no line, and no caller is
+// answered with them. What the cluster says ended the pod is read first, and is an end from outside
+// it with a deletion timestamp beside it as without one.
 func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarries(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -495,12 +496,12 @@ func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarr
 }
 
 // Of the evictions whose message names no container over its request (overRequest, which
-// capturePodEnd reads first, and which is the pod's own use whatever condition it carries), one is
+// readPodEnd reads first, and which is the pod's own use whatever condition it carries), one is
 // the pod's own only where the DisruptionTarget condition is not on it, and selfEvicted reads that
 // condition itself, so it never agrees with disruption about a pod: an eviction under node
 // pressure carries the same `Evicted` reason a pod over its own limit gets, and among those the
 // condition is all that tells them apart. Read from the reason alone, selfEvicted would
-// call a neighbour's pressure the pod's own, and any order of capturePodEnd's cases that asked it
+// call a neighbour's pressure the pod's own, and any order of readPodEnd's cases that asked it
 // before disruption, or any other caller of it, would have every role of that pod charged.
 func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *testing.T) {
 	for _, tc := range []struct {
@@ -692,6 +693,73 @@ func TestAPodsEndIsObservedByTheRuleWhicheverOfItsTerminalStatusAndItsDeletionCo
 					obs.Detail, named, tc.cause == deletedByAnother)
 			}
 		})
+	}
+}
+
+// An end read neither way is read again at each later event of the pod (capturePodEnd), and only
+// a reading that decides the end stops that: the kubelet's `Evicted` status can reach the informer
+// in an event of its own before the DisruptionTarget condition that says the node's pressure caused
+// it, and read from that first event alone, a neighbour's pressure would be charged a death. The
+// later event reads the end as one from outside the pod. That reading decides the end, and it is
+// the one the pod's line names: the empty reading before it decided nothing and wrote no line, so
+// the end writes one line, the not-ours one.
+func TestAnEndReadNeitherWayIsReadAgainAtTheEventThatSaysTheClusterEndedIt(t *testing.T) {
+	const disrupted = "TerminationByKubelet"
+	logs := &lockedLog{}
+	g := newRig(t, nil, withLog(logs))
+	loc := g.spawn(workerSpec(t))
+	name, uid := loc.Sandbox.Name, loc.Sandbox.PodUID
+
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus(evictedReason) })
+	if end := g.podEndHeld(uid); end.reading != "" || end.cause != evictedForItsOwnUse {
+		t.Fatalf("read %+v of the eviction with no condition, want it read neither way in the words %q", end, evictedForItsOwnUse)
+	}
+	g.update(g.pod(name), func(p *corev1.Pod) {
+		p.Status.Conditions = append(p.Status.Conditions, disruptionTarget(disrupted))
+	})
+
+	if end := g.podEndRead(uid); end.reading != runtime.PodEndNotOurs || end.reason != disrupted {
+		t.Fatalf("read %+v of the eviction once its condition came, want it read again as %s with the reason %s",
+			end, runtime.PodEndNotOurs, disrupted)
+	}
+	lines := linesHolding(logs.String(), podEndLine)
+	if len(lines) != 1 || !strings.Contains(lines[0], "uid="+uid) || !strings.Contains(lines[0], "reading="+string(runtime.PodEndNotOurs)) {
+		t.Fatalf("the pod's end wrote the lines %q, want one naming the pod and the reading %s that decided the end:\n%s",
+			lines, runtime.PodEndNotOurs, logs.String())
+	}
+}
+
+// A re-read takes no record of an intended end (capturePodEnd). The first reading of the end took
+// any record that stood, so one the daemon writes once the pod has shown its end was written by an
+// act that did not make that end: a launch that suspends the Sandbox of a pod that already failed
+// with no reason records the daemon's end under daemonSuspendedAct (suspendRecordingEnd) before the
+// controller's delete of that pod reaches the informer. Taken by the re-read that delete makes, the
+// record would turn the pod's own failure into the daemon's end, in the words of an act that did
+// not make it. The end stays read neither way, and the record is left to its expiry.
+func TestAReReadOfAnEndTakesNoRecordTheDaemonWroteAfterThePodShowedIt(t *testing.T) {
+	g := runningIssuePod(t)
+	name := SandboxName(workerToken)
+	g.update(g.pod(name), func(p *corev1.Pod) { p.Status = endedPodStatus("") })
+	if end := g.podEndHeld(recorded); end.reading != "" || end.cause != terminalWithNoClusterEnd {
+		t.Fatalf("read %+v of the failed pod, want it read neither way in the words %q", end, terminalWithNoClusterEnd)
+	}
+	g.r.meanToEndPod(recorded, daemonSuspendedAct)
+
+	if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
+		t.Fatal(err)
+	}
+	g.podEndLeft(recorded)
+
+	if end := g.podEndHeld(recorded); end.reading != "" || end.cause != terminalWithNoClusterEnd {
+		t.Fatalf("read %+v of the failed pod at its delete, want it still read neither way in the words %q, not as the act the daemon recorded once the pod had ended",
+			end, terminalWithNoClusterEnd)
+	}
+	if held := g.intendedEnds(); held != 1 {
+		t.Errorf("the runtime holds %d records of an intended end, want the one written after the pod showed its end left standing: a re-read takes none", held)
+	}
+	obs := g.observed(rolesLocator(workerToken, recorded))
+	if obs.Kind != runtime.Gone || obs.EndReading != "" {
+		t.Fatalf("observed %s EndReading=%q (%s), want Gone read neither way", obs.Kind, obs.EndReading, obs.Detail)
 	}
 }
 

@@ -72,9 +72,10 @@ func (g *rig) leaveTheStore() {
 // ephemeral-storage and no limit the pod passed and must not be told as the spec's limit; a
 // message naming over its request only a container this pod's spec does not hold; and a node's
 // refusal at admission, which carries the same reason and no condition and passed no limit. The
-// pod's line tells the end in the words of the cause it carries: a container over its request as
-// the same eviction carrying the condition is told, never as a limit of the pod's own it did not
-// pass, and any other end in words naming no container of the pod over its request.
+// end's record holds it in the words of the cause it carries, though no line names an end read
+// neither way: a container over its request as the same eviction carrying the condition is read,
+// never as a limit of the pod's own it did not pass, and any other end in words naming no
+// container of the pod over its request.
 func TestPlainCauseAnEvictionWithNoDisruptionTargetIsMarkedWithTheCauseItsMessageNames(t *testing.T) {
 	checkSelfEvictions(t, []selfEviction{
 		{name: "the pod's own limit", message: "Pod ephemeral local storage usage exceeds the total limit of containers 10Gi. ",
@@ -136,7 +137,7 @@ func TestPGDiskADiskLimitEvictionCarriesWhetherTheLimitCountedTheTestDatabase(t 
 // selfEviction is one `Evicted` end with no DisruptionTarget condition of the tester's pod: the
 // kubelet's message, the volumes the pod's spec holds beside the one every pod of the rig has
 // (podObject), the cause the pod's death carries and, where the case names them, the words the
-// pod's line tells the end in.
+// end's record holds.
 type selfEviction struct {
 	name, message string
 	volumes       []corev1.Volume
@@ -145,7 +146,7 @@ type selfEviction struct {
 }
 
 // checkSelfEvictions ends the tester's pod of a reservedIssuePod as each case says and checks that
-// its end is told in the case's words where it names them, and that its claim observes it Gone,
+// its end is read in the case's words where it names them, and that its claim observes it Gone,
 // read neither way, with the case's cause, the pod gone from the store or not.
 func checkSelfEvictions(t *testing.T, cases []selfEviction) {
 	t.Helper()

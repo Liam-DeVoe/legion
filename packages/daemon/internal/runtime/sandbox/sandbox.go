@@ -986,9 +986,13 @@ func (r *Runtime) stopFrame(generation uint64) shimwire.LauncherStop {
 	}
 }
 
-// daemonSuspendedAct is the act a suspension with no act of its own is recorded under as the
-// daemon's end of the pod (meanToEndPodOf): setMode's, and suspendOver's where the reset mark
-// turns setMode's suspension into a merge patch.
+// daemonSuspendedAct is the act the daemon's end of a pod is recorded under (meanToEndPodOf) where
+// that end is a suspension with no words of its own: every suspension setMode sends, and each
+// suspendOver whose caller passes it as its act — an issue's close and release (endIssuePod), a
+// launch's suspension over a Sandbox already Suspended (relaunch) or of a pod whose end carries no
+// reason to record (suspendRecordingEnd), and a failed launch's (suspendFailedLaunch). It is
+// passed, never read from the shape of the patch, so it is recorded whichever patch suspends the
+// Sandbox: the JSON patch setMode sends, or the merge patch a reset mark makes of it (suspendOver).
 const daemonSuspendedAct = "the daemon suspended the pod's sandbox"
 
 // setMode sets the Sandbox's operating mode, fenced to the Sandbox read (a JSON patch whose first
@@ -1010,16 +1014,17 @@ func (r *Runtime) setMode(ctx context.Context, s *sandbox, mode string) error {
 // relaunch-for-ever the initFailed reading exists to stop.
 //
 // Every JSON patch the daemon writes to suspend a Sandbox takes its operation from here, so no such
-// patch can end a pod with no record. Those patches are setMode's, for an issue's close or release
-// (endIssuePod), a launch that found a pod it cannot use and is not live enough to displace
-// (relaunch), the suspension of a failed launch (suspendFailedLaunch) and a repository cache's own
-// (reconcileCachePod), and ensureSandbox's relabel of a Sandbox its issue's old tree left Running,
-// which suspends it in the same patch. Each merge patch that suspends a Sandbox writes its record
-// too: the one of a suspension that replaces a live pod beside the annotation naming the pod
-// (suspendDisplacing), and the one whose reset mark stands in for setMode's patch as setMode would
-// (suspendOver). The merge patch that records a pod's own end beside its suspension writes none,
-// since that pod ended of its own (suspendRecordingEnd). The two deletes write theirs
-// (deleteSandbox, deleteFenced).
+// patch can end a pod with no record. Those patches are suspendOver's, under the act its caller
+// passes, for an issue's close or release (endIssuePod), a launch that found a pod it cannot use
+// and is not live enough to displace (relaunch, suspendRecordingEnd) and the suspension of a failed
+// launch (suspendFailedLaunch); setMode's, for a repository cache's own (reconcileCachePod); and
+// ensureSandbox's relabel of a Sandbox its issue's old tree left Running, which suspends it in the
+// same patch. Each merge patch that suspends a Sandbox writes its record too where its act needs
+// one: the one of a suspension that replaces a live pod beside the annotation naming the pod
+// (suspendDisplacing), and the one whose reset mark stands in for that JSON patch, under the act
+// its caller passes (suspendOver). The merge patch that records a pod's own end beside its
+// suspension writes none, since that pod ended of its own (suspendRecordingEnd). The two deletes
+// write theirs (deleteSandbox, deleteFenced).
 func (r *Runtime) suspending(s *sandbox, act string) jsonPatchOp {
 	r.meanToEndPodOf(s, act)
 	return jsonPatchOp{Op: "add", Path: "/spec/operatingMode", Value: modeSuspended}

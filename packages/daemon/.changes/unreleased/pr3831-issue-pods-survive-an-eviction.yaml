@@ -12,6 +12,11 @@ body: |-
   A copy sent to a pod that ends before any of its roles registers is sent again at the next start.
   The restore of an issue runs one role start at a time, and once a pod's launcher process holds
   the copy, the starts of its other roles neither take nor send it again.
+  A stop held for a turn's end, such as a project pause's, an operator's suspend or a linger,
+  waits for that turn's copy, at most the copy's 4-minute budget and never past the stop's own
+  deadline, and a copy that fails or times out lets the stop go. A project's pause stops no
+  running copy. Only a daemon whose project records the issue writes or drops its running copy,
+  so an operator's spawn of another project's issue leaves that project's copy as it is.
 
   A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
   did not make, continues every role of the issue in its own session with no death and no launch

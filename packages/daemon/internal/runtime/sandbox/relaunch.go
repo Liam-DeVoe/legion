@@ -299,7 +299,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 			// a patch of its own (suspendOver), before it waits the pod out and deletes the
 			// Sandbox. A launch that stops before that delete thus leaves the reset to the next
 			// launch.
-			if s, err = r.suspendOver(bounded, s, pod, nil); err != nil {
+			if s, err = r.suspendOver(bounded, s, pod, daemonSuspendedAct, nil); err != nil {
 				return fail("mark its kept volume for the reset", err)
 			}
 		}
@@ -665,14 +665,15 @@ func (r *Runtime) stillFetching(pod *corev1.Pod) string {
 // (suspendOver). A pod that the patch made and whose init container failed on the kept volume for
 // a cause local to it (volumeFault) thus leaves the reset mark (volumeResetAnnotation), as
 // ReplacePod and the release leave it: the next launch reads no pod once the suspension has taken
-// this one down, and it resets the volume on the mark. Every other failed launch sends setMode's
-// patch alone.
+// this one down, and it resets the volume on the mark. Every other failed launch sends the JSON
+// patch setMode sends for a suspension alone. Either way the daemon's end of the pod is recorded
+// under daemonSuspendedAct, the act this passes.
 func (r *Runtime) suspendFailedLaunch(ctx context.Context, token claim.Token, s *sandbox) {
 	suspending, cancel := call(context.WithoutCancel(ctx))
 	defer cancel()
 	sent := *s
 	sent.Spec.OperatingMode = modeRunning
-	if _, err := r.suspendOver(suspending, &sent, r.storedPod(s.Name), nil); err != nil {
+	if _, err := r.suspendOver(suspending, &sent, r.storedPod(s.Name), daemonSuspendedAct, nil); err != nil {
 		r.log.Error("sandbox runtime: could not suspend the sandbox of a failed launch", "claim", token, "err", err)
 	}
 }
@@ -1442,18 +1443,18 @@ const (
 // the pod as the one that suspension replaces (displacing), and records first that the daemon
 // means to end that pod (meanToEndPod): the annotation this same write sets answers for the roles
 // of that pod, and the record answers for the pod's end itself, so both read as the daemon's own.
-// The write is suspendOver's, so a pod that failed on the Sandbox's kept volume would leave the
-// reset mark in the same patch; a live pod shows no failed init container, so a launch's
-// replacement writes none. It returns the Sandbox as the patch left it, the one copy that carries
-// the name: a migrating launch reads it from there onto the Sandbox it creates in its place
-// (replaceSupersededSandbox).
+// The write is suspendOver's, under no act of its own ("") since this record is the one the end
+// needs, so a pod that failed on the Sandbox's kept volume would leave the reset mark in the same
+// patch; a live pod shows no failed init container, so a launch's replacement writes none. It
+// returns the Sandbox as the patch left it, the one copy that carries the name: a migrating launch
+// reads it from there onto the Sandbox it creates in its place (replaceSupersededSandbox).
 func (r *Runtime) suspendDisplacing(ctx context.Context, s *sandbox, pod *corev1.Pod, kind replacementKind) (*sandbox, error) {
 	act := "a launch replaced the pod"
 	if kind == roundReplacement {
 		act = "an update round replaced the pod"
 	}
 	r.meanToEndPod(string(pod.UID), act)
-	return r.suspendOver(ctx, s, pod, displacing(pod.UID, kind))
+	return r.suspendOver(ctx, s, pod, "", displacing(pod.UID, kind))
 }
 
 // displacing is the annotations of a suspension that replaces the live pod uid for kind: uid as
@@ -1478,21 +1479,25 @@ func displacing(uid types.UID, kind replacementKind) map[string]*string {
 // ended, it is not the Sandbox's, or there is none. A pod of the Sandbox's own whose end carries a
 // reason (runtime.PodEnd) has that end recorded in the same JSON merge patch (endedPodAnnotation,
 // endedPodEndAnnotation), so the API server applies the suspension and the record together or
-// neither. A pod that failed on the Sandbox's kept volume for a cause local to it (volumeFault)
-// has the reset mark (volumeResetAnnotation) written in that same patch (suspendOver), as
-// ReplacePod writes it. The launch resets such a volume only after the pod is gone
-// (replaceSupersededSandbox). A launch that stops before that delete thus leaves the mark, and the
-// next launch, which reads no pod or one that is being deleted, resets the volume on it
-// (volumeReset). Any other pod is suspended over as setMode does, recording nothing.
+// neither, and nothing records that end as the daemon's, since the pod ended of its own: the act
+// is "" (suspendOver). A pod that failed on the Sandbox's kept volume for a cause local to it
+// (volumeFault) has the reset mark (volumeResetAnnotation) written in that same patch
+// (suspendOver), as ReplacePod writes it. The launch resets such a volume only after the pod is
+// gone (replaceSupersededSandbox). A launch that stops before that delete thus leaves the mark, and
+// the next launch, which reads no pod or one that is being deleted, resets the volume on it
+// (volumeReset). Any other pod is suspended over under daemonSuspendedAct, as setMode suspends a
+// Sandbox, so the daemon's end of the pod the Sandbox owns is recorded (meanToEndPodOf) whether or
+// not the reset mark makes the patch a merge patch: a pod whose init container keeps failing shows
+// no reason, and its end, with no record, would read as one from outside the pod (suspending).
 func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *corev1.Pod) error {
-	var annotations map[string]*string
+	act, annotations := daemonSuspendedAct, map[string]*string(nil)
 	if ownedBy(pod, s.UID) {
 		if end := runtime.PodEnd(pod.Status.Reason, pod.Status.Message); end != "" {
 			ended := string(pod.UID)
-			annotations = map[string]*string{endedPodAnnotation: &ended, endedPodEndAnnotation: &end}
+			act, annotations = "", map[string]*string{endedPodAnnotation: &ended, endedPodEndAnnotation: &end}
 		}
 	}
-	_, err := r.suspendOver(ctx, s, pod, annotations)
+	_, err := r.suspendOver(ctx, s, pod, act, annotations)
 	return err
 }
 
@@ -1506,19 +1511,28 @@ func (r *Runtime) suspendRecordingEnd(ctx context.Context, s *sandbox, pod *core
 // Running patch (suspendFailedLaunch), the update round's ReplacePod, and the release
 // (endIssuePod).
 //
-// A Sandbox that is not Suspended takes one merge patch of the mode and the annotations
-// (suspendAnnotating), or setMode's patch where there is no annotation. A Sandbox already
-// Suspended takes a merge patch of the annotations alone (annotate), of those it does not carry
-// with the same value already, and no write where there is none. It returns the Sandbox as the
-// patch left it, and s where it wrote no merge patch.
+// act is the act the daemon's own end of the pod is recorded under (meanToEndPodOf), or "" where
+// the caller's act records no end of the daemon's here, its own annotations recording what the act
+// needs: a displacement records its own end before it calls (suspendDisplacing), and a pod whose
+// end the patch records ended of its own (suspendRecordingEnd). An issue's close and release
+// (endIssuePod), a launch over a Sandbox already Suspended (relaunch), a launch's suspension of a
+// pod whose end carries no reason to record (suspendRecordingEnd) and a failed launch's suspension
+// (suspendFailedLaunch) pass daemonSuspendedAct. The end is recorded from act alone, before the
+// patch is sent, and never from whether there are annotations, so the reset mark, which turns a
+// suspension with no annotation of the caller's into a merge patch, leaves what is recorded as the
+// suspension without it would have recorded.
 //
-// A suspension whose caller gave no annotation of its own is setMode's, and the daemon ends the
-// pod with it, so where the reset mark turns it into a merge patch it records that end first, as
-// setMode records its own (suspending, meanToEndPodOf). A caller that gives annotations records
-// what its act needs: a displacement records its own end (suspendDisplacing), and a pod whose end
-// the patch records ended of its own, so nothing records it as the daemon's (suspendRecordingEnd).
-func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, annotations map[string]*string) (*sandbox, error) {
-	setModes := len(annotations) == 0
+// A Sandbox that is not Suspended takes one merge patch of the mode and the annotations
+// (suspendAnnotating), the end recorded first where act is not "", or, where there is no
+// annotation at all, the JSON patch setMode sends for a suspension, whose operation records the
+// end under act (suspending). That patch is refused with an error, and nothing is written, where
+// act is "": its operation always records an end, and a caller that names no act and gives no
+// annotation has said neither what the daemon's end of the pod is nor what its own act records. A
+// Sandbox already Suspended takes a merge patch of the annotations alone (annotate), of those it
+// does not carry with the same value already, and no write where there is none; it records
+// nothing, since no such patch ends the pod. It returns the Sandbox as the patch left it, and s
+// where it wrote no merge patch.
+func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, act string, annotations map[string]*string) (*sandbox, error) {
 	if fault := volumeFault(s, pod); fault != "" {
 		if annotations == nil {
 			annotations = map[string]*string{}
@@ -1527,10 +1541,14 @@ func (r *Runtime) suspendOver(ctx context.Context, s *sandbox, pod *corev1.Pod, 
 	}
 	if s.mode() != modeSuspended {
 		if len(annotations) == 0 {
-			return s, r.setMode(ctx, s, modeSuspended)
+			if act == "" {
+				return s, fmt.Errorf("suspend Sandbox %s: no act to record the daemon's end of its pod under and no annotation to write", s.Name)
+			}
+			_, err := r.patch(ctx, s, r.suspending(s, act))
+			return s, err
 		}
-		if setModes {
-			r.meanToEndPodOf(s, daemonSuspendedAct)
+		if act != "" {
+			r.meanToEndPodOf(s, act)
 		}
 		return r.suspendAnnotating(ctx, s, annotations)
 	}

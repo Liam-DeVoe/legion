@@ -50,7 +50,7 @@ const podEndRecordLife = 10 * time.Minute
 // and the Agent Sandbox controller deletes the pod — so every end the daemon makes carries a
 // deletion timestamp the daemon did not write, and this reading is made only where no record of
 // an intended end answers for the pod. It is made only of a pod not yet terminal: a terminal pod
-// is read from its status alone, whatever deletion timestamp it carries (capturePodEnd).
+// is read from its status alone, whatever deletion timestamp it carries (readPodEnd).
 const deletedByAnother = "the pod was being deleted with no act of the daemon's to account for it"
 
 // clusterEndedReasons are the reasons a pod's own status carries when the cluster ended it, and
@@ -73,7 +73,7 @@ const deletedByAnother = "the pod was being deleted with no act of the daemon's 
 // for ever. The kubelet's admission check writes `Evicted` with no condition as well, for a pod a
 // node under pressure refuses before it runs, which is the refusal UnexpectedAdmissionError is.
 // So `Evicted` with no DisruptionTarget condition reads as neither reading and is charged a
-// death (capturePodEnd). So does an eviction under node memory or disk pressure whose message
+// death (readPodEnd). So does an eviction under node memory or disk pressure whose message
 // names a container of the pod using more memory, or more ephemeral storage, than it requested
 // (overRequest), though it carries the condition: that pod's own use is what the kubelet evicted
 // first, and a new pod running the same work would use as much.
@@ -90,7 +90,7 @@ const evictedReason = "Evicted"
 // refused it at admission (clusterEndedReasons), or a kubelet that wrote no condition evicted it
 // for node memory or disk pressure. Such an end is read neither way and charged. The same end
 // whose message names a container of the pod over its memory or its ephemeral-storage request is
-// told in evictedOverRequest's words instead (selfEvictedCause, capturePodEnd), since the kubelet
+// read in evictedOverRequest's words instead (selfEvictedCause, readPodEnd), since the kubelet
 // writes that sentence only for node pressure and these words would name a cause it was not.
 const evictedForItsOwnUse = "the kubelet evicted the pod with no DisruptionTarget condition: over a limit of its own, refused at admission, or for node pressure, its message naming no container of the pod over its request"
 
@@ -174,7 +174,7 @@ func specContainer(pod *corev1.Pod, name string) bool {
 // whether or not the kubelet also wrote the condition. The role is then told the resource, its use
 // and its request as the message gives them (dispatch://INFRA-1117 R9), and not a limit it never
 // reached. Any other message is read for a disk limit of the pod's own (diskEviction). The end is
-// read neither way and charged whatever this answers (capturePodEnd), so the cause decides only
+// read neither way and charged whatever this answers (readPodEnd), so the cause decides only
 // what the role is told of its death.
 func selfEvictedCause(pod *corev1.Pod) runtime.DeathCause {
 	if cause := namedOverRequest(pod); cause.Kind != "" {
@@ -264,7 +264,7 @@ func specDiskLimit(pod *corev1.Pod) int64 {
 // terminalWithNoClusterEnd is the reading of a pod already terminal whose status names neither an
 // end the cluster made (disruption) nor an eviction (selfEvicted): a reason outside
 // clusterEndedReasons, UnexpectedAdmissionError among them, or no reason at all. Such an end is
-// read neither way and charged, whatever deletion timestamp the pod carries (capturePodEnd).
+// read neither way and charged, whatever deletion timestamp the pod carries (readPodEnd).
 const terminalWithNoClusterEnd = "the pod was terminal and its status names no end the cluster made"
 
 // disruption is whether the cluster says it ended pod, with the words the daemon read that from
@@ -272,9 +272,9 @@ const terminalWithNoClusterEnd = "the pod was terminal and its status names no e
 // kubelet set on a pod they are ending — an eviction, a preemption, a node shutting down or
 // draining — and otherwise one of clusterEndedReasons on the pod's own status. Both readings live
 // here, read in this one place. A pod whose status reason is evictedReason with no condition is no
-// disruption (clusterEndedReasons); selfEvicted names that end for capturePodEnd. A disruption the
+// disruption (clusterEndedReasons); selfEvicted names that end for readPodEnd. A disruption the
 // kubelet made for node memory or disk pressure whose message names a container of the pod over
-// its request is still one here, and capturePodEnd asks overRequest before it asks this.
+// its request is still one here, and readPodEnd asks overRequest before it asks this.
 //
 // kubeletFailure asks a different question of the same two facts, so neither reads the other: it
 // answers any non-empty reason, which this excludes, and it reads the image probe's pod, which
@@ -293,7 +293,7 @@ func disruption(pod *corev1.Pod) (cause, reason string, ok bool) {
 // evictedForItsOwnUse names, or evictedOverRequest where its message names a container of the pod
 // over its request: the reason is evictedReason and the condition is not set true. It reads the
 // condition itself rather than leaning on disruption having answered no first, so no order of
-// capturePodEnd's cases, and no other caller, can read an eviction under node pressure, which
+// readPodEnd's cases, and no other caller, can read an eviction under node pressure, which
 // carries the condition, as the pod's own and have it charged.
 func selfEvicted(pod *corev1.Pod) bool {
 	if pod.Status.Reason != evictedReason {
@@ -341,7 +341,7 @@ func (e podEnd) expired(now time.Time) bool {
 
 // sameReading is whether e reads a pod's end as o does: the same reading, made from the same words,
 // with the same cause told in plain words. A later event of the pod read that way changes nothing
-// a claim is answered and writes no second line (capturePodEnd).
+// a claim is answered and writes no line (capturePodEnd).
 func (e podEnd) sameReading(o podEnd) bool {
 	return e.reading == o.reading && e.cause == o.cause && e.death == o.death
 }
@@ -455,56 +455,25 @@ func (r *Runtime) prunePodEnds() {
 // other pod ever holds, beside the Sandbox-name record that stands in for an annotation
 // (stranded).
 //
-// An end the daemon's own record names is the daemon's own (takeIntendedEnd), whatever the cluster
-// made of it, so a pod the daemon is ending that the kubelet then evicts continues no role. An end
-// the cluster says it made (disruption) is an end from outside the pod, except an eviction under
-// node memory or disk pressure whose message names a container of the pod over its request of
-// that resource (overRequest): that is the pod's own use, read neither way, with its cause kept
-// for the claims of the pod (podEnd.death). Past those, a pod already terminal — in the phase the
-// kubelet sets on a pod it has ended (terminal) — is read from its status alone, and a deletion
-// timestamp counts only on a pod not yet terminal. A terminal pod is read neither way, whatever
-// its reason and whatever deletion timestamp it carries: `Evicted` with no DisruptionTarget
-// condition (selfEvicted), a reason outside the cluster's own such as UnexpectedAdmissionError,
-// or no reason at all. An `Evicted` end with no condition keeps the cause its message names
-// (selfEvictedCause): a container of the pod over its memory or its ephemeral-storage request, as
-// the eviction above that carries the condition does and in the same words (evictedOverRequest),
-// since the kubelet evicted that pod for its own use whatever condition it wrote, or else a disk
-// limit of the pod's own that the kubelet evicted it for passing. A message naming neither, a
-// node's refusal at admission among them, keeps no cause, so no role is told it passed a limit it
-// never reached, and the end is charged all the same. The words of an end read neither way
-// (evictedOverRequest, evictedForItsOwnUse, terminalWithNoClusterEnd) and its reason are kept for
-// the line (logPodEnd), and no caller is answered with them (podEndOf). A pod not yet terminal
-// that carries a deletion timestamp no act of the daemon's accounts for is an end from outside it
-// (deletedByAnother). A pod the informer delivers as deleted is read by the same rule from the
-// last state it carries.
+// The reading itself is readPodEnd's, made from the state this event carries; what is kept, and
+// when, is this function's: it takes the record of an intended end at the first reading of the end
+// alone (takeIntendedEnd), keeps the reading, and writes its line (logPodEnd). Every reading is
+// kept, an end of neither reading too, which is kept with an empty reading and charged as it always
+// was. A reading that is not empty decides the end at the event that made it: a deletion read from
+// outside stays so when the kubelet's terminal status follows it, and no later event of the same
+// end — a second eviction, the controller's delete, pod garbage collection, an operator's own
+// `kubectl delete pod`, the informer's delete — is read again or gets a line of its own. An empty
+// reading is read again at each later event of the pod, by the same rule and from the state that
+// event carries, so an end is read alike whether its facts came in one event or in several; a
+// re-read that reads the end as the reading standing does (podEnd.sameReading) keeps that reading,
+// and only a changed reading is kept. A re-read takes no record of an intended end: the first
+// reading took any that stood (takeIntendedEnd), so a record standing now was written after the pod
+// had shown its end, by an act that did not make it.
 //
-// The rule reads a pod's failure the same however the informer delivers its facts. The controller
-// deletes a pod the kubelet has failed, and the informer can deliver the terminal status and the
-// deletion timestamp in one event or in two. Read from the deletion timestamp wherever there is
-// one, the same failure would be continued uncharged when both came in one event and charged when
-// the status came first, and a pod a node keeps refusing, or a task that fills its own disk, would
-// be relaunched for ever whenever the two came together.
-//
-// The rule has one cost: an outside delete the daemon first sees when the pod is already terminal
-// is charged a death. That is rare. The informer hands notify each watch event in order, and a
-// graceful delete sets the deletion timestamp on the running pod before the kubelet makes it
-// terminal, so the daemon sees the running pod's deletion first and reads it as an end from
-// outside. It sees the terminal pod first only when its watch missed that update and a relist
-// delivered only the later state: that is inferred from how client-go's watch and relist behave,
-// and no test here proves the order the informer delivers in.
-//
-// Every reading is kept, an end of neither reading too, which is kept with an empty reading and
-// charged as it always was. A reading that is not empty makes the first event that shows a pod's
-// end the one that decides: a deletion read from outside stays so when the kubelet's terminal
-// status follows it, and no later event of the same end — a second eviction, the controller's
-// delete, pod garbage collection, an operator's own `kubectl delete pod`, the informer's delete —
-// is read again or gets a line of its own. An empty reading is read again at each later event of
-// the pod, by the same rule and from the state that event carries, so an end is read alike whether
-// its facts came in one event or in several; a re-read that reads the end as the reading standing
-// does (podEnd.sameReading) keeps that reading and writes no line, and only a changed reading is
-// kept and logged. A re-read takes no record of an intended end: the first reading took any that
-// stood (takeIntendedEnd), so a record standing now was written after the pod had shown its end, by
-// an act that did not make it. A reading that has expired is pruned before the event is read, so
+// Only a reading that decides the end, one that is not empty, writes the pod's line (logPodEnd),
+// whether the first event made it or a re-read did. An empty reading decides nothing and writes
+// none, so the one line a pod's end gets names the reading that decided it, and an end no event
+// reads either way gets none. A reading that has expired is pruned before the event is read, so
 // that event reads the end afresh. The empty reading is answered to no caller as a reading
 // (podEndOf), so it decides nothing it did not read; the cause it carries, where it carries one, is
 // answered. Called with r.mu held.
@@ -522,12 +491,69 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 		r.podEnds[uid] = held
 		return
 	}
-	end := podEnd{name: pod.Name, goneAt: held.goneAt}
 	var act string
 	intended := false
 	if !read {
 		act, intended = r.takeIntendedEnd(uid)
 	}
+	end := readPodEnd(pod, act, intended)
+	end.name, end.goneAt = pod.Name, held.goneAt
+	if read && end.sameReading(held) {
+		r.podEnds[uid] = held
+		return
+	}
+	r.podEnds[uid] = end
+	r.logPodEnd(pod, end)
+}
+
+// readPodEnd is the reading of pod's end by the one rule every event of the pod is read by, from
+// the state this event carries; act is the act a record of the daemon's own names for the end,
+// where intended says such a record stood (takeIntendedEnd, which capturePodEnd asks). It reads
+// pod, act and intended and nothing else — no record, no clock, no runtime state — so it sets the
+// reading, its words, the cluster's reason and the cause alone: the pod's name and the moment the
+// pod left the informer's store are the record's, which capturePodEnd sets. A pod none of the
+// rule's cases names, one the informer delivers deleted whose last state shows no end, reads as an
+// empty end with no words.
+//
+// An end the daemon's own record names is the daemon's own, whatever the cluster made of it, so a
+// pod the daemon is ending that the kubelet then evicts continues no role. An end the cluster says
+// it made (disruption) is an end from outside the pod, except an eviction under node memory or disk
+// pressure whose message names a container of the pod over its request of that resource
+// (overRequest): that is the pod's own use, read neither way, with its cause kept for the claims of
+// the pod (podEnd.death). Past those, a pod already terminal — in the phase the kubelet sets on a
+// pod it has ended (terminal) — is read from its status alone, and a deletion timestamp counts only
+// on a pod not yet terminal. A terminal pod is read neither way, whatever its reason and whatever
+// deletion timestamp it carries: `Evicted` with no DisruptionTarget condition (selfEvicted), a
+// reason outside the cluster's own such as UnexpectedAdmissionError, or no reason at all. An
+// `Evicted` end with no condition keeps the cause its message names (selfEvictedCause): a container
+// of the pod over its memory or its ephemeral-storage request, as the eviction above that carries
+// the condition does and in the same words (evictedOverRequest), since the kubelet evicted that pod
+// for its own use whatever condition it wrote, or else a disk limit of the pod's own that the
+// kubelet evicted it for passing. A message naming neither, a node's refusal at admission among
+// them, keeps no cause, so no role is told it passed a limit it never reached, and the end is
+// charged all the same. The words of an end read neither way (evictedOverRequest,
+// evictedForItsOwnUse, terminalWithNoClusterEnd) and its reason are kept on its record, which a
+// later event's reading is compared with (podEnd.sameReading); no line names them (logPodEnd), and
+// no caller is answered with them (podEndOf). A pod not yet terminal that carries a deletion
+// timestamp no act of the daemon's accounts for is an end from outside it (deletedByAnother). A pod
+// the informer delivers as deleted is read by the same rule from the last state it carries.
+//
+// The rule reads a pod's failure the same however the informer delivers its facts. The controller
+// deletes a pod the kubelet has failed, and the informer can deliver the terminal status and the
+// deletion timestamp in one event or in two. Read from the deletion timestamp wherever there is
+// one, the same failure would be continued uncharged when both came in one event and charged when
+// the status came first, and a pod a node keeps refusing, or a task that fills its own disk, would
+// be relaunched for ever whenever the two came together.
+//
+// The rule has one cost: an outside delete the daemon first sees when the pod is already terminal
+// is charged a death. That is rare. The informer hands notify each watch event in order, and a
+// graceful delete sets the deletion timestamp on the running pod before the kubelet makes it
+// terminal, so the daemon sees the running pod's deletion first and reads it as an end from
+// outside. It sees the terminal pod first only when its watch missed that update and a relist
+// delivered only the later state: that is inferred from how client-go's watch and relist behave,
+// and no test here proves the order the informer delivers in.
+func readPodEnd(pod *corev1.Pod, act string, intended bool) podEnd {
+	var end podEnd
 	cause, reason, disrupted := disruption(pod)
 	ownUse := overRequest(pod)
 	switch {
@@ -545,12 +571,7 @@ func (r *Runtime) capturePodEnd(pod *corev1.Pod, gone bool) {
 	case pod.DeletionTimestamp != nil:
 		end.reading, end.cause = runtime.PodEndNotOurs, deletedByAnother
 	}
-	if read && end.sameReading(held) {
-		r.podEnds[uid] = held
-		return
-	}
-	r.podEnds[uid] = end
-	r.logPodEnd(pod, end)
+	return end
 }
 
 // podEnding is whether pod's event is one an end can be read from: the informer delivered it as
@@ -560,24 +581,29 @@ func podEnding(pod *corev1.Pod, gone bool) bool {
 	return gone || pod.DeletionTimestamp != nil || terminal(pod)
 }
 
-// podEndLine is the one line a pod's end gets, written where the end is first read, and again only
-// where a later event reads otherwise an end the first read neither way (capturePodEnd), naming the
+// podEndLine is the one line a pod's end gets, written by the reading that decides the end — the
+// daemon's own end or one from outside the pod — whether the first event of the end made that
+// reading or a later event read again an end the events before it read neither way
+// (capturePodEnd). A reading of neither kind decides nothing and gets no line. The line names the
 // pod, which reading was made, the words it was made from, the reason the cluster gave where it
 // gave one, and, as ended, the roles whose processes the end ended: every role of that pod the
 // runtime watches. The line names what ended and nothing of what any claim got for it. It is
-// written before any claim is decided, and the supervisor decides each claim on its own — a
-// pod_end_not_ours end continued uncharged however often it comes, an end read neither way charged
-// as the claim's own death wherever that claim had work outstanding — so each claim's own
-// supervise line says what that claim got (supervise's endedFromOutside, died). One line
-// per pod end and not one per role: a pod's six roles end together, and the runtime knows every
-// watched claim whose locator names the pod. A reader of the line tells a restart an eviction
+// written before any claim is decided on the reading it names, and the supervisor decides each
+// claim on its own — a pod_end_not_ours end continued uncharged however often it comes, an end
+// read neither way charged as the claim's own death wherever that claim had work outstanding — so
+// each claim's own supervise line says what that claim got (supervise's endedFromOutside, died).
+// One line per pod end and not one per role: a pod's six roles end together, and the runtime knows
+// every watched claim whose locator names the pod. A reader of the line tells a restart an eviction
 // caused from one an out-of-memory kill caused.
 const podEndLine = "sandbox runtime: read what ended a watched pod"
 
-// logPodEnd writes that line for end, the reading just made of pod's end: at warning level for an
-// end from outside the pod, which cost every role in it its turn through nothing of its own, and
-// at info level for one the daemon itself made, which is the daemon reporting its own act, or for
-// an end read neither way, which is charged as it always was.
+// logPodEnd writes that line for end, the reading just made of pod's end, where that reading
+// decides the end: at warning level for an end from outside the pod, which cost every role in it
+// its turn through nothing of its own, and at info level for one the daemon itself made, which is
+// the daemon reporting its own act. A reading of neither kind writes nothing: it decides nothing,
+// a later event of the pod reads the end again, and the reading that then decides it, where one
+// does, is the one the line names. Such an end is charged as it always was, and each claim's own
+// supervise line says what that claim got.
 //
 // A pod the runtime watches no claim of gets no line. The line is the record of the watched roles
 // an end ended, and a pod no claim of this runtime runs in ends none: the pods informer carries
@@ -587,6 +613,9 @@ const podEndLine = "sandbox runtime: read what ended a watched pod"
 // whether or not the line is written: a claim of the pod may be watched by the time the end is
 // evaluated. Called with r.mu held.
 func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
+	if end.reading == "" {
+		return
+	}
 	ended := make([]string, 0, len(r.watch))
 	for token, loc := range r.watch {
 		if loc.Sandbox == nil || loc.Sandbox.PodUID != string(pod.UID) {
@@ -616,11 +645,11 @@ func (r *Runtime) logPodEnd(pod *corev1.Pod, end podEnd) {
 // podEndRecordLife, and the claims of that pod are judged for its end only once it has gone.
 //
 // An end read neither way is answered to no one either, unless it carries a cause the daemon tells
-// in plain words (podEnd.death), which is then answered with its empty reading. Its record exists so
-// that a later event of the pod that reads the end alike writes no second line (capturePodEnd), and
-// it holds no reading, so the claims of that pod are evaluated as they were before the reading
-// existed: no reading on the observation and nothing added to its detail, and only the cause where
-// there is one.
+// in plain words (podEnd.death), which is then answered with its empty reading. Its record exists
+// so that a later event of the pod is read as a re-read, which takes no record of an intended end
+// and changes nothing where it reads the end alike (capturePodEnd), and it holds no reading, so the
+// claims of that pod are evaluated as they were before the reading existed: no reading on the
+// observation and nothing added to its detail, and only the cause where there is one.
 func (r *Runtime) podEndOf(uid string) (podEnd, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
