@@ -59,17 +59,18 @@ func (refusingSource) Token() (*oauth2.Token, error) {
 
 // TestTheUserinfoReadPrintsNoneOfGooglesWords: the userinfo read --owner me makes
 // (gcpBackend.personEmail) prints none of a credential's URL Google's words quote: neither the
-// body of a refusal it answers (gcpUserinfo's status line and body), nor the refusal of the token
-// source the read asks for a token through the http.Client oauth2.NewClient builds, which comes
-// back inside that client's *url.Error.
+// body of a refusal it answers (gcpUserinfo's status line and body, including the bearer it
+// echoes), nor the refusal of the token source the read asks for a token through the http.Client
+// oauth2.NewClient builds, which comes back inside that client's *url.Error.
 func TestTheUserinfoReadPrintsNoneOfGooglesWords(t *testing.T) {
 	refused := answering(func(r *http.Request) *http.Response {
+		body := redacttest.Words + " the request carried " + r.Header.Get("Authorization")
 		return &http.Response{StatusCode: http.StatusForbidden, Status: "403 Forbidden", Header: http.Header{},
-			Body: io.NopCloser(strings.NewReader(redacttest.Words)), Request: r}
+			Body: io.NopCloser(strings.NewReader(body)), Request: r}
 	})
 	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Transport: refused})
 	for name, source := range map[string]oauth2.TokenSource{
-		"a refused userinfo read":  oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "demo-access-not-a-secret", TokenType: "Bearer"}),
+		"a refused userinfo read":  oauth2.StaticTokenSource(&oauth2.Token{AccessToken: redacttest.Token, TokenType: "Bearer"}),
 		"a token source's refusal": refusingSource{},
 	} {
 		t.Run(name, func(t *testing.T) {
