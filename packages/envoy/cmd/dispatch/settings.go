@@ -39,8 +39,9 @@ type setting struct {
 // settings is every Dispatch setting, in the order an operator meets them: storage, identity,
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
 // listener, projects and the issues the search bar files, the GitHub App, cookies,
-// service-account tokens, the secrets broker, meaning search's model service, the model the
-// server generates text with, the dashboard, and local and test runs.
+// service-account tokens, the secrets broker and the Legion status scope it grants, meaning
+// search's model service, the model the server generates text with, the dashboard, and local and
+// test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `versions`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
@@ -140,6 +141,8 @@ var settings = []setting{
 		Description: "Base URL of the secrets broker's API, an absolute http(s) URL with no path; set, the credential-request pages are on."},
 	{Name: "DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE", Required: "when `DISPATCH_AGENT_SECRETS_URL` is set",
 		Description: "File holding Dispatch's own projected Kubernetes service-account token, which every call to the secrets broker presents; the broker verifies it and reads the caller from `BROKER_API_ACCOUNTS`. In the cluster it is the projected-token volume's path (`/var/run/secrets/…/token`), which the kubelet rewrites in place; the file is read at call time, so a rotation needs no restart, and a local run writes a token into a file of its own and names that."},
+	{Name: "DISPATCH_LEGION_STATUS_SCOPE", Default: "`off`", Required: "no",
+		Description: "Set to `on` to refuse three writes of a Legion issue to a credential that holds neither the `person` scope nor `legion-status`. The three writes are a write of the issue's status, the removal of its `legion` label, and a move that leaves it under no labelled issue. Dispatch answers each of them `403 LEGION_STATUS_SCOPE_REQUIRED`. A Legion issue carries the `legion` label, in any letter case, or is under an issue that carries it. Unset or `off`, Dispatch refuses none of these writes, and any other value refuses startup. Turn it on in this order. (1) Deploy the secrets broker release that grants `legion-status`, then wait one broker access-token lifetime (`BROKER_ACCESS_TOKEN_SECONDS`, 15 minutes by default). (2) Deploy this Dispatch release. (3) Run each deployment with `dispatch_token_broker` on, so each Legion daemon writes with its own broker token and no role's token is the shared one. (4) Run each daemon on the release where `close_child` and `park_child` write status through the daemon. (5) Change the deployment's instructions so each Legion controller admits an issue through the daemon's `set_status` and writes no `todo` itself. After the controller adds the `legion` label, Dispatch refuses a status write the controller sends itself. Nothing refuses another order: Dispatch turns the refusal on whichever steps are done."},
 	{Name: "DISPATCH_EMBEDDER", Default: "`bedrock`", Required: "no",
 		Description: "Where meaning search reaches Cohere Embed v4: `bedrock` (AWS Bedrock, on the AWS SDK's own region and credentials; with no region, search is keyword-only) or `azure` (Azure AI Foundry, configured by the `DISPATCH_AZURE_EMBED_*` settings, each of which `bedrock` refuses, and by the shared Azure sign-in, which `DISPATCH_ANSWERER=azure` reads too)."},
 	{Name: "DISPATCH_AZURE_EMBED_ENDPOINT", Required: "when `DISPATCH_EMBEDDER` is `azure`",

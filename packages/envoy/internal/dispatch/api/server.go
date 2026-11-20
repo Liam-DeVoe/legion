@@ -144,6 +144,12 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *agentsecrets.Client
+	// LegionStatusScope turns on the refusal of three writes of a Legion issue (cmd/dispatch:
+	// DISPATCH_LEGION_STATUS_SCOPE): a write of its status, the removal of its legion label, and
+	// a move that leaves it under no labelled issue. With it on, Dispatch refuses each of them to
+	// a credential that holds neither model.ScopePerson nor model.ScopeLegionStatus. False
+	// refuses none of them, which is every deployment that has not turned it on.
+	LegionStatusScope bool
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -261,6 +267,10 @@ type DepsInput struct {
 	// projected Kubernetes ServiceAccount token, which the client presents on every broker call.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope turns on the refusal of a Legion issue's status, label and parent writes
+	// from a credential that holds neither the person scope nor legion-status; see
+	// Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store; nil keeps files in Postgres. See Deps.Files.
 	Files            files.Store
 	TestHooksEnabled bool
@@ -365,6 +375,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
+		LegionStatusScope:      input.LegionStatusScope,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,
 		StreamHeartbeat:        heartbeat,

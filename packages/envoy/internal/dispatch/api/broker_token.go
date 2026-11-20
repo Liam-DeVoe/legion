@@ -77,6 +77,12 @@ func errNoBrokerConfigured() *apiError {
 	return errorf(http.StatusUnauthorized, "UNAUTHORIZED", "invalid bearer token")
 }
 
+// legionStatusScopes is the scopes of a Legion daemon's own broker token: model.ScopeLegionStatus
+// alone. It is a slice of its own, so no request allocates one and nothing appends to
+// model.Scopes, which every credential holding person shares. Read it, never write it: every such
+// credential shares this one slice.
+var legionStatusScopes = []string{model.ScopeLegionStatus}
+
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
 // the key that token is bound to (internal/brokertoken). A verified caller is the session the
@@ -156,16 +162,25 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own
 	// agent acting for them, so it may do what they may, approvals included. A token scoped to a
-	// project gets none, because the deployment mapped that token to a project and not to the
+	// project gets neither, because the deployment mapped that token to a project and not to the
 	// person: it proves a session, not that any person stands behind the request. A token that
 	// names a service and no person gets none either, whatever scope the broker answered: there
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person. A read-only token is
 	// one of those, and its one scope, read, is carried as the credential's ReadOnly mark and
 	// never as a scope a route could require.
+	//
+	// A token scoped to a project whose answer holds legion-status gets that scope alone
+	// (legionStatusScopes). The broker grants it to a Legion daemon's own token only. Dispatch
+	// reads the scope and does not check the token's session: the broker decides who holds it.
+	// No credential holds it beside person, so an act's scopes, which only a credential holding
+	// person records (actingPerson), never carry it.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
+	switch {
+	case caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson:
 		scopes = model.Scopes
+	case caller.LegionStatus && caller.ProjectScope == brokertoken.ProjectScopeNamed:
+		scopes = legionStatusScopes
 	}
 	actor := model.Actor{
 		Kind: "session",
