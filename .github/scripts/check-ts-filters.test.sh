@@ -329,6 +329,14 @@ printf 'pkg/lib/lib.ts\n' > "$root/pkg/app/listed"
 run_check "$root"
 check "one keeping only another directory's files fails the same way" \
   "$(contains "$out" "exited 0 and its list keeps 1 file(s) of this repository, none of them under pkg/app, the program's own directory")"
+# A directory whose name starts with the program's directory's name is another directory:
+# pkg/application is no part of pkg/app, so its files are not the program's own.
+mkdir -p "$root/pkg/application"
+printf 'export const application = 1;\n' > "$root/pkg/application/main.ts"
+printf 'pkg/application/main.ts\n' > "$root/pkg/app/listed"
+run_check "$root"
+check "one keeping only a sibling whose name starts with the program's directory fails the same way" \
+  "$(contains "$out" "exited 0 and its list keeps 1 file(s) of this repository, none of them under pkg/app, the program's own directory")"
 
 echo "case: a pair naming a filter the changes job does not define"
 root=$(fixture unknown-filter)
