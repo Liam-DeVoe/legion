@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // group is one of the three groups that R24 puts each issue status in. The rule holds two
@@ -152,6 +154,71 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 	}}}
 }
 
+// plannedWrite is a step of a plan that its builder checks under the plan's owner locks (D16): an
+// issueWriteStep, or a step that embeds one (statusChangeStep, parentStatusFixStep).
+type plannedWrite interface{ issueWrite() issueWriteStep }
+
+// issueWrite is the step itself, which a step that embeds it answers too.
+func (step issueWriteStep) issueWrite() issueWriteStep { return step }
+
+// issueWriteLocks is the owner locks that the steps of a plan need, in key order: each step's
+// issue, and its current and new parent.
+func issueWriteLocks[Step plannedWrite](steps []Step) []string {
+	var keys []string
+	for _, planned := range steps {
+		step := planned.issueWrite()
+		keys = append(keys, step.key)
+		if step.parentBefore != nil {
+			keys = append(keys, *step.parentBefore)
+		}
+		if step.parentAfter != nil {
+			keys = append(keys, *step.parentAfter)
+		}
+	}
+	slices.Sort(keys)
+	return slices.Compact(keys)
+}
+
+// lockIssueWriteOwners takes the owner locks of the issues keys in one store.LockOwners call, the
+// lock order every write of many owners takes: the planning transaction of a status change and
+// of R25's fix, which checks the whole plan under them.
+func lockIssueWriteOwners(ctx context.Context, tx pgx.Tx, keys []string) error {
+	owners := make([]store.Owner, 0, len(keys))
+	for _, key := range keys {
+		owners = append(owners, store.IssueOwner(key))
+	}
+	return store.LockOwners(ctx, tx, owners...)
+}
+
+// issueWriteRow is an issue's row as the builder of a plan reads it to fill in its steps.
+type issueWriteRow struct {
+	key, title, status string
+	parent             *string
+	labels             []string
+	lastSeq            int
+}
+
+// readIssueWriteRows reads the rows of the issues keys, by key.
+func readIssueWriteRows(ctx context.Context, q queryer, keys []string) (map[string]issueWriteRow, error) {
+	rows, err := q.Query(ctx, `select key, title, status, parent_key, labels, last_seq from issues where key = any($1)`, keys)
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of a plan: %w", err)
+	}
+	collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueWriteRow, error) {
+		var read issueWriteRow
+		err := row.Scan(&read.key, &read.title, &read.status, &read.parent, &read.labels, &read.lastSeq)
+		return read, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the issues of a plan: %w", err)
+	}
+	read := make(map[string]issueWriteRow, len(collected))
+	for _, row := range collected {
+		read[row.key] = row
+	}
+	return read, nil
+}
+
 // refuseIssueWritePlan is the one check of a plan, which its caller runs before the plan's first
 // write, with the owner lock of each step's issue and of each step's current and new parent held.
 // It refuses with an error what no setting lets through, and it always answers the conflict with
@@ -161,7 +228,7 @@ func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issu
 	// The guard of who may write the status of a Legion issue comes first here.
 	if plan.includeChildren && !writer.human && plan.writesStatus("done") {
 		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
-			"only a person signed in at a browser can close the open issues under an issue with it (include_children with done); this request presents a token")
+			"Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.")
 	}
 	return parentStatusConflictOf(ctx, q, plan)
 }

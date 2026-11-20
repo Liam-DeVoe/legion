@@ -2,7 +2,7 @@
   "status": 403,
   "body": {
     "code": "BROWSER_SIGN_IN_REQUIRED",
-    "error": "only a person signed in at a browser can close the open issues under an issue with it (include_children with done); this request presents a token",
+    "error": "Only a person who is signed in at a browser can close the open issues under an issue together with it (include_children with done). This request presents a token.",
     "changed": []
   }
 }

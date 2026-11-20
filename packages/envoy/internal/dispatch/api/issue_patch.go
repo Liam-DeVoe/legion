@@ -107,18 +107,19 @@ type issueWriteCall struct {
 	// the write's own transaction, after the write's own events, so the write and its comment
 	// commit together or not at all. A write that changes nothing leaves no comment.
 	comment *issueComment
-	// step is what the write of one step of a status change carries beside the PATCH's fields
-	// (status_change.go), or nil for a PATCH.
+	// step is what the write of one step of a status change (status_change.go) or of R25's fix
+	// (parent_status_fix.go) carries beside the PATCH's fields, or nil for a PATCH.
 	step *issueWriteCallStep
 }
 
 // issueWriteCallStep is what the write of one step of a status change (POST
-// /api/v1/issues/{key}/status-change) carries beside the PATCH's fields. Each step is a write of
-// its own, and it decides its write from what it reads under its own owner lock, not from the
-// plan that the call read before its first step.
+// /api/v1/issues/{key}/status-change) or of R25's fix (RunParentStatusFixAtBoot) carries beside
+// the PATCH's fields. Each step is a write of its own, and it decides its write from what it reads
+// under its own owner lock, not from the plan that the call read before its first step.
 type issueWriteCallStep struct {
-	// named is the issue that the status change names. A step that holds its owner lock reads
-	// back the ids of every event the step appended on it (issueWriteResult.namedEvents).
+	// named is the issue that the status change names, or empty for a step of R25's fix, which
+	// names none. A step that holds its owner lock reads back the ids of every event the step
+	// appended on it (issueWriteResult.namedEvents).
 	named string
 	// fence is the call's fence on named, or nil for a call that sent no expected_sequence.
 	fence *issueWriteFence

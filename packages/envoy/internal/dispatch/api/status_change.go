@@ -34,7 +34,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // statusChangeRoute is the route's own name, which the advice of each write names.
@@ -251,7 +250,7 @@ func readStatusChange(ctx context.Context, q queryer, key string, change statusC
 		if err != nil {
 			return statusChangeRead{}, err
 		}
-		rows, err := readStatusChangeRows(ctx, q, above)
+		rows, err := readIssueWriteRows(ctx, q, above)
 		if err != nil {
 			return statusChangeRead{}, err
 		}
@@ -267,34 +266,6 @@ func readStatusChange(ctx context.Context, q queryer, key string, change statusC
 			return statusChangeRead{}, err
 		}
 		read.descendants = descendants
-	}
-	return read, nil
-}
-
-// statusChangeRow is an issue's row as a status change's plan reads it.
-type statusChangeRow struct {
-	key, title, status string
-	parent             *string
-	lastSeq            int
-}
-
-// readStatusChangeRows reads the rows of the issues keys, by key.
-func readStatusChangeRows(ctx context.Context, q queryer, keys []string) (map[string]statusChangeRow, error) {
-	rows, err := q.Query(ctx, `select key, title, status, parent_key, last_seq from issues where key = any($1)`, keys)
-	if err != nil {
-		return nil, fmt.Errorf("read the issues of a status change: %w", err)
-	}
-	collected, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (statusChangeRow, error) {
-		var read statusChangeRow
-		err := row.Scan(&read.key, &read.title, &read.status, &read.parent, &read.lastSeq)
-		return read, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the issues of a status change: %w", err)
-	}
-	read := make(map[string]statusChangeRow, len(collected))
-	for _, row := range collected {
-		read[row.key] = row
 	}
 	return read, nil
 }
@@ -357,23 +328,6 @@ func (read statusChangeRead) steps(change statusChange) []statusChangeStep {
 	return steps
 }
 
-// statusChangeLocks is the owner locks a plan's steps need: each step's issue, and its current and
-// new parent, in key order.
-func statusChangeLocks(steps []statusChangeStep) []string {
-	var keys []string
-	for _, step := range steps {
-		keys = append(keys, step.key)
-		if step.parentBefore != nil {
-			keys = append(keys, *step.parentBefore)
-		}
-		if step.parentAfter != nil {
-			keys = append(keys, *step.parentAfter)
-		}
-	}
-	slices.Sort(keys)
-	return slices.Compact(keys)
-}
-
 // planStatusChange is the plan of change on the issue key, checked under its owner locks before
 // any step writes (D16). It reads the plan with plain reads, then, in a transaction of its own
 // that writes nothing, takes the owner locks of every step's issue and of each step's current and
@@ -428,12 +382,8 @@ func (s *server) planStatusChangeUnderLocks(
 		return statusChangePlan{}, nil, err
 	}
 	defer tx.Rollback(ctx)
-	held := statusChangeLocks(read.steps(change))
-	owners := make([]store.Owner, 0, len(held))
-	for _, owner := range held {
-		owners = append(owners, store.IssueOwner(owner))
-	}
-	if err := store.LockOwners(ctx, tx, owners...); err != nil {
+	held := issueWriteLocks(read.steps(change))
+	if err := lockIssueWriteOwners(ctx, tx, held); err != nil {
 		return statusChangePlan{}, nil, err
 	}
 	named, err := s.loadIssue(ctx, tx, key)
@@ -457,7 +407,7 @@ func (s *server) planStatusChangeUnderLocks(
 		return statusChangePlan{}, nil, err
 	}
 	steps := slices.DeleteFunc(again.steps(change), func(step statusChangeStep) bool { return resumed.holds(step.key) })
-	for _, lock := range statusChangeLocks(steps) {
+	for _, lock := range issueWriteLocks(steps) {
 		if _, locked := slices.BinarySearch(held, lock); !locked {
 			return statusChangePlan{}, &again, nil
 		}
@@ -466,14 +416,14 @@ func (s *server) planStatusChangeUnderLocks(
 	for _, step := range steps {
 		keys = append(keys, step.key)
 	}
-	rows, err := readStatusChangeRows(ctx, tx, keys)
+	rows, err := readIssueWriteRows(ctx, tx, keys)
 	if err != nil {
 		return statusChangePlan{}, nil, err
 	}
 	writes := issueWritePlan{steps: make([]issueWriteStep, 0, len(steps)), includeChildren: change.includeChildren}
 	for index := range steps {
 		row := rows[steps[index].key]
-		steps[index].title, steps[index].lastSeq = row.title, row.lastSeq
+		steps[index].title, steps[index].labelsBefore, steps[index].lastSeq = row.title, row.labels, row.lastSeq
 		writes.steps = append(writes.steps, steps[index].issueWriteStep)
 	}
 	conflict, err := s.refuseIssueWritePlan(ctx, tx, writer, writes)

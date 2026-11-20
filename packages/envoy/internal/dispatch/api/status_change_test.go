@@ -36,8 +36,8 @@ const statusChangeRule = "Dispatch keeps a parent's status in line with its chil
 	"child is done, and while a child is in work its parent is in work too."
 
 // browserSignInRefusal is the message of the 403 BROWSER_SIGN_IN_REQUIRED.
-const browserSignInRefusal = "only a person signed in at a browser can close the open issues under an issue with it " +
-	"(include_children with done); this request presents a token"
+const browserSignInRefusal = "Only a person who is signed in at a browser can close the open issues under an issue together " +
+	"with it (include_children with done). This request presents a token."
 
 // statusChangeRig is ruleRig with the server Register mounted, whose step hook a test sets
 // (statusChangeAfterStep).

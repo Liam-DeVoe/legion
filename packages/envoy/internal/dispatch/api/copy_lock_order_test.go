@@ -48,13 +48,18 @@ var (
 // caller's, and commit it before they return (see TestCopyLockComesBeforeEveryPendingRowAndEvent):
 // each settlement settleOwedNow runs opens and commits its own, and SettleIssueDocuments, which
 // settleIssueBeforeClose calls, refuses a joined context; sweepClosedIssueAsks begins and commits
-// its own; and writeIssue, the PATCH's write core, begins and commits its own, so what one call
-// of it takes does not order its caller's later calls.
+// its own; writeIssue, the PATCH's write core, begins and commits its own, so what one call of it
+// takes does not order its caller's later calls; and the pass of R25's boot fix under its lease
+// (parentStatusFixPass.run) holds no transaction and no ledger across its steps: its planning
+// transaction rolls back before the first step, each step commits its own in writeIssue, and its
+// record is a statement of its own, so the pass holds nothing when it returns and a later try of
+// the lease is not ordered after it.
 var ownTransactionFunctions = []string{
 	"docs.Service.settleOwedNow",
 	"api.server.settleIssueBeforeClose",
 	"api.server.sweepClosedIssueAsks",
 	"api.server.writeIssue",
+	"api.parentStatusFixPass.run",
 }
 
 // TestCopyLockComesBeforeEveryPendingRowAndEvent enforces the order the copy lock's deadlock
