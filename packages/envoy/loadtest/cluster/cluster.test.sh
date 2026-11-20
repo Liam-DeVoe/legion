@@ -3000,7 +3000,7 @@ record_pid "$started_record" "$kill_step"
 # The waits in this case are the step's own doing, never a stretch of wall clock: this one ends
 # at the watcher's first nap, which the fake sleep records, and at once if the step ends first.
 watching=no
-while kill -0 "$kill_step" 2>/dev/null; do
+until process_ended "$kill_step"; do
   if grep -qx 30 "$fake/sleep.log"; then
     watching=yes
     break
@@ -3689,7 +3689,7 @@ stop_watchdog_end() {
   pg_disk_watch pgterm "$oneread_dir" step-pgterm "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgterm
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || process_ended "$watcher"; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=300
@@ -3698,7 +3698,7 @@ stop_watchdog_end() {
   stop_watchdog_end
   [ ! -f "$fake/stop-late" ] ||
     fail "pg_disk_watch_stop did not return within 45 s: the TERM that landed inside the watcher's read of the lock was lost, and every path out of a step waits on that watcher"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  process_ended "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: the TERM that landed inside its read of the lock was lost"
   ! grep -qF 'so it was killed' "$oneread_stop" ||
     fail "pg_disk_watch_stop had to kill a watcher that was sent a TERM it could take: $(cat "$oneread_stop")"
@@ -3711,7 +3711,7 @@ stop_watchdog_end() {
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgbound
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/lock-get-fails" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$fake/lock-get-fails" ] || process_ended "$watcher"; do sleep 0.05; done
   [ -f "$fake/lock-get-fails" ] ||
     fail "the watcher ended before its first read of the lock, so no TERM of this case lands inside one: $(cat "$oneread_out")"
   PG_DISK_STOP_SECONDS=2
@@ -3726,7 +3726,7 @@ stop_watchdog_end() {
     fail "pg_disk_watch_stop took $bound_took s to return, past its $PG_DISK_STOP_SECONDS s bound and a margin: a step hangs on a watcher that will not leave"
   grep -qF "step pgbound: the disk watcher did not end within $PG_DISK_STOP_SECONDS s of its SIGTERM, so it was killed" "$oneread_stop" ||
     fail "pg_disk_watch_stop did not name the step whose watcher it killed at its bound: $(cat "$oneread_stop")"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  process_ended "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop reached its bound: $(cat "$oneread_out")"
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
@@ -3890,7 +3890,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   watcher=$PG_DISK_WATCHER
   # The watcher's 30 s poll is a real sleep here, so the act below is its only one: a watcher
   # that took the TERM leaves before the next nap ends, and one that lost it acts again.
-  until [ -f "$unreach_dir/step-failed.json" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$unreach_dir/step-failed.json" ] || process_ended "$watcher"; do sleep 0.05; done
   [ -f "$unreach_dir/step-failed.json" ] ||
     fail "the watcher ended before it recorded the step failed, so no TERM of this case lands after an act that failed: $(cat "$unreach_out")"
   PG_DISK_STOP_SECONDS=5
@@ -3901,7 +3901,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     fail "pg_disk_watch_stop did not return within 45 s of the TERM it sent between the watcher's failed act and its next nap: $(cat "$unreach_stop")"
   ! grep -qF 'so it was killed' "$unreach_stop" ||
     fail "pg_disk_watch_stop had to kill the watcher at its bound: the TERM between its failed act and its next nap was lost: $(cat "$unreach_stop")"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  process_ended "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: $(cat "$unreach_out")"
   jq -e '[.reasons[] | select(.kind == "pg_disk")] | length == 1' "$unreach_dir/step-failed.json" >/dev/null 2>&1 ||
     fail "the watcher recorded $(jq -r '[.reasons[] | select(.kind == "pg_disk")] | length' "$unreach_dir/step-failed.json" 2>/dev/null) pg_disk failure(s), not the one it records however many polls the stop takes: $(cat "$unreach_dir/step-failed.json" 2>/dev/null)"
@@ -3927,7 +3927,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   pg_disk_watch pgread "$unreach_read_dir" step-pgread "$unreach_read_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$unreach_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgread
   watcher=$PG_DISK_WATCHER
-  until [ -f "$fake/pg-df-started" ] || ! kill -0 "$watcher" 2>/dev/null; do sleep 0.05; done
+  until [ -f "$fake/pg-df-started" ] || process_ended "$watcher"; do sleep 0.05; done
   [ -f "$fake/pg-df-started" ] ||
     fail "the watcher ended before its read of the volume began, so no TERM of this case lands inside one: $(cat "$unreach_out")"
   # The read answers a second after the TERM below, so that TERM lands while the watcher is in it.
@@ -3949,7 +3949,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
     fail "pg_disk_watch_stop took $read_took s of its $PG_DISK_STOP_SECONDS s bound to return, instead of ending with the read its TERM landed inside: $(cat "$unreach_stop")"
   ! grep -qF 'so it was killed' "$unreach_stop" ||
     fail "pg_disk_watch_stop had to kill the watcher at its bound: the TERM that landed inside its read of the volume was lost: $(cat "$unreach_stop")"
-  ! kill -0 "$watcher" 2>/dev/null ||
+  process_ended "$watcher" ||
     fail "the disk watcher still runs after pg_disk_watch_stop returned: $(cat "$unreach_out")"
   [ ! -f "$unreach_read_dir/step-failed.json" ] ||
     fail "the watcher recorded the step failed although its TERM landed inside the volume read it would have acted on: $(cat "$unreach_read_dir/step-failed.json")"
@@ -3967,10 +3967,17 @@ rm -f -- "$unreach_fail"
 run_cluster seed --namespace "$ns"
 ((RC == 0)) || fail "seed exited $RC: $(cat "$tmp/out")"
 # The heartbeat up started is held in its first period; the step below starts one whose 60 s is a
-# fast sleep, so the periods this case waits out cost it no clock.
+# fast sleep, so the periods this case waits out cost it no clock. Each heartbeat is a daemon in a
+# session of its own, an orphan once the command that started it has gone, so its end is read by
+# its state (process_ended): below a PID 1 that reaps nothing it stays a zombie. The waits for it
+# are events, each with a backstop of 300 s for a hang, as await_gone's.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
 kill -TERM -- "-$unreach_hb" 2>/dev/null || true
-until ! kill -0 "$unreach_hb" 2>/dev/null; do sleep 0.05; done
+t0=$SECONDS
+until process_ended "$unreach_hb"; do
+  ((SECONDS - t0 <= 300)) || fail "up's heartbeat (pid $unreach_hb) did not end within 300 s of its SIGTERM, the case's backstop for a hang"
+  sleep 0.05
+done
 # Two bounds a test can reach, as (dd) reaches the grace: the slack the wait gives the loadgen
 # run over the bound that run was started with, and the grace each step of its stop gets.
 # Everything else -- the parse, the lock, the run's daemons, the step's shell and its EXIT trap
@@ -3990,7 +3997,7 @@ FAKE_RC_UNTIL_STOP=1 FAKE_RUNNER_EXEC_FAIL=$unreach_fail FAKE_FAST_SLEEP=60 FAKE
 unreach_pid=$!
 record_pid "$started_record" "$unreach_pid"
 # The pod goes away once the load runs in it, which is when a step has nothing but this wait left.
-until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || ! kill -0 "$unreach_pid" 2>/dev/null; do sleep 0.05; done
+until grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null || process_ended "$unreach_pid"; do sleep 0.05; done
 grep -q '^step-unreach ' "$fake/runner-starts" 2>/dev/null ||
   fail "the step command ended before it started its loadgen run, so no runner pod of it went away: $(cat "$unreach_step")"
 : >"$unreach_fail"
@@ -4008,20 +4015,18 @@ step_took=$((EPOCHSECONDS - step_at))
 # The heartbeat ends with the command, as (o) has it for a run whose command is gone: the lock
 # it renewed every 60 s is renewed no more, so it ages and up calls it stale.
 unreach_hb=$(<"$LOADTEST_CLUSTER_ROOT/$unreach_run/heartbeat.pid")
-kill -0 "$unreach_hb" 2>/dev/null ||
+! process_ended "$unreach_hb" ||
   fail "the heartbeat the step started (pid $unreach_hb) is not running, though the gate holds it in its first period: $(cat "$LOADTEST_CLUSTER_ROOT/$unreach_run/logs/heartbeat.log")"
 : >"$fake/root-unreach-step.gate"
-for ((i = 0; i < 50; i++)); do
-  kill -0 "$unreach_hb" 2>/dev/null || break
-  sleep 0.1
-done
+t0=$SECONDS
+until process_ended "$unreach_hb" || ((SECONDS - t0 > 300)); do sleep 0.1; done
 unreach_hb_alive=no
-kill -0 "$unreach_hb" 2>/dev/null && unreach_hb_alive=yes
+process_ended "$unreach_hb" || unreach_hb_alive=yes
 unreach_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 sleep 1
 unreach_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 [ "$unreach_hb_alive" = no ] ||
-  fail "the heartbeat daemon (pid $unreach_hb) still runs 5 s after the step command it outlived ended: a run no command drives keeps its lock fresh"
+  fail "the heartbeat daemon (pid $unreach_hb) still runs 300 s after the step command it outlived ended, the case's backstop: a run no command drives keeps its lock fresh"
 [ "$unreach_patches_after" = "$unreach_patches" ] ||
   fail "the lock was patched $((unreach_patches_after - unreach_patches)) more times after the step command ended: the copy's lock never ages, so no other worker may take it"
 rm -f -- "$unreach_fail"
@@ -4073,7 +4078,7 @@ stuck_out=$fake/stuck.out
   stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
   ((stop_rc == 1)) ||
     stand_in_fail "stop_daemon returned $stop_rc, not 1, although the heartbeat daemon (pid $STAND_IN) ignored its SIGTERM and still runs: $(cat "$stuck_out")"
-  grep -qF "the heartbeat daemon (pid $STAND_IN) is still in the process table 10 s after its SIGTERM; $RUN_DIR/heartbeat.pid still names it" "$stuck_out" ||
+  grep -qF "the heartbeat daemon (pid $STAND_IN) is still running 10 s after its SIGTERM; $RUN_DIR/heartbeat.pid still names it" "$stuck_out" ||
     stand_in_fail "stop_daemon did not name the heartbeat daemon (pid $STAND_IN) it could not stop: $(cat "$stuck_out")"
   [ "$(cat "$RUN_DIR/heartbeat.pid" 2>/dev/null)" = "$STAND_IN" ] ||
     stand_in_fail "stop_daemon removed the pidfile of the heartbeat daemon (pid $STAND_IN) it did not stop"
@@ -4098,7 +4103,7 @@ stuck_out=$fake/stuck.out
   stop_rc=0
   stop_daemon heartbeat 2>"$stuck_out" || stop_rc=$?
   ((stop_rc == 0)) || stand_in_fail "stop_daemon returned $stop_rc for a heartbeat daemon that ended on its SIGTERM: $(cat "$stuck_out")"
-  ! kill -0 "$STAND_IN" 2>/dev/null || stand_in_fail "stop_daemon returned with the heartbeat daemon (pid $STAND_IN) still there"
+  process_ended "$STAND_IN" || stand_in_fail "stop_daemon returned with the heartbeat daemon (pid $STAND_IN) not ended"
   [ ! -e "$RUN_DIR/heartbeat.pid" ] || fail "stop_daemon left the pidfile of the heartbeat daemon it stopped"
   # A daemon's process group can outlive the daemon: a member of it that receives the same TERM,
   # as a role loop of the sampler with its kubectl exec can. The stop returns only after each
@@ -4130,9 +4135,11 @@ stuck_out=$fake/stuck.out
   # and the second is a nap the stop began after the count, so after the daemon had left. A stop
   # that waits for the daemon alone makes at most that one late nap and returns, finding the member
   # still in the group, and fails on a line of its own; a stop that waits for the group still polls,
-  # and returns once the released member has gone. The stop's own bound of 10 s from its TERM is
-  # far above the steps the row waits for, and a stop that returned past it is named as one that
-  # ran out.
+  # and returns once the released member has ended. The row gives the stop a bound of 600 s from its
+  # TERM (DAEMON_STOP_SECONDS), a hang's backstop, so no stretch the box holds the row for runs it
+  # out; a stop that returned past it is named as one that ran out. Each end is read by its state
+  # (process_ended): the member is an orphan once the daemon has gone, a zombie for ever below a
+  # PID 1 that reaps nothing.
   # shellcheck disable=SC2016 # expanded by the member's trap
   member_stand_in ': >"$EVENT_TERM"; until [ -e "$EVENT_RELEASE" ]; do "$REAL" 0.05; done; exit 0'
   : >"$fake/stop-naps"
@@ -4161,34 +4168,36 @@ EOF
     wait "$stop_pid" 2>/dev/null || true
     stand_in_fail "$@"
   }
+  DAEMON_STOP_SECONDS=600
   stop_in_background
+  DAEMON_STOP_SECONDS=10
   stop_rc=0 t0=$SECONDS
   until [ -e "$fake/member-term" ]; do
-    ((SECONDS - t0 <= 10)) || release_member_fail "the member of the heartbeat daemon's process group did not receive its SIGTERM within 10 s"
+    ((SECONDS - t0 <= 600)) || release_member_fail "the member of the heartbeat daemon's process group did not receive its SIGTERM within 600 s, the row's backstop for a hang"
     "$real_sleep" 0.05
   done
   term_at=$EPOCHSECONDS
-  while kill -0 "$STAND_IN" 2>/dev/null; do
-    ((SECONDS - t0 <= 10)) || release_member_fail "the heartbeat daemon (pid $STAND_IN) did not leave the table within 10 s of its group's SIGTERM"
+  until process_ended "$STAND_IN"; do
+    ((SECONDS - t0 <= 600)) || release_member_fail "the heartbeat daemon (pid $STAND_IN) did not end within 600 s of its group's SIGTERM, the row's backstop for a hang"
     "$real_sleep" 0.01
   done
   mapfile -t naps <"$fake/stop-naps"
   naps_then=${#naps[@]}
-  while kill -0 "$stop_pid" 2>/dev/null && ((${#naps[@]} <= naps_then + 1)); do
-    ((SECONDS - t0 <= 30)) || release_member_fail "stop_daemon did not nap twice within 30 s after the heartbeat daemon had left the table"
+  while ! process_ended "$stop_pid" && ((${#naps[@]} <= naps_then + 1)); do
+    ((SECONDS - t0 <= 600)) || release_member_fail "stop_daemon did not nap twice within 600 s after the heartbeat daemon had ended, the row's backstop for a hang"
     "$real_sleep" 0.01
     mapfile -t naps <"$fake/stop-naps"
   done
-  if ! kill -0 "$stop_pid" 2>/dev/null; then
-    ((EPOCHSECONDS - term_at < 10)) ||
-      release_member_fail "stop_daemon's own bound of 10 s from its SIGTERM ran out before this row could release the member (pid $MEMBER_PID): the box held the row that long: $(cat "$stuck_out")"
-    release_member_fail "stop_daemon returned once the heartbeat daemon itself had left the table, before the member of its process group (pid $MEMBER_PID) had gone: it waited for the daemon alone: $(cat "$stuck_out")"
+  if process_ended "$stop_pid"; then
+    ((EPOCHSECONDS - term_at < 600)) ||
+      release_member_fail "the stop's bound of 600 s from its SIGTERM ran out before this row could release the member (pid $MEMBER_PID): the box held the row that long: $(cat "$stuck_out")"
+    release_member_fail "stop_daemon returned once the heartbeat daemon itself had ended, before the member of its process group (pid $MEMBER_PID) had: it waited for the daemon alone: $(cat "$stuck_out")"
   fi
   : >"$fake/member-release"
   wait "$stop_pid" || stop_rc=$?
   member_left=""
-  ! kill -0 "$MEMBER_PID" 2>/dev/null || member_left+=" pid $MEMBER_PID"
-  ! kill -0 "$NAP_PID" 2>/dev/null || member_left+=" pid $NAP_PID"
+  process_ended "$MEMBER_PID" || member_left+=" pid $MEMBER_PID"
+  process_ended "$NAP_PID" || member_left+=" pid $NAP_PID"
   [ -z "$member_left" ] ||
     stand_in_fail "stop_daemon returned with members of the heartbeat daemon's process group ($member_left) still there after the member's release: $(cat "$stuck_out")"
   ((stop_rc == 0)) ||
@@ -4202,7 +4211,7 @@ EOF
     stand_in_fail "stop_daemon returned $stop_rc, not 1, although a member of the heartbeat daemon's process group (pid $MEMBER_PID) ignored its SIGTERM and still runs: $(cat "$stuck_out")"
   # The stop names exactly the group's members still there at its bound: the member and its nap,
   # in whatever order it read them, and no other pid.
-  member_list=$(sed -n "s/.*the heartbeat daemon (pid $STAND_IN) has left, but its process group still holds \(.*\) in the process table 10 s after the group's SIGTERM.*/\1/p" "$stuck_out")
+  member_list=$(sed -n "s/.*the heartbeat daemon (pid $STAND_IN) has ended, but its process group still holds \(.*\), not ended 10 s after the group's SIGTERM.*/\1/p" "$stuck_out")
   member_got=$(tr ',' '\n' <<<"$member_list" | sed -n 's/^ *pid \([0-9][0-9]*\)$/\1/p' | sort -n | paste -sd' ')
   member_want=$(printf '%s\n' "$MEMBER_PID" "$NAP_PID" | sort -n | paste -sd' ')
   [ "$member_got" = "$member_want" ] ||
@@ -4691,7 +4700,7 @@ done
 ((held_rc == 0)) || fail "the stop of a watcher with a process it could not see stopped ended with $held_rc: $(cat "$held_out")"
 grep -qx 'the moment the stop returned: the process it could not see stopped and its child had ended: yes' "$held_out" ||
   fail "the stop returned with the process it could not see stopped (pid ${h_held:-}) or its child (pid ${h_below:-}) not ended: $(cat "$held_out")"
-grep -qF "step held: a process of the disk watcher's act (pid ${h_held:-none}) was not seen stopped within 10 s of its SIGSTOP" "$held_out" ||
+grep -qF "step held: a process of the disk watcher's act (pid ${h_held:-none}) was not seen stopped by the freeze's deadline, 10 s from its start" "$held_out" ||
   fail "the stop does not name the process it could not see stopped (pid ${h_held:-}): $(cat "$held_out")"
 grep -qE "step held: the disk watcher did not end within 0 s of its SIGTERM, so it was killed, with the 2 processes of its act below it \(pids (${h_held:-none} ${h_below:-none}|${h_below:-none} ${h_held:-none})\)" "$held_out" ||
   fail "the stop's line does not name the process it could not see stopped and its child among those it killed: $(cat "$held_out")"
@@ -4795,16 +4804,15 @@ for act_row in runner-stop volume-read threads; do
 done
 pass "the stop of the disk watcher kills and waits for every process of its act below the watcher -- the kubectl under timeout in the watcher's own shell and in a command substitution, and a kubectl of 16 threads until each thread of it has gone and its port is free -- and names each"
 
-# A read that fails is no answer. step_gone of a step shell whose start it could not read -- here
-# proc_start_into, the reader it uses, fails for that shell's pid, as it does for a shell with no
-# file descriptor to spare -- answers 2, which its callers name and poll on, rather than calling the
-# step gone; run_command_alive, which reads through proc_start,
-# keeps the file of a command whose start it could not read, or whose file it could not read, and
-# counts the run alive. The same shell read as it is answers 1 and keeps the run alive, and a run
-# directory that has gone is a gone step (0). The shortage itself is made too: under `ulimit -n 4`
-# the read of the live shell's start cannot be made, and step_gone answers 2, where a read through a
-# command substitution, which then cannot make its pipe, answers 0 and empty and called the step
-# gone.
+# A read that fails is no answer. step_gone of a step shell whose /proc entry it could not read --
+# here proc_ended, the reader step_gone and run_command_alive use, answers 2 for that shell's pid,
+# as it does for a shell with no file descriptor to spare -- answers 2, which its callers name and
+# poll on, rather than calling the step gone; run_command_alive keeps the file of a command whose
+# entry it could not read, or whose file it could not read, and counts the run alive. The same
+# shell read as it is answers 1 and keeps the run alive, and a run directory that has gone is a
+# gone step (0). The shortage itself is made too: under `ulimit -n 4` the read of the live shell's
+# stat cannot be made, and step_gone answers 2, where a read through a command substitution, which
+# then cannot make its pipe, answers 0 and empty and called the step gone.
 sg_out=$fake/step-gone.out
 sg_rc=0
 # shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
@@ -4825,23 +4833,17 @@ bash -c '
     step_gone "$self" "$self_start" || rc=$?
     echo "descriptor limit: step_gone $rc"
   )
-  eval "orig_$(declare -f proc_start)"
-  eval "orig_$(declare -f proc_start_into)"
-  proc_start_into() {
-    [ "$2" != "$self" ] || return 1
-    orig_proc_start_into "$1" "$2"
-  }
-  proc_start() {
-    [ "$1" != "$self" ] || return 1
-    orig_proc_start "$1"
+  eval "orig_$(declare -f proc_ended)"
+  proc_ended() {
+    [ "$1" != "$self" ] || return 2
+    orig_proc_ended "$@"
   }
   rc=0
   step_gone "$self" "$self_start" || rc=$?
   echo "start unread: step_gone $rc"
   ! run_command_alive || echo "start unread: the run is alive"
   [ ! -f "$file" ] || echo "start unread: the file is kept"
-  eval "$(declare -f orig_proc_start | sed 1s/orig_proc_start/proc_start/)"
-  eval "$(declare -f orig_proc_start_into | sed 1s/orig_proc_start_into/proc_start_into/)"
+  eval "$(declare -f orig_proc_ended | sed 1s/orig_proc_ended/proc_ended/)"
   chmod 000 "$file"
   if { : <"$file"; } 2>/dev/null; then
     echo "file unread: not made, this user reads a file of mode 000"
@@ -4859,10 +4861,57 @@ for sg_line in 'read: step_gone 1' 'read: the run is alive' 'descriptor limit: s
   'start unread: the run is alive' 'start unread: the file is kept' 'no run directory: step_gone 0'; do
   grep -qx "$sg_line" "$sg_out" || fail "step_gone or run_command_alive did not answer '$sg_line': $(cat "$sg_out")"
 done
-grep -qF "the start of a command of run lt-20261119t000000-5afe (pid " "$sg_out" ||
-  fail "run_command_alive does not name the command whose start it could not read: $(cat "$sg_out")"
+grep -qF "the /proc entry of a command of run lt-20261119t000000-5afe (pid " "$sg_out" ||
+  fail "run_command_alive does not name the command whose /proc entry it could not read: $(cat "$sg_out")"
 if ! grep -qx 'file unread: not made, this user reads a file of mode 000' "$sg_out"; then
   { grep -qx 'file unread: the run is alive' "$sg_out" && grep -qx 'file unread: the file is kept' "$sg_out"; } ||
     fail "run_command_alive did not keep the file it could not read, or did not count the run alive: $(cat "$sg_out")"
 fi
-pass "step_gone answers a read of the step shell's start it could not make, a failed read or one a descriptor limit stopped, as no answer (2), not a gone step, and run_command_alive keeps a command whose start or file it could not read, counting the run alive"
+pass "step_gone answers a read of the step shell's start it could not make, a failed read or one a descriptor limit stopped, as no answer (2), not a gone step, and run_command_alive keeps a command whose /proc entry or file it could not read, counting the run alive"
+
+# An end is the process's state. A step shell, or a command of the run, that has ended and that
+# nothing reaps -- a zombie, which a PID 1 that reaps nothing leaves in the table for ever, with its
+# start time -- has ended: step_gone answers 0 for it, and run_command_alive removes its file and,
+# with no other command and no hold, calls the run not alive, so the heartbeat stops renewing the
+# lock. The zombie is a child whose parent never waits: a sleep that a shell became by exec once it
+# had started that child, as a PID 1 that reaps nothing is.
+zs_out=$fake/step-gone-zombie.out
+zs_rc=0
+# shellcheck disable=SC2016 # expanded by the bash that sourced cluster.sh
+bash -c '
+  source "$1"
+  source "$3"
+  set_run lt-20261119t000000-20b1
+  rm -rf -- "$RUN_DIR"
+  mkdir -p "$RUN_DIR/commands"
+  bash -c "\"\$1\" 0.2 & echo \"\$!\" >\"\$2.tmp\"; mv -- \"\$2.tmp\" \"\$2\"; exec \"\$1\" 300" _ "$2" "$RUN_DIR/zombie" &
+  parent=$!
+  at=$SECONDS
+  until [ -s "$RUN_DIR/zombie" ]; do
+    ((SECONDS - at <= 600)) || { echo "the zombie stand-in wrote no pid within 600 s, the row'"'"'s backstop for a hang"; exit 1; }
+    "$2" 0.05
+  done
+  z=$(<"$RUN_DIR/zombie")
+  z_start=$(proc_start "$z")
+  until [ "$(process_state "$z")" = Z ]; do
+    ((SECONDS - at <= 600)) || { echo "the child (pid $z) was no zombie within 600 s, the row'"'"'s backstop for a hang"; exit 1; }
+    "$2" 0.05
+  done
+  echo "parent $parent zombie $z"
+  rc=0
+  step_gone "$z" "$z_start" || rc=$?
+  echo "zombie: step_gone $rc"
+  printf "%s\n" "$z_start" >"$RUN_DIR/commands/$z"
+  if run_command_alive; then echo "zombie: the run is alive"; else echo "zombie: the run is not alive"; fi
+  if [ -f "$RUN_DIR/commands/$z" ]; then echo "zombie: the file is kept"; else echo "zombie: the file is removed"; fi
+  # no-wait: its own child, which the wait below reaps.
+  kill -KILL "$parent"
+  wait "$parent" 2>/dev/null || true
+  rm -rf -- "$RUN_DIR"
+' _ "$cluster" "$real_sleep" "$test_lib" >"$zs_out" 2>&1 || zs_rc=$?
+((zs_rc == 0)) || fail "the reads of step_gone and run_command_alive over a zombie ended with $zs_rc: $(cat "$zs_out")"
+for zs_line in 'zombie: step_gone 0' 'zombie: the run is not alive' 'zombie: the file is removed'; do
+  grep -qx "$zs_line" "$zs_out" ||
+    fail "step_gone or run_command_alive did not answer '$zs_line' for a step shell or command that has ended and that nothing reaps, a zombie: $(cat "$zs_out")"
+done
+pass "step_gone calls a step shell that has ended and that nothing reaps, a zombie, gone, and run_command_alive removes such a command's file and calls the run not alive"

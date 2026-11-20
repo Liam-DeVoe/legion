@@ -188,32 +188,43 @@ bash -c '
   echo "kill_and_restart returned"
 ' _ "$here/common.sh" "$tmp/functions.sh" "$kr" >"$kr/out.log" 2>&1 &
 kr_job=$!
-# kr_fail MESSAGE: the port released and kill_and_restart waited for, then the row fails.
+# kr_record_new: the listener kill_and_restart started, once its job has ended, recorded for the
+# suite's exit (record_pid) when it is not the killed one, on every path out of the row: a row that
+# fails has seen kill_and_restart start that listener as well, and would leave it holding the port.
+kr_record_new() {
+  new=$(cat "$kr/run/listener.pid" 2>/dev/null || true)
+  [ -z "$new" ] || [ "$new" = "$old" ] || record_pid "$tmp/started" "$new"
+}
+# kr_fail MESSAGE: the port released, kill_and_restart waited for and the listener it started
+# recorded, then the row fails.
 kr_fail() {
   : >"$kr/release"
   wait "$kr_job" 2>/dev/null || true
+  kr_record_new
   fail "$* (kill_and_restart said: $(cat "$kr/out.log"))"
 }
+# The row waits on events, each with a backstop of 600 s for a hang, named as one: the box's speed
+# moves when an event comes, never which one comes.
 t0=$EPOCHSECONDS
 until [ -e "$kr/term" ] && [ "$(process_state "$old")" = Z ]; do
-  ((EPOCHSECONDS - t0 <= 20)) || kr_fail "the killed listener's main thread (pid $old) was no zombie within 20 s of kill_and_restart's start"
+  process_ended "$kr_job" && kr_fail "kill_and_restart ended before the killed listener's main thread (pid $old) was a zombie"
+  ((EPOCHSECONDS - t0 <= 600)) || kr_fail "the killed listener's main thread (pid $old) was no zombie within 600 s of kill_and_restart's start, the row's backstop for a hang"
   sleep 0.05
 done
 mapfile -t kr_naps <"$kr/naps"
 kr_then=${#kr_naps[@]}
-while ((${#kr_naps[@]} <= kr_then + 1)) && ! grep -q '^note: killed the listener' "$kr/out.log" && kill -0 "$kr_job" 2>/dev/null; do
-  ((EPOCHSECONDS - t0 <= 60)) || kr_fail "kill_and_restart neither napped nor went on within 60 s of its start"
+while ((${#kr_naps[@]} <= kr_then + 1)) && ! grep -q '^note: killed the listener' "$kr/out.log" && ! process_ended "$kr_job"; do
+  ((EPOCHSECONDS - t0 <= 600)) || kr_fail "kill_and_restart neither napped nor went on within 600 s of its start, the row's backstop for a hang"
   sleep 0.01
   mapfile -t kr_naps <"$kr/naps"
 done
-if grep -q '^note: killed the listener' "$kr/out.log" || ! kill -0 "$kr_job" 2>/dev/null; then
+if grep -q '^note: killed the listener' "$kr/out.log" || process_ended "$kr_job"; then
   kr_fail "kill_and_restart went on past its wait while the killed listener's other thread still held port $kr_port: it took the zombie main thread for an ended listener"
 fi
 : >"$kr/release"
 kr_rc=0
 wait "$kr_job" || kr_rc=$?
-new=$(cat "$kr/run/listener.pid" 2>/dev/null || true)
-[ -z "$new" ] || [ "$new" = "$old" ] || record_pid "$tmp/started" "$new"
+kr_record_new
 ((kr_rc == 0)) || fail "kill_and_restart ended with $kr_rc: $(cat "$kr/out.log")"
 grep -qx 'kill_and_restart returned' "$kr/out.log" || fail "kill_and_restart did not return: $(cat "$kr/out.log")"
 jq -e --argjson o "$old" --argjson n "${new:-0}" '.old_pid == $o and .new_pid == $n and .new_pid != $o' "$kr/out/restart.json" >/dev/null ||

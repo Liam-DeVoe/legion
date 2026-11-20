@@ -1,6 +1,6 @@
 # shellcheck shell=bash
-# common.sh: what run-step.sh, run-series.sh and stack.sh share (README.md). They source it. Not
-# executable.
+# common.sh: what run-step.sh, run-series.sh and stack.sh share (README.md). They source it, and so
+# do cluster.sh, vm.sh, restart-step.sh and the suites' test-lib.sh. Not executable.
 #
 # die MESSAGE prints MESSAGE, prefixed with the script's name, and exits 1. note MESSAGE prints
 # MESSAGE with the same prefix and goes on. usage prints the script's header comment, from its
@@ -9,7 +9,9 @@
 # joined_sha256 FILE... the sha256 of the files' concatenation (stack.sh's builds, replay.sh's
 # parts). proc_start PID prints a process's start time, proc_ended PID START says whether the
 # process that started then has ended, and proc_wait_ended PID START UNTIL waits until it has, or
-# until a time (cluster.sh's waits, restart-step.sh's).
+# until a time (cluster.sh's waits, restart-step.sh's). proc_threads_stopped PID says whether every
+# thread of a process is stopped or has ended, the one reading of a stop that cluster.sh's freeze
+# and test-lib.sh's end_tree share.
 #
 # resolve_paths sets SRC to LOADTEST_SRC (default: the checkout holding this file) and ROOT to
 # LOADTEST_ROOT (default ${TMPDIR:-/tmp}/dispatch-loadtest, created), both as physical paths, and
@@ -161,6 +163,36 @@ proc_wait_ended() {
     ((rc == 1 && EPOCHSECONDS <= $3)) || return "$rc"
     sleep 0.1
   done
+}
+
+# proc_threads_stopped PID: every thread of PID, read once, is stopped -- its state T or t (stopped,
+# or held by a tracer) -- or has ended -- Z or X, a thread that forks nothing. A child that ends
+# after its parent is stopped stays a zombie, which never reads T, and a process whose main thread
+# has left reads Z while its other threads still run, which is why each thread is read. It returns
+# 0 then, and 1 when a thread still runs, when a thread that is there cannot be read, or when no
+# thread was listed: a task directory that cannot be read, or an entry that has gone, which only the
+# entry tells apart, so its caller asks that. A thread that has left since the directory was read
+# has ended. The reads are the shell's own, so a caller can ask at the moment a SIGSTOP is sent:
+# cluster.sh's proc_stopped, before the disk watcher's freeze reads a process's children, and
+# test-lib.sh's stop_process, before end_tree reads them.
+proc_threads_stopped() {
+  local task stat running=unread
+  for task in "/proc/$1"/task/*; do
+    [ "$task" != "/proc/$1/task/*" ] || break
+    [ "$running" = yes ] || running=no
+    # A failed read takes the branch after ||: bash gives a brace group whose own redirection
+    # fails the status 1 without applying a `!` in front of it.
+    { read -r stat <"$task/stat"; } 2>/dev/null || {
+      [ ! -e "$task" ] || running=yes
+      continue
+    }
+    stat=${stat##*) }
+    case ${stat%% *} in
+    T | t | Z | X) ;;
+    *) running=yes ;;
+    esac
+  done
+  [ "$running" = no ]
 }
 
 resolve_paths() {

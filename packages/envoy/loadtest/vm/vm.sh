@@ -741,31 +741,41 @@ on_vm_for() {
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$vm")" "$(remote_argv "$@")"
 }
 
-# REMOTE_START_OF: the load machine's sh function `start_of PID`, which sets `now` to PID's start
-# time (field 22 of /proc/PID/stat, read after the command name, which may hold spaces), or to
-# nothing when that entry cannot be read; its caller tells an entry that has gone from one it could
-# not read. The shell alone reads it, with no awk, sed or cut, so a load machine image that lacks
-# them still records and compares starts. Each script that writes a pid file there runs it, and so
-# does remote_kill, which reads one.
+# REMOTE_START_OF: the load machine's sh functions `start_of PID`, which sets `now` to PID's start
+# time (field 22 of /proc/PID/stat, read after the command name, which may hold spaces) and `state`
+# to the state of its main thread (field 3), or both to nothing when that entry cannot be read; and
+# `ended PID [START]`, which answers 0 once the process PID names has ended: its entry has gone,
+# its start differs from START (another process holds the pid now), or it is a zombie (Z) or dead
+# (X) with no thread listed but its main one. A zombie that nothing reaps -- every orphan of a
+# machine whose PID 1 reaps nothing -- stays in the table for ever, and a zombie main thread with
+# another thread listed is a process still ending, whose threads still hold its port; `kill -0`
+# answers 0 for both. `ended` answers 1 otherwise, an entry that is there and cannot be read among
+# them, since nothing shows it ended. The shell alone reads, with no awk, sed or cut, so a load
+# machine image that lacks them still records and compares starts; the read's own error is
+# silenced in the shell's order of redirections (dash opens the file before it moves standard
+# error). Each script that writes a pid file there runs it, and so does remote_kill, which reads
+# one.
 # shellcheck disable=SC2016 # expanded by the load machine's sh
-REMOTE_START_OF='start_of() { now= stat=; read -r stat <"/proc/$1/stat" 2>/dev/null || return 0; stat=${stat##*) }; set -f; set -- $stat; set +f; [ "$#" -ge 20 ] || return 0; shift 19; now=$1; }'
+REMOTE_START_OF='start_of() { now= state= stat=; { read -r stat <"/proc/$1/stat"; } 2>/dev/null || return 0; stat=${stat##*) }; set -f; set -- $stat; set +f; [ "$#" -ge 20 ] || return 0; state=$1; shift 19; now=$1; }; ended() { start_of "$1"; if [ -z "$now" ]; then [ ! -e "/proc/$1" ]; return; fi; [ -z "${2:-}" ] || [ "$now" = "$2" ] || return 0; case $state in Z | X) ;; *) return 1 ;; esac; for t in /proc/"$1"/task/*; do [ "$t" = "/proc/$1/task/$1" ] || [ ! -e "$t" ] || return 1; done; return 0; }'
 
-# remote_kill WHAT FILE [started]: the process whose pid FILE holds on the load machine ended there
-# and gone from that machine's process table, and FILE removed. TERM first; KILL when the pid is
-# still there REMOTE_TERM_SECONDS later; then a wait, of up to REMOTE_GONE_SECONDS, for the pid to
-# leave the table. The wait is what a kill that only sends signals lacks: SIGKILL ends a process
-# when the kernel next runs it, and its pid answers kill -0 until its parent -- the machine's init,
-# or the sshd of the ssh that started it, never the sh below -- has reaped it. A caller that starts
-# the next process on the same port, or reads the table, at once meets that moment: vm.test.sh
-# found a stopped step's tunnel still there that way, on a loaded machine. Gone from the table is
-# dead and reaped.
+# remote_kill WHAT FILE [started]: the process whose pid FILE holds on the load machine ended there,
+# every thread of it, and FILE removed. TERM first; KILL when it has not ended REMOTE_TERM_SECONDS
+# later; then a wait, of up to REMOTE_GONE_SECONDS, for it to end. The wait is what a kill that
+# only sends signals lacks: SIGKILL ends a process when the kernel next runs it, each thread in
+# turn, and a caller that starts the next process on the same port, or reads the table, at once
+# meets that moment: vm.test.sh found a stopped step's tunnel still there that way, on a loaded
+# machine. The end is the process's own state (REMOTE_START_OF's `ended`): its entry gone, or a
+# zombie with no thread but its main one, which holds no port and no file and which only its
+# parent -- the machine's init, or the sshd of the ssh that started it -- can reap. A machine whose
+# PID 1 reaps nothing keeps such a zombie in its table for ever, so `kill -0`, which answers 0 for
+# a zombie, is no test of an end.
 #
-# It returns 1 when the pid is still there at that bound, naming WHAT and the pid, and keeps FILE,
-# which still names a live process. Any other end of the remote command -- the machine not
-# reached, the ssh timed out, the script cut short -- says nothing of the process, so it returns 1
-# too, naming WHAT, FILE and the ssh's exit and what it said. Each WHAT it returns 1 for is added
-# to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both. The command
-# that adds WHAT to NOT_GONE also clears STOPPING, so no interrupt finds WHAT in both.
+# It returns 1 when the process has not ended at that bound, naming WHAT and the pid, and keeps
+# FILE, which still names it. Any other end of the remote command -- the machine not reached, the
+# ssh timed out, the script cut short -- says nothing of the process, so it returns 1 too, naming
+# WHAT, FILE and the ssh's exit and what it said. Each WHAT it returns 1 for is added to NOT_GONE,
+# and STOPPING names WHAT while the kill runs; step_interrupt reads both. The command that adds
+# WHAT to NOT_GONE also clears STOPPING, so no interrupt finds WHAT in both.
 #
 # FILE holds `PID START`, the start the script that started the process read (REMOTE_START_OF), so
 # that a pid the machine has given another process since is told apart. The kill reads the start
@@ -773,9 +783,12 @@ REMOTE_START_OF='start_of() { now= stat=; read -r stat <"/proc/$1/stat" 2>/dev/n
 # signals nothing, removes FILE, names the pid and the command of the process that holds it now,
 # and returns 0. A pid whose /proc entry has gone has ended too, however near the kill's read it
 # went, and the kill returns 0. An entry that is there and whose start could not be read says
-# nothing either way: the kill signals nothing, keeps FILE, and returns 1 naming the pid. FILE
-# holding a pid alone was written by a driver before these records, which a deployment it started
-# still holds: that pid is ended and waited for as before, with no start to compare.
+# nothing either way: the kill signals nothing, keeps FILE, and returns 1 naming the pid. A START
+# of `-` is the mark of a start script that could not read its own process's start: nothing tells
+# that pid from another process that took it since, so the kill signals nothing, keeps FILE, and
+# returns 1 naming the pid. FILE holding a pid alone was written by a driver before these records,
+# which a deployment it started still holds: that pid is ended and waited for as before, with no
+# start to compare.
 #
 # With `started`, the kill follows a start of WHAT whose ssh this pod has not seen return -- a start
 # a signal cut short, or an ssh this stop has just ended -- while the command it carried may still
@@ -790,7 +803,7 @@ REMOTE_START_OF='start_of() { now= stat=; read -r stat <"/proc/$1/stat" 2>/dev/n
 # directory that takes no new file -- a full disk, no free inode, no write permission -- never
 # stops a kill before it signals, and an interrupt that ends the script during one leaves no file.
 remote_kill() {
-  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' unread=$'\n''pid-start-unread=([0-9]+)'$'\n' differs=$'\n''pid-start-differs=([0-9]+) ([^'$'\n'']*)'$'\n' none=$'\n''no-pid'$'\n'
+  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' unread=$'\n''pid-start-unread=([0-9]+)'$'\n' unrecorded=$'\n''pid-start-unrecorded=([0-9]+)'$'\n' differs=$'\n''pid-start-differs=([0-9]+) ([^'$'\n'']*)'$'\n' none=$'\n''no-pid'$'\n'
   STOPPING=$what
   # shellcheck disable=SC2016 # expanded by the load machine's sh
   out=$(on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'
@@ -804,7 +817,11 @@ remote_kill() {
         sleep 1
       done
     fi
-    read -r pid start <"$1" 2>/dev/null || pid= start=
+    { read -r pid start <"$1"; } 2>/dev/null || pid= start=
+    if [ -n "$pid" ] && [ "$start" = - ]; then
+      echo "pid-start-unrecorded=$pid"
+      exit 6
+    fi
     if [ -n "$pid" ] && [ -n "$start" ]; then
       start_of "$pid"
       if [ -z "$now" ]; then
@@ -820,17 +837,17 @@ remote_kill() {
         exit 0
       fi
     fi
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    if [ -n "$pid" ] && ! ended "$pid" "$start"; then
       kill -TERM "$pid" 2>/dev/null
       i=0
-      while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$2" ]; do
+      while ! ended "$pid" "$start" && [ "$i" -lt "$2" ]; do
         sleep 1
         i=$((i + 1))
       done
-      if kill -0 "$pid" 2>/dev/null; then
+      if ! ended "$pid" "$start"; then
         kill -KILL "$pid" 2>/dev/null
         end=$(($(date +%s) + $3))
-        while kill -0 "$pid" 2>/dev/null; do
+        while ! ended "$pid" "$start"; do
           if [ "$(date +%s)" -gt "$end" ]; then
             echo "pid=$pid"
             exit 3
@@ -848,9 +865,11 @@ remote_kill() {
     return 0
   fi
   if ((rc == 3)) && [[ $'\n'$out$'\n' =~ $left ]]; then
-    note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
+    note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL, not ended; $file there still names it"
   elif ((rc == 5)) && [[ $'\n'$out$'\n' =~ $unread ]]; then
     note "$file on the $LOAD_VM VM names pid ${BASH_REMATCH[1]}, whose /proc entry there is there and whose start could not be read, so nothing tells it from another process that took that pid: it is not signalled, and nothing shows $what gone"
+  elif ((rc == 6)) && [[ $'\n'$out$'\n' =~ $unrecorded ]]; then
+    note "$file on the $LOAD_VM VM names pid ${BASH_REMATCH[1]} with no start, since the start of $what could not read it there, so nothing tells that pid from another process that took it: it is not signalled, and nothing shows $what gone"
   elif ((rc == 4)) && [[ $'\n'$out$'\n' =~ $none ]]; then
     note "the start of $what on the $LOAD_VM VM recorded no pid in $file there within $REMOTE_GONE_SECONDS s of its kill, so nothing shows it gone"
   else
@@ -1258,7 +1277,7 @@ stub_embed_start() {
     die "the stub embedder an earlier up started on the $LOAD_VM VM is not shown gone (the line above says why), and while it runs it holds the port this one needs"
   key_file=$(remote_secret embed-key "$(cfg .secrets.embed_key)")
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "$now" >"$6/stub-embed.pid"' \
+  on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "${now:--}" >"$6/stub-embed.pid"' \
     sh "$remote" "$key_file" "$work/stub-embed.pem" "0.0.0.0:$(port_of stub_embed)" "$(vm_host "$LOAD_VM")" "$work" ||
     die "starting loadgen stub-embed on the $LOAD_VM VM failed"
   local waited=0
@@ -2299,7 +2318,7 @@ tunnel_start() {
   fi
   TUNNEL_OPEN=started
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  if ! on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "$now" >"$pid_file"' \
+  if ! on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "${now:--}" >"$pid_file"' \
     sh "$(pprof_tunnel_pid_file)" "$(pprof_tunnel_log)" \
     "${cmd[@]}" -i "$identity" -o StrictHostKeyChecking=accept-new \
     -o "UserKnownHostsFile=$(remote_run)/known_hosts" \
@@ -2437,7 +2456,7 @@ load_start() {
   shift 2
   ssh_cmd
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  remote_cmd=$(remote_argv sh -c "$REMOTE_START_OF"'; pid_file=$1; shift; start_of "$$"; printf "%s %s\n" "$$" "$now" >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
+  remote_cmd=$(remote_argv sh -c "$REMOTE_START_OF"'; pid_file=$1; shift; start_of "$$"; printf "%s %s\n" "$$" "${now:--}" >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
   STARTING="the step's load"
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$LOAD_VM")" "$remote_cmd" >"$dir/loadgen.out" 2>&1 &
   LOAD_SSH_PID=$! LOAD_REMOTE=1 STARTING=""

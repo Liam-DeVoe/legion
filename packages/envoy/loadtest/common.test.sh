@@ -668,7 +668,7 @@ case_end_tree_names_unconfirmed() {
     return
   done
   ((rc == 1)) || { fail "(m) end_tree returned $rc, not 1, for a tree with a process it could not see stopped"; return; }
-  grep -qF "end_tree: pid $middle, below pid $parent, was not seen stopped within 10 s of its SIGSTOP; it is sent the SIGKILL with the rest, and its children are read" "$mark-err" ||
+  grep -qF "end_tree: pid $middle, below pid $parent, was not seen stopped by the walk's deadline, 10 s from its start; it is sent the SIGKILL with the rest, and its children are read" "$mark-err" ||
     { fail "(m) end_tree did not name the process it could not see stopped (pid $middle): $(<"$mark-err")"; return; }
   wait "$parent" 2>/dev/null || true
   printf 'PASS: end_tree names a process it cannot see stopped and still ends it, its children and the rest of the tree\n'
@@ -677,22 +677,44 @@ case_end_tree_names_unconfirmed() {
 # case_end_tree_refuses_no_pid: end_tree refuses a token that is no pid by name and signals
 # nothing: `kill -STOP 0` would stop every process of the caller's process group. The caller runs in
 # a session of its own, so a fault stops that shell alone, which the case sees as its state T; the
-# case then ends it.
+# case then ends it. The case decides by those events, never by a clock: the caller's status file
+# (end_tree returned), its state T (end_tree stopped it), or the caller ended with no status
+# written (end_tree killed it). A machine that runs the caller late only makes the event come
+# later. The 600 s is a hang's backstop, named as one, far above a source and two file writes.
 case_end_tree_refuses_no_pid() {
   local mark=$temporary_dir/no-pid job pid t0 state rc
   rm -f -- "$mark"-*
   # shellcheck disable=SC2016 # expanded by the shell it starts
   setsid bash -c 'echo "$$" >"$2-pid.tmp"; mv -- "$2-pid.tmp" "$2-pid"; source "$1"; rc=0; end_tree 0 2>"$2-err" || rc=$?; echo "$rc" >"$2-rc"' _ "$here/test-lib.sh" "$mark" &
   job=$!
-  wait_for "$mark-pid" || { fail "(n) the caller wrote no pid within 10 s"; return; }
+  t0=$EPOCHSECONDS
+  until [ -s "$mark-pid" ]; do
+    if process_ended "$job"; then
+      wait "$job" 2>/dev/null || true
+      fail "(n) the caller (pid $job) ended before it wrote its pid"
+      return
+    fi
+    ((EPOCHSECONDS - t0 <= 600)) || { fail "(n) the caller (pid $job) wrote no pid within 600 s, the case's backstop for a hang"; return; }
+    "$TEST_LIB_SLEEP" 0.05
+  done
   pid=$(<"$mark-pid")
-  t0=$EPOCHSECONDS state=""
   until [ -s "$mark-rc" ]; do
     state=$(process_state "$pid")
-    if [ "$state" = T ] || ((EPOCHSECONDS - t0 > 10)); then
+    if [ "$state" = T ]; then
       end_process "$pid" || true
       wait "$job" 2>/dev/null || true
-      fail "(n) end_tree 0 did not return within 10 s; its caller reads state ${state:-gone}, so it signalled process group 0"
+      fail "(n) end_tree 0 stopped its caller (pid $pid), which reads state T: it signalled process group 0"
+      return
+    fi
+    if process_ended "$pid" && [ ! -s "$mark-rc" ]; then
+      wait "$job" 2>/dev/null || true
+      fail "(n) end_tree 0 ended its caller (pid $pid) before the caller wrote its status: it signalled process group 0"
+      return
+    fi
+    if ((EPOCHSECONDS - t0 > 600)); then
+      end_process "$pid" || true
+      wait "$job" 2>/dev/null || true
+      fail "(n) end_tree 0 neither returned nor stopped its caller (pid $pid, state ${state:-gone}) within 600 s, the case's backstop for a hang"
       return
     fi
     "$TEST_LIB_SLEEP" 0.05

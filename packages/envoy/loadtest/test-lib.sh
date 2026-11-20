@@ -2,14 +2,16 @@
 # test-lib.sh: what the load test's suites (vm/vm.test.sh, cluster/cluster.test.sh, common.test.sh
 # and restart-step.test.sh) share about a process a case started and has to see end or hold still.
 # They source it before they put a fake sleep first on PATH. Not executable, and no part of what
-# the scripts it tests run.
+# the scripts it tests run. It sources common.sh, the drivers' own library, for the one reading of
+# a stop they share (proc_threads_stopped); nothing of the drivers' sources this file.
 #
 # process_ended PID: the process PID names has ended: its /proc entry is gone, or its main thread
 # is a zombie and its task directory lists no thread but the main one. A zombie main thread with
 # another thread listed is a process still ending, whose threads still hold its files, its ports
 # and its locks, so it has not ended. An entry there that cannot be read has not ended either, as
 # far as a case can tell. It reads /proc with builtins alone, so a case can ask it at the moment a
-# stop returns.
+# stop returns. It is the suites' own reading of an end, kept apart from the drivers' proc_ended,
+# so that a case does not judge a driver by the driver's own reader.
 #
 # wait_gone PID [SECONDS]: waited until PID has ended (process_ended), for SECONDS (10 by default)
 # on the clock at most. It returns 1 when it has not, and the caller says so. A case's stand-in that
@@ -19,11 +21,12 @@
 # end_process PID [SECONDS]: PID sent SIGKILL, and waited until it has ended (wait_gone).
 #
 # stop_process PID [SECONDS]: PID sent SIGSTOP, and waited until every thread of it reads stopped
-# (T or t) or ended (Z or X: a thread that has ended forks nothing), for SECONDS (10 by default)
-# at most; it returns 1 when one still runs then, or when its entry cannot be read. A signal is
-# delivered when the kernel next runs its process, so a parent sent SIGSTOP that is not run before
-# its child is killed reaps that child at once, from the wait it is in, and only then stops: a case
-# that holds a dead child in the table under a stopped parent waits for the stop first. A child that
+# (T or t) or ended (Z or X: a thread that has ended forks nothing): common.sh's
+# proc_threads_stopped, the drivers' reading too. It waits SECONDS (10 by default) at most, and
+# returns 1 when a thread still runs then, or when its entry cannot be read. A signal is delivered
+# when the kernel next runs its process, so a parent sent SIGSTOP that is not run before its child
+# is killed reaps that child at once, from the wait it is in, and only then stops: a case that
+# holds a dead child in the table under a stopped parent waits for the stop first. A child that
 # ends after its parent is stopped stays a zombie, which never reads T, so a zombie counts as
 # stopped.
 #
@@ -43,22 +46,28 @@
 # another run's processes as well. It returns 1 when end_tree did, whose lines name each process.
 #
 # end_tree PID [SECONDS]: PID and every process below it ended: each sent SIGSTOP and seen stopped
-# (stop_process, SECONDS each) before its children are read, so that none starts one the reading
-# misses, then all of them SIGKILL, and each waited until it has ended (wait_gone, SECONDS each).
-# SECONDS is 10 by default. Every process is walked: one that is not seen stopped is named, still
-# gets the SIGKILL, and its children are still read. It returns 1, naming each, when a process was
-# not seen stopped or has not ended, or when a children file held a token that is no pid; a PID
-# already gone is nothing to end.
+# (stop_process) before its children are read, so that none starts one the reading misses, then
+# all of them SIGKILL, and each waited until it has ended (wait_gone). The walk has one deadline,
+# SECONDS (10 by default) from its start, and the waits after the SIGKILL one more, SECONDS from
+# it: a tree of many processes the walk cannot see stopped, or that do not end, holds it no
+# longer than one. Every process is walked: one that is not seen stopped is named, still gets the
+# SIGKILL, and its children are still read. It returns 1, naming each, when a process was not seen
+# stopped or has not ended, or when a children file held a token that is no pid; a PID already
+# gone is nothing to end.
 
+# shellcheck source=packages/envoy/loadtest/common.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 TEST_LIB_SLEEP=$(command -v sleep)
 
 process_ended() {
   local stat task
   [ -e "/proc/$1" ] || return 0
-  if ! { read -r stat <"/proc/$1/stat"; } 2>/dev/null; then
+  # A failed read takes the branch after ||: bash gives a brace group whose own redirection fails
+  # the status 1 without applying a `!` in front of it.
+  { read -r stat <"/proc/$1/stat"; } 2>/dev/null || {
     [ -e "/proc/$1" ] && return 1
     return 0
-  fi
+  }
   stat=${stat##*) }
   [ "${stat%% *}" = Z ] || return 1
   for task in "/proc/$1"/task/*; do
@@ -86,26 +95,12 @@ end_process() {
 }
 
 stop_process() {
-  local pid=$1 bound=${2:-10} t0=$EPOCHSECONDS task stat running
+  local pid=$1 until=$((EPOCHSECONDS + ${2:-10}))
   kill -STOP "$pid" 2>/dev/null || return 1
   while :; do
-    running=unread
-    for task in "/proc/$pid"/task/*; do
-      [ "$task" != "/proc/$pid/task/*" ] || break
-      [ "$running" = yes ] || running=no
-      if ! { read -r stat <"$task/stat"; } 2>/dev/null; then
-        [ ! -e "$task" ] || running=yes
-        continue
-      fi
-      stat=${stat##*) }
-      case ${stat%% *} in
-      T | t | Z | X) ;;
-      *) running=yes ;;
-      esac
-    done
-    [ "$running" != no ] || return 0
+    proc_threads_stopped "$pid" && return 0
     [ -e "/proc/$pid" ] || return 1
-    ((EPOCHSECONDS - t0 <= bound)) || return 1
+    ((EPOCHSECONDS <= until)) || return 1
     "$TEST_LIB_SLEEP" 0.05
   done
 }
@@ -144,22 +139,40 @@ end_recorded() {
   return "$rc"
 }
 
+# end_tree_left UNTIL: the seconds left until UNTIL, 0 once it has passed.
+end_tree_left() {
+  local left=$(($1 - EPOCHSECONDS))
+  printf '%s\n' "$((left > 0 ? left : 0))"
+}
+
 end_tree() {
-  local pid=$1 bound=${2:-10} walked seen i=0 file kid found=() rc=0
+  local pid=$1 bound=${2:-10} walked seen i=0 file kid found=() rc=0 until
   [[ $pid =~ ^[1-9][0-9]*$ ]] || {
     printf 'end_tree: refusing invalid process id %q\n' "$pid" >&2
     return 1
   }
-  walked=("$pid") seen=" $pid "
+  walked=("$pid") seen=" $pid " until=$((EPOCHSECONDS + bound))
   if ! stop_process "$pid" "$bound"; then
     [ -e "/proc/$pid" ] || return 0
-    printf 'end_tree: pid %s was not seen stopped within %s s of its SIGSTOP; it is sent the SIGKILL with the rest, and its children are read\n' "$pid" "$bound" >&2
+    printf "end_tree: pid %s was not seen stopped by the walk's deadline, %s s from its start; it is sent the SIGKILL with the rest, and its children are read\n" "$pid" "$bound" >&2
     rc=1
   fi
   while ((i < ${#walked[@]})); do
     for file in "/proc/${walked[i]}"/task/*/children; do
       found=()
-      { read -r -a found <"$file"; } 2>/dev/null || true
+      # The file ends with no newline, so read answers 1 at its end; only the redirection's own
+      # failure makes this group fail, and that takes the else branch (a `!` in front of a group
+      # whose redirection fails is not applied by bash). A pattern left unmatched is a task
+      # directory that could not be read, or a process that has gone, which its own entry tells.
+      if { read -r -a found || :; } 2>/dev/null <"$file"; then
+        :
+      else
+        if [ -e "$file" ] || { [ "$file" = "/proc/${walked[i]}/task/*/children" ] && [ -e "/proc/${walked[i]}" ]; }; then
+          printf 'end_tree: the children of pid %s could not be read, so a process below it may not be ended\n' "${walked[i]}" >&2
+          rc=1
+        fi
+        continue
+      fi
       for kid in "${found[@]}"; do
         [[ $seen != *" $kid "* ]] || continue
         seen+="$kid "
@@ -168,9 +181,9 @@ end_tree() {
           rc=1
           continue
         }
-        if ! stop_process "$kid" "$bound"; then
+        if ! stop_process "$kid" "$(end_tree_left "$until")"; then
           [ -e "/proc/$kid" ] || continue
-          printf 'end_tree: pid %s, below pid %s, was not seen stopped within %s s of its SIGSTOP; it is sent the SIGKILL with the rest, and its children are read\n' "$kid" "${walked[i]}" "$bound" >&2
+          printf "end_tree: pid %s, below pid %s, was not seen stopped by the walk's deadline, %s s from its start; it is sent the SIGKILL with the rest, and its children are read\n" "$kid" "${walked[i]}" "$bound" >&2
           rc=1
         fi
         walked+=("$kid")
@@ -181,8 +194,9 @@ end_tree() {
   # no-wait: each of walked[@] is waited for just below, one at a time, until it has ended
   # (wait_gone).
   kill -KILL "${walked[@]}" 2>/dev/null || true
+  until=$((EPOCHSECONDS + bound))
   for i in "${!walked[@]}"; do
-    wait_gone "${walked[i]}" "$bound" || {
+    wait_gone "${walked[i]}" "$(end_tree_left "$until")" || {
       printf 'end_tree: pid %s has not ended %s s after its SIGKILL\n' "${walked[i]}" "$bound" >&2
       rc=1
     }
