@@ -48,6 +48,7 @@ import {
 } from "@legion/contracts/legion-api";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { DAEMON_MODULE, runDaemonPane } from "./daemon-pane";
+import { RIG_OWNER, RIG_WORLD } from "./rig-world";
 
 const GRANT_TTL_MS = 60_000;
 const [portArg, logFile, bootTokenFile, project, issue, role, phaseArg] = Bun.argv.slice(2);
@@ -83,7 +84,8 @@ const [PHASE = "", HANDOFF_WORD = ""] =
     ? runDaemonPane(DAEMON_MODULE, ["phase", role]).split("\n")
     : [phaseArg, ""];
 /** `GET /legion/v1/state`: the one issue the worker holds, admitted in PHASE (the phase its role
- * works, through daemon-pane.go, or the seventh argument's), on the rig's one repository.
+ * works, through daemon-pane.go, or the seventh argument's), on the rig's one repository
+ * (rig-world.json's, which the pane's addressing names).
  * `capabilities` is the deployment's capability report, `strandedClaims` the claims nothing will
  * wake, `heldOutboxRows` the lifecycle rows held behind their issues' running ones, `consumers`
  * the lag of the daemon's durable consumers and `repositories` the project's mapping, each of
@@ -104,8 +106,8 @@ const STATE = LegionStateResponse.parse({
       phase: PHASE,
       status: "in_progress",
       tree: issue,
-      repo: "sjawhar/legion-smoke",
-      defaultBranch: "main",
+      repo: RIG_WORLD.repository,
+      defaultBranch: RIG_WORLD.defaultBranch,
       workers: {},
     },
   },
@@ -115,8 +117,8 @@ const STATE = LegionStateResponse.parse({
   wakesWaiting: [],
   capabilities: [],
   repositories: {
-    owners: ["sjawhar"],
-    mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
+    owners: [RIG_OWNER],
+    mapped: [{ repo: RIG_WORLD.repository, default: true }],
     refused: [],
     withoutWebhookApp: [],
     caches: [],

@@ -13,10 +13,12 @@ import {
   e2eAgentToken,
 } from "../../../dispatch/e2e/api";
 import { harnessPorts } from "../../../dispatch/e2e/harness-ports";
+import { RIG_WORLD } from "./rig-world";
 import { agentPost, IMPLEMENTER } from "./seed-requests";
 
-/** The repository of the heads scenarios' world, rig.sh's worker_repo. */
-const HEADS_REPO = "example/widgets";
+/** The repository of the heads scenarios' world and its default branch, rig-world.json's. */
+const HEADS_REPO = RIG_WORLD.repository;
+const HEADS_BASE = RIG_WORLD.defaultBranch;
 /** The cases of reviewer-own-head, each one batch of rig.sh's cmd_batch. */
 const OWN_HEAD_CASES = ["sibling-fails", "ci-only", "no-implementer", "no-tester"] as const;
 /** The cases of ci-pass-and-fail: the role its run drives through one world. */
@@ -86,7 +88,7 @@ async function seedGithub(fields: Record<string, unknown>): Promise<void> {
         contents: "read",
         pull_requests: "read",
         installation_id: 256,
-        default_branch: "main",
+        default_branch: HEADS_BASE,
         ...fields,
       },
     }),
@@ -253,7 +255,7 @@ export async function headsEvents(
           body: `Dispatch: ${fixture.issue}`,
           head_ref: `legion/${fixture.issue}-${pr}`,
           head_repo: HEADS_REPO,
-          base_ref: "main",
+          base_ref: HEADS_BASE,
         },
       ])
     ),
@@ -310,7 +312,7 @@ export async function headsEvents(
     const eventID = `skill-scenarios-pr-${pr}-opened-${headOf(pr).slice(0, 7)}`;
     const payload = {
       action: "opened",
-      base_ref: "main",
+      base_ref: HEADS_BASE,
       body: `Dispatch: ${fixture.issue}`,
       head_ref: `legion/${fixture.issue}-${pr}`,
       head_repo: HEADS_REPO,

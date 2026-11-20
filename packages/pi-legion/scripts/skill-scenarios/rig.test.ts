@@ -21,7 +21,13 @@ import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
 import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
+import { DAEMON_MODULE, workerPane } from "./daemon-pane";
+import { RIG_WORLD } from "./rig-world";
 import { fileRowLimit, RIG_STEP, SCRIPT_RUN, VCS_COMMAND } from "./test-limit";
+
+/** rig.sh's world variables as its header sets them from rig-world.json, for a row that runs one
+ * of its functions alone. */
+const WORLD_VARS = `worker_repo=${RIG_WORLD.repository} worker_base=${RIG_WORLD.defaultBranch}`;
 
 // Every test here runs rig.sh and its stand-ins as real processes, which a loaded machine
 // stretches with no bound, so each test gets the limit test-limit.ts computes from the bounds of
@@ -2115,7 +2121,7 @@ describe("ci_job_results", () => {
         fn("ci_job_results"),
         `docker() { printf '%s\\n' "$*" >>"$R/calls"; cat >"$R/sql"; head -n 1 "$R/answers"; sed -i 1d "$R/answers"; }`,
         `sleep() { printf '%s\\n' "$1" >>"$R/sleeps"; }`,
-        "R=$1 tag=t worker_key=LWEVAL-9 worker_repo=example/widgets",
+        `R=$1 tag=t worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "ci_job_results",
       ].join("\n"),
       [run]
@@ -2161,7 +2167,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         ...["fail", "g", "fixture_repo", "workspace_on", fixture].map(fn),
-        "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         `${fixture} 3 1700000000`,
       ].join("\n"),
       [run]
@@ -2278,7 +2284,7 @@ describe("heads_fixture", () => {
           "set -euo pipefail",
           fn("fail"),
           fn("heads_routes"),
-          "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
           'heads_routes ci-pass-and-fail "$2"',
         ].join("\n"),
         [run, role]
@@ -2318,20 +2324,21 @@ describe("heads_fixture", () => {
   });
 
   // Each GitHub read the heads scenarios' agents made in the fifth round of runs, one call of each
-  // endpoint in the form an agent wrote it, and the reads the role prompts and skills name. Both
-  // repository names an agent used: the world's, and the one its addressing names.
+  // endpoint in the form an agent wrote it, and the reads the role prompts and skills name. The
+  // round's agents named two repositories, since the pane's addressing named another than the
+  // world's; the addressing now reads rig-world.json, so each call names the world's.
   const ROUND_CALLS = [
     "gh --version",
     "gh auth status",
-    "gh repo view skills-rig/project --json defaultBranchRef --jq .defaultBranchRef.name",
-    "gh api repos/skills-rig/project --jq {full_name,default_branch}",
+    "gh repo view example/widgets --json defaultBranchRef --jq .defaultBranchRef.name",
+    "gh api repos/example/widgets --jq {full_name,default_branch}",
     "gh api repos/example/widgets/branches --jq .[].name",
-    "gh api -i repos/skills-rig/project/branches/main",
+    "gh api -i repos/example/widgets/branches/main",
     "gh api repos/example/widgets/branches/main/protection/required_status_checks",
-    "gh api repos/skills-rig/project/rulesets",
+    "gh api repos/example/widgets/rulesets",
     'gh api --paginate repos/example/widgets/rules/branches/main --jq .[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context',
-    "gh api --paginate repos/skills-rig/project/issues/702/comments --jq .[] | [.user.login,.body] | @tsv",
-    "gh api repos/skills-rig/project/pulls/702/comments",
+    "gh api --paginate repos/example/widgets/issues/702/comments --jq .[] | [.user.login,.body] | @tsv",
+    "gh api repos/example/widgets/pulls/702/comments",
     "gh api --paginate repos/example/widgets/pulls/703/reviews --jq .[] | [.id,.state,.user.login] | @tsv",
     "gh api repos/example/widgets/pulls/702 --jq {head:.head.sha,base:.base.ref,mergeable_state}",
     "gh api repos/example/widgets/actions/runs?head_sha={702}&per_page=100 --jq .workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv",
@@ -2368,7 +2375,7 @@ describe("heads_fixture", () => {
         "set -euo pipefail",
         fn("fail"),
         fn("heads_routes"),
-        "R=$1 worker_key=LWEVAL-9 worker_repo=example/widgets",
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes reviewer-own-head sibling-fails",
       ].join("\n"),
       [run]
@@ -2404,7 +2411,7 @@ describe("heads_fixture", () => {
     }
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
     // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
-    expect(gh("gh api repos/skills-rig/project/branches/main --jq .protected")).toEqual({
+    expect(gh("gh api repos/example/widgets/branches/main --jq .protected")).toEqual({
       code: 0,
       stdout: "false\n",
       stderr: "",
@@ -2453,6 +2460,11 @@ describe("heads_fixture", () => {
       stderr: "gh: Not Found (HTTP 404)\n",
     });
     expect(gh("gh pr view 702 --json reviews --jq .reviews[].state").stdout).toBe("APPROVED\n");
+    // A repository other than the world's, which the App's token cannot read: GitHub's 404.
+    expect(gh("gh api repos/skills-rig/project/branches/main --jq .protected")).toMatchObject({
+      code: 1,
+      stderr: "gh: Not Found (HTTP 404)\n",
+    });
     // A read no route names: the stand-in's own failure, named in the run's log, never an answer.
     expect(gh("gh api repos/example/widgets/planted-unknown-endpoint --jq .")).toEqual({
       code: 97,
@@ -2470,4 +2482,67 @@ describe("heads_fixture", () => {
       exit: 97,
     });
   });
+
+  // Catches: a pane whose addressing names another repository or default branch than the world
+  // the stand-ins serve, as the fifth round's did (`skills-rig/project`, `trunk`, where GitHub's
+  // stand-in held `example/widgets` on `main`): an agent that reads the repository it was told
+  // then reads a world that does not exist. The addressing comes from daemon-pane.go, the world
+  // from rig.sh, and both read rig-world.json, so each side is read here and they must agree.
+  test("the pane's addressing names the repository and default branch the stand-in's world serves", () => {
+    const { code, run } = build("heads_fixture");
+    expect(code).toBe(0);
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": "- Check k1 (before_merge): pass at the head by implementer, tester" },
+      })
+    );
+    const made = bash(
+      [
+        "set -euo pipefail",
+        fn("fail"),
+        fn("heads_routes"),
+        `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+        "heads_routes reviewer-own-head sibling-fails",
+      ].join("\n"),
+      [run]
+    );
+    expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
+    const pane = workerPane(
+      { rig: run, port: 13399, profile: "rig-profile" },
+      { ...childEnv, HOME: path.join(run, "pane-home") },
+      { project: "skillsrig", issue: "LWEVAL-9", role: "reviewer" },
+      { daemonModule: DAEMON_MODULE, systemPrompt: true, ghPath: process.execPath }
+    );
+    const promptFile = (pane.systemPromptArgument ?? "")
+      .replace(/^--append-system-prompt /, "")
+      .replace(/^'(.*)'$/, "$1");
+    const told = /Your issue's repository is (\S+) \(default branch ([^)]+)\)/.exec(
+      readFileSync(promptFile, "utf8")
+    );
+    const routes: { match: string; stdout?: unknown }[] = JSON.parse(
+      readFileSync(path.join(run, "fixtures.json"), "utf8")
+    ).routes;
+    const repoRead = routes.find((route) => route.match.includes("/?repos/[^/ ]+/[^/ ?]+([ ?]|$)"))
+      ?.stdout as { full_name?: string; default_branch?: string } | undefined;
+    const remoteHead = spawnWithin(
+      { ...VCS_COMMAND, part: "git symbolic-ref" },
+      ["git", "-C", path.join(run, "remote.git"), "symbolic-ref", "--short", "HEAD"],
+      { env: childEnv }
+    )
+      .stdout.toString()
+      .trim();
+    const world = JSON.parse(readFileSync(path.join(run, "world.json"), "utf8"));
+    expect({
+      addressing: { repository: told?.[1], defaultBranch: told?.[2] },
+      githubStandIn: { repository: repoRead?.full_name, defaultBranch: repoRead?.default_branch },
+      remote: { repository: world.repo, defaultBranch: remoteHead },
+    }).toEqual({
+      addressing: RIG_WORLD,
+      githubStandIn: RIG_WORLD,
+      remote: RIG_WORLD,
+    });
+  }, 600_000);
 });
