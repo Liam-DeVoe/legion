@@ -52,7 +52,10 @@ export interface HeldPatches {
  *  44424277368, 44632529216 and 44650607607 read holds of 2,999 ms. So the rest is slept again
  *  until the clock the rows read says the hold is whole. */
 async function sleepUntil(until: number): Promise<void> {
-  for (let left = until - Date.now(); left > 0; left = until - Date.now()) await sleep(left);
+  for (let left = until - Date.now(); left > 0; left = until - Date.now()) {
+    // The rest of a save's hold, measured on the wall clock the rows read the hold with.
+    await sleep(left);
+  }
 }
 
 /**
