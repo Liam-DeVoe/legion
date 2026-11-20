@@ -17,11 +17,13 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -56,6 +58,56 @@ func TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson(t *testing.T) 
 				t.Errorf("%s: GET /v1/person-access?person=%s = %d %s, want 200 naming %s with exchange_entries %d", c.name, person, status, body, person, want)
 			}
 		}
+	}
+}
+
+// TestASignInsCredentialEnrolsASessionOnTheRig: on a rig taking Google person trades, the launcher
+// credential a person's trade mints at the real token endpoint enrols a session (201), as on the
+// broker main builds, which lists the machine's account in BROKER_VM_SERVICES for the service its
+// exchange entry names. A rig that listed the account only in its exchange entries would mint the
+// credential and then refuse it at every launcher route, 401 LAUNCHER_INVALID.
+func TestASignInsCredentialEnrolsASessionOnTheRig(t *testing.T) {
+	const machineAccount = "leaver-machine@example.iam.gserviceaccount.com"
+	google := oidctest.New(t)
+	googleKey := google.PublishKey(t, "google-key")
+	rig := NewRig(t, WithPersonSignIns(google, machineAccount))
+
+	machine := google.Claims(machineAccount, GoogleMachineAudience)
+	machine["email"], machine["email_verified"] = machineAccount, true
+	person := google.Claims("google-"+rig.Operator, PersonSignInAudience)
+	person["email"], person["email_verified"], person["hd"] = rig.Operator, true, personSignInDomain
+	boxKey := NewSigningKey(t)
+	form := url.Values{
+		"grant_type":          {brokerclient.GrantTypeTokenExchange},
+		"client_id":           {oauthwire.ExchangeClientID},
+		"subject_token":       {google.Mint(t, googleKey, person)},
+		"subject_token_type":  {oauthwire.SubjectTokenTypePerson},
+		"actor_token":         {google.Mint(t, googleKey, machine)},
+		"actor_token_type":    {oauthwire.ActorTokenTypeMachine},
+		oauthwire.FormSession: {"ada-sign-in"},
+	}
+	traded, err := (&http.Client{Transport: brokerclient.NewDPoPTransport(boxKey, &http.Transport{}), Timeout: 30 * time.Second}).
+		PostForm(rig.URL+brokerclient.TokenPath, form)
+	if err != nil {
+		t.Fatalf("trade %s's sign-in: %v", rig.Operator, err)
+	}
+	defer traded.Body.Close()
+	var answer struct {
+		CredentialID string `json:"credential_id"`
+	}
+	if err := json.NewDecoder(traded.Body).Decode(&answer); err != nil || traded.StatusCode != http.StatusOK || answer.CredentialID == "" {
+		t.Fatalf("%s's sign-in trade answered %d (%v), want 200 with a launcher credential", rig.Operator, traded.StatusCode, err)
+	}
+
+	thumbprint, err := proof.Thumbprint(&NewSigningKey(t).PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := NewClient(t, rig.URL, strings.TrimPrefix(rig.URL, "http://"))
+	status, body := client.Launcher(t, boxKey, answer.CredentialID, http.MethodPost, "/v1/enrollments",
+		map[string]any{"kind": "session", "runtime_id": "ada-box", "thumbprint": thumbprint})
+	if status != http.StatusCreated {
+		t.Fatalf("a session's enrollment under the credential of %s's sign-in answered %d %s, want 201", rig.Operator, status, strings.TrimSpace(string(body)))
 	}
 }
 
