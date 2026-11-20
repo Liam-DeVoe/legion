@@ -91,6 +91,12 @@
       "reason": "no move of the stand-in takes a tree out of the workflow, and no scenario boots a merger (rig.sh's worker_boots)"
     },
     {
+      "name": "a project's pause and its resume",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "daemon-standin\\.ts:\\d+ .*\\(main's #4115: .* are not modelled\\. Unreachable: only the controller's `legion` tool sends a pause or a resume",
+      "reason": "pi-legion's tools.ts gives the `pause` and `resume` ops to the controller's role alone, and no scenario boots a controller (rig.sh's worker_boots: tester, reviewer and implementer)"
+    },
+    {
       "name": "the footer's entry and the reviewed commit it moves",
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ Not modelled: the `entry` a review's footer names.* Unreachable: no scenario enters `reviewing` a second time",

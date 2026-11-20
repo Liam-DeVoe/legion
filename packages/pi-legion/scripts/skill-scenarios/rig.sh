@@ -2947,7 +2947,7 @@ review_world() {
 #                and the loop runs in `accepting` (run_threads_closed says why).
 approved_world() {
   local index=$1 start=$2 guard=$3 case_name=$4 src when worker_pr worker_pr_url C1 body extra
-  local threads entries threads_line reviews pr_head doc fix
+  local threads entries threads_line reviews pr_head fix
   # The two files the world is written with, and the threads the approval left, each with what
   # the reviewer wrote and what its PR body entry says still stands. Every world but the dropped
   # guard's documents the name as printed exactly as given, which the trim makes false; the
@@ -2983,17 +2983,7 @@ approved_world() {
   esac
   round_world "$index" "$start" "$guard" "$doc_line" "$trigger"
   pr_head=$C1
-  # The reviewer's text commit: the sentence the change made false rewritten, nothing else,
-  # committed as the review App and pushed onto the issue branch, whose push the remote takes,
-  # since it changes no workflow file.
-  if [ -n "$fix" ]; then
-    doc=$(<"$src/docs/cli.md")
-    printf '%s\n' "${doc/"$doc_line"/"$fix"}" >"$src/docs/cli.md"
-    fixture_by=reviewer fixture_git commit -qam "docs: say what the CLI does with the spaces around the name"
-    pr_head=$(fixture_git rev-parse HEAD)
-    fixture_git push -q "$R/remote.git" "legion/$worker_key"
-    : >"$R/pushes.log"
-  fi
+  [ -z "$fix" ] || pr_head=$(fixture_reviewer_commit "$doc_line" "$fix")
   # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
   # of what is open, then one entry per open thread, each stamped with the head the reviewer
   # approved. The count line says what the counts are and nothing about who answers or resolves a
@@ -3407,6 +3397,21 @@ fixture_head_commit() {
   C1=$(fixture_git rev-parse HEAD)
   fixture_git push -q "$R/remote.git" "legion/$worker_key"
   : >"$R/pushes.log"
+}
+
+# fixture_reviewer_commit DOC_LINE FIX rewrites the sentence DOC_LINE of docs/cli.md as FIX and
+# nothing else, commits it as the review App (role_identity) and pushes it onto legion/<key>, which
+# the run's remote takes since it changes no workflow file, and prints the commit: the reviewer's
+# own text commit above the implementer's (approved_world). The push log is emptied of the world's
+# own push, as fixture_head_commit empties it of the implementer's.
+fixture_reviewer_commit() {
+  local doc
+  doc=$(<"$src/docs/cli.md")
+  printf '%s\n' "${doc/"$1"/"$2"}" >"$src/docs/cli.md"
+  fixture_by=reviewer fixture_git commit -qam "docs: say what the CLI does with the spaces around the name"
+  fixture_git push -q "$R/remote.git" "legion/$worker_key"
+  : >"$R/pushes.log"
+  fixture_git rev-parse HEAD
 }
 
 # fixture_implement CHANGED writes the implement handoff as the implementer records it with

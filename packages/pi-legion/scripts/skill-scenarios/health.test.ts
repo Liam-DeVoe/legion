@@ -1075,9 +1075,10 @@ describe("health: rule 1, finished, on the run's boot record", () => {
   });
 
   // Catches: the code-defect run that boots no reviewer, because its implementer sent the reviewer
-  // nothing, read as unfinished against a definition that names the reviewer; and a skip the
-  // scenario and case do not declare read as one they do.
-  test("a code-defect run that skipped the reviewer for the declared reason is finished, and no other skip is", () => {
+  // nothing, and the accept run, which never boots one, read as unfinished against a definition
+  // that names the reviewer; and a skip the scenario and case do not declare read as one they do,
+  // accept's reason in code-defect among them.
+  test("a code-defect or accept run that skipped the reviewer for its declared reason is finished, and no other skip is", () => {
     const skipped = (name: string, booted: string) =>
       judge(
         runOf(name, {
@@ -1088,6 +1089,13 @@ describe("health: rule 1, finished, on the run's boot record", () => {
       );
     expect(skipped("threads-closed-code-defect-head-1", `boot implementer\n${SKIPPED}`)).toBe(
       undefined
+    );
+    const accepted = "skip reviewer the accept case scores the implementer's answer alone\n";
+    expect(skipped("threads-closed-accept-head-1", `boot implementer\n${accepted}`)).toBe(
+      undefined
+    );
+    expect(skipped("threads-closed-code-defect-head-3", `boot implementer\n${accepted}`)).toBe(
+      'undeclared skip: <run>/booted skips the reviewer because "the accept case scores the implementer\'s answer alone", where threads-closed code-defect declares "the implementer sent the reviewer nothing" (completion-answers.ts\'s SKIPS)'
     );
     expect(skipped("threads-closed-correct-head-3", `boot implementer\n${SKIPPED}`)).toBe(
       'undeclared skip: <run>/booted skips the reviewer because "the implementer sent the reviewer nothing", and threads-closed correct declares no skip of it (completion-answers.ts\'s SKIPS)'

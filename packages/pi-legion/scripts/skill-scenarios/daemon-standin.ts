@@ -2054,7 +2054,14 @@ function turnOutcome(body: unknown): Response {
  * no kept run called it, so an agent reaches it only with a round it made up; the daemon's answer
  * to that is a sentence its supervisor builds in an unexported function, which this does not
  * restate. Such a call is answered 404, which health reads as a world the daemon would not have
- * served, so the run is unhealthy and never scored. */
+ * served, so the run is unhealthy and never scored.
+ *
+ * A project's pause and its resume (main's #4115: `POST /legion/v1/project/pause` and
+ * `/legion/v1/project/resume`, the state's `paused` and `lastPause`, and the operator routes a
+ * pause refuses while it stands) are not modelled. Unreachable: only the controller's `legion`
+ * tool sends a pause or a resume (pi-legion's tools.ts, whose `controller` ops alone hold `pause`
+ * and `resume`), and no scenario boots a controller (rig.sh's worker_boots), so no run's state
+ * holds a pause and no agent of a run can send one. */
 async function handle(
   path: string,
   body: unknown

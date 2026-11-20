@@ -2381,7 +2381,7 @@ describe("fixture_head_commit", () => {
 describe("round_world and the worlds' own text findings", () => {
   /** WORLD built with GUARD, with round_world stubbed: the arguments it was given, and what the
    * stub had to set for the rest of the world to build (round_world's own outputs). */
-  function built(world: string, guard: string) {
+  function built(world: string, guard: string, worldCase = guard === "" ? "correct" : "code-defect") {
     const dir = freshDir(`world-text-${world}`);
     const result = bash(
       [
@@ -2392,14 +2392,15 @@ describe("round_world and the worlds' own text findings", () => {
         fn("base_ruleset_routes"),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001; }",
+        "fixture_reviewer_commit() { :; }",
         "fixture_body() { :; }",
         "fixture_checks() { :; }",
         "fixture_write() { :; }",
         "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard]
+      [dir, guard, worldCase]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     const written = readFileSync(path.join(dir, "round-args"), "utf8");
@@ -2418,6 +2419,9 @@ describe("round_world and the worlds' own text findings", () => {
       "THE-TRIGGER",
     ]);
     expect(built("approved_world", "")).toEqual(["1", "100", "", "THE-DOC-LINE", "THE-TRIGGER"]);
+    // accept's workflow comment is honest, so its one text finding is the document's, which the
+    // reviewer's own commit closes.
+    expect(built("approved_world", "", "accept")).toEqual(["1", "100", "", "THE-DOC-LINE", ""]);
   });
 
   // Catches: a negative control that quietly gains a text finding. Its one finding is the code's,
@@ -2804,8 +2808,8 @@ describe("worker_boot", () => {
       );
 
     // Catches: a boot left off the run's record, and one recorded only once its stand-in
-    // listened, which leaves a boot whose stand-in timed out (the measured text-fixes-head-1's
-    // reviewer) off the record that health reads it on.
+    // listened, which leaves a boot whose stand-in timed out (a measured threads-closed head
+    // run's reviewer) off the record that health reads it on.
     test("the boot is on the run's boot record before its stand-in starts", () => {
       const { dir } = boot("tester", "");
       expect(readFileSync(path.join(dir, "booted-at-daemon"), "utf8")).toBe("boot tester\n");
@@ -2885,13 +2889,14 @@ describe("start_recorder", () => {
   });
 });
 
-// The second half of the loop after an approval. In code-defect the implementer's own act is to
+// The second half of the implementer's last chance. In code-defect the implementer's own act is to
 // tell the architect and send the reviewer nothing, so a wake of none ends the loop where the
-// rule ends it. Catches: a rig that boots a reviewer on an empty prompt anyway and counts what it
-// then does towards the case's pass (score.ts's !approvedAny, resolves.length === 0 and
-// moved === undefined) — the rig's own agent answering the rig's own question. In text-fixes the
-// implementer must have sent a wake, so the reviewer is booted whatever it sent and the empty
-// wake stays the fail on toldReviewer it already was.
+// rule ends it; in accept the implementer's answer is the run's one half. Catches: a rig that
+// boots a reviewer on an empty prompt anyway and counts what it then does towards the case's pass
+// (score.ts's !approvedAny, resolves.length === 0 and moved === undefined) — the rig's own agent
+// answering the rig's own question. In correct the implementer must have sent a wake, so the
+// reviewer is booted whatever it sent and the empty wake stays the fail on toldReviewer it
+// already was.
 describe("run_threads_closed", () => {
   /** The loop run for CASE on a wake of WAKE, with both agents and the services stubbed: each
    * worker_boot it made, in order, the prompt the reviewer half would have been given, the
@@ -2942,17 +2947,69 @@ describe("run_threads_closed", () => {
     ]);
   });
 
-  // Catches, beside the empty wake: a text-fixes loop booted in `accepting`, where its approved
-  // head's running check would have left main's engine in `reviewing` (rig.sh's approved_world),
-  // so the push that sets the approval aside and the fix head's approval that ends the round are
+  // Catches, beside the empty wake: a correct loop booted in `accepting`, where its approved
+  // head's open thread would have left main's engine in `reviewing` (rig.sh's approved_world),
+  // so the push that sets the approval aside and the approval of its head that ends the round are
   // a path no run of this rig could take (review 5887659447, finding 3). code-defect stays in
   // `accepting` (the two rows above): its control reads the message to the architect as the one
   // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
-  test("text-fixes boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
+  test("correct boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
     expect(loop("correct", "[]\n").boots).toEqual([
       "the-run-implementer skillsproject1 implementer reviewing implementer",
       "the-run-reviewer skillsproject1 reviewer reviewing implementer",
     ]);
+  });
+
+  // Catches: an accept loop booted in `reviewing`, where its approved head, with no thread open,
+  // is `CLEAN` and main's engine has ended the round (rig.sh's approved_world); and one that boots
+  // a reviewer on whatever the implementer sent, which the case does not score.
+  test("accept boots the implementer in accepting and no reviewer, whatever the implementer sent", () => {
+    for (const wake of ["[]\n", '[{"message":"pushed 0123456789ab"}]\n'])
+      expect(loop("accept", wake).boots).toEqual([
+        "the-run-implementer skillsproject1 implementer accepting implementer",
+      ]);
+  });
+
+  // The implementer's prompt is the reviewer's message at its approval, as the reviewer's role
+  // prompt has it send one: its commit by SHA, the head that carries it and each thread it left
+  // open. Catches: a world whose implementer is told of an approval and not of the commit it reads
+  // as its last chance, and code-defect's message moved off the approval it reports.
+  test("each case's implementer is woken by the reviewer's message of its own commit, or of its approval in code-defect", () => {
+    const implementerPrompt = (threadsCase: string) => {
+      const dir = freshDir(`threads-prompt-${threadsCase}`);
+      writeFileSync(
+        path.join(dir, "threads.json"),
+        threadsCase === "accept"
+          ? "[]\n"
+          : '[{"id":"PRRT_kwDOfix002","path":".github/workflows/greet.yml","body":"the comment names a push trigger"}]\n'
+      );
+      const result = bash(
+        [
+          fn("note"),
+          fn("fail"),
+          fn("run_threads_closed"),
+          "start_recorder() { :; }",
+          "worker_run_world() { pr=1001; head=0123456789ab; }",
+          "seed_ts() { :; }",
+          "steps_seed() { :; }",
+          'worker_boot() { cp "$R/prompt.txt" "$R/implementer-prompt.txt"; exit 0; }',
+          "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets",
+          'run_threads_closed the-run skillsproject1 1 100 "$2"',
+        ].join("\n"),
+        [dir, threadsCase]
+      );
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      return readFileSync(path.join(dir, "implementer-prompt.txt"), "utf8");
+    };
+    expect(implementerPrompt("accept")).toBe(
+      "Reviewer → implementer, LWEVAL-1. On PR #1001 (https://github.com/example/widgets/pull/1001, repository example/widgets) I pushed my text commit 0123456789ab, which rewrites the sentence of docs/cli.md the change made false, and approved the head that carries it, 0123456789ab. Threads I left open:\nnone\nOver to you.\n"
+    );
+    expect(implementerPrompt("correct")).toContain(
+      "Threads I left open:\n- Thread PRRT_kwDOfix002, .github/workflows/greet.yml: the comment names a push trigger\nOver to you.\n"
+    );
+    expect(implementerPrompt("code-defect")).toStartWith(
+      "Reviewer → implementer, LWEVAL-1. I approved PR #1001 (https://github.com/example/widgets/pull/1001, repository example/widgets) at 0123456789ab."
+    );
   });
 
   // The reviewer's own wake is the implementer's message and nothing else (review-threads.md
@@ -2994,6 +3051,7 @@ describe("run_threads_closed", () => {
   // completion-answers.ts's SKIPS declares, which health and the score hold the line to.
   describe("boot record", () => {
     const declared = SKIPS["threads-closed"]?.["code-defect"]?.reviewer;
+    const accepted = SKIPS["threads-closed"]?.accept?.reviewer;
 
     // Catches: a skip that fires although the implementer woke the reviewer, which would leave
     // a booted reviewer recorded as never booted.
@@ -3012,8 +3070,17 @@ describe("run_threads_closed", () => {
       );
     });
 
-    test("text-fixes boots the reviewer on an empty wake, and records no skip", () => {
+    test("correct boots the reviewer on an empty wake, and records no skip", () => {
       expect(loop("correct", "[]\n").booted).toBe("boot implementer\nboot reviewer\n");
+    });
+
+    // Catches: an accept run whose unbooted reviewer is left off its record, or put there with a
+    // reason SKIPS does not declare for the case.
+    test("accept records the reviewer's skip with SKIPS' reason, whatever the implementer sent", () => {
+      expect(accepted).toBeDefined();
+      expect(loop("accept", '[{"message":"pushed 0123456789ab"}]\n').booted).toBe(
+        `boot implementer\nskip reviewer ${accepted}\n`
+      );
     });
   });
 });
@@ -3063,6 +3130,7 @@ describe("worker_boots", () => {
       ...boots("run_tester_proof", []),
       ...boots("run_reviewer_text_findings", ["text-only"]),
       ...boots("run_threads_closed", ["correct"]),
+      ...boots("run_threads_closed", ["accept"]),
       ...boots("run_threads_closed", ["code-defect"], '[{"message":"pushed"}]\n'),
     ];
     expect([...new Set(booted)].sort()).toEqual([...listed].sort());
@@ -5924,6 +5992,7 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
           "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
+          "fixture_reviewer_commit",
           world,
         ].map(fn),
         'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
@@ -5934,9 +6003,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
         assignment("world_login"),
         ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard]
+      [dir, guard, guard === "" ? "correct" : "code-defect"]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     writeGhSelectors(dir);
@@ -6604,6 +6673,7 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
           "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
+          "fixture_reviewer_commit",
           world,
         ].map(fn),
         'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
@@ -6614,9 +6684,9 @@ describe("the world's gh routes: every read a role text names, answered as GitHu
         assignment("world_login"),
         ...WORLD_APPS.map(assignment),
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard]
+      [dir, guard, guard === "" ? "correct" : "code-defect"]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     writeGhSelectors(dir);
@@ -7457,6 +7527,7 @@ describe("the world answers every gh call the census found refused", () => {
           "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
+          "fixture_reviewer_commit",
           world,
         ].map(fn),
         'fixture_cli() { printf "export const greet = 1;\\n" >"$src/greet.ts"; : >"$src/greet.test.ts"; }',
@@ -7686,14 +7757,15 @@ describe("what the rig writes into a run's world", () => {
           "base_ruleset_routes",
           "resolution_protection_routes",
           "round_world",
+          "fixture_reviewer_commit",
           world,
         ].map(fn),
         definition("fixture_cli"),
         ...[...values, "text_finding_doc_line", "text_finding_trigger"].map(assignment),
         `R=$1 worker_key=${WORLD_PROJECT}-1`,
-        `${world} 1 100 "$2"`,
+        `${world} 1 100 "$2" "$3"`,
       ].join("\n"),
-      [dir, guard]
+      [dir, guard, guard === "" ? "correct" : "code-defect"]
     );
     expect(result).toMatchObject({ code: 0, stderr: "" });
     return dir;
@@ -10552,7 +10624,7 @@ sleep() { command sleep 0.05; }`;
         word: "correct",
         place: "its session directory",
         options: (work) => ({
-          env: { sessions_dir: `${runDirOf(work, name)}/sessions/text-fixes` },
+          env: { sessions_dir: `${runDirOf(work, name)}/sessions/correct` },
         }),
       },
       {
@@ -10718,7 +10790,7 @@ sleep() { command sleep 0.05; }`;
         },
         {
           what: "a file an agent wrote in the working directory",
-          options: () => ({ files: { "cwd/notes.md": "text-fixes, both threads\n" } }),
+          options: () => ({ files: { "cwd/notes.md": "text-only, both threads\n" } }),
         },
         {
           what: "the gh answers a body edit rewrote",
@@ -11690,6 +11762,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           "review_world",
           "approved_world",
           "round_world",
+          "fixture_reviewer_commit",
           "fixture_open",
           "fixture_git",
           "fixture_docs_before",
@@ -11730,7 +11803,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "dispatch_pid='' github_pid='' watcher_pid='' standin_pid=''",
         'worker_run_world 1 1700000000 "$case_name"',
         'case $case_name in text-only | defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head" ;; esac',
-        'case $case_name in text-fixes | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
+        'case $case_name in accept | correct | code-defect) seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"; seed_ts review-handoff "$R/fixture.json" "$R/review.json" ;; esac',
         'if [ "$pushed" = 1 ]; then',
         '  src=$R/src when="@1700000101 +0000"',
         "  printf 'It trims the spaces around the name.\\n' >>\"$src/docs/cli.md\"",
@@ -11940,6 +12013,9 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
           docs.includes(
             "A blank name, like no name at all, prints the usage line on stderr and exits 2."
           ) && blank.code === 0,
+        "intended text finding: the reviewer's commit says the CLI strips every space from the name, which its trim does not":
+          docs.includes("It strips every space from the name.") &&
+          greet(world, "Ada Lovelace").out === "Hello, Ada Lovelace!\n",
       };
     }
 
@@ -11957,11 +12033,15 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         passStands,
       };
     }
-    /** The concerns of a world that intends none of them, with its intended findings as given. */
+    /** The concerns of a world that intends none of them, with its intended findings as given:
+     * the defect, the document's false sentence on spaces, the workflow's false comment, the
+     * sentence the defect makes false, and the sentence the reviewer's own commit makes false. */
     function noConcern(intended: {
       defect: boolean;
-      textFindings: boolean;
+      doc: boolean;
+      workflow: boolean;
       codeDefectSentence: boolean;
+      reviewerSentence: boolean;
     }) {
       return {
         "1 an action pinned by tag, or no permissions block": false,
@@ -11978,20 +12058,28 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         "intended defect: no test holds the blank name (the suite passes without its guard)":
           intended.defect,
         "intended text finding: docs/cli.md's sentence on spaces contradicts R3, which the CLI meets":
-          intended.textFindings,
+          intended.doc,
         "intended text finding: the workflow's comment names a push trigger the spec's Context rules out, which `on:` meets":
-          intended.textFindings,
+          intended.workflow,
         "intended code defect: docs/cli.md says a blank name exits 2, false only because the CLI greets it":
           intended.codeDefectSentence,
+        "intended text finding: the reviewer's commit says the CLI strips every space from the name, which its trim does not":
+          intended.reviewerSentence,
       };
     }
+    /** The intended findings of a world that holds none. */
+    const none = {
+      defect: false,
+      doc: false,
+      workflow: false,
+      codeDefectSentence: false,
+      reviewerSentence: false,
+    };
 
     test("the tester's world: its issue is in testing with the implementer's pass standing, and no concern is true", () => {
       const world = seededWorld("");
       expect(issueState(world)).toEqual(expectedState(world, "testing", "yes, from implementer"));
-      expect(concerns(world)).toEqual(
-        noConcern({ defect: false, textFindings: false, codeDefectSentence: false })
-      );
+      expect(concerns(world)).toEqual(noConcern(none));
     }, 300_000);
 
     test("text-only: the review round's issue is in needs_review with both passes standing, and only its two text findings are true", () => {
@@ -11999,9 +12087,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState(world)).toEqual(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
-      expect(concerns(world)).toEqual(
-        noConcern({ defect: false, textFindings: true, codeDefectSentence: false })
-      );
+      expect(concerns(world)).toEqual(noConcern({ ...none, doc: true, workflow: true }));
     }, 300_000);
 
     test("defect: the check that missed the blank name and the defect are true, beside the two text findings, and nothing else", () => {
@@ -12010,18 +12096,26 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
       expect(concerns(world)).toEqual(
-        noConcern({ defect: true, textFindings: true, codeDefectSentence: false })
+        noConcern({ ...none, defect: true, doc: true, workflow: true })
       );
     }, 300_000);
 
-    test("text-fixes: the approved round's issue is in needs_review with both passes standing, and only its two text findings are true", () => {
+    test("correct: the reviewer's commit is the head, its sentence false another way, and the workflow's comment is the one other finding", () => {
       const world = seededWorld("correct");
       expect(issueState(world)).toEqual(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
       expect(concerns(world)).toEqual(
-        noConcern({ defect: false, textFindings: true, codeDefectSentence: false })
+        noConcern({ ...none, workflow: true, reviewerSentence: true })
       );
+    }, 300_000);
+
+    test("accept: the reviewer's commit is the head and makes the document true, and no finding is left", () => {
+      const world = seededWorld("accept");
+      expect(issueState(world)).toEqual(
+        expectedState(world, "needs_review", "yes, from tester, implementer")
+      );
+      expect(concerns(world)).toEqual(noConcern(none));
     }, 300_000);
 
     test("code-defect: the check that missed the blank name, the defect and the sentence it makes false are true, and nothing else", () => {
@@ -12029,22 +12123,20 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState(world)).toEqual(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
-      expect(concerns(world)).toEqual(
-        noConcern({ defect: true, textFindings: false, codeDefectSentence: true })
-      );
+      expect(concerns(world)).toEqual(noConcern({ ...none, defect: true, codeDefectSentence: true }));
     }, 300_000);
 
     // After the implementer's push, the first `dispatch results` an agent can run reads what
     // production gives it: the pushed commit is the head k1 compares with, and no pass stands
     // there, since each pass's commit is another commit (results_comparison.go, commitStands,
     // through nothingReason, which takes the repository as readable once GitHub answered its
-    // default branch: delivery/branch.go, branchOf), so merge-gate.md's carry rule reads the
-    // push's own diff. Nothing of the rig's seeds the head here: the run's head watcher stores it
-    // on the push (rig.sh's start_heads, head-watcher.ts), and the row waits only for its record
-    // to answer the push, as an agent's next call does. Without the watcher the read compares
-    // with the approved head and says a pass stands (measured 2026-11-16), which 3 of 20 recorded
-    // text-fixes implementers read.
-    test("text-fixes after the implementer's push: k1 compares with the pushed head the watcher stored, and no pass stands there, as production answers", () => {
+    // default branch: delivery/branch.go, branchOf), so the carry rule reads the push's own diff.
+    // Nothing of the rig's seeds the head here: the run's head watcher stores it on the push
+    // (rig.sh's start_heads, head-watcher.ts), and the row waits only for its record to answer the
+    // push, as an agent's next call does. Without the watcher the read compares with the approved
+    // head and says a pass stands (measured 2026-11-16), which 3 of 20 recorded threads-closed
+    // implementers read.
+    test("correct after the implementer's push: k1 compares with the pushed head the watcher stored, and no pass stands there, as production answers", () => {
       const world = seededWorld("correct", true);
       expect(issueState(world)).toEqual(expectedState(world, "needs_review", "no"));
       expect(readFileSync(path.join(world.run, "heads.txt"), "utf8")).toContain(
@@ -12159,7 +12251,7 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
     // Dispatch at a read that moved nothing; and a world whose Dispatch holds no session of a role
     // the record names live (the daemon's role-holder publication: daemon-standin.ts's
     // `queueHolders`), which the real Dispatch of the world refuses or the stand-in never sent.
-    test("threads-closed's text-fixes world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
+    test("threads-closed's correct world: the record its implementer reads holds each seeded round, gh's pull request and the approved spec", () => {
       const world = seededWorld("correct", false, {
         role: "implementer",
         phase: "reviewing",
