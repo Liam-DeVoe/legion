@@ -237,8 +237,8 @@
 #      contracts modules of dispatch_two_builds_go's block. Otherwise a change to a file the
 #      tag step reads runs the tagged tests alone and the untagged ones nowhere. The read set
 #      and never the filter's selection, which its generated block narrows: TAG_RUNS pairs
-#      envoy_go and envoy_infra_go with themselves, since each job's own unit step runs the
-#      package's untagged tests, and held to its own selection a filter would be held to every
+#      envoy_infra_go with itself, since that job's own unit step runs the packages' untagged
+#      tests, and held to its own selection a filter would be held to every
 #      file its patterns reach, so rule 17 would accept a generated `!` line deleted by hand and
 #      rule 9 would refuse none of that filter's patterns. Rules 9 and 17 pass over the files
 #      this rule holds a filter to, and the three read one set, so none refuses what another

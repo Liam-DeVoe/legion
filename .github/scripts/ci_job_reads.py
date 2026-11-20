@@ -185,7 +185,7 @@ def reads(*entries):
 
 
 def envoy_go_files_but_infra():
-    """The .go files internal/testnats/nats_test.go's dockerDriverFiles opens: every one under
+    """The .go files internal/textcheck/container_runtime_test.go's dockerDriverFiles opens: every one under
     packages/envoy but infra's, node_modules' and testdata's, test files included, as one
     `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
     does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
@@ -951,16 +951,16 @@ RULES = {
         run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
-    f"{ENVOY}/internal/testnats/nats_test.go": [
-        run(ENVOY, ["./..."], "internal/testnats/nats_test.go:871-872 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:904-917 walks packages/envoy but infra, node_modules and testdata, "
-                  "and :917 reads every .go file it finds, test files included (dockerDriverFiles, called at :832 by "
-                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :825)")
-          for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:43,50 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
          "internal/textcheck/claims_doc_test.go:77 reads the committed copy it holds the guide's list to (extractLines, called with it at :60)")),
+    f"{ENVOY}/internal/textcheck/container_runtime_test.go": [
+        run(ENVOY, ["./..."], "internal/textcheck/container_runtime_test.go:104-105 go list -f ... ./... in packages/envoy", mode="build"),
+        *[Read(g, "internal/textcheck/container_runtime_test.go:137-150 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :150 reads every .go file it finds, test files included (dockerDriverFiles, called at :65 by "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :58)")
+          for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/environment_reads_test.go": [
         Read(path, "internal/textcheck/environment_reads_test.go:117 environmentReads walks it (:36), testdata and "
                    "node_modules passed over (:41-42), and :49 parses each .go file but the test files (:46)")
@@ -1077,6 +1077,33 @@ callout=$(../../{TAGGED_TESTS} natslive ./internal/broker/natscallout)
 go test -count=1 -timeout 5m -tags natslive -run "$callout" -v ./internal/broker/natscallout/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
+
+
+def nats_matrix_step():
+    """envoy-go's natslive step, pinned whole for the reason above. Both of the step's gates carry
+    it: envoy_go_natslive, the step's own, which TAG_RUNS pairs with envoy-go-race, and envoy_go,
+    since the job must be selected for the step to run in it. Only what the natslive tag adds, one
+    package at a time: the rig's own matrix, the one test of internal/bus that needs a real server
+    image, and the auth service's check that the deployed server lets an empty allow list through,
+    which its guard refuses. The untagged tests of all three packages run in envoy-go-race, since
+    UNIT_TEST_PATTERN leaves the race lane's packages out of the unit step."""
+    return pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
+        (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
+        (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
+        (ENVOY, ["./internal/broker/natscallout/"], "go test -tags natslive ./internal/broker/natscallout/", {"tags": "natslive"}),
+    ])
+
+
+def nats_matrix_reads():
+    """What envoy-go's natslive step reads beyond its three closures: the script its -run comes
+    from, the step that pulls the images its tests start, and the Go it runs on."""
+    return reads(
+        (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
+        (".github/actions/pull-test-images/**", f"{at('envoy-go', 'Pull test container images')} pulls the images "
+                                                f"{at('envoy-go', NATS_MATRIX_STEP)}'s tests start"),
+    ) + setup_go("envoy-go", f"{ENVOY}/go.mod")
+
+
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
@@ -1594,11 +1621,12 @@ class RaceJob(NamedTuple):
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
-            "NATS credentials and the NATS auth service",
+            "NATS credentials, the NATS auth service and the test NATS servers",
             "30m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
-                    RacePackage("natscred"), RacePackage("internal/broker/natscallout"))),
+                    RacePackage("natscred"), RacePackage("internal/broker/natscallout"),
+                    RacePackage("internal/testnats"))),
     RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "70m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "60m", (RacePackage("internal/dispatch/docs"),)),
 )
@@ -3228,18 +3256,8 @@ GATES = [
              f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "
              "packages, less the race lane's, and its command", {}),
         ]),
-        # Only what the natslive tag adds, one package at a time: the rig's own matrix, the one
-        # test of internal/bus that needs a real server image, and the auth service's check that
-        # the deployed server lets an empty allow list through, which its guard refuses. The rest
-        # of internal/testnats runs in the unit step; the rest of internal/bus and
-        # internal/broker/natscallout runs in envoy-go-race, since UNIT_TEST_PATTERN leaves the
-        # race lane's packages out of the unit step, and the envoy_go entry of TAG_RUNS, one entry
-        # per step, checks the testnats half alone.
-        pinned_step("envoy-go", NATS_MATRIX_STEP, ENVOY, NATS_MATRIX_SCRIPT, [
-            (ENVOY, ["./internal/testnats/"], "go test -tags natslive ./internal/testnats/", {"tags": "natslive"}),
-            (ENVOY, ["./internal/bus/"], "go test -tags natslive ./internal/bus/", {"tags": "natslive"}),
-            (ENVOY, ["./internal/broker/natscallout/"], "go test -tags natslive ./internal/broker/natscallout/", {"tags": "natslive"}),
-        ]),
+        # The natslive step, which has a gate of its own as well (envoy_go_natslive, below).
+        nats_matrix_step(),
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
@@ -3247,6 +3265,12 @@ GATES = [
                                 f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it and copies it"),
         (DATABASE_SKIPS_TEST, f"{at('envoy-go', DATABASE_SKIPS_TEST_STEP)} runs it"),
     ) + ceiling_reads("envoy-go") + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
+
+    # envoy-go's natslive step alone, behind a gate of its own (envoy_go_natslive), so the TAG_RUNS
+    # pairing below holds envoy_go_race, the filter of the job that runs the three packages'
+    # untagged tests, to what this step reads and not to what the rest of envoy-go reads.
+    gate("envoy_go_natslive", "envoy-go", step=NATS_MATRIX_STEP, exact=[nats_matrix_step()],
+         reads=nats_matrix_reads()),
 
     # envoy-go's fast half: its format and generated-code checks, the shell-script tests,
     # the vet of the module as darwin compiles it, and the build and pack of the envoy commands
@@ -3920,8 +3944,12 @@ TAG_RUNS = [
     TagRun("listener_server_change", "listener-server-change", SOAK_STEP, "envoy_go_race", "envoy-go-race",
            f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs ./cmd/listener's untagged tests",
            job_file("listener-server-change")),
-    TagRun("envoy_go", "envoy-go", NATS_MATRIX_STEP, "envoy_go", "envoy-go",
-           f"envoy-go's own \"{UNIT_TEST_STEP}\" runs ./internal/testnats's untagged tests",
+    # The natslive step has a gate of its own (envoy_go_natslive), so envoy_go_race is held to
+    # that step's reads and not to the rest of envoy-go's. envoy-go's unit step leaves the three
+    # packages out, since the lane runs them under the detector.
+    TagRun("envoy_go_natslive", "envoy-go", NATS_MATRIX_STEP, "envoy_go_race", "envoy-go-race",
+           f"envoy-go-race's \"{RACE_JOBS['envoy-go-race'].step}\" runs the untagged tests of ./internal/testnats, "
+           "./internal/bus and ./internal/broker/natscallout",
            job_file("envoy-go")),
     TagRun("envoy_infra_go", "envoy-infra-go", INFRA_NATSLIVE_STEP, "envoy_infra_go", "envoy-infra-go",
            f"envoy-infra-go's own \"Unit test envoy-infra\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",

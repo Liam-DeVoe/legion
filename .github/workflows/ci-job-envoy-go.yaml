@@ -7,6 +7,14 @@ name: CI job envoy-go
 # The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
 # these steps selects this job alone, where a change to ci.yaml selects every job.
 #
+# The natslive step runs behind an input of its own, which ci.yaml's calling job fills from the
+# `changes` output of the same name (envoy_go_natslive), whose filter is that step's reads. The
+# step runs only the tests the natslive tag adds, since envoy-go-race runs the untagged tests of
+# its three packages, and its gate of its own holds envoy-go-race's filter to what this step reads
+# rather than to what the rest of this job reads. A step of a called workflow cannot read
+# `needs.changes.outputs.<name>`, so it is an input here. The job runs only when `changes`
+# succeeded, so the step needs no `changes-result` term.
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -17,6 +25,12 @@ on:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      envoy_go_natslive:
+        description: >-
+          ci.yaml's `needs.changes.outputs.envoy_go_natslive`: the natslive step below runs when
+          that filter matched.
         type: string
         required: true
 
@@ -172,7 +186,7 @@ jobs:
       # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS).
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/testnats$|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # Each named test runs once on each store backend as its `aws` and `gcp` subtests, and each
       # backend's rows run that backend's own code: the store forms against the GCP fake and the
@@ -230,8 +244,9 @@ jobs:
       - name: Vet agent-secrets' moto run (no moto)
         run: go vet -tags moto ./cmd/agent-secrets/
         working-directory: packages/envoy
-      # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The real-server tests, a rendered authorization on the image the hub runs
+      # internal/testnats runs its server in the test process, so the race step that runs its
+      # untagged tests (envoy-go-race) starts no container. The real-server tests, a rendered
+      # authorization on the image the hub runs
       # among them, are the one thing an in-process server cannot reproduce: they sit behind the
       # natslive tag, and this step is where they run (INFRA-250). internal/bus has tests of its own
       # there. One is the consumer cap: the module links nats-server v2.15.1 in process, which caps
@@ -248,13 +263,15 @@ jobs:
       # image the hub runs lets a user with an empty publish allow list publish anywhere, the
       # fail-open its guard refuses, so the guard is shown able to fail on the server production
       # runs. Each package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run
-      # the package's untagged tests, which already run elsewhere - internal/testnats in the unit
-      # step above, and internal/bus and internal/broker/natscallout in envoy-go-race, which the
-      # unit step's grep -Ev leaves out - so the -run comes from .github/scripts/go-tagged-tests.sh,
+      # the package's untagged tests, which already run in envoy-go-race - internal/testnats,
+      # internal/bus and internal/broker/natscallout, which the unit step's grep -Ev leaves out -
+      # so the -run comes from .github/scripts/go-tagged-tests.sh,
       # which reads the names off the source at run time, and no test name is spelled here. Each
       # assignment is a line of its own: under bash -e it carries the script's exit status, so an
       # empty or refused list fails the step instead of running -run "", which matches every test.
+      # The step runs behind its own filter (envoy_go_natslive, the header says why).
       - name: Test the container-backed NATS matrix (natslive)
+        if: inputs.envoy_go_natslive == 'true'
         run: |
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           go test -count=1 -tags natslive -run "$rig" ./internal/testnats/

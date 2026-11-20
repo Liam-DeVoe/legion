@@ -3322,9 +3322,9 @@ replace "$root/.github/ci-filters.yaml" "  - 'mod/lib/assets/*'" "  - 'mod/lib/a
 run_check "$root"
 check "passes once the filter selects the tree, so a change there selects the job" "$(is "$status" 0)"
 
-# A tag step can lean on its own job: envoy-go's NATS matrix step runs ./internal/testnats under
-# natslive with -run while envoy-go's own unit step runs that package's untagged tests, so
-# TAG_RUNS pairs the envoy_go filter with itself, and envoy_infra_go too. What rule 15 holds the
+# A tag step can lean on its own job: envoy-infra-go's natslive step runs ./core, ./seed and ./gcp
+# under natslive with -run while envoy-infra-go's own unit step runs those packages' untagged
+# tests, so TAG_RUNS pairs the envoy_infra_go filter with itself. What rule 15 holds the
 # untagged job's filter to is then what the tag step reads, never what the filter selects: held
 # to its own selection, a filter is held to every file its own patterns reach, so rule 17 would
 # want no `!` pattern of it and rule 9's second direction would refuse none of its patterns. These

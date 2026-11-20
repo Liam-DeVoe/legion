@@ -2132,7 +2132,7 @@ def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
     holds that filter to; the entry names that filter as the tag step's gate.
 
     The read set and never what the filter selects: a filter's selection is its patterns net of
-    its generated block, so an entry pairing a filter with itself (envoy_go, envoy_infra_go) would
+    its generated block, so an entry pairing a filter with itself (envoy_infra_go) would
     hold the filter to every file its own patterns reach. Rule 17 would then want no `!` pattern
     of it, so a generated line deleted by hand would pass, and rule 9's second direction would
     refuse none of its patterns. Only a tag step's filter this check computes no read set for (an

@@ -588,6 +588,18 @@ The three jobs whose tag steps lean on this job's untagged run of ./cmd/dispatch
 and ./cmd/broker: each runs only what its tag adds, so a change that starts one
 must start this job too (check-ci-filters.sh's rule 15).
 
+## envoy_go_natslive: envoy-go's natslive step alone, behind a gate of its own
+
+envoy-go's natslive step alone, behind a gate of its own (envoy_go_natslive): `go test -tags
+natslive` of internal/testnats, internal/bus and internal/broker/natscallout, each with the -run
+.github/scripts/go-tagged-tests.sh prints, so it runs only what the tag adds, and the images
+the step before it pulls (.github/actions/pull-test-images). TAG_RUNS pairs the step with
+envoy_go_race, whose job runs the untagged tests of all three packages, and the step's own gate
+holds that filter to this step's reads rather than to the rest of envoy-go's, its Bun install
+and its Postgres scripts among them. The filter names packages/envoy/** rather than the three
+closures, as envoy_go_race does, so the step runs on every change that ran it before; its
+generated block keeps it off the Go test files its builds do not compile.
+
 ## envoy_go_checks: envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
 
 envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
@@ -907,15 +919,20 @@ start it too, though the row leaves them out: this filter takes no `!` pattern.
 ## envoy_go_race: The shared race job: the closure of `go test -race`
 
 The shared race job: the closure of `go test -race` over delivery, the Dispatch
-store, the bus, the listener, the registry store, the session cache, kvwatch, natscred
-and the NATS auth service (`go list -deps -test -race` in packages/envoy), and every
+store, the bus, the listener, the registry store, the session cache, kvwatch, natscred,
+the NATS auth service and the test NATS servers (internal/testnats) (`go list -deps -test
+-race` in packages/envoy), and every
 .md file under packages/envoy, which internal/dispatch/store's
 search_text_test.go:104-120 walks (the RULES row for
 that file in .github/scripts/ci_job_reads.py declares packages/envoy/**/*.md). The
 filter names the wide root rather than that package list and that glob, and its
 generated block keeps it off the Go test files the job does not compile, and
-listener_server_change's tagged soak test, which rule 15 holds this filter to, is
-not among them. No bun_install anchor: no test of these packages runs bun.
+listener_server_change's tagged soak test and envoy-go's natslive tests, which rule 15
+holds this filter to, are not among them. The module's container guard, which reads every
+.go file under packages/envoy, is a text check
+(internal/textcheck/container_runtime_test.go), so neither this job's race build nor envoy-go's
+natslive build of internal/testnats compiles it, and this filter is held to none of those
+files. No bun_install anchor: no test of these packages runs bun.
 
 ## envoy_go_race: listener-server-change takes its -run from this script
 
@@ -923,6 +940,14 @@ listener-server-change takes its -run from this script, and this is the job that
 runs cmd/listener's untagged tests, so it must run whenever the script changes -
 and whenever that job's own definition does, for the same reason
 (check-ci-filters.sh's rule 15).
+
+## envoy_go_race: envoy-go's natslive step runs only what the tag adds
+
+envoy-go's natslive step runs only what the natslive tag adds to internal/testnats,
+internal/bus and internal/broker/natscallout, and this is the job that runs those three
+packages' untagged tests, so it must run whenever a file that step reads changes: its own
+workflow file, ci-job-envoy-go.yaml, and the action that pulls the images its tests start
+(check-ci-filters.sh's rule 15, through the step's own gate, envoy_go_natslive).
 
 ## envoy_go_race_api: The API race job. Not packages/envoy/**, as envoy_go_race has: that
 
@@ -1340,6 +1365,12 @@ gated like the other slow suites.
 The two-build job's Go step alone, behind a gate of its own (ci-job-dispatch-two-builds.yaml
 says why). The dispatch_two_builds output decides whether the job runs at all, the `full-ci` term with
 it, so this one carries only the dispatched term.
+
+## envoy-go's natslive step, behind a gate of its own
+
+envoy-go's natslive step, behind a gate of its own (ci-job-envoy-go.yaml says why). The
+envoy_go output decides whether the job runs at all, the `full-ci` term with it, so this one
+carries only the dispatched term.
 
 ## Why the tool fallback proof carries no full-ci term
 
@@ -1764,7 +1795,10 @@ applies, natscred, whose service keeper probes with the connection's options whi
 internal/bus may be setting its handlers (natscred/probe_race_test.go, which only the race
 build compiles, so this lane is its one run), the NATS auth service
 (internal/broker/natscallout), which starts a goroutine per request from nats.go's delivery
-callback, counts those waiting for a decision slot and waits them out at Close, and the
+callback, counts those waiting for a decision slot and waits them out at Close, the test NATS
+servers (internal/testnats), whose Server.Reload states the order its relay's barrier makes in
+client locks the detector sees, so a nats-server whose locks move fails
+TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace here and nowhere else, and the
 Dispatch API and the document service - all under the race detector. A read
 that walks a live document without its lock races the room's peers, which no ordinary run
 shows: envoy-go's unit-test step runs without -race (LEGION-499). The lane sits beside
@@ -1776,7 +1810,8 @@ what the race build cannot run at all or at full size", which runs the handful o
 assertions the detector makes impossible or shrinks and nothing else.
 
 The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
-the registry store, the session cache, kvwatch, natscred and the NATS auth service),
+the registry store, the session cache, kvwatch, natscred, the NATS auth service and the test
+NATS servers),
 envoy-go-race-api and envoy-go-race-docs, whose notes, .github/ci-notes/ci.md#why-the-document-service-runs-alone-under-the-race-detector,
 say why the document service runs alone.
 
