@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strconv"
 
 	"github.com/jackc/pgx/v5"
@@ -58,8 +57,8 @@ type IssueDescendant struct {
 	Depth  int
 }
 
-// IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status,
-// in key order: IssueDescendantRows' keys. An issue with no child, an issue no row has, and the
+// IssueDescendants is the keys of every issue below the issue key on `child_of`, at any status:
+// IssueDescendantRows' keys, in its order. An issue with no child, an issue no row has, and the
 // empty key answer []. api's coverage read is this query.
 func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, error) {
 	rows, err := IssueDescendantRows(ctx, q, key)
@@ -70,7 +69,6 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 	for _, row := range rows {
 		descendants = append(descendants, row.Key)
 	}
-	slices.Sort(descendants)
 	return descendants, nil
 }
 
@@ -84,30 +82,32 @@ func IssueDescendants(ctx context.Context, q Queryer, key string) ([]string, err
 // plan of a status change (api's planStatusChange) are this query. api's issueChildrenStatement is
 // a different read - one row per direct child, with a rollup over that child's own subtree - and
 // stays its own.
+//
+// The walk carries each issue's project and number, which its order needs, from the row it reads
+// already, rather than join its keys back to issues: the planner has no estimate of a recursive
+// CTE's size, so such a join hashes the whole table (api's issueChildrenStatement says what it
+// cost there). The two columns follow from the key, so `union` removes the rows it removes
+// without them.
 func IssueDescendantRows(ctx context.Context, q Queryer, key string) ([]IssueDescendant, error) {
 	if key == "" {
 		return []IssueDescendant{}, nil
 	}
 	rows, err := q.Query(ctx, `
 		with recursive descendants as (
-			select c.key, c.parent_key, c.status, 1 as depth from issues c where c.parent_key = $1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, 1 as depth
+			from issues c where c.parent_key = $1
 			union
-			select c.key, c.parent_key, c.status, d.depth + 1
+			select c.key, c.parent_key, c.status, c.project_key, c.number, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
 			where d.depth < $2
 		)
-		select d.key, d.parent_key, d.status, d.depth
-		from descendants d join issues i on i.key = d.key
-		order by d.depth, i.project_key, i.number
+		select key, parent_key, status, depth from descendants
+		order by depth, project_key, number
 	`, key, IssueDepthCap)
 	if err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}
-	descendants, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (IssueDescendant, error) {
-		var descendant IssueDescendant
-		err := row.Scan(&descendant.Key, &descendant.Parent, &descendant.Status, &descendant.Depth)
-		return descendant, err
-	})
+	descendants, err := pgx.CollectRows(rows, pgx.RowToStructByPos[IssueDescendant])
 	if err != nil {
 		return nil, fmt.Errorf("read the descendants of %s: %w", key, err)
 	}

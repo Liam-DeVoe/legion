@@ -667,7 +667,7 @@ func xidWindowIssueCloseWithOpenAsks(t *testing.T, f *xidFixture) {
 }
 
 // TestXidWindowsUnderTheParentStatusRule measures, with DISPATCH_PARENT_STATUS_RULE on, the two
-// writes to which the rule adds a statement inside the xid window (D4): a create under a parent,
+// writes to which the rule adds a statement inside the xid window: a create under a parent,
 // whose write phase reads the parent's row `for share` just before its insert, and a close, whose
 // write phase reads the issue's open children again after its own update. With the rule off
 // neither statement runs, and xidWindowIssueCreateWithSpec and xidWindowIssueCloseWithOpenAsks

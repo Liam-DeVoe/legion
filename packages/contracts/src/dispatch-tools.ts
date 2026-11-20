@@ -351,6 +351,15 @@ export const ISSUE_STATUS_OPTIONS = [
   "include_parent",
 ] as const;
 
+/** The options of the status change that `input` sets to true, in the order of
+ *  `ISSUE_STATUS_OPTIONS`. An option set to false asks for nothing. The tool's rule and the CLI's
+ *  call both read the options through this one filter. */
+export function issueStatusOptionsOf(
+  input: Readonly<Record<string, unknown>>
+): (typeof ISSUE_STATUS_OPTIONS)[number][] {
+  return ISSUE_STATUS_OPTIONS.filter((option) => input[option] === true);
+}
+
 /** The fields of dispatch_issue_update the status change route does not take, so no option goes
  *  with one of them. */
 const ISSUE_UPDATE_PATCH_FIELDS = [
@@ -371,13 +380,16 @@ const ISSUE_UPDATE_PATCH_FIELDS = [
 ] as const;
 
 const ISSUE_UPDATE_OPTIONS_RULE =
-  "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children.";
+  "include_children, unlink_children and include_parent go with status, and with reason when the status is done, and with no other field. include_children does not go with unlink_children, or with status done.";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}. ${ISSUE_UPDATE_OPTIONS_RULE}`;
 
 /** The refusal of the parts of the options' rule `input` breaks, or undefined when it keeps it or
- *  sets no option to true. An option set to false asks for nothing, so the rule does not read it. */
+ *  sets no option to true. An option set to false asks for nothing, so the rule does not read it.
+ *  include_children with done closes the open issues under the issue, which Dispatch takes only
+ *  from a person signed in at a browser: a call of this tool presents a token, so it is refused
+ *  here, before its reason is posted. */
 function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): string | undefined {
-  const options = ISSUE_STATUS_OPTIONS.filter((option) => input[option] === true);
+  const options = issueStatusOptionsOf(input);
   if (options.length === 0) return undefined;
   const named = options.join(", ").replace(/, ([^,]*)$/, " and $1");
   const others = ISSUE_UPDATE_PATCH_FIELDS.filter((field) => input[field] !== undefined);
@@ -385,6 +397,10 @@ function issueStatusOptionsProblem(input: Readonly<Record<string, unknown>>): st
     [
       !(input["include_children"] === true && input["unlink_children"] === true),
       "include_children does not go with unlink_children. The open children move with the issue or leave it, so name one of the two.",
+    ],
+    [
+      !(input["include_children"] === true && input["status"] === "done"),
+      "include_children does not go with status done. Only a person who is signed in at a browser can close the open issues under an issue together with it, and this call presents a token. That person does it on the issue's page in Dispatch: Close issue, then Move them with it.",
     ],
     [
       typeof input["status"] === "string",
@@ -979,7 +995,9 @@ export const dispatchToolSpecs = [
       "this rule, it refuses a status or parent change that breaks it with 409 " +
       "PARENT_STATUS_CONFLICT, which names each issue that holds it. include_children, " +
       "unlink_children and include_parent tell Dispatch what to do with those issues. Each goes " +
-      "with status alone, and with reason when the status is done. " +
+      "with status alone, and with reason when the status is done. include_children does not go " +
+      "with done: only a person signed in at a browser closes the open issues under an issue " +
+      "together with it, on the issue's page. " +
       "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
       "tool's fields it takes only a board move " +
       "(before, after), components, " +
@@ -1010,7 +1028,7 @@ export const dispatchToolSpecs = [
       include_children: z
         .boolean()
         .describe(
-          "With status, also write that status on each open issue under this issue, at any depth, whose status is in another group. Dispatch refuses it with status done from a token (403 BROWSER_SIGN_IN_REQUIRED): only a person signed in at a browser closes the open issues under an issue together with it."
+          "With status, also write that status on each open issue under this issue, at any depth, whose status is in another group. Not with status done, which this tool refuses before anything is sent: only a person who is signed in at a browser can close the open issues under an issue together with it, on the issue's page in Dispatch (Close issue, then Move them with it)."
         )
         .optional(),
       unlink_children: z

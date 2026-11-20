@@ -205,11 +205,15 @@ type DispatchArgs struct {
 	// ParentStatusRule renders DISPATCH_PARENT_STATUS_RULE=on, which turns on Dispatch's
 	// parent-status rule: Dispatch refuses a write that leaves a parent's status out of line with
 	// its children's, and at boot it runs the one-time fix of the pairs that break the rule. Set it
-	// only once every Legion daemon that writes to this Dispatch runs the release that sends the
-	// parent-status options. No process of the earlier setting may serve beside one with the new
-	// setting: at one replica the app's Recreate strategy stops the old pod before the new one
-	// starts, and at more replicas the app is scaled to zero first. Unset renders nothing, so a
-	// deployment that leaves it unset renders what it always rendered.
+	// only when two conditions hold. First, each Legion daemon that writes to this Dispatch runs
+	// the releases with the daemon's side of the rule, which send the parent-status options.
+	// Second, each project's instructions retry a failed root architect with a status write of
+	// todo alone, not backlog and then todo, and that project's daemon and controller have read
+	// them. The rule refuses that backlog while an issue under the root is in work. No process of
+	// the earlier setting may serve beside one with the new setting: at one replica the app's
+	// Recreate strategy stops the old pod before the new one starts, and at more replicas the app
+	// is scaled to zero first. Unset renders nothing, so a deployment that leaves it unset renders
+	// what it always rendered.
 	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an

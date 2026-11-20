@@ -1,4 +1,4 @@
-import { describe, expect, type Mock, spyOn, test } from "bun:test";
+import { describe, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
@@ -10,14 +10,19 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock, tick } from "../../../__tests__/fake-clock";
+import { answerRequests } from "../../../__tests__/network";
+import { decisionsAndReadMarkHandlers } from "../../../__tests__/proof-document";
 import { answerIssuePatches } from "../../../__tests__/send-answers";
 import { api, type WriteBounds } from "../../../api/client";
 import type {
   Issue,
   IssueChild,
+  IssueCoverage,
   IssueDetails,
   IssueSummary,
   StatusChangeAnswer,
@@ -25,16 +30,16 @@ import type {
   UpdateIssueInput,
   UserIssueState,
 } from "../../../api/types";
-import { useIssueHeaderWrites } from "../../issue-page/useIssueHeaderWrites";
+import { HeaderSlot } from "../../issue-page/slots/header";
 import { issueStatuses } from "../../project/board-model";
 import { IssueBoard } from "../../project/IssueBoard";
 import { IssuesTable } from "../../project/IssuesTable";
+import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../../shell/keymap";
 import { IssueHeader } from "../IssueHeader";
 import { issuePriority } from "../issue-priority";
 import { useIssuePriority } from "../useIssuePriority";
-import { ParentStatusDialog } from "./ParentStatusDialog";
 import { answerStatusChanges, type StatusChangeAnswerer } from "./status-change-fixtures";
 
 // The inventory of every control of the page that writes an issue's status (INFRA-4731's plan,
@@ -185,20 +190,52 @@ function renderHeader(shown: IssueDetails) {
   };
 }
 
-/** The new issue page's Status pick (`useIssueHeaderWrites`' `pickStatus`), made with `status` by
- *  a press of its own, with the question the pick asks drawn as that page's control draws it. */
-function NewPagePick({ shown, status }: { shown: IssueDetails; status: string }): ReactNode {
-  const writes = useIssueHeaderWrites(shown, state);
-  return (
-    <>
-      <button onClick={() => writes.pickStatus(status)} type="button">
-        Pick {status}
-      </button>
-      {writes.statusQuestion === undefined ? null : (
-        <ParentStatusDialog question={writes.statusQuestion} />
-      )}
-    </>
+/** Pushes the `issue` scope, which the new issue page's view row pushes and its header's slot does
+ *  not: the header's palette rows register into it. */
+function IssueScope(): null {
+  useKeymapScope("issue");
+  return null;
+}
+
+/** The new issue page's header over `shown`, as that page's root mounts it (`HeaderSlot`), with
+ *  the reads it makes answered: the issue and the reader's state of it, and the comments,
+ *  decisions, coverage and projects that its count of what waits and its approval read. */
+function renderOutlineHeader(shown: IssueDetails) {
+  const reads = [
+    spyOn(api, "getIssue").mockResolvedValue(shown),
+    spyOn(api, "getMyState").mockResolvedValue({ [shown.key]: state }),
+    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+  ];
+  answerRequests(
+    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+      Response.json({
+        gaps: [],
+        has_plan: false,
+        issue: String(params.key),
+        requirements: [],
+        spec_artifact_id: "",
+      } satisfies IssueCoverage)
+    ),
+    ...decisionsAndReadMarkHandlers()
   );
+  const path = `/issues/${shown.key}`;
+  const route = parseIssuePath(path, "");
+  if (route === undefined) throw new Error(`${path} is no issue's address`);
+  const view = render(
+    <MemoryRouter initialEntries={[path]}>
+      <QueryClientProvider client={signedIn()}>
+        <KeymapProvider>
+          <IssueScope />
+          <HeaderSlot issue={shown} route={route} />
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return () => {
+    view.unmount();
+    for (const read of reads) read.mockRestore();
+  };
 }
 
 /** The palette's row labelled `label`, as `$mod+k` offers it now. */
@@ -395,25 +432,76 @@ describe("every status writer of the page asks", () => {
     }
   });
 
-  test("the new issue page's Status pick", async () => {
+  test("the new issue page's status select", async () => {
     const writes = answerWrites();
     const user = userEvent.setup();
-    const view = render(
-      <QueryClientProvider client={signedIn()}>
-        <KeymapProvider>
-          <NewPagePick shown={issue} status="done" />
-        </KeymapProvider>
-      </QueryClientProvider>
-    );
+    const cleanup = renderOutlineHeader(issue);
     try {
-      await user.click(screen.getByRole("button", { name: "Pick done" }));
-      await expectDryRunFirst(writes, "CORE-1", "done");
+      await user.selectOptions(await screen.findByRole("combobox", { name: "Status" }), "backlog");
+      await expectDryRunFirst(writes, "CORE-1", "backlog");
+      expect(screen.getByRole("combobox", { name: "Status" })).toHaveValue("backlog");
     } finally {
-      view.unmount();
+      cleanup();
     }
   });
 
+  test("the new issue page's Close", async () => {
+    const writes = answerWrites();
+    const user = userEvent.setup();
+    const cleanup = renderOutlineHeader(issue);
+    try {
+      await user.click(await screen.findByRole("button", { name: "Issue actions" }));
+      await user.click(screen.getByRole("button", { name: "Close issue" }));
+      await expectDryRunFirst(writes, "CORE-1", "done");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the new issue page's Reopen", async () => {
+    const writes = answerWrites();
+    const user = userEvent.setup();
+    const cleanup = renderOutlineHeader(closedChild);
+    try {
+      await user.click(await screen.findByRole("button", { name: "Issue actions" }));
+      await user.click(screen.getByRole("button", { name: "Reopen into Backlog" }));
+      await expectDryRunFirst(writes, "CORE-1", "backlog");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the new issue page's palette Close issue", async () => {
+    const writes = answerWrites();
+    const cleanup = renderOutlineHeader(issue);
+    try {
+      await screen.findByRole("button", { name: "Issue actions" });
+      await act(async () => paletteRow("Close issue").run());
+      await expectDryRunFirst(writes, "CORE-1", "done");
+    } finally {
+      cleanup();
+    }
+  });
+
+  test("the new issue page's palette Reopen issue", async () => {
+    const writes = answerWrites();
+    const cleanup = renderOutlineHeader(closedChild);
+    try {
+      await screen.findByRole("button", { name: "Issue actions" });
+      await act(async () => paletteRow("Reopen issue").run());
+      await expectDryRunFirst(writes, "CORE-1", "backlog");
+    } finally {
+      cleanup();
+    }
+  });
+
+  // dnd-kit keeps every click from the page for 50 ms after a drop, with a listener on `document`,
+  // which the next row shares: on the real clock a row that ends inside those 50 ms hands the
+  // listener to the next row, whose first click never reaches its target (the header's Reopen
+  // timed out so in a whole lane). So the drop runs on the fake clock, and the row moves it past
+  // the 50 ms before it ends, as the drags of `IssueBoard.test.tsx` do.
   test("the board's pointer drop", async () => {
+    jest.useFakeTimers();
     const writes = answerWrites();
     const layout = layOutBoard();
     const cleanup = renderBoard([card({ status: "retro" })], { showEdges: true });
@@ -426,6 +514,8 @@ describe("every status writer of the page asks", () => {
         within(within(board).getByRole("region", { name: "Retro" })).getByRole("article")
       ).toBeInTheDocument();
     } finally {
+      await tick(80);
+      realClock();
       cleanup();
       layout.mockRestore();
     }

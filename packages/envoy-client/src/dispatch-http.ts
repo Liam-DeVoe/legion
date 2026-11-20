@@ -1,4 +1,4 @@
-import { TradeRetryingError } from "@legion/broker-client/token-errors";
+import { TradeRetryingError } from "@legion/cipher-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,
@@ -131,20 +131,32 @@ export class DispatchServiceError extends Error {
    * false for an answer something in Dispatch's place wrote (`DispatchGatewayError`).
    */
   readonly fromDispatch: boolean = true;
+  readonly candidates: DispatchServiceErrorShape["candidates"] | undefined;
+  readonly current: DispatchServiceErrorShape["current"] | undefined;
+  readonly mismatches: DispatchServiceErrorShape["mismatches"] | undefined;
+  /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
+  readonly issues: DispatchServiceErrorShape["issues"] | undefined;
+  /** A status change's refusal: the entry of each step that wrote before it. */
+  readonly changed: DispatchServiceErrorShape["changed"] | undefined;
 
   constructor(
     readonly code: string,
     readonly status: number,
     message: string,
-    readonly candidates?: DispatchServiceErrorShape["candidates"],
-    readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
-    /** A `409 PARENT_STATUS_CONFLICT`'s issues: each one the write would leave out of line. */
-    readonly issues?: DispatchServiceErrorShape["issues"],
-    /** A status change's refusal: the entry of each step that wrote before it. */
-    readonly changed?: DispatchServiceErrorShape["changed"]
+    /** The members of Dispatch's refusal beside its message that a caller reads off the error:
+     *  its answer's JSON, or another refusal whose members it keeps. */
+    details: {
+      readonly [Member in "candidates" | "changed" | "current" | "issues" | "mismatches"]?:
+        | DispatchServiceErrorShape[Member]
+        | undefined;
+    } = {}
   ) {
     super(message);
+    this.candidates = details.candidates;
+    this.current = details.current;
+    this.mismatches = details.mismatches;
+    this.issues = details.issues;
+    this.changed = details.changed;
   }
 }
 
@@ -1286,9 +1298,9 @@ export class DispatchClient {
     try {
       return await this.#json("POST", path, input);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw statusChangeNoRouteRefusal(this.#baseUrl, route);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        statusChangeNoRouteRefusal(this.#baseUrl, route)
+      );
     }
   }
 
@@ -1645,9 +1657,9 @@ export class DispatchClient {
     try {
       return await this.#json("POST", path, body);
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw reviewNoRouteRefusal(this.#baseUrl, route, version);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        reviewNoRouteRefusal(this.#baseUrl, route, version)
+      );
     }
   }
 
@@ -1676,9 +1688,9 @@ export class DispatchClient {
       });
       return payload;
     } catch (error) {
-      if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
-      const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
-      throw resultDryRunNoRouteRefusal(this.#baseUrl, route);
+      throw this.#refusalOfNoRoute(error, path, (route) =>
+        resultDryRunNoRouteRefusal(this.#baseUrl, route)
+      );
     }
   }
 
@@ -2184,6 +2196,18 @@ export class DispatchClient {
       signal: signal === undefined ? this.#signal : AbortSignal.any([this.#signal, signal]),
       sleep: this.#sleep,
     });
+  }
+
+  /** What the catch of a `POST` of `path` throws: the refusal `refuse` writes for that route where
+   *  `error` is an answer of no route each time it was sent (a build older than the route), else
+   *  `error` as it came. It returns rather than throws, so the throw stays at the catch. */
+  #refusalOfNoRoute(
+    error: unknown,
+    path: readonly string[],
+    refuse: (route: string) => DispatchServiceError
+  ): unknown {
+    if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) return error;
+    return refuse(`POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`);
   }
 
   /**
@@ -2859,11 +2883,7 @@ export class DispatchClient {
           error.code ?? `HTTP_${response.status}`,
           response.status,
           error.error,
-          error.candidates,
-          error.current,
-          error.mismatches,
-          error.issues,
-          error.changed
+          error
         );
       }
       throw this.#gatewayError(method, url, response, text, "Dispatch's error JSON");

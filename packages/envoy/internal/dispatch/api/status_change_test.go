@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,7 +21,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -71,16 +72,6 @@ func (rig statusChangeRig) quiet(t *testing.T) map[string]string {
 // statusChangeOf is the status change of key with body.
 func statusChangeOf(key string, body map[string]any) ruleWrite {
 	return ruleWrite{http.MethodPost, "/api/v1/issues/" + key + "/status-change", body}
-}
-
-// lastSeq reads the last_seq of key as it is stored.
-func (rig ruleRig) lastSeq(t *testing.T, key string) int {
-	t.Helper()
-	var seq int
-	if err := rig.database.Pool.QueryRow(context.Background(), `select last_seq from issues where key = $1`, key).Scan(&seq); err != nil {
-		t.Fatalf("read the last_seq of %s: %v", key, err)
-	}
-	return seq
 }
 
 // wantChange is an entry of changed, or the answer's issue, as a test expects it: the key, the
@@ -223,11 +214,7 @@ func requireComments(t *testing.T, database *store.Store, keys []string, want ..
 func (rig ruleRig) requireIssue(t *testing.T, key, status, parent string) {
 	t.Helper()
 	gotStatus, gotParent := rig.issue(t, key)
-	got := ""
-	if gotParent != nil {
-		got = *gotParent
-	}
-	if gotStatus != status || got != parent {
+	if got := deref(gotParent); gotStatus != status || got != parent {
 		t.Errorf("%s is %s under %q, want %s under %q", key, gotStatus, got, status, parent)
 	}
 }
@@ -250,7 +237,7 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 		iced := rig.file(t, "Child on ice", "icebox", root)
 		seq := map[string]int{}
 		for _, key := range []string{root, middle, leaf, done, iced} {
-			seq[key] = rig.lastSeq(t, key)
+			seq[key] = issueLastSeq(t, rig.database, key)
 		}
 		write := statusChangeOf(root, map[string]any{"status": "done", "include_children": true})
 		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
@@ -280,7 +267,7 @@ func TestIncludeChildrenMovesTheOpenIssuesUnderIt(t *testing.T) {
 		done := rig.file(t, "Child kept done", "done", root)
 		seq := map[string]int{}
 		for _, key := range []string{root, child, grandchild} {
-			seq[key] = rig.lastSeq(t, key)
+			seq[key] = issueLastSeq(t, rig.database, key)
 		}
 		write := statusChangeOf(root, map[string]any{"status": "backlog", "include_children": true})
 		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
@@ -386,7 +373,7 @@ func tokenCallersServer(t *testing.T, on bool) statusChangeServer {
 	const sessionToken, personToken = "a-token-acting-as-its-session", "a-token-scoped-to-its-person"
 	rig.broker.Says(sessionToken, liveNamedToken(agent.jkt))
 	scoped := liveNamedToken(agent.jkt)
-	scoped.ProjectScope, scoped.Projects = brokertoken.ProjectScopePerson, nil
+	scoped.ProjectScope, scoped.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.broker.Says(personToken, scoped)
 	server := statusChangeServer{
 		name: "the token server", project: brokerTestProject, database: rig.database,
@@ -571,7 +558,7 @@ func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 	done := rig.file(t, "Child already done", "done", named)
 	seq := map[string]int{}
 	for _, key := range []string{named, triaged, backlog, planned, running} {
-		seq[key] = rig.lastSeq(t, key)
+		seq[key] = issueLastSeq(t, rig.database, key)
 	}
 	write := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true})
 	unlinked := func(key, status string) wantChange { return wantChange{key, status, "", seq[key], seq[key] + 2} }
@@ -596,7 +583,7 @@ func TestUnlinkChildrenMakesEachARoot(t *testing.T) {
 
 // TestIncludeParentMovesTheAncestorsIntoWork: include_parent moves each ancestor of the issue that
 // is not in work to in_progress, highest first, and keeps an ancestor in work as it is. A done
-// ancestor is reopened into in_progress (D5), which the reopen of its done child under it needs:
+// ancestor is reopened into in_progress, which the reopen of its done child under it needs:
 // with no option the rule refuses that reopen. Each moved ancestor has one comment that names the
 // call, and the issue the call names none.
 func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
@@ -609,7 +596,7 @@ func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
 		named := rig.file(t, "Issue started", "backlog", lower)
 		seq := map[string]int{}
 		for _, key := range []string{upper, lower, named} {
-			seq[key] = rig.lastSeq(t, key)
+			seq[key] = issueLastSeq(t, rig.database, key)
 		}
 		write := statusChangeOf(named, map[string]any{"status": "todo", "include_parent": true})
 		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
@@ -631,12 +618,12 @@ func TestIncludeParentMovesTheAncestorsIntoWork(t *testing.T) {
 	t.Run("a done ancestor is reopened", func(t *testing.T) {
 		parent := rig.file(t, "Ancestor closed", "in_progress", "")
 		named := rig.file(t, "Issue reopened under it", "done", parent)
-		rig.move(t, parent, "done")
+		setIssueStatus(t, rig.handler, parent, "done")
 		reopen := statusChangeOf(named, map[string]any{"status": "backlog"})
 		requireStatusChange(t, reopen.String(), rig.send(t, reopen), http.StatusConflict, wantConflict([]ruleHolder{
 			{parent, "Ancestor closed", "done", "parent", parent + " (done) is the parent of " + named + " and is done"},
 		}))
-		seq := map[string]int{parent: rig.lastSeq(t, parent), named: rig.lastSeq(t, named)}
+		seq := map[string]int{parent: issueLastSeq(t, rig.database, parent), named: issueLastSeq(t, rig.database, named)}
 		write := statusChangeOf(named, map[string]any{"status": "backlog", "include_parent": true})
 		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusOK, wantAnswer(
 			wantChange{named, "backlog", parent, seq[named], seq[named] + 1},
@@ -680,13 +667,8 @@ var statusChangeCases = []statusChangeCase{
 
 // withMembers is body with the members given added.
 func withMembers(body map[string]any, members map[string]any) map[string]any {
-	out := make(map[string]any)
-	for key, value := range body {
-		out[key] = value
-	}
-	for key, value := range members {
-		out[key] = value
-	}
+	out := maps.Clone(body)
+	maps.Copy(out, members)
 	return out
 }
 
@@ -696,11 +678,7 @@ func changedOf(t *testing.T, response *httptest.ResponseRecorder) []string {
 	answer := decodeBody[statusChangeAnswer](t, response)
 	listed := make([]string, 0, len(answer.Changed))
 	for _, entry := range answer.Changed {
-		parent := ""
-		if entry.Parent != nil {
-			parent = *entry.Parent
-		}
-		listed = append(listed, entry.Key+" "+entry.Status+" under "+parent)
+		listed = append(listed, entry.Key+" "+entry.Status+" under "+deref(entry.Parent))
 	}
 	return listed
 }
@@ -708,24 +686,14 @@ func changedOf(t *testing.T, response *httptest.ResponseRecorder) []string {
 // keyedStatusChange sends write as alice under the Idempotency-Key key.
 func (rig ruleRig) keyedStatusChange(t *testing.T, write ruleWrite, key string) *httptest.ResponseRecorder {
 	t.Helper()
-	encoded, err := json.Marshal(write.body)
-	if err != nil {
-		t.Fatalf("encode the request: %v", err)
-	}
-	request := httptest.NewRequest(write.method, write.path, bytes.NewReader(encoded))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "alice")
-	request.Header.Set(contracts.IdempotencyKeyHeader, key)
-	response := httptest.NewRecorder()
-	rig.handler.ServeHTTP(response, request)
-	return response
+	return keyedRequest(t, rig.handler, write.method, write.path, write.body, "alice", key)
 }
 
 // TestADryRunWritesNothing: a dry run of each option answers each issue the call would change,
 // with the status and the parent the call would leave, the issue's last_seq now and no issue, and
 // writes nothing: no row, no event, no comment, and under a request key no recovery point. Its
 // entries name the issues, statuses and parents of the real call's. With the rule off, a dry run
-// of a call the rule would refuse answers 409 PARENT_STATUS_CONFLICT as with it on (D8), and the
+// of a call the rule would refuse answers 409 PARENT_STATUS_CONFLICT as with it on, and the
 // real call is taken.
 func TestADryRunWritesNothing(t *testing.T) {
 	rig := newStatusChangeRig(t, true)
@@ -744,11 +712,11 @@ func TestADryRunWritesNothing(t *testing.T) {
 				if entry.Issue != nil {
 					t.Errorf("the dry run's entry of %s holds an issue, want none", entry.Key)
 				}
-				if now := rig.lastSeq(t, entry.Key); entry.PreviousLastSeq != now {
+				if now := issueLastSeq(t, rig.database, entry.Key); entry.PreviousLastSeq != now {
 					t.Errorf("the dry run's entry of %s has previous_last_seq %d, want the last_seq now, %d", entry.Key, entry.PreviousLastSeq, now)
 				}
 			}
-			if answer.Issue.Key != named || answer.Issue.LastSeq != rig.lastSeq(t, named) {
+			if answer.Issue.Key != named || answer.Issue.LastSeq != issueLastSeq(t, rig.database, named) {
 				t.Errorf("the dry run answered the issue %s at last_seq %d, want %s as it stands", answer.Issue.Key, answer.Issue.LastSeq, named)
 			}
 			key := fmt.Sprintf("status-change-dry-run-%d", index)
@@ -828,7 +796,7 @@ func TestAStatusChangeRefusedMidwayNamesWhatItChanged(t *testing.T) {
 	named := rig.file(t, "Parent closed with its children", "in_progress", "")
 	first := rig.file(t, "First child", "todo", named)
 	second := rig.file(t, "Second child", "todo", named)
-	seq := rig.lastSeq(t, first)
+	seq := issueLastSeq(t, rig.database, first)
 	var late string
 	hooked := 0
 	rig.afterStep(t, func(ctx context.Context, step int) {
@@ -1022,7 +990,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 			for _, test := range statusChangeCases {
 				t.Run(fmt.Sprintf("%s with the rule on %t", test.option, on), func(t *testing.T) {
 					named, body, _ := test.seed(t, rig.ruleRig, "Fenced "+test.option)
-					stale := rig.lastSeq(t, named)
+					stale := issueLastSeq(t, rig.database, named)
 					if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled by another writer"})); retitled.Code != http.StatusOK {
 						t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
 					}
@@ -1032,7 +1000,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 						requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince))
 						assertUnchanged(t, write.String(), before, databaseFingerprint(t, rig.database))
 					}
-					current := statusChangeOf(named, withMembers(body, map[string]any{"expected_sequence": rig.lastSeq(t, named)}))
+					current := statusChangeOf(named, withMembers(body, map[string]any{"expected_sequence": issueLastSeq(t, rig.database, named)}))
 					if taken := rig.send(t, current); taken.Code != http.StatusOK {
 						t.Fatalf("%s with the issue's own last_seq: status=%d body=%s, want 200", current, taken.Code, taken.Body.String())
 					}
@@ -1041,11 +1009,13 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		}
 	})
 
+	// The subtests below file issues of their own on one server with the rule on.
+	rig := newStatusChangeRig(t, true)
+
 	t.Run("a stale done on an issue closed since the read is ISSUE_CHANGED, not ISSUE_CLOSED", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		named := rig.file(t, "Issue closed since the read", "in_progress", "")
-		stale := rig.lastSeq(t, named)
-		rig.move(t, named, "done")
+		stale := issueLastSeq(t, rig.database, named)
+		setIssueStatus(t, rig.handler, named, "done")
 		write := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true, "expected_sequence": stale})
 		requireStatusChange(t, write.String(), rig.send(t, write), http.StatusConflict, wantRefusal("ISSUE_CHANGED", changedSince))
 		unfenced := statusChangeOf(named, map[string]any{"status": "done", "unlink_children": true})
@@ -1053,7 +1023,6 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 	})
 
 	t.Run("no expected_sequence is taken, and actor names the write's actor", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		named := rig.file(t, "Issue moved by a session", "in_progress", "")
 		child := rig.file(t, "Child moved by the session", "backlog", named)
 		path := "/api/v1/issues/" + named + "/status-change"
@@ -1071,14 +1040,13 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 	})
 
 	t.Run("a fenced call into work is taken after its own step", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		named := rig.file(t, "Issue started with its tree", "backlog", "")
 		child := rig.file(t, "Child on the backlog", "backlog", named)
 		grandchild := rig.file(t, "Grandchild on the backlog", "backlog", child)
 		iced := rig.file(t, "Child on ice", "icebox", named)
 		seq := map[string]int{}
 		for _, key := range []string{named, child, grandchild, iced} {
-			seq[key] = rig.lastSeq(t, key)
+			seq[key] = issueLastSeq(t, rig.database, key)
 		}
 		dry := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true, "expected_sequence": seq[named], "dry_run": true})
 		before := rig.quiet(t)
@@ -1153,7 +1121,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 		staleAnchorQuote(t, database, anchored.ID)
 
 		check := ruleRig{database: database}
-		seq := check.lastSeq(t, named)
+		seq := issueLastSeq(t, database, named)
 		started := lastEventID(t, database)
 		path := "/api/v1/issues/" + named + "/status-change"
 		response := dispatchRequest(t, handler, http.MethodPost, path, map[string]any{
@@ -1179,11 +1147,10 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 	})
 
 	t.Run("another writer's event on the named issue stops the call at the next step", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		named := rig.file(t, "Issue retitled during its call", "backlog", "")
 		first := rig.file(t, "First child", "backlog", named)
 		second := rig.file(t, "Second child", "backlog", named)
-		seq := map[string]int{named: rig.lastSeq(t, named), first: rig.lastSeq(t, first)}
+		seq := map[string]int{named: issueLastSeq(t, rig.database, named), first: issueLastSeq(t, rig.database, first)}
 		rig.afterStep(t, func(ctx context.Context, step int) {
 			if step != 1 {
 				return
@@ -1209,15 +1176,16 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 	})
 
 	t.Run("a grandchild another writer closed between two steps stays done", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		named := rig.file(t, "Issue put back on the backlog", "in_progress", "")
 		child := rig.file(t, "Child in work", "in_progress", named)
 		first := rig.file(t, "First grandchild", "todo", child)
 		second := rig.file(t, "Grandchild closed by another writer", "todo", child)
-		seq := map[string]int{named: rig.lastSeq(t, named), child: rig.lastSeq(t, child), first: rig.lastSeq(t, first)}
+		seq := map[string]int{
+			named: issueLastSeq(t, rig.database, named), child: issueLastSeq(t, rig.database, child), first: issueLastSeq(t, rig.database, first),
+		}
 		rig.afterStep(t, func(ctx context.Context, step int) {
 			if step == 0 {
-				rig.move(t, second, "done")
+				setIssueStatus(t, rig.handler, second, "done")
 			}
 		})
 		write := statusChangeOf(named, map[string]any{"status": "backlog", "include_children": true})
@@ -1235,14 +1203,13 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 	})
 
 	t.Run("an ancestor another writer moved into work between two steps keeps that status", func(t *testing.T) {
-		rig := newStatusChangeRig(t, true)
 		upper := rig.file(t, "Upper ancestor", "backlog", "")
 		lower := rig.file(t, "Lower ancestor moved by another writer", "backlog", upper)
 		named := rig.file(t, "Issue started", "backlog", lower)
-		seq := map[string]int{upper: rig.lastSeq(t, upper), named: rig.lastSeq(t, named)}
+		seq := map[string]int{upper: issueLastSeq(t, rig.database, upper), named: issueLastSeq(t, rig.database, named)}
 		rig.afterStep(t, func(ctx context.Context, step int) {
 			if step == 0 {
-				rig.move(t, lower, "todo")
+				setIssueStatus(t, rig.handler, lower, "todo")
 			}
 		})
 		write := statusChangeOf(named, map[string]any{"status": "todo", "include_parent": true})
@@ -1258,7 +1225,7 @@ func TestTheStatusChangeRouteTakesThePatchFence(t *testing.T) {
 }
 
 // TestAStatusChangeChecksItsPlanUnderItsLocks: the route reads its plan again under the owner
-// locks of every issue the plan writes (D16). A writer that holds the owner lock of one step's
+// locks of every issue the plan writes. A writer that holds the owner lock of one step's
 // issue makes a dry run wait for it, which pg_locks shows, and the open child that writer files
 // under that issue before it commits is in the dry run's answer.
 func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
@@ -1316,7 +1283,9 @@ func TestAStatusChangeChecksItsPlanUnderItsLocks(t *testing.T) {
 			return false
 		}
 	})
-	seq := map[string]int{named: rig.lastSeq(t, named), child: rig.lastSeq(t, child), late: rig.lastSeq(t, late)}
+	seq := map[string]int{
+		named: issueLastSeq(t, rig.database, named), child: issueLastSeq(t, rig.database, child), late: issueLastSeq(t, rig.database, late),
+	}
 	requireStatusChange(t, write.String(), response, http.StatusOK, map[string]any{
 		"issue": wantChange{named, "in_progress", "", 0, seq[named]}.issue(),
 		"changed": entries([]wantChange{
@@ -1384,7 +1353,7 @@ func (rig repeatRig) seqs(t *testing.T, keys ...string) map[string]int {
 	t.Helper()
 	seq := make(map[string]int, len(keys))
 	for _, key := range keys {
-		seq[key] = rig.lastSeq(t, key)
+		seq[key] = issueLastSeq(t, rig.database, key)
 	}
 	return seq
 }
@@ -1516,7 +1485,7 @@ func movedComment(key, from, to, named string) string {
 	return optionComment(key, fmt.Sprintf("Dispatch moved this issue from `%s` to `%s` with %s, because alice's status change of %s passed `include_children`.", from, to, named, named))
 }
 
-// TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft: D7 on the route. A keyed call keeps its
+// TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft: a keyed call of the route keeps its
 // progress in its key's recovery point. A repeat whose holder died before the point's mark takes
 // the key over as a new attempt, counts the events the point holds as the call's own in its fence,
 // makes only the steps the point does not hold, and answers as the uninterrupted call would, with
@@ -1637,7 +1606,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 	t.Run("a repeat of a call that finished is answered from its point with no fence, after the close's sweep", func(t *testing.T) {
 		named := rig.file(t, "Issue closed with an open ask", "in_progress", "")
 		ask := createIssueAsk(t, rig.handler, named, "Ship the close?")
-		seq := rig.lastSeq(t, named)
+		seq := issueLastSeq(t, rig.database, named)
 		const key = "repeat-finished"
 		write := statusChangeOf(named, map[string]any{"status": "done", "expected_sequence": seq})
 		first := rig.keyedStatusChange(t, write, key)
@@ -1646,7 +1615,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		}
 		rig.requireSweptOnce(t, named, ask)
 		again := rig.keyedStatusChange(t, write, key)
-		now := rig.lastSeq(t, named)
+		now := issueLastSeq(t, rig.database, named)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
 			wantChange{named, "done", "", seq, now}, wantChange{named, "done", "", seq, now},
 		))
@@ -1670,7 +1639,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		if retitled := rig.send(t, patchOf(named, map[string]any{"title": "Retitled after the lost answer"})); retitled.Code != http.StatusOK {
 			t.Fatalf("retitle %s: status=%d body=%s", named, retitled.Code, retitled.Body.String())
 		}
-		now := rig.lastSeq(t, named)
+		now := issueLastSeq(t, rig.database, named)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
 			wantChange{named, "todo", "", seq[named], now},
@@ -1730,7 +1699,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		}
 		before := lastEventID(t, rig.database)
 		want := wantRefusal("ISSUE_CHANGED", changedSince,
-			wantChange{named, "todo", "", seq[named], rig.lastSeq(t, named)},
+			wantChange{named, "todo", "", seq[named], issueLastSeq(t, rig.database, named)},
 			wantChange{child, "todo", named, seq[child], seq[child] + 2},
 		)
 		requireStatusChange(t, write.String()+" repeated", rig.keyedStatusChange(t, write, key), http.StatusConflict, want)
@@ -1765,7 +1734,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 					createThreadComment(t, rig.handler, named, map[string]any{"body": "Closed while its call was cut off."}, "alice")
 				}
 				repeat := rig.keyedStatusChange(t, write, key)
-				now := rig.lastSeq(t, named)
+				now := issueLastSeq(t, rig.database, named)
 				changed := []wantChange{
 					{child, "done", named, seq[child], seq[child] + 2},
 					{named, "done", "", seq[named] + 1, now},
@@ -1802,7 +1771,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				write := statusChangeOf(named, body)
 				resume := rig.stopAfterStep(t, write, key, 1)
 				rig.lapse(t, key)
-				rig.move(t, named, "done")
+				setIssueStatus(t, rig.handler, named, "done")
 				before := lastEventID(t, rig.database)
 				want := wantRefusal(code, message,
 					wantChange{first, "todo", "", seq[first], seq[first] + 2},
@@ -1872,7 +1841,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		var once sync.Once
 		rig.afterStep(t, func(_ context.Context, step int) {
 			if step == 1 {
-				once.Do(func() { rig.move(t, last, "todo") })
+				once.Do(func() { setIssueStatus(t, rig.handler, last, "todo") })
 			}
 		})
 		write := statusChangeOf(named, map[string]any{"status": "todo", "include_children": true})
@@ -1885,7 +1854,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 			t.Fatalf("the call left the point %+v, want it marked", held.point)
 		}
 		loseAnswer(t, rig.database, key)
-		now := rig.lastSeq(t, named)
+		now := issueLastSeq(t, rig.database, named)
 		again := rig.keyedStatusChange(t, write, key)
 		requireStatusChange(t, write.String()+" repeated", again, http.StatusOK, wantAnswer(
 			wantChange{named, "todo", "", seq[named], now},
@@ -1974,7 +1943,7 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 		requireEachClosedOnce(t, rig.database, named, child)
 
 		stale := rig.file(t, "Issue whose settled close is stale", "in_progress", "")
-		staleSeq := rig.lastSeq(t, stale)
+		staleSeq := issueLastSeq(t, rig.database, stale)
 		if retitled := rig.send(t, patchOf(stale, map[string]any{"title": "Retitled before the repeat"})); retitled.Code != http.StatusOK {
 			t.Fatalf("retitle %s: status=%d body=%s", stale, retitled.Code, retitled.Body.String())
 		}
@@ -2167,7 +2136,7 @@ func TestStatusChangeAnswersMatchTheirFixtures(t *testing.T) {
 	})), http.StatusConflict})
 
 	stale := rig.file(t, "Issue changed since its read", "in_progress", "")
-	staleSeq := rig.lastSeq(t, stale)
+	staleSeq := issueLastSeq(t, rig.database, stale)
 	if retitled := rig.send(t, patchOf(stale, map[string]any{"title": "Issue retitled since its read"})); retitled.Code != http.StatusOK {
 		t.Fatalf("retitle %s: status=%d body=%s", stale, retitled.Code, retitled.Body.String())
 	}

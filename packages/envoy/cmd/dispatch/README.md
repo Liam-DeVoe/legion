@@ -215,14 +215,14 @@ Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` p
 
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
-`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
 Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseReadOnlyToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
-A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A Legion daemon's own broker token holds the OAuth scope `legion-status` and no other.
 The broker grants that scope only to the token of an account entry whose fixed session is `legion-daemon:<PROJECT>` of the entry's own project, and Dispatch reads it only on a token scoped to one project.
@@ -929,7 +929,10 @@ A tab opened before the deploy needs a reload:
 With the setting on, a process refuses a write that leaves a parent's status out of line with its children's (`409 PARENT_STATUS_CONFLICT`, Routes, below), and its boot runs the one-time fix of the pairs that break that rule (below).
 A process with the setting off still takes such a write after the fix ran, and the fix does not run again.
 So no process of the earlier setting may serve once a process with the setting on serves, whether the deploy changes the setting or first brings an image that reads it.
-Turn the setting on only once every Legion daemon that writes to this Dispatch runs the release that sends the options of `POST /api/v1/issues/{key}/status-change`.
+Turn the setting on only when two conditions hold.
+First, each Legion daemon that writes to this Dispatch runs the releases with the daemon's side of the rule, which send the options of `POST /api/v1/issues/{key}/status-change`.
+Second, each project's instructions retry a failed root architect with a status write of `todo` alone, not `backlog` and then `todo`, and that project's daemon and controller have read them.
+The rule refuses that `backlog` while an issue under the root is in work.
 Stop every process of the earlier setting, or scale it to zero, before a process with the setting on serves.
 At its default one replica, `envoy-infra:gcp:Dispatch` does that with a Kubernetes Deployment's `strategy: Recreate`, which stops the old pod before the new one starts (its input `parentStatusRule`, `packages/envoy/infra/README.md`).
 A deployment that runs more than one replica rolls, so scale it to zero first, as for INFRA-258 above.
@@ -2314,7 +2317,7 @@ The release before it never reads the index and serves beside it unchanged, exce
 the index is left for the next release that reads it.
 
 Migration `0150_dpop_proofs` creates `dpop_proofs`, the record of every RFC 9449 DPoP proof Dispatch has accepted, and its expiry index.
-A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/brokertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
+A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/ciphertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
 the maintenance pass deletes every record past its proof's acceptance window beside the idempotency-key sweep.
 It is a new table that touches no row, which the release before it neither reads nor writes; its census answers `0`.
 

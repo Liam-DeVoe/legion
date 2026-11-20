@@ -1,7 +1,7 @@
 // parent_status_fix_test.go holds the tests of R25's fix (parent_status_fix.go): the one-time
 // change, at boot with DISPATCH_PARENT_STATUS_RULE on, of the pairs of a parent and a child that
 // break R24. The tests run it over the chains captured from a deployment on 2026-11-20, stored
-// with neutral keys (testdata/parent-status-fix/chains.jsonl, D10), and over a few rows beside
+// with neutral keys (testdata/parent-status-fix/chains.jsonl), and over a few rows beside
 // them for the cases the chains lack.
 package api
 
@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -123,10 +124,10 @@ type fixRig struct {
 	keys   []string
 }
 
-// newFixRig loads the fixture into a server's database: every parent before its children, each
-// issue with its key, number, status, parent and labels, the pull request link of ACME-79, and
-// each project's next_number past its largest number. Every parent that the fixture names is in
-// it.
+// newFixRig loads the fixture into a server's database, in one batch: every parent before its
+// children, each issue with its key, number, status, parent and labels, the pull request link of
+// ACME-79, and each project's next_number past its largest number. Every parent that the fixture
+// names is in it.
 func newFixRig(t *testing.T) fixRig {
 	t.Helper()
 	ctx := context.Background()
@@ -152,6 +153,7 @@ func newFixRig(t *testing.T) fixRig {
 		}
 		loaded[issue.Key] = issue
 	}
+	batch := &pgx.Batch{}
 	for inserted := map[string]bool{}; len(inserted) < len(issues); {
 		progressed := false
 		for _, issue := range issues {
@@ -163,25 +165,20 @@ func newFixRig(t *testing.T) fixRig {
 			if err != nil {
 				t.Fatalf("the fixture's key %s has no number: %v", issue.Key, err)
 			}
-			if _, err := rig.database.Pool.Exec(ctx, `
+			batch.Queue(`
 				insert into issues (key, project_key, number, title, status, parent_key, labels, created_by, rank, closed_at)
 				values ($1, $2, $3, $4, $5::text, $6, $7, '{"kind":"user","id":"alice"}', $8, case when $5::text = 'done' then now() end)
-			`, issue.Key, project, number, "Issue "+issue.Key, issue.Status, issue.Parent, loaded[issue.Key].Labels, fmt.Sprintf("U%06d", number)); err != nil {
-				t.Fatalf("load %s: %v", issue.Key, err)
-			}
+			`, issue.Key, project, number, "Issue "+issue.Key, issue.Status, issue.Parent, loaded[issue.Key].Labels, fmt.Sprintf("U%06d", number))
 			inserted[issue.Key], progressed = true, true
 		}
 		if !progressed {
 			t.Fatalf("the fixture names a parent it does not hold: %d of %d issues loaded", len(inserted), len(issues))
 		}
 	}
-	for _, statement := range []string{
-		`insert into issue_external_links (issue_key, url, kind) values ('ACME-79', '` + fixPullRequest + `', 'github_pr')`,
-		`update projects set next_number = (select max(number) + 1 from issues where project_key = projects.key) where key in ('ACME', 'ZETA')`,
-	} {
-		if _, err := rig.database.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("load the fixture: %v", err)
-		}
+	batch.Queue(`insert into issue_external_links (issue_key, url, kind) values ('ACME-79', '` + fixPullRequest + `', 'github_pr')`)
+	batch.Queue(`update projects set next_number = (select max(number) + 1 from issues where project_key = projects.key) where key in ('ACME', 'ZETA')`)
+	if err := rig.database.Pool.SendBatch(ctx, batch).Close(); err != nil {
+		t.Fatalf("load the fixture: %v", err)
 	}
 	return fixRig{ruleRig: rig, loaded: loaded, keys: slices.Sorted(maps.Keys(loaded))}
 }
@@ -190,10 +187,29 @@ func newFixRig(t *testing.T) fixRig {
 // answers the rule on.
 func (rig fixRig) fix(t *testing.T) {
 	t.Helper()
-	rule, err := RunParentStatusFixAtBoot(t.Context(), rig.deps, storetest.Leases(t, rig.database.Pool), true)
+	rig.fixThrough(t, storetest.Leases(t, rig.database.Pool))
+}
+
+// fixThrough is fix with the lease pool leases.
+func (rig fixRig) fixThrough(t *testing.T, leases duty.Leases) {
+	t.Helper()
+	rule, err := RunParentStatusFixAtBoot(t.Context(), rig.deps, leases, true)
 	if err != nil || !rule.On() {
 		t.Fatalf("the fix with the setting on answered the rule on=%t and %v, want the rule on and no error", rule.On(), err)
 	}
+}
+
+// leaseStatementsOfAFix runs the fix as fix does, through a lease pool of its own whose statements
+// it counts, and answers how many statements the fix sent through that pool. The fix takes its
+// lease on that pool (duty.Exclusive), so a start that takes the lease sends some, and a start
+// that takes no lease sends none.
+func (rig fixRig) leaseStatementsOfAFix(t *testing.T) int64 {
+	t.Helper()
+	counter := &storetest.StatementCounter{}
+	leases := storetest.Leases(t, storetest.TracedStore(t, rig.database, counter).Pool)
+	sent := counter.Count()
+	rig.fixThrough(t, leases)
+	return counter.Count() - sent
 }
 
 // stored is each issue of the fixture as the database holds it now.
@@ -203,11 +219,7 @@ func (rig fixRig) stored(t *testing.T) map[string]fixIssue {
 	if err != nil {
 		t.Fatalf("read the fixture's issues: %v", err)
 	}
-	issues, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fixIssue, error) {
-		var issue fixIssue
-		err := row.Scan(&issue.Key, &issue.Status, &issue.Parent, &issue.Labels)
-		return issue, err
-	})
+	issues, err := pgx.CollectRows(rows, pgx.RowToStructByPos[fixIssue])
 	if err != nil {
 		t.Fatalf("read the fixture's issues: %v", err)
 	}
@@ -479,23 +491,28 @@ func TestTheFixRunsBeforeAnyOtherWriteAndOnlyWithItsSetting(t *testing.T) {
 }
 
 // TestASecondStartOfTheFixChangesNothing: a boot that finds the fix's record runs nothing: it
-// takes no lease and writes no row, event, comment or record. A boot that stopped after the
-// fix's last step and before its record plans no step the next time, and writes only the record,
-// with nothing unlinked and nothing moved.
+// sends no statement through its lease pool, so it takes no lease, and it writes no row, event,
+// comment or record. A boot that stopped after the fix's last step and before its record plans no
+// step the next time, and writes only the record, with nothing unlinked and nothing moved. That
+// start takes the lease, and its lease pool counts its statements, so the count can see a lease.
 func TestASecondStartOfTheFixChangesNothing(t *testing.T) {
 	rig := newFixRig(t)
 	rig.fix(t)
 	awaitNoSettlementOwed(t, rig.database)
 	fixed := databaseFingerprint(t, rig.database)
 
-	rig.fix(t)
+	if sent := rig.leaseStatementsOfAFix(t); sent != 0 {
+		t.Errorf("a second start of the fix sent %d statements through its lease pool, want none: it takes no lease", sent)
+	}
 	assertUnchanged(t, "a second start of the fix", fixed, databaseFingerprint(t, rig.database))
 	rig.requireRecord(t, len(fixUnlinks), len(fixMoves))
 
 	if _, err := rig.database.Pool.Exec(context.Background(), `delete from parent_status_fix`); err != nil {
 		t.Fatalf("remove the record, as a boot that stopped before it leaves the database: %v", err)
 	}
-	rig.fix(t)
+	if sent := rig.leaseStatementsOfAFix(t); sent == 0 {
+		t.Errorf("a start of the fix after a boot that stopped before its record sent no statement through its lease pool, want the lease taken")
+	}
 	after := databaseFingerprint(t, rig.database)
 	delete(fixed, "parent_status_fix")
 	delete(after, "parent_status_fix")

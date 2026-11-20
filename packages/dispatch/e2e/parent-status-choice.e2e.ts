@@ -343,8 +343,8 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
         [third.waiting.key]: { parent: null, status: "backlog" },
       });
 
-    // K's issue page: K into work under Q on the backlog asks whether Q moves into work too, and
-    // lists Q.
+    // The issue page of `child`: `child` into work under `shelved`, on the backlog, asks whether
+    // `shelved` moves into work too, and lists `shelved`.
     await page.goto(`/issues/${child.key}`);
     await expect(page.getByRole("heading", { level: 1, name: child.title })).toBeVisible();
     await statusSelect.selectOption("in_progress");
@@ -371,8 +371,8 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
         [child.key]: { parent: shelved.key, status: "in_progress" },
       });
 
-    // The project's issues table: Move to epic of W, in work, to E, on the backlog, asks whether E
-    // moves into work too and lists that change as the dry run answers it.
+    // The project's issues table: Move to epic of `loose`, in work, to `epic`, on the backlog,
+    // asks whether `epic` moves into work too and lists that change as the dry run answers it.
     const epicPosts = watchWrites(
       page,
       "POST",
@@ -400,12 +400,8 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
     expect(changed.map(entryLine)).toEqual([
       entryLine({ key: epic.key, parent: null, status: "in_progress" }),
     ]);
-    const changeLines = await Promise.all(
-      changed.map(
-        async (entry) =>
-          `${entry.key} “${(await getIssue(entry.key)).title}” moves to ${statusText(entry.status)}`
-      )
-    );
+    // The one change is the epic's own, so its line names the epic's title, which the seed holds.
+    const changeLines = [`${epic.key} “${epic.title}” moves to ${statusText("in_progress")}`];
     await expect(intoWorkChanges).toHaveText(changeLines);
 
     // Cancel writes nothing.
@@ -418,7 +414,7 @@ test("parent-status-choice: a parent's move asks which way its open issues go", 
       [epic.key]: { parent: null, status: "backlog" },
     });
 
-    // Again, and confirmed: E is in progress with W under it.
+    // Again, and confirmed: `epic` is in progress with `loose` under it.
     await expect(looseSelect).toBeChecked();
     await epicPick.selectOption(epic.key);
     await moveButton.click();

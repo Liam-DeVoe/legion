@@ -25,7 +25,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -106,7 +106,7 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 		t.Fatalf("create the project as a person: status=%d body=%s", created.Code, created.Body.String())
 	}
 	caller := newBrokerCaller(t)
-	broker := func(token string, answer brokertoken.Introspection) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
+	broker := func(token string, answer ciphertoken.Introspection) func(*testing.T, string, string, map[string]any) *httptest.ResponseRecorder {
 		rig.broker.Says(token, answer)
 		return func(t *testing.T, method, path string, body map[string]any) *httptest.ResponseRecorder {
 			return rig.serve(caller.presenting(t, method, path, token, body))
@@ -125,7 +125,7 @@ func newLegionStatusRigOn(t *testing.T, serving testServerOptions) *legionStatus
 		}
 	}
 	personScoped := liveNamedToken(caller.jkt)
-	personScoped.ProjectScope, personScoped.Projects = brokertoken.ProjectScopePerson, nil
+	personScoped.ProjectScope, personScoped.Projects = ciphertoken.ProjectScopePerson, nil
 	rig.credentials = []legionCredential{
 		{name: legionSharedToken, verdict: legionRefused, send: bearer("agent-token", sessionActor())},
 		{name: "the shared token naming the daemon's session", verdict: legionRefused,

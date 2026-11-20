@@ -7,7 +7,7 @@ import { replaceQueryData } from "../../api/query-client";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
-  isParentStatusConflict,
+  askOnConflict,
   issueHasParentOrOpenChild,
   type ParentStatusQuestion,
   useParentStatusMove,
@@ -81,9 +81,10 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
 export interface IssueHeaderWrites {
   /** The drafts of the title, the route and the parent, and the submits that save them. */
   readonly drafts: IssueDrafts;
-  /** The title, the route and the parent, which the drafts save, and a status sent through the
-   *  drafts (`requestStatusSubmit`); the Status pill's pick is a write of its own (`pickStatus`).
-   *  Each press names its issue (`IssueFieldsSave`). */
+  /** The title, the route and the parent, which the drafts save, and the status of Close and
+   *  Reopen (`requestStatus`), which goes through the drafts (`requestStatusSubmit`); the Status
+   *  pill's pick is a write of its own (`pickStatus`). Each press names its issue
+   *  (`IssueFieldsSave`). */
   readonly updateIssue: KeyedWriteResult<Issue, IssueFieldsSave, unknown>;
   /** The labels, which the popover saves as one set when it closes. */
   readonly labels: KeyedWriteResult<Issue, IssueLabelsSave, unknown>;
@@ -115,11 +116,15 @@ export interface IssueHeaderWrites {
    * it. This write, refused by the rule, asks the same question.
    */
   readonly pickStatus: (next: string) => void;
-  /** The question a pick asks while Dispatch's rule would refuse it, which the control that makes
-   *  the pick draws as `ParentStatusDialog`. */
+  /** Close, Reopen and the palette's two rows: the status sent through the drafts
+   *  (`drafts.requestStatusSubmit`, a write of `updateIssue`), through the rule's question as the
+   *  pick goes. That write, refused by the rule, asks the same question. */
+  readonly requestStatus: (next: string) => void;
+  /** The question a status write of the header (`pickStatus`, `requestStatus`) asks while
+   *  Dispatch's rule would refuse it, which the header draws as `ParentStatusDialog`. */
   readonly statusQuestion: ParentStatusQuestion | undefined;
-  /** Why the dry run of the newest pick was refused, which put the pick back, until the next
-   *  pick: the control that makes the pick shows it. */
+  /** Why the dry run of the newest status write was refused, which put the status back, until
+   *  the next one: the header shows it. */
   readonly statusRefusal: unknown;
   /** A parent Dispatch refused, with the reason it gave, or one the reader stopped, which may have
    *  been saved, drawn where the parent is edited. */
@@ -196,9 +201,17 @@ export function useIssueHeaderWrites(
       drafts.onIssueSuccess(next ?? issue, input);
     },
   };
+  // Every status write of the header goes through the rule's question (`useParentStatusMove`):
+  // the pick (`statusWrite`, below), and Close and Reopen through the drafts (`updateIssue`). A
+  // status write Dispatch refused under the rule - the page read the parent or the children before
+  // they changed - asks the rule's question, as a refused dry run does (`askOnConflict`).
+  const parentStatus = useParentStatusMove();
   const updateIssue = useKeyedWrite({
     ...fieldWrite,
     inline: ({ input }) => !statusPickOnly(input),
+    onError: (error, { input, issueKey }) => {
+      askOnConflict(parentStatus, issueKey, input, error);
+    },
     onSettled: (_data, error) => {
       drafts.onIssueSettled(error);
     },
@@ -208,17 +221,12 @@ export function useIssueHeaderWrites(
   // takes `updateIssue`'s line and mutation key, so it waits behind a title, route or parent write
   // still being tried, and `pendingStatus` reads it. It lets go of no guard and drains no draft
   // (`drafts.onIssueSettled`): the guard and the drafts are `updateIssue`'s, and a drain here,
-  // after a title Dispatch refused, would send that title again. A pick Dispatch refused under the
-  // parent-status rule - the page read the parent or the children before they changed - asks the
-  // rule's question, as a refused dry run does.
-  const parentStatus = useParentStatusMove();
+  // after a title Dispatch refused, would send that title again.
   const statusWrite = useKeyedWrite({
     ...fieldWrite,
     inline: false,
     onError: (error, { input, issueKey }) => {
-      if (statusPickOnly(input) && input.status !== undefined && isParentStatusConflict(error)) {
-        void parentStatus.ask({ key: issueKey, status: input.status }, error);
-      }
+      askOnConflict(parentStatus, issueKey, input, error);
     },
   });
   // The labels are a field of the issue too, so they land as every field write does: a landing
@@ -303,7 +311,15 @@ export function useIssueHeaderWrites(
       status: next,
     });
   };
-  // A pick the rule's question is checking or asking about is pending too, so the pill shows it.
+  const requestStatus = (next: string) => {
+    void parentStatus.move({
+      key: issue.key,
+      patch: () => drafts.requestStatusSubmit(next),
+      related: issueHasParentOrOpenChild(issue),
+      status: next,
+    });
+  };
+  // A status the rule's question is checking or asking about is pending too, so the pill shows it.
   const pendingStatus =
     parentStatus.pending?.status ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
@@ -326,6 +342,7 @@ export function useIssueHeaderWrites(
     pin,
     pinGuard,
     releaseClaim,
+    requestStatus,
     statusQuestion: parentStatus.question,
     statusRefusal: parentStatus.refusal,
     statusSaving,

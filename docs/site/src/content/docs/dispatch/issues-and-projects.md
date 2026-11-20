@@ -72,14 +72,16 @@ in work too. Before the page changes the status of an issue that has a parent or
 asks Dispatch what the change would do. When the change would break this rule, a dialog names the
 issues that stop it and offers a choice:
 
-- **Move them with it**: each open issue under it takes the new status too.
+- **Move them with it**: each open issue under it whose status is in another group takes the new
+  status too. The groups are not started (Triage, Icebox, Backlog), in work and done. So a child in
+  Icebox stays there when its parent moves to Backlog.
 - **Unlink them**: each open child stops being a child of this issue and keeps its status.
 - **Move the parents into work too**: each parent that is not in work moves to In progress.
 - **Keep as it is** or **Cancel**: nothing changes. Escape does the same.
 
 The page offers the first two when a child stops the change, and the third when a parent stops it.
-Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each issue
-a choice changes.
+Each choice lists the changes it makes before you choose it. Dispatch leaves a comment on each
+other issue a choice changes. The issue you moved gets no comment, since the change is your own.
 
 ## The List and the Board
 
