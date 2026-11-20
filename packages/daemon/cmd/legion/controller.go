@@ -360,24 +360,27 @@ const ohMyPiStopGrace = shim.DefaultGrace
 // signal sent to this process was sent on to it.
 //
 // Oh My Pi shares this process's group, the terminal's foreground group, and is not bound to ctx:
-// a terminal's Ctrl-C, SIGHUP or SIGQUIT reaches it with this process, and is its to handle, and
-// a cancel of ctx could only kill it outright. What the terminal does not send is sent on instead:
-// a SIGTERM, a SIGHUP or a SIGQUIT sent to this process's own pid alone, which main's
+// a cancel of ctx could only kill it outright. A signal the terminal sends that group, a closing
+// terminal's SIGHUP, reaches it with this process and is its to handle; while Oh My Pi's interface
+// reads the terminal, in raw mode, the terminal turns no key into a signal, Ctrl-C and the quit key
+// included. What reaches this process alone is sent on: a SIGINT, a SIGTERM, a SIGHUP or a SIGQUIT
+// sent to this process's own pid, from a `kill` in another terminal or a supervisor, which main's
 // signal.NotifyContext and the command's hang-up and quit watch (stoppingOnHangupOrQuit) catch, so
-// that without this Oh My Pi would run on, never told, with this process waiting for it. Each goes
-// to omp's pid, which the shell exec'd Oh My Pi into, never to the group, which would reach this
-// process and every sibling of it as well (forwardTo's reason). Where the terminal sent it, Oh My
-// Pi gets it twice, as gh does under `legion gh` (forwardTo). SIGINT is not sent on: the terminal
-// sends it to the whole group every time, so there is no SIGINT this would be Oh My Pi's only way
-// of hearing. SIGHUP is sent on only where this process was not started with it ignored, for
-// runGhChild's reason.
+// that without this Oh My Pi would run on, never told, with this process waiting for it for as long
+// as the session lasts. Each goes to omp's pid, which the shell exec'd Oh My Pi into, never to the
+// group, which would reach this process and every sibling of it as well (forwardTo's reason).
+// Where the terminal sent it to the group as well, Oh My Pi gets it twice, as gh does under
+// `legion gh` (forwardTo): a second copy of the signal it is already ending on. SIGHUP is sent on
+// only where this process was not started with it ignored, for runGhChild's reason. SIGINT is sent
+// on whatever this process was started with: main's signal.NotifyContext has caught it since
+// before this ran, which undoes an inherited ignore of it.
 //
 // From the first signal sent on, the wait for Oh My Pi is bounded at grace; one still running then
 // is killed, so this command never outlives its Oh My Pi, nor waits on it without end. The
 // forwarding is armed before the start, so a signal in the moment between the fork and the wait is
 // held and sent on; one that came before it, which cancelled ctx, starts no Oh My Pi.
 func runOhMyPi(ctx context.Context, omp *exec.Cmd, grace time.Duration) (int, error) {
-	forwarded := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT}
+	forwarded := []os.Signal{syscall.SIGTERM, syscall.SIGQUIT, syscall.SIGINT}
 	if !signal.Ignored(syscall.SIGHUP) {
 		forwarded = append(forwarded, syscall.SIGHUP)
 	}

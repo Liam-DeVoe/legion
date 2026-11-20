@@ -123,10 +123,11 @@ const controllerSignalHelper = "LEGION_TEST_CONTROLLER_SIGNAL_DIR"
 
 // TestControllerStartSignalHelper is the process
 // TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand signals: the real command
-// line of `legion controller start` (operatorMachine.run), whose recording Oh My Pi is held
-// (LEGION_TEST_HOLD), ignoring the signals LEGION_TEST_HOLD_IGNORES names. It writes the recording
-// directory's path to `record` in its directory, its stderr to `stderr` once the command ends, and
-// exits with the command's status.
+// line of `legion controller start` (operatorMachine.runUnder), under main's own signal context
+// (mainContext), as the binary runs it, whose recording Oh My Pi is held (LEGION_TEST_HOLD),
+// ignoring the signals LEGION_TEST_HOLD_IGNORES names and recording any other it gets. It writes
+// the recording directory's path to `record` in its directory, its stderr to `stderr` once the
+// command ends, and exits with the command's status.
 func TestControllerStartSignalHelper(t *testing.T) {
 	dir := os.Getenv(controllerSignalHelper)
 	if dir == "" {
@@ -137,24 +138,29 @@ func TestControllerStartSignalHelper(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "record"), []byte(c.record), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	code, _, stderr := c.run()
+	ctx, stop := mainContext()
+	code, _, stderr := c.runUnder(ctx)
+	stop()
 	_ = os.WriteFile(filepath.Join(dir, "stderr"), []byte(stderr), 0o600)
 	os.Exit(code)
 }
 
-// TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand: a SIGHUP, a SIGQUIT or a
-// SIGTERM sent to `legion controller start`'s own pid while its Oh My Pi runs - a `kill` from
-// another terminal, which the terminal's own group, Oh My Pi's, does not get - is sent on to Oh My
-// Pi (runOhMyPi), and the command ends with 128+<signal> once Oh My Pi has: at once where Oh My Pi
-// ends on the signal, and at ohMyPiStopGrace, with Oh My Pi killed, where it ignores it. Before, the
-// command caught the signal, cancelled a context Oh My Pi is not bound to, and waited for Oh My Pi
-// for as long as the session lasted, with Oh My Pi never told.
+// TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand: a SIGINT, a SIGHUP, a
+// SIGQUIT or a SIGTERM sent to `legion controller start`'s own pid while its Oh My Pi runs - a
+// `kill` from another terminal, which the terminal's own group, Oh My Pi's, does not get - is sent
+// on to Oh My Pi (runOhMyPi), which records the signal it got, and the command ends with
+// 128+<signal> once Oh My Pi has: at once where Oh My Pi ends on the signal, and at
+// ohMyPiStopGrace, with Oh My Pi killed, where it ignores it. Before, the command caught the
+// signal, cancelled a context Oh My Pi is not bound to, and waited for Oh My Pi for as long as the
+// session lasted, with Oh My Pi never told. The record is what tells a signal sent on from the kill
+// at the grace, which ends Oh My Pi inside the same bound with no signal to end its session on.
 func TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		signal  syscall.Signal
 		ignores string
 	}{
+		{"SIGINT", syscall.SIGINT, ""},
 		{"SIGHUP", syscall.SIGHUP, ""},
 		{"SIGQUIT", syscall.SIGQUIT, ""},
 		{"SIGTERM", syscall.SIGTERM, ""},
@@ -219,17 +225,23 @@ func TestASignalToControllerStartWhileOhMyPiRunsEndsOhMyPiAndTheCommand(t *testi
 			if ohMyPiRuns(omp) {
 				t.Errorf("the controller's Oh My Pi (pid %d) still runs after legion controller start ended on a %v to its pid; want it ended first", omp, tc.signal)
 			}
+			record, _ := os.ReadFile(filepath.Join(dir, "record"))
+			caught, err := os.ReadFile(filepath.Join(string(record), "held-caught"))
+			got := strings.TrimSpace(string(caught))
+			if want := strings.TrimPrefix(tc.name, "SIG"); tc.ignores == "" && got != want {
+				t.Errorf("the controller's Oh My Pi recorded %q (%v) after a %v to legion controller start's pid; want %q: the signal was not sent on to it", got, err, tc.signal, want)
+			}
+			if tc.ignores != "" && got != "" {
+				t.Errorf("the controller's Oh My Pi, ignoring %s, recorded %q; want nothing, and a kill at ohMyPiStopGrace", tc.ignores, got)
+			}
 		})
 	}
 }
 
 // ohMyPiRuns says whether pid is still the recording Oh My Pi: a shell running the script named
-// omp, read from /proc so a pid the kernel has given out since does not count.
+// omp, read from /proc (heldprocess.CommandLine), so a pid the kernel has given out since does not
+// count.
 func ohMyPiRuns(pid int) bool {
-	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
-	if err != nil {
-		return false
-	}
-	argv := strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	argv := heldprocess.CommandLine(pid)
 	return len(argv) >= 2 && filepath.Base(argv[1]) == "omp"
 }

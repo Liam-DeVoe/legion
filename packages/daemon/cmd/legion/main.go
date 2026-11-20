@@ -1670,7 +1670,15 @@ func processEnvironment() map[string]string {
 }
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := mainContext()
 	defer stop()
 	os.Exit(run(ctx, os.Args, os.Stdout, os.Stderr))
+}
+
+// mainContext is the context main runs every command under: cancelled by a SIGINT or a SIGTERM
+// (mainNotified), with a cause naming the signal (endedBySignal). A test that signals a command's
+// own pid runs the command under it too, as the binary does (TestControllerStartSignalHelper):
+// under a context no signal cancels, a SIGINT would end the test's helper by its default action.
+func mainContext() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 }
