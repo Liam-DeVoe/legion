@@ -24,7 +24,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // process is one envoy-dispatch process's outbox under test: its own pool, its own events broker
@@ -572,22 +571,24 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // release inside the grace is a holder that gave the hold up early; load can only make that bound
 // safer, since a loaded machine delays the release and never hastens it.
 //
-// How long past the grace the release comes is not bounded: between the grace's timer and the
-// release there is only a run of goroutine wakes - the holder's wake, the timer, serve's return
-// and publish's clearing of the hold (lease.go, publish) - which is the machine's to say. A bound
-// on it was this row's until it failed on those wakes at 500 ms, under CI's eight concurrent go
-// test calls (run 42949344199) and with 111 test binaries at once (run 43716631673, job
-// 132819560357), and was then widened to 6 s, which made it a reading of the machine. A holder
-// that kept the hold through the outage is caught without one: it never writes the line, and the
-// row fails thirty seconds before the run's own deadline, the one bound the release is waited
-// under. The event written after the cut is published by the process whose NATS works, waited on
-// as an event at eventWait, since that wait begins once the release is in.
+// Above, the release must come within 500 ms of the grace, main's bound, measured from just after
+// the cut: between the grace's timer and the release there is only a run of goroutine wakes - the
+// holder's wake, the timer, serve's return and publish's clearing of the hold (lease.go, publish) -
+// and a release well past the grace is a holder that kept the hold through an outage it should
+// have given up. That bound is the row's check of how soon the release follows the grace, so it
+// stays main's: those wakes ran past it under CI's eight concurrent go test calls (run
+// 42949344199) and with 111 test binaries at once (run 43716631673, job 132819560357), and
+// widening it to fit them (6 s) made it a reading of the machine, while dropping it left the row
+// no check of how soon. The event written after the cut is published by the process whose NATS
+// works, waited on as an event at eventWait, since that wait begins once the release is in.
 //
-// Serial: it reads publish's line through the default logger, which it swaps
-// (logtest.SetDefault); and a holder whose renewals a parallel batch starves for the 4 s from a
-// confirmed renewal to the loss deadline (publisherHoldOptions, TTL less Margin) reports the hold
-// lost and ends its turn before the grace runs out, and the row would then be reading that load
-// rather than the product (docs/testing.md).
+// Serial: its assertion is a time - the release must come within 500 ms of natsLossGrace after
+// the cut (main's bound, above) - so this package's parallel tests must not run beside it; it
+// reads publish's line through the default logger, which it swaps (logtest.SetDefault); and a
+// holder whose renewals a parallel batch starves for the 4 s from a confirmed renewal to the loss
+// deadline (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before
+// the grace runs out, and the row would then be reading that load rather than the product
+// (docs/testing.md).
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	recorder := &logtest.Recorder{}
 	logtest.SetDefault(t, recorder)
@@ -601,15 +602,13 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	waitFor(t, eventWait, "the first process taking the publisher hold", cut.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
-	// Read before the cut, so the grace is armed after this moment and the bound below holds
+	// Read before the cut, so the grace is armed after this moment and the lower bound below holds
 	// whatever the scheduler does between the two statements.
 	downAt := time.Now()
 	proxy.Cut()
 	var released map[string]string
-	// Until what the test binary's deadline leaves, less the thirty seconds horizontest.Drain
-	// leaves a failure to print in (testwait.Bounded), and testwait.PastTheRun where the run has
-	// no deadline: no span past the grace is this row's (above).
-	waitFor(t, testwait.Bounded(t, testwait.PastTheRun, 30*time.Second), "the cut process's line releasing the publisher hold", func() bool {
+	// Main's bound on how soon the release follows the grace (above), from just after the cut.
+	waitFor(t, natsLossGrace+500*time.Millisecond, "the cut process's line releasing the publisher hold within 500 ms of natsLossGrace", func() bool {
 		var found bool
 		released, found = releaseLine(recorder, cut.outbox.instance)
 		return found

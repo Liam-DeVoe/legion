@@ -788,6 +788,10 @@ func TestAppendFailureClosesDocumentConnectionAndReloadsRoom(t *testing.T) {
 		Identity:    headerIdentity(database),
 		Settle:      time.Hour,
 	})
+	// Its rooms stay resident testRoomIdleTimeout once idle, set before any room starts, so ygo's
+	// idle sweep cannot retire the room inside waitForNoLiveDocument's wait, roomWait: only the
+	// failed append's eviction can take it away.
+	service.srv.RoomIdleTimeout = testRoomIdleTimeout
 	cleanupAndRelease(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, "before")
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))

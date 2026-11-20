@@ -5143,24 +5143,22 @@ func settleCurrentGeneration(t *testing.T, service *Service, artifactID string) 
 	settleNow(service, artifactID)
 }
 
-// appendStall is how long awaitRoomAppends lets the service land no append at all, while the room
-// it waits for still counts one, before it fails: three times the longest such stall measured, as
-// docs/testing.md asks of a bound. With this bound lifted to 10 min, the package as CI runs it, on
-// a 288-CPU machine at a load of 230 when it began (2026-11-16), had 927 of these waits go more
-// than 1 s with no append landing and the room's counts unchanged, 231 more than 3 s and 22 5 s
-// or more; the longest went 5.363 s.
-const appendStall = 16 * time.Second
-
 // awaitRoomAppends waits until room's live updates have reached its persistence or landed, by
 // wait - the service's waitForPendingUpdates or waitForDurableAppends, which the room's idle
 // signal wakes - and fails the test if they do not. It puts no span on the wait: a room's appends
 // queue behind every other room's on the service's room-appends pool, so how long they take grows
 // with how many rooms the test drives at once, one per CPU for a test whose subtests run in
 // parallel, and with the machine's load. It fails on appends that have stopped instead: no append
-// landed anywhere in the service and the room's own counts unchanged for appendStall, or the run's
-// deadline 30 s away, so that the failure names this wait rather than the binary's timeout.
+// landed anywhere in the service and the room's own counts unchanged for roomWait, the package's
+// give-up for a room landing an append, or the run's deadline 30 s away, so that the failure names
+// this wait rather than the binary's timeout. The stall is a give-up for appends that must come,
+// never a measurement, so it is roomWait and no span of its own. Measured with it lifted to
+// 10 min, the package as CI runs it, on a 288-CPU machine at a load of 230 when it began
+// (2026-11-16), had 927 of these waits go more than 1 s with no append landing and the room's
+// counts unchanged, 231 more than 3 s and 22 5 s or more; the longest went 5.363 s.
 func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait func(context.Context, string) error) {
 	t.Helper()
+	stall := roomWait(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	waited := make(chan error, 1)
@@ -5191,8 +5189,8 @@ func awaitRoomAppends(t *testing.T, service *Service, room, what string, wait fu
 			}
 			var why string
 			switch {
-			case now.Sub(movedAt) >= appendStall:
-				why = fmt.Sprintf("no append landed in the service for %s", appendStall)
+			case now.Sub(movedAt) >= stall:
+				why = fmt.Sprintf("no append landed in the service for %s", stall)
 			case bounded && deadline.Sub(now) < 30*time.Second:
 				why = "the run's deadline is 30 s away"
 			default:
@@ -6467,8 +6465,10 @@ func waitForRoomFailure(t *testing.T, service *Service, artifactID string) {
 // wait as long as the sweep's would pass a close that left the room resident, the sweep retiring
 // it in the close's place. The sweep retires a room no sooner than a whole timeout after its
 // stamp, so a wait of half that, begun within the other half, ends before the sweep can answer
-// for the close. With the default minute that is 30 s; a row on a shorter timeout is serial, so
-// the wait begins as the close returns.
+// for the close. On testRoomIdleTimeout, an hour, which the service of every parallel caller sets
+// before any room starts, half the timeout is past roomWaitCap, so the wait is roomWait. A row on
+// the default minute (a wait of 30 s) or a shorter timeout is serial, so the wait begins as the
+// close returns.
 func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
 	wait := roomWait(t)

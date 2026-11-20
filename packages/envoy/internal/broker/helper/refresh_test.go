@@ -722,7 +722,9 @@ func TestARateLimitedRefreshKeepsTheLoginAndWaitsItsRetryAfter(t *testing.T) {
 // answer is abandoned at Start's bound (shortened here from 5 s), so serve listens within the
 // wait `register` gives it: the kept login is installed as issued and the loop retries the refresh.
 func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: Start must return within 5 s, main's bound, while the broker
+	// never answers its refresh, which is the row's check that Start abandons that refresh at its
+	// own bound (startRefreshBound, 200 ms here) rather than waiting on the broker.
 	f := newFakeBroker(t)
 	path, kept := keptLogin(t, f)
 	gate := make(chan struct{})
@@ -743,7 +745,7 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(eventWait):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Start waited on a refresh the broker never answered")
 	}
 	if held := b.cred.Load(); held == nil || held.refreshToken != kept.RefreshToken {
