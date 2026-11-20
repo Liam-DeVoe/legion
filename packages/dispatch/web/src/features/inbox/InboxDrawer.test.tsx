@@ -249,6 +249,7 @@ test("Escape with a row focused backs out of the row first; only a second Escape
   const view = renderDrawer();
   try {
     await user.click(screen.getByRole("button", { name: "Open inbox" }));
+    // The drawer is drawn at once, over the inbox's loading skeleton, so the row is waited for.
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
     // The list is a chunk of its own (`InboxList.tsx`), drawn under a frame that is there before
     // it: the first row of this file to open the drawer finds that chunk still loading.

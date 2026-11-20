@@ -39,6 +39,7 @@ import {
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { relativeTimeLabel, Timestamp, useRelativeTimeTick } from "../refs/Timestamp";
 import type { TextEditRange } from "./block-spans";
+import { mentionDisplay } from "./composer-draft";
 import type { AcceptedMention } from "./composer-model";
 import { mentionText, survivingMentions } from "./send-request";
 import { useAgents } from "./useAgents";
@@ -320,14 +321,6 @@ function mentionQuery(
   const at = before.lastIndexOf("@");
   if (at < 0 || /\s/.test(before.slice(at + 1))) return undefined;
   return { query: before.slice(at + 1), start: at };
-}
-
-export function mentionDisplay(title: string, target: string): string {
-  const trimmed = title.trim();
-  if (trimmed !== "" && !/^(?:session|role):/i.test(trimmed) && !/[@\r\n]/.test(trimmed)) {
-    return trimmed;
-  }
-  return target.replace(":", " ");
 }
 
 /** One edit of the field: the text now, the accepted mentions reconciled against it, and the

@@ -29,11 +29,12 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskAnswerArea } from "./AskAnswerArea";
 import { askCommentInput, postAskComment } from "./ask-comment";
 import { emptyDraftRefusal } from "./draft-store";
-import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import type { AskPress } from "./outstanding-answers";
+import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
 import { UnsentText } from "./UnsentText";
 
 export type CreateReply = (
@@ -86,6 +87,20 @@ function AskReply({
       </p>
     </li>
   );
+}
+
+/** One press of a reply: the ask it is of (`AskPress`) and the comment it posts - the words and
+ *  the sessions picked in them, frozen with the press (`askCommentInput`). */
+interface ReplyPress extends AskPress {
+  readonly input: CreateCommentInput;
+}
+
+/** The draft a file pasted or dropped into a reply joins: the ask's (`reply-drafts.ts`), with
+ *  whether the ask took a reply as a settled ask at the paste, which the text it adds records
+ *  (`writtenSettled`). */
+interface ReplyUploadDraft {
+  readonly askId: string;
+  readonly settled: boolean;
 }
 
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
@@ -208,27 +223,39 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
-  const [draft, setDraft] = useReplyDraft(ask.id, takesReply(ask));
+  const settled = takesReply(ask);
+  const [draft, setDraft] = useReplyDraft(ask.id, settled);
   // The uploads behind the reply, held by the composer rather than by the box it writes in, as
   // the ask card holds its answer's (`AskCard.tsx`): the send is this composer's, so what holds
-  // the send is too.
-  const upload = useDraftUpload((text) =>
-    setDraft((current) => ({ ...current, text: appendToDraft(current.text, text) }))
+  // the send is too. A file's text joins the draft of the ask it was pasted or dropped under,
+  // which its press carries (`useDraftUpload`): a host may draw this composer for another ask
+  // before it lands.
+  const upload = useDraftUpload(
+    (text: string, { askId, settled: pastedSettled }: ReplyUploadDraft) =>
+      setReplyDraft(askId, (current) => ({
+        ...current,
+        text: appendToDraft(current.text, text),
+        writtenSettled: pastedSettled,
+      }))
   );
   const uploading = upload.pending > 0;
   // Keyed by the ask, so the send outlives the composer that started it and any composer for the
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
   const { sending } = useSending(mutationKey);
-  // The form shows a refused reply itself, with Retry, under the draft it kept.
+  // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
+  // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
+  // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
+  // host draws this composer for by then.
   const submit = useKeyedWrite({
-    write: (input: CreateCommentInput, bounds) => postAskComment(ask, input, bounds, reply),
+    method: "POST",
+    write: (press: ReplyPress, bounds) => postAskComment(press.ask, press.input, bounds, reply),
     inline: true,
-    label: () => `Reply on “${ask.question}”`,
+    label: (press: ReplyPress) => `Reply on “${press.ask.question}”`,
     mutationKey,
-    onSuccess: (_comment, input) => {
-      clearReplyDraft(ask.id, input.body ?? "");
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+    onSuccess: (_comment, press) => {
+      clearReplyDraft(press.ask.id, press.input.body ?? "");
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
   /** Why Reply refuses the draft as it stands: it posts what the box holds. */
@@ -239,7 +266,7 @@ export function AskReplyComposer({
   // reply the picture would miss.
   const sendReply = () => {
     if (refusal !== null || sending) return;
-    submit.mutate(askCommentInput(ask.id, draft));
+    submit.mutate({ ask, input: askCommentInput(ask.id, draft) });
   };
 
   return (
@@ -272,16 +299,13 @@ export function AskReplyComposer({
         onDraftChange={setDraft}
         refusals={{ reply: refusal }}
         upload={upload}
+        uploadDraft={{ askId: ask.id, settled }}
         uploadOwner={uploadOwner}
       />
       {submit.isError ? (
         <QueryError
-          message="Could not post your reply."
-          onRetry={() => {
-            if (submit.variables !== undefined) {
-              submit.mutate(submit.variables);
-            }
-          }}
+          message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}
+          onRetry={submit.retry}
           retrying={submit.isPending}
         />
       ) : null}

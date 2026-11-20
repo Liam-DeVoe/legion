@@ -1,9 +1,10 @@
-import { createDraftStore, EMPTY_DRAFT } from "./draft-store";
+import { createMentionDraftStore, EMPTY_DRAFT, keptMentionDraft } from "./draft-store";
 
 /**
  * Unsent ask-answer drafts, by ask id, for the reason the reply drafts beside them live in one
  * (`reply-drafts.ts`): a draft belongs to the ask, not to the form showing it, so every card for
- * one ask reads and writes the same draft and a card that remounts picks it back up.
+ * one ask reads and writes the same draft and a card that remounts picks it back up. The tab
+ * keeps each for a reload of the page too, under `answer` (`draft-store.ts`).
  *
  * It outlives the ask's Inbox row, which is what the Inbox reads it for. A question the server
  * withdraws, resolves or answers elsewhere leaves the list at once, except where the reader had
@@ -13,10 +14,10 @@ import { createDraftStore, EMPTY_DRAFT } from "./draft-store";
  * longer unsent.
  *
  * The draft is the text and the mentions picked in it (`draft-store.ts`), so a box that closes
- * and opens again holds both. An answer cannot carry a mention, so the card refuses to send one
- * rather than dropping it (`AskAnswerArea.tsx`).
+ * and opens again holds both, and so does the page a reload draws. An answer cannot carry a
+ * mention, so the card refuses to send one rather than dropping it (`AskAnswerArea.tsx`).
  */
-const store = createDraftStore(EMPTY_DRAFT);
+const store = createMentionDraftStore("answer", EMPTY_DRAFT, keptMentionDraft);
 
 /** What the reader has typed into the ask's answer box and not sent, read without subscribing to
  *  it: the Inbox asks at the commit that drops the row, not at every keystroke in the column. */
@@ -24,6 +25,22 @@ export const answerDraft = store.read;
 
 /** The ask's draft and its setter; the component re-renders whenever any form changes it. */
 export const useAnswerDraft = store.useDraft;
+
+/** Writes an ask's draft by the ask's id, from outside every field for it: what a press of that
+ *  ask's form addresses once a host draws the form for another ask (`useAskAnswerForm`). */
+export const setAnswerDraft = store.set;
+
+/** Who is signed in now: another person's sign-in forgets every answer draft, since each is the
+ *  person's who typed it (`DraftStore.signedIn`). */
+export const answerDraftsSignedIn = store.signedIn;
+
+/** The person whose sign-out landed: every answer draft of theirs is forgotten, in the page and
+ *  in the tab, and none is taken until someone signs in (`DraftStore.signedOut`). */
+export const answerDraftsSignedOut = store.signedOut;
+
+/** What a reload of the page does to the answer drafts, for the draft matrix: the page forgets
+ *  them, and the tab keeps them for the next sign-in (`DraftStore.reload`). */
+export const reloadAnswerDrafts = store.reload;
 
 /** Forgets every answer draft, for the unit-test preload. */
 export const resetAnswerDrafts = store.reset;

@@ -52,7 +52,7 @@ const ON_PAGE = {
  * mentions at all, so a host whose send is an answer refuses the draft while one survives
  * (`ANSWER_MENTION_REFUSAL`) rather than dropping it silently.
  */
-export function AskAnswerArea<Name extends string>({
+export function AskAnswerArea<Name extends string, UploadDraft>({
   actions,
   disabled = false,
   draft,
@@ -66,6 +66,7 @@ export function AskAnswerArea<Name extends string>({
   readOnly = false,
   refusals,
   upload,
+  uploadDraft,
   uploadOwner,
 }: {
   readonly actions: (state: AskAnswerActions<Name>) => ReactNode;
@@ -97,7 +98,11 @@ export function AskAnswerArea<Name extends string>({
    *  dropped into the field starts one, the line under the field says one is still out, and the
    *  host holds its own sends while `upload.pending > 0` - including the ones it draws where
    *  this area is not mounted. */
-  readonly upload: DraftUpload;
+  readonly upload: DraftUpload<UploadDraft>;
+  /** The draft a file pasted or dropped here joins, which its press carries (`useDraftUpload`):
+   *  a host may draw this area for another ask before the file lands, and the file's text then
+   *  goes to the ask it was pasted under, never to the one the area shows. */
+  readonly uploadDraft: UploadDraft;
   /** Where a file pasted or dropped into the box goes: the ask's issue, or its document's
    *  project. Without one the field takes a paste as text. */
   readonly uploadOwner?: ArtifactOwner;
@@ -139,7 +144,7 @@ export function AskAnswerArea<Name extends string>({
           uploadOwner === undefined
             ? undefined
             : (event) => {
-                if (!readOnly) upload.drop(event, uploadOwner);
+                if (!readOnly) upload.drop(event, uploadOwner, uploadDraft);
               }
         }
         // A draft sent before its upload lands would go without the picture; the buttons say the
@@ -149,7 +154,7 @@ export function AskAnswerArea<Name extends string>({
           uploadOwner === undefined
             ? undefined
             : (event) => {
-                if (!readOnly) upload.paste(event, uploadOwner);
+                if (!readOnly) upload.paste(event, uploadOwner, uploadDraft);
               }
         }
         onPickerOpenChange={onPickerOpenChange}

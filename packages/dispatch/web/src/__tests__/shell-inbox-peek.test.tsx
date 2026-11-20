@@ -52,7 +52,11 @@ test("the shell keeps the peek the reader left: what they narrowed it to survive
   const getAsk = mockAskReads(rows);
   const view = renderShell();
   try {
-    // The reader opens the peek the way the shell offers it, from the keyboard.
+    // The reader opens the peek the way the shell offers it, from the keyboard, once the shell is
+    // drawn. `AuthGate` draws it a commit after the sign-in check lands, once the draft stores are
+    // told who is signed in (`shellFor`); a press before that is held by the entry and replayed
+    // when the keymap binds (`early-keys.ts`), which a unit test does not load.
+    await screen.findByTestId("app-shell");
     await user.keyboard("i");
     const dialog = await screen.findByRole("dialog", { name: "Inbox" });
     await within(dialog).findByText("Which approach?");
