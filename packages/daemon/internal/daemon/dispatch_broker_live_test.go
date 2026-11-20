@@ -1735,3 +1735,42 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 		t.Errorf("a token of the session %s uploading to the conversation of %s = %s, the proxy recorded %+v; want 403 SESSION_SCOPE", other.session, role.session, scoped.outcome, scoped.records)
 	}
 }
+
+// The rig's proxy lands the record of a request whose answer breaks off part way through its body.
+// httputil.ReverseProxy, running under an HTTP server, aborts the handler with
+// http.ErrAbortHandler when it cannot copy the whole body, so a record landed only after
+// forward.ServeHTTP returns never lands, its request stays in flight, and since() waits for it
+// until the test's own -timeout. Dispatch whose connection drops mid-answer, or a client that
+// gives up while the answer is still going out, is that case. A table must name such a request
+// with what the proxy saw of it, and since() must return once the client's call has.
+func TestTheRigsProxyLandsARecordWhoseAnswerBreaksOff(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("partial"))
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler) // the connection closes with 93 bytes of the body unsent
+	}))
+	t.Cleanup(upstream.Close)
+	proxy := newRecordingProxy()
+	proxy.forward(upstream.URL)
+	front := httptest.NewServer(proxy.at("proxy"))
+	t.Cleanup(front.Close)
+
+	mark := proxy.count()
+	answer, err := http.Get(front.URL + "/api/v1/whoami")
+	if err == nil {
+		_, _ = io.Copy(io.Discard, answer.Body)
+		_ = answer.Body.Close()
+	}
+	read := make(chan []proxyRecord, 1)
+	go func() { read <- proxy.since(mark) }()
+	select {
+	case records := <-read:
+		if len(records) != 1 || records[0].Route != "/api/v1/whoami" {
+			t.Fatalf("since(%d) = %+v, want the one request to /api/v1/whoami", mark, records)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("since(%d) still waits 10 s after the client's call returned: the record of a request whose answer broke off never lands, so every since() from that mark on waits until the test times out", mark)
+	}
+}
