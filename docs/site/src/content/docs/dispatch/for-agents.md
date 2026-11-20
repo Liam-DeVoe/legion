@@ -401,6 +401,10 @@ To answer one block rather than the whole item, pass its reference to
 answering that block, and `dispatch read` of the reply prints `Re: block <id>:` and the block's
 text before its body, or `Re: block <id> (removed)` once an edit removed it.
 
+`dispatch message --in-reply-to` names a message you may read: one of the issue, or for a direct
+message one in that session's conversation you are a party of. Any other message, a message of a
+conversation you may not read included, is refused as an id no message holds.
+
 ## The HTTP API
 
 The `dispatch` commands cover everyday work. For anything else, the [HTTP API reference](/legion/dispatch/reference/api/)
