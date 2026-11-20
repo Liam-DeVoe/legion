@@ -1739,6 +1739,62 @@ test("a press in Details keeps the row's editing, and a press on another row of 
   );
 });
 
+// Details takes the focus from the row's editor as it opens, and a press on Details' own words
+// moves the page's selection into them and the focus to the page's body. The focus Details gave
+// back to the editor as it closed then put the caret at the node's block's start, and the words
+// typed next went in there rather than where the reader had left off. The caret comes back at the
+// place the editor kept, as the editor's own.
+test("the focus given back to a row's editor after a press in Details brings the caret back where the reader left it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, view } = await editLive(user);
+  await user.keyboard("{Shift}");
+  await select(wordsOf(editable, "r1"), 5);
+  // Details beside the outline, with its heading and its Close.
+  const details = render(
+    <aside {...{ [DETAILS_ATTRIBUTE]: "" }}>
+      <h2>Details</h2>
+      <button type="button">Close</button>
+    </aside>
+  );
+  const heading = details.getByRole("heading", { name: "Details" });
+  // Opening Details puts the focus on its Close (`margin/Margin.tsx`).
+  await act(async () => details.getByRole("button", { name: "Close" }).focus());
+  await user.click(heading);
+  // The press is over a task after its click.
+  await waitInAct(0);
+  expect(
+    [
+      document.activeElement === document.body,
+      heading.contains(window.getSelection()?.anchorNode ?? null),
+    ],
+    "the press on Details' heading left the focus off the page's body or the selection off its words"
+  ).toEqual([true, true]);
+
+  await focusByScript(editable);
+  expect(document.activeElement === editable, "the focus did not come back to the editor").toBe(
+    true
+  );
+  expect(selected(), "the caret came back elsewhere").toEqual(["r1:5", "r1:5"]);
+  const { $head } = view.state.selection;
+  expect(
+    [$head.parent.attrs.blockId, $head.parentOffset],
+    "the editor's own caret is not where the reader left it"
+  ).toEqual(["r1", 5]);
+});
+
+/** Gives `editable` the focus as a script does - Details' Close gives it back to where Details
+ *  took it from (`margin/Margin.tsx`) - and moves the page's selection as a browser does then: a
+ *  selection that stands outside the editable once the editable holds the focus goes to its start,
+ *  a reset ProseMirror reads as one (`prosemirror-view`'s `DOMObserver.flush`), and the move is
+ *  reported. happy-dom moves no selection on a focus, so that move is made here. Waits out
+ *  ProseMirror's own look at the selection, 20 ms after its editable takes the focus. */
+async function focusByScript(editable: HTMLElement): Promise<void> {
+  await act(async () => editable.focus({ preventScroll: true }));
+  if (!editable.contains(window.getSelection()?.anchorNode ?? null)) await select(editable, 0);
+  await waitInAct(30);
+}
+
 // The fold control, Let it close and the row's other controls prevent their `mousedown`'s
 // default, so a press on one leaves the focus where it was. A press on one while a row is edited
 // left the focus in the row's editor, and ending the editing at that press's end took the editor's

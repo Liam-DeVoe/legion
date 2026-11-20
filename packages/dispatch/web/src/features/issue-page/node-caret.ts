@@ -576,7 +576,10 @@ function headingBreaks(node: ProseMirrorNode): number {
  * end for one below - as the editor's own at once (`selectInEditor`). The backstop for a move
  * `confineKey` does not name: a press on another block of the editor, a drag across blocks, a
  * platform's own key for a move. A selection whose ends both stand in the block is left alone,
- * so the report of the move this makes, which calls this again, changes nothing.
+ * so the report of the move this makes, which calls this again, changes nothing. The selection a
+ * browser puts at the editable's start as a script gives the editable the focus back is no such
+ * move: the row puts the editor's own selection on the page as the focus comes in, before that
+ * reset (`useNodeEditing.ts`), so this finds the caret where the reader left it.
  */
 export function selectionIntoBlock(host: HTMLElement, blockId: string | undefined): void {
   const drawn = drawnBlock(host, blockId);

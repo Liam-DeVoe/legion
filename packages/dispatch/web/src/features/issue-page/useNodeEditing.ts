@@ -139,8 +139,11 @@ export function nodeEditable(
  * keeps the focus where it was, in the editor, as the fold control does. A press that went down
  * outside the tree ends nothing: Details draws the document's threads, and the composer a reader
  * opens on their selection, only while the page draws the document's editor, and a press
- * anywhere else outside the tree leaves the editing as it is too. The focus entering another row
- * of the tree with no press - an address's landing, any script's focus - ends the editing.
+ * anywhere else outside the tree leaves the editing as it is too. The caret keeps its place in
+ * the node's block while the reader is out there, and is back at that place when the focus is
+ * given back to the editor - by Details' Close - wherever the page's selection went meanwhile.
+ * The focus entering another row of the tree with no press - an address's landing, any script's
+ * focus - ends the editing.
  *
  * Escape leaves the caret for the row it came from. The editor calls `preventDefault` on the
  * key before it reaches the page's keyboard registry, which drops every binding of the press
@@ -323,7 +326,8 @@ export function useNodeEditing({
     // editor takes as its own in the same task (`caretInBlock`); from their first act the focus
     // and the caret are theirs, inside the node's block: an end of the selection moved out of
     // it - a press on another block of the editor, a drag, a key's move the guard below does
-    // not name - goes back to the block's nearer end (`selectionIntoBlock`).
+    // not name - goes back to the block's nearer end (`selectionIntoBlock`), and a focus that
+    // comes back to the editor from outside it comes back at the caret the editor kept (below).
     const rowSelector = rowSelectorOf(rowKey);
     let settled: (() => void) | undefined;
     // The row is looked at apart from the editor's drawing as well, until the caret is placed:
@@ -367,6 +371,33 @@ export function useNodeEditing({
       if (!acts.signal.aborted) return;
       const row = box.querySelector<HTMLElement>(rowSelector);
       if (row !== null) selectionIntoBlock(row, blockId);
+    };
+    // The focus coming back into the editor from outside it - Details' Close gives back the
+    // focus its opening took (`margin/Margin.tsx`), as a dialog closing does - finds the page's
+    // selection wherever the reader left it out there: a press on Details' words put it in those
+    // words. A browser puts a selection that stands outside an editable at the editable's start
+    // as a script focuses it, which ProseMirror reads as that reset and answers with its own
+    // selection (`prosemirror-view`'s `DOMObserver.flush`); but ProseMirror listens again each
+    // time it writes its selection to the page, so the backstop above heard the reset first and
+    // took it to the block's start, which the editor then read as its own: driven on a preview,
+    // a press on Details' heading and then its Close put the words typed next at the start of
+    // the statement, not at the caret six letters in. The editor keeps its own selection while
+    // it has no focus - it reads no move of the page's then - inside the node's block, where its
+    // hold keeps it (`holdEditsToBlock`). So that selection goes on the page as the editable
+    // takes the focus, before the browser's reset (`EditorView.focus`, which moves no focus where
+    // the editable holds it already), and a browser leaves a selection already inside the
+    // editable it focuses where it is. A press in the editor puts its own caret after this, once
+    // it has moved the focus, and the backstop holds that one to the block as before.
+    const cameBack = (event: FocusEvent) => {
+      const view = editorView.current;
+      if (
+        hold.current === "on" &&
+        view !== undefined &&
+        event.target === view.dom &&
+        view.hasFocus()
+      ) {
+        view.focus();
+      }
     };
     // Whether the editing has ended here, with no caret placed.
     let over = false;
@@ -436,6 +467,7 @@ export function useNodeEditing({
       // Only a selection moved after the caret was placed is the editor's doing.
       document.addEventListener("selectionchange", changed, { signal: acts.signal });
       document.addEventListener("selectionchange", confine, { signal: confining.signal });
+      box.addEventListener("focusin", cameBack, { capture: true, signal: confining.signal });
       return acts.signal.aborted;
     };
     const changed = () => {
