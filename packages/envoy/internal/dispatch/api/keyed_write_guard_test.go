@@ -92,6 +92,15 @@ var keyedWriteGuardAllowed = map[string]string{
 	// and an admission deletes the rows of every process that is no member, so a count a crash
 	// left behind is cleared rather than replayed.
 	"docs.Service.releaseConditionalEdit": "writes the queue's own count after the edit, which no key marks",
+	// The latest edit source a closing room's record holds, written to the document's
+	// pending-settlement row under the document's lock (docs.Service.persistLastActor): bookkeeping
+	// of the room, never the request's own work. It runs on the room-appends pool, whose wait for
+	// that lock no bound ends, because only a request's own wait for a document's lock is bounded
+	// (lockDocumentRoom); a request-pool transaction would be refused at the write lock bound and
+	// drop the source. The write is refused unless the record still reads closed at the credit
+	// sequence the source was read at and the row still reads as the close's snapshot read it, so
+	// a repeat after a takeover finds the row moved and writes nothing a second time.
+	"docs.Service.persistLastActor": "writes a closing room's latest edit source, the room's bookkeeping, refused once the row has moved",
 }
 
 // keyedWriteOffence is one statement a keyed route's handler can reach that commits a write outside
