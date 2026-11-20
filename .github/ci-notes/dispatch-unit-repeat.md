@@ -26,7 +26,10 @@ measurement beside the budgets:
 
 `packages/dispatch/e2e/__tests__/unit-repeat.test.ts`, which the dashboard job of `ci.yaml` runs
 on every change to the workflow, holds each lane's three budgets to those rules, and holds the job
-and the step to the matrix's values.
+and the step to the matrix's values. Its controls plant each fault in a parsed copy of the
+workflow, one past the boundary of its rule as worked out from that lane's own measurements, and
+name the lane and the rule that fail. They repeat no measured number. So a new reading changes the
+matrix and these notes and no line of the test.
 
 ### What was measured, on 2026-11-20
 

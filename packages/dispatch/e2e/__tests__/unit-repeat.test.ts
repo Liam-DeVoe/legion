@@ -792,46 +792,112 @@ interface MeasuredLeg {
 const MARGIN = 2;
 /** The seconds the step's `timeout --kill-after` gives the tool to report after the deadline. */
 const KILL_AFTER = 60;
+/** The seconds the step's budget keeps past the kill-after, for the step's own start. */
+const STEP_SLACK = 60;
 
-function mapping(value: unknown): Readonly<Record<string, unknown>> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? Object.fromEntries(Object.entries(value))
+/** The rule a budget problem breaks: the workflow's shape, a lane's matrix row that does not
+ *  read as numbers, or one of the three budget rules of a lane. */
+type BudgetRule =
+  | "no-repeat-job"
+  | "job-timeout"
+  | "step-timeout"
+  | "step-run"
+  | "unread"
+  | "deadline"
+  | "step"
+  | "job";
+
+/** One way the budgets fall short: the lane whose row it is in, or null for the job's and the
+ *  step's own shape, the rule it breaks, and the words a reader gets. */
+interface BudgetProblem {
+  readonly lane: string | null;
+  readonly rule: BudgetRule;
+  readonly text: string;
+}
+
+/** One matrix row or one step of the workflow, as YAML parses it. */
+type WorkflowEntry = Record<string, unknown>;
+
+/** The parts of dispatch-unit-repeat.yaml the budget check reads, as YAML parses them. A part the
+ *  file lacks reads as undefined, and the check names it as a problem. The objects are the
+ *  parsed ones, not copies, so a control's change to one reaches the workflow it checks. */
+interface RepeatWorkflow {
+  jobs?: {
+    repeat?: {
+      "timeout-minutes"?: unknown;
+      strategy?: { matrix?: { include?: unknown } };
+      steps?: unknown;
+    };
+  };
+}
+
+/** The repeat job's matrix rows. */
+function matrixRows(workflow: RepeatWorkflow | null): WorkflowEntry[] {
+  const include = workflow?.jobs?.repeat?.strategy?.matrix?.include;
+  return Array.isArray(include) ? include : [];
+}
+
+/** The repeat job's test step. */
+function testStep(workflow: RepeatWorkflow | null): WorkflowEntry | undefined {
+  const steps = workflow?.jobs?.repeat?.steps;
+  return Array.isArray(steps)
+    ? steps.find(
+        (each: WorkflowEntry) =>
+          typeof each?.name === "string" && each.name.startsWith("Run the lane")
+      )
     : undefined;
 }
 
-/** Every way the budgets of the workflow text `text` fall short of the measurements beside them,
- *  and the legs it read. A list of no problem over no leg is a check that read nothing, which
- *  the caller refuses. */
-function budgetProblems(text: string): { problems: string[]; legs: MeasuredLeg[] } {
-  const problems: string[] = [];
+/** What the test step's `run:` holds: test:repeat under `timeout` at the matrix's deadline. */
+const DEADLINE_RUN = `timeout --foreground --signal=TERM --kill-after=${KILL_AFTER} \${{ matrix.deadline_seconds }} bun run test:repeat `;
+
+/** Every way the budgets of a parsed workflow fall short of the measurements beside them, and
+ *  the legs it read. A list of no problem over no leg is a check that read nothing, which the
+ *  caller refuses. */
+function budgetProblems(workflow: RepeatWorkflow | null): {
+  problems: BudgetProblem[];
+  legs: MeasuredLeg[];
+} {
+  const problems: BudgetProblem[] = [];
   const legs: MeasuredLeg[] = [];
-  const job = mapping(mapping(mapping(Bun.YAML.parse(text))?.jobs)?.repeat);
-  if (job === undefined) return { problems: ["the workflow has no job named repeat"], legs };
+  const job = workflow?.jobs?.repeat;
+  if (job === undefined) {
+    problems.push({
+      lane: null,
+      rule: "no-repeat-job",
+      text: "the workflow has no job named repeat",
+    });
+    return { problems, legs };
+  }
   if (job["timeout-minutes"] !== `\${{ matrix.job_minutes }}`) {
-    problems.push("the job's timeout-minutes is not the matrix's job_minutes");
+    problems.push({
+      lane: null,
+      rule: "job-timeout",
+      text: "the job's timeout-minutes is not the matrix's job_minutes",
+    });
   }
-  const steps = Array.isArray(job.steps) ? job.steps.map(mapping) : [];
-  const step = steps.find(
-    (each) => typeof each?.name === "string" && each.name.startsWith("Run the lane")
-  );
+  const step = testStep(workflow);
   if (step?.["timeout-minutes"] !== `\${{ matrix.step_minutes }}`) {
-    problems.push("the test step's timeout-minutes is not the matrix's step_minutes");
+    problems.push({
+      lane: null,
+      rule: "step-timeout",
+      text: "the test step's timeout-minutes is not the matrix's step_minutes",
+    });
   }
-  const run = typeof step?.run === "string" ? step.run : "";
-  if (
-    !run.includes(
-      `timeout --foreground --signal=TERM --kill-after=${KILL_AFTER} \${{ matrix.deadline_seconds }} bun run test:repeat `
-    )
-  ) {
-    problems.push(
-      `the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=${KILL_AFTER}`
-    );
+  if (typeof step?.run !== "string" || !step.run.includes(DEADLINE_RUN)) {
+    problems.push({
+      lane: null,
+      rule: "step-run",
+      text: `the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=${KILL_AFTER}`,
+    });
   }
-  const include = mapping(mapping(job.strategy)?.matrix)?.include;
-  for (const entry of Array.isArray(include) ? include.map(mapping) : []) {
-    const number = (key: string) => (typeof entry?.[key] === "number" ? entry[key] : Number.NaN);
+  for (const row of matrixRows(workflow)) {
+    const number = (key: string) => {
+      const value = row[key];
+      return typeof value === "number" ? value : Number.NaN;
+    };
     const leg = {
-      lane: String(entry?.lane),
+      lane: String(row.lane),
       slowest: number("slowest_seconds"),
       otherSteps: number("other_steps_seconds"),
       deadline: number("deadline_seconds"),
@@ -839,24 +905,35 @@ function budgetProblems(text: string): { problems: string[]; legs: MeasuredLeg[]
       jobMinutes: number("job_minutes"),
     };
     legs.push(leg);
+    const { lane } = leg;
     if (Object.values(leg).some((value) => Number.isNaN(value))) {
-      problems.push(`${leg.lane}: a measurement or a budget is missing or is not a number`);
+      problems.push({
+        lane,
+        rule: "unread",
+        text: `${lane}: a measurement or a budget is missing or is not a number`,
+      });
       continue;
     }
     if (leg.deadline < MARGIN * leg.slowest) {
-      problems.push(
-        `${leg.lane}: deadline_seconds ${leg.deadline} is under ${MARGIN} x the slowest ${leg.slowest} s`
-      );
+      problems.push({
+        lane,
+        rule: "deadline",
+        text: `${lane}: deadline_seconds ${leg.deadline} is under ${MARGIN} x the slowest ${leg.slowest} s`,
+      });
     }
-    if (leg.stepMinutes * 60 < leg.deadline + KILL_AFTER + 60) {
-      problems.push(
-        `${leg.lane}: step_minutes ${leg.stepMinutes} is under the deadline, the ${KILL_AFTER} s kill-after and 60 s`
-      );
+    if (leg.stepMinutes * 60 < leg.deadline + KILL_AFTER + STEP_SLACK) {
+      problems.push({
+        lane,
+        rule: "step",
+        text: `${lane}: step_minutes ${leg.stepMinutes} is under the deadline, the ${KILL_AFTER} s kill-after and ${STEP_SLACK} s`,
+      });
     }
     if (leg.jobMinutes * 60 < leg.stepMinutes * 60 + MARGIN * leg.otherSteps) {
-      problems.push(
-        `${leg.lane}: job_minutes ${leg.jobMinutes} is under step_minutes and ${MARGIN} x the other steps' ${leg.otherSteps} s`
-      );
+      problems.push({
+        lane,
+        rule: "job",
+        text: `${lane}: job_minutes ${leg.jobMinutes} is under step_minutes and ${MARGIN} x the other steps' ${leg.otherSteps} s`,
+      });
     }
   }
   return { problems, legs };
@@ -869,41 +946,95 @@ test(
     // as the 16-minute web and the two-minute web-cold budgets did. The workflow writes each
     // lane's measurement beside its budgets, and .github/ci-notes/dispatch-unit-repeat.md says
     // where each was read.
-    const text = readFileSync(
-      fileURLToPath(
-        new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
-      ),
-      "utf8"
-    );
-    const { problems, legs } = budgetProblems(text);
+    // The repository's own file, read as the parts the check reads: a part it lacks reads as
+    // undefined, which the check names.
+    const workflow = Bun.YAML.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL("../../../../.github/workflows/dispatch-unit-repeat.yaml", import.meta.url)
+        ),
+        "utf8"
+      )
+    ) as RepeatWorkflow | null;
+    const { problems, legs } = budgetProblems(workflow);
     expect(legs.map((leg) => leg.lane)).toEqual(["web", "web-cold", "harness"]);
     expect(problems).toEqual([]);
 
-    // The controls: each budget moved below its rule, each in a copy of the text, fails by name.
-    const planted = (from: string, to: string) => {
-      expect(text).toContain(from);
-      return budgetProblems(text.replace(from, to)).problems;
+    // The controls. Each plants one fault in a parsed copy of the workflow, and reads its lane and
+    // rule by name. A fault on a number sits one past the boundary of the rule it breaks, worked
+    // out from that lane's own measurements, and the boundary itself passes. So this row repeats
+    // no measured number, and a new measurement of the workflow changes no line of it.
+    const broken = (change: (copy: RepeatWorkflow | null) => void) => {
+      const copy = structuredClone(workflow);
+      change(copy);
+      return budgetProblems(copy).problems.map(({ lane, rule }) => ({ lane, rule }));
     };
-    expect(planted("deadline_seconds: 3960", "deadline_seconds: 3900")).toEqual([
-      "web: deadline_seconds 3900 is under 2 x the slowest 1954 s",
-    ]);
-    expect(planted("slowest_seconds: 1496", "slowest_seconds: 1550")).toEqual([
-      "harness: deadline_seconds 3000 is under 2 x the slowest 1550 s",
-    ]);
-    expect(planted("step_minutes: 8 ", "step_minutes: 7 ")).toEqual([
-      "web-cold: step_minutes 7 is under the deadline, the 60 s kill-after and 60 s",
-    ]);
-    expect(planted("job_minutes: 60 ", "job_minutes: 59 ")).toEqual([
-      "harness: job_minutes 59 is under step_minutes and 2 x the other steps' 229 s",
-    ]);
+    const inRow = (lane: string, change: (row: WorkflowEntry, leg: MeasuredLeg) => void) =>
+      broken((copy) => {
+        const row = matrixRows(copy).find((each) => each.lane === lane);
+        const leg = legs.find((each) => each.lane === lane);
+        if (row === undefined || leg === undefined) throw new Error(`no matrix row for ${lane}`);
+        change(row, leg);
+      });
+    for (const { lane } of legs) {
+      const at = (key: string, value: (leg: MeasuredLeg) => number) =>
+        inRow(lane, (row, leg) => {
+          row[key] = value(leg);
+        });
+      const fails = (rule: BudgetRule) => [{ lane, rule }];
+      // A deadline under twice the slowest, and a slowest leg that a new reading puts past half
+      // the deadline: the deadline rule.
+      const deadlineFloor = (leg: MeasuredLeg) => MARGIN * leg.slowest;
+      expect(at("deadline_seconds", (leg) => deadlineFloor(leg) - 1)).toEqual(fails("deadline"));
+      expect(at("deadline_seconds", deadlineFloor)).toEqual([]);
+      const slowestCeiling = (leg: MeasuredLeg) => Math.floor(leg.deadline / MARGIN);
+      expect(at("slowest_seconds", (leg) => slowestCeiling(leg) + 1)).toEqual(fails("deadline"));
+      expect(at("slowest_seconds", slowestCeiling)).toEqual([]);
+      // A step budget with no room for the kill-after and the slack past the deadline.
+      const stepFloor = (leg: MeasuredLeg) =>
+        Math.ceil((leg.deadline + KILL_AFTER + STEP_SLACK) / 60);
+      expect(at("step_minutes", (leg) => stepFloor(leg) - 1)).toEqual(fails("step"));
+      expect(at("step_minutes", stepFloor)).toEqual([]);
+      // A job budget with no room for twice the other steps past the step's budget, and other
+      // steps that a new reading makes too long for it.
+      const jobFloor = (leg: MeasuredLeg) =>
+        Math.ceil((leg.stepMinutes * 60 + MARGIN * leg.otherSteps) / 60);
+      expect(at("job_minutes", (leg) => jobFloor(leg) - 1)).toEqual(fails("job"));
+      expect(at("job_minutes", jobFloor)).toEqual([]);
+      const otherCeiling = (leg: MeasuredLeg) =>
+        Math.floor((leg.jobMinutes * 60 - leg.stepMinutes * 60) / MARGIN);
+      expect(at("other_steps_seconds", (leg) => otherCeiling(leg) + 1)).toEqual(fails("job"));
+      expect(at("other_steps_seconds", otherCeiling)).toEqual([]);
+      // A row whose measurement is gone reads as no number, not as a pass.
+      expect(
+        inRow(lane, (row) => {
+          delete row.slowest_seconds;
+        })
+      ).toEqual(fails("unread"));
+    }
+
+    // The job's and the step's own shape: each takes its limit from the matrix, and the step
+    // runs the tool under the deadline.
     expect(
-      planted(`--kill-after=60 \${{ matrix.deadline_seconds }}`, "--kill-after=60 600")
-    ).toEqual([
-      "the test step does not run test:repeat under timeout at the matrix's deadline_seconds with --kill-after=60",
-    ]);
-    expect(planted(`timeout-minutes: \${{ matrix.job_minutes }}`, "timeout-minutes: 60")).toEqual([
-      "the job's timeout-minutes is not the matrix's job_minutes",
-    ]);
+      broken((copy) => {
+        const job = copy?.jobs?.repeat;
+        if (job !== undefined) job["timeout-minutes"] = 60;
+      })
+    ).toEqual([{ lane: null, rule: "job-timeout" }]);
+    expect(
+      broken((copy) => {
+        const step = testStep(copy);
+        if (step !== undefined) step["timeout-minutes"] = 60;
+      })
+    ).toEqual([{ lane: null, rule: "step-timeout" }]);
+    expect(
+      broken((copy) => {
+        const step = testStep(copy);
+        if (step !== undefined) {
+          step.run = String(step.run).replace(`\${{ matrix.deadline_seconds }}`, "600");
+        }
+      })
+    ).toEqual([{ lane: null, rule: "step-run" }]);
   },
   rowLimit()
 );
