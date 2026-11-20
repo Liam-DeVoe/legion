@@ -211,7 +211,7 @@ type rolePushFixture struct {
 	// setupPath is the PATH of the commands that make the repository, which run the real jj by its
 	// full path and push with the real git.
 	setupPath string
-	// timestamp is JJ_TIMESTAMP in every command's environment, or "" to leave it unset: a row
+	// timestamp is JJ_TIMESTAMP in every command's environment, or "" to leave it unset: a test
 	// that sets it (rolePushFixedTimestamp) before its setup has every commit that jj makes for it,
 	// in the setup and in the push alike, carry that one time, as commands within one second do.
 	timestamp string
@@ -1433,44 +1433,43 @@ func TestTheRevisionReaderFindsEachCommitIDWord(t *testing.T) {
 }
 
 // rolePushRefusedRows are the pushes that make a bookmark of their own, -c and --named, of a
-// commit id: of @-, and of @- whose change is divergent. sameSecond is whether the row runs a
-// second time with one fixed JJ_TIMESTAMP (rolePushFixedTimestamp), its retry in the second of
-// the refused push's rewrite.
-func rolePushRefusedRows() []struct {
-	rolePushRow
-	sameSecond bool
-} {
+// commit id: of @-, and of @- whose change is divergent (rolePushDivergentRefusedRow).
+func rolePushRefusedRows() []rolePushRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	work := func(f *rolePushFixture) rolePushChange {
 		return f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
 	}
-	return []struct {
-		rolePushRow
-		sameSecond bool
-	}{
-		{rolePushRow{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
+	return []rolePushRow{
+		{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
 			c := work(f)
 			return rolePushSends("push-"+c.change[:12], c, "implementer", impl)
-		}}, false},
-		{rolePushRow{name: "--named nm=<commit id>", args: []string{"git", "push", "--named", "nm={commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
+		}},
+		{name: "--named nm=<commit id>", args: []string{"git", "push", "--named", "nm={commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
 			return rolePushSends("nm", work(f), "implementer", impl)
-		}}, false},
-		// The refused push's rewrite hides the commit the role named, whose change then has two
-		// visible commits: the retry names a hidden commit of a divergent change, which stands for
-		// itself, and the step rewrites it again.
-		{rolePushRow{name: "-c <commit id> of a divergent change", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
-			x := f.commitOn(rev, rev, "main", "x\n")
-			f.jj(rev, "new", "main")
-			d1, _ := f.diverge(x, rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
-			f.jj(impl, "new", d1.commit)
-			want := rolePushSends("push-"+x.change[:12], d1, "implementer", impl)
-			want.diverges = true
-			return want
-		}}, true},
+		}},
+		rolePushDivergentRefusedRow(),
 	}
 }
 
-// rolePushFixedTimestamp is the one JJ_TIMESTAMP of a row that fixes it
+// rolePushDivergentRefusedRow is the push of -c with the commit id of @-, D1, one of the two
+// commits of a divergent change, each with the reviewer as author and D1 with the implementer's
+// trailer. The refused push's rewrite hides D1, whose change then has two visible commits: the
+// retry names a hidden commit of a divergent change, which stands for itself, and the step
+// rewrites it again.
+func rolePushDivergentRefusedRow() rolePushRow {
+	impl, rev := rolePushImplementer, rolePushReviewer
+	return rolePushRow{name: "-c <commit id> of a divergent change", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
+		x := f.commitOn(rev, rev, "main", "x\n")
+		f.jj(rev, "new", "main")
+		d1, _ := f.diverge(x, rolePushMessage("D1", "implementer"), rolePushMessage("D2", "reviewer"))
+		f.jj(impl, "new", d1.commit)
+		want := rolePushSends("push-"+x.change[:12], d1, "implementer", impl)
+		want.diverges = true
+		return want
+	}}
+}
+
+// rolePushFixedTimestamp is the one JJ_TIMESTAMP of a test that fixes it
 // (rolePushFixture.timestamp).
 const rolePushFixedTimestamp = "2026-11-20T10:00:00+00:00"
 
@@ -1495,56 +1494,38 @@ func (f *rolePushFixture) refusedPush(args []string) string {
 // its own: `jj bookmark list --all` names neither push-<change> nor nm. Once the remote takes it,
 // the same command, with the commit id the role first gave, sends the trailer's author and leaves
 // no change divergent; where that commit's change is divergent, it sends the rewritten commit with
-// the trailer's author. It does so in a later second than the refused push's rewrite, and in the
-// same second (one fixed JJ_TIMESTAMP), where the step's rewrite of the hidden commit would make
-// the commit the refused push's rewrite made, which jj refuses to make again: the step takes that
-// commit, prints its rewrite, and sends it, and makes no change more divergent.
+// the trailer's author. That retry, of a divergent change's commit, runs in a later second than
+// the refused push's rewrite; TestASameSecondRetrySendsTheCommitTheRefusedPushMade runs it in the
+// same second.
 func TestARefusedPushLeavesNoBookmarkAndItsRetrySends(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushRefusedRows() {
-		timestamps := []string{""}
-		if row.sameSecond {
-			timestamps = append(timestamps, rolePushFixedTimestamp)
-		}
-		for _, timestamp := range timestamps {
-			title := row.name
-			if timestamp != "" {
-				title += ", its retry in the same second"
-			}
-			t.Run(title, func(t *testing.T) {
-				t.Parallel()
-				rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
-					f := newRolePushFixture(t, form, "")
-					f.timestamp = timestamp
-					want := row.setup(f)
-					args := f.resolve(row.args)
-					name := strings.TrimPrefix(want.refs[0].ref, "refs/heads/")
-					f.refusedPush(args)
-					for line := range strings.SplitSeq(f.jj(rolePushImplementer, "bookmark", "list", "--all"), "\n") {
-						if bookmark, _, _ := strings.Cut(line, ":"); bookmark == name || strings.HasPrefix(bookmark, name+" ") {
-							t.Errorf("jj bookmark list --all names %s after the refused push: %q", name, line)
-						}
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				want := row.setup(f)
+				args := f.resolve(row.args)
+				name := strings.TrimPrefix(want.refs[0].ref, "refs/heads/")
+				f.refusedPush(args)
+				for line := range strings.SplitSeq(f.jj(rolePushImplementer, "bookmark", "list", "--all"), "\n") {
+					if bookmark, _, _ := strings.Cut(line, ":"); bookmark == name || strings.HasPrefix(bookmark, name+" ") {
+						t.Errorf("jj bookmark list --all names %s after the refused push: %q", name, line)
 					}
-					if timestamp == "" {
-						if want.diverges {
-							// The retry runs in a later second than the refused push's rewrite:
-							// the step's rewrite of the hidden commit makes a new commit, which
-							// the change has beside the two.
-							rolePushNextSecond()
-						}
-						want.others = true
-						want.rewrites = nil
-					} else {
-						// The step takes the commit the refused push's rewrite made, prints
-						// the row's rewrite of it, and sends it: no change is more divergent.
-						want.diverges = false
-					}
-					divergent := f.divergence()
-					code, _, stderr := f.push(rolePushImplementer, args...)
-					f.check(want, code, stderr, divergent, 0)
-				})
+				}
+				if want.diverges {
+					// The retry runs in a later second than the refused push's rewrite: the
+					// step's rewrite of the hidden commit makes a new commit, which the change
+					// has beside the two.
+					rolePushNextSecond()
+				}
+				want.others = true
+				want.rewrites = nil
+				divergent := f.divergence()
+				code, _, stderr := f.push(rolePushImplementer, args...)
+				f.check(want, code, stderr, divergent, 0)
 			})
-		}
+		})
 	}
 }
 
@@ -1553,6 +1534,32 @@ func TestARefusedPushLeavesNoBookmarkAndItsRetrySends(t *testing.T) {
 func rolePushNextSecond() {
 	now := time.Now()
 	time.Sleep(now.Truncate(time.Second).Add(time.Second).Sub(now))
+}
+
+// The push of rolePushDivergentRefusedRow, refused, and its retry in the second of the refused
+// push's rewrite (one fixed JJ_TIMESTAMP): the step's rewrite of D1, the hidden commit the retry
+// names, would make the commit the refused push's rewrite made of D1, which jj refuses to make
+// again. The step takes that commit, prints its rewrite of D1, and sends it with the
+// implementer's author, and makes no change more divergent.
+func TestASameSecondRetrySendsTheCommitTheRefusedPushMade(t *testing.T) {
+	t.Parallel()
+	row := rolePushDivergentRefusedRow()
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushFixture(t, form, "")
+		f.timestamp = rolePushFixedTimestamp
+		want := row.setup(f)
+		args := f.resolve(row.args)
+		d1 := want.rewrites[0].old
+		printed := rolePushStepLines(f.refusedPush(args)).rewrites
+		if len(printed) != 1 || printed[0].old != d1 {
+			t.Fatalf("the refused push printed the rewrites %v, want one, of %s", printed, d1)
+		}
+		want.refs[0].commits[0].commit = printed[0].new
+		want.diverges = false
+		divergent := f.divergence()
+		code, _, stderr := f.push(rolePushImplementer, args...)
+		f.check(want, code, stderr, divergent, 0)
+	})
 }
 
 // A retry after a `jj op restore` to the operation before the refused push, in the second of that
@@ -1801,33 +1808,21 @@ func (f *rolePushFixture) shortIDPushed(maker, describer rolePushIdentity, messa
 func rolePushShortIDName(commit string) string { return "commit id " + commit[:1] + " " }
 
 // rolePushShortIDRows are the pushes of P, a commit whose id as rolePushShortensDryRun prints it
-// starts the id of a hidden commit too (shortIDPushed), each pushed by the implementer. filled is
-// whether the step fills P's author before its last dry run.
-func rolePushShortIDRows() []struct {
-	rolePushRow
-	filled bool
-} {
+// starts the id of a hidden commit too (shortIDPushed), each pushed by the implementer.
+func rolePushShortIDRows() []rolePushRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	message := rolePushMessage("work", "implementer")
-	return []struct {
-		rolePushRow
-		filled bool
-	}{
-		{rolePushRow{name: "--bookmark", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+	return []rolePushRow{
+		{name: "--bookmark", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			p := f.shortIDPushed(rev, impl, message)
 			f.bookmark("legion/K-1", p.commit)
 			return rolePushSends("legion/K-1", p, "implementer", impl)
-		}}, false},
-		{rolePushRow{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
+		}},
+		{name: "-c <commit id>", args: []string{"git", "push", "-c", "{commit:@-}"}, setup: func(f *rolePushFixture) rolePushWant {
 			p := f.shortIDPushed(rev, impl, message)
 			return rolePushSends("push-"+p.change[:12], p, "implementer", impl)
-		}}, false},
-		{rolePushRow{name: "--bookmark, an empty author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
-			p := f.shortIDPushed(rolePushNobody, rolePushNobody, message)
-			f.bookmark("legion/K-1", p.commit)
-			return rolePushSends("legion/K-1", p, "implementer", impl)
-		}}, true},
-		{rolePushRow{name: "--bookmark, another bookmark's commit of the same digit", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
+		}},
+		{name: "--bookmark, another bookmark's commit of the same digit", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			p := f.shortIDPushed(rev, impl, message)
 			f.bookmark("legion/K-1", p.commit)
 			other := rolePushMessage("other work", "implementer")
@@ -1838,7 +1833,7 @@ func rolePushShortIDRows() []struct {
 				same:       map[string]rolePushIdentity{p.commit: rev, o.commit: rev},
 				cannotRead: rolePushCannotReadIt, cannotReadNames: rolePushShortIDName(p.commit), noMetaedit: true,
 			}
-		}}, false},
+		}},
 	}
 }
 
@@ -1849,11 +1844,11 @@ func rolePushShortIDRows() []struct {
 // pushed commit a digit that a hidden commit's id starts with too and no other visible commit's,
 // in a repository where jj resolves that digit as a prefix among every commit (shortIDPushed). The
 // step reads each such id among the commits the push can send, never as a prefix jj resolves: the
-// commit, pushed by --bookmark or by -c with its commit id, and filled where it has no author,
-// reaches the remote with its trailer's author, and the step prints its rewrite. Where another
-// bookmark, which the push does not send, holds a commit of the same digit, the step prints one
-// line that names the short id and changes nothing, and the push runs as written and exits 0, as
-// jj alone does.
+// commit, pushed by --bookmark or by -c with its commit id, reaches the remote with its trailer's
+// author, and the step prints its rewrite. Where another bookmark, which the push does not send,
+// holds a commit of the same digit, the step prints one line that names the short id and changes
+// nothing, and the push runs as written and exits 0, as jj alone does. A commit with no author,
+// which the step fills, is TestAFilledCommitsShortIDIsReadAmongTheCommitsThePushCanSend.
 func TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) {
 	t.Parallel()
 	for _, row := range rolePushShortIDRows() {
@@ -1861,22 +1856,40 @@ func TestADryRunsShortCommitIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) 
 			t.Parallel()
 			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
 				f := newRolePushFixture(t, form, rolePushShortensDryRun)
-				want := row.setup(f)
-				divergent := f.divergence()
-				code, _, stderr := f.push(rolePushImplementer, f.resolve(row.args)...)
-				// The step's last dry run prints the id of the commit it filled short too, and
-				// main's commit, a bookmark's, may start with the same digit: the step then cannot
-				// tell the two apart, prints its one line, and the push runs as written, with the
-				// commit the step filled.
-				if row.filled {
-					if filled := f.read("legion/K-1").commit; filled[0] == f.seed[0] {
-						want.cannotRead, want.cannotReadNames = rolePushCannotReadIt, rolePushShortIDName(filled)
-					}
-				}
-				f.check(want, code, stderr, divergent, 0)
+				f.pushAndCheck(row.args, row.setup(f))
 			})
 		})
 	}
+}
+
+// A push by --bookmark of P, a commit with an empty author and the implementer's trailer, in the
+// repository of shortIDPushed and through the recording jj that shortens each commit id of a dry
+// run to its first digit (rolePushShortensDryRun). The step reads jj's refusal of P among the
+// commits it can fill and fills P; its last dry run then prints the id of the commit the fill
+// made, which the step reads among the targets of bookmarks and tags and the commits the push's
+// revisions name (fullHeads). That id is new in each run, so its first digit may be that of main's
+// commit: the setup deletes the local bookmark main before the push, so that legion/K-1 is the one
+// bookmark, the repository has no tag and the push no revision argument, and the short id starts
+// the id of one commit of that read in every run, whatever the run's ids are. main stays on the
+// remote, and trunk() reads main@origin. Fixing the ids instead would not do: jj reads
+// JJ_RANDOMNESS_SEED in each command, so one seed gives each command the same change ids and makes
+// the fixture's changes divergent, and which digit fixed ids give is a fact of the bytes a jj
+// release writes for each commit, not of the step. The commit the step filled reaches the remote
+// with the trailer's author, the step prints its rewrite, and it prints no line of a dry run it
+// cannot read.
+func TestAFilledCommitsShortIDIsReadAmongTheCommitsThePushCanSend(t *testing.T) {
+	t.Parallel()
+	impl := rolePushImplementer
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushFixture(t, form, rolePushShortensDryRun)
+		p := f.shortIDPushed(rolePushNobody, rolePushNobody, rolePushMessage("work", "implementer"))
+		f.bookmark("legion/K-1", p.commit)
+		f.jj(impl, "bookmark", "delete", "main")
+		if read := strings.Fields(f.jj(impl, "--ignore-working-copy", "log", "-r", "bookmarks() | tags()", "--no-graph", "-T", `commit_id ++ "\n"`)); !slices.Equal(read, []string{p.commit}) {
+			t.Fatalf("bookmarks() | tags() holds %v before the push, want %s alone", read, p.commit)
+		}
+		f.pushAndCheck(rolePushBookmark, rolePushSends("legion/K-1", p, "implementer", impl))
+	})
 }
 
 // A bookmark that jj itself finds conflicted is jj's own refusal of the push, as at the base: the
@@ -2436,18 +2449,12 @@ func rolePushHelpOptions(help string) []rolePushOption {
 // rolePushRevsetRows' theirs, each a -c, a -r or a --named).
 func rolePushEveryArgument() []string {
 	var words []string
-	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushUntouchedRows(), rolePushStartedRows()} {
+	for _, rows := range [][]rolePushRow{rolePushAuthorRows(), rolePushFormRows(), rolePushRefusedRows(), rolePushUntouchedRows(), rolePushStartedRows(), rolePushShortIDRows()} {
 		for _, row := range rows {
 			words = append(words, row.args...)
 		}
 	}
 	for _, row := range rolePushCannotReadRows() {
-		words = append(words, row.args...)
-	}
-	for _, row := range rolePushRefusedRows() {
-		words = append(words, row.args...)
-	}
-	for _, row := range rolePushShortIDRows() {
 		words = append(words, row.args...)
 	}
 	for _, row := range rolePushTwoRemoteFirsts {
