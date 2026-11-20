@@ -145,7 +145,7 @@ jobs:
 
       # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
       # supervises under tmux and refuses to start without it, which is also what the Stage 1
-      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134). Its .deb files come from the
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:173-176). Its .deb files come from the
       # apt cache .github/workflows/ci-caches.yaml's apt job fills, keyed on the runner's release
       # (the first step), its architecture and the hash of the pins and the script, and the
       # install reads no mirror. A miss fetches under the bound .github/scripts/apt-cache.sh's
