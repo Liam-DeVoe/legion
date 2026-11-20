@@ -55,6 +55,11 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// afterAuthorize runs inside SuspendIssue once the store's last read has answered that the
+	// pod goes, before the fake counts the teardown: production's runtime is then setting the
+	// Sandbox suspended, waiting its pod out and deleting it, with the pod lock held and no read
+	// of the store left. A test sets it before the drain.
+	afterAuthorize func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -89,6 +94,12 @@ func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authoriz
 	act, err := authorize(ctx)
 	if err != nil {
 		return err
+	}
+	r.mu.Lock()
+	after := r.afterAuthorize
+	r.mu.Unlock()
+	if act && after != nil {
+		after()
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

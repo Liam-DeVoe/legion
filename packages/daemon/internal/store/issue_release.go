@@ -19,10 +19,18 @@ import (
 // release's per-role stops. It is the release's counterpart to IssueClose, and differs in what it
 // authorizes: a close acts on an issue the workflow has taken out, a release on an issue that is
 // still in it and comes back at the next wake for one of its roles.
+//
+// Takes says the read is the teardown's last, the one the runtime asks under its pod lock and
+// takes the pod on (runtime.IssueSuspender), and Sandbox names the Sandbox it takes, "" where the
+// runtime names none. A last read that answers ReleaseActs records the take on the mark
+// (issue_releases.taken_pod), which refuses an operator's take-over of a suspended claim of the
+// issue from then until the release ends (refuseOperatorTakeOver, which every claim write runs).
 type IssueReleased struct {
 	Issue, Tree                     string
 	IssueGeneration, TreeGeneration uint64
 	Row                             int64
+	Takes                           bool
+	Sandbox                         string
 }
 
 // ReleaseAct is what one row of an idle release may do, which the store decides and the row's
@@ -379,9 +387,19 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // operator's own suspension holds a claim of its issue (ReleaseCauseOperatorSuspended). The rule
 // that marked it holds such a pod for as long as the operator leaves it standing
 // (workflow.UnownedPodRelease), and the operator can suspend a claim after the mark, so the
-// teardown reads that suspension again here, in the transaction the runtime takes the pod on.
-// The idle release reads no such suspension: its rule marks a pod whatever its stopped claims
-// are, and a claim it suspended itself that an operator takes over is already overtaken.
+// teardown reads that suspension again here, and the runtime takes the pod on the last of these
+// reads, the one it asks under its pod lock. The idle release reads no such suspension: its rule
+// marks a pod whatever its stopped claims are, and a claim it suspended itself that an operator
+// takes over is already overtaken.
+//
+// The runtime reads the store no more after that last read, so a suspension an operator made
+// after it would land on a claim whose pod is going. A last read that answers ReleaseActs
+// therefore records the take on the mark (IssueReleased.Takes, issue_releases.taken_pod), and an
+// operator's take-over of a suspended claim of the issue is refused from then until the release
+// ends (refuseOperatorTakeOver). The two are ordered by the shared serializer this transaction takes
+// first and the take-over takes too: a take-over committed before this read is a claim it reads,
+// and one after it reads the take. That holds for both kinds of release, since both act on the
+// same read.
 //
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
@@ -450,8 +468,10 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		// An operator's suspension of a claim of the issue, made after the mark of a release that
 		// suspends no role, keeps the pod. It is read with the two values the rule read when it
-		// marked the release (pods.IdleClaim.OperatorSuspended), and it is a cancel, so it comes
-		// before the waits below, as every cancel does.
+		// marked the release (pods.IdleClaim.OperatorSuspended). It is read after the cancels
+		// above and before issueStopFences, which decides the cancel for a reserved cleanup and
+		// then the waits: with a cleanup reserved as well, the release is cancelled and keeps its
+		// pod either way, and the hold recorded is this one rather than `unauthorized`.
 		if mark.suspendsNoRole() {
 			var operatorHeld bool
 			if err := tx.QueryRow(ctx, `select exists (
@@ -470,6 +490,16 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		if may {
 			decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
+			// The runtime takes the pod on this answer when it is the last read, and reads the
+			// store no more: the take goes on the mark in this same transaction, so an
+			// operator's take-over that comes after it is refused rather than landing on a claim
+			// whose pod is going (refuseOperatorTakeOver).
+			if release.Takes {
+				if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = $3 where project = $1 and issue = $2`,
+					project, release.Issue, release.Sandbox); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	})
@@ -477,4 +507,64 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		return ReleaseDecision{}, fmt.Errorf("authorize issue release: %w", err)
 	}
 	return decision, nil
+}
+
+// operatorSuspension is whether c, as a write hands it, is suspended by the operator: the one
+// write the take of a pod can refuse (refuseOperatorTakeOver).
+func operatorSuspension(c supervise.Claim) bool {
+	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
+}
+
+// refuseOperatorTakeOver is the guard every claim write runs inside its own transaction before it
+// writes (putClaim): a write that turns a stopped claim — suspended by another source, failed or
+// retired — into an operator's suspension is refused while the release of the claim's issue pod
+// has taken that pod. Its teardown's last read answered that the pod goes and recorded the take
+// on the mark (IssueRelease, issue_releases.taken_pod); the runtime acts on that read and reads
+// the store no more, so such a suspension would keep no pod. The refusal is a
+// *supervise.PodTakenError naming the release and the Sandbox, and the write's transaction rolls
+// back; once the release ends, its mark and the take go, and the same write lands.
+//
+// It is in the claim write itself, and not in one caller of it, because upsertClaim is the one
+// statement that writes claims.suspended_by: whichever decision takes a stopped claim over for
+// the operator, now or later, meets it. A live claim suspended by the operator passes: no claim
+// of the issue is live while the teardown holds the pod past its last read, since that read acts
+// only when none is (releaseOvertaken, issueStopFences) and a launch waits for the runtime's pod
+// lock, and a claim that launched after a teardown that failed is one the teardown's next read
+// reads as overtaken, so its pod stays.
+//
+// The read of the take and the claim's write are one transaction under the shared serializer,
+// which the teardown's reads take first too: a take-over that commits before the last read is a
+// claim that read sees, and the release is cancelled and keeps the pod
+// (ReleaseCauseOperatorSuspended, or overtaken for a claim the idle release suspended); one that
+// comes after it reads the take.
+func refuseOperatorTakeOver(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
+	if !operatorSuspension(c) {
+		return nil
+	}
+	var state, by string
+	err := tx.QueryRow(ctx, `select state, suspended_by from claims where token = $1`, string(c.Token)).Scan(&state, &by)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	stopped := state == string(supervise.StateSuspended) || state == string(supervise.StateFailed) || state == string(supervise.StateRetired)
+	if !stopped || (state == string(supervise.StateSuspended) && by == string(supervise.SuspendedByOperator)) {
+		return nil
+	}
+	if err := treelifecycle.Serialize(ctx, tx); err != nil {
+		return err
+	}
+	var release int64
+	var sandbox string
+	err = tx.QueryRow(ctx, `select id, taken_pod from issue_releases
+		where project = $1 and issue = $2 and taken_pod is not null`, c.Project, c.Issue).Scan(&release, &sandbox)
+	switch {
+	case err == nil:
+		return &supervise.PodTakenError{Issue: c.Issue, Release: release, Sandbox: sandbox}
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	}
+	return err
 }

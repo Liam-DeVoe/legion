@@ -3153,7 +3153,10 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // wake it makes can resume a role between the two reads, as an operator's suspension can be
 // made. So the inner answer is what is carried out — a cancel there cancels, and a release that
 // is over by then does nothing — and a pod that still stands is never recorded as released, nor
-// given a backstop, nor stripped of its backstops.
+// given a backstop, nor stripped of its backstops. The inner read is the last: an operator's
+// take-over of a suspended claim of the issue that comes after it is refused until the release
+// ends, rather than landing on a claim whose pod is going (store.Store.PutClaim's guard). A start
+// that comes after it waits for the runtime's pod lock and builds a new pod.
 //
 // A teardown of a release that is over acts on nothing and undoes nothing: a role stop that
 // cancelled this release has already resumed what it suspended, and a release that finished
@@ -3185,10 +3188,15 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// standing, which is the same release. The runtime reads the store no more after it, so that
+	// read records the take, naming the Sandbox, and an operator's take-over of a suspended claim
+	// of the issue is refused from then until the release ends (store.Store.PutClaim's guard): a
+	// suspension that late would land on a claim whose pod is going.
 	decision := first
+	taking := releasing
+	taking.Takes, taking.Sandbox = true, r.issueSandboxName(row.Issue)
 	authorize := func(ctx context.Context) (bool, error) {
-		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
+		inner, err := r.trees.IssueRelease(ctx, r.project, taking, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
 		}
@@ -3204,10 +3212,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// about to delete, and the state of every claim of the issue — and reads both before the
 	// teardown, because the pod and its claims are exactly what the teardown changes.
 	var savedBytes int
-	var sandboxName string
 	var claims store.ClaimStates
 	if decision.SuspendsNoRole {
-		sandboxName = r.issueSandboxName(row.Issue)
 		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
 			return err
 		}
@@ -3234,7 +3240,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	if decision.SuspendsNoRole {
 		r.log.Info("outbox: released the pod of an issue no role can use; the release suspended no role, so no session is waiting for a wake",
 			"issue", row.Issue, "tree", payload.Tree, "generation", payload.Generation,
-			"sandbox", sandboxName, "claims", claims)
+			"sandbox", taking.Sandbox, "claims", claims)
 		// No role was suspended and no bundle was saved, so the record carries neither. No
 		// backstop is armed either, which is the one act of the idle release this one must not
 		// make: armBackstops cancels the issue's open backstops before arming at most one of

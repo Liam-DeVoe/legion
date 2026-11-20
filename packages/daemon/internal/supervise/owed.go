@@ -344,6 +344,14 @@ func writeOwed(err error) bool {
 	if err == nil {
 		return false
 	}
+	// The store's own judgement of the write, made in its transaction like the server's: an
+	// operator's suspension of a stopped claim while a release takes the claim's pod, which the
+	// same write meets again until the release ends (PodTakenError). Owed, the repair would make
+	// it once the pod was gone.
+	var taken *PodTakenError
+	if errors.As(err, &taken) {
+		return false
+	}
 	// The wrapper first: a connection that never opened judged no statement, whatever the server
 	// said in refusing the connection itself.
 	var connErr *pgconn.ConnectError

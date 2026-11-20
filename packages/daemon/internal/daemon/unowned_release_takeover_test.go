@@ -2,6 +2,9 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +175,160 @@ func TestAnOperatorsSuspensionAfterTheUnownedReleaseIsQueuedKeepsThePod(t *testi
 		}
 		if records := rig.records(t); len(records.Releases) != 1 || len(records.Holds) != 0 {
 			t.Fatalf("records = %d releases and holds %+v, want the one release and no hold", len(records.Releases), records.Holds)
+		}
+	})
+}
+
+// releaseID is the id of the release the rig's issue has in flight (issue_releases.id).
+func (r *idleRig) releaseID(t *testing.T) int64 {
+	t.Helper()
+	var id int64
+	if err := r.pool.QueryRow(context.Background(), `select id from issue_releases where issue = $1`, r.issue.Key).Scan(&id); err != nil {
+		t.Fatalf("read the release in flight: %v", err)
+	}
+	return id
+}
+
+// storedSuspension is the state and the suspension's source the store holds for m's claim.
+func (r *idleRig) storedSuspension(t *testing.T, m *supervise.Machine) (state, by string) {
+	t.Helper()
+	if err := r.pool.QueryRow(context.Background(), `select state, suspended_by from claims where token = $1`,
+		string(m.Claim().Token)).Scan(&state, &by); err != nil {
+		t.Fatalf("read the stored claim: %v", err)
+	}
+	return state, by
+}
+
+// suspendAsOperator posts the operator's suspend (`legion claims suspend`) to m's claim and answers
+// what the machine answered, which the route reads: a *supervise.RefusedError is its 409.
+func suspendAsOperator(m *supervise.Machine) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	return m.Handle(ctx, supervise.RequestSuspend{Claim: m.Claim().Token, Reason: "the operator suspended it",
+		By: supervise.SuspendedByOperator})
+}
+
+// refusedWhileTheReleaseTakesThePod requires err to be the operator's answer while release takes
+// the rig's pod: a refusal (409 on the operator's route) whose sentence names the release and
+// the pod's Sandbox, so the operator learns the pod is going.
+func refusedWhileTheReleaseTakesThePod(t *testing.T, err error, rig *idleRig, release int64) {
+	t.Helper()
+	var refused *supervise.RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("the operator's suspend after the teardown's last read answered %v, want a refusal: the pod it would hold is being deleted", err)
+	}
+	if named := fmt.Sprintf("release %d of %s", release, rig.issue.Key); !strings.Contains(err.Error(), named) ||
+		!strings.Contains(err.Error(), rig.rt.sandboxName) {
+		t.Fatalf("the refusal %q does not name %q and the Sandbox %s", err, named, rig.rt.sandboxName)
+	}
+}
+
+// The runtime takes the pod on the teardown's last read, the one it asks under its pod lock,
+// and reads the store no more: it sets the Sandbox suspended, waits the pod out and deletes it.
+// An operator's suspension that comes in that window cannot keep the pod, so the daemon refuses
+// it, naming the release and the pod, and leaves the claim as it was: no operator is told a pod
+// is held that is going. Once the release has ended, the same suspension is taken. Both release
+// rules take the pod on that same read, so both refuse it.
+//
+// The control is a daemon's suspension in the same window, which holds no pod and is taken.
+func TestAnOperatorsSuspensionAfterTheTeardownsLastReadIsRefused(t *testing.T) {
+	t.Run("the release of a pod no claim owns refuses it and takes the pod", func(t *testing.T) {
+		rig, architect := stoppedPodForTakeover(t)
+		queueUnownedRelease(t, rig)
+		release := rig.releaseID(t)
+		hooked := false
+		var suspended error
+		rig.rt.afterAuthorize = func() { hooked, suspended = true, suspendAsOperator(architect) }
+
+		rig.drain(t)
+
+		if !hooked {
+			t.Fatal("the runtime's last read never answered that the pod goes, so the window was not reached")
+		}
+		refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+		if got := architect.Claim(); !got.Released() || got.Session != "ses-architect" {
+			t.Fatalf("the architect is %s by %s with session %q, want it left released with ses-architect", got.State, got.SuspendedBy, got.Session)
+		}
+		if state, by := rig.storedSuspension(t, architect); state != "suspended" || by != "released" {
+			t.Fatalf("the stored architect is %s by %s, want suspended by released: a refused suspension writes nothing", state, by)
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the one the last read answered", teardowns)
+		}
+		if records := rig.records(t); len(records.Releases) != 1 || len(records.Holds) != 0 {
+			t.Fatalf("records = %d releases and holds %+v, want the one release and no hold", len(records.Releases), records.Holds)
+		}
+		if rig.marked(t) {
+			t.Fatal("the finished release left its mark behind")
+		}
+		// The release has ended, and the same suspension is taken now: it holds the claim, whose
+		// next resume builds the issue's pod again.
+		if err := suspendAsOperator(architect); err != nil {
+			t.Fatalf("the operator's suspend once the release ended = %v, want it taken", err)
+		}
+		if state, by := rig.storedSuspension(t, architect); state != "suspended" || by != "operator" {
+			t.Fatalf("the stored architect is %s by %s, want suspended by operator", state, by)
+		}
+	})
+
+	t.Run("an idle release refuses it for a claim it suspended and takes the pod", func(t *testing.T) {
+		rig := newIdleRig(t)
+		queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(context.Background()) })
+		if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+			t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
+		}
+		release := rig.releaseID(t)
+		hooked := false
+		var suspended error
+		rig.rt.afterAuthorize = func() { hooked, suspended = true, suspendAsOperator(rig.machine) }
+
+		rig.drain(t)
+
+		if !hooked {
+			t.Fatal("the runtime's last read never answered that the pod goes, so the window was not reached")
+		}
+		refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+		if got := rig.machine.Claim(); !got.Released() {
+			t.Fatalf("the implementer is %s by %s, want it left released", got.State, got.SuspendedBy)
+		}
+		if state, by := rig.storedSuspension(t, rig.machine); state != "suspended" || by != "released" {
+			t.Fatalf("the stored implementer is %s by %s, want suspended by released", state, by)
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the one the last read answered", teardowns)
+		}
+		if records := rig.records(t); len(records.Releases) != 1 || len(records.Holds) != 0 {
+			t.Fatalf("records = %d releases and holds %+v, want the one release and no hold", len(records.Releases), records.Holds)
+		}
+		if err := suspendAsOperator(rig.machine); err != nil {
+			t.Fatalf("the operator's suspend once the release ended = %v, want it taken", err)
+		}
+		if got := rig.machine.Claim(); got.SuspendedBy != supervise.SuspendedByOperator {
+			t.Fatalf("the implementer is suspended by %s, want the operator", got.SuspendedBy)
+		}
+	})
+
+	t.Run("control: a daemon's suspension in the same window is taken, and the pod goes", func(t *testing.T) {
+		rig, architect := stoppedPodForTakeover(t)
+		queueUnownedRelease(t, rig)
+		hooked := false
+		var suspended error
+		rig.rt.afterAuthorize = func() {
+			hooked = true
+			suspended = architect.Handle(context.Background(), supervise.RequestSuspend{Claim: architect.Claim().Token,
+				Reason: "a daemon rule suspended it", By: supervise.SuspendedByDaemon})
+		}
+
+		rig.drain(t)
+
+		if !hooked || suspended != nil {
+			t.Fatalf("hook ran %t, the daemon's suspend = %v; want it run and taken: a daemon's suspension holds no pod", hooked, suspended)
+		}
+		if state, by := rig.storedSuspension(t, architect); state != "suspended" || by != "daemon" {
+			t.Fatalf("the stored architect is %s by %s, want suspended by daemon", state, by)
+		}
+		if _, teardowns := rig.rt.reads(); teardowns != 1 {
+			t.Fatalf("Sandbox teardowns = %d, want the one", teardowns)
 		}
 	})
 }

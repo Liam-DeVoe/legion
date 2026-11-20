@@ -397,9 +397,10 @@ func IdleRelease(view pods.IdleView, now time.Time, idle time.Duration, onConfig
 //     stands for as long as the operator leaves it standing: they end it by resuming the claim,
 //     which starts the role in the pod that is still there, or by stopping it, which retires the
 //     claim and leaves the issue to this rule (IdleHoldUnownedOperatorSuspended). The teardown
-//     reads it again, in the transaction the runtime takes the pod on, so a suspension an
-//     operator makes once the release is marked keeps the pod too
-//     (store.ReleaseCauseOperatorSuspended);
+//     reads it again, the last time in the transaction the runtime takes the pod on, so a
+//     suspension an operator makes once the release is marked and before that last read keeps
+//     the pod too (store.ReleaseCauseOperatorSuspended). One made after that read cannot keep
+//     the pod, which is going, and is refused rather than lost (store.Store.PutClaim's guard);
 //
 //   - nothing waits for delivery to a role of the issue. A start queued for a stopped claim is
 //     the one delivery such an issue carries, and it is what brings a role back into this pod; a

@@ -752,6 +752,9 @@ type Store interface {
 	// CheckLaunch rechecks the bound lifecycle before a claim persists StateLaunching or calls the
 	// runtime; it returns the named cleanup wait without charging a launch failure.
 	CheckLaunch(ctx context.Context, c Claim) error
+	// PutClaim, like every write of a claim, refuses with a *PodTakenError, writing nothing, a
+	// write that turns a stopped claim into an operator's suspension while the release of its
+	// issue pod has taken that pod: past the teardown's last read, a suspension keeps no pod.
 	PutClaim(ctx context.Context, c Claim) error
 	PutDelivery(ctx context.Context, token claim.Token, d Delivery) error
 	// PutClaimAndDelivery writes both in one transaction: a confirmation records the claim and

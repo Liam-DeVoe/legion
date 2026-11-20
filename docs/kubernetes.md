@@ -6344,9 +6344,15 @@ Nothing takes a released issue out of the list the pass decides, because this re
 A pass line whose `held` counts are mostly `unowned_sandbox_gone` is the ordinary state of a deployment that has released pods, and the two numbers to read beside it are `decided` and `released`.
 An operator's suspension holds the pod because it is the one suspension the daemon never ends by itself.
 The operator ends that pod by resuming the claim, which starts the role in the pod that is still there, or by stopping it, which retires the claim and leaves the issue to this rule.
-The pass reads that suspension when it queues the release, and the teardown reads it again, the last time under the runtime's pod lock just before the pod is deleted (`store.IssueRelease`).
-So an operator who suspends a claim of the issue after the release is queued still keeps the pod: the teardown cancels the release and records the hold as `unowned_operator_suspended`.
-A role start or resume after the queue cancels the release too, and records `overtaken`.
+The pass reads that suspension when it queues the release, and the teardown reads it again, the last time under the runtime's pod lock (`store.IssueRelease`).
+So an operator who suspends a claim of the issue after the release is queued, and before that last read, still keeps the pod: the teardown cancels the release and records the hold as `unowned_operator_suspended`.
+The runtime deletes the pod on that last read and reads the store no more, so a suspension made after it could keep nothing.
+The daemon refuses that suspension instead: `legion claims suspend` answers `409 Conflict` with a sentence that names the release and the pod's Sandbox, and the claim is left as it was (the guard of every claim write, `refuseOperatorTakeOver` in `internal/store/issue_release.go`).
+So in that window a suspension is refused, not lost, and once the release has ended the same command suspends the claim.
+An idle release takes its pod on the same last read, and refuses an operator's suspension made after it in the same way.
+A role start or resume after the queue cancels the release and records `overtaken` when the teardown reads the start row, the wake that resumed the role, or the role still starting or in a turn.
+A resumed role that is already ready or idle when the teardown reads makes the teardown wait for its process instead, and nothing is recorded.
+A start after the last read waits for the runtime's pod lock, and once the teardown has deleted the pod it starts the role in a new pod.
 A pause after the queue does not cancel it ([Pausing a project](#pausing-a-project)).
 
 A release is three acts, in this order, and the daemon gives it an id (`issue_releases.id`) that its mark, its bundle and the restore report of the pod that puts that bundle back all carry:
@@ -6542,6 +6548,10 @@ SQL
 It prints `DELETE <n>`, and `DELETE 0` once every such release has finished.
 The teardown row of a mark this deletes finds no mark and finishes without acting, which costs nothing: that release suspends no claim and saves no bundle, so the pod it would have taken stands, and the earlier release has no rule that releases a pod no claim owns.
 An issue whose pod this rule has already released stands with no Sandbox and no pod, which the earlier release builds again at the next start of a claim of that issue.
+
+The column that records a teardown's last read on a release's mark, `issue_releases.taken_pod` (`20261120084333_issue_release_taken_pod.up.sql`), needs no step of a rollback.
+It is nullable, and no earlier build reads or writes it, so the earlier daemon reads and writes the table as before and the column stays in place for a later upgrade.
+The earlier daemon refuses no operator's suspension made after a teardown's last read: such a suspension is taken again, and keeps no pod.
 
 ### Pausing a project
 

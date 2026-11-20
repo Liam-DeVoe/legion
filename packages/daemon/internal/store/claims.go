@@ -63,10 +63,11 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. A write that can queue a role-holder
-// publication is one transaction with the publication it queues (putClaim); a write that can queue
-// none (queuesRoleHolders) is one statement on the pool, with no transaction around it.
+// publication, and a write of an operator's suspension, which putClaim's guard reads against the
+// release of the claim's issue pod (refuseOperatorTakeOver), is one transaction with what goes
+// with it (putClaim); any other write is one statement on the pool, with no transaction around it.
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
-	if !s.queuesRoleHolders(c) {
+	if !s.queuesRoleHolders(c) && !operatorSuspension(c) {
 		return upsertClaim(ctx, s.pool, c)
 	}
 	var queued bool
@@ -301,6 +302,9 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // and its publication together, or neither; PutClaim alone writes on the pool when it can queue
 // none, since then nothing goes with the write.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
+	if err := refuseOperatorTakeOver(ctx, tx, c); err != nil {
+		return false, err
+	}
 	if !s.queuesRoleHolders(c) {
 		return false, upsertClaim(ctx, tx, c)
 	}

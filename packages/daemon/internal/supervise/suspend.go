@@ -250,7 +250,8 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 // suspended, so the rule resumes it no more until the operator does, and a daemon's or an
 // operator's suspend of a claim whose idle pod was released, so the linger, park, close or
 // hand-over that asked for it owns the claim and no later wake acts on it. Anything else changes
-// nothing, and an operator's suspension is never taken over.
+// nothing, and an operator's suspension is never taken over. The operator's take-over is written
+// through a check of its own (takeOverForOperator).
 func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
@@ -261,8 +262,58 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	}
 	m.log.Info("supervise: a suspension takes the suspended claim over", "reason", request.Reason,
 		"by", request.By, "suspendedBy", m.claim.SuspendedBy)
+	if request.By == SuspendedByOperator {
+		return m.takeOverForOperator(ctx)
+	}
 	m.claim.SuspendedBy = request.By
 	return m.persist(ctx)
+}
+
+// PodTakenError is a write of an operator's suspension of a stopped claim that the store refused
+// because the release of the claim's issue pod has taken that pod (the store's claim write guards
+// every such write): the release's teardown read the store for the last time, found no
+// operator's suspension, and the runtime is deleting the pod on that read. A suspension made now
+// would keep no pod. Release is the release's id (issue_releases.id) and Sandbox the Sandbox its
+// teardown takes, "" where the runtime named none. No write it refused is owed (writeOwed): the
+// same write is refused until the release ends.
+type PodTakenError struct {
+	Issue   string
+	Release int64
+	Sandbox string
+}
+
+func (e *PodTakenError) Error() string {
+	pod := "the issue's pod"
+	if e.Sandbox != "" {
+		pod += " (Sandbox " + e.Sandbox + ")"
+	}
+	return fmt.Sprintf("release %d of %s is deleting %s: its last read found no operator's suspension, so a suspension now would keep no pod; the claim is left as it was, and it can be suspended again once the release ends",
+		e.Release, e.Issue, pod)
+}
+
+// takeOverForOperator writes the operator's take-over of the suspended claim, and keeps it in
+// memory only once the store has taken it. The store's claim write refuses it while the release of
+// the claim's issue pod has passed its teardown's last read, after which the runtime deletes the
+// pod and reads nothing more; the refusal is the operator's answer (a RefusedError, 409 on the
+// route), naming the release and the pod, with the claim put back exactly as it was. So no
+// operator's suspension lands on a claim whose pod is going. Any other failure of the write puts
+// the claim back too and owes nothing (putClaim, not persist), since an owed take-over would be
+// made later by the repair, when the pod it was for may be gone; the operator asks again.
+func (m *Machine) takeOverForOperator(ctx context.Context) error {
+	held := m.claim.SuspendedBy
+	m.claim.SuspendedBy = SuspendedByOperator
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.SuspendedBy = held
+		m.publish()
+		var podTaken *PodTakenError
+		if errors.As(err, &podTaken) {
+			m.log.Info("supervise: the operator's take-over of the suspended claim was refused: its issue's pod is being deleted by a release",
+				"issue", podTaken.Issue, "release", podTaken.Release, "sandbox", podTaken.Sandbox)
+			return &RefusedError{State: m.claim.State, Request: "suspend", Err: podTaken}
+		}
+		return err
+	}
+	return nil
 }
 
 // suspensionRank orders the sources a suspended claim can be held by, weakest first: a released

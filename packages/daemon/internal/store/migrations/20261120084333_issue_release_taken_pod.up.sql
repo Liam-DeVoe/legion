@@ -1,0 +1,18 @@
+-- 20261120084333_issue_release_taken_pod.up.sql — a release's mark records that its teardown has
+-- taken the pod.
+--
+-- taken_pod is null until the teardown's last read, the one the runtime asks under its pod lock
+-- (store.IssueRelease with IssueReleased.Takes), answers that the pod goes. That read writes it
+-- in its own transaction, naming the issue's Sandbox ('' where the runtime names none), and the
+-- mark keeps it until the release ends: its finish or its cancel deletes the mark, and a teardown
+-- that fails after that read leaves it for the row's retry, which ends the release. The runtime
+-- acts on that read and reads the store no more, so a suspension an operator makes after it
+-- would land on a claim whose pod is going. Every claim write that turns a stopped claim into an
+-- operator's suspension reads this column under the shared serializer that read takes too
+-- (store.refuseOperatorTakeOver) and is refused while it is set, so the two are ordered and no
+-- such suspension lands.
+--
+-- The column is nullable with no default, so every mark standing reads as one whose teardown has
+-- not taken its pod, which is what each of them is until its teardown runs again, and an earlier
+-- build, which names its columns, reads and writes the table as before.
+alter table issue_releases add column taken_pod text;
