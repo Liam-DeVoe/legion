@@ -1768,6 +1768,7 @@ envoy_go_natslive:
   - '!packages/envoy/internal/testport/**/*_test.go'
   - '!packages/envoy/internal/testtmp/**/*_test.go'
   - '!packages/envoy/internal/textcheck/**/*_test.go'
+  - '!packages/envoy/internal/tlsalert/**/*_test.go'
   - '!packages/envoy/internal/verify/**/*_test.go'
   - '!packages/envoy/internal/webhook/**/*_test.go'
   - '!packages/envoy/internal/weborigin/**/*_test.go'
