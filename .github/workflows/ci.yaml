@@ -493,17 +493,20 @@ jobs:
       # one try and no retry - on a pull request one GitHub API read per step, on a merge group one
       # fetch of the group's base - and one answer of "this diff is temporarily unavailable due
       # to heavy server load" failed this job, and every job waiting on it, on pull request #4449
-      # (run 44595619799, attempt 1). The script makes three attempts at each read, counted, and
-      # fails naming the read after the third; its header says how the repository it writes keeps
-      # every filter's verdict the one paths-filter's own read reached. The checkout is the .github
-      # cone, where the script is, and on a merge group the head the script diffs from; its own
-      # fetch is checkout's, which makes three attempts too. A dispatched run selects every job
-      # through the outputs above and filters nothing, so it runs none of these steps: a step
-      # that failed here would fail `changes`, whose result every job's `if:` reads.
+      # (run 44595619799, attempt 1). The script makes three attempts at the one read an event
+      # needs, counted, and fails naming the read after the third; its header says how the
+      # repository it writes keeps every filter's verdict the one paths-filter's own read reached.
+      # The checkout is the .github cone, where the script is, and on a merge group the head the
+      # script diffs from. Its depth is 2 so that a merge group's base, the head's parent, comes
+      # in checkout's own fetch, which makes three attempts too, and the script reaches origin only
+      # for a base that is not a parent of the head. A dispatched run selects every job through
+      # the outputs above and filters nothing, so it runs none of these steps: a step that failed
+      # here would fail `changes`, whose result every job's `if:` reads.
       - if: github.event_name != 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           sparse-checkout: .github
+          fetch-depth: 2
           persist-credentials: false
       - name: List the change's files
         if: github.event_name != 'workflow_dispatch'

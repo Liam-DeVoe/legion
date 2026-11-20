@@ -131,6 +131,19 @@ check "it installs" "$(is "$status" 0)"
 check "the one it lacks, and only that one" "$(is "$calls" "$x64_options update
 $x64_options install -y --no-install-recommends postgresql-client")"
 
+echo "case: a package pinned to the version the image carries"
+run_case STANDIN_INSTALLED=tmux -- "$script" "${budget[@]}" tmux=9.9-standin
+check "it answers" "$(is "$status" 0)"
+check "having called no apt-get at all" "$(is "$calls" "")"
+check "and says the image carries it" \
+  "$(is "$out" "tmux 9.9-standin is on the runner image already: no apt call for it")"
+
+echo "case: a package pinned to a version the image does not carry"
+run_case STANDIN_INSTALLED=tmux -- "$script" "${budget[@]}" tmux=3.4-1ubuntu0.2
+check "it installs" "$(is "$status" 0)"
+check "the pinned version, as written" "$(is "$calls" "$x64_options update
+$x64_options install -y --no-install-recommends tmux=3.4-1ubuntu0.2")"
+
 echo "case: a healthy mirror"
 run_case -- "$script" "${budget[@]}" tmux
 check "it installs" "$(is "$status" 0)"
@@ -200,12 +213,12 @@ check "update, install (refused), update, install" "$(is "$(call_count "$calls")
 check "it says how the first attempt ended" \
   "$(contains "$err" '^attempt 1 of 2 to install zsh failed: apt-get install exited 100; trying again in 0 s$')"
 
-echo "case: an arm64 runner keeps the retries ports.ubuntu.com needs"
+echo "case: an arm64 runner keeps the image's own retries, which ports.ubuntu.com needs"
 run_case STANDIN_ARCH=aarch64 -- "$script" "${budget[@]}" zsh
 check "it installs" "$(is "$status" 0)"
-check "with three retries and 30 s on each call" \
-  "$(is "$calls" "-o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 update
--o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 install -y --no-install-recommends zsh")"
+check "passing apt no option of its own" \
+  "$(is "$calls" "update
+install -y --no-install-recommends zsh")"
 
 echo "case: no package named"
 run_case -- "$script" "${budget[@]}"

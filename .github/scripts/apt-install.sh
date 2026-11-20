@@ -32,9 +32,9 @@
 # the steps before the call and the error line. Every caller passes 300 s today: four calls of
 # 62 s, where a healthy runner's update takes 6 to 16 s and its install a few seconds.
 #
-# apt's own knobs are passed on every call, so a runner image of any age acquires the same way.
-# An x64 runner image points the archive at a list of mirrors, azure.archive.ubuntu.com first, and
-# apt tries an item on a mirror Acquire::Retries more times, each waiting up to
+# On x64 apt's own knobs are passed on every call, so a runner image of any age acquires the same
+# way. An x64 runner image points the archive at a list of mirrors, azure.archive.ubuntu.com
+# first, and apt tries an item on a mirror Acquire::Retries more times, each waiting up to
 # Acquire::http::Timeout for a byte, before it moves to the next mirror; it does that for every
 # item, one item at a time. Measured in the pinned ubuntu:24.04 image with that mirror list and a
 # first mirror that accepts the connection and never answers, `apt-get update` from no index at
@@ -43,7 +43,10 @@
 # retry and 15 s, and 192 s with no retry and 5 s, after which `apt-get install tmux` took 34 s. A
 # healthy mirror answers within a second, so on x64 no retry and 5 s it is. An arm64 runner reads
 # ports.ubuntu.com, which that list does not cover, so a retry is its only way past a refused item,
-# and it keeps the image's values for it: three retries, 30 s.
+# and there the script passes nothing and leaves the image's own values: three retries, 30 s.
+#
+# A package named with a version, `name=version`, is on the image only when that version is the
+# one installed; any other version, or none, is installed with apt, the pin passed as written.
 #
 # Inputs, from the environment:
 #   GITHUB_JOB          the job, as Actions sets it, named in the error.
@@ -74,16 +77,16 @@ if [ "$call_seconds" -lt 1 ]; then
   exit 2
 fi
 
-case $(uname -m) in
-  x86_64) retries=0 timeout=5 ;;
-  *) retries=3 timeout=30 ;;
-esac
-options=(-o "Acquire::Retries=$retries" -o "Acquire::http::Timeout=$timeout" -o "Acquire::https::Timeout=$timeout")
+options=()
+if [ "$(uname -m)" = x86_64 ]; then
+  options=(-o Acquire::Retries=0 -o Acquire::http::Timeout=5 -o Acquire::https::Timeout=5)
+fi
 packages=()
 for package in "$@"; do
-  carried=$(dpkg-query -W -f='${db:Status-Status} ${Version}' "$package" 2> /dev/null || true)
-  if [ "${carried%% *}" = installed ]; then
-    echo "$package ${carried#* } is on the runner image already: no apt call for it"
+  name=${package%%=*}
+  carried=$(dpkg-query -W -f='${db:Status-Status} ${Version}' "$name" 2> /dev/null || true)
+  if [ "${carried%% *}" = installed ] && { [ "$name" = "$package" ] || [ "${carried#* }" = "${package#*=}" ]; }; then
+    echo "$name ${carried#* } is on the runner image already: no apt call for it"
   else
     packages+=("$package")
   fi
