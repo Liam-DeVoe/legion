@@ -64,7 +64,9 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // brokertoken.Verifier.Live, and, for a token naming a person, whether that person may still act
 // and the token's account is still theirs (brokerPersonAdmitted), as every request under the
 // token asks: so a socket a replaced account's broker token opened closes at its next heartbeat
-// after the replacing sign-in commits. It answers the person the token names as the caller's owner,
+// after the replacing sign-in commits. Then, as brokerTokenActor, a held introspection answer
+// (brokertoken.Caller.Held) is 401 MEMBERSHIP_HELD, so a socket closes at its next heartbeat after
+// the broker answers its person held. It answers the person the token names as the caller's owner,
 // and, as the caller's viewer, only whether that person is a restricted member, which its admission
 // read in its one statement (broker true: a broker-issued token names its one project, or none,
 // for its whole life, so no grant is compared). The heartbeat holds the connection to that
@@ -83,6 +85,9 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 		admission, err := s.brokerPersonAdmitted(r.Context(), live)
 		if err != nil {
 			return model.Actor{}, true, err
+		}
+		if live.Held {
+			return model.Actor{}, true, errBrokerTokenHeld(live.Person)
 		}
 		person := live.Person
 		return model.Actor{Owner: &person, Viewer: &model.Viewer{Person: person, Restricted: admission.Restricted}}, true, nil
@@ -143,17 +148,25 @@ func (s *server) callerStillResolves(r *http.Request) (caller model.Actor, broke
 // it is of another issuer, which its mints and approves name (BrokerAdmittedSubject,
 // BrokerForeignAccount), and whether the person is restricted, which a live socket's heartbeat
 // holds it to.
+//
+// Last, where a Google rule signs people in (Deps.Standing set), the same statement reads whether
+// Dispatch records a hold of the person (recordedHoldSQL), which is 401 MEMBERSHIP_HELD, whatever
+// the token's project scope: an operator entry's token names the person too. It asks Standing
+// nothing: the broker's hold gate already asked the person route, and its introspection's held
+// answer, which a caller reads after this admission (brokertoken.Caller.Held), carries every hold
+// this read cannot see. With Standing nil a recorded hold holds nobody.
 func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Caller) (brokerAdmission, error) {
 	var kind string
-	var replaced, named bool
+	var replaced, named, recorded bool
 	admission := brokerAdmission{Subject: s.brokerTokenSubject(caller), Foreign: s.brokerForeignAccount(caller)}
 	held := s.deps.SignInIssuer != "" && caller.ProjectScope != brokertoken.ProjectScopeNamed
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select coalesce((select member_kind from people where email = $1), ''),
 			`+brokerAccountReplaced("$1", "$2::text", "$5::boolean", "$3::timestamptz", "$4::boolean")+`,
-			`+brokerAccountNamed("$1", "$2::text")+`
+			`+brokerAccountNamed("$1", "$2::text")+`,
+			`+recordedHoldSQL("$1")+`
 	`, model.CanonicalLogin(caller.Person), admission.Subject, timeOrNull(caller.CredentialCreatedAt), held, admission.Foreign).
-		Scan(&kind, &replaced, &named)
+		Scan(&kind, &replaced, &named, &recorded)
 	if err != nil {
 		slog.Warn("dispatch: a broker token naming a person was refused: their member kind and recorded account could not be read", "error", err)
 		return brokerAdmission{}, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
@@ -163,10 +176,22 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 		return brokerAdmission{}, brokerReplacedRefusal(admission.Subject == "", named)
 	}
 	admission.Restricted = model.MemberKind(kind) == model.MemberRestricted
-	if !admission.Restricted {
-		return admission, nil
+	if admission.Restricted {
+		if err := s.restrictedOwnerAdmitted(ctx, caller.Person); err != nil {
+			return brokerAdmission{}, err
+		}
 	}
-	return admission, s.restrictedOwnerAdmitted(ctx, caller.Person)
+	if recorded && s.deps.Standing != nil {
+		return brokerAdmission{}, errMembershipHeld(membershipHeldText)
+	}
+	return admission, nil
+}
+
+// recordedHoldSQL is the SQL expression that people records a hold of the person address names
+// (held_since later than signed_in_at, which a sign-in by any build releases), false for an
+// address no row holds.
+func recordedHoldSQL(address string) string {
+	return "coalesce((select held_since > signed_in_at from people where email = " + address + "), false)"
 }
 
 // brokerCredentialMargin is how long after people recorded an address's Google account a broker
@@ -390,7 +415,10 @@ func errNoBrokerConfigured() *apiError {
 // BROKER_TOKEN_NOT_ACTIVE, as a token the broker no longer holds live is; a token of another
 // account no revocation names is 401 BROKER_ACCOUNT_NOT_SIGNED_IN; and a token recording no
 // account Dispatch can name, whose credential was made before people recorded its person's account
-// or within brokerCredentialMargin after, is 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT.
+// or within brokerCredentialMargin after, is 401 BROKER_TOKEN_RECORDS_NO_ACCOUNT. Last, a person
+// Dispatch holds is 401 MEMBERSHIP_HELD: a hold Dispatch records (brokerPersonAdmitted), and then
+// one the broker's introspection answered (brokertoken.Caller.Held), in the broker's own words. So
+// a revocation and the admission rule answer before a hold.
 func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	if s.deps.BrokerTokens == nil {
 		return model.Actor{}, false, errNoBrokerConfigured()
@@ -430,6 +458,9 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		if admission, err = s.brokerPersonAdmitted(r.Context(), caller); err != nil {
 			return model.Actor{}, false, err
 		}
+	}
+	if caller.Held {
+		return model.Actor{}, false, errBrokerTokenHeld(caller.Person)
 	}
 	// Both scopes go to a token the broker scoped to its person: that token is the person's own
 	// agent acting for them, so it may do what they may, approvals included. A token scoped to a

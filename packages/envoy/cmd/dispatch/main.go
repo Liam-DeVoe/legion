@@ -546,6 +546,14 @@ func main() {
 		os.Exit(1)
 	}
 	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	// Under DISPATCH_SIGNIN_DOMAIN, the people census, and the refusal of a domain no full member's
+	// sign-in records, which would hold every member (checkPeopleAtBoot). It reads people after the
+	// retirement above, so a retired row counts as one Dispatch cannot check, and refuses before
+	// the server serves.
+	if err := checkPeopleAtBoot(ctx, people, rule, boot.SignInDomain); err != nil {
+		slog.Error("dispatch: check the sign-in domain against the people", "error", err)
+		os.Exit(1)
+	}
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -554,7 +562,7 @@ func main() {
 	if boot.IAPAudience != "" {
 		slog.Info("dispatch: naming people from Identity-Aware Proxy's signed assertion", "audience", boot.IAPAudience, "keys", boot.IAPKeySetURL, "domain", boot.SignInDomain)
 	}
-	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
+	requestIdentity, membership := requestIdentityFor(boot, signingKey, people, sessions, signIn, rule)
 
 	broker := events.NewBroker()
 	documentService := newDocumentService(boot, serverURL, docs.Deps{
@@ -657,6 +665,10 @@ func main() {
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
+	// Under a Google rule, whether a person's personal tokens and broker credentials are held
+	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
+	// holds nobody, under any other rule.
+	built.Standing = standingFor(rule, membership)
 	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
 
 	if err != nil {
@@ -708,7 +720,8 @@ func main() {
 	//     batch is full), the repair of closed and reopened issues' asks (api.RunIssueAskRepair,
 	//     every 10 minutes on a plain ticker, after the boot's own unleased pass), the prune of
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
-	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
+	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute, whose
+	//     last work under a Google rule is the membership pass, identity.MembershipPass), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
 	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
@@ -1176,16 +1189,23 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
-	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
-	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
-	// timer and not a woken loop because no commit announces either, and it starts here because
-	// it resumes those deliveries through the API server built just above. With a list of private
-	// projects, it checks the store once as it starts, beside the serving process, then hourly.
+	// The Idempotency-Keys past their 24 hours, the deliveries a process that died left owed and,
+	// under a Google rule, the membership pass (identity.MembershipPass), once a minute across the
+	// processes under the suggestion-outcomes lease. It is a timer and not a woken loop because no
+	// commit announces any of these, and it starts here because it resumes those deliveries
+	// through the API server built just above. With a list of private projects, it checks the
+	// store once as it starts, beside the serving process, then hourly. The membership pass asks
+	// the Membership the router's Standing asks, and the sign-out's check of access that outlives
+	// the browser (routes.AppContext.Outliving).
 	maintenanceInterval := api.MaintenanceSweepInterval
 	if boot.MaintenanceSweepInterval > 0 {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
-	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects)
+	var confirmMemberships func(context.Context) error
+	if built.Standing != nil {
+		confirmMemberships = identity.MembershipPass{Membership: membership, People: people, Outliving: appCtx.Outliving()}.Run
+	}
+	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects, confirmMemberships)
 	// The credentials at the secrets broker of a Google account another account took the
 	// address of are revoked there with one call naming that account, woken by each revocation a
 	// sign-in records and retried until the broker confirms. It takes no lease: each pass claims the

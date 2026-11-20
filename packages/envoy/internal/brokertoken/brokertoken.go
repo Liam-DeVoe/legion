@@ -204,6 +204,13 @@ type Caller struct {
 	// act for Person.
 	AccountIssuer  string
 	AccountSubject string
+	// Held is the broker's introspection answer's `held` (Introspection.Held): Dispatch holds
+	// Person until they sign in again, or until a refresh confirms them. The Verifier sets it from
+	// the answer and keeps it as long as it keeps any affirmative answer
+	// (AffirmativeCacheTTL). Dispatch reads it after its own revocation and admission checks,
+	// and the Envoy listener after its own checks, and each refuses a held caller 401
+	// MEMBERSHIP_HELD.
+	Held bool
 	// CredentialCreatedAt is when the token's credential was made at the broker, from the broker
 	// database's clock (Introspection's CredentialCreatedAt): its sign-in on a machine, or the
 	// machine login it was exchanged from. The zero time for a token naming no person and for one

@@ -7,9 +7,13 @@
 // cmd/dispatch/README.md) and one NATS server, with one signing key, and drives the surface the
 // other build's clients use: the CLI (twobuild_cli_test.go), the stored documents and the document
 // socket (twobuild_documents_test.go), the messages and subscription settings on the bus
-// (twobuild_messages_test.go), and what the page admission does while the previous build's process
-// is live and once it has left the registry (twobuild_transition_test.go). This file is the
-// harness all four start their builds with.
+// (twobuild_messages_test.go), what the page admission does while the previous build's process
+// is live and once it has left the registry (twobuild_transition_test.go), and a person's hold,
+// which each build's sign-in and sign-out leave the other to read (twobuild_hold_test.go). This
+// file is the harness all five start their builds with.
+//
+// A row that signs people in asks for it (withSignInIssuer): the harness then starts one fake OIDC
+// issuer and starts both builds signing people in through it. The others start with no sign-in.
 //
 // The previous build is a directory packages/envoy/scripts/build-dispatch-build.sh writes, named by
 // DISPATCH_PREVIOUS_BUILD. The suite skips only when that variable is unset; a directory it names
@@ -29,6 +33,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -157,13 +163,31 @@ type twoBuilds struct {
 	build previousBuild
 	// binary is this tree's envoy-dispatch, built once so a restart runs the same binary.
 	binary string
+	// issuer is the fake OIDC issuer both builds sign people in through, nil for a row that asked
+	// for none (withSignInIssuer).
+	issuer *oidctest.Issuer
 }
 
-// newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing.
-// newFirstRolloutBuilds is the same with the first-rollout build as the earlier one.
-func newTwoBuilds(t *testing.T) *twoBuilds {
+// twoBuildsOption is what a row asks of the harness beside the two builds, the database and NATS.
+type twoBuildsOption func(t *testing.T, b *twoBuilds)
+
+// withSignInIssuer starts one fake OIDC issuer (oidctest) that serves the code flow to the client
+// both builds sign people in as (cookieClientID), and has each build sign people in through it
+// (previousSignIn, currentSignIn). A row drives the issuer as Google and as a sign-in pool at once:
+// the claims it queues name the person both ways.
+func withSignInIssuer() twoBuildsOption {
+	return func(t *testing.T, b *twoBuilds) {
+		b.issuer = oidctest.New(t)
+		b.issuer.EnableCodeFlow(b.issuer.PublishKey(t, "signing-key"), cookieClientID, cookieClientSecret)
+	}
+}
+
+// newTwoBuilds opens the previous build, the database and the NATS server, and starts nothing but
+// what opts ask for. newFirstRolloutBuilds is the same with the first-rollout build as the earlier
+// one.
+func newTwoBuilds(t *testing.T, opts ...twoBuildsOption) *twoBuilds {
 	t.Helper()
-	return newTwoBuildsOf(t, openPreviousBuild(t))
+	return newTwoBuildsOf(t, openPreviousBuild(t), opts...)
 }
 
 func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
@@ -171,14 +195,66 @@ func newFirstRolloutBuilds(t *testing.T) *twoBuilds {
 	return newTwoBuildsOf(t, openFirstRolloutBuild(t))
 }
 
-func newTwoBuildsOf(t *testing.T, build previousBuild) *twoBuilds {
+func newTwoBuildsOf(t *testing.T, build previousBuild, opts ...twoBuildsOption) *twoBuilds {
 	t.Helper()
-	return &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+	builds := &twoBuilds{dispatchPair: newPair(t), build: build, binary: cmdtest.Build(t, "envoy-dispatch")}
+	for _, opt := range opts {
+		opt(t, builds)
+	}
+	return builds
 }
 
-// options is what both builds' processes start with: the pair's NATS, the one signing key, and env.
-func (b *twoBuilds) options(env map[string]string) dispatchOptions {
-	return dispatchOptions{NATSURL: b.nats, SigningKey: multiprocessSigningKey, Env: env}
+// options is what both builds' processes start with: the pair's NATS, the one signing key, and env
+// over signIn, the build's own sign-in. A sign-in takes the session cookie as the person's
+// identity, so the process trusts no identity header, as a deployment that signs people in does
+// not. A nil signIn, a row's that asked for no issuer, adds nothing.
+func (b *twoBuilds) options(signIn, env map[string]string) dispatchOptions {
+	options := dispatchOptions{NATSURL: b.nats, SigningKey: multiprocessSigningKey, Env: env}
+	if signIn != nil {
+		options.Env = maps.Clone(signIn)
+		maps.Copy(options.Env, env)
+		options.Without = []string{"DISPATCH_IDENTITY_HEADER_TRUSTED"}
+	}
+	return options
+}
+
+// previousSignIn is the previous build's sign-in through the issuer, nil when the row has none.
+// The previous release refuses DISPATCH_SIGNIN_DOMAIN under any issuer but Google's, so it signs
+// people in as a sign-in pool's group: DISPATCH_SIGNIN_GROUP, cookieGroup, whose rule names the
+// person by the email in the pool username and records no Google account (`sub`).
+func (b *twoBuilds) previousSignIn() map[string]string {
+	env := b.cookieSignIn()
+	if env != nil {
+		env["DISPATCH_SIGNIN_GROUP"] = cookieGroup
+	}
+	return env
+}
+
+// currentSignIn is this tree's, nil when the row has none: the Workspace domain leaverDomain
+// (DISPATCH_SIGNIN_DOMAIN) under the issuer in Google's place, which the test hooks'
+// DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER=1 lets this tree take.
+func (b *twoBuilds) currentSignIn() map[string]string {
+	env := b.cookieSignIn()
+	if env != nil {
+		env["DISPATCH_SIGNIN_DOMAIN"] = leaverDomain
+		env["DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER"] = "1"
+	}
+	return env
+}
+
+// cookieSignIn is what both builds' sign-ins share: the session cookie as the identity, sent over
+// plain HTTP, and the issuer's client. It is nil when the row has no issuer.
+func (b *twoBuilds) cookieSignIn() map[string]string {
+	if b.issuer == nil {
+		return nil
+	}
+	return map[string]string{
+		"DISPATCH_IDENTITY":             "cookie",
+		"DISPATCH_INSECURE_COOKIE":      "1",
+		"DISPATCH_SIGNIN_ISSUER":        b.issuer.URL(),
+		"DISPATCH_SIGNIN_CLIENT_ID":     cookieClientID,
+		"DISPATCH_SIGNIN_CLIENT_SECRET": cookieClientSecret,
+	}
 }
 
 // startPrevious starts a process of the previous build, its own web app served, and returns once it
@@ -188,7 +264,7 @@ func (b *twoBuilds) options(env map[string]string) dispatchOptions {
 // bind would be any program's to take first, and the start would fail on `address already in use`.
 func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
-	options := b.options(env)
+	options := b.options(b.previousSignIn(), env)
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 	b.a = startDispatchProcessWith(t, b.databaseURL(t), options)
 	b.a.waitHealthy(t)
@@ -198,7 +274,7 @@ func (b *twoBuilds) startPrevious(t *testing.T, env map[string]string) *dispatch
 // startCurrent starts a process of this tree and returns once it answers /healthz.
 func (b *twoBuilds) startCurrent(t *testing.T, env map[string]string) *dispatchProcess {
 	t.Helper()
-	options := b.options(env)
+	options := b.options(b.currentSignIn(), env)
 	options.Binary = b.binary
 	b.b = startDispatchProcessWith(t, b.databaseURL(t), options)
 	b.b.waitHealthy(t)

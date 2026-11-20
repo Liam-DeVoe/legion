@@ -2228,6 +2228,26 @@ jobs:
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
+              # The broker cmd/dispatch/leaver_hold_rig_test.go starts in process (brokertest), and
+              # the packages it compiles: the leaver rig, which every cmd/dispatch test binary
+              # builds, the two-build row of a hold across a roll among them.
+              - 'packages/envoy/internal/broker/airlock/*'
+              - 'packages/envoy/internal/broker/answer/*'
+              - 'packages/envoy/internal/broker/api/*'
+              - 'packages/envoy/internal/broker/approval/**'
+              - 'packages/envoy/internal/broker/brokertest/*'
+              - 'packages/envoy/internal/broker/enroll/*'
+              - 'packages/envoy/internal/broker/exchange/*'
+              - 'packages/envoy/internal/broker/machine/*'
+              - 'packages/envoy/internal/broker/oauth/*'
+              - 'packages/envoy/internal/broker/oauthstore/*'
+              - 'packages/envoy/internal/broker/policy/**'
+              - 'packages/envoy/internal/broker/projectaccess/*'
+              - 'packages/envoy/internal/broker/record/*'
+              - 'packages/envoy/internal/broker/requests/*'
+              - 'packages/envoy/internal/broker/secrets/*'
+              - 'packages/envoy/internal/broker/store/**'
+              - 'packages/envoy/internal/testpg/testdb/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/brokerclient/*'
@@ -2979,6 +2999,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_hold_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
@@ -3022,6 +3043,7 @@ jobs:
               - '!packages/envoy/cmd/dispatch/twobuild_cli_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_documents_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_harness_test.go'
+              - '!packages/envoy/cmd/dispatch/twobuild_hold_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_messages_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_nodes_test.go'
               - '!packages/envoy/cmd/dispatch/twobuild_owner_lock_test.go'
@@ -4217,6 +4239,11 @@ jobs:
               # internal/dispatch/store/cmd/connections (and so testlimits and the store, below).
               - '.github/scripts/pg-connection-ceiling.sh'
               - *go_workspace
+              # The broker's shapes and the broker-token check internal/dispatch/agentsecrets
+              # compiles (below).
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/broker/wire/*'
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/contracts/*'
               # internal/contracts mints an envelope's ids through it (message_envelope.go).
               - 'packages/envoy/internal/id/*'
@@ -4224,6 +4251,10 @@ jobs:
               # socket_admission.go).
               - 'packages/envoy/internal/dispatch/access/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
+              # internal/dispatch/identity's membership pass asks the broker through this client
+              # whether a signed-out person has access that outlives the browser
+              # (membership_pass.go).
+              - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
               # docs/statement_timing_test.go measures this package's statements through it.
@@ -4270,12 +4301,16 @@ jobs:
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/fold/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              # internal/brokertoken reads this machine's Google identity token through it.
+              - 'packages/envoy/internal/googleidentity/*'
               # room_recovery_test.go reads the goroutine dump through it.
               - 'packages/envoy/internal/goroutinetest/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
+              # internal/brokertoken bounds each address's introspections through it.
+              - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/stacktest/*'
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/listenerwire/*'
@@ -4284,9 +4319,12 @@ jobs:
               - 'packages/contracts/fixtures/decision-blocks/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
               # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/internal/broker/**/*_test.go'
+              - '!packages/envoy/internal/brokertoken/**/*_test.go'
               - '!packages/envoy/internal/contracts/**/*_test.go'
               - '!packages/envoy/internal/dispatch/access/**/*_test.go'
               - '!packages/envoy/internal/dispatch/accesslog/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/agentsecrets/**/*_test.go'
               - '!packages/envoy/internal/dispatch/asks/**/*_test.go'
               - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
               - '!packages/envoy/internal/dispatch/benchtime/**/*_test.go'
@@ -4308,10 +4346,12 @@ jobs:
               - '!packages/envoy/internal/dispatch/text/**/*_test.go'
               - '!packages/envoy/internal/dispatch/texttrees/**/*_test.go'
               - '!packages/envoy/internal/fold/**/*_test.go'
+              - '!packages/envoy/internal/googleidentity/**/*_test.go'
               - '!packages/envoy/internal/goroutinetest/**/*_test.go'
               - '!packages/envoy/internal/oidc/**/*_test.go'
               - '!packages/envoy/internal/pglisten/**/*_test.go'
               - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/ratelimit/**/*_test.go'
               - '!packages/envoy/internal/stacktest/**/*_test.go'
               - '!packages/envoy/listenerwire/**/*_test.go'
               - '!packages/envoy/migrationid/**/*_test.go'

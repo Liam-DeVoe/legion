@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 const bearerPrefix = "Bearer "
@@ -228,7 +229,9 @@ func (w *admissionWarnings) admitted(logger *logging.Logger, credential, path st
 // presentation is this credential whatever the listener's other settings are, and is never
 // retried as a bearer. It comes before the open pass-through too, which is what binds a session
 // on an open listener: a caller that presents a broker token is held to the session it names
-// even where /v1 would have served the request with no credential at all.
+// even where /v1 would have served the request with no credential at all. A token that passes
+// every check but whose broker answers its person held is refused 401 MEMBERSHIP_HELD
+// (refuseHeldBrokerToken), and served again once the broker answers otherwise.
 //
 // A listener with none of the broker variables set reads that header as it read every
 // Authorization header it did not know before this credential existed: the open listener serves
@@ -294,6 +297,10 @@ func apiAuth(auth listenerAPIAuth, next http.Handler) http.Handler {
 			caller, err := auth.brokers.verify(r)
 			if err != nil {
 				refuseBrokerToken(w, auth.logger, r, auth.brokers, err)
+				return
+			}
+			if caller.Held {
+				refuseHeldBrokerToken(w, auth.logger, r, caller)
 				return
 			}
 			admit(w, r.WithContext(withBrokerCaller(r.Context(), caller)), credentialBroker)
@@ -367,6 +374,21 @@ func refuseBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Re
 	default:
 		writeJSONError(w, http.StatusUnauthorized, "unauthorized")
 	}
+}
+
+// refuseHeldBrokerToken answers a broker token that passed every check of this listener, the
+// proof and the key among them, whose broker answered its person held (brokertoken.Caller.Held):
+// Dispatch holds that person's credentials until they sign in again, or until Dispatch can confirm
+// them with Google. It is 401 MEMBERSHIP_HELD in the broker's own words for a hold, naming the
+// person, since the answer carries no rule; the token is still live, so a client keeps it and the
+// same token is served once the broker answers otherwise. It logs the rejection line every refused
+// presentation writes, under the class membership_held.
+func refuseHeldBrokerToken(w http.ResponseWriter, logger *logging.Logger, r *http.Request, caller brokertoken.Caller) {
+	logger.Warn("listener: broker token rejected",
+		slog.String("reason", "membership_held"),
+		slog.String("path", r.URL.Path))
+	writeJSON(w, http.StatusUnauthorized, listenerwire.APIError{Code: "MEMBERSHIP_HELD", Error: fmt.Sprintf(
+		"%[1]s's credentials are held by Dispatch; they work again when %[1]s signs in to Dispatch, or when Dispatch can confirm %[1]s with Google again", caller.Person)})
 }
 
 // brokerTokenCheckFailed is the class of a presentation this listener could not judge at all:

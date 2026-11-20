@@ -843,6 +843,23 @@ It also leaves the broker refusing the account the address came back to, when th
 Recording the revocation again, as the runbook and the store README give it, has the loop pay it and recovers both.
 It exits 0 once it listed what is owed or settled every revocation named, 1 when nothing of the address is owed, when a revocation named is not owed at that generation, or when the database cannot be opened, read or written, and 2 for anything but one address followed by well-formed `<subject>:<generation>` names.
 
+### Changing the Workspace domain
+
+```sh
+envoy-dispatch forget-hosted-domains
+```
+
+Under `DISPATCH_SIGNIN_DOMAIN`, each sign-in and each hourly confirmation records the Workspace domain its ID token carried (`hd`).
+Dispatch does not start while at least one full member's row holds a refresh token and records a domain, and none of those rows records `DISPATCH_SIGNIN_DOMAIN`, compared byte for byte: a mistyped domain would hold every member at their next hourly check.
+Its error names the domain it was given, the domains the rows record, and this command.
+A row that records no domain does not count, and neither does a restricted member's.
+
+For an intended change of domain: stop every Dispatch process; once Google gives the new `hd`, run `envoy-dispatch forget-hosted-domains` once; then start every process with the new domain.
+It forgets the domain every row recorded and prints how many rows it changed, `forget-hosted-domains: <n> people rows no longer record a Workspace domain; ...`; each row records a domain again at its next confirmation.
+It holds and releases nobody.
+A process that runs with the old domain after Google's change holds each full member whose refresh it runs, and that member must then sign in again.
+It exits 0 once it forgot the domains, 1 when the database cannot be opened or written, and 2 for any argument.
+
 ## Local Postgres
 
 Start the local database once:

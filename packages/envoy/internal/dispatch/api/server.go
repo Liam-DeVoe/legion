@@ -90,6 +90,13 @@ type AgentPublisher interface {
 	PublishReportingDuplicateWithin(context.Context, contracts.Envelope) (bool, error)
 }
 
+// PersonStanding answers whether Dispatch holds a person's personal tokens and broker credentials
+// until they sign in again, or until a refresh confirms them: *identity.Membership is the one
+// Dispatch serves with (identity.Membership.Standing). Its error is no answer.
+type PersonStanding interface {
+	Standing(ctx context.Context, email string) (identity.Standing, error)
+}
+
 // Deps are the API's application dependencies.
 type Deps struct {
 	Store          *store.Store
@@ -154,6 +161,13 @@ type Deps struct {
 	// Nil, a server with no sign-in rule (header identity, dev sign-in), admits no restricted
 	// member. A full member's token never asks it.
 	RestrictedAdmission identity.RestrictedAdmission
+	// Standing answers whether Dispatch holds a person's personal tokens and broker credentials
+	// until they sign in again (identity.Membership.Standing): a personal token whose owner's
+	// confirmation is older than identity.MembershipMaxAge asks it (personalTokenActor), and the
+	// person route answers its held and as_of (getAccessPerson). It is set only where a Google
+	// rule signs people in (identity.SignInRule's Holds); nil holds nobody, a recorded hold
+	// included.
+	Standing PersonStanding
 	// PrivateProjects are the keys of the projects this deployment has provisioned as private,
 	// sorted and each once (cmd/dispatch: DISPATCH_PRIVATE_PROJECTS): only these can be made
 	// private (privateProjectProvisioned). Empty refuses every switch to private 409
@@ -178,6 +192,12 @@ type Deps struct {
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
 	AgentSecrets *agentsecrets.Client
+	// Outliving answers whether a person has access that outlives their browser session: an
+	// unrevoked personal token, or a live broker credential or an exchange entry that names them
+	// (agentsecrets.OutlivingAccess). A sign-out under a Google rule keeps the person's refresh
+	// token while it answers yes or cannot answer (routes' authLogout). NewDeps builds it from
+	// Store's pool and AgentSecrets, so with no broker it reads agent_tokens alone.
+	Outliving agentsecrets.OutlivingAccess
 	// SignInIssuer is the issuer people sign in through (cmd/dispatch: DISPATCH_SIGNIN_ISSUER), as
 	// oidc.CanonicalIssuer spells it: the issuer of every Google account people records, which a
 	// machine login's approve names the approving account under (approveCredentialRecord) and the
@@ -295,6 +315,8 @@ type DepsInput struct {
 	// RestrictedAdmission is Deps.RestrictedAdmission: the sign-in rule, which a restricted
 	// member's tokens are held to.
 	RestrictedAdmission identity.RestrictedAdmission
+	// Standing is Deps.Standing: nil where no Google rule signs people in.
+	Standing PersonStanding
 	// PrivateProjects and BusProjects are Deps.PrivateProjects and Deps.BusProjects.
 	PrivateProjects []string
 	BusProjects     BusProjects
@@ -398,6 +420,10 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
 		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
 	}
+	outliving := agentsecrets.OutlivingAccess{Broker: agentSecretsClient}
+	if input.Store != nil {
+		outliving.Pool = input.Store.Pool
+	}
 	var signInIssuer string
 	if issuer := strings.TrimSpace(input.SignInIssuer); issuer != "" {
 		signInIssuer = oidc.CanonicalIssuer(issuer)
@@ -425,12 +451,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 		OIDCAccounts:           input.OIDCAccounts,
 		AccessAccounts:         input.AccessAccounts,
 		RestrictedAdmission:    input.RestrictedAdmission,
+		Standing:               input.Standing,
 		PrivateProjects:        input.PrivateProjects,
 		BusProjects:            input.BusProjects,
 		BrokerTokens:           input.BrokerTokens,
 		AgentStream:            input.AgentStream,
 		AgentPublisher:         input.AgentPublisher,
 		AgentSecrets:           agentSecretsClient,
+		Outliving:              outliving,
 		SignInIssuer:           signInIssuer,
 		Files:                  input.Files,
 		TestHooksEnabled:       input.TestHooksEnabled,

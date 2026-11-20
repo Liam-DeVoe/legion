@@ -136,7 +136,7 @@ func TestABrokerRestoredAloneIsRecoveredByTellingItAgainWhatWasSettledSince(t *t
 	const email, takeback = "lostbroker@example.com", "takeback@example.com"
 	signIn := func(email, account string) {
 		t.Helper()
-		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, email, account, "refresh-"+account, "", model.MemberFull); err != nil {
 			t.Fatalf("the sign-in of %s at %s: %v", account, email, err)
 		}
 	}
@@ -230,11 +230,11 @@ func TestABrokerDatabaseMadeAgainIsToldEveryRevocationSettled(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "madeagain@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	machine := r.signInMachine(t, email, "account-a", strings.Repeat("m", 43))
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.served.revokeOwedBrokerCredentials(ctx)
@@ -302,10 +302,10 @@ func TestTheBrokerRestoredBlockHoldsEachAddressesSessionRow(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
 	const email = "lockedrows@example.com"
-	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-a", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.served.revokeOwedBrokerCredentials(ctx)

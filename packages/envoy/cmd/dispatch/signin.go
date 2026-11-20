@@ -13,6 +13,7 @@ import (
 	"golang.org/x/net/idna"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -391,24 +392,40 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 // would otherwise go on naming its person for its thirty days, signed by the deployment's own
 // DISPATCH_SIGNING_KEY and confirmed by nobody. Dev sign-in has no issuer either and keeps its
 // cookie: it mints that cookie itself. That case is read from boot, which says what the
-// deployment configured, and not from signIn.
-func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) identity.Identity {
+// deployment configured, and not from signIn. It also answers the *identity.Membership it built,
+// which confirms the person with the issuer, nil where it built none (no signIn, or a header, IAP
+// or no browser identity: IAP keeps no refresh token to confirm a person with): the one the
+// router's Standing (standingFor) and the membership pass ask, so a request and a pass share one
+// refresh of a person.
+func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) (identity.Identity, *identity.Membership) {
 	if boot.IdentityHeader != "" {
-		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}, nil
 	}
 	if boot.IAPAudience != "" {
 		return identity.IAPIdentity{
 			Verifier: oidc.NewIAPVerifier(boot.IAPAudience, oidc.NewKeysAt(boot.IAPKeySetURL)),
 			Rule:     rule,
 			People:   people,
-		}
+		}, nil
 	}
 	if boot.SignInIssuer == "" && !boot.DevSignIn {
-		return identity.NoBrowserIdentity{}
+		return identity.NoBrowserIdentity{}, nil
 	}
 	cookieIdentity := identity.CookieIdentity{SigningKey: signingKey, Sessions: sessions}
 	if signIn != nil {
 		cookieIdentity.Membership = &identity.Membership{People: people, SignIn: signIn, Rule: rule}
 	}
-	return cookieIdentity
+	return cookieIdentity, cookieIdentity.Membership
+}
+
+// standingFor is the Standing the router is handed (routes.AppContextOptions.Standing, which the
+// API reads as api.Deps.Standing): membership where a Google rule signs people in (rule.Holds,
+// DISPATCH_SIGNIN_DOMAIN with or without DISPATCH_SIGNIN_OUTSIDE), and nil, which holds nobody,
+// under any other rule or where requestIdentityFor built no membership. It answers the interface
+// so a nil membership is a nil Standing, never a non-nil one holding a nil pointer.
+func standingFor(rule identity.SignInRule, membership *identity.Membership) api.PersonStanding {
+	if membership == nil || rule == nil || !rule.Holds() {
+		return nil
+	}
+	return membership
 }

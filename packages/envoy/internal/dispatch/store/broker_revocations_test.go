@@ -156,7 +156,7 @@ func brokerPeople(database *Store) *PgPeopleStore {
 func signInAll(t *testing.T, people *PgPeopleStore, email string, subjects ...string) {
 	t.Helper()
 	for _, subject := range subjects {
-		if err := people.SignInSubject(context.Background(), email, subject, "refresh-"+subject, model.MemberFull); err != nil {
+		if err := people.SignInSubject(context.Background(), email, subject, "refresh-"+subject, "", model.MemberFull); err != nil {
 			t.Fatalf("the sign-in of %s under %s: %v", email, subject, err)
 		}
 	}
@@ -201,11 +201,11 @@ func TestSignInSubjectRecordsABrokerRevocationOfTheAccountItReplaces(t *testing.
 					t.Fatal(err)
 				}
 			default:
-				if err := people.SignInSubject(ctx, test.email, test.held, "refresh-held", test.heldKind); err != nil {
+				if err := people.SignInSubject(ctx, test.email, test.held, "refresh-held", "", test.heldKind); err != nil {
 					t.Fatalf("seed %s: %v", test.email, err)
 				}
 			}
-			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", test.kind); err != nil {
+			if err := people.SignInSubject(ctx, test.email, test.subject, "refresh-new", "", test.kind); err != nil {
 				t.Fatalf("the sign-in of %s under %s: %v", test.email, test.subject, err)
 			}
 			got := brokerRevocationsOf(t, database, test.email)
@@ -279,7 +279,7 @@ func TestSignInSubjectFirstRecordingRevokesTheTokensOfAnotherAccount(t *testing.
 				tokenOf(test.email, "account-b's agent", "account-b"),
 				tokenOf("other-"+test.email, "account-a's agent at another address", "account-a"),
 			}
-			if err := people.SignInSubject(ctx, test.email, "account-b", "refresh-b", model.MemberFull); err != nil {
+			if err := people.SignInSubject(ctx, test.email, "account-b", "refresh-b", "", model.MemberFull); err != nil {
 				t.Fatalf("the sign-in of %s under account-b: %v", test.email, err)
 			}
 			for _, id := range revoked {
@@ -480,7 +480,7 @@ func TestSignInSubjectRecordsTheRevocationOfAnAccountRestrictedSinceItTookTheAdd
 	if settled, err := revocations.Settle(ctx, paid[0]); err != nil || !settled {
 		t.Fatalf("settle member-1's revocation: %t, %v", settled, err)
 	}
-	if err := people.ConfirmSubject(ctx, email, "member-2", "refresh-member-2", "refresh-member-2-confirmed", model.MemberRestricted); err != nil {
+	if err := people.ConfirmSubject(ctx, email, "member-2", "refresh-member-2", "refresh-member-2-confirmed", "", model.MemberRestricted); err != nil {
 		t.Fatalf("member-2's confirmation as restricted: %v", err)
 	}
 	if got := storedMemberKind(t, database, email); got != string(model.MemberRestricted) {
@@ -556,7 +556,7 @@ func TestSignInSubjectRecordsNoBrokerRevocationWhenItRollsBack(t *testing.T) {
 	`); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses the new subject") {
+	if err := people.SignInSubject(ctx, email, "subject-2", "refresh-2", "", model.MemberFull); err == nil || !strings.Contains(err.Error(), "the test refuses the new subject") {
 		t.Fatalf("a sign-in whose own write fails: err = %v, want that write's error", err)
 	}
 	if got := brokerRevocationsOf(t, database, email); len(got) != 0 {

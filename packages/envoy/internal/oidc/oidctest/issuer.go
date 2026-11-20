@@ -112,7 +112,8 @@ type codeFlowClient struct {
 // the next authorization requests and the one used when none is queued, and
 // the codes and refresh tokens issued. Everything that is not a client's own is
 // the issuer's, shared by every client it serves: one queue of sign-ins, one
-// token failure, one revocation state.
+// token failure, one set of per-person refresh answers, one token wait, one
+// revocation state.
 type codeFlow struct {
 	clients         map[string]*codeFlowClient
 	queued          []map[string]any
@@ -122,7 +123,14 @@ type codeFlow struct {
 	deviceCodes     map[string]*deviceGrant
 	refreshes       int
 	token           tokenFailure
-	revocation      revocation
+	// refreshFailures is how a refresh of a person's refresh token is
+	// answered instead of being granted, keyed by that person's email
+	// lowercased, when RefuseRefresh or FailRefreshFor set it.
+	refreshFailures map[string]tokenFailure
+	// tokenDelay is how long the token endpoint waits before it answers each
+	// grant (DelayToken).
+	tokenDelay time.Duration
+	revocation revocation
 	// omitRefresh makes a code exchange answer with no refresh token
 	// (OmitRefreshTokens).
 	omitRefresh bool
@@ -131,13 +139,31 @@ type codeFlow struct {
 	spoil func(claims map[string]any)
 }
 
-// tokenFailure is how the token endpoint answers every grant instead of
-// granting it, when FailToken or DropToken set it: status with code as the
-// body's OAuth error, or, with drop, closing the connection unanswered.
+// tokenFailure is how the token endpoint answers a grant instead of granting
+// it: every grant, when FailToken or DropToken set it, and a refresh of one
+// person's refresh tokens, when RefuseRefresh or FailRefreshFor did. It is
+// status with code as the body's OAuth error, or, with drop, closing the
+// connection unanswered.
 type tokenFailure struct {
 	status int
 	code   string
 	drop   bool
+}
+
+// answer writes f in place of a grant.
+func (f tokenFailure) answer(w http.ResponseWriter) {
+	switch {
+	case f.drop:
+		if hijacker, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hijacker.Hijack(); err == nil {
+				_ = conn.Close()
+			}
+		}
+	case f.code == "":
+		http.Error(w, http.StatusText(f.status), f.status)
+	default:
+		tokenError(w, f.status, f.code)
+	}
 }
 
 // revocation is the state of the revocation endpoint: every token the client
@@ -353,10 +379,11 @@ func (i *Issuer) EnableDeviceFlow(key *Key, clientID, clientSecret string) {
 func (i *Issuer) enableClient(key *Key, clientID, clientSecret string, device bool) {
 	if i.codeFlow == nil {
 		i.codeFlow = &codeFlow{
-			clients:     map[string]*codeFlowClient{},
-			codes:       map[string]codeGrant{},
-			grants:      map[string]*refreshGrant{},
-			deviceCodes: map[string]*deviceGrant{},
+			clients:         map[string]*codeFlowClient{},
+			codes:           map[string]codeGrant{},
+			grants:          map[string]*refreshGrant{},
+			deviceCodes:     map[string]*deviceGrant{},
+			refreshFailures: map[string]tokenFailure{},
 		}
 	}
 	i.codeFlow.clients[clientID] = &codeFlowClient{key: key, clientSecret: clientSecret, deviceGrant: device}
@@ -496,6 +523,59 @@ func (i *Issuer) Refreshes() int {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	return i.codeFlow.refreshes
+}
+
+// RefuseRefresh makes every refresh whose refresh token's claims carry email
+// answer 400 invalid_grant while refuse is set, as Google answers the refresh
+// of an account it no longer confirms; another person's refresh is granted.
+// The address matches whatever its case. The refusal is the person's rather
+// than one refresh token's, so the refresh token a later sign-in of theirs
+// issues is refused too, while the sign-in itself, a code exchange or a device
+// code grant, is granted. It revokes nothing: refuse false grants that
+// person's refreshes again, with the refresh tokens they already hold. It and
+// FailRefreshFor set one answer per person, the later replacing the earlier,
+// and the off value of either grants that person's refreshes again.
+func (i *Issuer) RefuseRefresh(email string, refuse bool) {
+	failure := tokenFailure{}
+	if refuse {
+		failure = tokenFailure{status: http.StatusBadRequest, code: "invalid_grant"}
+	}
+	i.setRefreshFailure(email, failure)
+}
+
+// FailRefreshFor makes every refresh whose refresh token's claims carry email
+// answer status, with no OAuth error, instead of being granted, as Google's
+// token endpoint answers a refresh it cannot answer now (a 5xx or a 429);
+// another person's refresh is granted, and a status of 0 grants that person's
+// again. It matches the address, and shares one answer per person with
+// RefuseRefresh, as RefuseRefresh says.
+func (i *Issuer) FailRefreshFor(email string, status int) {
+	i.setRefreshFailure(email, tokenFailure{status: status})
+}
+
+// setRefreshFailure makes failure the answer to every refresh of email's
+// refresh tokens; a failure with no status grants them again.
+func (i *Issuer) setRefreshFailure(email string, failure tokenFailure) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if failure.status == 0 {
+		delete(i.codeFlow.refreshFailures, strings.ToLower(email))
+		return
+	}
+	i.codeFlow.refreshFailures[strings.ToLower(email)] = failure
+}
+
+// DelayToken makes the token endpoint wait d before it answers each grant,
+// whatever it then answers, or until the client hangs up, when it answers
+// nothing and changes nothing; zero answers at once again. The wait holds no
+// lock, so requests that arrive together each answer about d after they
+// arrived rather than one after another, and the test's other calls on the
+// issuer go on meanwhile: an identity provider slow to answer, not one
+// answering a queue.
+func (i *Issuer) DelayToken(d time.Duration) {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.codeFlow.tokenDelay = d
 }
 
 // ApproveDeviceCode approves the device authorization whose user code a person
@@ -749,35 +829,38 @@ func (i *Issuer) handleDeviceAuthorization(w http.ResponseWriter, r *http.Reques
 // was issued is invalid_grant. A code whose authorization request carried a
 // PKCE challenge is exchanged only with the code_verifier whose S256 is that
 // challenge (RFC 7636 section 4.6); a missing or wrong verifier is
-// invalid_grant, and spends the code like any refusal.
+// invalid_grant, and spends the code like any refusal. Before it reads the
+// grant the endpoint waits as DelayToken says; the failure FailToken or
+// DropToken set then answers every grant, and the one RefuseRefresh or
+// FailRefreshFor set answers a refresh of that person's refresh tokens.
 func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 	if err := r.ParseForm(); err != nil {
 		tokenError(w, http.StatusBadRequest, "invalid_request")
 		return
 	}
 	i.mu.Lock()
-	defer i.mu.Unlock()
 	flow := i.codeFlow
 	if flow == nil {
+		i.mu.Unlock()
 		http.Error(w, "code flow not enabled", http.StatusNotFound)
 		return
 	}
+	delay := flow.tokenDelay
+	i.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
 	if failure := flow.token; failure.status != 0 || failure.drop {
 		if r.PostForm.Get("grant_type") == "refresh_token" {
 			flow.refreshes++
 		}
-		switch {
-		case failure.drop:
-			if hijacker, ok := w.(http.Hijacker); ok {
-				if conn, _, err := hijacker.Hijack(); err == nil {
-					_ = conn.Close()
-				}
-			}
-		case failure.code == "":
-			http.Error(w, http.StatusText(failure.status), failure.status)
-		default:
-			tokenError(w, failure.status, failure.code)
-		}
+		failure.answer(w)
 		return
 	}
 	clientID, clientSecret, basic := r.BasicAuth()
@@ -822,6 +905,12 @@ func (i *Issuer) handleToken(w http.ResponseWriter, r *http.Request) {
 		if !ok || grant.revoked || grant.clientID != clientID {
 			tokenError(w, http.StatusBadRequest, "invalid_grant")
 			return
+		}
+		if email, _ := grant.claims["email"].(string); email != "" {
+			if failure, set := flow.refreshFailures[strings.ToLower(email)]; set {
+				failure.answer(w)
+				return
+			}
 		}
 		claims = maps.Clone(grant.claims)
 	case deviceCodeGrantType:

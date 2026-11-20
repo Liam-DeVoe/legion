@@ -1,0 +1,679 @@
+package main
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"golang.org/x/oauth2"
+
+	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/proof"
+	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+)
+
+// The leaver rig: the real Dispatch router and the real secrets broker (brokertest.NewRig), each
+// on Postgres, wired to each other as a deployment wires them, for the tests of a hold. Dispatch
+// signs people in with Google, the fake Google (signInPool) standing in for it, under
+// DISPATCH_SIGNIN_DOMAIN=example.com and DISPATCH_SIGNIN_OUTSIDE=1, keeps its sessions in its
+// database (store.PgSessionStore), relays machine-login decisions to the broker and checks
+// broker-issued tokens against it (DISPATCH_AGENT_SECRETS_URL), and answers the broker's own
+// service account on its person route (DISPATCH_ACCESS_ACCOUNTS). A person the rig signs in holds
+// the credentials of the measurement table a leaver's hold is read on (person).
+
+const (
+	// leaverDomain is the Workspace domain DISPATCH_SIGNIN_DOMAIN names: an address on it signs in
+	// as a full member.
+	leaverDomain = "example.com"
+	// leaverProject is the project whose access list names the restricted members, owned by
+	// privOwner as newOutsideSignIn's PRIV is.
+	leaverProject = "PRIV"
+	// leaverBrokerAccount is the secrets broker's Kubernetes service account, the one account
+	// DISPATCH_OIDC_ACCOUNTS admits and DISPATCH_ACCESS_ACCOUNTS lets read the person answer, and
+	// leaverAccountAudience is DISPATCH_OIDC_AUDIENCE, the audience its projected token names.
+	leaverBrokerAccount   = "system:serviceaccount:dispatch:envoy-broker"
+	leaverAccountAudience = "dispatch"
+	// leaverHumanSecret is the broker rig's human-tier secret, which its operator, ada, owns: a
+	// session's ask for it is an approval request to her (brokertest.NewRig).
+	leaverHumanSecret = "TEST_SECRET"
+)
+
+// The people of the tests: ada, a full member whom the fake Google refuses; bob, a full member
+// whom it confirms; carol, a full member who holds only a machine login; dana and erin, restricted
+// members whom the rig's PRIV lists.
+const (
+	adaEmail   = "ada@example.com"
+	bobEmail   = "bob@example.com"
+	carolEmail = "carol@example.com"
+	danaEmail  = "dana@outside.example"
+	erinEmail  = "erin@outside.example"
+)
+
+// leaverRig is one Dispatch and one secrets broker.
+type leaverRig struct {
+	// google is the fake Google every sign-in and refresh of Dispatch's goes to.
+	google *oidctest.Issuer
+	// accounts issues the projected service-account tokens Dispatch admits (DISPATCH_OIDC_ISSUER),
+	// signing them with accountKey.
+	accounts   *oidctest.Issuer
+	accountKey *oidctest.Key
+	// broker is the secrets broker, and client a machine's client of it.
+	broker *brokertest.Rig
+	client *brokertest.Client
+	// toBroker is the server DISPATCH_AGENT_SECRETS_URL names, through which each of Dispatch's
+	// calls reaches the broker: while brokerStopped is set it cuts each call unanswered, as a
+	// stopped broker leaves it, and counts it in cutCalls.
+	toBroker      *httptest.Server
+	brokerStopped atomic.Bool
+	cutCalls      atomic.Int64
+	// outside holds Dispatch's database, its people store and the boot the router serves, with
+	// PRIV and its access list, as newOutsideSignIn builds them.
+	outside *outsideSignIn
+	// app is the app context the router serves, handler the router, and background its
+	// background work, whose revocation pass a test runs as the server's loop does. membership is
+	// the router's identity.Membership, which its Standing asks and a membership pass a test runs
+	// asks too, as main hands both the one Membership.
+	app        *routes.AppContext
+	handler    http.Handler
+	background api.Background
+	membership *identity.Membership
+	// persons is each person the rig signed in, by email.
+	persons map[string]*leaverPerson
+}
+
+// leaverOption changes how newLeaverRig builds its rig, by the hooks it adds to the config.
+type leaverOption func(*leaverConfig)
+
+// leaverConfig is the hooks newLeaverRig runs, each kind in the order the options added them.
+type leaverConfig struct {
+	// broker hooks run once the fake Google and the service-account issuer exist, before the
+	// broker is built, and give brokertest.NewRig its options.
+	broker []func(t *testing.T, r *leaverRig) []brokertest.Option
+	// toBroker hooks wrap the handler that carries each of Dispatch's calls to the broker, the
+	// first given innermost.
+	toBroker []func(t *testing.T, r *leaverRig, next http.Handler) http.Handler
+	// built hooks run once the router is built and r.handler serves it.
+	built []func(t *testing.T, r *leaverRig)
+}
+
+// leaverPerson is one person's credentials.
+type leaverPerson struct {
+	email string
+	// signedIn is the answer of the person's last sign-in callback: its session cookie is the one
+	// their browser holds.
+	signedIn *httptest.ResponseRecorder
+	// dsp is the person's personal token.
+	dsp leaverToken
+	// machineKey holds the machine login credential, whose OAuth token pair is machineToken.
+	machineKey   *ecdsa.PrivateKey
+	machineToken *oauth2.Token
+	credential   string
+	// enrollment is the session enrolled under the machine login, signing with sessionKey.
+	enrollment string
+	sessionKey *ecdsa.PrivateKey
+	// enrolments counts the sessions enrol asked for, so each names a runtime of its own.
+	enrolments int
+	// agentSecret is the agent-tier secret the person owns, which their own sessions get at once;
+	// agentGrant is the setup session's grant of it, and humanGrant its grant of
+	// leaverHumanSecret, which ada approved.
+	agentSecret string
+	agentGrant  string
+	humanGrant  string
+	// brokerToken is a Dispatch access token the broker minted from the machine login's token
+	// (RFC 8693), bound to machineKey.
+	brokerToken string
+}
+
+// leaverToken is one personal token: its id and its plaintext.
+type leaverToken struct {
+	id, plaintext string
+}
+
+// newLeaverRig builds the rig over fresh databases on DISPATCH_TEST_DATABASE_URL and
+// BROKER_TEST_DATABASE_URL. It fails t when either is unset: a skipped run is no evidence.
+func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
+	t.Helper()
+	for _, name := range []string{storetest.DatabaseURLEnv, brokerstoretest.DatabaseURLEnv} {
+		if os.Getenv(name) == "" {
+			t.Fatalf("%s is unset: the leaver rig runs the real Dispatch and the real broker on Postgres, and refuses to skip without it", name)
+		}
+	}
+	var config leaverConfig
+	for _, opt := range opts {
+		opt(&config)
+	}
+	r := &leaverRig{google: signInPool(t, "dispatch-client", "client-secret"), accounts: oidctest.New(t), persons: map[string]*leaverPerson{}}
+	r.accountKey = r.accounts.PublishKey(t, "account-key")
+
+	var brokerOptions []brokertest.Option
+	for _, hook := range config.broker {
+		brokerOptions = append(brokerOptions, hook(t, r)...)
+	}
+	r.broker = brokertest.NewRig(t, brokerOptions...)
+	r.client = brokertest.NewClient(t, r.broker.URL, strings.TrimPrefix(r.broker.URL, "http://"))
+	r.client.UIToken, r.client.DPoP = r.broker.UIToken, brokerclient.NewDPoPTransport
+
+	target, err := url.Parse(r.broker.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toBroker http.Handler = httputil.NewSingleHostReverseProxy(target)
+	for _, hook := range config.toBroker {
+		toBroker = hook(t, r, toBroker)
+	}
+	r.toBroker = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if r.brokerStopped.Load() {
+			r.cutCalls.Add(1)
+			panic(http.ErrAbortHandler)
+		}
+		toBroker.ServeHTTP(w, req)
+	}))
+	t.Cleanup(r.toBroker.Close)
+
+	// Dispatch presents the broker rig's own Dispatch account token, as it presents its projected
+	// token in a deployment.
+	accountFile := filepath.Join(t.TempDir(), "account-token")
+	if err := os.WriteFile(accountFile, []byte(r.broker.UIToken+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	boot := resolveWith(t, map[string]string{
+		"DISPATCH_SIGNIN_ISSUER":                    "https://accounts.google.com",
+		"DISPATCH_SIGNIN_GROUP":                     "",
+		"DISPATCH_SIGNIN_DOMAIN":                    leaverDomain,
+		"DISPATCH_SIGNIN_OUTSIDE":                   "1",
+		"DISPATCH_OIDC_ISSUER":                      r.accounts.URL(),
+		"DISPATCH_OIDC_AUDIENCE":                    leaverAccountAudience,
+		"DISPATCH_OIDC_ACCOUNTS":                    leaverBrokerAccount,
+		"DISPATCH_ACCESS_ACCOUNTS":                  leaverBrokerAccount,
+		"DISPATCH_AGENT_SECRETS_URL":                r.toBroker.URL,
+		"DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE": accountFile,
+	})
+	// Resolved under Google's issuer, then pointed at the fake one, so no test calls Google.
+	boot.SignInIssuer = r.google.URL()
+
+	database := storetest.Open(t)
+	r.outside = &outsideSignIn{pool: r.google, database: database, boot: boot}
+	r.outside.people = testPeople{PgPeopleStore: store.NewPgPeopleStore(database.Pool, testSigningKey, nil, peopleOptions(boot)...), pool: database.Pool}
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ($1, 'Private', $2)`, leaverProject, privOwner); err != nil {
+		t.Fatalf("seed %s: %v", leaverProject, err)
+	}
+	for _, email := range []string{danaEmail, erinEmail} {
+		r.list(t, email)
+	}
+
+	brokerTokens, err := brokerTokenVerifier(boot, database, brokerOrigin)
+	if err != nil {
+		t.Fatalf("build the broker-token check: %v", err)
+	}
+	serviceTokens := serviceTokenVerifier(boot)
+	if err := serviceTokens.Discover(t.Context()); err != nil {
+		t.Fatalf("discover the service-account token issuer: %v", err)
+	}
+	built := routes.AppContextOptions{
+		Lifetime: t.Context(), SigningKey: testSigningKey, SignIn: signInFlow(boot), People: r.outside.people,
+		Store: database, Sessions: store.NewPgSessionStore(database.Pool), BrokerTokens: brokerTokens, OIDC: serviceTokens,
+	}
+	rule, err := signInRule(boot, accessLister(built.Store))
+	if err != nil {
+		t.Fatal(err)
+	}
+	built.Identity, r.membership = requestIdentityFor(boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	built.Standing = standingFor(rule, r.membership)
+	r.app, err = routes.BuildAppContext(appContextOptions(boot, rule, built))
+	if err != nil {
+		t.Fatalf("build the router: %v", err)
+	}
+	r.handler, r.background = routes.New(r.app)
+	t.Cleanup(r.background.Wait)
+	r.outside.handler = r.handler
+
+	// The broker's account reads the person answer, which a broker pointed at this Dispatch asks:
+	// a rig whose service-account settings did not take fails here, saying so.
+	asked := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/access/person?person="+url.QueryEscape(privOwner), nil)
+	asked.Header.Set("Authorization", "Bearer "+r.brokerAccountToken(t))
+	answered := httptest.NewRecorder()
+	r.handler.ServeHTTP(answered, asked)
+	if answered.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/access/person as the broker's account %s answered %d %s, want 200", leaverBrokerAccount, answered.Code, answered.Body.String())
+	}
+
+	for _, hook := range config.built {
+		hook(t, r)
+	}
+	return r
+}
+
+// brokerAccountToken is a projected token of the broker's service account for Dispatch's
+// audience, good for an hour: the bearer the broker presents on Dispatch's person route.
+func (r *leaverRig) brokerAccountToken(t *testing.T) string {
+	t.Helper()
+	return r.accounts.Mint(t, r.accountKey, r.accounts.Claims(leaverBrokerAccount, leaverAccountAudience))
+}
+
+// person signs email in and gives them every credential of the measurement table: a cookie, a
+// dsp_ token, a machine login approved through Dispatch, a session enrolled under it, an
+// agent-tier grant and a human-tier grant, and a broker token minted from the machine login.
+func (r *leaverRig) person(t *testing.T, email string) *leaverPerson {
+	t.Helper()
+	p := r.signIn(t, email)
+	p.dsp = r.mintToken(t, p, "leaver hold")
+	r.machineLogin(t, p)
+	r.brokerCredentials(t, p)
+	return p
+}
+
+// signIn signs email in to Dispatch through the fake Google as the Google account
+// "google-<email>", and records the person, whose browser then holds the callback's cookie.
+func (r *leaverRig) signIn(t *testing.T, email string) *leaverPerson {
+	t.Helper()
+	p := &leaverPerson{email: email, signedIn: r.signInAs(t, email, "google-"+email)}
+	r.persons[email] = p
+	return p
+}
+
+// signInAgain signs a person the rig signed in before in again through the fake Google, as the
+// same Google account, and their browser holds the new cookie. It changes nothing the fake Google
+// refuses (refuse).
+func (r *leaverRig) signInAgain(t *testing.T, email string) {
+	t.Helper()
+	p := r.persons[email]
+	if p == nil {
+		t.Fatalf("the rig never signed %s in, so there is no sign-in to make again", email)
+	}
+	p.signedIn = r.signInAs(t, email, "google-"+email)
+}
+
+// signInAs runs a whole sign-in to Dispatch as the Google account subject at email, a Workspace
+// account (hd example.com) at an address on leaverDomain and an account with no Workspace
+// elsewhere, and requires it to be signed in.
+func (r *leaverRig) signInAs(t *testing.T, email, subject string) *httptest.ResponseRecorder {
+	t.Helper()
+	claims := map[string]any{"sub": subject, "email": email, "email_verified": true}
+	if strings.HasSuffix(email, "@"+leaverDomain) {
+		claims["hd"] = leaverDomain
+	}
+	signedIn := codeFlowSignIn(t, r.handler, r.google, claims)
+	if signedIn.Code != http.StatusFound || !sessionCookieSet(signedIn) {
+		t.Fatalf("the sign-in of the Google account %s at %s: the callback answered %d %s, want a signed-in redirect", subject, email, signedIn.Code, signedIn.Body.String())
+	}
+	return signedIn
+}
+
+// signOut signs p out of Dispatch with their cookie, as the dashboard's Sign out does.
+func (r *leaverRig) signOut(t *testing.T, p *leaverPerson) {
+	t.Helper()
+	if out := cookieRequest(r.handler, http.MethodPost, "/auth/logout", "", p.signedIn); out.Code != http.StatusOK {
+		t.Fatalf("POST /auth/logout on %s's cookie answered %d %s, want 200", p.email, out.Code, out.Body.String())
+	}
+}
+
+// mintToken mints a dsp_ token named name on p's cookie, as the agent tokens page does.
+func (r *leaverRig) mintToken(t *testing.T, p *leaverPerson, name string) leaverToken {
+	t.Helper()
+	minted := cookieRequest(r.handler, http.MethodPost, "/api/v1/me/agent-tokens", leaverBody(t, map[string]string{"name": name}), p.signedIn)
+	var token struct {
+		ID    string `json:"id"`
+		Token string `json:"token"`
+	}
+	if minted.Code != http.StatusCreated || json.Unmarshal(minted.Body.Bytes(), &token) != nil || token.ID == "" || !strings.HasPrefix(token.Token, "dsp_") {
+		t.Fatalf("POST /api/v1/me/agent-tokens on %s's cookie answered %d %s, want 201 with a token", p.email, minted.Code, minted.Body.String())
+	}
+	return leaverToken{id: token.ID, plaintext: token.Token}
+}
+
+// revokeToken revokes p's token on their cookie, as the agent tokens page does.
+func (r *leaverRig) revokeToken(t *testing.T, p *leaverPerson, token leaverToken) {
+	t.Helper()
+	if revoked := cookieRequest(r.handler, http.MethodDelete, "/api/v1/me/agent-tokens/"+token.id, "", p.signedIn); revoked.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /api/v1/me/agent-tokens/%s on %s's cookie answered %d %s, want 204", token.id, p.email, revoked.Code, revoked.Body.String())
+	}
+}
+
+// machineLogin logs a machine of p's in at the broker as the helper's `machine login` does: p
+// approves it on Dispatch's machine-login page with their cookie, Dispatch relays the approval to
+// the broker, and the machine redeems its device code for its token pair.
+func (r *leaverRig) machineLogin(t *testing.T, p *leaverPerson) {
+	t.Helper()
+	p.machineKey = brokertest.NewSigningKey(t)
+	device := r.client.DeviceLogin(t, p.machineKey, p.email, localPart(p.email)+"-box")
+	code := leaverBody(t, map[string]string{"code": device.UserCode})
+	looked := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/machine-lookup", code, p.signedIn)
+	var lookup struct {
+		RecordID string `json:"record_id"`
+	}
+	if err := json.Unmarshal(looked.Body.Bytes(), &lookup); err != nil || lookup.RecordID == "" {
+		t.Fatalf("Dispatch's machine-lookup of %s's machine login answered %d %s, want its record", p.email, looked.Code, looked.Body.String())
+	}
+	approved := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/"+lookup.RecordID+"/approve", code, p.signedIn)
+	var decided struct {
+		State        string `json:"state"`
+		CredentialID string `json:"credential_id"`
+	}
+	if err := json.Unmarshal(approved.Body.Bytes(), &decided); err != nil || decided.State != "approved" || decided.CredentialID == "" {
+		t.Fatalf("Dispatch's approve of %s's machine login answered %d %s, want it approved with a credential", p.email, approved.Code, approved.Body.String())
+	}
+	p.credential = decided.CredentialID
+	token, err := r.client.DeviceToken(t, p.machineKey, device)
+	if err != nil {
+		t.Fatalf("the device token of %s's machine login: %v", p.email, err)
+	}
+	p.machineToken = token
+}
+
+// brokerCredentials gives p, whose machine is logged in, a session enrolled under the machine
+// login, that session's grant of an agent-tier secret p owns and of the human-tier secret, which
+// ada approves on the broker's approval page, and a broker token minted from the machine login.
+func (r *leaverRig) brokerCredentials(t *testing.T, p *leaverPerson) {
+	t.Helper()
+	ctx := context.Background()
+	p.enrollment, p.sessionKey = r.client.EnrollSession(t, p.machineKey, p.credential, p.email+"-session")
+	p.agentSecret = strings.ToUpper(localPart(p.email)) + "_AGENT_SECRET"
+	r.broker.Secrets.Put(policytest.Secret(p.agentSecret, p.email, policy.TierAgent, localPart(p.email)+"-agent-secret-v1"))
+	if err := r.broker.Policy.Refresh(ctx); err != nil {
+		t.Fatalf("reload the broker's policy with %s: %v", p.agentSecret, err)
+	}
+	p.agentGrant = r.client.RequestAgentSecret(t, p.sessionKey, p.enrollment, "leaver hold", p.agentSecret)
+
+	asked := r.client.AskForAgentSecret(t, p.sessionKey, p.enrollment, "leaver hold", leaverHumanSecret)
+	var pending struct {
+		RequestID string  `json:"request_id"`
+		RecordID  *string `json:"record_id"`
+	}
+	if asked.Status != http.StatusOK || asked.State != "pending" || json.Unmarshal([]byte(asked.Body), &pending) != nil || pending.RecordID == nil {
+		t.Fatalf("%s's session asks %s: %d %s, want 200 pending with an approval record", p.email, leaverHumanSecret, asked.Status, asked.Body)
+	}
+	r.broker.Decide(t, *pending.RecordID, true)
+	status, body := r.client.Session(t, p.sessionKey, p.enrollment, http.MethodGet, "/v1/requests/"+pending.RequestID, nil)
+	var read struct {
+		State   string `json:"state"`
+		GrantID string `json:"grant_id"`
+	}
+	if status != http.StatusOK || json.Unmarshal(body, &read) != nil || read.State != "granted" || read.GrantID == "" {
+		t.Fatalf("%s's request for %s after ada approved it: %d %s, want 200 granted", p.email, leaverHumanSecret, status, body)
+	}
+	p.humanGrant = read.GrantID
+
+	token, status, refusal := r.exchange(t, p)
+	if token == "" {
+		t.Fatalf("the exchange of %s's machine login's token answered %d %s, want a broker token", p.email, status, refusal)
+	}
+	p.brokerToken = token
+}
+
+// delist takes email off PRIV's access list, as PRIV's owner does.
+func (r *leaverRig) delist(t *testing.T, email string) {
+	t.Helper()
+	r.outside.unlist(t, leaverProject, email)
+}
+
+// list names email on PRIV's access list, as PRIV's owner does.
+func (r *leaverRig) list(t *testing.T, email string) {
+	t.Helper()
+	r.outside.listOn(t, leaverProject, access.PrincipalPerson, email)
+}
+
+// refuse makes the fake Google answer each refresh of email's grants invalid_grant, as Google
+// answers one for an account it no longer confirms.
+func (r *leaverRig) refuse(email string) {
+	r.google.RefuseRefresh(email, true)
+}
+
+// ageConfirmation dates email's last confirmation d back by the database's clock
+// (people.confirmed_at = now() - d). A row that holds no confirmation, which is a row with no
+// refresh token, has none to date, and the log says so.
+func (r *leaverRig) ageConfirmation(t *testing.T, email string, d time.Duration) {
+	t.Helper()
+	aged, err := r.outside.database.Pool.Exec(context.Background(), `
+		update people set confirmed_at = now() - make_interval(secs => $2) where email = $1 and confirmed_at is not null
+	`, email, d.Seconds())
+	if err != nil {
+		t.Fatalf("date %s's confirmation %s back: %v", email, d, err)
+	}
+	if aged.RowsAffected() == 0 {
+		t.Logf("no people row of %s holds a confirmation to date %s back: it holds no refresh token", email, d)
+	}
+}
+
+// storesRefreshToken reports whether email's people row holds a refresh token.
+func (r *leaverRig) storesRefreshToken(t *testing.T, email string) bool {
+	t.Helper()
+	var stored bool
+	if err := r.outside.database.Pool.QueryRow(context.Background(), `select refresh_token is not null from people where email = $1`, email).Scan(&stored); err != nil {
+		t.Fatalf("read %s's people row: %v", email, err)
+	}
+	return stored
+}
+
+// stopBroker cuts each of Dispatch's calls to the broker unanswered from now on, as a stopped
+// broker leaves them, and startBroker carries them again.
+func (r *leaverRig) stopBroker()  { r.brokerStopped.Store(true) }
+func (r *leaverRig) startBroker() { r.brokerStopped.Store(false) }
+
+// The credential calls. Each makes the one request a credential of the measurement table is used
+// in and answers its status and, for a refusal, its code: the JSON code a Dispatch or broker
+// route refuses with, or the OAuth error a token endpoint answers. A success answers no code.
+
+// cookie is GET /api/v1/whoami on p's session cookie, as the dashboard's script sends it.
+func (r *leaverRig) cookie(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	return dispatchAnswer(cookieRequest(r.handler, http.MethodGet, "/api/v1/whoami", "", p.signedIn))
+}
+
+// personalToken is GET /api/v1/whoami with token as the bearer, as an agent sends it.
+func (r *leaverRig) personalToken(t *testing.T, token leaverToken) (int, string) {
+	t.Helper()
+	return dispatchAnswer(bearerRequest(r.handler, http.MethodGet, "/api/v1/whoami", "", token.plaintext))
+}
+
+// brokerTokenAtDispatch is GET /api/v1/whoami presenting p's broker token under the DPoP scheme,
+// with a proof of the machine key the token is bound to, as an agent on p's machine sends it.
+func (r *leaverRig) brokerTokenAtDispatch(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	capture := &leaverCapture{}
+	signing, err := http.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/whoami", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signing.Header.Set("Authorization", "DPoP "+p.brokerToken)
+	response, err := (&http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, capture)}).Do(signing)
+	if err != nil {
+		t.Fatalf("sign %s's broker token request: %v", p.email, err)
+	}
+	response.Body.Close()
+	request := httptest.NewRequest(http.MethodGet, brokerOrigin+"/api/v1/whoami", nil)
+	request.Header.Set("Authorization", capture.last.Header.Get("Authorization"))
+	request.Header.Set("DPoP", capture.last.Header.Get("DPoP"))
+	recorder := httptest.NewRecorder()
+	r.handler.ServeHTTP(recorder, request)
+	return dispatchAnswer(recorder)
+}
+
+// refreshGrant redeems the machine login's refresh token at the broker (POST /v1/oauth/token), as
+// the helper does once its access token expires, and keeps the pair it answers.
+func (r *leaverRig) refreshGrant(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	refreshed, err := r.client.Refresh(t, p.machineKey, p.machineToken)
+	if err != nil {
+		var refused *oauth2.RetrieveError
+		if errors.As(err, &refused) && refused.Response != nil {
+			return refused.Response.StatusCode, refused.ErrorCode
+		}
+		t.Fatalf("the refresh grant of %s's machine login got no answer: %v", p.email, err)
+	}
+	p.machineToken = refreshed
+	return http.StatusOK, ""
+}
+
+// enrol asks the broker for a new session under p's machine login (POST /v1/enrollments).
+func (r *leaverRig) enrol(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	key := brokertest.NewSigningKey(t)
+	thumbprint, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.enrolments++
+	return brokerAnswer(r.client.Launcher(t, p.machineKey, p.credential, http.MethodPost, "/v1/enrollments",
+		map[string]any{"kind": "session", "runtime_id": fmt.Sprintf("%s-session-%d", p.email, p.enrolments), "thumbprint": thumbprint}))
+}
+
+// renewLease renews the lease of the session enrolled at setup (POST /v1/enrollments/{id}/renew).
+func (r *leaverRig) renewLease(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	return brokerAnswer(r.client.Session(t, p.sessionKey, p.enrollment, http.MethodPost, "/v1/enrollments/"+p.enrollment+"/renew", map[string]any{}))
+}
+
+// mintBrokerToken asks the broker for a new broker token from the machine login's token (the RFC
+// 8693 exchange).
+func (r *leaverRig) mintBrokerToken(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	_, status, code := r.exchange(t, p)
+	return status, code
+}
+
+// askAgentSecret is the setup session's ask for the agent-tier secret p owns (POST /v1/requests).
+func (r *leaverRig) askAgentSecret(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	asked := r.client.AskForAgentSecret(t, p.sessionKey, p.enrollment, "leaver hold", p.agentSecret)
+	return brokerAnswer(asked.Status, []byte(asked.Body))
+}
+
+// askHumanSecret is the setup session's ask for the human-tier secret (POST /v1/requests).
+func (r *leaverRig) askHumanSecret(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	asked := r.client.AskForAgentSecret(t, p.sessionKey, p.enrollment, "leaver hold", leaverHumanSecret)
+	return brokerAnswer(asked.Status, []byte(asked.Body))
+}
+
+// readAgentGrant reads the values of the agent-tier grant from setup (POST /v1/grants/{id}/values).
+func (r *leaverRig) readAgentGrant(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	return brokerAnswer(r.client.Session(t, p.sessionKey, p.enrollment, http.MethodPost, "/v1/grants/"+p.agentGrant+"/values", nil))
+}
+
+// readHumanGrant reads the values of the human-tier grant ada approved at setup.
+func (r *leaverRig) readHumanGrant(t *testing.T, p *leaverPerson) (int, string) {
+	t.Helper()
+	return brokerAnswer(r.client.Session(t, p.sessionKey, p.enrollment, http.MethodPost, "/v1/grants/"+p.humanGrant+"/values", nil))
+}
+
+// exchange trades p's machine login's access token for a broker token bound to the machine key
+// (the RFC 8693 exchange), answering the token, or none with the status and the OAuth error.
+func (r *leaverRig) exchange(t *testing.T, p *leaverPerson) (token string, status int, code string) {
+	t.Helper()
+	form := url.Values{
+		"grant_type": {brokerclient.GrantTypeTokenExchange}, "client_id": {oauthwire.ExchangeClientID},
+		"subject_token": {p.machineToken.AccessToken}, "subject_token_type": {oauthwire.SubjectTokenTypeAccessToken},
+		oauthwire.FormSession: {localPart(p.email) + "-leaver-hold"},
+	}
+	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.machineKey, &http.Transport{}), Timeout: 30 * time.Second}
+	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
+	if err != nil {
+		t.Fatalf("the exchange of %s's machine login's token got no answer: %v", p.email, err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read the exchange's answer for %s: %v", p.email, err)
+	}
+	var answer struct {
+		AccessToken string `json:"access_token"`
+		Error       string `json:"error"`
+	}
+	_ = json.Unmarshal(raw, &answer)
+	return answer.AccessToken, response.StatusCode, answer.Error
+}
+
+// dispatchAnswer is a Dispatch answer as a credential call answers it.
+func dispatchAnswer(response *httptest.ResponseRecorder) (int, string) {
+	if response.Code < http.StatusMultipleChoices {
+		return response.Code, ""
+	}
+	return response.Code, errorCode(response)
+}
+
+// brokerAnswer is a broker answer as a credential call answers it.
+func brokerAnswer(status int, body []byte) (int, string) {
+	if status < http.StatusMultipleChoices {
+		return status, ""
+	}
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	_ = json.Unmarshal(body, &refusal)
+	return status, refusal.Code
+}
+
+// leaverWant is the answer a credential call must give: what was asked, named by the person and
+// the credential, and the status and code (none for a success) it must answer.
+type leaverWant struct {
+	t      *testing.T
+	what   string
+	status int
+	code   string
+}
+
+// expectAnswer is the answer what must give.
+func expectAnswer(t *testing.T, what string, status int, code string) leaverWant {
+	return leaverWant{t: t, what: what, status: status, code: code}
+}
+
+// got checks the answer a credential call gave: another fails the test, naming what was asked,
+// the answer and the one wanted, and the one wanted is logged, so a run shows each row it read.
+func (w leaverWant) got(status int, code string) {
+	w.t.Helper()
+	if status != w.status || code != w.code {
+		w.t.Errorf("%s answered %d %q, want %d %q", w.what, status, code, w.status, w.code)
+		return
+	}
+	w.t.Logf("%s answered %d %q, as wanted", w.what, status, code)
+}
+
+// leaverCapture keeps the request the DPoP transport signed, instead of sending it.
+type leaverCapture struct{ last *http.Request }
+
+func (c *leaverCapture) RoundTrip(r *http.Request) (*http.Response, error) {
+	c.last = r
+	return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader("")), Request: r}, nil
+}
+
+// leaverBody is value as a JSON request body. (twobuild_harness_test.go's jsonBody is the same, but
+// only under the twobuild tag.)
+func leaverBody(t *testing.T, value any) string {
+	t.Helper()
+	body, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(body)
+}
+
+// localPart is the part of email before its @.
+func localPart(email string) string {
+	local, _, _ := strings.Cut(email, "@")
+	return local
+}

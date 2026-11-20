@@ -1100,8 +1100,9 @@ jobs:
   # second build of the dashboard, which is what a rolling release puts in front of a browser. It
   # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
   # suite's job does not wait on a second Vite build and two more servers, and then, on the same
-  # build and machine, the one spec of outside sign-in (DISPATCH_E2E_SIGNIN=google), whose
-  # one-process harness signs people in through the dev OIDC issuer the step before it built.
+  # build and machine, the two specs of Google sign-in (DISPATCH_E2E_SIGNIN=google), outside
+  # sign-in and the leaver hold, whose one-process harness signs people in through the dev OIDC
+  # issuer the step before it built.
   multiprocess:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
@@ -1199,9 +1200,9 @@ jobs:
         # The fonts are not needed: this job's specs are every *.multiprocess.e2e.ts there is --
         # coedit, signin and two-builds today (`multiprocessSpecs` in e2e/playwright.config.ts
         # matches them by that suffix, so a new one joins without an edit here) -- and
-        # outside-sign-in.e2e.ts, and they run headless Chromium and compare no screenshot (none
-        # holds `toHaveScreenshot` or `toMatchSnapshot`), and fonts-liberation and
-        # fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
+        # outside-sign-in.e2e.ts and leaver-hold.e2e.ts, and they run headless Chromium and compare
+        # no screenshot (none holds `toHaveScreenshot` or `toMatchSnapshot`), and fonts-liberation
+        # and fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
         # glyphs would fail visibly.
         #
         # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
@@ -1235,16 +1236,21 @@ jobs:
         timeout-minutes: 2
         run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
-      - name: Browser-test outside sign-in at a second origin
+      - name: Browser-test Google sign-in, outside sign-in and the leaver hold
         # One server signs people in through the same issuer standing in for Google
         # (DISPATCH_E2E_SIGNIN=google, e2e/harness-signin.ts), with outside sign-in on and a second
-        # origin, and its one spec signs a person from outside the domain in there as a restricted
-        # member while an access list names them. The steps before built the dashboard, the server
-        # and the issuer. Measured once, in full-lane run 43875720942 (job 133328121115): 6 s,
-        # 13:42:10 to 13:42:16. 6 s x 1.15 = 7 s -> the two-minute floor, the sign-in step's
-        # above; its harness is that step's, one server and no proxy.
+        # origin. The mode's project runs its two specs and no other (`outsideSignInSpecs` in
+        # e2e/playwright.config.ts): outside-sign-in.e2e.ts signs a person from outside the domain
+        # in at the second origin as a restricted member while an access list names them, and
+        # leaver-hold.e2e.ts holds a person's personal token once the issuer refuses their refresh,
+        # until they sign in again. The steps before built the dashboard, the server and the
+        # issuer. Measured once, in full-lane run 43875720942 (job 133328121115), with outside
+        # sign-in alone: 6 s, 13:42:10 to 13:42:16. 6 s x 1.15 = 7 s -> the two-minute floor, the
+        # sign-in step's above; its harness is that step's, one server and no proxy. The leaver
+        # hold's row took 1.6 s beside outside sign-in's 2.4 s in one local run, which leaves the
+        # step far inside that floor.
         timeout-minutes: 2
-        run: DISPATCH_E2E_SIGNIN=google bunx playwright test --config e2e/playwright.config.ts outside-sign-in
+        run: DISPATCH_E2E_SIGNIN=google bunx playwright test --config e2e/playwright.config.ts
         working-directory: packages/dispatch
       # `if: failure()`, which this job can afford where the shard job cannot: its project sets
       # `retries: 0` (e2e/playwright.config.ts), so a row that fails fails this job and this

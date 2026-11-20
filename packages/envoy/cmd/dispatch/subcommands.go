@@ -85,6 +85,9 @@ var subcommands = []subcommand{
 	{"clear-broker-revocation", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return clearBrokerRevocation(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
+	{"forget-hosted-domains", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return forgetHostedDomains(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+	}},
 	{"settings", func(_ context.Context, _ []string, _ settingValues, stdout, stderr io.Writer) int {
 		if err := writeSettings(stdout); err != nil {
 			fmt.Fprintf(stderr, "settings: %v\n", err)

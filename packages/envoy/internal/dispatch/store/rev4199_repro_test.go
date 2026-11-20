@@ -17,13 +17,13 @@ func TestRev4199OutsiderTokenSurvivesTheMembersReclaim(t *testing.T) {
 	database := migratedEmptyStore(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, nil)
 	const email = "alice@second.example"
-	if err := people.SignInSubject(ctx, email, "consumer-sub", "refresh-outsider", model.MemberRestricted); err != nil {
+	if err := people.SignInSubject(ctx, email, "consumer-sub", "refresh-outsider", "", model.MemberRestricted); err != nil {
 		t.Fatalf("the outsider's sign-in to an address no row holds: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `insert into agent_tokens (owner, name, token_hash, prefix) values ($1, 'outsider', sha256('dsp_repro'::bytea), 'repro')`, email); err != nil {
 		t.Fatal(err)
 	}
-	if err := people.SignInSubject(ctx, email, "workspace-sub", "refresh-member", model.MemberFull); err != nil {
+	if err := people.SignInSubject(ctx, email, "workspace-sub", "refresh-member", "", model.MemberFull); err != nil {
 		t.Fatalf("the member's Workspace sign-in: %v", err)
 	}
 	var kind, sub string

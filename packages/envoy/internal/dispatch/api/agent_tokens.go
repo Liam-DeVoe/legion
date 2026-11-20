@@ -590,6 +590,11 @@ const codeTokenOwnerNotAdmitted = "TOKEN_OWNER_NOT_ADMITTED"
 // address's tokens that recorded another account, store.PgPeopleStore.SignInSubject), the token is
 // 401 TOKEN_REVOKED, as a revoked token is, since its account is not the address's any more and
 // never will be again under this token.
+//
+// Last, the same join reads whether Dispatch holds the owner (personalTokenHeld): a recorded hold,
+// whether a refresh token is stored, and the confirmation's age, so a token whose owner's
+// confirmation is younger than an hour costs no read beyond the one it always cost. A revocation
+// and the restricted admission rule answer before a hold.
 func (s *server) personalTokenActor(ctx context.Context, plaintext string) (model.Actor, error) {
 	hash := sha256.Sum256([]byte(plaintext))
 	var id, name, owner string
@@ -597,14 +602,17 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	var revokedAt *time.Time
 	var memberKind *string
 	var replaced bool
+	var hold ownerHold
 	err := s.deps.Store.Pool.QueryRow(ctx, `
 		select agent_tokens.id::text, agent_tokens.name, agent_tokens.owner, agent_tokens.scopes,
 			agent_tokens.projects, agent_tokens.revoked_at, people.member_kind,
-			`+tokenAccountReplaced("$2::boolean")+`
+			`+tokenAccountReplaced("$2::boolean")+`,
+			`+ownerHoldColumns+`
 		from agent_tokens
 		left join people on people.email = canonical_login(agent_tokens.owner)
 		where agent_tokens.token_hash = $1
-	`, hash[:], s.deps.SignInIssuer != "").Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced)
+	`, hash[:], s.deps.SignInIssuer != "").Scan(&id, &name, &owner, &scopes, &projects, &revokedAt, &memberKind, &replaced,
+		&hold.recorded, &hold.stored, &hold.age)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.Actor{}, nil
 	}
@@ -618,6 +626,9 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		if err := s.restrictedOwnerAdmitted(ctx, model.CanonicalLogin(owner)); err != nil {
 			return model.Actor{}, err
 		}
+	}
+	if err := s.personalTokenHeld(ctx, model.CanonicalLogin(owner), hold); err != nil {
+		return model.Actor{}, err
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, `
 		update agent_tokens
@@ -635,6 +646,77 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 		Owner:      &owner,
 		Credential: &model.Credential{Scopes: scopes, TokenID: id, TokenName: name, Projects: projects},
 	}, nil
+}
+
+// codeMembershipHeld refuses, 401, a credential of a person Dispatch holds until they sign in
+// again, or until a refresh confirms them (identity.Membership.Standing): their personal token, or
+// a token the secrets broker issued naming them. A hold revokes nothing, so a client keeps the
+// credential, which works again once the hold ends.
+const codeMembershipHeld = "MEMBERSHIP_HELD"
+
+// The two texts of codeMembershipHeld Dispatch can give a rule for (errMembershipHeld): a recorded
+// hold, or the unopenable rule, which a sign-in ends; and the 24-hour rule, which the next
+// confirmation ends. The words name no person: whoever holds the token is told why it stopped.
+const (
+	membershipHeldText      = "this token's owner must sign in to Dispatch again: Google no longer confirms their sign-in, so the token is held until they do"
+	membershipHeldGraceText = "no refresh confirmed this token's owner in 24 hours; the token works again at the next confirmation"
+)
+
+// errMembershipHeld is the refusal of a held person's credential, saying text.
+func errMembershipHeld(text string) error {
+	return errorf(http.StatusUnauthorized, codeMembershipHeld, "%s", text)
+}
+
+// errBrokerTokenHeld is the refusal of a broker token whose introspection answered held
+// (brokertoken.Caller.Held): the broker's own words for a hold, naming person, since the answer
+// carries no rule (the Envoy listener answers the same text).
+func errBrokerTokenHeld(person string) error {
+	return errMembershipHeld(fmt.Sprintf("%[1]s's credentials are held by Dispatch; they work again when %[1]s signs in to Dispatch, or when Dispatch can confirm %[1]s with Google again", person))
+}
+
+// ownerHold is what a personal token's statement reads of its owner's people row for
+// personalTokenHeld (ownerHoldColumns): a recorded hold (held_since later than signed_in_at),
+// whether a refresh token is stored (one that does not open included), and the confirmation's age
+// by the database's clock, nil for none. A token whose owner no row holds reads none of them.
+type ownerHold struct {
+	recorded, stored bool
+	age              *time.Duration
+}
+
+// ownerHoldColumns are the three columns of ownerHold, over the people row a statement joins as
+// people.
+const ownerHoldColumns = `coalesce(people.held_since > people.signed_in_at, false), people.refresh_token is not null,
+			now() - people.confirmed_at`
+
+// personalTokenHeld answers nil while owner's personal token may act, by Standing's steps 1 to 4
+// on what the token's own statement read (hold): where no Google rule signs people in
+// (Deps.Standing nil) nobody is held; a recorded hold is 401 MEMBERSHIP_HELD; no stored refresh
+// token, or a confirmation younger than identity.MembershipMaxAge, is not held. Only an older
+// confirmation asks Standing itself, with owner as model.CanonicalLogin spells it, which may
+// refresh the owner with Google: a held answer is 401 MEMBERSHIP_HELD with its rule's words, and
+// one it cannot give is 503 IDENTITY_UNAVAILABLE, never an accept.
+func (s *server) personalTokenHeld(ctx context.Context, owner string, hold ownerHold) error {
+	switch {
+	case s.deps.Standing == nil:
+		return nil
+	case hold.recorded:
+		return errMembershipHeld(membershipHeldText)
+	case !hold.stored, hold.age != nil && *hold.age < identity.MembershipMaxAge:
+		return nil
+	}
+	standing, err := s.deps.Standing.Standing(ctx, owner)
+	if err != nil {
+		slog.Warn("dispatch: a personal token was refused: whether Dispatch holds its owner could not be read", "error", err)
+		return errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
+			"whether this token's owner may still act could not be read; try again in a minute")
+	}
+	switch {
+	case !standing.Held:
+		return nil
+	case standing.ByGrace && !standing.Unopenable:
+		return errMembershipHeld(membershipHeldGraceText)
+	}
+	return errMembershipHeld(membershipHeldText)
 }
 
 // tokenAccountReplaced is the SQL expression, over the row agent_tokens joined to its owner's

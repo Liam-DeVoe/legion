@@ -327,7 +327,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	const unapplied, noAccount, takeback, alias, outside = "unapplied@example.com", "noaccount@example.com", "takeback@example.com", "alias@example.com", "outside@example.com"
 
 	// unapplied@: Dispatch, restored, records A; A's credentials at the broker are live.
-	if err := r.people.SignInSubject(ctx, unapplied, "a-unapplied", "refresh-a", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, unapplied, "a-unapplied", "refresh-a", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	token := r.personalToken(t, unapplied, "a-unapplied")
@@ -341,7 +341,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	// noaccount@: no Dispatch row; the broker refuses X.
 	r.revoke(t, noAccount, "x-noaccount", "h-noaccount", 3)
 	// takeback@: Dispatch records the stale S; the broker refuses H and N.
-	if err := r.people.SignInSubject(ctx, takeback, "s-takeback", "refresh-s", model.MemberFull); err != nil {
+	if err := r.people.SignInSubject(ctx, takeback, "s-takeback", "refresh-s", "", model.MemberFull); err != nil {
 		t.Fatal(err)
 	}
 	r.revoke(t, takeback, "h-takeback", "s-takeback", 4)
@@ -399,7 +399,7 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	for _, holder := range []struct{ email, account string }{
 		{unapplied, "b-unapplied"}, {noAccount, "h-noaccount"}, {takeback, "h-takeback"},
 	} {
-		if err := r.people.SignInSubject(ctx, holder.email, holder.account, "refresh-"+holder.account, model.MemberFull); err != nil {
+		if err := r.people.SignInSubject(ctx, holder.email, holder.account, "refresh-"+holder.account, "", model.MemberFull); err != nil {
 			t.Fatalf("%s's sign-in at %s after the reset: %v", holder.account, holder.email, err)
 		}
 	}

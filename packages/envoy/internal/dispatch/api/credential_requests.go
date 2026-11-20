@@ -246,6 +246,15 @@ func (s *server) approveCredentialRecord(w http.ResponseWriter, r *http.Request)
 // and for a broker token the refusal its admission would name (brokerReplacedRefusal:
 // BROKER_TOKEN_RECORDS_NO_ACCOUNT, BROKER_TOKEN_NOT_ACTIVE or BROKER_ACCOUNT_NOT_SIGNED_IN), read
 // in the same statement; a read that fails is 503 IDENTITY_UNAVAILABLE. It writes nothing.
+//
+// The same statement reads whether Dispatch holds the caller, as each credential's own check does,
+// and a held caller is then 401 MEMBERSHIP_HELD, so a person held between the request's start and
+// its relay approves and denies nothing: for a personal token, Standing's steps on its owner's
+// people row, asking Standing for a confirmation older than an hour (personalTokenHeld) once the
+// transaction has ended, since Standing reads through the pool itself; for a broker token, the
+// hold Dispatch records for its person, where a Google rule signs people in (brokerPersonAdmitted's,
+// recordedHoldSQL), since there is no introspection answer to read here; for a cookie, the session
+// generation a hold advances. A revocation answers before a hold.
 func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject string, generation int64, err error) {
 	cookieLogin, cookieGeneration := s.mintCookie(r, actor)
 	var tokenID *string
@@ -253,7 +262,9 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		tokenID = &actor.Act.TokenID
 	}
 	broker := s.mintBrokerCaller(r, actor)
-	var cookieGone, tokenGone, brokerReplaced, brokerNamed bool
+	var cookieGone, tokenGone, brokerReplaced, brokerNamed, brokerHeld bool
+	var owner *string
+	var hold ownerHold
 	unread := func(err error) (string, int64, error) {
 		slog.Warn("dispatch: a credential decision was refused: whether its caller still holds the address could not be read", "error", err)
 		return "", 0, errorf(http.StatusServiceUnavailable, "IDENTITY_UNAVAILABLE",
@@ -274,9 +285,24 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 			`+brokerAccountReplaced("$5::text", "$6::text", "$9::boolean", "$8::timestamptz", "$7::boolean")+`,
 			`+brokerAccountNamed("$5::text", "$6::text")+`,
 			coalesce(`+credentialSubjectSQL("$1::text", "$2::text", "$4::uuid", "$6::text", "$7::boolean", "$8::timestamptz")+`, ''),
-			coalesce((select generation from user_sessions where login = $1::text), 0)
+			coalesce((select generation from user_sessions where login = $1::text), 0),
+			`+recordedHoldSQL("$5::text")+`,
+			owner.login, coalesce(owner.recorded, false), coalesce(owner.stored, false), owner.age
+		from (select 1) as one
+		left join (
+			select canonical_login(agent_tokens.owner) as login, `+ownerHoldColumns+`
+			from agent_tokens
+			left join people on people.email = canonical_login(agent_tokens.owner)
+			where agent_tokens.id = $4::uuid
+		) as owner (login, recorded, stored, age) on true
 	`, actor.ID, cookieLogin, cookieGeneration, tokenID, broker.address, broker.subject, s.deps.SignInIssuer != "", broker.created, broker.foreign).
-		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation); err != nil {
+		Scan(&cookieGone, &tokenGone, &brokerReplaced, &brokerNamed, &subject, &generation, &brokerHeld,
+			&owner, &hold.recorded, &hold.stored, &hold.age); err != nil {
+		return unread(err)
+	}
+	// The read is done: end the transaction, and its lock, before Standing, which takes a pooled
+	// connection of its own (store.ErrNestedAcquire).
+	if err := tx.Rollback(r.Context()); err != nil {
 		return unread(err)
 	}
 	switch {
@@ -286,6 +312,13 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 		return "", 0, errTokenRevoked()
 	case brokerReplaced:
 		return "", 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
+	case brokerHeld && s.deps.Standing != nil:
+		return "", 0, errMembershipHeld(membershipHeldText)
+	}
+	if owner != nil {
+		if err := s.personalTokenHeld(r.Context(), *owner, hold); err != nil {
+			return "", 0, err
+		}
 	}
 	return subject, generation, nil
 }
