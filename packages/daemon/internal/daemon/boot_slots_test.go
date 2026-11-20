@@ -186,22 +186,33 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 }
 
 // issueSlotsMigration is the migration that gives an issue its own slot, the first schema change
-// of this release (dispatch://INFRA-980). It is the one migration preReleaseStore withholds, and
-// so the one every test of the first boot watches Store.Migrate apply.
+// of this release (dispatch://INFRA-980). preReleaseStore withholds it, so every test of the first
+// boot watches Store.Migrate apply it.
 const issueSlotsMigration = 20261103183833
 
+// dispatchValueSequencesMigration is the one later migration that names what issueSlotsMigration
+// creates: it gives dispatch_issues.parent, which issueSlotsMigration adds, a sequence of its own
+// and an index. preReleaseStore withholds it beside issueSlotsMigration, since it fails on a
+// database that lacks that column.
+const dispatchValueSequencesMigration = 20261120055717
+
 // preReleaseStore is a database of this test's own carrying every embedded migration except
-// issueSlotsMigration, each applied as Store.Migrate applies it — the migration's SQL, the
-// widening of schema_version for a timestamped version, and the version row.
+// issueSlotsMigration and dispatchValueSequencesMigration, each applied as Store.Migrate applies
+// it — the migration's SQL, the widening of schema_version for a timestamped version, and the
+// version row.
 //
-// It withholds that one migration rather than cutting the series at its version because the two
+// It withholds issueSlotsMigration rather than cutting the series at its version because the two
 // halves of a pre-release store are wanted at once: the schema must take this release's own
 // writers, so a test seeds its records through record.Store.PutIssue and every column that
-// writer names is there, while what Store.Migrate is left to find is exactly the issue slots,
+// writer names is there, while what Store.Migrate is left to find is the issue slots,
 // design_gates.ever_opened and the lifecycle backfill that migration brings. Store.Migrate
 // applies each migration the database has not recorded a row for, per version rather than by
-// max(version) (store.migrate and store.apply), so the gap one withheld version leaves is a
-// migration it still runs, and no later migration names anything that one creates.
+// max(version) (store.migrate and store.apply), so the gap a withheld version leaves is a
+// migration it still runs. One later migration names what issueSlotsMigration creates,
+// dispatchValueSequencesMigration, so it is withheld too, and Store.Migrate applies the two in
+// version order, the column before the migration that names it. No test of the first boot writes
+// the copy of Dispatch's issues before it migrates, so that second migration finds no row of the
+// copy and marks no project for a refill.
 //
 // It is built rather than checked in because the first boot on the release is reachable no other
 // way: nothing on intake.DaemonBooted says which boot is the first, so the grant that keeps every
@@ -222,7 +233,7 @@ func preReleaseStore(t *testing.T) *store.Store {
 	}
 	withheld := make([]migrations.Migration, 0, len(all))
 	for _, migration := range all {
-		if migration.Version != issueSlotsMigration {
+		if migration.Version != issueSlotsMigration && migration.Version != dispatchValueSequencesMigration {
 			withheld = append(withheld, migration)
 		}
 	}

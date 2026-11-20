@@ -2,6 +2,7 @@ package record
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -170,5 +171,34 @@ func TestAClaimDeliveredBeforeItsIssuesFirstEventIsKept(t *testing.T) {
 		if rows, err = records.DispatchIssues(t.Context(), tx, "LEGION"); err != nil || rows[0].ClaimSeq != 2 || rows[0].ClaimedBy != "session:s-1" {
 			t.Fatalf("the mirror after a claim with no sequence = %#v, %v; want the claim at 2 kept", rows, err)
 		}
+	})
+}
+
+// The copy has an index on its parent column. A parent's children are read by it
+// (DispatchChildren, `where project = $1 and parent = any($2)`), and a parent link never crosses a
+// project, so the column alone serves that read; a walk up a chain reads by key, which the primary
+// key serves.
+func TestTheCopyIndexesItsParentColumn(t *testing.T) {
+	st := migratedStore(t)
+	inTx(t, st, func(tx pgx.Tx) {
+		rows, err := tx.Query(t.Context(), `select indexdef from pg_indexes where schemaname = current_schema() and tablename = 'dispatch_issues'`)
+		must(t, err)
+		definitions, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		must(t, err)
+		var onParent []string
+		for _, definition := range definitions {
+			// An index's definition reads `CREATE INDEX <name> ON <table> USING <method> (<key columns>)`.
+			_, columns, _ := strings.Cut(definition, " USING ")
+			_, columns, _ = strings.Cut(columns, "(")
+			first, _, _ := strings.Cut(columns, ")")
+			first, _, _ = strings.Cut(first, ",")
+			if strings.TrimSpace(first) == "parent" {
+				onParent = append(onParent, definition)
+			}
+		}
+		if len(onParent) != 1 {
+			t.Fatalf("indexes of dispatch_issues whose first key column is parent = %q, want one; the table's indexes are %q", onParent, definitions)
+		}
+		t.Logf("the copy's index on its parent column: %s", onParent[0])
 	})
 }
