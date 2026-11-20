@@ -7,10 +7,12 @@ sidebar:
 
 `packages/envoy/scripts/dev-broker.sh` creates a Postgres database of its own, builds the broker,
 its clients, `dev-oidc-issuer` and `dev-airlock-stands`, writes a fake secrets file, which stands
-in for Secrets Manager, starts `dev-airlock-stands`, whose GitHub stand is the GitHub the two
-`github-app` secrets mint at, starts `dev-oidc-issuer`, which stands in both for a cluster's
+in for Secrets Manager, and a profiles file, which names the profile each `github-app` secret is
+served as, starts `dev-airlock-stands`, whose GitHub stand is the GitHub the `github-app`
+secrets mint at, starts `dev-oidc-issuer`, which stands in both for a cluster's
 ServiceAccount token issuer and for the identity provider a person signs in to the broker at, and
-starts the broker on a free port, trusting that issuer for both. It needs Go, `jq`, `curl` and a
+starts the broker on a free port, trusting that issuer for both, with its proxy behind one TCP
+front the script binds first. It needs Go, `jq`, `curl` and a
 Postgres server: by default it
 starts one in Docker through `packages/envoy/scripts/dev-postgres.sh` (a container named
 `dispatch-pg`, reused when it is there; one made from another image than that script's is
@@ -157,6 +159,31 @@ the registered service of the enrolment command the banner prints (`DEV_BROKER_P
 for the `--ttl` its request names; with none, 15 minutes when any secret it names is human tier
 and 12 hours otherwise
 (until its session ends for a secret tagged `default-grant=session`), and never past its session. Every command below runs in that second shell.
+
+Every GitHub App token the broker mints is a profile's, so the profiles file the script writes,
+`$DEV_BROKER_PROFILES_FILE` (`BROKER_PROFILES_FILE`), names each of the three `github-app`
+secrets as a profile of its own name, whose release is the JSON of its installations.
+`DEMO_GITHUB_APP` is also the source of two profiles of other names, `DEMO_GITHUB_READ` and
+`DEMO_GITHUB_ADMIN_READ`: each is `acme-org`'s bare token behind the broker's proxy, bound to
+`api.github.test` for `GET` and `HEAD` alone, the first with GitHub's eight reads and the second
+with those and `administration`, `members` and `organization_administration`.
+The broker asks GitHub for each profile's permissions cut to what the App's installation holds,
+names what the cut left out in the release's `github_left_out` and in one log line for each
+entry, `cipherd: a profile's permission was left out, since the installation does not hold it`,
+and refuses a release whose cut leaves nothing, `PROFILE_MINT_REFUSED`.
+The stand's own map of what each installation holds leaves out `issues`, `workflows` and
+`statuses` at write, so a release of `DEMO_GITHUB_APP` here names those three.
+
+A command reaches the proxied profiles' host only where the GitHub stand can be served there: set
+`DEV_BROKER_PROXIED_GITHUB_IP` to a loopback address (`127.0.0.9`, say), and the stand serves
+`api.github.test` over TLS on that address's port 443, which the broker's proxy is told to dial.
+The machine must then let this user bind port 443.
+Without it, the proxy refuses a call to `api.github.test`, since the name resolves nowhere.
+`DEV_BROKER_GITHUB_PERMISSIONS` (`<owner>=<permission>:<level>,...`, several separated by spaces)
+sets what each installation holds in place of the stand's own map, and `DEV_BROKER_BROKER_BIN`
+names a broker binary the script starts in place of the one it builds.
+`packages/envoy/scripts/github-profile-check.sh` sets the first two and drives every profile end to
+end on a stack of its own.
 
 ## Run a helper and log it in
 
@@ -538,7 +565,8 @@ with no proof, which the broker rereads after its answer) or the five-minute rel
 `packages/envoy/scripts/dev-airlock.sh` starts the whole airlock, in a stack of its own. It runs
 `dev-broker.sh` first, for Postgres, `dev-oidc-issuer` and the binaries, and then adds what the
 airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and records every
-request each one is sent; a rules file (`BROKER_AIRLOCK_RULES_FILE`) and a fake secrets file that
+request each one is sent; a profiles file (`BROKER_PROFILES_FILE`), each secret a profile of its
+own name with a proxy block, and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
 port of its own, behind one TCP front over both API ports and one over both proxy ports; one
 enrolled pod session, whose key directory the exports name and whose lease an
@@ -576,7 +604,7 @@ dev-airlock: ready.
   export AGENT_SECRETS_URL=http://127.0.0.1:49793
   export AGENT_SECRETS_KEY_DIR=/tmp/agent-secrets-airlock.eGQ8I8/session-key
   export AIRLOCK_PROXY_URL=http://127.0.0.1:32100
-  export AIRLOCK_RULES_FILE=/tmp/agent-secrets-airlock.eGQ8I8/airlock.json
+  export AIRLOCK_PROFILES_FILE=/tmp/agent-secrets-airlock.eGQ8I8/profiles.json
   export AIRLOCK_FAKE_SECRETS_FILE=/tmp/agent-secrets-airlock.eGQ8I8/fake-secrets.json
   export AIRLOCK_S_URL=https://s.airlock.test
   export AIRLOCK_S_RECORDS=http://127.0.0.1:16053/records/s
@@ -585,15 +613,17 @@ dev-airlock: ready.
   broker 2:            api 127.0.0.1:27522, proxy 127.0.0.1:20097, pid 46404, log /tmp/agent-secrets-airlock.eGQ8I8/broker2.log
   secrets:             AIRLOCK_DEMO_TOKEN and AIRLOCK_SCOPED_TOKEN (stored, bound to s.airlock.test; AIRLOCK_SCOPED_TOKEN in
                        authorization and x-key, GET /read alone), AIRLOCK_GITHUB_APP (github-app,
-                       installation 7 on acme-org), AIRLOCK_GOOGLE_LOGIN (google-login),
-                       AIRLOCK_AZURE_LOGIN (kind azure, human tier) and AIRLOCK_AWS_KEY (kind aws)
+                       installation 7 on acme-org; AIRLOCK_PLAIN_GITHUB is
+                       its profile with no proxy block, released as its value), AIRLOCK_GOOGLE_LOGIN
+                       (google-login), AIRLOCK_AZURE_LOGIN (kind azure, human tier) and AIRLOCK_AWS_KEY (kind
+                       aws), each a profile of its own name in /tmp/agent-secrets-airlock.eGQ8I8/profiles.json
 ...
 ```
 
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
-stack's `bin/`. The rules file binds `AIRLOCK_DEMO_TOKEN` to the stand-in service S,
-`s.airlock.test`, and names no headers for it, so its value travels in `authorization`, the one
-header an entry with none takes. The command gets a placeholder of 58 characters in place of the
+stack's `bin/`. The profiles file binds `AIRLOCK_DEMO_TOKEN` to the stand-in service S,
+`s.airlock.test`, and its proxy block names no headers, so its value travels in `authorization`,
+the one header a proxy block with none takes. The command gets a placeholder of 58 characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the
 command's call to S goes through the broker:
 
@@ -619,7 +649,7 @@ $ jq -j '.secrets[] | select(.name | endswith("airlock-demo-token")) | "Bearer "
 a2ecdfa9af6567f28055293e907aaec873a545fa2b0ee30c14e8e2a7b27aa149  -
 ```
 
-The rules file's second entry, `AIRLOCK_SCOPED_TOKEN`, is bound to the same host for `GET /read`
+The profiles file's second profile, `AIRLOCK_SCOPED_TOKEN`, is bound to the same host for `GET /read`
 alone, so the proxy refuses a `POST /write` with it, names the rule that refused, and ends the
 refusal with its answer id:
 
@@ -653,16 +683,19 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-airlock-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its rules file says
-who decides each human-tier secret:
+server, where the broker mints the identity token it presents to the model. Its profiles file
+says who decides each human-tier secret, in each profile's proxy block:
 
-| Secret | Its rules entry and tags | Who decides a request for it |
+| Secret | Its proxy block and tags | Who decides a request for it |
 | --- | --- | --- |
 | `AIRLOCK_JUDGED_TOKEN` | `judge: 900` with `guidance`, owned by `ada@example.com` | The judge, against that guidance. |
-| `AIRLOCK_HOSTLESS_TOKEN` | `judge: 900` with `guidance` and no `hosts`, owned by `ada@example.com` | The judge; the value is released to the command, since the entry binds no host. |
+| `AIRLOCK_SECOND_JUDGED_TOKEN` | `judge: 900` with `guidance` of its own, owned by `ada@example.com` | The judge, against that guidance; a request for it beside `AIRLOCK_JUDGED_TOKEN` is decided by the judge for both, each against its own guidance. |
 | `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge, in the place of anyone who signs in. |
 | `AIRLOCK_ADMIN_TOKEN` | `judge: 900`, `admin: "true"` | `ada@example.com` on the broker page: the judge never decides an administrator's key. |
 | `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | `ada@example.com` on the broker page. |
+
+Every proxy block binds at least one host, so no profile releases its value under a judge: the
+broker refuses a profiles file with a proxy block that names none.
 
 `agent-secrets secret show "$AIRLOCK_JUDGED_SECRET"` prints the same: its `decides:` line names the
 judge, and its `guidance:` line the text the judge decides on, `$AIRLOCK_JUDGE_GUIDANCE`. Ask for it
@@ -700,7 +733,7 @@ beside what the check expected.
 
 ## Stop
 
-1. In the first shell, press Ctrl-C: the script stops the broker and `dev-oidc-issuer`, drops its
+1. In the first shell, press Ctrl-C: the script stops the broker, its proxy's front, `dev-oidc-issuer` and the stand-ins, drops its
    database, and prints the workdir it kept. A token the issuer minted verifies nowhere else, and no
    longer verifies once it stops.
 2. In the second shell, leave the registered session (`exit`), then stop the helper: `kill %1`.
@@ -723,9 +756,9 @@ deployment's own daemon, which makes that call as it starts a pod; and the fake 
 Manager and KMS. The broker reads that file again on every call it makes to it, so editing it is
 how you write a secret here.
 
-The airlock's proxy, its rules, its decision and its swap are the real ones too, and so is each
+The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
 broker process the airlock stack runs. Five more things stand in there. `cmd/dev-airlock-stands`
-plays every host the rules bind: S and T, which answer one line and record what they were sent,
+plays every host a proxy block binds: S and T, which answer one line and record what they were sent,
 the GitHub and Google endpoints a `github-app` and a `google-login` secret mint at, the Microsoft
 token endpoint the `azure` kind exchanges at, which also plays the resource host that token is
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
@@ -736,7 +769,7 @@ what it writes — is real as well, and three more of that command's stands serv
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue, one done one and one
 answered ask on the open one, and a
-metadata server that mints the broker's identity token. The rules file the script writes stands
+metadata server that mints the broker's identity token. The profiles file the script writes stands
 in for the deployment's own, which lives in the deployment's repository. The proxy's certificate
 authority is made at each start, where a deployment keeps it in a Kubernetes Secret both broker
 pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a

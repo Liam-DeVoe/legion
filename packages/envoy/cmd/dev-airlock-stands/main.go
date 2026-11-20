@@ -2,7 +2,8 @@
 // (scripts/dev-broker.sh and the airlock checks run beside it), so a check script drives the
 // same stand-ins the Go tests do: the two HTTPS services S and T, which record every request
 // they get and of which S answers a WebSocket upgrade at /socket; the stand-in GitHub and
-// Google endpoints a github-app and a google-login secret are minted at; the stand-in
+// Google endpoints a github-app and a google-login secret are minted at, the GitHub one served
+// a second time over TLS for a command behind the proxy; the stand-in
 // Microsoft authority the azure kind reads a tenant's OpenID configuration from and exchanges
 // at; a stand-in AWS service that verifies Signature Version 4 with the real test key and
 // the real session token; and the three the broker's model judge calls - a model endpoint, a
@@ -11,7 +12,9 @@
 // why one implementation answers both.
 //
 //	dev-airlock-stands [--dir <path>] [--address <stand>=<host:port> ...] [--host <stand>=<name> ...]
-//	                   [--github-owner <owner>=<installation id> ...] [--google-lifetime <duration>]
+//	                   [--github-owner <owner>=<installation id> ...]
+//	                   [--installation-permissions <owner>=<permission>:<level>,... ...]
+//	                   [--google-lifetime <duration>]
 //	                   [--aws-key <key id>=<secret key>] [--aws-session-token <token>]
 //	                   [--records-address <host:port>]
 //	dev-airlock-stands front --listen <host:port> [--backend <host:port> ...] [--backends-file <path>]
@@ -28,11 +31,11 @@
 // (probe.go) and `load` (load.go), which are here so that CI compiles and vets them. With no
 // subcommand it serves the stands, which is what the rest of this comment is about.
 //
-// A stand is named s, t, github, google, microsoft, aws, model, dispatch or metadata. Each
-// binds 127.0.0.1 on a port the operating system picks unless --address names one, and each
-// HTTPS stand's certificate names 127.0.0.1 and localhost unless --host adds names of its own
-// - the name a rules file binds a secret to, which the command's own TLS verification reads
-// out of the certificate.
+// A stand is named s, t, github, github-tls, google, microsoft, aws, model, dispatch or
+// metadata. Each binds 127.0.0.1 on a port the operating system picks unless --address names
+// one, and each HTTPS stand's certificate names 127.0.0.1 and localhost unless --host adds names
+// of its own - the host a profile's proxy block binds a credential to, which the command's own
+// TLS verification reads out of the certificate.
 //
 // The model stand answers one call at a time and what it answers is set while it runs, since
 // one check drives several cases against one stack: POST <records URL>/answers/model, whose
@@ -43,7 +46,17 @@
 //
 // The GitHub stand answers what each token request's body asked for - the repositories it names
 // and the permissions it names - and serves GET /repos/{owner}/{repo} to a token it minted whose
-// scope holds that repository, so a check spends a narrowed token as a caller does. What it
+// scope holds that repository, so a check spends a narrowed token as a caller does. The App's
+// installation on each owner holds what --installation-permissions names for that owner, or the
+// stand-in package's own map where it names nothing, and a token request naming a permission
+// past what it holds is refused 422, as GitHub refuses it; only github-profile-check.sh passes
+// the flag, so every other driver reads the stand's own map. Three routes answer by what the
+// token holds, as GitHub answers them (github.go): GET /repos/{owner}/{repo}/keys needs
+// administration, GET /orgs/{org}/installations needs organization_administration, and POST
+// /repos/{owner}/{repo}/statuses/{sha} needs statuses at write and answers 422 for any commit
+// but the one the report names (github_commit_sha). The github-tls stand is that same GitHub
+// over TLS: a token minted at the github stand, where the broker's minter reaches it, is spent
+// at github-tls, where a command reaches it through the proxy under a bound host's name. What it
 // answers a token request is set while it runs by the same device as the model's: POST
 // <records URL>/answers/github, whose body is {"mode": "<word>", "repository": "<name>"}, where
 // the repository is the one the refuse-repository mode reads and every other mode leaves out.
@@ -106,11 +119,13 @@ import (
 const exitUsageError = 2
 
 // The stands this command serves. s and t are the two services a call behind the airlock
-// reaches; the other seven stand in for the endpoints the broker itself calls.
+// reaches; github-tls is the GitHub stand as a call behind the airlock reaches it, over TLS
+// under a bound host's name; the other seven stand in for the endpoints the broker itself calls.
 const (
 	standS         = "s"
 	standT         = "t"
 	standGitHub    = "github"
+	standGitHubTLS = "github-tls"
 	standGoogle    = "google"
 	standMicrosoft = "microsoft"
 	standAWS       = "aws"
@@ -121,7 +136,7 @@ const (
 
 // stands is every stand's name, in the order the JSON lists them.
 var stands = []string{
-	standS, standT, standGitHub, standGoogle, standMicrosoft, standAWS,
+	standS, standT, standGitHub, standGitHubTLS, standGoogle, standMicrosoft, standAWS,
 	standModel, standDispatch, standMetadata,
 }
 
@@ -130,7 +145,10 @@ var stands = []string{
 // behind TLS would need a root in the pod's trust store, and the three the model judge calls
 // are reached by that same sort of client; the metadata server could be nothing else, since
 // internal/googleidentity asks it over http and no other scheme. Every other stand is reached
-// through the proxy, whose extra roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names.
+// through the proxy, whose extra roots BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE names. That is why
+// the GitHub stand is two: github, plain, where the broker mints a GitHub profile's token, and
+// github-tls, where a command behind the proxy spends it, since the proxy refuses plain http to a
+// bound host and decrypts nothing but a bound host's port 443.
 var plainStands = map[string]bool{
 	standGitHub: true, standGoogle: true,
 	standModel: true, standDispatch: true, standMetadata: true,
@@ -236,10 +254,13 @@ func main() {
 // options is what the flags say: everything serve needs and nothing it reads from the
 // environment.
 type options struct {
-	dir             string
-	addresses       standFlags
-	hosts           hostFlags
-	installations   map[string]int64
+	dir           string
+	addresses     standFlags
+	hosts         hostFlags
+	installations map[string]int64
+	// permissions is what --installation-permissions says each named owner's installation
+	// holds, by owner; an owner it does not name holds the stand-in package's own map.
+	permissions     map[string]map[string]string
 	googleLifetime  time.Duration
 	awsKeyID        string
 	awsSecretKey    string
@@ -268,11 +289,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 	fs := flag.NewFlagSet("dev-airlock-stands", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	o := options{addresses: standFlags{flagName: "--address"}, hosts: hostFlags{}, installations: map[string]int64{}}
+	o := options{addresses: standFlags{flagName: "--address"}, hosts: hostFlags{}, installations: map[string]int64{}, permissions: map[string]map[string]string{}}
 	fs.StringVar(&o.dir, "dir", "", "write the authority's and the services' files into `<path>`, and with none a directory of this run's own")
 	fs.Var(&o.addresses, "address", "bind `<stand>=<host:port>` at that address rather than 127.0.0.1 on a port the system picks (repeatable)")
 	fs.Var(&o.hosts, "host", "add `<stand>=<name>`'s name or address to that stand's certificate (repeatable)")
 	fs.Var(ownerFlags{installations: o.installations}, "github-owner", "the GitHub stand answers `<owner>=<installation id>` as an installation of the App (repeatable)")
+	fs.Var(permissionFlags{held: o.permissions}, "installation-permissions", "the App's installation on the owner of `<owner>=<permission>:<level>,...` holds those permissions, and nothing for an owner followed by nothing, in place of the stand's own map (repeatable)")
 	fs.DurationVar(&o.googleLifetime, "google-lifetime", time.Hour, "the Google stand's answer says the access token lasts `<duration>`")
 	fs.StringVar(&o.recordsAddress, "records-address", "127.0.0.1:0", "serve the recording routes at `<host:port>`")
 	awsKey := fs.String("aws-key", "", "the AWS stand verifies each call against `<key id>=<secret key>`, and with none a pair of its own")
@@ -305,6 +327,14 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// One owner, so a github-app secret released with no --github-owner still mints: a
 		// check that cares which owner says so itself.
 		o.installations["acme-org"] = 7
+	}
+	for _, owner := range slices.Sorted(maps.Keys(o.permissions)) {
+		if _, installed := o.installations[owner]; !installed {
+			// A map for an owner the App is not installed on would answer nothing: a check
+			// that named the wrong owner reads that here, not as a cut that never happened.
+			fmt.Fprintf(stderr, "dev-airlock-stands: --installation-permissions names %s, on which no --github-owner installs the App\n", owner)
+			return exitUsageError
+		}
 	}
 	return serve(ctx, o, stdout, stderr)
 }
@@ -429,6 +459,8 @@ type report struct {
 	// is only ever what the minter signs its App JWT with.
 	GitHubAppID      string `json:"github_app_id"`
 	GitHubAppKeyFile string `json:"github_app_key_file"`
+	// GitHubCommitSHA is the one commit every repository of the GitHub stand holds.
+	GitHubCommitSHA string `json:"github_commit_sha"`
 	// Stands is each stand by name.
 	Stands map[string]standReport `json:"stands"`
 }
@@ -474,7 +506,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	out := report{
 		Dir: dir, CACertFile: certFile, CAKeyFile: keyFile,
 		AWSKeyID: o.awsKeyID, AWSSecretKey: o.awsSecretKey,
-		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile,
+		GitHubAppID: standInGitHubAppID, GitHubAppKeyFile: appKeyFile, GitHubCommitSHA: standInCommitSHA,
 		DispatchOpenIssue: standInOpenIssue, DispatchDoneIssue: standInDoneIssue,
 		DispatchAnsweredAsk: standInAnsweredAsk, DispatchAskAnsweredBy: o.askAnsweredBy,
 		Stands: map[string]standReport{},
@@ -512,8 +544,14 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	// mints a token of its own for every request, as GitHub does (DistinctTokens): the broker
 	// revokes a token it minted and hands to nobody, and a stand that answered one string for a
 	// scope would have that revoke end the token the airlock's proxy holds for the same scope.
-	github := airlocktest.NewGitHubStand(airlocktest.GitHubOptions{Installations: o.installations, DistinctTokens: true})
+	// Each installation holds what --installation-permissions names for its owner, or the
+	// stand-in package's own map. One answer serves both GitHub stands (githubRoutes), so a token
+	// minted at the plain one is spent at the TLS one.
+	github := newGitHubRoutes(airlocktest.NewGitHubStand(airlocktest.GitHubOptions{
+		Installations: o.installations, Permissions: o.permissions, DistinctTokens: true,
+	}), o.installations)
 	services[standGitHub].AnswerWith(github.Answer)
+	services[standGitHubTLS].AnswerWith(github.Answer)
 	services[standGoogle].AnswerWith(airlocktest.NewGoogleStand(airlocktest.GoogleOptions{Lifetime: o.googleLifetime}).Answer)
 	// The Microsoft stand plays both hosts of its one certificate: the authority a federated
 	// token is exchanged at, and the Resource Manager that access token is then spent at.
@@ -538,7 +576,7 @@ func serve(ctx context.Context, o options, stdout, stderr io.Writer) int {
 	}).Answer)
 	services[standMetadata].AnswerWith(airlocktest.NewMetadataStand(airlocktest.MetadataOptions{}).Answer)
 
-	records := &http.Server{Handler: recordsHandler(services, model, github), ReadHeaderTimeout: 30 * time.Second}
+	records := &http.Server{Handler: recordsHandler(services, model, github.stand), ReadHeaderTimeout: 30 * time.Second}
 	recordsURL, stopRecords, err := serveRecords(records, o.recordsAddress)
 	if err != nil {
 		fmt.Fprintf(stderr, "dev-airlock-stands: %v\n", err)
