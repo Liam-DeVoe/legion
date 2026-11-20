@@ -82,8 +82,8 @@ name: Dispatch unit suite repeated
 # "GitHub Actions usage is free for standard GitHub-hosted runners in public repositories". In
 # runner minutes, each leg's job rounded up to a whole minute as GitHub bills it, the runs that
 # the notes' measurement reads took 115 to 164 minutes (runs 44712651976, 44709413418,
-# 44726566359, 44751162563, 44751677485, 44759854373 and 44759866208), and $0, since those minutes
-# are free here.
+# 44726566359, 44751162563, 44751677485, 44759854373, 44759866208, 44770373346, 44796999569 and
+# 44808555733), and $0, since those minutes are free here.
 
 on:
   schedule:
@@ -148,17 +148,17 @@ jobs:
           - lane: web-cold
             reruns: 1
             slowest_seconds: 158 # run 44751677485, round 1
-            other_steps_seconds: 28 # run 44712085178, round 2
+            other_steps_seconds: 32 # run 44770373346, round 2
             deadline_seconds: 360 # 2 x 158 = 316 s, up to the next whole minute
             step_minutes: 8 # 360 + 60 s kill-after + 60 s of slack = 480 s
-            job_minutes: 9 # 8 + 2 x 28 s = 56 s, up to the next whole minute, 1
+            job_minutes: 10 # 8 + 2 x 32 s = 64 s, up to the next whole minute, 2
           - lane: harness
             reruns: 20
-            slowest_seconds: 1496 # run 44759866208, round 2
+            slowest_seconds: 1565 # run 44796999569, round 2
             other_steps_seconds: 229 # run 44709413418, round 1, whose zsh install is most of it
-            deadline_seconds: 3000 # 2 x 1,496 = 2,992 s, up to the next whole minute
-            step_minutes: 52 # 3,000 + 60 s kill-after + 60 s of slack = 3,120 s
-            job_minutes: 60 # 52 + 2 x 229 s = 458 s, up to the next whole minute, 8
+            deadline_seconds: 3180 # 2 x 1,565 = 3,130 s, up to the next whole minute
+            step_minutes: 55 # 3,180 + 60 s kill-after + 60 s of slack = 3,300 s
+            job_minutes: 63 # 55 + 2 x 229 s = 458 s, up to the next whole minute, 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
