@@ -79,20 +79,16 @@ var (
 	lockReadSubquery     = regexp.MustCompile(`^\s*(select|with|values)\b`)
 )
 
-// lockReadExemptions are the reads of test code that keep to no database or backend of their own,
-// or keep to one in a way the check cannot read, and whose tests depend on no other test's
-// database, keyed "<path> <function>", each with why: two that no server runs; one that counts
-// locks on a table only its own database holds; two that read every backend of the server, one
-// counting them on purpose and one whose test asserts nothing of what it reads; and one that
-// counts the backends its own backend holds up, through an or the check does not follow. A key
-// that names no such read is itself an offence, so the list cannot outlive its reads.
+// lockReadExemptions are the reads of test code that keep to no database or backend of their own
+// and whose tests depend on no other test's database, keyed "<path> <function>", each with why:
+// two that no server runs; one that counts locks on a table only its own database holds; and two
+// that read every backend of the server, one counting them on purpose and one whose test asserts
+// nothing of what it reads. A key that names no such read is itself an offence, so the list
+// cannot outlive its reads.
 var lockReadExemptions = map[string]string{
 	"packages/envoy/cmd/dispatch/connection_ceiling_test.go connectionRefusalCause": "a refused connection's diagnosis, not a " +
 		"lock read: it counts every client backend of the server beside the server's max_connections, the limit Postgres " +
 		"refused the connection on, so it counts the whole server's on purpose",
-	"packages/envoy/internal/broker/api/oauth_login_test.go awaitWaiters": "it counts the backends that wait on the backend " +
-		"$1 names, a backend of its own test, or on one of those: each is held up by its own test's backend, but the " +
-		"condition is an or of that and a nested read of the same, which the check does not follow",
 	"packages/envoy/internal/broker/store/migrate_guard_test.go TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations": "the " +
 		"test's own migration counts the locks on broker_schema_migrations, a table the test creates in an empty database of " +
 		"its own (emptySchemaStore): a table created on the server takes an oid from the server's one counter, which no " +
