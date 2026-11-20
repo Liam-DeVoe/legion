@@ -13,9 +13,9 @@
  * already uses: this file holds no token, sets no GH_TOKEN and needs none of its own. The pod's gh
  * sends each call with the token of the one owner the call names, so every call here names exactly
  * one owner (a search names one `org:`, `user:` or `repo:` qualifier). Blobs are read in batches of
- * up to 50 with `gh api graphql`, sent with GH_REPO naming the repository so the pod's gh takes that
- * owner's token; a blob a batch does not give whole (binary, truncated, missing) is read alone with
- * `gh api repos/<r>/git/blobs/<sha>`.
+ * up to 50 with `gh api graphql`, whose `-f owner=<owner>` field (the query's `$owner` variable) is
+ * what the pod's gh routes a GraphQL call by, so it takes that owner's token; a blob a batch does
+ * not give whole (binary, truncated, missing) is read alone with `gh api repos/<r>/git/blobs/<sha>`.
  *
  * 1. Repositories. `gh repo list <owner> --limit 2000 --json nameWithOwner,isFork,isArchived,
  *    defaultBranchRef,parent` for each configured owner (with `--only`, for the owners of the named
@@ -37,30 +37,29 @@
  *    such a repository); every other kind is read wherever its path is. Every manifest read is
  *    resolved (a package.json without omp.skills still names the package an npm-sourced plugin
  *    comes from); only those of their kind are listed, the rest counted.
- * 5. Loaders by code search. For each skill name, `gh api -i -X GET search/code` for
- *    `skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` (each plugin that ships
- *    the skill) and the quoted name, once per configured owner (`org:` or `user:`, as
- *    `users/<owner>` gives its type) or, with `--only`, once per named repository (`repo:`). The
- *    pod's gh refuses a quoted search word holding a colon, so each pattern is sent as its runs
- *    between colons, each quoted (`skill://x` as `"skill" "//x"`); GitHub's search reads
- *    punctuation loosely either way, so its hits are candidates: each hit file is read, at its
- *    repository's commit of step 1, and kept only where the skill's name is in it as a whole name
- *    (not inside a longer name), outside a skill. Each query's `total_count` and
- *    `incomplete_results`, its hits and their verdicts, and each failure go to `queries.jsonl`. A
- *    query whose `total_count` reaches 1,000, and each query of a name in `COMMON_WORD_NAMES` (a
- *    short list of plain English words kept in this file, `dispatch` and `envoy` among them; a
- *    plain word not on it is run again only when it reaches 1,000), is run again once per
- *    repository of that owner that holds a skill. A fork, which code search leaves out, is read
- *    from its tree instead when it holds a skill: each text blob (`TEXT_EXTENSIONS`, or a name in
- *    `TEXT_NAMES`) of at most `FORK_SCAN_MAX_BYTES` bytes outside a skill is read and searched for
- *    every skill name. Pacing: GitHub allows 10 code searches a minute per token, and each owner
- *    has its own token, so each search call's `x-ratelimit-remaining` and `x-ratelimit-reset`
- *    headers are kept per owner, and a spent owner waits for its reset while another owner's
- *    queries run; a call refused for its rate limit sleeps to the reset its headers give, else the
- *    one `gh api rate_limit` gives, and runs again. `--max-search-calls <n>` stops searching after
- *    n calls; every query it leaves out is in `queries.jsonl` as not run. A query whose hits GitHub
- *    counts past its 1,000-result cap (or the budget cut short) keeps how many it left unread
- *    (`unread`), and skill-copies.md lists it.
+ * 5. Loaders by code search. For each skill name, one `gh api -i -X GET search/code` for the quoted
+ *    name, once per owner whose listing succeeded (`org:` or `user:`, as `users/<owner>` gives its
+ *    type) or, with `--only`, once per named repository (`repo:`). One search stands for the brief's
+ *    five patterns (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the
+ *    quoted name): `searchFor` says why. Each hit file is read, at its repository's commit of
+ *    step 1, and kept only where the skill's name is in it as a whole name (not inside a longer
+ *    name), outside a skill; `mentions` then sorts each mention by those patterns. Each query's
+ *    `total_count` and `incomplete_results`, its hits and their verdicts, and each failure go to
+ *    `queries.jsonl`. A query whose `total_count` reaches 1,000, and each query of a name in
+ *    `COMMON_WORD_NAMES` (a short list of plain English words kept in this file, `dispatch` and
+ *    `envoy` among them; a plain word not on it is run again only when it reaches 1,000), is run
+ *    again once per repository of that owner that holds a skill. A fork, which code search leaves
+ *    out, is read from its tree instead when it holds a skill: each text blob (`TEXT_EXTENSIONS`,
+ *    or a name in `TEXT_NAMES`) of at most `FORK_SCAN_MAX_BYTES` bytes outside a skill is read and
+ *    searched for every skill name. Pacing: GitHub allows 10 code searches a minute per token, and
+ *    each owner has its own token, so the owners' searches run at once, each owner's one at a time
+ *    (GitHub asks for one client's requests to be serial) and paced by its own limit: at most
+ *    `x-ratelimit-limit` (10 when absent) calls started in any 60 seconds, a wait for
+ *    `x-ratelimit-reset` when `x-ratelimit-remaining` is 0, and a call refused for its rate limit
+ *    run again after its `retry-after`, else its reset, else the reset `gh api rate_limit` gives.
+ *    `--max-search-calls <n>` stops searching after n calls; every query it leaves out is in
+ *    `queries.jsonl` as not run. A query whose hits GitHub counts past its 1,000-result cap (or the
+ *    budget cut short) keeps how many it left unread (`unread`), and skill-copies.md lists it.
  * 6. The prefix table. From the installers: a skill an Oh My Pi plugin package ships is at
  *    `**\/node_modules/<package>/<dir>/<name>/`, and, for a package the worker image carries (one
  *    the prepack script stages or whose directory holds the Claude Code build script), at
@@ -119,20 +118,12 @@ export interface GhResult {
   readonly stderr: string;
 }
 
-/** Runs gh with `args`, and `env` over this process's environment; the test injects a stand-in. */
-export type Gh = (
-  args: readonly string[],
-  env?: Readonly<Record<string, string>>
-) => Promise<GhResult>;
+/** Runs gh with `args`; the test injects a stand-in. */
+export type Gh = (args: readonly string[]) => Promise<GhResult>;
 
 /** The pod's own gh, with the environment this process has. */
-export const spawnGh: Gh = async (args, env) => {
-  const child = Bun.spawn(["gh", ...args], {
-    env: env === undefined ? process.env : { ...process.env, ...env },
-    stdin: "ignore",
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+export const spawnGh: Gh = async (args) => {
+  const child = Bun.spawn(["gh", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const [stdout, stderr, code] = await Promise.all([
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
@@ -291,11 +282,13 @@ class Github {
     return text;
   }
 
-  /** Reads the blobs `entries` of `repository` into the cache in GraphQL batches (`gh api
-   *  graphql`, sent with GH_REPO naming the repository, so the pod's gh routes it to that owner's
-   *  token), up to BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes a call: one call where each blob
-   *  alone would take one. A blob a batch does not give whole (binary, truncated, missing, or in a
-   *  batch that fails) is left to `blob`, which reads it alone. */
+  /** Reads the blobs `entries` of `repository` into the cache in GraphQL batches, up to BLOB_BATCH
+   *  blobs and BLOB_BATCH_BYTES bytes a call: one call where each blob alone would take one. The
+   *  owner and name go in as the fields `owner` and `name` (the query's variables): a `gh api
+   *  graphql` call names no repository, and the pod's gh routes one by its `owner` field, so the
+   *  call takes that owner's token (GH_REPO does not route it: gh reads GH_REPO only for a
+   *  placeholder). A blob a batch does not give whole (binary, truncated, missing, or in a batch
+   *  that fails) is left to `blob`, which reads it alone. */
   async prefetch(repository: string, entries: readonly TreeEntry[]): Promise<void> {
     const [owner = "", name = ""] = repository.split("/");
     const wanted = new Map<string, TreeEntry>();
@@ -326,10 +319,17 @@ class Github {
             `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
         )
         .join(" ");
-      const query = `query { repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) { ${fields} } }`;
-      const result = await this.io.gh(["api", "graphql", "-f", `query=${query}`], {
-        GH_REPO: repository,
-      });
+      const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+      const result = await this.io.gh([
+        "api",
+        "graphql",
+        "-f",
+        `owner=${owner}`,
+        "-f",
+        `name=${name}`,
+        "-f",
+        `query=${query}`,
+      ]);
       const parsed = BlobBatch.safeParse(result.code === 0 ? parseJson(result.stdout) : undefined);
       if (!parsed.success) {
         const why = firstLine(result.stderr) || "an answer not of its shape";
@@ -1925,28 +1925,27 @@ export const COMMON_WORD_NAMES: Readonly<Record<string, true>> = {
   writing: true,
 };
 
-/** The search patterns of the brief, for one skill name. */
-export type PatternKind =
-  | "skill-uri"
-  | "slash-skill"
-  | "skills-path"
-  | "plugin-qualified"
-  | "quoted-name";
-
-export interface SearchPattern {
-  readonly kind: PatternKind;
-  readonly name: string;
-  readonly plugin: string;
-  /** The text the pattern looks for, as the brief writes it. */
-  readonly text: string;
-  /** The search terms sent: each run between colons, quoted. */
-  readonly terms: string;
-}
-
-/** The terms GitHub gets for a pattern: each run between colons in double quotes, since the pod's
- *  gh refuses a quoted search word that holds a colon (`skill://x` is sent as `"skill" "//x"`). */
-export function searchTerms(text: string): string {
-  return text
+/**
+ * The search terms for a skill name: the quoted name, each run between colons quoted alone, since
+ * the pod's gh refuses a quoted search word that holds a colon (`a:b` is sent as `"a" "b"`).
+ *
+ * One search for the quoted name, per owner, stands for the five patterns the brief names
+ * (`skill://<name>`, `/skill:<name>`, `skills/<name>`, `<plugin>:<name>` and the quoted name):
+ *   - every one of the five holds the name, and GitHub's code search reads punctuation as a break
+ *     between words, so a file that matches any of them holds the name's own words in a row, which
+ *     is what the quoted name matches;
+ *   - every hit file is read and kept only where the name stands whole (`mentions`), and
+ *     `mentions` sorts each mention by those five patterns, so a pattern's own search would find
+ *     no file, and no kind of mention, that the one search misses;
+ *   - a search whose count reaches GitHub's cap of 1,000 results is run again per repository, so
+ *     the cap on the one search hides no repository a narrower pattern's search would reach.
+ * Checked on cybermonklabs/legion on 2026-11-20, with all five searched: for each of
+ * `agent-secrets`, `approval-review` and `asd-ste100`, every file the four other patterns found
+ * (54, 19 and 24 files) was among the quoted name's hits. One search instead of five takes a run
+ * over three owners' 632 names from about 8,100 searches to about 1,900.
+ */
+export function searchTerms(name: string): string {
+  return name
     .replace(/"/g, "")
     .split(":")
     .filter((part) => part !== "")
@@ -1954,28 +1953,9 @@ export function searchTerms(text: string): string {
     .join(" ");
 }
 
-/** The five patterns of a name: `skill://<name>`, `/skill:<name>`, `skills/<name>`, one
- *  `<plugin>:<name>` for each plugin that ships it, and the quoted name. */
-export function patternsFor(name: string, plugins: readonly string[]): SearchPattern[] {
-  const make = (kind: PatternKind, text: string, plugin = ""): SearchPattern => ({
-    kind,
-    name,
-    plugin,
-    text,
-    terms: searchTerms(text),
-  });
-  return [
-    make("skill-uri", `skill://${name}`),
-    make("slash-skill", `/skill:${name}`),
-    make("skills-path", `skills/${name}`),
-    ...plugins.map((plugin) => make("plugin-qualified", `${plugin}:${name}`, plugin)),
-    make("quoted-name", `"${name}"`),
-  ];
-}
-
-/** One search query: a pattern in one scope. */
+/** One search query: a skill name in one scope. */
 interface SearchJob {
-  readonly pattern: SearchPattern;
+  readonly name: string;
   /** `org:<o>`, `user:<o>` or `repo:<r>`. */
   readonly scope: string;
   readonly owner: string;
@@ -1994,9 +1974,6 @@ export interface SearchHit {
 export interface QueryRecord {
   readonly type: "search";
   readonly name: string;
-  readonly kind: PatternKind;
-  readonly plugin: string;
-  readonly pattern: string;
   readonly q: string;
   readonly scope: string;
   readonly reason: string;
@@ -2055,18 +2032,54 @@ function splitIncluded(text: string): {
   };
 }
 
-/** Code search calls, paced per owner by GitHub's rate-limit headers, under a call budget. */
+/** One owner's code-search pacing: the start times of its calls in the last minute, its limit a
+ *  minute, and when its spent limit resets. */
+interface OwnerPace {
+  starts: number[];
+  limit: number;
+  blockedUntil: number;
+}
+
+/** The calls a minute GitHub allows code search when an answer gives no `x-ratelimit-limit`. */
+const SEARCH_LIMIT = 10;
+const MINUTE_MS = 60_000;
+
+/** Code search calls under a call budget, each owner paced by its own token's limit (the file
+ *  header, step 5). */
 class CodeSearch {
   calls = 0;
-  private readonly blockedUntil = new Map<string, number>();
+  private readonly paces = new Map<string, OwnerPace>();
 
   constructor(
     private readonly github: Github,
     readonly budget: number
   ) {}
 
-  blocked(owner: string): number {
-    return this.blockedUntil.get(owner) ?? 0;
+  private pace(owner: string): OwnerPace {
+    let pace = this.paces.get(owner);
+    if (pace === undefined) {
+      pace = { starts: [], limit: SEARCH_LIMIT, blockedUntil: 0 };
+      this.paces.set(owner, pace);
+    }
+    return pace;
+  }
+
+  /** Waits until `owner` may start a call: fewer than its limit started in the last minute, and
+   *  past any reset its answers or a refusal named. */
+  private async waitFor(owner: string): Promise<void> {
+    const io = this.github.io;
+    const pace = this.pace(owner);
+    for (;;) {
+      const now = io.now();
+      pace.starts = pace.starts.filter((start) => start > now - MINUTE_MS);
+      const windowOpens = pace.starts.length < pace.limit ? 0 : (pace.starts[0] ?? now) + MINUTE_MS;
+      const until = Math.max(pace.blockedUntil, windowOpens);
+      if (until <= now) return;
+      io.err(
+        `copies: code search of ${owner} waits ${Math.ceil((until - now) / 1000)} s for its rate limit`
+      );
+      await io.sleep(until - now);
+    }
   }
 
   /** One page of a search; undefined when the call budget is spent before it. */
@@ -2077,17 +2090,13 @@ class CodeSearch {
     record: QueryRecord
   ): Promise<SearchPage | undefined> {
     const io = this.github.io;
+    const pace = this.pace(job.owner);
     for (;;) {
-      const wait = this.blocked(job.owner) - io.now();
-      if (wait > 0) {
-        io.err(
-          `copies: the code search limit of ${job.owner} is spent; waiting ${Math.ceil(wait / 1000)} s`
-        );
-        await io.sleep(wait);
-      }
+      await this.waitFor(job.owner);
       if (this.calls >= this.budget) return undefined;
       this.calls++;
       record.calls++;
+      pace.starts.push(io.now());
       const result = await io.gh([
         "api",
         "-i",
@@ -2102,10 +2111,16 @@ class CodeSearch {
         `page=${page}`,
       ]);
       const answer = splitIncluded(result.stdout);
-      const reset = Number(answer.headers.get("x-ratelimit-reset"));
-      const resetMs = Number.isFinite(reset) && reset > 0 ? reset * 1000 + 1000 : undefined;
+      const header = (name: string) => {
+        const value = Number(answer.headers.get(name));
+        return Number.isFinite(value) && value > 0 ? value : undefined;
+      };
+      const limit = header("x-ratelimit-limit");
+      if (limit !== undefined) pace.limit = limit;
+      const reset = header("x-ratelimit-reset");
+      const resetMs = reset === undefined ? undefined : reset * 1000 + 1000;
       if (answer.headers.get("x-ratelimit-remaining") === "0" && resetMs !== undefined)
-        this.blockedUntil.set(job.owner, resetMs);
+        pace.blockedUntil = resetMs;
       if (result.code === 0 && answer.status < 300) {
         const parsed = SearchAnswer.safeParse(parseJson(answer.body));
         if (!parsed.success)
@@ -2121,10 +2136,11 @@ class CodeSearch {
         (answer.status === 429 || RATE_LIMITED.test(`${result.stderr}\n${answer.body}`))
       ) {
         record.rate_limit_retries++;
-        this.blockedUntil.set(
-          job.owner,
-          resetMs ?? io.now() + (await this.github.waitForReset("code_search"))
-        );
+        const retryAfter = header("retry-after");
+        pace.blockedUntil =
+          retryAfter !== undefined
+            ? io.now() + retryAfter * 1000
+            : (resetMs ?? io.now() + (await this.github.waitForReset("code_search")));
         continue;
       }
       throw new Error(firstLine(result.stderr) || `HTTP ${answer.status}`);
@@ -2135,11 +2151,8 @@ class CodeSearch {
 function newRecord(job: SearchJob): QueryRecord {
   return {
     type: "search",
-    name: job.pattern.name,
-    kind: job.pattern.kind,
-    plugin: job.pattern.plugin,
-    pattern: job.pattern.text,
-    q: `${job.pattern.terms} ${job.scope}`,
+    name: job.name,
+    q: `${searchTerms(job.name)} ${job.scope}`,
     scope: job.scope,
     reason: job.reason,
     status: "not run",
@@ -2190,30 +2203,51 @@ async function runSearch(search: CodeSearch, job: SearchJob, record: QueryRecord
   record.unread = Math.max(0, (record.total_count ?? 0) - record.items_read);
 }
 
-/** Runs the jobs in order, except that a job whose owner waits for its rate limit gives way to
- *  another owner's. Returns one record per job, in the jobs' order. */
+/** Runs the jobs: each owner's in order, one at a time, and the owners' at once, so each owner's
+ *  token is paced by its own limit while the others' run. `followUps` gives, for a job that ran,
+ *  more jobs, each queued at the end of its own owner's queue. Returns one record per job: the
+ *  jobs' in their order, then the follow-ups' in the order they were queued. */
 async function runSearches(
   search: CodeSearch,
   jobs: readonly SearchJob[],
-  io: CopiesIo
+  io: CopiesIo,
+  followUps: (job: SearchJob, record: QueryRecord) => readonly SearchJob[] = () => []
 ): Promise<QueryRecord[]> {
-  const records = jobs.map(newRecord);
-  const pending = jobs.map((job, index) => ({ job, index }));
+  const queued = jobs.map((job) => ({ job, record: newRecord(job) }));
+  const queues = new Map<string, typeof queued>();
+  const enqueue = (entry: (typeof queued)[number]) => {
+    const queue = queues.get(entry.job.owner);
+    if (queue === undefined) queues.set(entry.job.owner, [entry]);
+    else queue.push(entry);
+  };
+  for (const entry of queued) enqueue(entry);
+  const started = io.now();
   let done = 0;
-  while (pending.length > 0) {
-    const now = io.now();
-    const ready = pending.findIndex(({ job }) => search.blocked(job.owner) <= now);
-    const [next] = pending.splice(Math.max(ready, 0), 1);
-    if (next === undefined) break;
-    const record = records[next.index];
-    if (record === undefined) continue;
-    if (search.calls >= search.budget)
-      record.error = `the search-call budget (${search.budget}) is spent`;
-    else await runSearch(search, next.job, record);
-    done++;
-    if (done % 25 === 0) io.err(`copies: ${done}/${jobs.length} searches, ${search.calls} calls`);
-  }
-  return records;
+  await Promise.all(
+    [...queues.values()].map(async (queue) => {
+      // The queue grows while it runs: a follow-up joins the end of its owner's own queue.
+      for (let index = 0; index < queue.length; index++) {
+        const entry = queue[index];
+        if (entry === undefined) continue;
+        if (search.calls >= search.budget)
+          entry.record.error = `the search-call budget (${search.budget}) is spent`;
+        else await runSearch(search, entry.job, entry.record);
+        for (const job of followUps(entry.job, entry.record)) {
+          const next = { job, record: newRecord(job) };
+          queued.push(next);
+          enqueue(next);
+        }
+        done++;
+        if (done % 25 === 0) {
+          const minutes = Math.round((io.now() - started) / MINUTE_MS);
+          io.err(
+            `copies: ${done}/${queued.length} searches, ${search.calls} calls, ${minutes} min`
+          );
+        }
+      }
+    })
+  );
+  return queued.map((entry) => entry.record);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2963,7 +2997,12 @@ export async function listCopies(
         scopes.push({ scope: `repo:${repo.repository}`, owner: repo.owner, reason: "--only" });
     }
   } else {
-    for (const owner of owners) {
+    // Each owner whose listing succeeded: one not listed has no repository read, so no hit there
+    // could be checked.
+    const listed = owners.filter(
+      (owner) => !listingErrors.some((failed) => failed.owner === owner)
+    );
+    for (const owner of listed) {
       let qualifier = "user";
       try {
         if ((await github.api(`users/${owner}`, GithubUser)).type === "Organization")
@@ -2974,35 +3013,30 @@ export async function listCopies(
       scopes.push({ scope: `${qualifier}:${owner}`, owner, reason: "owner" });
     }
   }
+  // One search per name and scope (`searchTerms` says why one stands for the brief's five).
   const baseJobs: SearchJob[] = names.flatMap((name) =>
-    patternsFor(name, pluginsOf.get(name) ?? []).flatMap((pattern) =>
-      scopes.map((scope) => ({ pattern, ...scope }))
-    )
+    scopes.map((scope) => ({ name, ...scope }))
   );
   io.err(`copies: ${baseJobs.length} code searches for ${names.length} names`);
-  const records = await runSearches(search, baseJobs, io);
-  if (only.length === 0) {
-    const reruns: SearchJob[] = [];
-    baseJobs.forEach((job, index) => {
-      const capped = (records[index]?.total_count ?? 0) >= 1000;
-      if (!capped && !Object.hasOwn(COMMON_WORD_NAMES, job.pattern.name)) return;
-      const reason = capped
-        ? "run again per repository: total_count reached 1,000"
-        : "run again per repository: a common word";
-      for (const repo of repositories) {
-        if (repo.owner === job.owner && !repo.fork && withSkill.has(repo.repository)) {
-          reruns.push({
-            pattern: job.pattern,
-            scope: `repo:${repo.repository}`,
-            owner: repo.owner,
-            reason,
-          });
-        }
-      }
-    });
-    io.err(`copies: ${reruns.length} searches run again per repository`);
-    records.push(...(await runSearches(search, reruns, io)));
-  }
+  // An owner's search of a name at the 1,000 cap, or of a common word, is run again once per
+  // repository of that owner holding a skill, queued behind that owner's own searches.
+  const reruns = (job: SearchJob, record: QueryRecord): SearchJob[] => {
+    if (job.reason !== "owner") return [];
+    const capped = (record.total_count ?? 0) >= 1000;
+    if (!capped && !Object.hasOwn(COMMON_WORD_NAMES, job.name)) return [];
+    const reason = capped
+      ? "run again per repository: total_count reached 1,000"
+      : "run again per repository: a common word";
+    return repositories
+      .filter((repo) => repo.owner === job.owner && !repo.fork && withSkill.has(repo.repository))
+      .map((repo) => ({
+        name: job.name,
+        scope: `repo:${repo.repository}`,
+        owner: repo.owner,
+        reason,
+      }));
+  };
+  const records = await runSearches(search, baseJobs, io, reruns);
 
   // Each hit file, read at its repository's commit, kept where it names the skill.
   const byRepository = new Map(repositories.map((repo) => [repo.repository.toLowerCase(), repo]));

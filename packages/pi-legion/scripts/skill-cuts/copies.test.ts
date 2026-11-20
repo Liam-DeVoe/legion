@@ -14,7 +14,6 @@ import {
   PREFIX_TABLE_COLUMNS,
   parseManifest,
   parseTsv,
-  patternsFor,
   prefixMatches,
   type QueryRecord,
   type ReaderSkill,
@@ -224,9 +223,17 @@ class World {
   readonly trees = new Map<string, unknown>();
   readonly blobs = new Map<string, string>();
   readonly failingBlobs = new Set<string>();
-  /** Each GraphQL blob batch: the repository its query names, GH_REPO, and how many blobs. */
-  readonly batches: { repository: string; ghRepo: string | undefined; blobs: number }[] = [];
+  /** Each GraphQL blob batch: the repository its `owner` and `name` fields name, and its blobs. */
+  readonly batches: { repository: string; blobs: number }[] = [];
   search: (q: string, page: number, call: number) => SearchReply = () => ({ body: EMPTY_SEARCH });
+  /** When set, each owner's first search answer is held until this many owners have a search in
+   *  flight: a run that searched the owners one after another would never release it. */
+  holdFirstSearches = 0;
+  /** Each search call: the owner its scope names, the clock when it started, searches in flight. */
+  readonly searchLog: { owner: string; at: number; inFlight: number; ownerInFlight: number }[] = [];
+  private readonly inFlight = new Map<string, number>();
+  private readonly searched = new Set<string>();
+  private readonly firstSearches = Promise.withResolvers<void>();
   private searchCalls = 0;
 
   readonly now = () => this.clock;
@@ -255,10 +262,7 @@ class World {
     for (const file of files) this.blobs.set(blobSha(file.text), file.text);
   }
 
-  readonly gh = async (
-    args: readonly string[],
-    env?: Readonly<Record<string, string>>
-  ): Promise<GhResult> => {
+  readonly gh = async (args: readonly string[]): Promise<GhResult> => {
     this.calls.push([...args]);
     const ok = (value: unknown): GhResult => ({
       code: 0,
@@ -275,15 +279,22 @@ class World {
     }
     if (args[0] !== "api") return fail(`stand-in gh: no answer for ${args.join(" ")}`);
     if (args[1] === "graphql") {
-      // A blob batch as GitHub answers it: a blob it cannot give is null, a binary one has no text.
-      const query = args.find((arg) => arg.startsWith("query="))?.slice("query=".length) ?? "";
-      const named = /repository\(owner: "([^"]+)", name: "([^"]+)"\)/.exec(query);
+      // As the pod's gh routes it: a GraphQL call takes the token of the owner its `owner` field
+      // names, and any other token cannot see a private repository. A blob batch as GitHub answers
+      // it: a blob it cannot give is null, a binary one has no text.
+      const field = (name: string) =>
+        args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
+      const query = field("query") ?? "";
+      const [owner, name] = [field("owner"), field("name")];
+      if (
+        owner === undefined ||
+        name === undefined ||
+        !query.includes("repository(owner: $owner, name: $name)")
+      ) {
+        return fail(`gh: Could not resolve to a Repository with the name '${query}'.`);
+      }
       const fields = [...query.matchAll(/(b\d+): object\(oid: "([0-9a-f]{40})"\)/g)];
-      this.batches.push({
-        repository: `${named?.[1]}/${named?.[2]}`,
-        ghRepo: env?.GH_REPO,
-        blobs: fields.length,
-      });
+      this.batches.push({ repository: `${owner}/${name}`, blobs: fields.length });
       const repository = Object.fromEntries(
         fields.map(([, alias = "", sha = ""]) => {
           const text = this.blobs.get(sha);
@@ -298,7 +309,19 @@ class World {
       const field = (name: string) =>
         args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
       this.searchCalls++;
-      const reply = this.search(field("q"), Number(field("page")), this.searchCalls);
+      const q = field("q");
+      const owner = /(?:org|user|repo):([^/\s]+)/.exec(q)?.[1] ?? "";
+      const ownerInFlight = (this.inFlight.get(owner) ?? 0) + 1;
+      this.inFlight.set(owner, ownerInFlight);
+      const inFlight = [...this.inFlight.values()].reduce((sum, count) => sum + count, 0);
+      this.searchLog.push({ owner, at: this.clock, inFlight, ownerInFlight });
+      const reply = this.search(q, Number(field("page")), this.searchCalls);
+      if (this.holdFirstSearches > 0 && !this.searched.has(owner)) {
+        this.searched.add(owner);
+        if (this.searched.size >= this.holdFirstSearches) this.firstSearches.resolve();
+        await this.firstSearches.promise;
+      }
+      this.inFlight.set(owner, (this.inFlight.get(owner) ?? 1) - 1);
       const status = reply.status ?? 200;
       const headers = {
         "Content-Type": "application/json",
@@ -874,15 +897,21 @@ describe("the full run over the owners", () => {
     });
   });
 
-  test("each query is kept with its counts, and a common word's queries run again per repository holding a skill", () => {
+  test("each name is searched once per owner listed, as the quoted name, and each query keeps its counts", () => {
     const queries = r.queries().filter((query) => query.type === "search");
-    const names = new Set(r.table("skill-copies.tsv").map((row) => row.name));
-    expect(queries.filter((query) => query.reason === "owner").length).toBeGreaterThanOrEqual(
-      names.size * 4 * 3
+    const names = [...new Set(r.table("skill-copies.tsv").map((row) => row.name))].sort();
+    const owners = queries.filter((query) => query.reason === "owner");
+    // acme-gone's listing failed, so it is not searched.
+    expect(owners.map((query) => query.q).sort()).toEqual(
+      names.flatMap((name) => [`"${name}" org:cybermonklabs`, `"${name}" user:acme`]).sort()
     );
     expect(queries.every((query) => query.status === "ok" && query.total_count !== null)).toBe(
       true
     );
+  });
+
+  test("a common word's queries run again per repository holding a skill, and no query word is one the pod's gh refuses", () => {
+    const queries = r.queries().filter((query) => query.type === "search");
     const reruns = queries.filter(
       (query) => query.reason === "run again per repository: a common word"
     );
@@ -897,10 +926,11 @@ describe("the full run over the owners", () => {
     }
   });
 
-  test("blobs are read in GraphQL batches routed to their repository, and only a blob no batch gives is read alone", () => {
+  test("blobs are read in GraphQL batches routed by their owner field, and only a blob no batch gives is read alone", () => {
     expect(w.batches.length).toBeGreaterThan(0);
+    const read = new Set(["cybermonklabs/legion", "acme/skills", "acme/old-skills"]);
     for (const batch of w.batches) {
-      expect(batch.ghRepo).toBe(batch.repository);
+      expect(read).toContain(batch.repository);
       expect(batch.blobs).toBeLessThanOrEqual(50);
     }
     const alone = w.calls
@@ -1186,6 +1216,50 @@ describe("code search pacing and the call budget", () => {
   });
 });
 
+describe("the owners' searches at once, each paced by its own limit", () => {
+  // Each owner's first search is held until both owners have one in flight: searching the owners
+  // one after another would never release it, and the run would not end.
+  const w = world();
+  w.holdFirstSearches = 2;
+  let r: Run;
+  beforeAll(async () => {
+    r = await run(w);
+  });
+  const callsOf = (owner: string) => w.searchLog.filter((call) => call.owner === owner);
+
+  test("both owners' searches are in flight at once, and each owner's one at a time", () => {
+    expect(r.code).toBe(0);
+    expect(Math.max(...w.searchLog.map((call) => call.inFlight))).toBe(2);
+    expect(w.searchLog.every((call) => call.ownerInFlight === 1)).toBe(true);
+    expect(new Set(w.searchLog.map((call) => call.owner))).toEqual(
+      new Set(["cybermonklabs", "acme"])
+    );
+  });
+
+  test("no owner starts more than its limit of 10 searches in any minute", () => {
+    for (const owner of ["cybermonklabs", "acme"]) {
+      const starts = callsOf(owner).map((call) => call.at);
+      expect(starts.length).toBeGreaterThan(20);
+      for (let index = 10; index < starts.length; index++) {
+        expect((starts[index] ?? 0) - (starts[index - 10] ?? 0)).toBeGreaterThanOrEqual(60_000);
+      }
+    }
+    expect(
+      r.errors.some((line) =>
+        /^copies: code search of acme waits \d+ s for its rate limit$/.test(line)
+      )
+    ).toBe(true);
+  });
+
+  test("each owner's minutes overlap the other's: the searches take the busier owner's time, not the sum", () => {
+    const minutes = (owner: string) => Math.ceil(callsOf(owner).length / 10) - 1;
+    const first = Math.min(...w.searchLog.map((call) => call.at));
+    const last = Math.max(...w.searchLog.map((call) => call.at));
+    expect(last - first).toBe(Math.max(minutes("cybermonklabs"), minutes("acme")) * 60_000);
+    expect(last - first).toBeLessThan((minutes("cybermonklabs") + minutes("acme")) * 60_000);
+  });
+});
+
 describe("the pure parts", () => {
   test.each([
     [
@@ -1303,20 +1377,9 @@ describe("the pure parts", () => {
     ]);
   });
 
-  test("each search pattern is sent with no quoted word holding a colon", () => {
-    expect(
-      patternsFor("alpha", ["acme-tools"]).map((pattern) => [
-        pattern.kind,
-        pattern.text,
-        pattern.terms,
-      ])
-    ).toEqual([
-      ["skill-uri", "skill://alpha", '"skill" "//alpha"'],
-      ["slash-skill", "/skill:alpha", '"/skill" "alpha"'],
-      ["skills-path", "skills/alpha", '"skills/alpha"'],
-      ["plugin-qualified", "acme-tools:alpha", '"acme-tools" "alpha"'],
-      ["quoted-name", '"alpha"', '"alpha"'],
-    ]);
+  test("a name is searched as its quoted words, with no quoted word holding a colon", () => {
+    expect(searchTerms("alpha")).toBe('"alpha"');
+    expect(searchTerms("tool-loop-alpha")).toBe('"tool-loop-alpha"');
     expect(searchTerms('"a:b"')).toBe('"a" "b"');
   });
 
