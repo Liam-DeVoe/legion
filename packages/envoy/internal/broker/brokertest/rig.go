@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
@@ -126,7 +128,8 @@ type Rig struct {
 	Secrets *secrets.Local
 	// Registry holds the policy's two metrics as cmd/broker/main.go builds them on its own
 	// registry: broker_policy_store_reads_total, counted from the first load on, and
-	// broker_unservable_secrets, registered once that load answered. A test reads them through
+	// broker_unservable_secrets, registered once that load answered; and, for a Rig built
+	// WithProjectAccess, the hold gate's broker_hold_unchecked_total. A test reads them through
 	// Registry.Handler(), the scrape main serves.
 	Registry *metrics.Registry
 	// Policy is the broker's live policy, for a test that reloads it as the broker's five-minute
@@ -149,7 +152,7 @@ type rigConfig struct {
 	lease         time.Duration
 	maxConns      int
 	minters       map[string]requests.Minter
-	projectAccess projectaccess.Access
+	projectAccess *projectaccess.Client
 	personSignIns *personSignInConfig
 }
 
@@ -159,6 +162,7 @@ type ProviderOption func(*providerConfig)
 
 type providerConfig struct {
 	projectAccess       projectaccess.Access
+	hold                *hold.Gate
 	google              *oidctest.Issuer
 	machineAccount      string
 	machineCredentials  oauth.MachineCredentials
@@ -189,9 +193,9 @@ func WithMinters(minters map[string]requests.Minter) Option {
 	return func(c *rigConfig) { c.minters = minters }
 }
 
-// WithProjectAccess gives the rig's exchange the same Dispatch client cmd/broker uses when
-// BROKER_PROJECT_ACCESS_URL is configured. A missing future gate must make the acceptance rows
-// below answer as before, not make this fixture unable to reach Dispatch.
+// WithProjectAccess wires the rig's broker to Dispatch at baseURL as cmd/broker wires one whose
+// BROKER_PROJECT_ACCESS_URL is set: the token exchange's Dispatch client, and the hold gate built
+// on that client and the rig's store, given to every field of the broker that takes it.
 func WithProjectAccess(baseURL string, account brokertoken.Account) Option {
 	return func(c *rigConfig) {
 		c.projectAccess = projectaccess.New(baseURL, account, nil)
@@ -267,7 +271,18 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		Audience: srv.URL, Skew: time.Minute, Replay: enr.Replay, Minters: config.minters,
 	}
 	reqMachine.Chain = requests.NewChainVerifier(st, srv.URL, time.Minute, reqMachine.Airlock)
-	providerOptions := []ProviderOption{func(c *providerConfig) { c.projectAccess = config.projectAccess }}
+	// The hold gate, as main builds it where BROKER_PROJECT_ACCESS_URL is set: on the exchange's
+	// own Dispatch client, this rig's store and its registry. Without WithProjectAccess there is
+	// none, and every field that takes one is nil, which holds nobody.
+	var gate *hold.Gate
+	providerOptions := []ProviderOption{}
+	if config.projectAccess != nil {
+		gate = hold.New(hold.Config{Access: config.projectAccess, Store: st, Log: slog.Default(), Metrics: registry})
+		providerOptions = append(providerOptions, func(c *providerConfig) {
+			c.projectAccess = config.projectAccess
+			c.hold = gate
+		})
+	}
 	if signIns := config.personSignIns; signIns != nil {
 		providerOptions = append(providerOptions, func(c *providerConfig) {
 			c.google = signIns.google
@@ -297,7 +312,8 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
 		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
-		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine),
+		Approval: NewApprovalPage(t, SignIn(issuer, podKey), srv.URL, st, reqMachine, WithApprovalHold(gate)),
+		Hold:     gate,
 	})
 
 	operatorFile := filepath.Join(t.TempDir(), "operator")
@@ -391,6 +407,7 @@ func NewOAuthProvider(t *testing.T, st *store.Store, issuer *oidctest.Issuer, op
 		Kubernetes: oauth.IssuerConfig{Issuer: issuer.URL(), Audience: exchangeAudience, Keys: keys},
 		GitHub:     oauth.IssuerConfig{Issuer: issuer.URL(), Audience: githubAudience, Keys: keys},
 		Projects:   config.projectAccess,
+		Hold:       config.hold,
 	}
 	if config.google != nil {
 		googleKeys, err := oidc.NewKeys(context.Background(), config.google.URL())
