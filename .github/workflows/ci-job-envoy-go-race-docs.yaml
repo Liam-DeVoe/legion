@@ -32,15 +32,15 @@ env:
 jobs:
   envoy-go-race-docs:
     runs-on: ubuntu-24.04-arm
-    # R6 sizes both numbers from one measurement pair alone, runs 44604816847 and 44604887499 at
-    # ae055610 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole
+    # R6 sizes both numbers from one measurement pair alone, runs 44657322918 and 44657415021 at
+    # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e). The step's -timeout is the smallest whole
     # minute at which its slowest package, on the slower run of the pair, takes at most half of
-    # it: internal/dispatch/docs, this job's one package, 1,608.5 s (run 44604887499, job
-    # 135864950192), 1,608.5 / 30 = 53.62, so 54m. The job's bound is its larger time in the
-    # pair, 1,689 s (run 44604816847, job 135845994946), 28.15 minutes, plus that -timeout plus
-    # 6: 28.15 + 54 + 6 = 88.15, so 89. The limit must fire before the runner cancels the job, so
+    # it: internal/dispatch/docs, this job's one package, 1,603.9 s (run 44657322918, job
+    # 136026779859), 1,603.9 / 30 = 53.46, so 54m. The job's bound is its larger time in the
+    # pair, 1,681 s (run 44657322918, job 136026779859), 28.02 minutes, plus that -timeout plus
+    # 6: 28.02 + 54 + 6 = 88.02, so 89. The limit must fire before the runner cancels the job, so
     # a hung test prints the dump that names it. The pair ran this job on arm64
-    # (ubuntu-24.04-arm), where the package took 1,596.1 s and 1,608.5 s; the pair at 4f1f4436
+    # (ubuntu-24.04-arm), where the package took 1,603.9 s and 1,590.7 s; the pair at 4f1f4436
     # read it at 1,353.2 s at most, on x64 (ubuntu-24.04).
     timeout-minutes: 89
     services:

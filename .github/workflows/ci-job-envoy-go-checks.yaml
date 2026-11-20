@@ -57,14 +57,14 @@ jobs:
     # is the runner time this change exists to cut.
     #
     # R6 sizes the job's bound and each go test call's -timeout from one measurement pair alone,
-    # runs 44604816847 and 44604887499 at ae055610, by the rule envoy-go's comment gives
+    # runs 44657322918 and 44657415021 at 8cfd2682, by the rule envoy-go's comment gives
     # (dispatch://INFRA-1075, check 6224bb0e). The job's bound is its larger time in the pair,
-    # 909 s (run 44604887499, job 135864946828), 15.15 minutes, plus the largest -timeout of its
-    # go test calls, the alone step's 2m, plus 6: 15.15 + 2 + 6 = 23.15, so 24. Its other go
+    # 853 s (run 44657415021, job 136039517954), 14.22 minutes, plus the largest -timeout of its
+    # go test calls, the alone step's 2m, plus 6: 14.22 + 2 + 6 = 22.22, so 23. Its other go
     # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
     # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
     # and its comment gives its reading.
-    timeout-minutes: 24
+    timeout-minutes: 23
     # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
     # same settings on the server's own command line and the same health check. envoy-go's own
     # service says what each setting buys and why this container can do without durability
@@ -173,9 +173,9 @@ jobs:
       # fails the ci-filters job naming it. The database is on the step rather than in the job's
       # env:, so it reaches this step alone. With the xid window tests in one call, the API took
       # 134.082 s on a two-vCPU pod (INFRA-636), more than the 2m below. -timeout 2m, by R6 from
-      # the pair at ae055610 (envoy-go's comment gives the rule): this call's one package on the
-      # slower run is internal/dispatch/api, 54.3 s (run 44604887499, job 135864946828), and
-      # 54.3 / 30 = 1.81, so 2m. The `go test -json` stream goes to a file the upload step below
+      # the pair at 8cfd2682 (envoy-go's comment gives the rule): this call's one package on the
+      # slower run is internal/dispatch/api, 49.6 s (run 44657415021, job 136039517954), and
+      # 49.6 / 30 = 1.65, so 2m. The `go test -json` stream goes to a file the upload step below
       # publishes and is replayed to the log, as the architecture-note step's is.
       - name: Test the wall-clock measurements alone
         env:
@@ -204,9 +204,9 @@ jobs:
       # run: envoy-go's unit step leaves them out, its `grep -Ev` and this step's package list
       # built from NOTE_AND_SPEC_PACKAGES in .github/scripts/ci_job_reads.py.
       #
-      # -timeout 1m, by R6 from the pair at ae055610 (envoy-go's comment gives the rule): this
-      # call's slowest package on the slower run is cmd/spec-check, 17.3 s (run 44604816847, job
-      # 135845995208), and 17.3 / 30 = 0.58, so 1m, the smallest whole minute there is.
+      # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
+      # call's slowest package on the slower run is cmd/spec-check, 20.0 s (run 44657322918, job
+      # 136026780288), and 20.0 / 30 = 0.67, so 1m, the smallest whole minute there is.
       # The `go test -json` stream goes to a file the upload step below publishes and is replayed
       # to the log, as the display-tree fixture check's is.
       - name: Test the architecture-note and spec-file rules and their commands
@@ -226,8 +226,8 @@ jobs:
       # only those daemon packages starts this job rather than envoy-go's: envoy-go's unit step
       # leaves both packages out, its `grep -Ev` and this step's package list built from
       # LISTENERWIRE_PACKAGES in .github/scripts/ci_job_reads.py. -timeout 1m, by R6 from the pair
-      # at ae055610 (envoy-go's comment gives the rule): this call's slowest package on the slower
-      # run is internal/wirecheck, 2.5 s (run 44604887499, job 135864946828), and 2.5 / 30 = 0.08,
+      # at 8cfd2682 (envoy-go's comment gives the rule): this call's slowest package on the slower
+      # run is internal/wirecheck, 2.3 s (run 44657322918, job 136026780288), and 2.3 / 30 = 0.08,
       # so 1m, the smallest whole minute there is. The `go test -json` stream goes to a file the
       # upload step below publishes and is replayed to the log, as the architecture-note step's is.
       - name: Test the listener's wire package, its clients and wirecheck
@@ -268,9 +268,9 @@ jobs:
       # envoy-go's unit step skips both by the same names, both texts built from
       # WEB_FIXTURE_TESTS in .github/scripts/ci_job_reads.py.
       #
-      # -timeout 1m, by R6 from the pair at ae055610 (envoy-go's comment gives the rule): this
-      # call's one package, internal/dispatch/pmdoc, read 0.027 s and 0.031 s (runs 44604816847
-      # and 44604887499, jobs 135845995208 and 135864946828), and 0.031 / 30 = 0.001, so 1m, the
+      # -timeout 1m, by R6 from the pair at 8cfd2682 (envoy-go's comment gives the rule): this
+      # call's one package, internal/dispatch/pmdoc, read 0.026 s and 0.026 s (runs 44657322918
+      # and 44657415021, jobs 136026780288 and 136039517954), and 0.026 / 30 = 0.001, so 1m, the
       # smallest whole minute there is. The `go test -json` stream goes to a file the
       # upload step below publishes and is replayed to the log, as the race lane's steps do, for
       # the reason envoy-go's unit step gives: the log keeps the package line of a green run and

@@ -34,11 +34,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
     # Every go test call of this job, of envoy-go-checks and of the race lane, and each of those
     # jobs' own timeout-minutes, is sized by R6 from one measurement pair alone: two
-    # workflow_dispatch runs of ci.yaml at one head, runs 44604816847 and 44604887499 at ae055610
+    # workflow_dispatch runs of ci.yaml at one head, runs 44657322918 and 44657415021 at 8cfd2682
     # (dispatch://INFRA-1075, check 6224bb0e). No limit is sized from any other run. The pair ran
     # envoy-go-checks on x64 (ubuntu-24.04) and the other five jobs on arm64 (ubuntu-24.04-arm),
-    # where main's #4308 moved them, as the pair at 31649808 did; every pair before that one ran
-    # on x64.
+    # where main's #4308 moved them, as the pairs at 31649808 and ae055610 did; every pair before
+    # those ran on x64.
     #
     # A call's -timeout is the smallest whole minute at which its slowest package, on the slower
     # run of the pair, takes at most half of it: that package's time divided by 30, rounded up.
@@ -51,33 +51,33 @@ jobs:
     # other job, so a new pair changes those lines and no others.
     #
     #   call                slowest package   reading    run          job           t / 30  limit
-    #   the package list    agent-secrets     541.0 s    44604816847  135845995806   18.03    19m
-    #   race-impossible     docs              223.7 s    44604816847  135845995806    7.46     8m
-    #   pgmigrate           pgmigrate         285.7 s    44604816847  135845995806    9.52    10m
-    #   shutdown            cmd/dispatch       61.7 s    44604816847  135845995806    2.06     3m
-    #   routes              routes             60.7 s    44604816847  135845995806    2.02     3m
-    #   events              events             37.2 s    44604816847  135845995806    1.24     2m
-    #   natslive (rig)      testnats            4.6 s    44604816847  135845995806    0.15     1m
-    #   natslive (cap)      bus                21.5 s    44604887499  135864942539    0.72     1m
-    #   natslive (callout)  natscallout         4.5 s    44604816847  135845995806    0.15     1m
-    #   integration         integration         2.8 s    44604816847  135845995806    0.09     1m
-    #   skip count          cmd/broker        256.558 s  44604887499  135864942539    8.55     9m
+    #   the package list    agent-secrets     522.8 s    44657322918  136026779841   17.43    18m
+    #   race-impossible     docs              216.1 s    44657322918  136026779841    7.20     8m
+    #   pgmigrate           pgmigrate         278.2 s    44657322918  136026779841    9.27    10m
+    #   shutdown            cmd/dispatch       50.2 s    44657322918  136026779841    1.67     2m
+    #   routes              routes             58.7 s    44657322918  136026779841    1.96     2m
+    #   events              events             38.6 s    44657322918  136026779841    1.29     2m
+    #   natslive (rig)      testnats            4.7 s    44657322918  136026779841    0.16     1m
+    #   natslive (cap)      bus                20.5 s    44657415021  136039517737    0.68     1m
+    #   natslive (callout)  natscallout         5.1 s    44657415021  136039517737    0.17     1m
+    #   integration         integration         7.7 s    44657415021  136039517737    0.26     1m
+    #   skip count          cmd/broker        263.2 s    44657322918  136026779841    8.77     9m
     #
     # The skip count is the step "Count the database broker suites' skips", whose go test writes
     # its stream to broker.json through the script's --keep: its reading is cmd/broker's package
-    # time there, 255.961 s and 256.558 s in the pair (jobs 135845995806 and 135864942539). Its
+    # time there, 263.2 s and 260.8 s in the pair (jobs 136026779841 and 136039517737). Its
     # step limit of 19 minutes is its 9m -timeout plus 10, main's own rule for it, which the
     # comment on the step gives. The skip counter's test keeps main's step limit of 15 minutes, and
     # the callout check step main's 6.
     #
     # Three calls run tests that read a margin off the test binary's own deadline, and each must
     # leave at least that margin above its slowest package's time, or those tests refuse the run
-    # rather than waiting in it. Each limit clears it: 19m leaves 663.2 s over
-    # internal/dispatch/pmdoc's 476.8 s in the package list, against the 60 s of pmdoc's
-    # perCallReportMargin (internal/dispatch/pmdoc/linear_test.go:1169); 8m leaves 256.3 s over
-    # the documents package's 223.7 s in the race-impossible call, against the 30 s of its
-    # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 3m leaves 118.3 s
-    # over cmd/dispatch's 61.7 s in the shutdown call, against the 30 s of horizontest.Drain
+    # rather than waiting in it. Each limit clears it: 18m leaves 614.1 s over
+    # internal/dispatch/pmdoc's 465.9 s in the package list, against the 60 s of pmdoc's
+    # perCallReportMargin (internal/dispatch/pmdoc/linear_test.go:1169); 8m leaves 263.9 s over
+    # the documents package's 216.1 s in the race-impossible call, against the 30 s of its
+    # roomWaitMargin (internal/dispatch/docs/settlement_credit_test.go:546); and 2m leaves 69.8 s
+    # over cmd/dispatch's 50.2 s in the shutdown call, against the 30 s of horizontest.Drain
     # (internal/dispatch/horizontest/horizontest.go, Drain), which the shutdown test's wait for its
     # event feed (waitEventsStart) leaves of the deadline so that its failure prints rather than
     # being cut off by the package timeout. At 4 minutes the race-impossible call failed that
@@ -85,9 +85,9 @@ jobs:
     # leaves 20.769s, not more than roomWaitMargin (30s): this looks like a misconfigured run;
     # raise -timeout".
     #
-    # The job's own bound is its larger time in the pair, 1,333 s (run 44604816847, job
-    # 135845995806), 22.22 minutes, plus the longest limit of its steps, 19 minutes, the package
-    # list's -timeout and the skip count's step limit alike, plus 6: 22.22 + 19 + 6 = 47.22, so 48.
+    # The job's own bound is its larger time in the pair, 1,328 s (run 44657322918, job
+    # 136026779841), 22.13 minutes, plus the longest limit of its steps, the skip count's step
+    # limit of 19 minutes, above the package list's 18m, plus 6: 22.13 + 19 + 6 = 47.13, so 48.
     # The other steps after the unit step have limits of their own under that: the store-form
     # count runs under backend-count.sh's -timeout of 5 minutes, the skip counter's test under its
     # step limit of 15 minutes and the callout check under its own 6. Both attempts of the pair
@@ -367,8 +367,8 @@ jobs:
       # The step below runs the module's packages in the background and, beside them, eight other
       # calls: the plain run of what the race build cannot make, internal/pgmigrate, the routes
       # package, internal/dispatch/events, the shutdown feed test, the container-backed NATS
-      # matrix, the integration suite and the agentloop vet. The package list runs 103 test
-      # binaries, beside 37 packages with no test files (both runs of the pair at ae055610, read
+      # matrix, the integration suite and the agentloop vet. The package list runs 104 test
+      # binaries, beside 37 packages with no test files (both runs of the pair at 8cfd2682, read
       # from the call's own -json). In the pair at bdffd7d2 (runs 43687973145 and 43691345741,
       # jobs 132732382594 and 132742525106) it took 519.0 s and 594.0 s from the first event of
       # its stream to the last, and every other call of this step had ended before it did. All nine
@@ -492,10 +492,10 @@ jobs:
           # to the last. The short calls follow it: the longest of them, natslive, took 73.0 s
           # and 65.6 s in that pair.
           #
-          # -timeout 19m, by R6 from the pair at ae055610 (the table on this job): this call's
-          # slowest package on the slower run is cmd/agent-secrets, 541.0 s (run 44604816847,
-          # job 135845995806), and 541.0 / 30 = 18.03, so 19m. The limit leaves 663.2 s above
-          # internal/dispatch/pmdoc's 476.8 s on that run, over the 60 s of pmdoc's
+          # -timeout 18m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
+          # slowest package on the slower run is cmd/agent-secrets, 522.8 s (run 44657322918,
+          # job 136026779841), and 522.8 / 30 = 17.43, so 18m. The limit leaves 614.1 s above
+          # internal/dispatch/pmdoc's 465.9 s on that run, over the 60 s of pmdoc's
           # perCallReportMargin, which is the floor a package that reads the test binary's
           # deadline sets for itself.
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
@@ -504,7 +504,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
           rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 19m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of them:
@@ -542,10 +542,10 @@ jobs:
           # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
           # //go:build !race and raceEnabled, less the tests that run alone, so a test added to
           # either and missing here fails the ci-filters job naming this step.
-          # -timeout 8m, by R6 from the pair at ae055610
+          # -timeout 8m, by R6 from the pair at 8cfd2682
           # (the table on this job): this call's slowest package on the slower run is
-          # internal/dispatch/docs, 223.7 s (run 44604816847, job 135845995806), and
-          # 223.7 / 30 = 7.46, so 8m. The limit leaves 256.3 s above that time, over the 30 s
+          # internal/dispatch/docs, 216.1 s (run 44657322918, job 136026779841), and
+          # 216.1 / 30 = 7.20, so 8m. The limit leaves 263.9 s above that time, over the 30 s
           # of the documents package's roomWaitMargin. A run that missed the Go build cache on
           # x64 has read 537.3 s there (run 44097184245), more than the 8m.
           #
@@ -575,9 +575,9 @@ jobs:
           # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
           # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
           # after 4m0s, running tests: TestRedactionAgainstServerOutcomes (3m20s)", run
-          # 42856652273). By R6 from the pair at ae055610 (the table on this job): this call's
-          # one package on the slower run is internal/pgmigrate, 285.7 s (run 44604816847, job
-          # 135845995806), and 285.7 / 30 = 9.52, so 10m. No floor stands above that rule
+          # 42856652273). By R6 from the pair at 8cfd2682 (the table on this job): this call's
+          # one package on the slower run is internal/pgmigrate, 278.2 s (run 44657322918, job
+          # 136026779841), and 278.2 / 30 = 9.27, so 10m. No floor stands above that rule
           # here: no test of internal/pgmigrate reads the test binary's deadline, so it declares
           # no margin of its own the way the documents package's roomWaitMargin (30 s) and
           # pmdoc's perCallReportMargin (60 s) are theirs.
@@ -587,10 +587,10 @@ jobs:
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than in the step's env:, which would reach
           # every call; the calls that name no server of their own run against 5432. -timeout
-          # 3m, by R6 from the pair at ae055610 (the table on this job): this call's one package
-          # on the slower run is internal/dispatch/routes, 60.7 s (run 44604816847, job
-          # 135845995806), and 60.7 / 30 = 2.02, so 3m.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 3m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          # 2m, by R6 from the pair at 8cfd2682 (the table on this job): this call's one package
+          # on the slower run is internal/dispatch/routes, 58.7 s (run 44657322918, job
+          # 136026779841), and 58.7 / 30 = 1.96, so 2m.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
           routes=$!
           # internal/dispatch/events, on the fifth Postgres service, for the reason the routes
           # call gives: its horizon tests wait for the event log's safe horizon, which any
@@ -598,10 +598,10 @@ jobs:
           # of them failed at its one-minute give-up (run 43596122521, job 132450917326). Its
           # own tests hold transaction ids on purpose, so it shares no other call's service:
           # 5436 is named on this call and nowhere else, and the package list above leaves the
-          # package out (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at ae055610
+          # package out (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 8cfd2682
           # (the table on this job): this call's one package on the slower run is
-          # internal/dispatch/events, 37.2 s (run 44604816847, job 135845995806), and
-          # 37.2 / 30 = 1.24, so 2m.
+          # internal/dispatch/events, 38.6 s (run 44657322918, job 136026779841), and
+          # 38.6 / 30 = 1.29, so 2m.
           DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5436/postgres?sslmode=disable go test -json -count=1 -timeout 2m ./internal/dispatch/events/ > "$RUNNER_TEMP/go-test-json/events.json" 2> "$RUNNER_TEMP/go-test-logs/events.log" &
           events=$!
           # The one untagged test of cmd/dispatch that reads a live event feed, on the third
@@ -611,12 +611,12 @@ jobs:
           # direction - routes' own tests hold transaction ids on purpose, and its horizon loop
           # has been blown by a sibling's clone before - so 5434 is named on this call and
           # nowhere else. The package list above skips this test by name, which is unique in the
-          # module (dispatch://INFRA-1075). -timeout 3m, by R6 from the pair at ae055610 (the
+          # module (dispatch://INFRA-1075). -timeout 2m, by R6 from the pair at 8cfd2682 (the
           # table on this job): this call's one package on the slower run is cmd/dispatch,
-          # 61.7 s (run 44604816847, job 135845995806), and 61.7 / 30 = 2.06, so 3m. The limit
-          # leaves 118.3 s above that time, over the 30 s of horizontest.Drain that the test's
+          # 50.2 s (run 44657322918, job 136026779841), and 50.2 / 30 = 1.67, so 2m. The limit
+          # leaves 69.8 s above that time, over the 30 s of horizontest.Drain that the test's
           # wait for its event feed leaves of the deadline.
-          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 3m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5434/postgres?sslmode=disable go test -json -count=1 -timeout 2m -run '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)$' ./cmd/dispatch/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
           shutdown=$!
           # internal/testnats runs its server in the test process, so the package list above
           # starts no container. The real-server tests, a rendered authorization on the image the
@@ -645,10 +645,11 @@ jobs:
           # its own and runs before the command it feeds: under bash -e it carries the script's
           # exit status, so an empty or refused list fails the step instead of running -run "",
           # which matches every test. -timeout 1m on each command, by R6 from the pair at
-          # ae055610 (the table on this job): on the slower run of each, internal/testnats took
-          # 4.6 s and internal/broker/natscallout 4.5 s (run 44604816847, job 135845995806) and
-          # internal/bus 21.5 s (run 44604887499, job 135864942539), and 4.6 / 30 = 0.15,
-          # 4.5 / 30 = 0.15 and 21.5 / 30 = 0.72, so 1m each, the smallest whole minute there is.
+          # 8cfd2682 (the table on this job): on the slower run of each, internal/testnats took
+          # 4.7 s (run 44657322918, job 136026779841) and internal/bus 20.5 s and
+          # internal/broker/natscallout 5.1 s (run 44657415021, job 136039517737), and
+          # 4.7 / 30 = 0.16, 20.5 / 30 = 0.68 and 5.1 / 30 = 0.17, so 1m each, the smallest whole
+          # minute there is.
           rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
           cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
           callout=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/broker/natscallout)
@@ -657,9 +658,9 @@ jobs:
             go test -json -count=1 -timeout 1m -tags natslive -run "$callout" ./internal/broker/natscallout/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
           natslive=$!
           # The integration suite, which runs a real NATS server in the test process.
-          # -timeout 1m, by R6 from the pair at ae055610 (the table on this job): this call's
-          # one package on the slower run is internal/integration, 2.8 s (run 44604816847, job
-          # 135845995806), and 2.8 / 30 = 0.09, so 1m, the smallest whole minute there is.
+          # -timeout 1m, by R6 from the pair at 8cfd2682 (the table on this job): this call's
+          # one package on the slower run is internal/integration, 7.7 s (run 44657415021, job
+          # 136039517737), and 7.7 / 30 = 0.26, so 1m, the smallest whole minute there is.
           go test -json -count=1 -timeout 1m ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
           integration=$!
           # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
@@ -752,9 +753,9 @@ jobs:
       # but the airlock's model comparisons, which the script's EXPECTED_SKIPS names (each needs a
       # built Lean model of the airlock, and the airlock-lean job runs them). A report that shows
       # no run prints database_skips=UNKNOWN and fails too. Its --timeout 9m is by R6 from the
-      # pair at ae055610 (the table on this job): the step's slowest package on the slower run is
-      # cmd/broker, 256.558 s (run 44604887499, job 135864942539; 255.961 s in run 44604816847, job
-      # 135845995806), which its stream holds, and 256.558 / 30 = 8.55, so 9m. cmd/broker took
+      # pair at 8cfd2682 (the table on this job): the step's slowest package on the slower run is
+      # cmd/broker, 263.2 s (run 44657322918, job 136026779841; 260.8 s in run 44657415021, job
+      # 136039517737), which its stream holds, and 263.2 / 30 = 8.77, so 9m. cmd/broker took
       # 580 s in main's unit step in CI on 2026-11-18 (job 135007706189, on arm64), more than the
       # 9m, and the broker's packages had 15 minutes here. That -timeout bounds each package's
       # test binary, and the packages run several at a time, so one that starts late ends up to 9
