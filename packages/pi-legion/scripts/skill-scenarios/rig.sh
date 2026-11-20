@@ -1510,32 +1510,41 @@ EOF
     fail "the agent of ${R##*/} did not start: its namespace could not be made: $(grep -v '^exit=' "$R/out.txt" | head -n 3 | tr '\n' ' ')"
 }
 
-# run_env_pids DIR prints each process whose environment's HOME is under DIR: an agent gets its
-# HOME, under its run's directory, from its pane file, and every command it runs inherits it. It
-# finds what stop_tree cannot reach from the pids a command recorded: a process that left their
-# tree, such as a `setsid -f` child. A process that merely works under DIR, such as a developer's
-# shell watching a run, has a HOME of its own, and another user's environment cannot be read. One
-# grep narrows the environments to those holding the text anywhere; each is then read variable by
-# variable.
+# run_env_pids DIR prints `PID START` (stat field 22) for each process whose environment's HOME is
+# DIR or a path under it: an agent gets its HOME, under its run's directory, from its pane file, and
+# every command it runs inherits it. It finds what stop_tree cannot reach from the pids a command
+# recorded: a process that left their tree, such as a `setsid -f` child. A process that merely works
+# under DIR, such as a developer's shell watching a run, has a HOME of its own, and another user's
+# environment cannot be read. It is procs_naming (scripts/e2e/lib/process-tree.sh), which hands every
+# /proc/<pid>/environ to grep through xargs in calls that fit ARG_MAX, reads each match whole, and
+# prints why and fails with 2 when the machine's environments could not be read.
+#
+# An agent and what it starts run in a PID namespace of their own (launch), where each has a pid of
+# that namespace's. This shell reads its own /proc, of the PID namespace the rig runs in, which
+# lists every process of the agent's namespace too, under the pid and start time this shell's
+# namespace gives it: the pids printed here, and every pid kill_held then reads, freezes and kills,
+# are this shell's own. No pid is ever read from inside the namespace (its namespace-ready is an
+# empty file), so none of the namespace's own pids, which name other processes or none here, can
+# reach a signal.
 # shellcheck disable=SC2329 # stop_env_processes, which the exit traps run, runs it
-run_env_pids() {
-  local p var
-  for p in $(grep -lzsF -e "HOME=$1/" /proc/[0-9]*/environ || true); do
-    {
-      while IFS= read -r -d '' var; do
-        case $var in "HOME=$1"/*) echo "${p//[!0-9]/}" && break ;; esac
-      done <"$p"
-    } 2>/dev/null || true
-  done
-}
+run_env_pids() { procs_naming "$1" HOME; }
 
-# stop_env_processes DIR stops, with stop_tree, each process run_env_pids DIR finds and everything
-# under it, a child that dropped its HOME included; the parent stop_tree checks is the one the
-# process has now, read a moment after the list.
+# stop_env_processes DIR ends each process run_env_pids DIR finds and everything under it, a child
+# that dropped its HOME included, through kill_held (scripts/e2e/lib/process-tree.sh), the run's
+# sweep's own loop: each is frozen and read again, ended only while it is still the process the walk
+# read (its start time) and its HOME is still DIR or under it, and then ended with its tree, its own
+# parent not read again. When run_env_pids could not read the machine's environments, or a tree's
+# processes could not all be read (kill_held), it says so, and this returns, so the exit handler
+# that runs it goes on with the rest of its cleanup.
 # shellcheck disable=SC2329 # the exit traps run it
 stop_env_processes() {
-  local pid
-  for pid in $(run_env_pids "$1"); do stop_tree "$pid" "$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')"; done
+  local pairs
+  pairs=$(run_env_pids "$1") || {
+    echo "stop_env_processes: stopped no process of the run under $1, since none could be named" >&2
+    return 0
+  }
+  kill_held "$1" HOME <<<"$pairs" ||
+    echo "stop_env_processes: the processes under some process of the run under $1 could not be read" >&2
 }
 
 # stop_panes SESSION stops, with stop_tree, each pane process of SESSION on the work directory's

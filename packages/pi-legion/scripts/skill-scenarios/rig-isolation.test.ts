@@ -12,6 +12,7 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { leakCheckEnv } from "./leak-check-env";
 import { WORLD_PROJECT } from "./run-names";
@@ -32,9 +33,10 @@ import { spawnChecked } from "./test-programs";
 // must stop its server when it ends.
 setDefaultTimeout(120_000);
 
-// Every row here runs the rig through python3, which puts it in a process group of its own
-// (`runRig` below says why it must). Read once, so one warning names python3 for the whole file.
-const withoutPython = skipWithout("python3");
+// Every row here runs the rig through ownGroup (scripts/e2e/lib/own-group.ts), a perl that puts it
+// in a process group of its own (`runRig` below says why it must). Read once, so one warning names
+// perl for the whole file.
+const withoutPerl = skipWithout("perl");
 
 const root = path.resolve(import.meta.dir, "../../../..");
 // A name of no measurement: every path a run's agent reads is built on it, and the rig starts no
@@ -43,7 +45,7 @@ const scratch = temporaryDirectory("isolation", { real: true });
 
 // Every row whose run starts an agent needs the namespace each agent runs in (rig.sh's launch),
 // and a host that refuses it refuses every run (require_namespace): rig.sh's own probe, read
-// once, says which host refuses it and in its words, as the python3 rows' warning does. The row
+// once, says which host refuses it and in its words, as the perl rows' warning does. The row
 // of a refused run, and the one refused before the namespace, run everywhere.
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
 const probe = spawnChecked(
@@ -60,7 +62,7 @@ if (withoutNamespace)
     `Skipped the namespace rows in ${import.meta.path}. This host refuses the namespace every run's agent starts in (rig.sh's namespace_probe): ${probe.stdout.toString().trim()}`
   );
 /** The rows that read the two runs the hook starts, and every other row that starts an agent. */
-const withoutRuns = withoutPython || withoutNamespace;
+const withoutRuns = withoutPerl || withoutNamespace;
 
 /**
  * Every write this file's body asks for, as a function the `beforeAll` at the end calls. The
@@ -218,9 +220,10 @@ put(
 // the server and the seeds) does not depend on how the caller installed one. On a devbox bun is a
 // mise shim, which finds its version in mise's global config under the developer's home, not under
 // the HOME below: there the shim exits 1 ("No version is set for shim: bun"), and load_label reads
-// that as settings without the handler limit. The link is here, not a directory added to PATH,
-// because python3 is a mise shim there too, and mise drops its install directories from the PATH
-// of what a shim runs, which is the rig.
+// that as settings without the handler limit. The link is here, not a directory added to PATH: the
+// rig was started through python3, a mise shim there too, and mise drops its install directories
+// from the PATH of what a shim runs. ownGroup's perl starts it now, and the link stays the one place
+// the rig's bun is chosen.
 stagings.push(() => symlinkSync(process.execPath, path.join(bin, "bun")));
 // A bun that cannot run, as a mise shim with no version set answers: the stand-in the row below
 // puts ahead of the link above.
@@ -320,56 +323,34 @@ const env = {
   SKILL_SCENARIOS_ASKGATE_CASE: "facts",
 };
 
-/** The parent between the test and the rig: it puts the rig in a process group of its own
- * (posix_spawnp with POSIX_SPAWN_SETPGROUP, which is setpgid in the child between fork and exec),
- * waits for it, and reports its status as a shell does. `-I` keeps a caller's PYTHON* variables
- * out of it; the rig's name is resolved on PATH, as posix_spawnp does, so it is the `bash` the
- * rest of the run uses. */
-const setpgid = [
-  "import os, sys",
-  "pid = os.posix_spawnp(sys.argv[1], sys.argv[1:], os.environ, setpgroup=0)",
-  "status = os.waitpid(pid, 0)[1]",
-  "sys.exit(128 + os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status))",
-].join("\n");
-
-/** The interpreter python3 reports as sys.executable, resolved in the hook with the caller's
- * environment, before the rig changes HOME and PATH. The rig's parent runs as that file, not as the
- * first python3 on PATH: a version manager's shim there (mise's, with no python selected) runs
- * under the HOME above and refuses the user's mise config as untrusted when the checkout is under
- * the user's home, or elsewhere runs python with mise's tool directories gone from PATH, so the
- * rig's own tools (bun) then have no version either. */
-let python = "";
-
 /** Runs the rig, in a process group of its own, and returns its exit status and its stderr.
  *
- * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/rig.sh), and a process
- * group that is orphaned — one no member's parent watches from another group of the same session —
- * has the kernel send SIGHUP and SIGCONT to every member the moment it is orphaned with a stopped
- * member in it. Where a Legion worker runs this suite each shell command is a session leader, so
- * bun's own group is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of
- * that SIGHUP (status 129) before printing any totals. Bun.spawn leaves its child in bun's own
- * group, so the rig needs a parent that moves it out of it.
+ * The rig stops its own tree before it exits (stop_tree, scripts/e2e/lib/process-tree.sh), and a
+ * process group that is orphaned — one no member's parent watches from another group of the same
+ * session — gets SIGHUP and SIGCONT from the kernel with a stopped member in it: Linux sends them
+ * the moment the group is orphaned, and the gVisor of a Legion pod whenever another member exits.
+ * Where a Legion worker runs this suite each shell command is a session leader, so bun's own group
+ * is orphaned: a rig sharing it hangs the test runner up, and `bun test` dies of that SIGHUP
+ * (status 129) before printing any totals. Bun.spawn leaves its child in bun's own group, so the rig
+ * needs to move out of it.
  *
  * A session of its own is the wrong tool: a setsid child leads its session, so the one parent
  * outside its group is in another session, which the orphan test does not count, and the group is
  * orphaned from the start — the rig hangs itself up with the first stop of its own teardown. What
- * it needs is a group of its own inside bun's session, under a parent that stays in bun's group:
- * that parent is the connection outside the group which keeps it from being orphaned in turn.
+ * it needs is a group of its own inside bun's session, whose parent, bun, is in another group of
+ * that session: that parent is the connection outside the group which keeps it from being orphaned.
  *
  * A POSIX shell reaches setpgid only through job control, and a job-control shell writes its job
  * table's notices on its stderr, which is the rig's: on bash 5.2.21, the ubuntu-24.04 runner's of
  * ci.yaml's pi-legion job, `set -m; "$@" & wait "$!"` leaves `[1]+  Done` and the job's command
  * there (bash 5.2.37 prints none, so that wrapper passed on a devbox and failed on the runner). So
- * no shell stands between the test and the rig: python3's posix_spawnp sets the group and nothing
- * else, has no job table to report from on any bash, and redirects none of the rig's stderr away,
- * so a complaint of the wrapper's own still reaches this test. python3 is on PATH on that runner
- * (ci.yaml's lint job runs .github/scripts/check-action-pins.sh, which runs python3, on the same
- * ubuntu-24.04 image, with no setup-python step) and in a Legion worker pod
- * (packages/daemon/docker/worker.Dockerfile installs python3 in its runtime-base stage and checks
- * it, `python3 --version`, in the runtime image's toolchain step). The rig's own shell runs with
- * job control off, as it always has. */
+ * no shell stands between the test and the rig: ownGroup's perl calls setpgrp and execs the rig's
+ * bash, so the pid Bun.spawn returns is the rig's own, with no job table, nothing of its stderr
+ * redirected, and the signal dispositions and environment a plain start would give it. A python3 in
+ * its place ignored SIGPIPE and SIGXFSZ and coerced LC_CTYPE, and its posix_spawnp handed all three
+ * to the rig. The rig's own shell runs with job control off, as it always has. */
 async function runRig(args: string[], vars: Record<string, string> = {}) {
-  const child = Bun.spawn([python, "-I", "-c", setpgid, "bash", rig, ...args], {
+  const child = Bun.spawn(ownGroup(["bash", rig, ...args]), {
     env: { ...env, ...vars },
     stdout: "pipe",
     stderr: "pipe",
@@ -392,17 +373,9 @@ const lines = (file: string) =>
     : [];
 
 beforeAll(async () => {
-  // Nothing is staged and no rig is started where the rows do not run: python3 starts every one
-  // of them, and this hook would throw on a host that does not have it.
-  if (withoutPython) return;
-  const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
-  const executable = resolved.stdout.toString().trim();
-  if (resolved.exitCode !== 0 || !path.isAbsolute(executable)) {
-    throw new Error(
-      `could not resolve the python3 interpreter (exit ${resolved.exitCode}): ${resolved.stderr.toString() || "no absolute executable path"}`
-    );
-  }
-  python = executable;
+  // Nothing is staged and no rig is started where the rows do not run: perl starts every one of
+  // them (ownGroup), and it would throw on a host that does not have it.
+  if (withoutPerl) return;
   // A staging may queue another, so the queue is drained until it is empty.
   for (let stage = stagings.shift(); stage !== undefined; stage = stagings.shift()) stage();
   mkdirSync(env.HOME);
@@ -524,7 +497,7 @@ test.skipIf(withoutRuns)("each run stops its Dispatch server when it ends", () =
 
 // AskGate's review would time out under Oh My Pi's default handler limit, so a run whose profile
 // leaves the limit there scores the timeout rather than the rule: the rig refuses it, starting nothing.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run on a profile whose settings leave the handler limit at its default is refused, naming the key",
   async () => {
     const databases = lines(path.join(stub, "docker.log")).filter((line) =>
@@ -544,7 +517,7 @@ test.skipIf(withoutPython)(
 // below) must start no run in the shared world instead: the run is refused before anything of it
 // is built, naming the host's refusal, with no directory, no database, no Dispatch server, no
 // agent and no session. The unshare first on PATH is the one the rig probes with and launches by.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run on a host that refuses the agent's namespace starts nothing and names the refusal",
   async () => {
     const refusal = "unshare: write failed /proc/self/uid_map: Operation not permitted";
@@ -575,7 +548,7 @@ test.skipIf(withoutPython)(
 // rig names bun's failure and its error, and never the key, for a profile that sets the limit and
 // for one that does not. The second is the control of the row above, whose refusal names the key
 // only where bun read the settings.
-test.skipIf(withoutPython)(
+test.skipIf(withoutPerl)(
   "a run whose bun cannot read the profile settings is refused, naming bun's failure and not the key",
   async () => {
     for (const [name, index] of [
