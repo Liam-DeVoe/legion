@@ -9,18 +9,21 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// One tab on A sends a single awareness frame that names 2,048 clients, then leaves. A reader who
-// opens the document on A a moment later must still be shown to a reader on B within a second, as
-// a reader on A is shown to the other readers on A at once. With a room client bound below what
-// the sockets of a process may hold (maxAwarenessClientsPerRoom), B's room is full of the frame's
-// clients, which stay there until they expire and their tombstones are purged (about 75 s, though
-// the flooding tab left at once), and B drops every client it has not seen before: the new reader
+// One tab on A sends a single awareness frame that names more clients than a room may hold
+// (floodClients), then leaves. A reader who opens the document on A a moment later must still be
+// shown to a reader on B within a second, as a reader on A is shown to the other readers on A at
+// once. A frame that no socket bound cuts fills A's room and, through the relay, B's
+// (maxAwarenessClientsPerRoom), and a room that keeps the frame's clients - the ones present and
+// the tombstones of the ones that left - until they expire and are purged (about 75 s, though the
+// flooding tab left at once) has no entry for a client it has not seen before: the new reader
 // stays invisible on B for that long, while on A it is seen at once. The waits for the reader are
-// the shared wait, which would sit those 75 s out, so the row reads B's room itself before she
-// joins: it must hold an entry free for her. The second is held only by the row's twin in
-// benchtime's timing lane (withinLive).
+// the shared wait, which would sit those 75 s out, so the row reads B's room itself, once it has
+// taken what A relayed of the frame and again once the frame has left bob's view: each time it
+// must hold an entry free for her. The second is held only by the row's twin in benchtime's timing
+// lane (withinLive).
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
 	aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
 }
@@ -45,20 +48,32 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 	carol := pair.openSyncedEditor(t, pair.a, "carol", artifactID, "x\n")
 
 	flood := dialTabSocket(t, pair.a, artifactID, "mallory")
-	const invented = 2048
-	if err := announceAwarenessClients(flood, artifactID, 500_000, invented, 1, inventedState(500_000)); err != nil {
+	if err := announceAwarenessClients(flood, artifactID, 500_000, floodClients, 1, inventedState(500_000)); err != nil {
 		t.Fatalf("send the flooding frame: %v", err)
 	}
 	if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
-		return holdsAnyClientFrom(states, 500_000, invented)
+		return holdsAnyClientFrom(states, 500_000, floodClients)
 	}); err != nil {
 		t.Fatalf("none of the flooding frame's clients reached bob on B: %v", err)
+	}
+	// A's room applies the frame in one step before it relays any of it, so what A holds once bob
+	// has seen some of the frame is all A took; B has taken all A relayed once its room holds as
+	// many entries. A room the frame filled refuses a reader who joins while its clients are there.
+	took := pair.a.roomCounters(t, artifactID).AwarenessClients
+	if held := testwait.Until(t, fmt.Sprintf("B's room to take what A's room relayed of the flood (A's holds %d entries)", took),
+		func() (int, bool) {
+			held := pair.b.roomCounters(t, artifactID).AwarenessClients
+			return held, held >= took
+		}); held >= docs.MaxAwarenessClientsPerRoomForTest {
+		t.Fatalf("B's room holds %d awareness client entries once one tab's %d-client frame reached it, at or past its bound of %d: "+
+			"no bound a socket is held to cut the frame, so one tab took every entry, and B has none for a reader who joins while its clients are there",
+			held, floodClients, docs.MaxAwarenessClientsPerRoomForTest)
 	}
 	flood.Close()
 	// The flooding tab has left before alice joins: bob, on B, holds none of its clients once B's
 	// room has taken their removal, which is the tombstones the bound must not count.
 	if err := bob.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
-		return !holdsAnyClientFrom(states, 500_000, invented)
+		return !holdsAnyClientFrom(states, 500_000, floodClients)
 	}); err != nil {
 		t.Fatalf("the flooding tab's clients never left bob's view on B: %v", err)
 	}
@@ -68,7 +83,7 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 	if held := pair.b.roomCounters(t, artifactID).AwarenessClients; held >= docs.MaxAwarenessClientsPerRoomForTest {
 		t.Fatalf("B's room holds %d awareness client entries once one tab's %d-client frame had left bob's view, at or past its bound of %d: "+
 			"it has no entry for a reader who joins now, who stays invisible on B until the tombstones expire and are purged",
-			held, invented, docs.MaxAwarenessClientsPerRoomForTest)
+			held, floodClients, docs.MaxAwarenessClientsPerRoomForTest)
 	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
@@ -82,19 +97,20 @@ func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, la
 	withinLive(t, lane, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A once one tab's %d-client awareness frame had left B's view, was seen by carol on A but not by bob on B: B's room still counts the frame's clients, the tombstones of the ones that left included, against its bound, and drops every client it has not seen before",
-			invented)
+			floodClients)
 	}
 	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
 }
 
-// The same flood, from a tab that stays: it keeps its 2,048 invented clients alive, re-announcing
-// them every ten seconds as a tab's heartbeat does. Alice, opening the document on A once A's room
-// holds them, is seen at once by carol on A; she must be seen by bob on B within a second too, as
-// she would be were all three on one process. With a room bound that counts every client a room
-// holds (maxAwarenessClientsPerRoom), A's room is full of the tab's clients, refuses alice's client
-// id, and never relays it: bob sees her only once the flooding tab stops re-announcing and its
-// clients expire. The row reads A's room before she joins - it must hold an entry free for her -
-// and the second is held only by the row's twin in benchtime's timing lane (withinLive).
+// The same flood, from a tab that stays: it keeps its floodClients invented clients alive,
+// re-announcing them every ten seconds as a tab's heartbeat does. Alice, opening the document on A
+// once A's room holds them, is seen at once by carol on A; she must be seen by bob on B within a
+// second too, as she would be were all three on one process. With a frame that no socket bound
+// cuts and a room bound that counts every client a room holds (maxAwarenessClientsPerRoom), A's
+// room is full of the tab's clients, refuses alice's client id, and never relays it: bob sees her
+// only once the flooding tab stops re-announcing and its clients expire. The row reads A's room
+// before she joins - it must hold an entry free for her - and the second is held only by the
+// row's twin in benchtime's timing lane (withinLive).
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
 	aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
 }
@@ -120,9 +136,8 @@ func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	carol := pair.openSyncedEditor(t, pair.a, "carol", artifactID, "x\n")
 
 	flood := dialTabSocket(t, pair.a, artifactID, "mallory")
-	const invented = 2048
 	announce := func(clock uint64) {
-		if err := announceAwarenessClients(flood, artifactID, 600_000, invented, clock, inventedState(600_000)); err != nil {
+		if err := announceAwarenessClients(flood, artifactID, 600_000, floodClients, clock, inventedState(600_000)); err != nil {
 			t.Errorf("announce the flooding tab's clients at clock %d: %v", clock, err)
 		}
 	}
@@ -144,14 +159,14 @@ func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	// The flood is in A's room before alice joins: carol, on A, holds one of the tab's clients once
 	// A's room has taken its frame.
 	if err := carol.WaitForAwareness(t, func(states map[uint64]json.RawMessage) bool {
-		return holdsAnyClientFrom(states, 600_000, invented)
+		return holdsAnyClientFrom(states, 600_000, floodClients)
 	}); err != nil {
 		t.Fatalf("none of the flooding tab's clients reached carol on A: %v", err)
 	}
 	if held := pair.a.roomCounters(t, artifactID).AwarenessClients; held >= docs.MaxAwarenessClientsPerRoomForTest {
 		t.Fatalf("A's room holds %d awareness client entries while one tab there keeps %d invented clients alive, at or past its bound of %d: "+
 			"it has no entry for a reader who joins now, and refuses her client id",
-			held, invented, docs.MaxAwarenessClientsPerRoomForTest)
+			held, floodClients, docs.MaxAwarenessClientsPerRoomForTest)
 	}
 
 	alice := pair.openSyncedEditor(t, pair.a, "alice", artifactID, "x\n")
@@ -165,10 +180,17 @@ func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	withinLive(t, lane, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A while one tab there kept %d invented awareness clients alive, was seen by carol on A but not by bob on B: A's room is full of that tab's clients and never relays hers",
-			invented)
+			floodClients)
 	}
 	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
 }
+
+// floodClients is how many client ids the flooding tabs above invent: more than a room may hold
+// (docs.MaxAwarenessClientsPerRoomForTest, production's bound, which the rows run at), so a frame
+// that no socket bound cuts fills the room; and few enough that the frame stays under the largest
+// awareness message a socket's filter reads whole (maxAwarenessMessageBytes, 256 KiB, in
+// docs/awareness_limit.go), since each invented client takes under 40 bytes of it (inventedState).
+const floodClients = docs.MaxAwarenessClientsPerRoomForTest + 96
 
 // inventedState is the state a flooding tab gives each of the client ids it invents from first:
 // a cursor-sized one, as the tabs of this suite's readers announce.
