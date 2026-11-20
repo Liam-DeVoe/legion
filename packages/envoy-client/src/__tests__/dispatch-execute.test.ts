@@ -5867,7 +5867,7 @@ describe("executeDispatchTool", () => {
       config,
       env: {},
       exec: repoExec("owner/repo"),
-      fetchImpl: answering({ key: "LEGION-216", title: "Architecture work" }) as typeof fetch,
+      fetchImpl: answering({ key: "ACME-216", title: "Architecture work" }) as typeof fetch,
       sleep: async () => {},
     }).then(
       () => undefined,

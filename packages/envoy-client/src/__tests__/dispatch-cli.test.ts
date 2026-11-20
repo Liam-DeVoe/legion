@@ -3692,7 +3692,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       ["--failed", "0", "failed"],
       ["--skipped", "0", "skipped"],
       ["--excluded", "0", "excluded"],
-      ["--screenshot", "dispatch://DSP-1/artifact/shot-png", "screenshots"],
+      ["--screenshot", "dispatch://ACME-1/artifact/shot-png", "screenshots"],
       ["--retract", "00000000-0000-4000-8000-000000000041", "retract"],
     ] as const) {
       const { code, stdout } = await runJob([...record, flag, value], jobEnvironment());
