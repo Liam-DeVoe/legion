@@ -85,6 +85,7 @@ import {
   commentDeliveries,
   focusConversation,
   handoffFields,
+  isUnread,
   listedReplies,
   type MessageConversation,
   matchesFilter,
@@ -1046,7 +1047,8 @@ export function ConversationTab({
   // after the kept boundary is marked as it is drawn; one added while nothing was unread is marked
   // once the read under the current key answers its event, which can be after the list drew it. A
   // read mark moved back, which a refocus reads, answers an earlier boundary and adds its marks.
-  // The boundary starts afresh on a visit to another issue and back (`issueKey`).
+  // The boundary starts afresh on a visit to another issue and back (`issueKey`). It places the
+  // marks alone: Jump to latest counts from the boundary the current read answers (`unreadCount`).
   const [visitBoundary, setVisitBoundary] = useState<{
     readonly issueKey: string;
     readonly unreadFrom: string;
@@ -1164,8 +1166,13 @@ export function ConversationTab({
   );
   // Counted over the list as shown, which is the list the pill acts on: it jumps to the first
   // card on the page, so a count taken over the whole set would name unread conversations the
-  // filter is hiding and land on a card carrying no `New` mark.
-  const unreadCount = shown.filter((conversation) => conversation.unread).length;
+  // filter is hiding and land on a card carrying no `New` mark. It counts from the boundary the
+  // reader's read mark gives now (`answeredFrom`), not the visit's kept one: a turn the reader was
+  // shown and has read keeps its `New` for the visit, but is not counted again. That boundary is
+  // never earlier than the kept one, so each conversation counted carries a `New`.
+  const unreadCount = shown.filter((conversation) =>
+    isUnread(conversation.at, answeredFrom)
+  ).length;
   // A landing overrides the filter: arriving at a conversation the current bucket hides resets
   // it to All, so a link never fails to land.
   useEffect(() => {

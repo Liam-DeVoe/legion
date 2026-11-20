@@ -1991,6 +1991,80 @@ test(
   })
 );
 
+// The pill counts the conversations after the reader's read mark as it stands, while every `New`
+// the visit drew stays drawn (`visitBoundary`): the two turns the reader was shown and then read
+// keep their marks, and only the two tails that arrive after the read mark are counted.
+test(
+  "Jump to latest counts the turns after the read mark while the visit's New marks stay drawn",
+  withScrollY(async () => {
+    const layout = installScrollLayoutMocks();
+    const stub = stubLists({
+      comments: [
+        comment("comment-1", { body: "An older comment", created_at: "2026-09-20T00:00:00Z" }),
+        comment("comment-2", { body: "A newer comment", created_at: "2026-09-20T00:05:00Z" }),
+      ],
+      head: [headEvent(9, "2026-09-20T00:05:00Z")],
+      unread: [headEvent(4, "2026-09-20T00:00:00Z")],
+    });
+    const queryClient = newQueryClient();
+    const view = render(tab({ "CORE-1": issueState([], 3) }, true, queryClient));
+    /** Whether each turn, in page order, draws a `New` mark. */
+    const newMarks = () =>
+      Array.from(view.container.querySelectorAll<HTMLElement>("[data-turn]")).map(
+        (turn) => within(turn).queryByText("New", { exact: true }) !== null
+      );
+    const pillText = () => screen.getByTestId("jump-to-latest").textContent;
+    /** Comment `id` arrives as event `seq`, as its live event refreshes the comments and the
+     *  issue's event reads. */
+    const arrive = async (id: string, body: string, seq: number, at: string) => {
+      stub.lists.comments = [...(stub.lists.comments ?? []), comment(id, { body, created_at: at })];
+      stub.lists.head = [headEvent(seq, at)];
+      await act(async () => {
+        await queryClient.invalidateQueries({ queryKey: ["comments", "CORE-1"] });
+        await queryClient.invalidateQueries({ queryKey: ["events", "CORE-1"] });
+      });
+      await screen.findByText(body);
+    };
+
+    try {
+      await screen.findByText("A newer comment");
+      await waitFor(() => expect(window.scrollY).toBe(RESTING_SCROLL_Y));
+      await waitFor(() => expect(newMarks()).toEqual([true, true]));
+
+      // The read mark through the head: nothing is unread under the new key.
+      stub.lists.unread = [];
+      view.rerender(tab({ "CORE-1": issueState([], 9) }, true, queryClient));
+      await waitFor(() =>
+        expect(queryClient.getQueryState(["events", "CORE-1", "unread-boundary", 9])?.status).toBe(
+          "success"
+        )
+      );
+      Object.defineProperty(window, "scrollY", {
+        configurable: true,
+        value: 4_500,
+        writable: true,
+      });
+      act(() => {
+        window.dispatchEvent(new Event("scroll"));
+      });
+      await screen.findByTestId("jump-to-latest");
+      expect(pillText()).toBe("Jump to latest");
+
+      // Event 10, the first tail's, is the first the reader has not read, through both arrivals.
+      stub.lists.unread = [headEvent(10, "2026-09-20T00:10:00Z")];
+      await arrive("comment-3", "A tail", 10, "2026-09-20T00:10:00Z");
+      await waitFor(() => expect(pillText()).toBe("Jump to latest · 1 new"));
+      await arrive("comment-4", "Another tail", 11, "2026-09-20T00:15:00Z");
+      await waitFor(() => expect(pillText()).toBe("Jump to latest · 2 new"));
+      expect(newMarks()).toEqual([true, true, true, true]);
+    } finally {
+      view.unmount();
+      layout.restore();
+      stub.restore();
+    }
+  })
+);
+
 test(
   "a reader pinned to the top stays pinned when a conversation arrives",
   withScrollY(async () => {
