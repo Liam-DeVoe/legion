@@ -393,7 +393,7 @@ func (a *Answerer) refused(run *answerRun, result agentloop.Result, runErr error
 		return false
 	}
 	switch {
-	case result.Fault == agentloop.FaultProviderError && result.Status == http.StatusBadRequest:
+	case (result.Fault == agentloop.FaultProviderError || result.Fault == agentloop.FaultContentFilter) && result.Status == http.StatusBadRequest:
 		// A 400 comes before any of the reply, so no answer has streamed. The flag is set
 		// whether or not the prose call can be made, since it is the service that refused.
 		if structuredOutputRefusal(result.Detail) {

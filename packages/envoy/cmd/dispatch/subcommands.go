@@ -160,6 +160,17 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 		collectAgentOnSignal(stderr)
 	}
 	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: slots, Hooks: hooks}
+	// The chat model's first token is read now, beside the hello and the first claim, so a
+	// sign-in's exchange - Azure's, whose source caches its token - is not made by a run's first
+	// model call; that call waits on the exchange in flight instead of starting its own. A read
+	// that fails here fails nothing: each call reads the token again.
+	if model.Endpoint.Token != nil {
+		go func() {
+			if _, err := model.Endpoint.Token(ctx); err != nil && ctx.Err() == nil {
+				slog.Warn("agent: read the chat model's token at start", "error", err)
+			}
+		}()
+	}
 	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, config); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)
 		return 1

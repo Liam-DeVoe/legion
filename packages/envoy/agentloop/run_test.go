@@ -689,6 +689,39 @@ func TestAProviderErrorCarriesTheStatusItWasRefusedWith(t *testing.T) {
 	}
 }
 
+// A call the provider's content filter refused is a fault of its own, which a caller tells apart
+// from every other refusal: a Chat Completions 400 whose body names the filter - the stream chunk
+// an Azure deployment sends with the error status, and Azure OpenAI's error body - carries the
+// 400, and a reply the provider stopped for content is one too. A 400 for any other cause stays a
+// provider error (TestAProviderErrorCarriesTheStatusItWasRefusedWith).
+func TestAContentFilterRefusalIsItsOwnFault(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		reply  reply
+		status int
+	}{
+		{name: "a 400 holding a chunk the filter stopped", status: http.StatusBadRequest, reply: reply{status: http.StatusBadRequest, body: []byte(
+			`data: {"created":1,"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"delta":{},"finish_reason":"content_filter","index":0,` +
+				`"content_filter_results":{"error":{"code":"content_filter","message":"Response content blocked by label 'Jailbreak'."}}}]}` + "\n\n")}},
+		{name: "a 400 whose error is the filter's", status: http.StatusBadRequest, reply: reply{status: http.StatusBadRequest, body: []byte(
+			`{"error":{"message":"The response was filtered due to the prompt triggering the content management policy.","type":null,"param":"prompt",` +
+				`"code":"content_filter","status":400,"innererror":{"code":"ResponsibleAIPolicyViolation"}}}`)}},
+		{name: "a reply the filter stopped", reply: chatStream("content_filter", chatUsage{Prompt: 1, Completion: 1}, "The note says")},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			result, err := Run(context.Background(), newFixture(t, newStandIn(t, c.reply), OpenAIChat, 1).req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Fault != FaultContentFilter || result.Status != c.status {
+				t.Errorf("fault %q with status %d, want %q with status %d: %s", result.Fault, result.Status, FaultContentFilter, c.status, result.Detail)
+			}
+		})
+	}
+}
+
 // A redirect is never followed, in a run and in a decision alike: the transport puts the
 // endpoint's credential on every request it carries, and Go's own client strips Authorization
 // on a cross-domain redirect before a transport runs, so following one would hand the token to

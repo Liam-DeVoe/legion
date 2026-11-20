@@ -698,9 +698,9 @@ var goingReadTools = map[string]goingReadTool{
 	// argument that fills each of their placeholders.
 	//
 	// dispatch_read reads the item its arguments name (goingPickRead); the reference that names an
-	// ask or a comment fills those rows' {id}. The lists of an issue's and a document's asks and
-	// comments, and a project document's summary, are reads its command makes to find an item,
-	// which no call picks.
+	// ask or a comment fills those rows' {id}, and an issue's dispatch://KEY/comments reads the
+	// list of its comments. The lists of an issue's asks and of a document's asks and comments, and
+	// a project document's summary, are reads its command makes to find an item, which no call picks.
 	"dispatch_read": {Pick: goingPickRead, Routes: []goingToolRoute{
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}", Path: map[string]string{"key": "issue"}},
 		{Method: http.MethodGet, Pattern: "/api/v1/issues/{key}/events", Path: map[string]string{"key": "issue"}},

@@ -143,8 +143,9 @@ func lastWhole(history []agentwire.SavedStep) []agentwire.SavedStep {
 // and its tool steps as that reply's results. The person's answer to a plan, Auto-review's and
 // each row of the plan that ran are told the model as the person's next message. A tool call whose
 // result was not saved is answered as unsaved, so each call has its result, as the providers
-// require; a tool step whose model step is only a note is told as a note.
-func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep) ([]agentloop.Message, error) {
+// require; a tool step whose model step is only a note is told as a note. The result of each
+// step withheld names, its note's too, is told as withheld (withheldHistory).
+func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep, withheld map[int]string) ([]agentloop.Message, error) {
 	var opening strings.Builder
 	if len(run.Turns) > 0 {
 		opening.WriteString("Earlier in this conversation, oldest first:\n")
@@ -190,6 +191,7 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep) ([]a
 		message := &steps[len(steps)-1]
 		message.Blocks = append(message.Blocks, agentloop.Block{Kind: agentloop.TextBlock, Text: text})
 	}
+	history = withheldHistory(history, withheld)
 	for _, step := range history {
 		if len(step.Body) == 0 {
 			older = append(older, fmt.Sprintf("step %d (%s): %s", step.Step, step.Kind, step.Note))
@@ -256,6 +258,48 @@ func conversation(run *agentwire.ClaimedRun, history []agentwire.SavedStep) ([]a
 	}
 	messages := []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{{Kind: agentloop.TextBlock, Text: opening.String()}}}}
 	return append(messages, steps...), nil
+}
+
+// withheldNote is what the model is told in place of a result its content filter refused a call
+// that held (worker.withhold).
+const withheldNote = "this result is withheld: the chat model's content filter refused a model call that held it. Do without it, and tell the person you could not read it."
+
+// withheldHistory is history with the result of each tool step withheld names told as
+// withheldNote, in its body and in its note.
+func withheldHistory(history []agentwire.SavedStep, withheld map[int]string) []agentwire.SavedStep {
+	if len(withheld) == 0 {
+		return history
+	}
+	out := make([]agentwire.SavedStep, len(history))
+	for i, step := range history {
+		if tool, held := withheld[step.Step]; held {
+			step.Note = tool + ": " + withheldNote
+			var body toolBody
+			if len(step.Body) > 0 && json.Unmarshal(step.Body, &body) == nil {
+				body.Result, body.Error = withheldNote, false
+				if encoded, err := json.Marshal(body); err == nil {
+					step.Body = encoded
+				}
+			}
+		}
+		out[i] = step
+	}
+	return out
+}
+
+// storedResult reports whether a saved tool step's result holds data that people, agents, GitHub
+// or a web page wrote (resultText marks it with storedDataNote), in its body or, for an older step
+// saved as its note alone, in its note; with the step's tool.
+func storedResult(step agentwire.SavedStep) (string, bool) {
+	if len(step.Body) == 0 {
+		tool, _, _ := strings.Cut(step.Note, " ")
+		return tool, strings.Contains(step.Note, storedDataNote)
+	}
+	var body toolBody
+	if json.Unmarshal(step.Body, &body) != nil {
+		return "", false
+	}
+	return body.Call.Tool, strings.HasPrefix(body.Result, storedDataNote)
 }
 
 // toolResult is the block that answers call with result.

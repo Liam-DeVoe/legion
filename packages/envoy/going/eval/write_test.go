@@ -19,8 +19,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // TestTheSeededStoreHoldsTheSeed writes the committed seed into an empty database and reads it
 // back as Dispatch stores it: each issue's fields, its close and its claim at the seed's own times,
 // its spec, each blocks and relates link, each ask with its answer and its opening event, each
-// comment, message and file, and the project counters a server's next write takes. A second write
-// leaves the store as it is, and a database holding another project is refused.
+// comment with its event, each message and file, and the project counters a server's next write
+// takes. A second write leaves the store as it is, and a database holding another project is
+// refused.
 func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	ctx := context.Background()
 	seed, err := LoadSeed(Files)
@@ -130,12 +131,27 @@ func TestTheSeededStoreHoldsTheSeed(t *testing.T) {
 	for _, comment := range seed.Comments {
 		var body, author string
 		var created time.Time
-		if err := database.Pool.QueryRow(ctx, `select body, author->>'id', created_at from comments where id = $1`,
-			ItemID("comment", comment.ID)).Scan(&body, &author, &created); err != nil {
+		var eventBody *string
+		var eventSeq *int
+		var ownerSeq int
+		if err := database.Pool.QueryRow(ctx, `
+			select c.body, c.author->>'id', c.created_at, e.payload->>'body', e.seq,
+			       coalesce((select last_seq from issues where key = c.issue_key), (select last_seq from artifacts where id = c.artifact_id))
+			from comments c
+			left join events e on e.type = 'comment.created' and e.payload->>'id' = c.id::text
+			  and e.issue_key is not distinct from c.issue_key and e.artifact_id is not distinct from c.artifact_id
+			where c.id = $1
+		`, ItemID("comment", comment.ID)).Scan(&body, &author, &created, &eventBody, &eventSeq, &ownerSeq); err != nil {
 			t.Fatalf("read comment %s: %v", comment.ID, err)
 		}
 		if body != comment.Body || author != comment.Author || !created.Equal(comment.CreatedAt) {
 			t.Errorf("comment %s holds %q by %s at %s, want %q by %s at %s", comment.ID, body, author, created, comment.Body, comment.Author, comment.CreatedAt)
+		}
+		// An issue's log lists its comments as the comment route leaves them: each under a
+		// comment.created event of its owner's, which carries its body.
+		if eventSeq == nil || *eventSeq > ownerSeq || eventBody == nil || *eventBody != comment.Body {
+			t.Errorf("comment %s has the comment.created event %v with the body %v under an owner whose last sequence is %d, want one at or below it with the comment's body",
+				comment.ID, eventSeq, eventBody, ownerSeq)
 		}
 	}
 	for _, message := range seed.Messages {

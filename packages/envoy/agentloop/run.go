@@ -119,6 +119,12 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		return result, fmt.Errorf("agentloop: %w", ctx.Err())
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
+	case transport.contentFiltered() && (stream.Err() != nil || len(result.Steps) == 0):
+		result.Fault, result.Status = FaultContentFilter, transport.failedStatus()
+		result.Detail = fmt.Sprintf("the provider's content filter refused the call with %d", result.Status)
+		if err := stream.Err(); err != nil {
+			result.Detail += ": " + err.Error()
+		}
 	case stream.Err() != nil:
 		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
 		result.Status = transport.failedStatus()
@@ -549,7 +555,13 @@ func (r *run) finish(result *Result, stream *aisdk.StreamTextResult) {
 			reason.Raw, r.req.Bounds.OutputTokens)
 		return
 	case provider.FinishReasonContentFilter:
-		result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+		// The SDK reads Anthropic's refusal stop reason as content-filter too, and that is the
+		// model refusing; every other provider word for it is the provider's content filter.
+		if reason.Raw == "refusal" {
+			result.Fault, result.Detail = FaultRefusal, fmt.Sprintf("the provider stopped the last reply: %s", reason.Raw)
+			return
+		}
+		result.Fault, result.Detail = FaultContentFilter, fmt.Sprintf("the provider's content filter stopped the last reply: %s", reason.Raw)
 		return
 	case provider.FinishReasonError:
 		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("the last reply ended in an error: %s", reason.Raw)

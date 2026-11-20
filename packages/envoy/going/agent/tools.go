@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"slices"
 	"strconv"
@@ -48,6 +50,10 @@ const (
 	dispatchSearch = "dispatch_search"
 	dispatchRead   = "dispatch_read"
 )
+
+// dispatchSuggest is the tool of Dispatch a suggestion in a document is, whose refusal of a quote
+// the model is told how to mend (mendNote).
+const dispatchSuggest = "dispatch_suggest"
 
 // modelResultLimit is the most bytes of a call's answer the model is given; a note names the
 // rest, which the model reads with another call or does without.
@@ -221,27 +227,77 @@ func (w *worker) read(ctx context.Context, step int, input json.RawMessage) (str
 	return w.callServer(ctx, agentwire.CallRequest{Step: step, Call: 1, Kind: agentwire.KindRoute, Tool: dispatchRead, Arguments: input})
 }
 
-// findable is a tool find_tools may answer, with the lowercase text it matches a need's words
-// against: its name, its name in words, and its description.
+// findable is a tool find_tools may answer: its name, what it does and its arguments' schema, with
+// the lowercase text it matches a need's words against: its name, its name in words, and its
+// description.
 type findable struct {
-	tool contracts.DispatchTool
-	text string
+	name, description string
+	schema            json.RawMessage
+	text              string
 }
 
-// findableTools is each tool of Dispatch, the two reads outside it and draw_block, made findable
-// once, at find_tools' first call.
+// issueCommentsRead is dispatch_read's form that lists an issue's comments (its ref
+// dispatch://KEY/comments), as find_tools answers it beside dispatch_read's own spec, whose long
+// description a need for an issue's comments would not rank first.
+var issueCommentsRead = contracts.DispatchTool{
+	Name:        dispatchRead,
+	Description: "List every comment on an issue, a person's or an agent session's, each with its author, its time and its body: dispatch_read, or read, with ref dispatch://KEY/comments.",
+	Arguments: []contracts.ToolField{
+		{Name: "ref", Kind: contracts.ToolFieldString, Required: true, Description: "dispatch://KEY/comments, KEY the issue's key, such as dispatch://DEMO-7/comments."},
+	},
+}
+
+// findableTools is each tool of Dispatch, with dispatch_read's form that lists an issue's comments
+// (issueCommentsRead); the reads the server makes by going's names for them (going.ReadSpecs: the
+// roster of agent sessions and the rest, which no spec of Dispatch states); the two reads outside
+// Dispatch and draw_block, made findable once, at find_tools' first call.
 var findableTools = sync.OnceValue(func() []findable {
-	tools := slices.Concat(contracts.DispatchTools, outsideReads, []contracts.DispatchTool{drawBlockTool})
-	out := make([]findable, 0, len(tools))
+	tools := slices.Concat(contracts.DispatchTools, []contracts.DispatchTool{issueCommentsRead}, outsideReads, []contracts.DispatchTool{drawBlockTool})
+	reads := going.ReadSpecs()
+	out := make([]findable, 0, len(tools)+len(reads))
+	add := func(name, description string, schema json.RawMessage) {
+		text := strings.ToLower(name + " " + strings.ReplaceAll(name, "_", " ") + " " + description)
+		out = append(out, findable{name: name, description: description, schema: schema, text: text})
+	}
 	for _, tool := range tools {
-		out = append(out, findable{tool: tool, text: strings.ToLower(tool.Name + " " + strings.ReplaceAll(tool.Name, "_", " ") + " " + tool.Description)})
+		add(tool.Name, tool.Description, schemaOf(tool.Arguments))
+	}
+	for _, read := range reads {
+		add(read.Name, read.Description, read.Schema)
 	}
 	return out
 })
 
-// findTools answers the specs that fit the model's need: each tool of Dispatch, the two reads
-// outside it and draw_block (findableTools), scored by how many of the need's words its name and
-// description hold, the best foundTools of them.
+// needFillers are words of a need that name no tool's work - "list the agent sessions and which
+// issue they work on" asks for agent, session, issue and work - and that find_tools does not match:
+// every long description holds them, which would rank it above the tool the need names.
+var needFillers = map[string]bool{
+	"and": true, "the": true, "which": true, "what": true, "who": true, "they": true, "their": true, "them": true,
+	"are": true, "for": true, "with": true, "that": true, "this": true, "its": true, "from": true, "all": true,
+	"any": true, "has": true, "have": true, "how": true, "list": true, "show": true, "read": true, "get": true,
+	"find": true, "tool": true, "tools": true, "need": true, "can": true, "does": true,
+}
+
+// needWords is the words of need find_tools matches: lowercase, each once, past two letters, no
+// filler (needFillers), and a plural read as its singular, so "sessions" matches "session".
+func needWords(need string) []string {
+	var words []string
+	for _, word := range strings.FieldsFunc(strings.ToLower(need), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) }) {
+		if len(word) <= 2 || needFillers[word] {
+			continue
+		}
+		if len(word) > 3 && strings.HasSuffix(word, "s") && !strings.HasSuffix(word, "ss") {
+			word = strings.TrimSuffix(word, "s")
+		}
+		words = append(words, word)
+	}
+	slices.Sort(words)
+	return slices.Compact(words)
+}
+
+// findTools answers the specs that fit the model's need (findableTools), scored by how many of the
+// need's words (needWords) its name and description hold, the best foundTools of them; of two
+// that hold as many, the one with the shorter description, whose words are more of it, first.
 func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (string, bool) {
 	var arguments struct {
 		Need string `json:"need"`
@@ -249,24 +305,29 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 	if err := json.Unmarshal(input, &arguments); err != nil || strings.TrimSpace(arguments.Need) == "" {
 		return "find_tools takes need, what you need a tool for", true
 	}
-	words := strings.FieldsFunc(strings.ToLower(arguments.Need), func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	words := needWords(arguments.Need)
 	type scored struct {
-		tool  contracts.DispatchTool
+		tool  findable
 		score int
 	}
 	var found []scored
 	for _, candidate := range findableTools() {
 		score := 0
 		for _, word := range words {
-			if len(word) > 2 && strings.Contains(candidate.text, word) {
+			if strings.Contains(candidate.text, word) {
 				score++
 			}
 		}
 		if score > 0 {
-			found = append(found, scored{candidate.tool, score})
+			found = append(found, scored{candidate, score})
 		}
 	}
-	slices.SortStableFunc(found, func(a, b scored) int { return b.score - a.score })
+	slices.SortStableFunc(found, func(a, b scored) int {
+		if a.score != b.score {
+			return b.score - a.score
+		}
+		return len(a.tool.description) - len(b.tool.description)
+	})
 	if len(found) > foundTools {
 		found = found[:foundTools]
 	}
@@ -275,7 +336,7 @@ func (w *worker) findTools(_ context.Context, _ int, input json.RawMessage) (str
 	}
 	specs := make([]map[string]any, 0, len(found))
 	for _, f := range found {
-		specs = append(specs, map[string]any{"name": f.tool.Name, "description": f.tool.Description, "arguments": json.RawMessage(schemaOf(f.tool.Arguments))})
+		specs = append(specs, map[string]any{"name": f.tool.name, "description": f.tool.description, "arguments": f.tool.schema})
 	}
 	encoded, _ := json.Marshal(specs)
 	return string(encoded), false
@@ -317,10 +378,88 @@ func (w *worker) callTool(ctx context.Context, step int, input json.RawMessage) 
 	case toolDrawBlock:
 		call.Kind, call.Block = agentwire.KindBlock, arguments.Arguments
 		return w.drawBlock(ctx, call)
+	case dispatchDocRead:
+		call.Kind, call.Tool, call.Arguments = agentwire.KindRoute, arguments.Tool, arguments.Arguments
+		return w.docRead(ctx, call)
 	default:
 		call.Kind, call.Tool, call.Arguments = agentwire.KindRoute, arguments.Tool, arguments.Arguments
 	}
 	return w.callServer(ctx, call)
+}
+
+// dispatchDocRead is the tool of Dispatch that reads a document's text, or an uploaded file's
+// (docRead).
+const dispatchDocRead = "dispatch_doc_read"
+
+// docRead is dispatch_doc_read as the person's own `dispatch doc-read` reads an item: a document's
+// text through the route call names; and an uploaded file, whose text route answers 400
+// NOT_DOCUMENT, as the bytes of the version call names, else of its latest - which the item's
+// summary names (dispatch_read, the step's next call) - through the version route that serves
+// them, the step's call after that. The model is given a file's bytes only where they are text
+// (textFile), at most modelResultLimit bytes of them as of any answer (resultText); of any other
+// file it is told what it is.
+func (w *worker) docRead(ctx context.Context, call agentwire.CallRequest) (string, bool) {
+	answer, told, refused := w.serverCall(ctx, call)
+	if told != "" {
+		return told, refused
+	}
+	var named map[string]any
+	if answer.Status != http.StatusBadRequest || !refusedAs(answer.Body, "NOT_DOCUMENT") || json.Unmarshal(call.Arguments, &named) != nil {
+		return resultText(call, answer), answer.Status/100 != 2
+	}
+	item := map[string]any{}
+	for _, name := range []string{"issue", "project", "artifact", "ref"} {
+		if value, held := named[name]; held {
+			item[name] = value
+		}
+	}
+	encoded, _ := json.Marshal(item)
+	summary, told, refused := w.serverCall(ctx, agentwire.CallRequest{Step: call.Step, Call: call.Call + 1, Kind: agentwire.KindRoute, Tool: dispatchRead, Arguments: encoded})
+	var record struct {
+		Name     string `json:"name"`
+		Kind     string `json:"kind"`
+		Versions []struct {
+			Number int `json:"number"`
+		} `json:"versions"`
+	}
+	if told != "" || refused || summary.Status/100 != 2 || json.Unmarshal(summary.Body, &record) != nil || record.Kind != "file" || len(record.Versions) == 0 {
+		return resultText(call, answer), true
+	}
+	if _, versioned := named["version"]; !versioned {
+		latest := 0
+		for _, version := range record.Versions {
+			latest = max(latest, version.Number)
+		}
+		named["version"] = latest
+	}
+	bytesCall := call
+	bytesCall.Call += 2
+	bytesCall.Arguments, _ = json.Marshal(named)
+	file, told, refused := w.serverCall(ctx, bytesCall)
+	switch {
+	case told != "":
+		return told, refused
+	case file.Status/100 == 2 && !textFile(file):
+		return fmt.Sprintf("%s is an uploaded file of %s, %d bytes, which is not text: no tool of the agent's reads it", record.Name, cmp.Or(file.ContentType, "no stated type"), len(file.Body)), true
+	}
+	return resultText(bytesCall, file), file.Status/100 != 2
+}
+
+// refusedAs reports whether body is a refusal of Dispatch's with code.
+func refusedAs(body []byte, code string) bool {
+	var refusal struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &refusal) == nil && refusal.Code == code
+}
+
+// textFile reports whether a file's answer is text the model may be given: a text content type,
+// or JSON, XML or YAML, and UTF-8.
+func textFile(answer agentwire.CallAnswer) bool {
+	media, _, _ := strings.Cut(strings.ToLower(answer.ContentType), ";")
+	media = strings.TrimSpace(media)
+	text := strings.HasPrefix(media, "text/") || slices.Contains([]string{"application/json", "application/xml", "application/yaml", "application/x-yaml", "application/x-ndjson"}, media)
+	return text && utf8.Valid(answer.Body)
 }
 
 // drawBlock asks the server to draw the block call names from the run's saved tool results, and
@@ -400,13 +539,30 @@ const (
 )
 
 // callServer makes call of the run at the server and answers what the model is told of it: the
-// call's answer (resultText), or what serverCall says of its refusal.
+// call's answer (resultText), with what to do instead where the answer is a refusal the model can
+// mend (mendNote), or what serverCall says of its refusal.
 func (w *worker) callServer(ctx context.Context, call agentwire.CallRequest) (string, bool) {
 	answer, told, refused := w.serverCall(ctx, call)
 	if told != "" {
 		return told, refused
 	}
-	return resultText(call, answer), answer.Status/100 != 2
+	return resultText(call, answer) + mendNote(call, answer), answer.Status/100 != 2
+}
+
+// suggestTargetNote is what the model is told after a suggestion's 404 TARGET_NOT_FOUND: what a
+// suggestion's quote must be, and how to find text that is one.
+const suggestTargetNote = "\n[The quote is no text of one block of the document. A suggestion replaces text inside one block - one heading, paragraph, list item or table cell: " +
+	"quote text that lies inside one block, such as one of the nearest blocks this answer names, and make one suggestion for each block the change needs. " +
+	"dispatch_doc_read with blocks lists the document's blocks.]"
+
+// mendNote is what the model is told after call's answer where that answer is a refusal it can
+// mend, "" for any other: a suggestion (dispatch_suggest) whose quote names no text of one block
+// of its document, 404 TARGET_NOT_FOUND, takes suggestTargetNote.
+func mendNote(call agentwire.CallRequest, answer agentwire.CallAnswer) string {
+	if call.Tool != dispatchSuggest || answer.Status != http.StatusNotFound || !refusedAs(answer.Body, "TARGET_NOT_FOUND") {
+		return ""
+	}
+	return suggestTargetNote
 }
 
 // serverCall makes call of the run at the server and answers its answer, or, where it has none,
@@ -457,7 +613,7 @@ func (w *worker) serverCall(ctx context.Context, call agentwire.CallRequest) (ag
 // What resultText writes around a call's answer, which ReadSavedResult reads back: the line that
 // names the call by its step and its number within the step, which a block names it by
 // (draw_block), with its status; and the notes after a body the model was given only the first
-// bytes of, or that the server cut.
+// bytes of, or that the server cut. callServer may write a mendNote after them.
 const (
 	resultHead      = "step %d, call %d: status %d\n"
 	shortenedPrefix = "\n[This answer holds "
@@ -544,6 +700,7 @@ func ReadSavedResult(body json.RawMessage) (SavedResult, error) {
 	saved := SavedResult{Tool: step.Call.Tool, Arguments: step.Call.Arguments}
 	saved.Call, _ = strconv.Atoi(numbers[2])
 	saved.Status, _ = strconv.Atoi(numbers[3])
+	rest, _ = strings.CutSuffix(rest, suggestTargetNote)
 	rest, saved.Cut = strings.CutSuffix(rest, serverCutNote)
 	rest, saved.Shortened = cutShortened(rest)
 	saved.Body = []byte(rest)

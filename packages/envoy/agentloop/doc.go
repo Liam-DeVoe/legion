@@ -51,8 +51,9 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters, the retry and the last refused status, and nothing
-// else.
+// the token, the endpoint's query parameters, the retry, the last refused status and whether the
+// first 64 KiB of that refusal's body name the provider's content filter (FaultContentFilter),
+// and nothing else.
 //
 // # Cache marks
 //

@@ -6,7 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,6 +39,9 @@ const (
 	codeModelRefused  = "MODEL_REFUSED"
 	codeModelTooLarge = "MODEL_REPLY_TOO_LARGE"
 	codeModelCallTime = "MODEL_CALL_TIME"
+	// codeContentFilter is a model call the chat model's content filter refused with every
+	// tool result of the run withheld from it (withhold).
+	codeContentFilter = "MODEL_CONTENT_FILTER"
 	// codeAgentFailed is a run the agent's own code failed on: a step it could not save, a
 	// history it could not read, a callback of its loop that panicked.
 	codeAgentFailed = "AGENT_FAILED"
@@ -71,6 +77,13 @@ type replyFrame struct {
 // errStepTaken ends agentloop.Run once its one model call of a step finished and was saved: each
 // step starts the loop again from the saved steps.
 var errStepTaken = errors.New("the step's model call finished and was saved")
+
+// errReplyFiltered ends agentloop.Run once its one model call of a step finished with a reply the
+// chat model's content filter stopped, which is not saved: the step is made again (withhold).
+var errReplyFiltered = errors.New("the chat model's content filter stopped the step's reply")
+
+// finishContentFilter is agentloop.Step.Finish of a reply the content filter stopped.
+const finishContentFilter = "content-filter"
 
 // worker is one claimed run of the agent's: the run, its level, what it has spent, its history,
 // and its own context, which a stop, a lease the run no longer holds, the watchdog and the
@@ -111,6 +124,10 @@ type worker struct {
 	// drawn is the block the server drew for a draw_block call (going.BlockData), by the step
 	// of the call, until that step is saved with it as its block frame.
 	drawn sync.Map
+	// withheld is the tool steps of the run whose results the model is no longer given, by their
+	// numbers, each with its tool: the content filter refused a model call that held them
+	// (withhold). Only the run's goroutine writes it, between its model calls.
+	withheld map[int]string
 }
 
 // newWorker is the worker of run, its context ctx's, its slot freed by release.
@@ -277,9 +294,11 @@ type stepOutcome struct {
 
 // step makes one step: one agentloop.Run of one model call, from the run's saved steps, with the
 // tools it calls; the model call is saved (OnStep), each tool call as it ends (toolRun). The
-// watchdog gives up the run when the step runs past its model call's time and watchdogGrace.
+// watchdog gives up the run when the step runs past its model call's time and watchdogGrace. A
+// call the chat model's content filter refused, or whose reply it stopped, saves nothing, and
+// the step is made again without the results the filter may have refused (withhold).
 func (w *worker) step() stepOutcome {
-	messages, err := conversation(w.run, lastWhole(w.history))
+	messages, err := conversation(w.run, lastWhole(w.history), w.withheld)
 	if err != nil {
 		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
 	}
@@ -301,6 +320,9 @@ func (w *worker) step() stepOutcome {
 	request.Model = w.agent.pacer.paced(request.Model, func() int { return prompt/charsPerToken + w.level.OutputTokens })
 	request.System, request.Input, request.Tools = system, messages, w.tools(base)
 	request.OnStep = func(step agentloop.Step) error {
+		if step.Finish == finishContentFilter {
+			return errReplyFiltered
+		}
 		finish = step.Finish
 		calls = w.saveReply(base, step)
 		return errStepTaken
@@ -322,10 +344,45 @@ func (w *worker) step() stepOutcome {
 			return stepOutcome{state: agentwire.StateDone}
 		}
 		return stepOutcome{}
+	case errors.Is(err, errReplyFiltered):
+		return w.withhold("the provider's content filter stopped the reply")
 	case err != nil:
 		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %v", codeAgentFailed, err)}
+	case result.Fault == agentloop.FaultContentFilter:
+		return w.withhold(result.Detail)
 	}
 	return w.faulted(result)
+}
+
+// withhold is how a step goes on whose model call the chat model's content filter refused: every
+// tool step of the run whose result holds data that people, agents, GitHub or a web page wrote
+// (storedDataNote), which the agent cannot vouch for, and that is not yet withheld, is withheld,
+// so the model is told of each that its result was withheld (conversation), and the step is made
+// again; a reply that ends the turn then tells the person which results were withheld
+// (saveReply). A call refused with no such result left to withhold ends the run failed with
+// codeContentFilter and the provider's detail.
+func (w *worker) withhold(detail string) stepOutcome {
+	added := 0
+	for _, step := range w.history {
+		if _, done := w.withheld[step.Step]; done || step.Kind != agentwire.StepTool {
+			continue
+		}
+		if tool, stored := storedResult(step); stored {
+			if w.withheld == nil {
+				w.withheld = map[int]string{}
+			}
+			w.withheld[step.Step] = tool
+			added++
+		}
+	}
+	if added == 0 {
+		return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf(
+			"%s: the chat model's content filter refused a model call of this run with every tool result of the run withheld from it (%s)",
+			codeContentFilter, note(detail))}
+	}
+	slog.Warn("agent: the chat model's content filter refused a model call; its tool results are withheld and the call is made again",
+		"run", w.run.ID, "withheld", added, "detail", note(detail))
+	return stepOutcome{}
 }
 
 // runModel makes request's one model call on the run's context, under the watchdog, adds what it
@@ -369,7 +426,9 @@ func (w *worker) merge() {
 
 // faulted is how a step whose model call saved nothing ends the run's turn: at its level's time,
 // or at the model call's own; a model call that failed, that the model refused or that passed its
-// size limits fails the run; a model the quota or a 429 held back is tried again.
+// size limits fails the run; a model the quota or a 429 held back is tried again. A failed call's
+// reason names the fault agentloop ended it with and its detail (faultDetail), so the reason says
+// why a call that drew no answer failed.
 func (w *worker) faulted(result agentloop.Result) stepOutcome {
 	switch result.Fault {
 	case agentloop.FaultTime:
@@ -391,7 +450,21 @@ func (w *worker) faulted(result agentloop.Result) stepOutcome {
 	if result.Status != 0 {
 		detail = fmt.Sprintf("the chat model answered %d", result.Status)
 	}
+	if result.Fault != "" {
+		detail += fmt.Sprintf(" (%s: %s)", result.Fault, faultDetail(result.Detail))
+	}
 	return stepOutcome{state: agentwire.StateFailed, reason: fmt.Sprintf("%s: %s", codeModelFailed, detail)}
+}
+
+// urlQuery is the query of an address in a fault's detail, which faultDetail leaves out.
+var urlQuery = regexp.MustCompile(`(https?://[^\s"'?]*)\?[^\s"']*`)
+
+// faultDetail is a fault's detail as a run's reason carries it: on one line, at most noteLimit
+// bytes, and each address in it without its query. The transport sends the endpoint's token in a
+// header alone, so the detail holds none; the query is left out since a caller's endpoint may
+// carry its own parameters there.
+func faultDetail(detail string) string {
+	return note(urlQuery.ReplaceAllString(detail, "$1"))
 }
 
 // saveReply saves step, the model call of the step numbered base, and answers the tools it
@@ -414,6 +487,9 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 			tools = append(tools, block.Name)
 		}
 	}
+	if len(w.withheld) > 0 && (len(tools) == 0 || slices.Contains(tools, toolProposePlan)) {
+		body.Text = strings.TrimSpace(body.Text + withheldTold(w.withheld))
+	}
 	body.Output = step.Usage.Output
 	line := note(body.Text)
 	if len(tools) > 0 {
@@ -422,6 +498,21 @@ func (w *worker) saveReply(base int, step agentloop.Step) []string {
 	frame, _ := json.Marshal(replyFrame{Step: base, Text: body.Text, Tools: append([]string{}, tools...)})
 	w.save(agentwire.StepRequest{Step: base, Kind: agentwire.StepModel, Note: line, Frames: []agentwire.Frame{{Name: frameReply, Data: frame}}}, body)
 	return tools
+}
+
+// withheldTold is what a reply that ends the run's turn - an answer, or a plan proposed - adds for
+// its person where the run withheld tool results from the model (withhold): which, by step and
+// tool, and that the reply does not use them.
+func withheldTold(withheld map[int]string) string {
+	var named []string
+	for _, step := range slices.Sorted(maps.Keys(withheld)) {
+		named = append(named, fmt.Sprintf("step %d (%s)", step, withheld[step]))
+	}
+	if len(named) == 1 {
+		return fmt.Sprintf("\n\nOne tool result of this run, %s, was withheld from the chat model, since its content filter refused a call that held it: this reply does not use it.", named[0])
+	}
+	return fmt.Sprintf("\n\n%d tool results of this run, %s, were withheld from the chat model, since its content filter refused a call that held them: this reply does not use them.",
+		len(named), strings.Join(named, ", "))
 }
 
 // toolRun is the agentloop Run of tool in the step whose model call is numbered base: it makes the

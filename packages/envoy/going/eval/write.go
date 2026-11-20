@@ -592,7 +592,9 @@ func (w *seedWriter) writeComments(ctx context.Context) error {
 }
 
 // writeComment writes one comment, indexes its blocks and writes the mentions its body holds, as
-// the comment route leaves them.
+// the comment route leaves them, and its comment.created event under its owner's next sequence,
+// which an issue's log lists: the comment as it was written, its body cut as an event carries one
+// (model.EventBody), and for a project document's comment the document it is on.
 func (w *seedWriter) writeComment(ctx context.Context, comment Comment) error {
 	id := ItemID("comment", comment.ID)
 	where := ownerOf(comment.Owner)
@@ -605,7 +607,33 @@ func (w *seedWriter) writeComment(ctx context.Context, comment Comment) error {
 	`, id, where.issue, where.artifact, author, comment.Body, comment.CreatedAt); err != nil {
 		return err
 	}
-	return w.indexItem(ctx, refs.ItemComment, id, comment.Body, comment.CreatedAt)
+	if err := w.indexItem(ctx, refs.ItemComment, id, comment.Body, comment.CreatedAt); err != nil {
+		return err
+	}
+	body, truncated := model.EventBody(comment.Body)
+	created := model.CommentEventPayload{
+		Comment: model.Comment{
+			ID: id, IssueKey: where.issue, ArtifactID: where.artifact, Author: w.actor(comment.Author),
+			Body: body, CreatedAt: comment.CreatedAt,
+		},
+		BodyTruncated: truncated,
+	}
+	if project, slug, found := strings.Cut(comment.Owner, "/artifact/"); found {
+		created.ProjectKey, created.ArtifactSlug = project, slug
+		for _, artifact := range w.seed.Artifacts {
+			if artifact.Owner == project && artifact.Slug == slug {
+				created.ArtifactName = artifact.Name
+			}
+		}
+	}
+	payload, err := json.Marshal(created)
+	if err != nil {
+		return err
+	}
+	if err := w.writeEvent(ctx, where, "comment.created", author, string(payload), comment.CreatedAt); err != nil {
+		return fmt.Errorf("its event: %w", err)
+	}
+	return nil
 }
 
 // writeMessages writes each message of an issue's thread, to its session where it names one, and

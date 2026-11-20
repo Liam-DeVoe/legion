@@ -78,7 +78,7 @@ type readTool struct {
 var readTools = []readTool{
 	{
 		name:        ReadRoster,
-		description: "Read the agent sessions Dispatch knows of: each session's title, state, roles, open asks and last activity, the roster's source (live, or stored when the live roster is unavailable) and its age in milliseconds. It takes no arguments.",
+		description: "Read the agent sessions Dispatch knows of: each session's title, state, roles, open asks and last activity, the roster's source (live, or stored when the live roster is unavailable) and its age in milliseconds. It names no issue a session works on: an issue's claim names the session that holds it. It takes no arguments.",
 		schema:      json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
 	},
 	{
@@ -130,6 +130,23 @@ var readTools = []readTool{
   "additionalProperties": false
 }`),
 	},
+}
+
+// ReadSpec is one read tool as a model is offered it: its name, what it reads, and the JSON schema
+// of its arguments.
+type ReadSpec struct {
+	Name, Description string
+	Schema            json.RawMessage
+}
+
+// ReadSpecs is each read tool, in the order a call offers them: the reads the server makes for the
+// command bar's agent too, by the same names (going_tools.go's goingReadTools).
+func ReadSpecs() []ReadSpec {
+	specs := make([]ReadSpec, len(readTools))
+	for i, tool := range readTools {
+		specs[i] = ReadSpec{Name: tool.name, Description: tool.description, Schema: tool.schema}
+	}
+	return specs
 }
 
 // readTools is every read tool request.Reads supplies, in readTools' order.

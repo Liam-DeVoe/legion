@@ -38,13 +38,15 @@ type Call struct {
 }
 
 // Reply is what the fake answers one request with. A Status other than 0 and 200 answers that
-// status with an error body, and RetryAfter its Retry-After header. Otherwise the reply streams
-// Padding bytes of SSE comments, which a reader skips, then Text, in one piece, then Calls, and
-// finishes with Finish ("stop", or "tool_calls" where it calls a tool, by default), having
-// written Output completion tokens. Hold, where set, is waited on before anything is sent, until
-// it closes or the client leaves; Endless streams text with no end until the client leaves.
+// status with an error body, Error where it is set and the fake's own otherwise, and RetryAfter
+// its Retry-After header. Otherwise the reply streams Padding bytes of SSE comments, which a
+// reader skips, then Text, in one piece, then Calls, and finishes with Finish ("stop", or
+// "tool_calls" where it calls a tool, by default), having written Output completion tokens.
+// Hold, where set, is waited on before anything is sent, until it closes or the client leaves;
+// Endless streams text with no end until the client leaves.
 type Reply struct {
 	Status     int
+	Error      string
 	RetryAfter string
 	Padding    int
 	Text       string
@@ -283,6 +285,10 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(reply.Status)
+		if reply.Error != "" {
+			_, _ = io.WriteString(w, reply.Error)
+			return
+		}
 		_, _ = fmt.Fprintf(w, `{"error":{"message":"the fake chat model answers %d"}}`, reply.Status)
 		return
 	}

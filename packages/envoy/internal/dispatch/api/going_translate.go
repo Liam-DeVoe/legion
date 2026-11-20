@@ -638,9 +638,9 @@ func goingTranslateHandoffVersion(ctx context.Context, read goingReader, call go
 // goingReadRef is what a read's `ref` names, as the `dispatch` command reads one
 // (parseDispatchRef, packages/envoy-client/src/dispatch-owner.ts): the reference text.ParseRef
 // reads, a dashboard URL under the server's own address included; and, after an issue's key, one
-// of the two reads of the issue only a read names (of): its log, `log` or the Activity tab's
-// `activity`, and its children. version is the version an `@v<N>` after a document's slug names,
-// "" for none.
+// of the three reads of the issue only a read names (of): its log, `log` or the Activity tab's
+// `activity`, its children, and its comments. version is the version an `@v<N>` after a
+// document's slug names, "" for none.
 type goingReadRef struct {
 	text.Ref
 	of      string
@@ -651,6 +651,7 @@ type goingReadRef struct {
 const (
 	goingRefLog      = "log"
 	goingRefChildren = "children"
+	goingRefComments = "comments"
 )
 
 // goingRefVersion is the `@v<N>` that ends a reference to a document at version N.
@@ -682,6 +683,8 @@ func goingParseReadRef(value, serverURL string) (goingReadRef, bool) {
 		of = goingRefLog
 	case "children":
 		of = goingRefChildren
+	case "comments":
+		of = goingRefComments
 	default:
 		return goingReadRef{}, false
 	}
@@ -722,18 +725,21 @@ func goingPickRead(arguments map[string]any, serverURL string) (string, goingCal
 
 // goingPickReadRef is the read of the item value, a read's reference, names (goingReadRef): an
 // issue (goingIssueRead), and its children, which the issue's own read lists; its log, as its
-// events (goingIssueEvents); a document of an issue or a project; a block, as its node in the
-// reference graph with what references it; an ask; a comment with its thread; and a message.
+// events (goingIssueEvents); its comments; a document of an issue or a project; a block, as its
+// node in the reference graph with what references it; an ask; a comment with its thread; and a
+// message.
 func goingPickReadRef(value string, arguments map[string]any, serverURL string) (string, goingCall, error) {
 	ref, parsed := goingParseReadRef(value, serverURL)
 	switch {
 	case !parsed:
 		return "", goingCall{}, goingUntranslatable(fmt.Sprintf(
-			"ref %q is no reference to an issue, its log or its children, a document, a block, an ask, a comment or a message", value))
+			"ref %q is no reference to an issue, its log, its children or its comments, a document, a block, an ask, a comment or a message", value))
 	case ref.of == goingRefLog:
 		return goingIssueEvents(ref.IssueKey, arguments)
 	case ref.of == goingRefChildren:
 		return "GET /api/v1/issues/{key}", goingCall{path: map[string]string{"key": ref.IssueKey}}, nil
+	case ref.of == goingRefComments:
+		return "GET /api/v1/issues/{key}/comments", goingCall{path: map[string]string{"key": ref.IssueKey}}, nil
 	case ref.Kind == "issue":
 		return goingIssueRead(ref.IssueKey, arguments)
 	case ref.Kind == "artifact" && ref.IssueKey != "":

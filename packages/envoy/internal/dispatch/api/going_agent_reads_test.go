@@ -284,10 +284,10 @@ var goingReadsNoPersonCalls = map[string]string{
 // by its name, send their words as the search route's q and find the issue whose title holds them.
 // A read of a reference reads the item it names through the route a person reads it with: an
 // issue, a comment with its thread, an issue's log, a document of an issue or a project, an ask, a
-// message, an issue's children and a block; a read naming how many events reads the issue's
-// events, and a project alone its documents on no issue. dispatch_doc_read reads the text of the
-// document its issue, artifact or reference names, with its blocks or at a version;
-// dispatch_handoff_read reads the version it names; dispatch_issues lists the issues with no
+// message, an issue's children, an issue's comments and a block; a read naming how many events
+// reads the issue's events, and a project alone its documents on no issue. dispatch_doc_read
+// reads the text of the document its issue, artifact or reference names, with its blocks or at a
+// version; dispatch_handoff_read reads the version it names; dispatch_issues lists the issues with no
 // priority. Then every read tool find_tools offers, called by call_tool with its spec's example,
 // reaches a row of its own with each argument where that row's route reads it: in its path, under
 // a query key the route reads, or in a field of the body it reads (routeShapes).
@@ -403,6 +403,8 @@ func TestTheAgentReadsWhatItsArgumentsName(t *testing.T) {
 			route: "GET /api/v1/issues/{key}/messages/{id}", holds: []string{"The miller is on his way."}},
 		{name: "an issue's children read the issue", tool: "read", arguments: map[string]any{"ref": issueRef + "/children"},
 			route: "GET /api/v1/issues/{key}", holds: []string{"The quernstone mill"}},
+		{name: "an issue's comments read its comments", tool: "read", arguments: map[string]any{"ref": issueRef + "/comments"},
+			route: "GET /api/v1/issues/{key}/comments", holds: []string{"Which millstone turns?", "The bedstone stays."}},
 		{name: "a block's reference reads the block", tool: "read", arguments: map[string]any{"ref": blockRef},
 			route: "GET /api/v1/references", query: url.Values{"to": {blockRef}}, holds: []string{blocks[0].ID}},
 		{name: "a project alone lists its documents on no issue", tool: "read", arguments: map[string]any{"project": "DEMO"},

@@ -1996,6 +1996,7 @@ export const dispatchToolSpecs = [
       "`Coverage: the spec marks no requirements`. Nothing is refused for a gap. " +
       `An issue read, and its dispatch://KEY/log, lists the issue's last ${DEFAULT_ISSUE_READ_EVENTS} events, oldest first; ` +
       "--events N lists the last N, and --all-events every one. " +
+      "An issue's dispatch://KEY/comments lists every comment on the issue. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
@@ -2021,7 +2022,7 @@ export const dispatchToolSpecs = [
       ref: z
         .string()
         .describe(
-          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, " +
+          "Optional dispatch:// reference: dispatch://KEY, dispatch://KEY/spec, dispatch://KEY/comments, " +
             "dispatch://KEY/artifact/<slug>[@vN], dispatch://KEY/ask/<id>, dispatch://KEY/comment/<id>, " +
             "dispatch://KEY/message/<id>, dispatch://PROJECT/artifact/<slug>[@vN], and its " +
             "/ask/<id> and /comment/<id>; or the dashboard URL of one. A block: " +

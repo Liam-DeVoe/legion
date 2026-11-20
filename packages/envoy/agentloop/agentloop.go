@@ -304,11 +304,11 @@ type Result struct {
 	Fault  Fault
 	Detail string
 	// Status is the HTTP status the provider refused the last call with, on a
-	// FaultProviderError whose call drew an answer that was not a 2xx, after the retry where
-	// one was made. It is zero on every other outcome, and on a provider error that came with
-	// no such status: a transport error, a token that could not be read, or a stream that
-	// broke after a 2xx. A caller tells a request the provider will not serve (a 400) from
-	// one it could not serve now by it.
+	// FaultProviderError or a FaultContentFilter whose call drew an answer that was not a 2xx,
+	// after the retry where one was made. It is zero on every other outcome, and on a provider
+	// error that came with no such status: a transport error, a token that could not be read,
+	// or a stream that broke after a 2xx. A caller tells a request the provider will not serve
+	// (a 400) from one it could not serve now by it.
 	Status int
 }
 
@@ -326,6 +326,10 @@ const (
 	FaultLength Fault = "length"
 	// FaultRefusal is the model refusing to answer.
 	FaultRefusal Fault = "refusal"
+	// FaultContentFilter is the provider's content filter refusing the call for what it holds:
+	// an error status whose body names the content filter, for a prompt the filter blocked, or
+	// a reply the provider stopped for content.
+	FaultContentFilter Fault = "content_filter"
 	// FaultMalformed is a last reply that is not exactly one object of Request.Final.
 	FaultMalformed Fault = "malformed"
 	// FaultProviderError is the provider failing: an error status that the one retry did

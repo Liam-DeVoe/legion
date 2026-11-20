@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
@@ -20,7 +21,8 @@ import (
 // the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
 // run's one retry, on a 429, a 5xx or a transport error, within the run's time. It keeps the
 // status of the last response it handed back, which is how a provider error is given the HTTP
-// status the provider answered with, and it cuts a response past streamLimit bytes.
+// status the provider answered with, and whether that response's body names the provider's
+// content filter; and it cuts a response past streamLimit bytes.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
@@ -34,7 +36,20 @@ type modelTransport struct {
 	// status is the last attempt's response status where it was not a 2xx, and zero where
 	// it was, or where the attempt drew no response at all.
 	status atomic.Int32
+	// filtered is set where the last attempt's response was not a 2xx and the first
+	// filterPeek bytes of its body name the provider's content filter (contentFilterMark).
+	filtered atomic.Bool
 }
+
+// filterPeek is how many bytes of a refused response's body the transport reads for whether it
+// names the provider's content filter, before it hands the whole body on.
+const filterPeek = 64 << 10
+
+// contentFilterMark is how a provider's refused response names its content filter: Chat
+// Completions' finish reason or error code content_filter, as Azure's endpoints answer a prompt
+// their filter blocked (an error body, or a stream chunk sent with the error status), and Azure
+// OpenAI's inner code for the same refusal.
+var contentFilterMark = regexp.MustCompile(`"(?:finish_reason|code)"\s*:\s*"content_filter"|"ResponsibleAIPolicyViolation"`)
 
 // errStreamTooLarge is a read of a response past the transport's streamLimit.
 var errStreamTooLarge = errors.New("the model's response passed its stream limit")
@@ -48,6 +63,12 @@ func (t *modelTransport) overLimit() bool {
 // was answered with a 2xx or drew no response.
 func (t *modelTransport) failedStatus() int {
 	return int(t.status.Load())
+}
+
+// contentFiltered reports whether the last attempt was refused with a response whose body names
+// the provider's content filter.
+func (t *modelTransport) contentFiltered() bool {
+	return t.filtered.Load()
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
@@ -91,6 +112,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Each attempt starts with no status of its own, so a token that could not be read,
 		// or a request that drew no response, is never given an earlier attempt's.
 		t.status.Store(0)
+		t.filtered.Store(false)
 		var key string
 		// Azure signs its own calls: the provider's credential middleware sets the header,
 		// and this transport reads no token for it.
@@ -138,11 +160,26 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		if resp.StatusCode/100 != 2 {
+			t.peekFilter(resp)
+		}
 		if t.streamLimit > 0 {
 			resp.Body = &limitedBody{ReadCloser: resp.Body, left: t.streamLimit, over: &t.tooLarge}
 		}
 		return resp, nil
 	}
+}
+
+// peekFilter reads the first filterPeek bytes of resp's body, a refused response's, sets filtered
+// where they name the provider's content filter, and puts them back in front of the rest, so the
+// SDK reads the body as the provider sent it.
+func (t *modelTransport) peekFilter(resp *http.Response) {
+	head, _ := io.ReadAll(io.LimitReader(resp.Body, filterPeek))
+	t.filtered.Store(contentFilterMark.Match(head))
+	resp.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(head), resp.Body), resp.Body}
 }
 
 // readToken reads the endpoint's token for one attempt. A Token that panics is recovered and
