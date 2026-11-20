@@ -362,9 +362,11 @@ func (exactLogin) Login(r *http.Request) (string, error) {
 	return "", identity.ErrNoIdentity
 }
 
-// The writer of an issue's records is the daemon's session, kind and id both: a signed-in person
-// whose login is legion-daemon:LEG is refused the plan write and the rating write 403 STEP_WRITER
-// with nothing written, where the session of that id writes both, which is the control.
+// The writer of an issue's records is the daemon's session, kind and id both: a person whose login
+// is legion-daemon:LEG writes no plan and no rating, with nothing written, where the session of that
+// id writes both, which is the control. Such a login can never sign in (people.email holds an
+// address), and a person no people row holds sees no project, so the write reads LEG-1 as a key no
+// issue holds and answers ISSUE_NOT_FOUND before its writer is judged (lockRecordedIssue).
 func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{identity: exactLogin{}})
 	issue := createTestIssue(t, handler, "LEG", "A run of steps")
@@ -373,9 +375,9 @@ func TestTheDaemonsIDIsNoWriterButAsASession(t *testing.T) {
 	rating := withFields(retroIdentity(nil, 1), map[string]any{"rating": 2, "rating_reason": "The plan was thin."})
 
 	planned := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/plans/"+plan, defaultPlanBody(nil, 1), writer)
-	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a plan of a person named "+writer, planned, http.StatusNotFound, "ISSUE_NOT_FOUND", issue)
 	rated := dispatchRequest(t, handler, http.MethodPut, "/api/v1/issues/"+issue+"/steps/"+retro+"/rating", rating, writer)
-	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusForbidden, codeStepWriter, writer, issue)
+	expectRefusal(t, "a rating of a person named "+writer, rated, http.StatusNotFound, "ISSUE_NOT_FOUND", issue)
 	if steps := stepsOf(t, handler, issue); len(steps) != 0 {
 		t.Fatalf("the refused writes left %d records, want none", len(steps))
 	}
@@ -400,9 +402,10 @@ func workflowRows(t *testing.T, database *store.Store) int {
 }
 
 // A credential scoped to one project writes no plan and no rating of another project's issue,
-// though it proves the session of that issue's daemon and the body names that session, so the
-// project check alone stands between them: 403 PROJECT_SCOPE with nothing written. The same writes
-// over a credential scoped to the issue's project land, which is the control.
+// though it proves the session of that issue's daemon and the body names that session: an issue of
+// a project the credential does not list is one it cannot see, so the write answers as a write of
+// a key no issue holds, 404 ISSUE_NOT_FOUND, with nothing written. The same writes over a
+// credential scoped to the issue's project land, which is the control.
 func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -434,8 +437,8 @@ func TestAProjectCredentialWritesNoPlanOrRatingOfAnotherProject(t *testing.T) {
 	} {
 		before := workflowRows(t, rig.database)
 		refused := rig.serve(caller.presenting(t, http.MethodPut, write.path, elsewhere, write.body))
-		expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusForbidden,
-			codeProjectScope, brokerTestProject, "OTH")
+		expectRefusal(t, "a "+write.name+" over a credential of "+brokerTestProject, refused, http.StatusNotFound,
+			"ISSUE_NOT_FOUND", issue)
 		if after := workflowRows(t, rig.database); after != before {
 			t.Fatalf("the refused %s took the workflow store from %d rows to %d, want none written", write.name, before, after)
 		}

@@ -63,7 +63,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor, "a plan")
+	actor, key, ok := s.requireIssueDaemon(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -74,7 +74,7 @@ func (s *server) putIssuePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	project, ok := s.lockRecordedIssue(w, r, tx, key)
+	project, ok := s.lockRecordedIssue(w, r, tx, key, actor, "a plan")
 	if !ok {
 		return
 	}

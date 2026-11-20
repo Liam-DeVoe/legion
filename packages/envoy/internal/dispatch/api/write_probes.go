@@ -67,7 +67,9 @@ var writeProbes = map[string]writeProbe{
 		`{` + probeActor + `,"body":"{\"next\":\"walked\"}"}`},
 	"PUT /api/v1/issues/{key}/design-gates": {byIssue, `{` + probeActor + `,"gates":[]}`},
 	"PUT /api/v1/issues/{key}/role-holders": {byIssue, `{` + probeActor + `,"holders":[]}`},
-	// The record writes read their issue as the caller sees it (lockRecordedIssue).
+	// Each record write reads its issue as the caller sees it before it judges the writer
+	// (lockRecordedIssue), so a key the caller cannot see is a key no issue holds whatever session
+	// the body names.
 	"PUT /api/v1/issues/{key}/steps/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
 	"PUT /api/v1/issues/{key}/steps/{id}/rating": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
 	"PUT /api/v1/issues/{key}/plans/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
