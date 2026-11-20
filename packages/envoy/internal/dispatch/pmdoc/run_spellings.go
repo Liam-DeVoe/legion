@@ -70,7 +70,18 @@ import (
 // A read that is provably the same parse as one already made is not made again (readsBackUnder):
 // storedMarkdown reads markdown holding no `~` as inlineMarkdown does, since the rules differ only
 // beside a `~`, and flankingMarkdown reads markdown as storedMarkdown does where no `*` or `_` run
-// could open or close otherwise under flankingRules (flankingDivergenceKey).
+// could open or close otherwise under flankingRules (flankingDivergenceKey). And a run whose first
+// writing does not read back under every reader, and that holds a space it can be cut at
+// (runSegments), reads each later writing back a group of its segments at a time first: a writing
+// one of whose groups does not read back under a reader does not read back under it whole either,
+// so the run is read whole only where every group reads back under inlineMarkdown, and a group
+// whose bytes an earlier writing wrote is not read again. The search keeps the writing it kept
+// before; it reads less of the run to find it.
+//
+// Last, where no writing reads back under inlineMarkdown, the run is written in a spelling for each
+// of its segments, each chosen as the search would choose it for that segment alone
+// (spellBySegment), and kept where that reads back under inlineMarkdown. Where it does not, or the
+// run holds no space it can be cut at, the first writing is kept, as before.
 func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlineContext) {
 	from := r.b.Len()
 	fused := r.writeInlineRun(nodes, prefix, context, runSpelling{})
@@ -81,11 +92,13 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 	labels, signature := referencedLabels(nodes), inlineSignature(nodes)
 	// firstReads is how many of the readBackReaderCount readers, from the first, the first writing
 	// reads back under.
-	firstReads := r.readsBackUnder(from, prefix, labels, signature)
+	firstReads := readsBackUnder(r.b.Bytes()[from:], prefix, labels, signature)
 	if firstReads == readBackReaderCount {
 		return
 	}
 	written := string(r.b.Bytes()[from:])
+	// segments is the run's segments, nil where it holds no cut.
+	segments := newRunSegments(nodes, prefix)
 	// readsByBytes is how many of those readers, from the first, each writing read back so far
 	// reads back under, by the digest of its bytes.
 	readsByBytes := map[[sha256.Size]byte]int{sha256.Sum256(r.b.Bytes()[from:]): firstReads}
@@ -97,14 +110,26 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 		reads := make([]int, len(spellings))
 		for index, spelling := range spellings {
 			r.b.Truncate(from)
-			if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
+			r.segments = segments
+			discarded := r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten
+			r.segments = nil
+			// bound is how many readers, from the first, every group of the run's segments reads
+			// back under, which the whole reads back under no more of.
+			bound := readBackReaderCount
+			if segments != nil && r.err == nil {
+				bound = segments.read(r.b.Bytes()[from:], spelling, readsByBytes)
+			}
+			if discarded {
 				reads[index] = -1
 				continue
 			}
 			digest := sha256.Sum256(r.b.Bytes()[from:])
 			count, read := readsByBytes[digest]
 			if !read {
-				count = r.readsBackUnder(from, prefix, labels, signature)
+				count = bound
+				if bound > 0 && !segments.readWhole() {
+					count = readsBackUnder(r.b.Bytes()[from:], prefix, labels, signature)
+				}
 				if count == readBackReaderCount {
 					return true
 				}
@@ -125,6 +150,9 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 	}
 	spellings := runSpellings(needs)
 	if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
+		return
+	}
+	if firstReads == 0 && segments != nil && r.spellBySegment(segments, from, context, labels, signature, readsByBytes) {
 		return
 	}
 	r.b.Truncate(from)
@@ -538,20 +566,20 @@ func writesAddressSyntax(nodes []*Node) (colons, dots, ats bool) {
 	return colons, dots, ats
 }
 
-// readsBackUnder is how many of the three readers, from the first, the inline markdown written
-// since from reads back under as the nodes whose footnote labels are labels and whose
-// inlineSignature is signature: the run's own lines, with the prefix its later lines are written
-// behind taken off, read after a definition for each label, since a reference reads as one only
-// then. It stops at the first reader the run does not read back under, and makes no read that is
-// the same parse as one it made: storedMarkdown reads a source holding no `~` as inlineMarkdown
-// does, since editorRules and storedRules differ only beside a `~` (a `*` or `_` run's widening by
-// one, tildeParser, tildeDelimiters, and the `~` runs' own group in delimiterList), so that
-// parse's nodes, error and divergence are inlineMarkdown's; and flankingMarkdown reads a source as
-// storedMarkdown does unless the stored parse reported a `*` or `_` run that could open or close
-// otherwise under flankingRules (parseInlineWithDefinitions). A label's `~` is the source's own:
-// the run writes every label it refers to as `[^label]`, and escapeFootnoteLabel escapes no `~`.
-func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string) int {
-	written := r.b.Bytes()[from:]
+// readsBackUnder is how many of the three readers, from the first, written, inline markdown a run
+// or a segment of one wrote (runSegments), reads back under as the nodes whose footnote labels are
+// labels and whose inlineSignature is signature: its own lines, with the prefix its later lines are
+// written behind taken off, read after a definition for each label, since a reference reads as one
+// only then. It stops at the first reader the markdown does not read back under, and makes no read
+// that is the same parse as one it made: storedMarkdown reads a source holding no `~` as
+// inlineMarkdown does, since editorRules and storedRules differ only beside a `~` (a `*` or `_`
+// run's widening by one, tildeParser, tildeDelimiters, and the `~` runs' own group in
+// delimiterList), so that parse's nodes, error and divergence are inlineMarkdown's; and
+// flankingMarkdown reads a source as storedMarkdown does unless the stored parse reported a `*` or
+// `_` run that could open or close otherwise under flankingRules (parseInlineWithDefinitions). A
+// label's `~` is the source's own: the run writes every label it refers to as `[^label]`, and
+// escapeFootnoteLabel escapes no `~`.
+func readsBackUnder(written []byte, prefix string, labels, signature []string) int {
 	var lines strings.Builder
 	lines.Grow(len(written))
 	for start := 0; start < len(written); {

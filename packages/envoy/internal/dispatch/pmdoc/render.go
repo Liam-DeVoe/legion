@@ -36,6 +36,10 @@ type renderer struct {
 	// openers is each text `<` the inline run being written wrote as it is (angleOpener), and
 	// escapedOpeners those of them its writing again escapes (writeInlineRun).
 	openers, escapedOpeners []angleOpener
+	// segments, while a run is written with its segments recorded (runSegments), is that run's
+	// segments: where its cuts are written, and the spelling each segment is written in where the
+	// run is written by segments.
+	segments *runSegments
 	// footnoteLineAt is where the last footnote definition's first line begins in the markdown,
 	// and footnoteLabel is its label as written, so that the line is read after a reference to it.
 	footnoteLineAt int

@@ -158,12 +158,15 @@ func (r *renderer) wwwMayFollow() bool {
 // raw HTML holds and a tag holds only inside a quoted value.
 //
 // A spelling that orders marks otherwise than as written is never kept once it fuses a delimiter
-// run, so its writing is thrown away here and in the search (inlineWithEscapes).
+// run, so its writing is thrown away here and in the search (inlineWithEscapes) - except where the
+// run's segments are recorded (runSegments), whose search reads each segment the writing fused
+// nothing in back on its own, so the writing is finished.
 func (r *renderer) writeInlineRun(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	from := r.b.Len()
 	r.openers = r.openers[:0]
+	r.segments.reset(from)
 	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
-	if r.err != nil || fused && spelling.order != marksAsWritten {
+	if r.err != nil || fused && spelling.order != marksAsWritten && r.segments == nil {
 		return fused
 	}
 	written := r.b.Bytes()
@@ -179,6 +182,7 @@ func (r *renderer) writeInlineRun(nodes []*Node, prefix string, context inlineCo
 	}
 	r.b.Truncate(from)
 	r.escapedOpeners = escaped
+	r.segments.reset(from)
 	fused = r.writeInlineNodes(nodes, prefix, context, spelling)
 	r.escapedOpeners = nil
 	return fused
@@ -344,17 +348,31 @@ func (r *renderer) escapesOpener(node *Node, offset int) bool {
 }
 
 // writeInlineNodes writes nodes in spelling for writeInlineRun, recording each text `<` it writes
-// as it is (angleOpener).
+// as it is (angleOpener), and, where the run's segments are recorded (runSegments), where it writes
+// each cut and in which segment it fuses two delimiter runs; where the run is written by segments,
+// each segment is written in its own spelling rather than in spelling.
 func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inlineContext, spelling runSpelling) (fused bool) {
 	escapePipes := context.tableCell
 	var active []Mark
 	position := inlinePosition{atLineStart: context.startsLine, atTextStart: true}
+	// segment is the segment of the run the next node begins in.
+	segment := 0
 	for index, n := range nodes {
 		if r.err != nil {
 			return fused
 		}
 		switch n.Type {
 		case "text":
+			// A text holding cuts is written from each cut on in the spelling of the segment after
+			// it, so its first character can be written in another spelling than its last: every
+			// cut stands in a text no mark is written over (runCutsOf), so the text's marks, and
+			// those it opens or closes beside the next node, are judged in its last character's
+			// spelling, and only its first character's flanking in the first's.
+			cuts := r.segments.cutsIn(index, segment)
+			first := r.segments.spellingOf(segment, spelling)
+			spelling = r.segments.spellingOf(segment+len(cuts), spelling)
+			textSegment := segment
+			segment += len(cuts)
 			wwwBare := !spelling.angleURLs
 			// A www link is written bare only where the character written before it is one a www
 			// URL may follow (wwwMayFollow); elsewhere its marks are written again with the link.
@@ -373,10 +391,11 @@ func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inline
 				}
 				if common < len(active) && common < len(next) && markDelimiter(active[common]) != 0 && markDelimiter(active[common]) == markDelimiter(next[common]) {
 					fused = true
+					r.segments.fuse(textSegment)
 				}
 				// A delimiter run the marks just closed, with nothing opened after it, stands
 				// before this text's first character.
-				flankFirst = spelling.flanking && len(active) != common && len(next) == common && r.closesAfterPunctuation() && !flankingNeutral(firstRune(n.Text))
+				flankFirst = first.flanking && len(active) != common && len(next) == common && r.closesAfterPunctuation() && !flankingNeutral(firstRune(n.Text))
 				for _, mark := range next[common:] {
 					r.openInlineMark(mark, nodes, index)
 				}
@@ -420,25 +439,23 @@ func (r *renderer) writeInlineNodes(nodes []*Node, prefix string, context inline
 			if containsMark(next, "link") {
 				label = r.labelBrackets
 			}
-			r.writeInlineText(n, &position, prefix, escapeContext{
+			text := escapeContext{
 				footnoteLabels: r.footnoteLabels,
 				tableCell:      escapePipes,
-				schemeColons:   spelling.schemeColons && !hasLink || bareURL,
-				wwwDots:        spelling.wwwDots && !hasLink,
-				ats:            spelling.ats && !hasLink,
 				label:          label,
 				followed:       index+1 < len(nodes) || len(next) > 0,
 				beforeLabel:    index+1 < len(nodes) && opensLabel(next, following, nodes[index+1]),
-				delimiters:     spelling.escapes,
 				heading:        context.heading,
 				marked:         len(next) > 0,
 				opener:         adjacentDelimiter(next[common:]),
 				closer:         adjacentDelimiter(next[sharedMarks(next, following):]),
 				flankFirst:     flankFirst,
 				flankLast:      flankLast,
-				pairBackslash:  spelling.pairBackslash,
-				tildeBackslash: spelling.tildeBackslash,
-			})
+				cuts:           cuts,
+				segment:        textSegment,
+			}
+			text.spell(first, hasLink, bareURL)
+			r.writeInlineText(n, &position, prefix, text)
 		case "hardbreak":
 			r.closeMarks(active, escapePipes)
 			active = nil
@@ -525,10 +542,11 @@ func (r *renderer) endLine(continues bool) {
 	r.b.Truncate(candidate.at)
 	r.b.WriteString(escape)
 	r.b.WriteString(tail)
-	// The openers after the escaped character are on its line, the last ones recorded.
+	// The openers and cuts after the escaped character are on its line, the last ones recorded.
 	for index := len(r.openers) - 1; index >= 0 && r.openers[index].at > candidate.at; index-- {
 		r.openers[index].at += len(escape) - width
 	}
+	r.segments.shift(candidate.at, len(escape)-width)
 }
 
 func (r *renderer) closeMarks(marks []Mark, escapePipes bool) {
@@ -687,6 +705,13 @@ func (r *renderer) writeInlineText(node *Node, position *inlinePosition, prefix 
 		textLineStart = 0
 	}
 	for byteOffset, char := range value {
+		if len(context.cuts) > 0 && context.cuts[0].offset == byteOffset {
+			// A cut's space is written as it is (runCutsOf), and the segment after it is written
+			// from it on in its own spelling.
+			context.segment++
+			r.segments.cutAt(r.b.Len()+byteOffset-segmentStart, context.segment, &context)
+			context.cuts = context.cuts[1:]
+		}
 		width := utf8.RuneLen(char)
 		context.textLineStart = textLineStart
 		context.afterMarker = position.afterMarker
