@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
@@ -294,7 +295,19 @@ func (m *Machine) verifyChainForRelease(ctx context.Context, grantID, enrollment
 // call gave. The release records both, with the reason of the grant's request, in its grant.used
 // row and its ReleasedMessage line (auditGrantUsed); nothing else reads them, and they decide
 // nothing about the release.
+//
+// Before checkRelease's owner check, a session that does not hold the grant is refused as for a
+// grant id no grant has, ErrGrantNotLive and only that, when the grant touches a private project
+// it cannot see, and ErrProjectAccessUnavailable when Dispatch could not say
+// (hideGrantFromSession): so ErrNotYours says only that a grant exists in a project the caller
+// sees. The session that holds the grant is checkRelease's alone, which ends a grant of a private
+// project the session no longer names for good.
 func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narrowing *secrets.GitHubNarrowing, call ReleaseCall) (Release, error) {
+	if err := m.hideGrantFromSession(ctx, grantID, enrollmentID); errors.Is(err, pgx.ErrNoRows) {
+		return Release{}, ErrGrantNotLive
+	} else if err != nil {
+		return Release{}, err
+	}
 	checked, err := m.checkRelease(ctx, grantID, enrollmentID, "values")
 	if err != nil {
 		return Release{}, err
@@ -1267,6 +1280,213 @@ func (m *Machine) JudgeHolds(ctx context.Context, recordID string) (bool, error)
 	return held, err
 }
 
+// HideUnseen is the person rule's answer to a route that names record recordID, which its caller
+// gave it, for login: pgx.ErrNoRows for an id no record has and for a secret request login may not
+// see (MaySee: one of a private project they are not on), one answer for both, so the route answers
+// login exactly as it answers an id no record has; ErrProjectAccessUnavailable when Dispatch could
+// not say whether login may see it, which the route answers 503 having written nothing; and nil
+// for a secret request login may see and for a machine login, which belongs to no project and
+// asks Dispatch nothing, as the pending list shows it (PendingForApprover). Every route that takes
+// a record id from a caller calls it before it answers anything else of the record, and a write
+// before its transaction, since it may ask Dispatch: the dismissal (Dismiss), the two decide
+// routes for a secret request (api.decideRecord) and the approval page, for the record it prints
+// and for each record an outcome line names (approval.Page). The approval page's decision is
+// ApplyDecision's own, whose person rule (decisionFacts) answers the same pgx.ErrNoRows.
+//
+// It reads what the rule asks of the record from the rows Create wrote beside it — every name the
+// request asked for, its signed reason, and the projects of the credentials it has had
+// (credentialsProjects) — and not from its signed request object, so it answers for a record
+// signed for another broker address too, which ReadRecord cannot verify here and no list of this
+// broker shows. Neither an empty login nor the sentinel record.AnyoneApprover names a person, and
+// either is shown what a reader naming no person is shown: no private project.
+func (m *Machine) HideUnseen(ctx context.Context, recordID, login string) error {
+	var kind, reason string
+	var names []string
+	var asked, current enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select cr.kind, coalesce(req.reason, ''),
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id = req.id), '{}'),
+			`+credentialColumns+`, `+currentCredentialColumns+`
+		from credential_requests cr
+		left join requests req on req.record_id = cr.id
+		left join enrollments enr on enr.id = cr.enrollment_id
+		left join enrollments cur on cur.id = req.enrollment_id
+		where cr.id=$1`, recordID).
+		Scan(&kind, &reason, &names, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	if err != nil || kind != record.KindAgentSecret {
+		return err
+	}
+	return m.hideUnseenRow(ctx, "record "+recordID, login, names, m.credentialsProjects(asked, current), reason)
+}
+
+// hideUnseenRow is pgx.ErrNoRows for a row login may not see (maySeeRecord: its names under the
+// live policy, the projects of the credentials it has had and its reason),
+// ErrProjectAccessUnavailable when Dispatch could not say, and nil for a row login may see: the
+// one answer HideUnseen gives for a record and RevokeByApprover for a grant, so both answer a
+// person the rule hides the row from as they answer an id no row has. row names the row for the
+// rule's log line.
+func (m *Machine) hideUnseenRow(ctx context.Context, row, login string, names, sessionProjects []string, reason string) error {
+	if login = record.CanonicalLogin(login); login == record.AnyoneApprover {
+		login = ""
+	}
+	may, err := m.maySeeRecord(ctx, row, login, names, sessionProjects, reason)
+	switch {
+	case err != nil:
+		return err
+	case !may:
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// rowFacts is what a private-project rule reads of a request or a grant: the enrollment that holds
+// it now (holder), which an adoption rewrites; the names it asks for or releases; the projects of
+// both credentials its request has had (credentialsProjects), the one that asked, which its record
+// names, and the one it hangs off now; and its request's signed reason.
+type rowFacts struct {
+	holder          string
+	names           []string
+	sessionProjects []string
+	reason          string
+}
+
+// readGrantFacts is grant grantID's rowFacts as GrantsForApprover lists the grant: its names are
+// the ones it releases, so a name its request was denied is left out. pgx.ErrNoRows means no such
+// grant.
+func (m *Machine) readGrantFacts(ctx context.Context, grantID string) (rowFacts, error) {
+	var f rowFacts
+	var asked, current enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select g.enrollment_id::text,
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
+			coalesce(r.reason, ''), `+credentialColumns+`, `+currentCredentialColumns+`
+		from grants g
+		join requests r on r.id = g.request_id
+		left join enrollments cur on cur.id = g.enrollment_id
+		left join credential_requests cr on cr.id = r.record_id
+		left join enrollments enr on enr.id = cr.enrollment_id
+		where g.id=$1`, grantID).
+		Scan(&f.holder, &f.names, &f.reason, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	if err != nil {
+		return rowFacts{}, err
+	}
+	f.sessionProjects = m.credentialsProjects(asked, current)
+	return f, nil
+}
+
+// readRequestFacts is request requestID's rowFacts, every name it asked for among them, as
+// HideUnseen reads a record's. A request the policy answered at once has no record, so its only
+// credential is the one it hangs off. pgx.ErrNoRows means no such request.
+func (m *Machine) readRequestFacts(ctx context.Context, requestID string) (rowFacts, error) {
+	var f rowFacts
+	var asked, current enrollmentRow
+	err := m.Store.Pool.QueryRow(ctx, `select r.enrollment_id::text,
+			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id), '{}'),
+			coalesce(r.reason, ''), `+credentialColumns+`, `+currentCredentialColumns+`
+		from requests r
+		left join enrollments cur on cur.id = r.enrollment_id
+		left join credential_requests cr on cr.id = r.record_id
+		left join enrollments enr on enr.id = cr.enrollment_id
+		where r.id=$1`, requestID).
+		Scan(&f.holder, &f.names, &f.reason, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
+			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	if err != nil {
+		return rowFacts{}, err
+	}
+	f.sessionProjects = m.credentialsProjects(asked, current)
+	return f, nil
+}
+
+// HideRequestFromSession is the private-project rule a session's own routes read before their
+// owner check, for request requestID and the calling session enrollmentID: pgx.ErrNoRows for an id
+// no request has and for a request of a private project the calling session cannot see
+// (hideFromSession), whoever owns it, one answer for both; ErrProjectAccessUnavailable when
+// Dispatch could not say, which the route answers 503 having changed nothing; and nil otherwise.
+// So the owner check's refusal (ErrNotOwner, 403 NOT_YOURS) says only that a request exists in a
+// project the caller sees. GET /v1/requests/{id} reads it, and Cancel.
+//
+// The session that holds the request — the enrollment it hangs off now — is answered nil, whatever
+// the request touches: it made the request, or adopted it with the session that made it, so it
+// holds everything the request says, and a request whose reason cites a private project's issue
+// its credential does not name is still its own to read while it waits and to cancel.
+func (m *Machine) HideRequestFromSession(ctx context.Context, requestID, enrollmentID string) error {
+	facts, err := m.readRequestFacts(ctx, requestID)
+	if err != nil || facts.holder == enrollmentID {
+		return err
+	}
+	return m.hideFromSession(ctx, "request "+requestID, enrollmentID, facts)
+}
+
+// hideGrantFromSession is HideRequestFromSession for grant grantID, which Values and RevokeGrant
+// read before their owner check. The session that holds the grant is answered nil: a release of a
+// grant of a private project it no longer names is checkRelease's to refuse, which ends the grant
+// for good.
+func (m *Machine) hideGrantFromSession(ctx context.Context, grantID, enrollmentID string) error {
+	facts, err := m.readGrantFacts(ctx, grantID)
+	if err != nil || facts.holder == enrollmentID {
+		return err
+	}
+	return m.hideFromSession(ctx, "grant "+grantID, enrollmentID, facts)
+}
+
+// hideFromSession is pgx.ErrNoRows when the row facts describe touches a private project the
+// session enrollmentID cannot see, ErrProjectAccessUnavailable when Dispatch could not say, and nil
+// otherwise. A row touches the project each of its names is tagged with, each project its
+// credentials name and the project of each issue key its reason names, as the person rule reads
+// them (maySeeRecord). The session sees a public project, a key Dispatch holds no project for, and
+// a private project its own credential names (credentialProjects: a person's session's list, the
+// project a pod's or a machine's operator entry maps it to) whose list still holds the person that
+// credential acts for, asked as a release asks it (projectFacts): a private project's secret goes
+// only to a credential that names it, and a row of one only to such a credential's session. A
+// session whose credential names no private project sees none. The answers it rests on are held to
+// atDecision's bound together.
+func (m *Machine) hideFromSession(ctx context.Context, row, enrollmentID string, facts rowFacts) error {
+	var caller enrollmentRow
+	if err := m.Store.Pool.QueryRow(ctx, `select kind, operator, subject, coalesce(projects, '{}') from enrollments where id=$1`, enrollmentID).
+		Scan(&caller.Kind, &caller.Operator, &caller.Subject, &caller.Projects); err != nil {
+		return err
+	}
+	person, named := m.credentialProjects(caller)
+	may, err := atDecision(ctx, m.Projects, func(ctx context.Context, _ bool) (bool, time.Time, error) {
+		tagged, asked, err := m.secretProjects(ctx, facts.names)
+		if err != nil {
+			return false, time.Time{}, err
+		}
+		reasonProjects := record.ReasonProjects(facts.reason)
+		if len(reasonProjects) > record.MaxReasonProjects {
+			m.logReasonUnread(row, len(reasonProjects))
+			reasonProjects = nil
+		}
+		// A project the session's credential names is asked about for its person, who sees it
+		// public or on its list; any other project for nobody, which Dispatch answers by its
+		// visibility alone, so only a public one, or a key of no project, passes.
+		var its, others []string
+		for _, project := range slices.Concat(privateProjects(tagged), facts.sessionProjects, reasonProjects) {
+			if slices.Contains(named, project) {
+				its = append(its, project)
+			} else {
+				others = append(others, project)
+			}
+		}
+		mayIts, seenIts, err := m.maySee(ctx, row, person, its, "")
+		if err != nil || !mayIts {
+			return false, time.Time{}, err
+		}
+		mayOthers, seenOthers, err := m.maySee(ctx, row, "", others, "")
+		if err != nil || !mayOthers {
+			return false, time.Time{}, err
+		}
+		return true, projectaccess.Oldest(asked, projectaccess.Oldest(seenIts, seenOthers)), nil
+	})
+	switch {
+	case err != nil:
+		return err
+	case !may:
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // Session is the two possibly-differing session ids a credential-request record can name, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment stated
 // when it enrolled (enrollments.session_id — agentbox's --session-id, or the Legion daemon's
@@ -1569,15 +1789,29 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// of the list is answered. A row whose responsible person is someone else is listed only where
 	// that person may not see it (listedInStead), within the list's one clock, listFallbackBound
 	// from here, so that however many people's rows touch a project, and however slowly Dispatch
-	// answers, they cannot keep the list from its caller.
+	// answers, they cannot keep the list from its caller. Such a row left off because a read
+	// failed is logged for itself, naming its responsible person (logFallbackUnread); the rows left
+	// off once the clock has run out are counted in one line for the list (logFallbackCut), since
+	// each of them is on its responsible person's list wherever that person may see it, which is
+	// where it belongs, and a line for each would bury the row a failed read leaves on nobody's
+	// list.
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
+	cut := 0
 	for i, p := range out {
 		if p.Kind == record.KindAgentSecret {
 			notify := reads[i].notify
 			if notify != "" && notify != record.CanonicalLogin(approver) {
-				if !m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason) {
+				listed, err := m.listedInStead(fallback, p, approver, notify, reads[i].sessionProjects, reads[i].reason)
+				switch {
+				case err != nil && fallback.Err() != nil:
+					cut++
+					continue
+				case err != nil:
+					m.logFallbackUnread(p.RecordID, notify, err)
+					continue
+				case !listed:
 					continue
 				}
 			} else {
@@ -1595,6 +1829,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 		}
 		visible = append(visible, p)
 	}
+	if cut > 0 {
+		m.logFallbackCut(record.CanonicalLogin(approver), cut, fallback.Err())
+	}
 	return visible, nil
 }
 
@@ -1606,7 +1843,7 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 // (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
 // project-access client's own 10, so without the clock a slow Dispatch and many other people's
 // rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
-// before the fallback existed, and logged.
+// before the fallback existed, and counted in the list's one line (logFallbackCut).
 const listFallbackBound = 2 * time.Second
 
 // listedInStead answers whether reader's list holds the agent-secret row p, whose record names
@@ -1616,31 +1853,25 @@ const listFallbackBound = 2 * time.Second
 // or since), it is listed for every other reader who may see it (MaySee), so a request no longer
 // waits where nobody sees it. Both reads run on fallback, the list's one clock
 // (listFallbackBound), the reader's first, so a row the reader may not see costs no read of the
-// other person's. A read that fails, or runs out of the clock, leaves the row off, as it was
-// before the fallback, failing closed, and is logged for the row (logRowUnanswered), so a request
-// an outage or the clock leaves on nobody's list says so. A row touching no project asks
-// Dispatch nothing.
-func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) bool {
-	row := "record " + p.RecordID
-	leftOff := func(err error) bool {
-		m.logRowUnanswered("fallback "+p.RecordID, err, "list", "pending", "record", p.RecordID, "responsible", notify)
-		return false
-	}
+// other person's. A row touching no project asks Dispatch nothing. Its error is the first read's
+// that failed, or the clock's when the clock ran out before the first read; either way the row
+// is left off, as it was before the fallback, failing closed. The caller tells the two apart by
+// the clock: a read that failed once the clock had run out may be one the clock cut short, and
+// is counted with the rows the clock left unread.
+func (m *Machine) listedInStead(fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
 	if err := fallback.Err(); err != nil {
-		return leftOff(err)
+		return false, err
 	}
+	row := "record " + p.RecordID
 	mine, err := m.maySeeRecord(fallback, row, reader, p.Identifiers, sessionProjects, reason)
-	switch {
-	case err != nil:
-		return leftOff(err)
-	case !mine:
-		return false
+	if err != nil || !mine {
+		return false, err
 	}
 	theirs, err := m.maySeeRecord(fallback, row, notify, p.Identifiers, sessionProjects, reason)
 	if err != nil {
-		return leftOff(err)
+		return false, err
 	}
-	return !theirs
+	return !theirs, nil
 }
 
 // requestedIdentifiers is what the record whose canonical body is canonical asks for, and the

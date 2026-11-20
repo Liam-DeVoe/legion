@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
@@ -13,8 +15,8 @@ import (
 // the append-only record names, while the decision reads the enrollment the request hangs off
 // now, which an adoption rewrites. A request the page would show a person under one of the two
 // lists and hide under the other is decided under both: a person outside a private project either
-// enrollment names is refused, and the request is left pending, while a person the project lists
-// decides it as before.
+// enrollment names is refused as for a record id no record has, and the request is left pending,
+// while a person the project lists decides it as before.
 func TestADecisionChecksTheProjectsOfBothEnrollments(t *testing.T) {
 	for _, c := range []struct {
 		name       string
@@ -36,8 +38,8 @@ func TestADecisionChecksTheProjectsOfBothEnrollments(t *testing.T) {
 				t.Fatalf("move the request to the second enrollment: %v", err)
 			}
 
-			if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, outsider); !errors.Is(err, record.ErrNotApprover) {
-				t.Fatalf("%s's approval = %+v, %v; want record.ErrNotApprover: PRIV does not list them", outsider, dec, err)
+			if dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {
+				t.Fatalf("%s's approval = %+v, %v; want pgx.ErrNoRows alone, as for an id no record has: PRIV does not list them", outsider, dec, err)
 			}
 			if got := readDecided(t, m, *req.RecordID); got.state != "pending" || got.events != 0 {
 				t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)

@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -21,7 +23,7 @@ import (
 // and PRIV_HUMAN. For each, an outsider's pending list leaves it out, MaySee is false for the
 // outsider and true for a person on PRIV's list, the record names PRIV among the projects its
 // session names (the approval page prints "which the session does not name" from that list), and
-// the outsider's approval is refused record.ErrNotApprover.
+// the outsider's approval is refused pgx.ErrNoRows alone, as an id no record has.
 //
 // Found by the tester of cybermonklabs/legion#4135 on a dev-stack.sh --project-access stack: PRIV's
 // pod asked for an untagged shared secret with the reason "carol's unannounced PRIV acquisition:
@@ -80,7 +82,7 @@ func TestAPrivateProjectsPodRequestIsDecidedListedAndShownOnlyToItsPeople(t *tes
 			t.Errorf("MaySee(%s, PRIV's pod's request for %s) = %v, %v; want true", insider, what, may, err)
 		}
 	}
-	if decision, err := m.ApplyDecision(t.Context(), *plain.RecordID, true, outsider); !errors.Is(err, record.ErrNotApprover) {
-		t.Errorf("an approval by %s, outside PRIV, of PRIV's pod's request for SHARED_KEY = %+v, %v; want record.ErrNotApprover", outsider, decision, err)
+	if decision, err := m.ApplyDecision(t.Context(), *plain.RecordID, true, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {
+		t.Errorf("an approval by %s, outside PRIV, of PRIV's pod's request for SHARED_KEY = %+v, %v; want pgx.ErrNoRows alone, as for an id no record has", outsider, decision, err)
 	}
 }

@@ -42,10 +42,11 @@ type createEnrollmentBody struct {
 	SessionID *string `json:"session_id"`
 	// A pod only: its projected service-account token, which proves the runtime id is its UID.
 	PodToken *string `json:"pod_token"`
-	// Optional, a session acting for a person only: the Dispatch projects the session names, at
-	// most 16 project keys, each once, in any order. The broker takes the list only when Dispatch
-	// says the session's person may see every project on it, and releases a private project's
-	// secret only to a session whose list names that project. Absent or empty names none.
+	// Optional, a session or a pod acting for a person only (a person's pod,
+	// enroll.PersonPodLogin): the Dispatch projects the session names, at most 16 project keys,
+	// each once, in any order. The broker takes the list only when Dispatch says the session's
+	// person may see every project on it, and releases a private project's secret only to a
+	// session whose list names that project. Absent or empty names none.
 	Projects []string `json:"projects"`
 	// A pod a launcher enrols only, optional: what the pod runs for, which every later process of
 	// it states again (the Legion daemon sends the role claim token, legion-<project>-<issue>-<role>,
@@ -152,9 +153,10 @@ func (s *server) createEnrollment(w http.ResponseWriter, r *http.Request, cred e
 		writeError(w, http.StatusForbidden, "SESSION_HELD", err.Error())
 		return
 	// The session's projects (enroll.Service.Create's project checks): a list that is no list, one
-	// named by an enrollment that acts for no person, one naming a project its person cannot see,
-	// a restricted member's session naming none, and a list the broker could not check with
-	// Dispatch, which is the one of the five a retry can change.
+	// named by an enrollment that acts for no person (a service's pod, a machine's own session),
+	// one naming a project its person cannot see, a restricted member's session or person's pod
+	// naming none, and a list the broker could not check with Dispatch, which is the one of the
+	// five a retry can change.
 	case errors.Is(err, enroll.ErrProjectsInvalid):
 		writeError(w, http.StatusBadRequest, "PROJECTS_INVALID", err.Error())
 		return

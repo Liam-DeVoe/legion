@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -238,8 +240,8 @@ func TestEveryDecisionOnAnAgedProjectFactIsMadeOnAFreshOne(t *testing.T) {
 	})
 	t.Run("a person's decision", func(t *testing.T) {
 		m, _, id, front := pendingShared(t, privateTeam(fixtureOperator))
-		if decision, err := m.ApplyDecision(t.Context(), id, true, outsider); !errors.Is(err, record.ErrNotApprover) {
-			t.Errorf("ApplyDecision(%s) on TEAM's aged public answer = %+v, %v; want record.ErrNotApprover: TEAM is private now", outsider, decision, err)
+		if decision, err := m.ApplyDecision(t.Context(), id, true, outsider); !errors.Is(err, pgx.ErrNoRows) || errors.Is(err, record.ErrNotApprover) {
+			t.Errorf("ApplyDecision(%s) on TEAM's aged public answer = %+v, %v; want pgx.ErrNoRows alone, as for an id no record has: TEAM is private now", outsider, decision, err)
 		}
 		handedAged(t, front)
 	})

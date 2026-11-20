@@ -123,13 +123,17 @@ func (s *podLauncherSigner) Sign(method, url string) (string, error) {
 // pod's live enrollment is answered 200 with that enrollment, so re-running enroll on a key dir
 // that already has key.pem gets its own enrollment back; alreadyLive reports that answer, because
 // the broker returns such an enrollment without extending its lease and the caller must renew it.
-func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string) (enrollmentID string, alreadyLive bool, err error) {
-	body, err := json.Marshal(map[string]string{
-		"kind":       "pod",
-		"runtime_id": runtimeID,
-		"thumbprint": thumbprint,
-		"pod_token":  podToken,
-	})
+// projects are the Dispatch projects the pod names, sent only when it names one, as a session's
+// enrollment sends them: the broker takes them from a person's pod, checked against its person,
+// and refuses them from any other pod (PROJECTS_NEED_A_PERSON).
+func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, runtimeID, thumbprint, podToken string, projects []string) (enrollmentID string, alreadyLive bool, err error) {
+	body, err := json.Marshal(struct {
+		Kind       string   `json:"kind"`
+		RuntimeID  string   `json:"runtime_id"`
+		Thumbprint string   `json:"thumbprint"`
+		PodToken   string   `json:"pod_token"`
+		Projects   []string `json:"projects,omitempty"`
+	}{Kind: "pod", RuntimeID: runtimeID, Thumbprint: thumbprint, PodToken: podToken, Projects: projects})
 	if err != nil {
 		return "", false, err
 	}
@@ -151,14 +155,15 @@ func (c *client) CreatePodEnrollment(ctx context.Context, signer proofSigner, ru
 	return result.EnrollmentID, status == http.StatusOK, nil
 }
 
-// cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]":
-// the whole of a pod's enrollment, from the projected token to the enrollment file the exec form
-// reads next. It is idempotent over one directory: it keeps key.pem (a new
-// key while the old enrollment is live would be refused ALREADY_ENROLLED), and when the broker
-// answers that this key's enrollment is already live — which it returns without extending the
-// lease — it renews that lease before it answers. Only the enrollment id reaches stdout; every
-// other line, the next command included, is stderr's.
-func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int {
+// cmdEnrollPod implements "enroll --pod --service <name> [--pod-token-file <file>] [--out <dir>]
+// [--projects <keys>]": the whole of a pod's enrollment, from the projected token to the
+// enrollment file the exec form reads next, naming projects (--projects, or
+// AGENT_SECRETS_PROJECTS) as a person's session does. It is idempotent over one directory: it
+// keeps key.pem (a new key while the old enrollment is live would be refused ALREADY_ENROLLED),
+// and when the broker answers that this key's enrollment is already live — which it returns
+// without extending the lease — it renews that lease before it answers. Only the enrollment id
+// reaches stdout; every other line, the next command included, is stderr's.
+func cmdEnrollPod(service, tokenFile, out string, projects []string, stdout, stderr io.Writer) int {
 	const prefix = "agent-secrets enroll"
 	base := brokerBaseURL()
 	for _, missing := range []struct {
@@ -191,7 +196,7 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	defer unlock()
-	return enrolPod(service, tokenFile, out, base, prefix, stdout, stderr)
+	return enrolPod(service, tokenFile, out, projects, base, prefix, stdout, stderr)
 }
 
 // enrolPod is cmdEnrollPod's work, with the directory made and the lock held.
@@ -211,7 +216,7 @@ func cmdEnrollPod(service, tokenFile, out string, stdout, stderr io.Writer) int 
 // names the paths the run used, as the GCP forms' retry commands name the credentials file that
 // signed them in. Every other line names them by their flags (outDir, outKeyFile,
 // --pod-token-file).
-func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
+func enrolPod(service, tokenFile, out string, projects []string, base brokeraddr.Address, prefix string, stdout, stderr io.Writer) int {
 	ctx := context.Background()
 	// refuse prints line and, where this directory holds a key, records line beside it. A run
 	// that has not reached enrollSessionKey yet leaves no key of its own, but an earlier run's
@@ -266,7 +271,7 @@ func enrolPod(service, tokenFile, out string, base brokeraddr.Address, prefix st
 		refuse(fmt.Sprintf("%s --pod: thumbprint: %v", prefix, err))
 		return 1
 	}
-	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token)
+	enrollmentID, alreadyLive, err := c.CreatePodEnrollment(ctx, &podLauncherSigner{key: launcherKey, credentialID: credentialID}, identity.runtimeID(), thumbprint, token, projects)
 	if err != nil {
 		refuse(podRefusal(prefix, "enrol", identity, base, err))
 		return 1

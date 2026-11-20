@@ -126,13 +126,18 @@ func anyProjectTagged(set *policy.Set, granted []requestedSecret) bool {
 }
 
 // credentialProjects is the person a credential acts for and the projects it names: a person's
-// session names the projects its enrollment recorded; a pod names the one project its operator's
-// entry maps its service account to (exchange.Set.MappedProjects), checked against that entry's
-// person; a machine's own session the one its fleet's Google account maps to; anything else names
-// none.
+// session names the projects its enrollment recorded, and so does a person's pod while
+// BROKER_POD_OPERATORS still maps its account to its person (personPodGrant, unmappedPersonPod),
+// since it named them when it enrolled as that session does and was checked against that person
+// (enroll.Service.Create); a pod of no person names the one project its operator's entry maps its
+// service account to (exchange.Set.MappedProjects), checked against that entry's person, and so
+// does a person's pod the setting no longer maps, which acts for no person; a machine's own
+// session the one its fleet's Google account maps to; anything else names none.
 func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects []string) {
 	switch {
 	case e.Kind == "session" && e.Operator != nil:
+		return *e.Operator, e.Projects
+	case personPodGrant(e) && !m.unmappedPersonPod(e):
 		return *e.Operator, e.Projects
 	case m.Exchange == nil || e.Subject == nil:
 		return "", nil
@@ -372,10 +377,10 @@ func (m *Machine) logChannelsMissing(project string) {
 }
 
 // rowUnansweredMessage is the log line for a row an approver's list leaves out because the
-// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable), or,
-// for a row whose responsible person is someone else (listedInStead), because a read failed or
-// the list's clock ran out: the row is hidden from that list alone, failing closed, and the rest
-// of the list is answered.
+// broker could not ask Dispatch whether the reader may see it (ErrProjectAccessUnavailable): the
+// row is hidden from that list alone, failing closed, and the rest of the list is answered. A
+// row whose responsible person is someone else has lines of its own (fallbackUnreadMessage,
+// fallbackCutMessage), since such a row belongs on the list only where that person may not see it.
 const rowUnansweredMessage = "an approver's list leaves out a row whose project Dispatch could not be asked about; it is listed again once Dispatch answers"
 
 // logRowUnanswered writes rowUnansweredMessage for the one row key names, with attrs and err,
@@ -384,6 +389,40 @@ const rowUnansweredMessage = "an approver's list leaves out a row whose project 
 func (m *Machine) logRowUnanswered(key string, err error, attrs ...any) {
 	if m.rowsUnansweredLogged.due(key) {
 		slog.Warn(rowUnansweredMessage, append(attrs, "error", err)...)
+	}
+}
+
+// fallbackUnreadMessage is the log line for a row whose responsible person is someone else
+// (listedInStead) that an approver's list leaves out because a read of Dispatch failed, the
+// reader's or that person's. All the broker knows is that it could not tell whether the row
+// belongs on the list, which it does only where that person may not see it; so the line names
+// the person, and an operator who finds that person off the row's project has found a request
+// waiting on nobody's list.
+const fallbackUnreadMessage = "an approver's list leaves out a row whose responsible person is someone else, since Dispatch could not be asked whether the row belongs there too; it belongs there only where that person may not see it"
+
+// logFallbackUnread writes fallbackUnreadMessage for the record recordID, naming responsible, the
+// person its record names, and err, the read's error, once per projectaccess.CacheTTL however
+// often its list is read, as logRowUnanswered does.
+func (m *Machine) logFallbackUnread(recordID, responsible string, err error) {
+	if m.rowsUnansweredLogged.due("fallback " + recordID) {
+		slog.Warn(fallbackUnreadMessage, "list", "pending", "record", recordID, "responsible", responsible, "error", err)
+	}
+}
+
+// fallbackCutMessage is the log line for the rows whose responsible person is someone else
+// (listedInStead) that an approver's list leaves out unread because its time for them ran out
+// (listFallbackBound). Each such row is listed for its responsible person wherever that person may
+// see it, and the broker read nothing that says which rows are not; so the line counts them, one
+// line for the list, rather than name every row as a request that may wait on nobody's list.
+const fallbackCutMessage = "an approver's list leaves out, unread, rows whose responsible person is someone else, since its time for reading them ran out; each belongs there only where that person may not see it"
+
+// logFallbackCut writes fallbackCutMessage for reader's list, counting rows and naming err, the
+// list's clock's error, once per reader per projectaccess.CacheTTL however often that list is
+// read: a list is read on every 15 s poll of every open Inbox tab, and while Dispatch is slow
+// every one of them runs out of the clock.
+func (m *Machine) logFallbackCut(reader string, rows int, err error) {
+	if m.rowsUnansweredLogged.due("cut " + reader) {
+		slog.Warn(fallbackCutMessage, "list", "pending", "reader", reader, "rows", rows, "bound", listFallbackBound, "error", err)
 	}
 }
 
@@ -638,8 +677,8 @@ func (m *Machine) judgeMayDecide(ctx context.Context, row string, states map[str
 // (credentialProjects). It is the one source every reader uses — the release (projectFacts), the
 // decision (mayDecide), the record a person reads (ReadRecord) and both approver lists — so the
 // path that releases a secret and the path that shows a request cannot disagree on whose it is:
-// a pod's enrollment row names no project of its own, and reading that column alone showed a
-// private project's pod requests to everyone.
+// a service's pod's enrollment row names no project of its own, and reading that column alone
+// showed a private project's pod requests to everyone.
 func (m *Machine) namedProjects(e enrollmentRow) []string {
 	_, named := m.credentialProjects(e)
 	return named
@@ -690,9 +729,11 @@ func (m *Machine) mayDecide(ctx context.Context, row, login string, facts projec
 // needs, and asked of Dispatch afresh (projectaccess.Fresh): the run's own check filled the cache
 // well inside projectaccess.CacheTTL, and an answer read back from it could not show a change made
 // since. The facts and the rule's own reads are one decision, held to atDecision's bound together.
-// A refusal is record.ErrNotApprover; a person's, for a record they may not see, is
-// pgx.ErrNoRows as well, since every read of the record answers them that way and the page that
-// decides tells them "no such record" (approval.Page.decide).
+// A refusal of the judge is record.ErrNotApprover. A person's, for a record they may not see, is
+// pgx.ErrNoRows alone, the answer every read of the record gives them (HideUnseen) and an id no
+// record has gives anyone: so the page that decides tells them "no such record"
+// (approval.Page.decide) whatever order its checks are in, and adds no refusal code to the address
+// it sends them to, which would say the record exists.
 func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decider, pre decisionRead, set *policy.Set) (projectFacts, error) {
 	if who.isJudge() {
 		bounded, cancel := JudgeDispatch(ctx)
@@ -730,7 +771,7 @@ func (m *Machine) decisionFacts(ctx context.Context, recordID string, who decide
 	case who.isJudge():
 		return projectFacts{}, fmt.Errorf("%w: the request now belongs to a private project, which the model judge leaves to a person", record.ErrNotApprover)
 	}
-	return projectFacts{}, fmt.Errorf("%w: no such record: %w", record.ErrNotApprover, pgx.ErrNoRows)
+	return projectFacts{}, pgx.ErrNoRows
 }
 
 // maySeeRecord is MaySee for a listing's row: names under the live policy, the projects of the

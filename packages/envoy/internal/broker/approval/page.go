@@ -156,7 +156,9 @@ type pageView struct {
 // and showing nothing else of it (unansweredView), and the outcome lines and the other pending
 // requests print as ever. Its sign-in as someone else names no login_hint, since the approver is
 // part of what it does not show; a record the person may not see answers 404 before it, as an id
-// no record has.
+// no record has. Whether the person may see the record is read first, from its rows
+// (requests.Machine.HideUnseen), and the record only after: so a record signed for another broker
+// address, which this broker cannot read, answers a person it hides from 404 too.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
@@ -168,9 +170,10 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 		p.beginSignIn(w, r, id, "", switching)
 		return
 	}
-	detail, err := p.cfg.Machine.ReadRecord(r.Context(), id)
+	err := p.cfg.Machine.HideUnseen(r.Context(), id, sess.Login)
+	var detail requests.RecordDetail
 	if err == nil {
-		err = p.hideUnseen(r.Context(), sess.Login, detail)
+		detail, err = p.cfg.Machine.ReadRecord(r.Context(), id)
 	}
 	unanswered := errors.Is(err, requests.ErrProjectAccessUnavailable)
 	switch {
@@ -256,20 +259,6 @@ func approverHint(approver string) string {
 	return approver
 }
 
-// hideUnseen is pgx.ErrNoRows for a record of a private project login may not see
-// (requests.Machine.MaySee), so its page answers exactly as for an id no record has and says
-// nothing of whether it exists; nil for a record login may see.
-func (p *Page) hideUnseen(ctx context.Context, login string, d requests.RecordDetail) error {
-	may, err := p.cfg.Machine.MaySee(ctx, login, d)
-	switch {
-	case err != nil:
-		return err
-	case !may:
-		return pgx.ErrNoRows
-	}
-	return nil
-}
-
 // recordView is detail as the page prints it to login at now.
 func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) recordView {
 	v := recordView{
@@ -351,14 +340,15 @@ func approverText(approver string) string {
 
 // outcomes is one line for each record id the comma-separated decided names, at most maxRecords
 // of them, each said from the broker's own record now and never from the URL: an id that is not a
-// record id, or names no record, gets none. read is the record the page has just read, which a
-// decision's own page always names, so it is not read again; readUnanswered says Dispatch could
-// not say whether login may see it. A record Dispatch could not answer for gets the line that it
-// is unavailable, naming its id and nothing it holds (unansweredOutcome), and the other lines
-// print as ever. refused is the comma-separated id:code pairs ServeDecide wrote for the records it
-// could not decide (refusalCodes); a record still pending names the reason its code picks, and a
-// pair whose code is not one of them is ignored, so the address picks among the broker's own
-// sentences and writes none of its own.
+// record id, or names no record, gets none, and nor does a record of a private project login may
+// not see (requests.Machine.HideUnseen), whose line would print its secrets' names. read is the
+// record the page has just read, which a decision's own page always names, so it is not read
+// again; readUnanswered says Dispatch could not say whether login may see it. A record Dispatch
+// could not answer for gets the line that it is unavailable, naming its id and nothing it holds
+// (unansweredOutcome), and the other lines print as ever. refused is the comma-separated id:code
+// pairs ServeDecide wrote for the records it could not decide (refusalCodes); a record still
+// pending names the reason its code picks, and a pair whose code is not one of them is ignored, so
+// the address picks among the broker's own sentences and writes none of its own.
 func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now time.Time, read requests.RecordDetail, readUnanswered bool) ([]string, error) {
 	codes := make(map[string]string)
 	for pair := range strings.SplitSeq(refused, ",") {
@@ -383,12 +373,9 @@ func (p *Page) outcomes(ctx context.Context, decided, refused, login string, now
 		}
 		d := read
 		if id != read.RecordID {
-			var err error
-			d, err = p.cfg.Machine.ReadRecord(ctx, id)
+			err := p.cfg.Machine.HideUnseen(ctx, id, login)
 			if err == nil {
-				// A record of a private project login may not see gets no line, as an id
-				// no record has gets none: the line would print its secrets' names.
-				err = p.hideUnseen(ctx, login, d)
+				d, err = p.cfg.Machine.ReadRecord(ctx, id)
 			}
 			switch {
 			case errors.Is(err, requests.ErrProjectAccessUnavailable):
@@ -590,8 +577,8 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 // on picks among these sentences and writes none of its own. A record the decision left pending
 // reads one of them in place of "still pending; it was not decided.". Two refusals need no code: a
 // record a private project refused the person is hidden from them on the page they land on, as an
-// id no record has (hideUnseen), and one Dispatch could not answer for prints its own line
-// (unansweredOutcome).
+// id no record has (requests.Machine.HideUnseen), and one Dispatch could not answer for prints its
+// own line (unansweredOutcome).
 var refusalSentences = map[string]string{
 	refusedPolicy: "still pending; it was not decided: the current policy no longer lets you approve it.",
 	refusedChain:  "still pending; it was not decided: its approval chain no longer verifies.",
@@ -616,11 +603,11 @@ const (
 // record Dispatch could not say whether login may see (requests.ErrProjectAccessUnavailable) is
 // decided by nobody, and the POST's other records are decided as ever: the page it lands on says
 // that one is unavailable. A record of a private project login may not see is "no such record",
-// as for an id no record has (the machine's refusal carries pgx.ErrNoRows), so the POST tells them
-// nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line names
-// someone else is said by the page it lands on in its own words ("not yours to decide"), and
-// carries no code; one for a record login may still see and decide is the current policy's — its
-// owner, a max-grant or a withheld name moved since the page was printed.
+// as for an id no record has (the machine's refusal is pgx.ErrNoRows alone), so the POST tells
+// them nothing of it. A refusal record.ErrNotApprover carries for a record whose approver line
+// names someone else is said by the page it lands on in its own words ("not yours to decide"),
+// and carries no code; one for a record login may still see and decide is the current policy's —
+// its owner, a max-grant or a withheld name moved since the page was printed.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (outcome, refusal string, made bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {

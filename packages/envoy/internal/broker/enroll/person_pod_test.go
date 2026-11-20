@@ -17,6 +17,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -565,6 +567,154 @@ func TestAPersonPodLoginIsListedAndRevokedAsItsPersonsOwn(t *testing.T) {
 			}
 			if !r.revoked(t, nextPod.ID.String()) {
 				t.Fatalf("enrollment %s is still live, want it ended with ada's next pod login", nextPod.ID)
+			}
+		})
+	}
+}
+
+// withPersonPodProjects gives r's service a client of a Dispatch stand-in in which ada is a member
+// of kind kind. PRIV is private, owned by grace, and its access list names ada. ELSE is private,
+// owned by grace, and names nobody else. PUB is public, which a restricted member does not see,
+// since such a member sees only the projects that name them. It answers the stand-in, so that a
+// test can take it down.
+func withPersonPodProjects(t *testing.T, r podRig, kind string) *projectaccesstest.Server {
+	t.Helper()
+	dispatch := projectaccesstest.NewServer(t, map[string]projectaccesstest.Row{
+		"PRIV": {Visibility: "private", Owner: gracePerson, Listed: []string{adaPerson}},
+		"ELSE": {Visibility: "private", Owner: gracePerson},
+		"PUB":  {Visibility: "public", Owner: gracePerson},
+	}, map[string]string{adaPerson: kind})
+	r.svc.Projects = projectaccess.New(dispatch.URL, dispatch.Account, nil)
+	return dispatch
+}
+
+// enrollNaming is enroll naming projects, as `agent-secrets enroll --pod` sends the list that
+// AGENT_SECRETS_PROJECTS or --projects holds.
+func (r podRig) enrollNaming(t *testing.T, cred Credential, account, podUID string, projects ...string) (Enrollment, error) {
+	t.Helper()
+	in := r.podEnrollment(t, cred, account, podUID)
+	in.Projects = projects
+	return r.svc.Create(context.Background(), cred, in)
+}
+
+// TestARestrictedMembersPodNamesItsProjectsAsItsSessionDoes: ada is a restricted member, and her
+// pod acts for her. Her pod's login names no project, and it is refused ErrProjectsRequired, the
+// refusal her own session gets. The refusal says to set AGENT_SECRETS_PROJECTS, and it is not
+// ErrProjectsNeedAPerson. The same login then names PRIV, which her access list gives her, and the
+// pod is enrolled with that list, as her session would be. So the refusal's words lead to an
+// enrollment, and not to a second refusal.
+func TestARestrictedMembersPodNamesItsProjectsAsItsSessionDoes(t *testing.T) {
+	for _, schema := range personPodSchemas() {
+		t.Run(schema.name, func(t *testing.T) {
+			r := newPersonPodRig(t, schema)
+			withPersonPodProjects(t, r, projectaccess.MemberRestricted)
+			cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
+
+			_, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada")
+			if !errors.Is(err, ErrProjectsRequired) || errors.Is(err, ErrProjectsNeedAPerson) || !strings.Contains(err.Error(), "AGENT_SECRETS_PROJECTS") {
+				t.Fatalf("Create(ada's pod, naming no project) = %v; want ErrProjectsRequired saying to set AGENT_SECRETS_PROJECTS", err)
+			}
+			if got := r.rows(t, "pod-uid-ada"); got != 0 {
+				t.Fatalf("enrollments naming pod-uid-ada after the refusal = %d, want none", got)
+			}
+
+			enr, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", "PRIV")
+			if err != nil {
+				t.Fatalf("Create(ada's pod, naming PRIV) = %v; want it enrolled, as ada's session naming PRIV is", err)
+			}
+			if !slices.Equal(enr.Projects, []string{"PRIV"}) || textOf(enr.Operator) != adaPerson {
+				t.Fatalf("Create(ada's pod, naming PRIV) = projects %v, operator %s; want [PRIV] and %s", enr.Projects, textOf(enr.Operator), adaPerson)
+			}
+			read, err := r.svc.Get(context.Background(), enr.ID.String())
+			if err != nil || !slices.Equal(read.Projects, []string{"PRIV"}) {
+				t.Fatalf("Get(ada's pod enrollment) = projects %v, %v; want [PRIV]", read.Projects, err)
+			}
+		})
+	}
+}
+
+// TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused: ada is a restricted member. Her pod
+// naming ELSE, whose access list does not name her, is refused ErrProjectNotVisible naming ELSE.
+// So is a list of PRIV and ELSE, and a list naming PUB, a public project that a restricted member
+// does not see. Nothing is enrolled. Her session gets the same refusals.
+func TestAPersonsPodNamingAProjectItsPersonCannotSeeIsRefused(t *testing.T) {
+	for _, schema := range personPodSchemas() {
+		t.Run(schema.name, func(t *testing.T) {
+			r := newPersonPodRig(t, schema)
+			withPersonPodProjects(t, r, projectaccess.MemberRestricted)
+			cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
+			for _, c := range []struct {
+				projects []string
+				unseen   string
+			}{
+				{[]string{"ELSE"}, "ELSE"},
+				{[]string{"PRIV", "ELSE"}, "ELSE"},
+				{[]string{"PUB"}, "PUB"},
+			} {
+				_, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", c.projects...)
+				if !errors.Is(err, ErrProjectNotVisible) || !strings.Contains(err.Error(), c.unseen) {
+					t.Errorf("Create(ada's pod, naming %v) = %v; want ErrProjectNotVisible naming %s", c.projects, err, c.unseen)
+				}
+			}
+			if got := r.rows(t, "pod-uid-ada"); got != 0 {
+				t.Fatalf("enrollments naming pod-uid-ada after the refusals = %d, want none", got)
+			}
+		})
+	}
+}
+
+// TestAFullMembersPodEnrollsAsBefore: ada is a full member. Her pod naming no project is enrolled
+// with no project, as before. Her next pod names PUB and PRIV, which she sees, and it is enrolled
+// with both, as her session naming them would be.
+func TestAFullMembersPodEnrollsAsBefore(t *testing.T) {
+	for _, schema := range personPodSchemas() {
+		t.Run(schema.name, func(t *testing.T) {
+			r := newPersonPodRig(t, schema)
+			withPersonPodProjects(t, r, projectaccess.MemberFull)
+			first := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
+			enr, err := r.enrollNaming(t, first, adaPodAccount, "pod-uid-ada")
+			if err != nil || enr.Projects != nil {
+				t.Fatalf("Create(ada's pod, naming no project) = projects %v, %v; want it enrolled naming none", enr.Projects, err)
+			}
+
+			next := personLogin(t, r, adaPodAccount, "pod-uid-ada-two", adaPerson)
+			named, err := r.enrollNaming(t, next, adaPodAccount, "pod-uid-ada-two", "PUB", "PRIV")
+			if err != nil || !slices.Equal(named.Projects, []string{"PRIV", "PUB"}) {
+				t.Fatalf("Create(ada's next pod, naming PUB and PRIV) = projects %v, %v; want it enrolled naming [PRIV PUB]", named.Projects, err)
+			}
+		})
+	}
+}
+
+// TestAPersonsPodNamingProjectsIsRefusedWhileDispatchCannotCheckThem: while Dispatch is down,
+// ada's pod naming PRIV is refused ErrProjectsUnchecked and nothing is enrolled, as her session
+// naming PRIV is. Her pod naming no project is enrolled, as her session naming none is. On a
+// broker with no client of Dispatch's project access, her pod naming PRIV is refused
+// ErrProjectsUnchecked too.
+func TestAPersonsPodNamingProjectsIsRefusedWhileDispatchCannotCheckThem(t *testing.T) {
+	for _, schema := range personPodSchemas() {
+		t.Run(schema.name, func(t *testing.T) {
+			r := newPersonPodRig(t, schema)
+			dispatch := withPersonPodProjects(t, r, projectaccess.MemberRestricted)
+			dispatch.SetDown(true)
+			cred := personLogin(t, r, adaPodAccount, "pod-uid-ada", adaPerson)
+			if _, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada", "PRIV"); !errors.Is(err, ErrProjectsUnchecked) {
+				t.Fatalf("Create(ada's pod, naming PRIV, Dispatch down) = %v; want ErrProjectsUnchecked", err)
+			}
+			if got := r.rows(t, "pod-uid-ada"); got != 0 {
+				t.Fatalf("enrollments naming pod-uid-ada after the refusal = %d, want none", got)
+			}
+			if enr, err := r.enrollNaming(t, cred, adaPodAccount, "pod-uid-ada"); err != nil || enr.Projects != nil {
+				t.Fatalf("Create(ada's pod, naming no project, Dispatch down) = projects %v, %v; want it enrolled naming none, as her session is", enr.Projects, err)
+			}
+
+			r.svc.Projects = nil
+			next := personLogin(t, r, adaPodAccount, "pod-uid-ada-two", adaPerson)
+			if _, err := r.enrollNaming(t, next, adaPodAccount, "pod-uid-ada-two", "PRIV"); !errors.Is(err, ErrProjectsUnchecked) {
+				t.Fatalf("Create(ada's pod, naming PRIV, no client) = %v; want ErrProjectsUnchecked", err)
+			}
+			if got := r.rows(t, "pod-uid-ada-two"); got != 0 {
+				t.Fatalf("enrollments naming pod-uid-ada-two after the refusal = %d, want none", got)
 			}
 		})
 	}

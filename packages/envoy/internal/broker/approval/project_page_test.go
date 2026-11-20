@@ -1,14 +1,17 @@
 package approval_test
 
 import (
+	"crypto/ecdsa"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
@@ -43,6 +46,31 @@ func (r *rig) nameProjects(t *testing.T, enrollmentID string, projects ...string
 	if _, err := r.st.Pool.Exec(t.Context(), `update enrollments set projects=$2 where id=$1`, enrollmentID, projects); err != nil {
 		t.Fatalf("name the session's projects: %v", err)
 	}
+}
+
+// requestSignedElsewhere has the session ask for names with reason in a request object signed for
+// another broker address, as when a session asked a broker of another BROKER_PUBLIC_URL that
+// shares this database, and answers its record's id: a record this broker does not verify
+// (requests.Machine.ReadRecord refuses it) and no list of it shows.
+func (r *rig) requestSignedElsewhere(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) string {
+	t.Helper()
+	const elsewhere = "https://the-old-public-url.example"
+	details := make([]record.AuthorizationDetail, len(names))
+	for i, n := range names {
+		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: n, Actions: []string{"inject"}}
+	}
+	compact, err := record.Sign(key, elsewhere, details, reason, "", nil, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	current := r.machine.Audience
+	r.machine.Audience = elsewhere
+	created, err := r.machine.Create(t.Context(), enrollmentID, compact, "", nil)
+	r.machine.Audience = current
+	if err != nil || created.RecordID == nil || created.State != "pending" {
+		t.Fatalf("Create under %s = %+v, %v; want a pending request on a record", elsewhere, created, err)
+	}
+	return *created.RecordID
 }
 
 // TestTheApprovalPageShowsAPrivateSecretsProject: the page of a request for PRIV's secret, from
@@ -92,7 +120,13 @@ func TestTheApprovalPageOfAnUntaggedRequestIsUnchanged(t *testing.T) {
 // tier, yet its page answers her the 404 an id no record has, it is not among the other requests
 // waiting for her, a decision's outcome line naming it says nothing of it, and her Approve leaves
 // it pending. ben's request for an untagged secret whose reason names a PRIV issue is hidden the
-// same way. A person on PRIV's list sees both.
+// same way, and so is one signed for another broker address, which the page cannot read: its page
+// and an outcome line naming it answered 503 before, since whether she may see it was read from
+// its signed request. A request her page printed while it touched no private project, whose
+// session then names PRIV, is refused her as "no such record" when she approves it, and her
+// decision lands on a page whose address carries no refusal code, as a decision of an id no
+// record has does: a code would say the request exists and why it was not decided. A person on
+// PRIV's list sees the first two.
 func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 	r, _ := projectRig(t)
 	enrollmentID, key := r.benSession(t, "ben-shared-box")
@@ -100,6 +134,8 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 	tagged := r.request(t, enrollmentID, key, "rotate the shared key", nil, "", "PRIV_SHARED")
 	plainSession, plainKey := r.benSession(t, "ben-reason-box")
 	reasoned := r.request(t, plainSession, plainKey, "PRIV-12: rotate the shared key", nil, "", "SHARED_SECRET")
+	staleSession, staleKey := r.benSession(t, "ben-stale-box")
+	stale := pending{recordID: r.requestSignedElsewhere(t, staleSession, staleKey, "PRIV-12: rotate the shared key", "SHARED_SECRET")}
 	// A session of its own: a second request of one session for the same secret and approver
 	// joins the pending one rather than opening a card of its own.
 	wikiSession, wikiKey := r.benSession(t, "ben-wiki-box")
@@ -107,16 +143,16 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 
 	b := r.browser(t)
 	b.SignIn(t, visible.recordID, person(carol))
-	for _, hidden := range []pending{tagged, reasoned} {
+	for _, hidden := range []pending{tagged, reasoned, stale} {
 		if res := b.Get(t, "/approve/"+hidden.recordID); res.Status != http.StatusNotFound || !strings.Contains(pageText(t, res.Body), "No such request") {
 			t.Errorf("carol's page of %s = %d:\n%s\nwant the 404 an id no record has", hidden.recordID, res.Status, pageText(t, res.Body))
 		}
 	}
-	page := b.Get(t, "/approve/"+visible.recordID+"?decided="+tagged.recordID+","+reasoned.recordID)
+	page := b.Get(t, "/approve/"+visible.recordID+"?decided="+tagged.recordID+","+reasoned.recordID+","+stale.recordID)
 	if page.Status != http.StatusOK {
 		t.Fatalf("carol's page of %s = %d", visible.recordID, page.Status)
 	}
-	for _, hidden := range []pending{tagged, reasoned} {
+	for _, hidden := range []pending{tagged, reasoned, stale} {
 		if strings.Contains(page.Body, hidden.recordID) {
 			t.Errorf("carol's page names %s, a request of PRIV:\n%s", hidden.recordID, page.Body)
 		}
@@ -131,6 +167,19 @@ func TestAnOutsiderSeesNoPrivateRequest(t *testing.T) {
 	form.Set("record", tagged.recordID)
 	b.FromPage(t, "/approve", decision(form, "approve"))
 	r.requirePending(t, tagged.recordID)
+
+	turnedSession, turnedKey := r.benSession(t, "ben-turned-box")
+	turned := r.request(t, turnedSession, turnedKey, "rotate the turned key", nil, "", "SHARED_SECRET")
+	turnedForm := decisionForm(t, b.Page(t, turned.recordID).Body, turned.recordID)
+	if turnedForm == nil {
+		t.Fatalf("carol's page of %s, which touches no private project yet, offers no form", turned.recordID)
+	}
+	r.nameProjects(t, turnedSession, privProject)
+	res := b.FromPage(t, "/approve", decision(turnedForm, "approve"))
+	if to := res.Header.Get("Location"); res.Status != http.StatusSeeOther || strings.Contains(to, "&refused=") {
+		t.Errorf("carol's Approve of %s once its session names PRIV = %d to %q; want 303 to an address carrying no refusal code", turned.recordID, res.Status, to)
+	}
+	r.requirePending(t, turned.recordID)
 
 	insider := r.browser(t)
 	insider.SignIn(t, tagged.recordID, person(ben))
