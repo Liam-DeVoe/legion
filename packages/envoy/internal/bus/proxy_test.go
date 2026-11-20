@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // busWait is how long a test of this package waits FOR AN EVENT: a delivery reaching its handler,
@@ -51,11 +53,11 @@ type relayLink struct {
 	swallow        atomic.Bool
 }
 
-// startRelayProxy relays to the server uri names, from loopback. Its url is uri pointed at the
-// proxy.
+// startRelayProxy relays to the server uri names, from a loopback address of its own
+// (testport.LoopbackIP). Its url is uri pointed at the proxy.
 func startRelayProxy(t *testing.T, uri string) *relayProxy {
 	t.Helper()
-	return startRelayProxyFrom(t, "127.0.0.1", uri)
+	return startRelayProxyFrom(t, testport.LoopbackIP().String(), uri)
 }
 
 // startRelayProxyFrom relays to the server uri names from a port it holds on host, so a test that

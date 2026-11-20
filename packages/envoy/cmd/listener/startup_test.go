@@ -484,7 +484,6 @@ func TestAListenerWithoutAGitHubRouteLeavesTheCIBucketAlone(t *testing.T) {
 	// Serial: its assertion is a quiet window: nothing settles within ciSettleBound of the
 	// listener turning healthy, the bound within which the positive control settles the same seed.
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "no-github-route")
@@ -525,7 +524,6 @@ func TestAListenerWithAGitHubRouteSettlesTheCIBucket(t *testing.T) {
 	// Serial: its assertion is a time: the seed settles within ciSettleBound of the listener
 	// turning healthy.
 	client := setupTestNATS(t)
-	t.Cleanup(client.Close)
 	kv, key := seedDueCIRecord(t, client, "acme", "widgets", "7", strings.Repeat("d", 40))
 
 	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), client.Conn.ConnectedUrl(), "github-route", githubWebhookEnv...)
@@ -611,6 +609,7 @@ func TestListenerLogsFromOtherPackagesKeepTheirHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect bus: %v", err)
 	}
+	t.Cleanup(client.Close)
 	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)

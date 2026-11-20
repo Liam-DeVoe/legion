@@ -3,11 +3,12 @@ package bus
 import (
 	"context"
 	"errors"
-	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // proxiedLookup is a connect's environment that names the proxy at address.
@@ -27,7 +28,7 @@ func proxiedLookup(address string) func(string) (string, bool) {
 func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
 	// Serial: its assertion is a time (the dial must end near the 1 s deadline, not at the 5 s
 	// connect timeout).
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the silent proxy: %v", err)
 	}

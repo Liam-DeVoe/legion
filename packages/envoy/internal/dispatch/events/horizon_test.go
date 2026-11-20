@@ -799,82 +799,78 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 }
 
 // Every reader of a process calls Safe; concurrent calls must share observations, since each one
-// costs a round trip and a transaction id. Callers that arrive while one is in flight wait it out
-// and share the next.
+// costs a round trip and a transaction id. The first caller's observation is in flight before the
+// others call, so each of them needs the next one: Safe never settles for an observation already
+// in flight when it is called. All of them share that next one, which the gate holds until they
+// have all parked on it. So 8 calls run exactly 2 observations.
 func TestHorizonConcurrentSafeCallsShareAnObservation(t *testing.T) {
 	database := storetest.Open(t)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	// The first observation is the one the callers wait out, the second the one they share.
-	// Each is held in SendBatch, before its batch reaches Postgres, so it stays in flight, and
-	// h.started stays where it is, until the test releases it.
-	waitedOut := horizonBatchGate{entered: make(chan struct{}), release: make(chan struct{})}
-	shared := horizonBatchGate{entered: make(chan struct{}), release: make(chan struct{})}
-	counting := &countingHorizonDB{HorizonDB: database.Pool, gates: []horizonBatchGate{waitedOut, shared}}
+	counting := &countingHorizonDB{HorizonDB: database.Pool}
+	for i := range counting.entered {
+		counting.entered[i], counting.release[i] = make(chan struct{}), make(chan struct{})
+	}
 	horizon := NewHorizon(counting)
 
 	const callers = 8
-	parked := make(chan struct{}, 2*callers)
+	// The test lets an observation end only once every caller that needs it has parked on it: a
+	// caller still on its way would find no observation in flight and run one of its own, which
+	// is the very thing this test says must not happen. Waiting on the parking itself is what the
+	// run's own machinery reports; a sleep long enough on an idle machine is not long enough on a
+	// loaded one.
+	parked := make(chan struct{}, 2*callers) // room for every caller to park on both observations
 	horizon.afterObservationParked = func() { parked <- struct{}{} }
-
-	// Safe never settles for an observation that was already in flight when it was called: it
-	// waits that one out and takes the next. So the observation the callers share has to start
-	// after every one of them is inside Safe, and this held one is what pins that down: while it
-	// is in flight no other can start, so every caller below reads the same h.started and refuses
-	// it.
-	waitedOutDone := make(chan error, 1)
-	go func() {
-		_, err := horizon.Safe(ctx)
-		waitedOutDone <- err
-	}()
-	<-waitedOut.entered
-
-	errs := make(chan error, callers)
-	for range callers {
-		go func() {
-			_, err := horizon.Safe(ctx)
-			errs <- err
-		}()
-	}
-	// A park is reported by a caller that has already taken the observation in flight as its own,
-	// under the lock, and does nothing afterwards but wait for that observation's result: the
-	// park is the caller having joined it, which neither a sleep nor a count of callers started
-	// proves. Every park up to the release here is on the held first observation, the only one
-	// that can be in flight, so once all of them are in, all `callers` callers are inside Safe
-	// and have read the same h.started.
-	awaitParked(ctx, t, parked, callers, "the observation they wait out")
-	close(waitedOut.release)
-	// The callers all wake, refuse that observation and take the next: one runs it, and the
-	// database holds it in flight while the other callers-1 report parked on it. That is the fact
-	// the shared observation is released on - every caller has joined it, callers-1 parked and
-	// one running it - so none of them can still be on its way and run an observation of its own.
-	awaitParked(ctx, t, parked, callers-1, "the observation they share")
-	close(shared.release)
-
-	if err := <-waitedOutDone; err != nil {
-		t.Fatalf("the Safe call the others waited out: %v", err)
-	}
-	for range callers {
-		if err := <-errs; err != nil {
-			t.Fatalf("concurrent Safe: %v", err)
-		}
-	}
-	if observations := counting.batches.Load() - 1; observations != 1 {
-		t.Fatalf("%d concurrent Safe calls ran %d observations beside the one they waited out, want the 1 they share",
-			callers, observations)
-	}
-}
-
-// awaitParked waits for want callers to report parked (Horizon.afterObservationParked) on the
-// observation named by on, which the test holds in flight meanwhile.
-func awaitParked(ctx context.Context, t *testing.T, parked <-chan struct{}, want int, on string) {
-	t.Helper()
-	for joined := range want {
+	awaitEntered := func(observation int) {
 		select {
-		case <-parked:
+		case <-counting.entered[observation-1]:
 		case <-ctx.Done():
-			t.Fatalf("only %d of %d callers joined %s: %v", joined, want, on, ctx.Err())
+			t.Fatalf("observation %d never reached the database: %v", observation, ctx.Err())
 		}
+	}
+	awaitParked := func(observation, waiting int) {
+		for i := range waiting {
+			select {
+			case <-parked:
+			case <-ctx.Done():
+				t.Fatalf("only %d of the %d Safe calls waiting on observation %d parked on it: %v", i, waiting, observation, ctx.Err())
+			}
+		}
+	}
+	errs := make(chan error, callers)
+	call := func() {
+		_, err := horizon.Safe(ctx)
+		errs <- err
+	}
+
+	// The first caller runs observation 1, and the gate holds it in flight.
+	go call()
+	awaitEntered(1)
+	// The others call only now, so none of them is satisfied by observation 1: each needs
+	// observation 2 or later, and parks on observation 1 to wait it out.
+	for range callers - 1 {
+		go call()
+	}
+	awaitParked(1, callers-1)
+	// Observation 1 ends and answers the first caller alone. The others wake and loop: one runs
+	// observation 2, which the gate holds, and the rest find it in flight and park on it.
+	close(counting.release[0])
+	awaitEntered(2)
+	awaitParked(2, callers-2)
+	// Observation 2 ends and answers every caller still waiting.
+	close(counting.release[1])
+	for i := range callers {
+		select {
+		case err := <-errs:
+			if err != nil {
+				t.Fatalf("concurrent Safe: %v", err)
+			}
+		case <-ctx.Done():
+			t.Fatalf("only %d of the %d concurrent Safe calls returned: %v", i, callers, ctx.Err())
+		}
+	}
+	if observations := counting.batches.Load(); observations != 2 {
+		t.Fatalf("%d concurrent Safe calls ran %d observations, want 2", callers, observations)
 	}
 }
 
@@ -1061,27 +1057,20 @@ type scanRow func(dest ...any) error
 
 func (s scanRow) Scan(dest ...any) error { return s(dest...) }
 
-// horizonBatchGate holds one observation of a countingHorizonDB: entered closes as that
-// observation arrives, and it waits there until release closes.
-type horizonBatchGate struct {
-	entered chan struct{}
-	release chan struct{}
-}
-
-// countingHorizonDB counts observations and holds the first len(gates) of them, each at its own
-// gate, before their batches reach the database: an observation held there is in flight, so no
-// other can start while the test has it.
+// countingHorizonDB counts observations and holds each of the first two at its gate: the nth
+// closes entered[n-1] as it reaches the database and waits there until release[n-1] closes. Every
+// later one runs at once.
 type countingHorizonDB struct {
 	HorizonDB
 	batches atomic.Int32
-	gates   []horizonBatchGate
+	entered [2]chan struct{}
+	release [2]chan struct{}
 }
 
 func (db *countingHorizonDB) SendBatch(ctx context.Context, batch *pgx.Batch) pgx.BatchResults {
-	if observation := int(db.batches.Add(1)); observation <= len(db.gates) {
-		gate := db.gates[observation-1]
-		close(gate.entered)
-		<-gate.release
+	if n := int(db.batches.Add(1)); n <= len(db.entered) {
+		close(db.entered[n-1])
+		<-db.release[n-1]
 	}
 	return db.HorizonDB.SendBatch(ctx, batch)
 }
