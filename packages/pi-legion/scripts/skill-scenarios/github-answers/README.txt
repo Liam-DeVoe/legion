@@ -67,9 +67,11 @@ errors above (the message, the documentation URL of the endpoint, the status as 
 `gh: <message> (HTTP <status>)`):
 review-dismiss-422   gh api -X PUT repos/<owner>/<repo>/pulls/<n>/reviews/<id of a COMMENTED review>/dismissals -f message=x
   the 422 status: GitHub's REST docs, "Dismiss a review for a pull request" (status codes);
-  the message: the architect's ruling of 2026-11-20 17:55Z (INFRA-1303), "a review in the
-  COMMENTED state cannot be dismissed: it answers 422 'Can not dismiss a commented pull request
-  review'"; the documentation URL: that docs section's anchor, as review-404 names its own.
+  the message, "Can not dismiss a commented pull request review": not measured, since a
+  dismissal is a write, which the read-only token cannot make; no archived call dismisses a
+  COMMENTED review (the one archived dismissal, trial-i-head-4's, dismisses review 6002, which
+  is APPROVED), so the text decides no run; the documentation URL: that docs section's anchor,
+  as review-404 names its own.
 
 What GitHub answered to the reads below, measured the same way on 2026-11-18, which the rig's
 answers follow (no file: each is stated here and in the comment of the code that follows it):

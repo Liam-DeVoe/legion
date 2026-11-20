@@ -35,9 +35,12 @@
 // as the others do): `update` sets its body to the `body` the call sends (required, the docs),
 // and `dismiss`, with the `message` the call sends (required) and an `event` that is DISMISS or
 // none (the docs), sets its state to DISMISSED (the docs' example). A COMMENTED review cannot be
-// dismissed: GitHub answers 422, "Can not dismiss a commented pull request review" (the
-// architect's ruling of 2026-11-20 17:55Z; the docs list the 422), in the shape of its measured
-// errors (github-answers/review-dismiss-422). What GitHub answers for a review the role did not
+// dismissed: GitHub answers 422 (the docs list the 422) with the message "Can not dismiss a
+// commented pull request review", in the shape of its measured errors
+// (github-answers/review-dismiss-422). The message is not measured: a dismissal is a write, which
+// the rig's read-only token cannot make, and no archived call dismisses a COMMENTED review (the
+// one archived dismissal, trial-i-head-4's, dismisses review 6002, which is APPROVED), so the
+// text decides no run. What GitHub answers for a review the role did not
 // send, a pending or dismissed one, an empty body, or a dismissal with no message or another
 // event is not measured, so each is refused as unmodeled. gh prints a review whose body was
 // edited with `includesCreatedEdit` (GraphQL's mark of an edited comment), which is not

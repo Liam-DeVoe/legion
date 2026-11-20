@@ -76,19 +76,21 @@ const IssueEvents = z.array(
 const MessageRead = z.looseObject({ message: z.looseObject({ body: z.string() }) });
 /** One line gh-standin.ts or the `bun` stand-in records: when the call started, its exit (none,
  * `null`, for a `gh run watch` of a run in progress, which the stand-in records before it waits
- * and which ends only when it is killed), and (a gh call that edited the pull request's body) the
- * body the stand-in kept and serves from then on. */
+ * and which ends only when it is killed), the request a gh call resolved to (where the stand-in
+ * resolved and recorded one), and (a gh call that edited the pull request's body) the body the
+ * stand-in kept and serves from then on. */
 const Call = z.looseObject({
   at: z.string(),
   as: z.string(),
   argv: z.array(z.string()),
+  request: z.string().optional(),
   exit: z.number().nullable(),
   stdin: z.string().optional(),
   files: z.record(z.string(), z.string()).optional(),
   body: z.string().optional(),
   unmodeled: z.boolean().optional(),
 });
-/** rig.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
+/** red-at-the-head.sh's worker_fixture: the tester's world, on the run's own issue `key`; `head` is the PR's
  * head, the implementer's code commit. */
 const World = z.object({
   key: z.string(),
@@ -821,45 +823,31 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
   return { run, scenario: "tester-proof", label, pass, ref, notes: notes.join(" ") };
 }
 
-/** The twenty worlds of rig.sh's red_fixture, each the same change under a different red, as
+/** The rig's one table of red-at-the-head (jq/worlds.json, which red-at-the-head.sh's red_world
+ * and rig.sh's run_prefix read): the prefix of every run's directory, and the worlds. */
+const RED_TABLE = z
+  .object({ run_prefix: z.string(), worlds: z.record(z.string(), z.unknown()) })
+  .parse(JSON.parse(readFileSync(path.join(import.meta.dir, "jq", "worlds.json"), "utf8")));
+/** The twenty worlds of red-at-the-head.sh's red_fixture, each the same change under a different red, as
  * world.json's `world` names the one a run ran: the tester's `a` to `h`, `k` and `l`, and the
- * reviewer's `i` and `j` and `m` to `t` (`c` to `h`, `k` and `l` with the reviewer, rig.sh's
+ * reviewer's `i` and `j` and `m` to `t` (`c` to `h`, `k` and `l` with the reviewer, the table's
  * red_world). */
-const RED_WORLDS = [
-  "a",
-  "b",
-  "c",
-  "d",
-  "e",
-  "f",
-  "g",
-  "h",
-  "i",
-  "j",
-  "k",
-  "l",
-  "m",
-  "n",
-  "o",
-  "p",
-  "q",
-  "r",
-  "s",
-  "t",
-] as const;
-/** A red-at-the-head run's directory, trial-<world>-<label>-<n>: the world comes before
+const RED_WORLDS = Object.keys(RED_TABLE.worlds) as [string, ...string[]];
+/** The prefix of a red-at-the-head run's directory, `trial`, not the scenario's name, so the page
+ * under test (red-at-the-head.md) sits in no run path. */
+const RED_PREFIX = RED_TABLE.run_prefix;
+/** A red-at-the-head run's directory, <RED_PREFIX>-<world>-<label>-<n>: the world comes before
  * the label, as an askgate case does (ASKGATE_RUN), so the worlds' batches of one label, each
  * numbered from 1, never share a directory. A world is one letter, so the label is whatever
  * follows it, hyphens and all; a run whose world.json names another world than its directory is a
- * rig error (redAtTheHead). The prefix is `trial`, not the scenario's name, kept by rig.sh's
- * run_prefix so the page under test (red-at-the-head.md) sits in no run path; the row this builds
- * stays keyed red-at-the-head:<world> all the same. */
-const RED_RUN = new RegExp(`^trial-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
-/** rig.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
+ * rig error (redAtTheHead). The row this builds stays keyed red-at-the-head:<world> all the
+ * same. */
+const RED_RUN = new RegExp(`^${RED_PREFIX}-(${RED_WORLDS.join("|")})-(.+)-\\d+$`);
+/** red-at-the-head.sh's red_fixture adds the world's red to worker_fixture's world.json: the world, the check
  * that failed and the job under it, the ids of the run and the job that carry the red, the failing
  * line that world's log read answers (`log`, empty in `h`, whose read answers an error), and,
  * where the red is a test, that test's full name (`test`, empty where the red is none). Beside them
- * it writes the world's facts, which rig.sh's red_world holds once for every reader of a run, and
+ * it writes the world's facts, which the table's red_world holds once for every reader of a run, and
  * which its comment gives the reasons for: the role that holds the phase (`role`) and the phase of
  * the handoff record it writes (`handoff`); whether it owes the record of the red and the one
  * re-run (`rerun`); how its round must end (`round`); whether it owes the three steps of the
@@ -939,10 +927,17 @@ const SLEEPS = /(?:^|[\s;&|(])sleep[ \t]+[\d$]/;
  * worlds `d` and `e` the decision is the act scored. */
 const RERUN_PRESS =
   /^run rerun\b(?!.*(?:^|\s)(?:-h|--help)(?:\s|$)).*(?:\s|--job=)\d+(?:\s|$)|^api\b.*actions\/(?:runs\/\d+\/rerun(?:-failed-jobs)?|jobs\/\d+\/rerun)(?:[?\s]|$)/;
-/** The method gh 2.98.0 sends a `gh api` call with (measured): the one -X/--method names, else
- * POST where the call carries a field (-f, -F, --field, --raw-field) or --input, and GET where it
- * carries neither. */
-function ghMethod(argv: string[]): string {
+/** The method gh sent a `gh api` call with: the one the stand-in recorded in the call's `request`
+ * (`gh api <METHOD> <endpoint> …`, gh-standin.ts's parseCall), which reads it as gh 2.98.0 does.
+ * A record with no request is one written before the stand-in recorded requests: every gh call of
+ * the archived batches of rounds 6, 8 and 10 (2419 calls, 1060 of them `gh api`); in the batch of
+ * record at 9c3bd9df every `gh api` call carries one (8 calls carry none, each a `gh run view
+ * --json` gh refused before any request). For such a record the method is read from its argv by
+ * gh's rule (measured): the one -X/--method names, else POST where the call carries a field (-f,
+ * -F, --field, --raw-field) or --input, and GET where it carries neither. */
+function ghMethod(call: { argv: string[]; request?: string }): string {
+  if (call.request?.startsWith("gh api ")) return call.request.split(" ")[2] ?? "";
+  const { argv } = call;
   for (const [index, arg] of argv.entries()) {
     if (arg === "-X" || arg === "--method") return (argv[index + 1] ?? "").toUpperCase();
     const attached = /^(?:-X|--method=)(.+)$/.exec(arg);
@@ -993,19 +988,13 @@ function ghTexts(text: string): string[] {
 
 /** The turns of a red-at-the-head run, as run_red_at_the_head wrote them to <run>/turns.txt, one
  * line per turn: `<turn> <wake> <the moment the turn ended, RFC 3339> <exit line>`, where the wake
- * is what started the turn (record_turn, rig.sh:2732-2736): `assignment`, `report` or
- * `settlement` as the rig records them, and `reminder` or `backstop` for a turn the phase
- * reminder or the daemon's backstop started, which no world of the rig gives. */
-function redTurns(runDir: string): { turn: string; wake: string; ended: bigint }[] {
+ * is what started the turn (record_turn): each turn and the moment it ended. */
+function redTurns(runDir: string): { turn: string; ended: bigint }[] {
   return lines(path.join(runDir, "turns.txt")).map((line) => {
-    const [turn = "", wake = "", ended = ""] = line.split(" ");
-    return { turn, wake, ended: instant(ended, `the end of turn ${turn}`) };
+    const [turn = "", , ended = ""] = line.split(" ");
+    return { turn, ended: instant(ended, `the end of turn ${turn}`) };
   });
 }
-/** The wakes of a turn that the page's bound starts, where no settlement came: "the bound is the
- * phase reminder or the daemon's backstop", whose one read of the counted set is the bound's and
- * no poll. */
-const BOUND_WAKES: Record<string, true> = { reminder: true, backstop: true };
 
 /** The failing line as a record quotes it: the world's own line (world.json's `log`), less the
  * `(fail)` marker a Bun test line opens with, the `[3.00ms]` it ends with, and the parenthesised
@@ -1100,7 +1089,7 @@ function submittedReview(
 }
 
 /** red-at-the-head: the legion-worker skill's rule for a phase whose pull request's head carries a
- * red check, skills/legion-worker/references/red-at-the-head.md. rig.sh's red_fixture puts twenty
+ * red check, skills/legion-worker/references/red-at-the-head.md. red-at-the-head.sh's red_fixture puts twenty
  * worlds under it, and world.json's `world` names the one this run ran (`a` to `t`, as the run's
  * directory does). The world's role (world.json's `role`) decides which half of the rule is
  * scored (dispatch://INFRA-1303/ask/dd2229bf-075c-4524-b045-41f39978dbb3: the tester reads no CI;
@@ -1114,7 +1103,7 @@ function submittedReview(
  *     its pass on the `before_merge` check the world's issue carries, never a verdict failed for
  *     the red (`outcome`). Every tester run is counted, since the rule holds each of them;
  *   - the reviewer's worlds, `i` and `j` and their variants of `c` to `h`, `k` and `l` (`m` to
- *     `t`, rig.sh's red_world), score the reviewer's act on the red: it writes the red down, then
+ *     `t`, the table's red_world), score the reviewer's act on the red: it writes the red down, then
  *     re-runs the failed jobs once, then waits for the settlement without polling for it, as
  *     below.
  * Each fact is read from what recorded it: the role's record from the run's issue on Dispatch
@@ -1122,7 +1111,7 @@ function submittedReview(
  * log read and the review from the gh stand-in's own record of each call (calls.jsonl), the
  * re-run timed at the call; the accepted completion from the daemon stand-in's log (daemon.log),
  * its first 200 answer to `handoff/complete`; the failing line and the failing test's name from
- * the world itself (world.json's `log` and `test`, which rig.sh's red_fixture writes there), as
+ * the world itself (world.json's `log` and `test`, which red-at-the-head.sh's red_fixture writes there), as
  * every fact of the world a condition below turns on (RedWorld); the verdict, the subscription,
  * the sleep and each `dispatch` command from the transcript, the only place they are recorded. A
  * reviewer's run passes when all of these hold:
@@ -1140,11 +1129,9 @@ function submittedReview(
  *      and in every world the run ran no `sleep`, no `gh run watch` and no `gh pr checks --watch`,
  *      and made no read of the head's CI (READ_CI) after its `gh run rerun` call in the turn that
  *      pressed it, which is the page's "A read of the head's checks or runs in the turn that
- *      pressed the re-run is the poll this forbids, whatever work came between, and so are
+ *      pressed the re-run is the poll this forbids, and so are
  *      `gh run watch` and `gh pr checks --watch`." A read in a later turn is the one the wake
- *      brings, no poll; where that turn's wake is the phase reminder or the daemon's backstop
- *      (`reminder` or `backstop` in turns.txt), the read is the page's bound and is counted in the
- *      notes (`bound`). A subagent's result or a message comes inside the recorded turn, so a read
+ *      brings, no poll. A subagent's result or a message comes inside the recorded turn, so a read
  *      on its wake in the turn that pressed the re-run stays a poll. Each call is placed in the
  *      first turn of <run>/turns.txt that ended at or after it, as condition 7 places the counted
  *      set's reads;
@@ -1279,7 +1266,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   }
   const wrote = problems.length === 0;
   const reruns = ghCalls(RERUN_PRESS).filter(
-    (call) => call.argv[0] !== "api" || ghMethod(call.argv) === "POST"
+    (call) => call.argv[0] !== "api" || ghMethod(call) === "POST"
   );
   const rerunAt = reruns[0] === undefined ? undefined : instant(reruns[0].at, "the re-run's time");
   // The order is judged on the first record that carries the entry, never on the newest: the page
@@ -1310,8 +1297,8 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const ciReadAt = ciReads.map((call) => instant(call.at, "a read of the head's CI"));
   const turns = redTurns(runDir);
   // A read of the head's CI after the re-run, in the turn that pressed it, is the page's "A read
-  // of the head's checks or runs in the turn that pressed the re-run is the poll this forbids,
-  // whatever work came between, and so are `gh run watch` and `gh pr checks --watch`." The read
+  // of the head's checks or runs in the turn that pressed the re-run is the poll this forbids, and
+  // so are `gh run watch` and `gh pr checks --watch`." (red-at-the-head.md). The read
   // the wake brings, in a later turn, is none. A re-run that no recorded turn end follows is in a
   // turn that runs to the end of the record.
   const turnOf = (at: bigint) => turns.find((turn) => turn.ended >= at);
@@ -1319,22 +1306,6 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   const reread =
     rerunAt !== undefined &&
     ciReadAt.some((at) => at > rerunAt && (rerunTurn === undefined || at <= rerunTurn.ended));
-  // INFRA-1303 D6, the architect's ruling of 2026-11-19 19:33Z: where no settlement comes, the
-  // page's bound is the phase reminder or the daemon's backstop, on which the role reads the
-  // counted set once. A read of the head's CI in a later turn that one of those two woke is that
-  // bound and no poll; the scorer tells the turn's wake from <run>/turns.txt's second field
-  // (record_turn, rig.sh:2732-2736; redTurns, which read only the turn and its end at
-  // score.ts:947-951 before). The rig records no `reminder` or `backstop` wake: its turns are the
-  // assignment, world `l`'s report and the settlement, and no world gives either wake (the
-  // architect's ruling of 19:36Z keeps such a world out of this lap), so the batch exercises
-  // neither bound and in a rig run this count is 0.
-  const bound =
-    rerunTurn === undefined
-      ? 0
-      : ciReadAt.filter((at) => {
-          const turn = at > rerunTurn.ended ? turnOf(at) : undefined;
-          return turn !== undefined && BOUND_WAKES[turn.wake] === true;
-        }).length;
   // The poll. The reviewer's is the page's: any `sleep` in the turn, a watch (WATCHES), or a read
   // of the head's CI after its press in the turn that pressed it. The tester's is a wait on CI: a
   // watch, or a read of CI (READ_CI) in a bash command that sleeps or loops around it, since a
@@ -1366,7 +1337,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   );
   const reviewsPath = new RegExp(`repos/${escaped(red.repo)}/pulls/${red.pr}/reviews\\b`);
   const reviews = ghCalls(reviewsPath).filter(
-    (call) => call.exit === 0 && ghMethod(call.argv) === "POST"
+    (call) => call.exit === 0 && ghMethod(call) === "POST"
   );
   const review = submittedReview(reviews.at(-1));
   const goesOn = reviewer
@@ -1382,8 +1353,8 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   ].join("\n");
   // How the round must end (world.json's `round`): it goes on where the re-run cleared the red,
   // and fails where it did not, its words naming the check in every world where it fails: where
-  // the re-run came back red (`j`; the page's "the reviewer requests changes, and the check is
-  // named"), where the red is the change's (`n`, `p`; the reviewer's prompt, "A required check red
+  // the re-run came back red (`j`; the page's "the reviewer requests changes and names the
+  // check"), where the red is the change's (`n`, `p`; the reviewer's prompt, "A required check red
   // there that the change made is a `REQUEST_CHANGES` naming it"), and where the head's one re-run
   // was spent before the role came (`o`; the page's "requests changes, names the check, and says
   // the head's one re-run is spent"), whose words also say that it is spent.
@@ -1479,7 +1450,7 @@ function redAtTheHead(runDir: string, run: string, label: string, dirWorld: stri
   // Whether the run met the red at all: a gh call that read the head's CI, or the page it
   // opened, which carries the red it came for.
   const readCI = ref || ciRead;
-  const turnFacts = `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"} bound=${bound}`;
+  const turnFacts = `reruns=${reruns.length}/${expected} subscribed=${subscribed} polled=${polled} verdict=${verdict || "none"} accepted=${accepted} review=${review?.event ?? "none"}`;
   const notes = reviewer
     ? [
         `world=${red.world} record=${record === undefined ? "none" : `v${record.version}`} wrote=${wrote} before=${before} pressed=${pressed} waited=${waited} outcome=${outcome} told=${told} declined=${declined} reported=${reported} readCI=${readCI}`,
@@ -3799,6 +3770,52 @@ const UNHEARD = [
     what: "the report publish failed or went unheard",
   },
 ];
+/** A red-at-the-head run the rig stopped at a step its world depends on, after the turn before it
+ * had ended, so out.txt keeps that turn's `exit=` line and the run reads as finished; undefined for
+ * every other run. run_red_at_the_head (rig.sh) runs the two steps as
+ *   red_report >>"$R/fixture.log" 2>&1 || fail "the world $world report failed; see $R/fixture.log"
+ *   rerun_settle >>"$R/fixture.log" 2>&1 || fail "the world $world settlement failed; see $R/fixture.log"
+ * and fail (rig.sh) prints its message on the stderr of `rig.sh run`, which cmd_batch's xargs
+ * passes on to the batch's own stderr: the run directory holds no copy of it, so the scorer names
+ * the run by no message of the rig's. What the run does hold is the step's own mark, which
+ * red-at-the-head.sh's red_wake, the move both steps make, writes only once its rewrite of
+ * fixtures.json has gone through:
+ *   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/$state-at"
+ * reported-at for red_report, settled-at for rerun_settle. So a run of a world whose counted set
+ * the rig reports (world.json's `report`) with no reported-at, or a run whose press reached
+ * fixtures.json in a world that settles it (`turns` 2) with no settled-at, stopped at that step, in
+ * every world. It is a rig error named by that fact. Whether the press reached fixtures.json is
+ * routes.jq's `pressed`, the test rerun_pressed makes before the rig settles the re-run, so the
+ * rig and the scorer read the press by one rule. The scenario table (scoreRuns) names this as
+ * red-at-the-head's `stopped`. */
+function redStopped(runDir: string): string | undefined {
+  if (!existsSync(path.join(runDir, "world.json"))) return undefined;
+  const facts = z
+    .looseObject({ report: z.boolean().optional(), turns: z.number().optional() })
+    .safeParse(JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")));
+  if (facts.success && facts.data.report === true && !existsSync(path.join(runDir, "reported-at")))
+    return "the rig's report step did not finish: the run has no reported-at";
+  const fixtures = path.join(runDir, "fixtures.json");
+  let pressed = false;
+  if (existsSync(fixtures)) {
+    const read = Bun.spawnSync(
+      ["jq", "-L", path.join(import.meta.dir, "jq"), "-e", 'include "routes"; pressed', fixtures],
+      { stderr: "pipe" }
+    );
+    // jq -e exits 0 on true, 1 on false, and otherwise on a file it cannot read as routes.
+    if (read.exitCode !== 0 && read.exitCode !== 1)
+      throw new Error(`${fixtures}: ${read.stderr.toString().trim()}`);
+    pressed = read.exitCode === 0;
+  }
+  if (
+    facts.success &&
+    facts.data.turns === 2 &&
+    pressed &&
+    !existsSync(path.join(runDir, "settled-at"))
+  )
+    return "the rig's settlement step did not finish: the run has no settled-at";
+  return undefined;
+}
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3807,12 +3824,12 @@ const UNHEARD = [
  *     and asks, and one run's answer can be another's;
  *   - it never finished: out.txt has no `exit=` line;
  *   - it met a gh call no route models (calls.jsonl's `unmodeled`);
- *   - a publish its world depends on failed or went unheard: rig.sh noted that the settlement of
+ *   - a publish its world depends on failed or went unheard: the rig noted that the settlement of
  *     the re-run (rerun_settle) or the report of the check (red_report) reached no listener
  *     (fixture.log, UNHEARD), so the turn it should have woken ran on no wake;
  *   - a step its world depends on did not finish, and the rig stopped the run after the turn
- *     before it: red-at-the-head's report of the check left no reported-at, or its settlement of
- *     a pressed re-run no settled-at;
+ *     before it (the scenario's `stopped`): red-at-the-head's report of the check left no
+ *     reported-at, or its settlement of a pressed re-run no settled-at (redStopped);
  *   - its agent got no model turn: it left no transcript, or one with no assistant message, as when
  *     the profile's gateway key command ran past its budget. The key command's own record of each
  *     call, which scripts/e2e/lib/model-gateway-unserved.sh reads, is a better signal this rig does
@@ -3853,7 +3870,8 @@ function unscored(
   labels: Map<string, string>,
   sharing: Map<string, string[]>,
   calls: RunCall[],
-  allowed: string[]
+  allowed: string[],
+  stopped: ((runDir: string) => string | undefined) | undefined
 ): string | undefined {
   if (dispatch === undefined) {
     if (!BATCH_DISPATCH[scenario]) return "it records no Dispatch of its own (no dispatch.json)";
@@ -3876,18 +3894,16 @@ function unscored(
   // no wake, so the run did not get the world it was built for (the architect's ruling of
   // 2026-11-21 01:06Z, on finding R6-F1). rig.sh notes each one and goes on to the turn, through
   //   note() { printf 'skill-scenarios: %s\n' "$*"; }
-  // (rig.sh:313 at bb4eef5b), on the output of the step, which run_red_at_the_head appends to the
-  // run's fixture.log; `--publish` exits 1 when the listener answered no 2xx or did not answer in
-  // the stand-in's five seconds (gh-standin.ts:560-568). The two such publishes (UNHEARD) are the
-  // settlement of the re-run, in rerun_settle:
-  //   SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --publish "$R/settlement.json" ||
-  //     note "the settlement of the re-run reached no listener at $url"
-  // (rig.sh:4442-4443), appended by `rerun_settle >>"$R/fixture.log" 2>&1 || fail …` (rig.sh:4494);
-  // and the rig's report of the check the counted set had not reported (world `l`, `t`), in
-  // red_report:
-  //   SKILL_SCENARIO_RUN=$R bun "$here/gh-standin.ts" --publish "$R/reported.json" ||
-  //     note "the report of the check reached no listener at $url"
-  // (rig.sh:4403-4404), appended by `red_report >>"$R/fixture.log" 2>&1 || fail …` (rig.sh:4490).
+  // (rig.sh), on the output of the step, which run_red_at_the_head appends to the run's
+  // fixture.log; `--publish` exits 1 when the listener answered no 2xx or did not answer in the
+  // stand-in's five seconds (gh-standin.ts's main and publish). The two such publishes (UNHEARD)
+  // are red-at-the-head.sh's red_wake, the move rerun_settle and red_report make:
+  //   SKILL_SCENARIO_RUN=$R bun "$red_dir/gh-standin.ts" --publish "$R/$envelope" ||
+  //     note "the $what reached no listener at $url"
+  // where $what is `settlement of the re-run` in rerun_settle (settlement.json) and `report of
+  // the check` in red_report (reported.json: the check the counted set had not reported, worlds
+  // `l` and `t`), each appended by `rerun_settle >>"$R/fixture.log" 2>&1 || fail …` and
+  // `red_report >>"$R/fixture.log" 2>&1 || fail …` (rig.sh's run_red_at_the_head).
   // The run is a rig error named with the note's own line.
   const unheard = existsSync(path.join(runDir, "fixture.log"))
     ? lines(path.join(runDir, "fixture.log")).flatMap((line) => {
@@ -3896,52 +3912,9 @@ function unscored(
       })[0]
     : undefined;
   if (unheard !== undefined) return unheard;
-  // A step the world depends on that did not finish: the rig stops the run there, after the turn
-  // before it has ended, so out.txt keeps that turn's `exit=` line and the run reads as finished.
-  // run_red_at_the_head runs the two steps as
-  //   red_report >>"$R/fixture.log" 2>&1 || fail "the world $world report failed; see $R/fixture.log"
-  //   rerun_settle >>"$R/fixture.log" 2>&1 || fail "the world $world settlement failed; see $R/fixture.log"
-  // (rig.sh:4490 and 4494 at bb4eef5b), and fail (rig.sh:314-317) prints its message on the stderr
-  // of `rig.sh run`, which cmd_batch's xargs passes on to the batch's own stderr (rig.sh:4626):
-  // the run directory holds no copy of it, so the scorer names the run by no message of the rig's.
-  // What the run does hold is the step's own mark, which each step writes only once its rewrite of
-  // fixtures.json has gone through, red_report's
-  //   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/reported-at"
-  // (rig.sh:4401) and rerun_settle's
-  //   date -u +%Y-%m-%dT%H:%M:%SZ >"$R/settled-at"
-  // (rig.sh:4440). So a run of a world whose counted set the rig reports (world.json's `report`)
-  // with no reported-at, or a run whose press reached fixtures.json (a `press` route that has
-  // answered, rerun_pressed's own test, rig.sh:4415-4417) in a world that settles it (`turns` 2)
-  // with no settled-at, stopped at that step, in every world. It is a rig error named by that fact.
-  if (scenario === "red-at-the-head" && existsSync(path.join(runDir, "world.json"))) {
-    const facts = z
-      .looseObject({ report: z.boolean().optional(), turns: z.number().optional() })
-      .safeParse(JSON.parse(readFileSync(path.join(runDir, "world.json"), "utf8")));
-    if (
-      facts.success &&
-      facts.data.report === true &&
-      !existsSync(path.join(runDir, "reported-at"))
-    )
-      return "the rig's report step did not finish: the run has no reported-at";
-    const fixtures = path.join(runDir, "fixtures.json");
-    const pressed =
-      existsSync(fixtures) &&
-      z
-        .looseObject({
-          routes: z.array(
-            z.looseObject({ press: z.boolean().optional(), answered: z.number().optional() })
-          ),
-        })
-        .parse(JSON.parse(readFileSync(fixtures, "utf8")))
-        .routes.some((route) => route.press === true && (route.answered ?? 0) > 0);
-    if (
-      facts.success &&
-      facts.data.turns === 2 &&
-      pressed &&
-      !existsSync(path.join(runDir, "settled-at"))
-    )
-      return "the rig's settlement step did not finish: the run has no settled-at";
-  }
+  // A step the world depends on that did not finish (the scenario's `stopped`, redStopped).
+  const stop = stopped?.(runDir);
+  if (stop !== undefined) return stop;
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
@@ -4350,57 +4323,72 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   }
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // Each scenario's scorer, keyed by the scenario's own word, and taking the name its directory
-  // carries before the label: an askgate run's case (ASKGATE_RUN), a red-at-the-head run's world
-  // (RED_RUN), and nothing for every other scenario.
-  const scorers: Record<string, (dir: string, run: string, label: string, subName: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-      "red-at-the-head": redAtTheHead,
-    };
+  // Each scenario, keyed by its own word: its scorer, the prefix its runs' directories start with,
+  // and, where its directory carries a name before the label (an askgate run's case, ASKGATE_RUN;
+  // a red-at-the-head run's world, RED_RUN), the pattern that reads it and the refusal of a
+  // directory that names none. Every prefix is the scenario's own word, save red-at-the-head's,
+  // RED_PREFIX, so the page under test does not sit in a run's agent-visible paths; the scorer,
+  // the `only` filter, the rows and the keys stay the scenario's own word all the same. A
+  // scenario whose rig can stop a run at a step of its world after the run's last turn names the
+  // check of it (`stopped`, red-at-the-head's redStopped), which unscored makes in its place among
+  // the rig errors.
+  type Scenario = {
+    score: (dir: string, run: string, label: string, subName: string) => Row;
+    prefix?: string;
+    sub?: { pattern: RegExp; refusal: string };
+    stopped?: (runDir: string) => string | undefined;
+  };
+  const scenarios: Record<string, Scenario> = {
+    "ask-on-message": { score: askOnMessage },
+    "measure-before-ask": { score: measureBeforeAsk },
+    "tester-proof": { score: (dir, run, label) => testerProof(dir, run, label, heads) },
+    brainstorm: { score: brainstormSurface },
+    askgate: {
+      score: askgateReview,
+      sub: {
+        pattern: ASKGATE_RUN,
+        refusal:
+          "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>",
+      },
+    },
+    "spec-writing": {
+      score: (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    },
+    "spec-rewrite": {
+      score: (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+    },
+    "red-at-the-head": {
+      score: redAtTheHead,
+      prefix: RED_PREFIX,
+      sub: {
+        pattern: RED_RUN,
+        refusal: `the directory names no world: a red-at-the-head run's directory is ${RED_PREFIX}-<world>-<label>-<n>`,
+      },
+      stopped: redStopped,
+    },
+  };
   // The prefix each scenario's runs' directories start with, mapped back to the scenario's word.
-  // Every prefix is the scenario's own word, save red-at-the-head's, which is `trial` (rig.sh's
-  // run_prefix), so the page under test does not sit in a run's agent-visible paths; the scorer,
-  // the `only` filter, the rows and the keys stay the scenario's own word all the same.
   const scenarioOf: Record<string, string> = Object.fromEntries(
-    Object.keys(scorers).map((scenario) => [
-      scenario === "red-at-the-head" ? "trial" : scenario,
-      scenario,
-    ])
+    Object.entries(scenarios).map(([scenario, { prefix }]) => [prefix ?? scenario, scenario])
   );
   const name = new RegExp(`^(${Object.keys(scenarioOf).join("|")})-(.+)-(\\d+)$`);
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
     const scenario = scenarioOf[match?.[1] ?? ""] ?? "";
-    const score = scorers[scenario];
+    const score = scenarios[scenario]?.score;
     if (!match || !score) continue;
     const [, , named = ""] = match;
     if (only && scenario !== only) continue;
     const dir = path.join(runsDir, run);
-    // null for an askgate directory that names no case, or a red-at-the-head one that names no
-    // world; undefined for every other scenario, whose directory carries the label alone.
-    const sub =
-      scenario === "askgate"
-        ? ASKGATE_RUN.exec(run)
-        : scenario === "red-at-the-head"
-          ? RED_RUN.exec(run)
-          : undefined;
+    // null for a directory that names no case or no world where its scenario's carries one;
+    // undefined for every other scenario, whose directory carries the label alone.
+    const carried = scenarios[scenario]?.sub;
+    const sub = carried === undefined ? undefined : carried.pattern.exec(run);
     const [, subName = "", label = named] = sub ?? [];
     const key = `${sub ? `${scenario}:${subName}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
-      if (sub === null)
-        throw new Error(
-          scenario === "askgate"
-            ? "the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
-            : "the directory names no world: a red-at-the-head run's directory is trial-<world>-<label>-<n>"
-        );
+      if (sub === null) throw new Error(carried?.refusal);
       const dispatch = dispatchOf(dir);
       const calls = runCalls(dir);
       // The paths the run had when it ran, which its transcripts name, never those of a copy
@@ -4410,7 +4398,17 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const profile = path.join(work, "profiles", label);
       // The run's own skills: its HOME (in its directory), its label's profile and checkout.
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
-      reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
+      reason = unscored(
+        dir,
+        scenario,
+        dispatch,
+        label,
+        labels,
+        sharing,
+        calls,
+        own,
+        scenarios[scenario]?.stopped
+      );
       if (reason === undefined) {
         const scored = score(dir, run, label, subName);
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);

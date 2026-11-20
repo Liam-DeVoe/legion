@@ -102,8 +102,9 @@
 // The stand-in is a fresh process per call, so the count of calls a route has answered outlives it
 // in fixtures.json, as the route's `answered`, written back with the body keep's own
 // read-modify-write on every call whose count something reads or that sends something to keep; a
-// read nothing counts writes nothing (`writes`, below), and a world rig.test.ts's rows share (the
-// file <run>/shared) refuses any call that would write it. Each call holds an exclusive flock(2) on
+// read nothing counts writes nothing (`writes`, below), and a world the rows of a test file share
+// (red-at-the-head.fixtures.ts's redFixture marks it with the file <run>/shared) refuses any call
+// that would write it. Each call holds an exclusive flock(2) on
 // <run>/fixtures.lock from its read of fixtures.json to that write, so no two `gh` processes of
 // one turn answer from the same read: two calls of one route take a reply each and count twice,
 // and a call beside the re-run never writes back the re-run's count as it stood before the
@@ -136,6 +137,11 @@
 // runs gets its environment less those, and none of them decides where a settlement goes. A
 // stand-in run from a Legion pane, whose ENVOY_URL names the live relay, would otherwise hand that
 // relay to each and publish a fixture's settlement there.
+// The stand-in is three parts: parseCall, which reads a call as gh resolves it; answer, which
+// answers it from the routes at a moment, with what it leaves in fixtures.json; and main, the
+// process: the lock, the read and the write of fixtures.json, what the call prints, the publish
+// and the record. gh-standin.test.ts calls the first two itself, and runs the process where the
+// process is what a row tests.
 //   gh-standin.ts gh <args...>
 //   gh-standin.ts --check
 //   gh-standin.ts --publish <envelope file>
@@ -204,7 +210,7 @@ const IssueCommentMode = z.enum(["post", "read", "edit", "list"]);
  * the ids of the reviews whose body the role updated, and the comments on the pull request kept,
  * in the order the role sent them. A route is parsed loosely, as the file is, so a key of the
  * rig's own outlives the write back. */
-const Fixtures = z
+export const Fixtures = z
   .looseObject({
     routes: z.array(
       z.looseObject({
@@ -543,33 +549,827 @@ const JSON_FIELDS: Record<string, string[]> = {
   ],
 };
 
-const [as = "gh", ...args] = Bun.argv.slice(2);
-// The environment every child of the stand-in runs with: its own less every DISPATCH_*, ENVOY_*
-// and NATS_* variable (the header). Bun hands a child the environment this process started with
-// unless a spawn names one, so each spawn below names this one; publish reads the run's own
-// listener from its pane.env.
-const childEnv = Object.fromEntries(
-  Object.entries(process.env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
-);
-const run = process.env.SKILL_SCENARIO_RUN;
-if (!run) {
-  console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
-  process.exit(2);
+/** Every variable of `env` but the DISPATCH_*, ENVOY_* and NATS_* ones (the header): the
+ * environment each child of the stand-in runs with. Bun hands a child the environment this
+ * process started with unless a spawn names one, so each spawn here names this one; publish reads
+ * the run's own listener from its pane.env. */
+export function withoutServices(env: Record<string, string | undefined>) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !/^(?:DISPATCH|ENVOY|NATS)_/.test(name))
+  );
 }
-// `--publish <file>` answers no call: it is the publish below, of the envelope the file holds.
-if (as === "--publish") {
-  const [file] = args;
-  if (file === undefined) {
-    console.error("usage: gh-standin.ts --publish <envelope file>");
-    process.exit(2);
+const childEnv = withoutServices(process.env);
+
+export type Fixtures = z.infer<typeof Fixtures>;
+type Route = Fixtures["routes"][number];
+type Answer = z.infer<typeof Reply>;
+type Given = [Flag, string | undefined];
+
+/** A call as gh resolves it (parseCall): its command, its flags as gh read them, what it hands
+ * GitHub, and the request the routes read (the header). */
+export interface Call {
+  command: string;
+  /** Each flag under its long name, with its value or undefined for one that takes none. */
+  given: Given[];
+  /** The flags as a route program reads them, each by its long name: its value, or true for a
+   * flag that takes none (`-bmain` is `--branch: "main"`). */
+  flags: Record<string, string | true>;
+  /** The fields a `--json` call names, which gh prints and no other; undefined with no `--json`. */
+  fields?: string[];
+  filter?: string;
+  /** The contents of each file and of the stdin (`-`) the call hands GitHub, by the name the call
+   * gave, in the order gh read them, and the stdin itself where it was read. */
+  files: Record<string, string>;
+  stdin?: string;
+  /** The body of a `gh pr edit`, `gh pr review` or `gh pr comment`, from `-b/--body` or
+   * `-F/--body-file`. */
+  editBody?: string;
+  reviewBody?: string;
+  commentBody?: string;
+  /** The `-f`/`-F` fields of a `gh api` call, each as gh sends it: a `-F` value typed as gh types
+   * it (true, false, null and an integer as JSON, `@file` the file's text) and a `-f` value a
+   * string. */
+  apiFields: Record<string, unknown>;
+  input?: string;
+  method?: string;
+  endpoint?: string;
+  document?: Document;
+  request: string;
+  /** The query of the request, each parameter by its name, decoded as GitHub reads it (a `+` a
+   * space, `%XX` its byte); a name given twice keeps its last value. A route program reads it. */
+  query: Record<string, string>;
+}
+
+/** What parseCall makes of a call: the call; gh's own refusal before any request, which gh prints
+ * as it stands and exits 1 on; or a request the rig does not model, with what the call's record
+ * holds of it by then. */
+export type Parsed =
+  | { kind: "call"; call: Call }
+  | { kind: "gh"; stderr: string }
+  | { kind: "refused"; request?: string; files: Record<string, string>; stdin?: string };
+
+/** The call `args` (the argv after `gh`) as gh resolves it, with GH_REPO from `env`, reading each
+ * file and the stdin (`-`) it hands GitHub through `read` when gh reads them: after every refusal
+ * gh makes of the arguments themselves, and before the request is resolved. */
+export async function parseCall(
+  args: string[],
+  env: Record<string, string | undefined>,
+  read: (source: string) => Promise<string>
+): Promise<Parsed> {
+  const files: Record<string, string> = {};
+  let stdin: string | undefined;
+  let request: string | undefined;
+  function refuse(): never {
+    throw new Unmodeled("a request the rig does not model");
   }
-  const result = await publish(JSON.parse(readFileSync(file, "utf8")));
-  console.log(JSON.stringify(result));
-  process.exit("status" in result && result.status >= 200 && result.status < 300 ? 0 : 1);
+  const readSource = async (source: string) => {
+    const text = await read(source);
+    if (source === "-") stdin = text;
+    return text;
+  };
+  try {
+    // The call as gh reads it: its command, its positional arguments and its flags.
+    const command =
+      args[0] === "api" || args[0]?.startsWith("-") ? (args[0] ?? "") : args.slice(0, 2).join(" ");
+    const table = FLAGS[command];
+    if (table === undefined) refuse();
+    const positional: string[] = [];
+    const given: Given[] = [];
+    for (let index = command.split(" ").length; index < args.length; index += 1) {
+      const arg = args[index] as string;
+      if (!arg.startsWith("-") || arg === "-") {
+        positional.push(arg);
+        continue;
+      }
+      const equals = arg.startsWith("--") ? arg.indexOf("=") : -1;
+      const name =
+        equals >= 0 ? arg.slice(0, equals) : arg.startsWith("--") ? arg : arg.slice(0, 2);
+      // gh refuses a long flag `gh api` does not have before it makes any request.
+      if (command === "api" && arg.startsWith("--") && !GH_API_FLAGS.includes(name))
+        return { kind: "gh", stderr: `unknown flag: ${name}\n\n${GH_API_USAGE}` };
+      const known = table[name];
+      if (known === undefined) return refuse();
+      if (!known.value) {
+        if (equals >= 0 || (!arg.startsWith("--") && arg.length > 2)) refuse();
+        given.push([known, undefined]);
+        continue;
+      }
+      const attached =
+        equals >= 0
+          ? arg.slice(equals + 1)
+          : !arg.startsWith("--") && arg.length > 2
+            ? arg.slice(2)
+            : undefined;
+      if (attached !== undefined) given.push([known, attached]);
+      else {
+        index += 1;
+        if (index >= args.length) refuse();
+        given.push([known, args[index]]);
+      }
+    }
+    const flagValue = (long: string) => given.find(([f]) => f.long === long)?.[1];
+    const has = (long: string) => given.some(([f]) => f.long === long);
+    const fields = has("--json") ? (flagValue("--json") ?? "").split(",") : undefined;
+    const filter = flagValue("--jq");
+    // gh refuses a field not on its list before it makes any request.
+    const listed = JSON_FIELDS[command];
+    if (fields !== undefined) {
+      if (listed === undefined) refuse();
+      const unknown = fields.find((field) => !listed.includes(field));
+      if (unknown !== undefined)
+        return {
+          kind: "gh",
+          stderr: `Unknown JSON field: ${JSON.stringify(unknown)}\nAvailable fields:\n${listed.map((field) => `  ${field}\n`).join("")}`,
+        };
+    }
+
+    // What the call hands GitHub: a body, a review, fields and an --input.
+    const prEdit = command === "pr edit";
+    const prReview = command === "pr review";
+    const prComment = command === "pr comment";
+    let editBody: string | undefined;
+    let reviewBody: string | undefined;
+    let commentBody: string | undefined;
+    const apiFields: Record<string, unknown> = {};
+    for (const [{ long }, value] of given) {
+      if (value === undefined) continue;
+      if (prEdit && long === "--body") editBody = value;
+      else if (prReview && long === "--body") reviewBody = value;
+      else if (prComment && long === "--body") commentBody = value;
+      else if ((prEdit || prReview || prComment) && long === "--body-file") {
+        files[value] = await readSource(value);
+        if (prEdit) editBody = files[value];
+        else if (prReview) reviewBody = files[value];
+        else commentBody = files[value];
+      } else if (long === "--input") files[value] = await readSource(value);
+      else if (long === "--raw-field" || long === "--field") {
+        const [key = "", ...rest] = value.split("=");
+        const raw = rest.join("=");
+        if (long === "--field" && raw.startsWith("@")) {
+          files[raw.slice(1)] = await readSource(raw.slice(1));
+          apiFields[key] = files[raw.slice(1)] ?? "";
+        } else if (long === "--field" && /^(?:true|false|null|-?\d+)$/.test(raw))
+          apiFields[key] = JSON.parse(raw);
+        else apiFields[key] = raw;
+      }
+    }
+    const input = flagValue("--input");
+    /** The request text of an argument: its whitespace written as \u001f (the header). */
+    const spaced = (arg: string) => arg.replace(/\s/g, "\u001f");
+    /** A field escaped as Go's url.QueryEscape escapes it, which is how gh writes a GET's fields. */
+    const queryEscape = (text: string) =>
+      encodeURIComponent(text)
+        .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
+        .replace(/%20/g, "+");
+    const flagText = (skip: (long: string) => boolean) =>
+      given
+        .filter(([f]) => !skip(f.long))
+        .flatMap(([f, value]) => (value === undefined ? [f.long] : [f.long, spaced(value)]));
+    let method: string | undefined;
+    let endpoint: string | undefined;
+    let document: Document | undefined;
+    if (command === "api") {
+      const [path, ...more] = positional;
+      if (path === undefined || more.length > 0) return refuse();
+      method = (
+        flagValue("--method") ??
+        (Object.keys(apiFields).length > 0 || input !== undefined ? "POST" : "GET")
+      ).toUpperCase();
+      let resolved = path.replace(/^https:\/\/api\.github\.com\//, "").replace(/^\//, "");
+      if (/\{(?:owner|repo|branch)\}/.test(resolved)) {
+        const repo = env.GH_REPO?.split("/").slice(-2);
+        if (repo === undefined || repo.length !== 2 || resolved.includes("{branch}")) refuse();
+        resolved = resolved
+          .replaceAll("{owner}", repo[0] as string)
+          .replaceAll("{repo}", repo[1] as string);
+      }
+      endpoint = resolved;
+      if (endpoint === "graphql") {
+        const { query, ...variables } = apiFields;
+        if (typeof query !== "string" || method !== "POST" || input !== undefined) return refuse();
+        // A query gh-graphql.ts cannot read throws Unmodeled, which refuses the call below.
+        document = parse(query, variables);
+        request = [
+          "gh",
+          "api",
+          method,
+          "graphql",
+          spaced(canonical(document)),
+          ...flagText(
+            (long) => long === "--method" || long === "--raw-field" || long === "--field"
+          ),
+        ].join(" ");
+      } else {
+        // A GET sends its fields as the query, as gh 2.98.0 does (measured in the review of
+        // 76cc2379: `-X GET …/actions/runs -f head_sha=… -f event=pull_request` sends
+        // `GET …/actions/runs?event=pull_request&head_sha=…`): gh adds them to the query the
+        // endpoint names and writes the whole query as Go's url.Values encodes it, every parameter
+        // by name, each escaped as url.QueryEscape escapes it. A GET that also hands over a body
+        // (--input) is not modeled. A REST read gh pages (--paginate) asks for 100 a page where
+        // it names no per_page (measured, 2026-11-19, GH_DEBUG=api: `--paginate
+        // …/pulls/4148/comments` sends `…/pulls/4148/comments?per_page=100`).
+        const queried = method === "GET" && Object.keys(apiFields).length > 0;
+        const paging = method === "GET" && has("--paginate");
+        const [bare = "", named = ""] = endpoint.split(/\?(.*)/s);
+        const pairs: [string, string][] = named
+          .split("&")
+          .filter((pair) => pair !== "")
+          .map((pair): [string, string] => {
+            const [name = "", ...value] = pair.split("=");
+            try {
+              return [
+                decodeURIComponent(name.replace(/\+/g, " ")),
+                decodeURIComponent(value.join("=").replace(/\+/g, " ")),
+              ];
+            } catch {
+              return refuse();
+            }
+          });
+        if (queried) {
+          if (input !== undefined) refuse();
+          pairs.push(
+            ...Object.keys(apiFields).map((key): [string, string] => [key, String(apiFields[key])])
+          );
+        }
+        const perPage = paging && !pairs.some(([name]) => name === "per_page");
+        if (queried)
+          endpoint = `${bare}?${[
+            ...pairs,
+            ...(perPage ? [["per_page", "100"] as [string, string]] : []),
+          ]
+            .map((pair, index) => ({ pair, index }))
+            .sort((a, b) =>
+              a.pair[0] < b.pair[0] ? -1 : a.pair[0] > b.pair[0] ? 1 : a.index - b.index
+            )
+            .map(({ pair: [key, value] }) => `${queryEscape(key)}=${queryEscape(value)}`)
+            .join("&")}`;
+        else if (perPage) endpoint += `${endpoint.includes("?") ? "&" : "?"}per_page=100`;
+        request = [
+          "gh",
+          "api",
+          method,
+          spaced(endpoint),
+          ...flagText(
+            (long) =>
+              long === "--method" || (queried && (long === "--raw-field" || long === "--field"))
+          ),
+        ].join(" ");
+      }
+    } else
+      request = [
+        "gh",
+        ...command.split(" "),
+        ...positional.map(spaced),
+        ...flagText(() => false),
+      ].join(" ");
+    const query: Record<string, string> = {};
+    for (const pair of endpoint?.includes("?")
+      ? endpoint.slice(endpoint.indexOf("?") + 1).split("&")
+      : []) {
+      if (pair === "") continue;
+      const [name = "", ...value] = pair.split("=");
+      try {
+        query[decodeURIComponent(name.replace(/\+/g, " "))] = decodeURIComponent(
+          value.join("=").replace(/\+/g, " ")
+        );
+      } catch {
+        refuse();
+      }
+    }
+    const flags: Record<string, string | true> = Object.fromEntries(
+      given.map(([f, value]) => [f.long, value ?? true])
+    );
+    if (has("--slurp") && (!has("--paginate") || filter !== undefined)) refuse();
+    return {
+      kind: "call",
+      call: {
+        command,
+        given,
+        flags,
+        fields,
+        filter,
+        files,
+        stdin,
+        editBody,
+        reviewBody,
+        commentBody,
+        apiFields,
+        input,
+        method,
+        endpoint,
+        document,
+        request,
+        query,
+      },
+    };
+  } catch (error) {
+    if (error instanceof Unmodeled) return { kind: "refused", request, files, stdin };
+    throw error;
+  }
 }
-/** fixtures.json as Fixtures parses it. A file it refuses ends this process with status 2 and the
- * reason, recording no call: the trouble is the rig's, never the agent's. */
-function readFixtures() {
+
+/** What answer makes of a call: a request the rig does not model, refused by the route it matched
+ * (null where none did); or what the call prints on stdout and stderr and exits with, the
+ * fixtures it leaves (its count, and the body, reviews and comments it kept) and whether it
+ * writes them (`writes`: a read nothing counts leaves the file as it found it), the body it left
+ * the pull request with, the envelope its route publishes once it has answered, and, for a run
+ * `gh run watch` waits on (a `watch` reply, the header), the seconds between its frames. */
+export type Answered =
+  | { refused: true; route: string | null }
+  | {
+      refused: false;
+      route: string;
+      fixtures: Fixtures;
+      writes: boolean;
+      stdout: string;
+      stderr: string;
+      status: number;
+      kept?: string;
+      publish?: unknown;
+      watch?: number;
+    };
+
+/** The `body` of the JSON the call's --input names, where that JSON holds a string one. A file
+ * that is no JSON throws. */
+function inputBody(call: Call): string | undefined {
+  const parsed: unknown = JSON.parse(call.files[call.input as string] ?? "null");
+  return typeof parsed === "object" &&
+    parsed !== null &&
+    "body" in parsed &&
+    typeof parsed.body === "string"
+    ? parsed.body
+    : undefined;
+}
+
+/** The body a call that posts or edits a comment on the pull request sends: `gh pr comment`'s own,
+ * or a REST call's `body` field or the `body` of its --input. */
+function commentText(call: Call): string | undefined {
+  if (call.command === "pr comment") return call.commentBody;
+  if (typeof call.apiFields.body === "string") return call.apiFields.body;
+  if (call.input === undefined) return undefined;
+  try {
+    return inputBody(call);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `stdout` as GitHub's next read would answer it, once this call edited the pull request's body:
+ * an answer that is an object with a `body` answers the new one. */
+function withBody(stdout: unknown, edit: string): unknown {
+  return typeof stdout === "object" && stdout !== null && "body" in stdout
+    ? { ...stdout, body: edit }
+    : stdout;
+}
+
+/** The call answered from `fixtures` at the moment `now`: from the first route whose regex
+ * matches its request, of the routes not yet spent. */
+export function answer(call: Call, fixtures: Fixtures, now: Date): Answered {
+  const routes = fixtures.routes.filter(
+    (candidate) => candidate.spends === undefined || (candidate.answered ?? 0) < candidate.spends
+  );
+  const route = routes.find((candidate) => new RegExp(candidate.match, "s").test(call.request));
+  // A call no route models is refused by name rather than answered with a GitHub error it might
+  // never have met: the rig has no answer for it, and a run that met one is the rig's to fix.
+  if (route === undefined) return { refused: true, route: null };
+  try {
+    return answered(call, fixtures, route, now);
+  } catch (error) {
+    if (error instanceof Unmodeled) return { refused: true, route: route.match };
+    throw error;
+  }
+}
+
+/** answer, once the call's route is found; a call that route does not model throws Unmodeled. */
+function answered(call: Call, fixtures: Fixtures, matched: Route, now: Date): Answered {
+  function refuse(): never {
+    throw new Unmodeled("a request the route does not model");
+  }
+  const has = (long: string) => long in call.flags;
+  /** The time GitHub stamps on what this call sends, to the second. */
+  const stamp = now.toISOString().replace(/\.\d+Z$/, "Z");
+  /** The text each named group of the route's match took in this call, which `$<name>` in the
+   * route's answer stands for. */
+  const groups = new RegExp(matched.match, "s").exec(call.request)?.groups ?? {};
+  // The answer this call takes: the reply its route's sequence has reached — the first call takes
+  // the first reply, a call past the end takes the last again — or the route's own answer. A route
+  // that follows another reaches its sequence by that route's answered calls rather than its own,
+  // so the state it answers turns on the call the role makes, not on the reads it makes.
+  const replies = matched.replies ?? [];
+  const followed =
+    matched.follows === undefined
+      ? matched
+      : fixtures.routes.find((candidate) => candidate.match === matched.follows);
+  const answeredBy = (match: string | undefined) =>
+    fixtures.routes.find((candidate) => candidate.match === match)?.answered ?? 0;
+  /** The reviews the role has sent, their inline comments, in the order it sent them, and the ids
+   * of the reviews whose body it updated. */
+  const keptReviews: Kept = {
+    reviews: fixtures.reviews ?? [],
+    comments: fixtures.review_comments ?? [],
+    edited: fixtures.review_edits ?? [],
+  };
+  const sequenced = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? matched;
+  if (sequenced.unmodeled) refuse();
+  /** Whether the role has posted a comment on the pull request, which the stand-in does not keep. */
+  const commented = matched.comments !== undefined && answeredBy(matched.comments) > 0;
+  const read = keptRead(
+    matched.reviews,
+    keptReviews,
+    { id: groups.id, fields: call.fields, commented },
+    sequenced
+  );
+  if (read === null) refuse();
+  /** The change this call makes to the review its `id` group names, through a route that carries
+   * `review_edit` (review-keep.ts): the review as GitHub answers the change, or GitHub's refusal. */
+  const changed =
+    matched.review_edit === undefined
+      ? undefined
+      : changedReview(matched.review_edit, keptReviews, {
+          id: groups.id,
+          input: call.input === undefined ? undefined : (call.files[call.input] ?? ""),
+          fields: call.apiFields,
+        });
+  if (changed === null) refuse();
+  /** The review this call changed, as the next read answers it, and what the call answers. */
+  const changedOne = changed !== undefined && "review" in changed ? changed.review : undefined;
+  const changeAnswer =
+    changed === undefined || "github" in changed ? changed : { stdout: changed.review };
+  // The comments the role posted on the pull request, kept (INFRA-1303, D9: e-head-3 of the batch
+  // of record at 9c3bd9df read back the comment it had just posted, and the rig had kept none),
+  // and the kept list this call leaves where it changed it. One comment is kept: a second would
+  // need an id and a URL of its own, which the route of `gh pr comment` does not answer, so it is
+  // refused as unmodeled. A read of a comment the role did not post answers GitHub's 404
+  // (measured on cybermonklabs/legion, github-answers/issue-comment-404); an edit of one is not
+  // modeled, since GitHub's answer to that write is not measured.
+  const keptComments = fixtures.issue_comments ?? [];
+  let comments: z.infer<typeof IssueComment>[] | undefined;
+  let commentAnswer: Answer | undefined;
+  if (matched.issue_comment !== undefined) {
+    const template = fixtures.comment_template;
+    if (template === undefined) return refuse();
+    const namedComment = keptComments.find((comment) => String(comment.id) === groups.id);
+    const text = commentText(call);
+    switch (matched.issue_comment) {
+      case "post": {
+        if (text === undefined || keptComments.length > 0) refuse();
+        const posted = { ...template, body: text, created_at: stamp, updated_at: stamp };
+        comments = [posted];
+        // `gh pr comment` prints the comment's URL, its route's own answer; the REST POST answers
+        // the comment, as GitHub's 201 does.
+        if (call.command !== "pr comment") commentAnswer = { stdout: posted };
+        break;
+      }
+      case "read":
+        commentAnswer =
+          namedComment === undefined ? { github: "issue-comment-404" } : { stdout: namedComment };
+        break;
+      case "edit": {
+        if (namedComment === undefined || text === undefined) return refuse();
+        const edited = { ...namedComment, body: text, updated_at: stamp };
+        comments = keptComments.map((comment) =>
+          comment.id === namedComment.id ? edited : comment
+        );
+        commentAnswer = { stdout: edited };
+        break;
+      }
+      case "list":
+        commentAnswer = { stdout: keptComments };
+        break;
+    }
+  }
+  const reply: Answer = commentAnswer ?? changeAnswer ?? read ?? sequenced;
+  /** The seconds between the frames of a `watch` reply: the call's --interval, else gh's default
+   * for the command, 3 for `gh run watch` (pkg/cmd/run/watch/watch.go:21) and 10 for `gh pr
+   * checks --watch` (pkg/cmd/pr/checks/checks.go:21), at v2.98.0. One that is not a positive whole
+   * number (gh would print its frames with no pause between them, or refuse it) is a state the
+   * rig does not model. */
+  const interval = Number(call.flags["--interval"] ?? (call.command === "pr checks" ? "10" : "3"));
+  if (reply.watch === true && !(Number.isInteger(interval) && interval > 0)) refuse();
+  /** The review this call sends through a route that keeps one (review-keep.ts). */
+  const sent =
+    matched.review === undefined
+      ? undefined
+      : sentReview(
+          matched.review,
+          {
+            prReview: call.command === "pr review",
+            events: ["--approve", "--request-changes", "--comment"].filter(has),
+            body: call.reviewBody,
+            input: call.input === undefined ? undefined : (call.files[call.input] ?? ""),
+            fields: call.apiFields,
+          },
+          keptReviews,
+          stamp
+        );
+  if (sent === null) refuse();
+
+  // What the call prints, decided before the write main makes of the fixtures, so every refusal
+  // holds the lock. A route that keeps the review and writes no answer of its own answers the
+  // review, as GitHub's POST does.
+  let output: unknown =
+    sent !== undefined && reply.stdout === undefined ? sent.review : (reply.stdout ?? "");
+  // `$<name>` in an answer's stdout or stderr stands for the text the match's group took: the
+  // commit a call named, for the combined status of a commit GitHub does not hold, say.
+  const named = (text: string, inJson: boolean) =>
+    text.replace(/\$<(\w+)>/g, (whole, name: string) => {
+      const took = groups[name];
+      if (took === undefined) return whole;
+      return inJson ? JSON.stringify(took).slice(1, -1) : took;
+    });
+  if (typeof output === "string") output = named(output, false);
+  else if (typeof output === "object" && output !== null)
+    output = JSON.parse(named(JSON.stringify(output), true));
+  let stderr = reply.stderr === undefined ? undefined : named(reply.stderr, false);
+  let status = reply.exit ?? 0;
+  // An error GitHub answers, as gh 2.98.0 printed it: the body GitHub sent on stdout, byte for
+  // byte, and gh's `gh: <message> (HTTP <status>)` on stderr, exit 1. Each answer is a pair of
+  // files under github-answers/, <name>.stdout and <name>.stderr, measured on 2026-11-18 with gh
+  // 2.98.0 against api.github.com on cybermonklabs/legion; github-answers/README.txt names the
+  // request each one answered, and the one answer stated rather than measured (review-dismiss-422,
+  // a write the rig's read-only token cannot make) and where it is stated from. The answers that
+  // name a commit were measured for 1111…1111, which stands for the commit the route's `sha`
+  // group took.
+  if (reply.github !== undefined) {
+    const measured = (part: "stdout" | "stderr") => {
+      const text = readFileSync(
+        `${import.meta.dir}/github-answers/${reply.github}.${part}`,
+        "utf8"
+      );
+      return reply.sha === undefined ? text : text.replaceAll(PROBE_SHA, groups[reply.sha] ?? "");
+    };
+    output = measured("stdout");
+    stderr = measured("stderr");
+    status = 1;
+  }
+  if (matched.graphql === true) {
+    const world = output as { graphql?: unknown; $refs?: Record<string, unknown> };
+    if (
+      call.document === undefined ||
+      typeof world !== "object" ||
+      world === null ||
+      world.graphql === undefined
+    )
+      return refuse();
+    // A request GitHub refuses before it reads anything (gh-graphql.ts) answers its errors alone,
+    // whatever the world holds (measured, github-answers/graphql-*).
+    const refused = call.document.errors.length > 0;
+    let projected: { data?: unknown; errors: unknown[] } = { errors: call.document.errors };
+    // A selection the world cannot state throws Unmodeled, which refuses the call.
+    if (!refused)
+      projected = project(call.document, world.graphql, world.$refs ?? {}, (marker) => {
+        if (marker.$keep !== "threads")
+          throw new Unmodeled(`no keep named ${String(marker.$keep)}`);
+        if (answeredBy(String(marker.until)) > 0)
+          throw new Unmodeled("a line comment the stand-in does not keep");
+        return threads(keptReviews.comments);
+      });
+    output = refused
+      ? { errors: projected.errors }
+      : projected.errors.length > 0
+        ? { data: projected.data, errors: projected.errors }
+        : { data: projected.data };
+    if (projected.errors.length > 0) {
+      if (call.filter !== undefined) refuse();
+      stderr = `gh: ${(projected.errors[0] as { message?: unknown }).message}\n`;
+      status = 1;
+    }
+  }
+  // A program reads the world's own answer; GitHub's measured error for a state the world does
+  // not hold yet (an attempt before the re-run) is answered as it stands.
+  // A REST read gh pages (--paginate) gets every page the route's program gives, as gh follows
+  // GitHub's `Link: rel="next"` from page to page: GitHub links the next page of a list that
+  // states its count (`total_count`) while the pages so far hold fewer, and of a bare array while
+  // the page was full and another follows. A route with no program answers its one page. A
+  // program the rig writes names a function of jq/programs.jq beside this file (`include
+  // "programs"; <name>`), which jq finds on its library path.
+  let pages: unknown[] | undefined;
+  if (matched.program !== undefined && reply.github === undefined) {
+    const world = output;
+    const program = matched.program;
+    const run = (asked: Record<string, string>): unknown => {
+      const ran = Bun.spawnSync(
+        [
+          "jq",
+          "-L",
+          `${import.meta.dir}/jq`,
+          "-c",
+          "--argjson",
+          "flags",
+          JSON.stringify(call.flags),
+          "--argjson",
+          "query",
+          JSON.stringify(asked),
+          "--argjson",
+          "json",
+          String(call.fields !== undefined),
+          "--argjson",
+          "now",
+          String(Math.floor(now.getTime() / 1000)),
+          program,
+        ],
+        { env: childEnv, stdin: new TextEncoder().encode(JSON.stringify(world)) }
+      );
+      if (ran.exitCode !== 0) refuse();
+      return JSON.parse(ran.stdout.toString());
+    };
+    output = run(call.query);
+    if (
+      call.command === "api" &&
+      call.method === "GET" &&
+      call.endpoint !== "graphql" &&
+      has("--paginate")
+    ) {
+      /** The list of a page: the page itself, or the one list beside the count of an object. */
+      const listOf = (page: unknown): unknown[] | undefined => {
+        if (Array.isArray(page)) return page;
+        if (typeof page !== "object" || page === null || !("total_count" in page)) return undefined;
+        const lists = Object.values(page).filter(Array.isArray);
+        return lists.length === 1 ? lists[0] : undefined;
+      };
+      const per = Number(call.query.per_page);
+      let number = Number(call.query.page ?? "1");
+      pages = [output];
+      for (;;) {
+        const last = pages[pages.length - 1];
+        const list = listOf(last);
+        if (list === undefined || !(per > 0)) break;
+        const more = Array.isArray(last)
+          ? list.length === per
+          : number * per < Number((last as { total_count: unknown }).total_count);
+        if (!more) break;
+        number += 1;
+        const next = run({ ...call.query, page: String(number) });
+        if (Array.isArray(next) && next.length === 0) break;
+        pages.push(next);
+      }
+    }
+  }
+  const fields = call.fields;
+  if (fields !== undefined && status === 0) {
+    // A route that answers text, or a field its answer does not hold, is not what --json reads; a
+    // call GitHub refuses prints its error, and no fields.
+    const records = Array.isArray(output) ? output : [output];
+    if (
+      records.some(
+        (record) =>
+          typeof record !== "object" ||
+          record === null ||
+          Array.isArray(record) ||
+          fields.some((field) => !(field in record))
+      )
+    )
+      refuse();
+    const picked = (record: Record<string, unknown>) =>
+      Object.fromEntries([...new Set(fields)].sort().map((field) => [field, record[field]]));
+    output = Array.isArray(output) ? output.map(picked) : picked(output as Record<string, unknown>);
+  }
+  // `--slurp` prints every page in one list, and ends paging.
+  if (has("--slurp")) {
+    output = pages ?? [output];
+    pages = undefined;
+  }
+
+  // The count of calls each route has answered outlives this call in fixtures.json, with the body
+  // where this call edited the pull request's, the review it sent with its inline comments, and
+  // the review it changed: main's one read-modify-write of the file carries them all.
+  const prPatch =
+    call.method === "PATCH" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(call.endpoint ?? "");
+  let edit = call.editBody;
+  if (prPatch && typeof call.apiFields.body === "string") edit = call.apiFields.body;
+  if (prPatch && call.input !== undefined) edit = inputBody(call) ?? edit;
+  const edited = fixtures.routes.map((candidate) => ({
+    ...candidate,
+    answered:
+      candidate === matched ||
+      (matched.counts_as !== undefined && candidate.match === matched.counts_as)
+        ? (candidate.answered ?? 0) + 1
+        : candidate.answered,
+    ...(edit === undefined
+      ? {}
+      : {
+          stdout: withBody(candidate.stdout, edit),
+          replies: candidate.replies?.map((one) => ({
+            ...one,
+            stdout: withBody(one.stdout, edit),
+          })),
+          settled:
+            candidate.settled === undefined
+              ? undefined
+              : { ...candidate.settled, stdout: withBody(candidate.settled.stdout, edit) },
+        }),
+  }));
+  const written: Fixtures = {
+    ...fixtures,
+    routes: edited,
+    ...(sent === undefined
+      ? {}
+      : {
+          reviews: [...keptReviews.reviews, sent.review],
+          review_comments: [...keptReviews.comments, ...sent.comments],
+        }),
+    ...(changedOne === undefined
+      ? {}
+      : {
+          reviews: keptReviews.reviews.map((review) =>
+            review.id === changedOne.id ? changedOne : review
+          ),
+          ...(matched.review_edit === "update"
+            ? { review_edits: [...(keptReviews.edited ?? []), changedOne.id] }
+            : {}),
+        }),
+    ...(comments === undefined ? {} : { issue_comments: comments }),
+  };
+  /** Whether this call changes what a later call or reader sees, and so writes fixtures.json: it
+   * sends something the stand-in keeps (a body, a review, a change of one, a comment), or it moves
+   * a count something reads — the count of a route that serves its own replies in turn or spends
+   * itself, of a route another route names (its `follows`, its `counts_as`, its `comments`, or
+   * the `until` of a GraphQL keep in its answer), or of the route it counts as. Any other call is
+   * a read that leaves the file as it found it: before this every call wrote the file back, in
+   * the stand-in's own form, so a row that only read a world rows share still changed what a
+   * later row read of it. The names are read from those fields alone, never from the file's text:
+   * two routes may share a match (world h's attempt-1 log read stands ahead of the log read of
+   * every attempt, with the same match), and a match that appears twice in the file is no route
+   * that names it. */
+  const namedRoutes = new Set<string>();
+  const namesOfKeeps = (value: unknown): void => {
+    if (Array.isArray(value)) for (const item of value) namesOfKeeps(item);
+    else if (typeof value === "object" && value !== null) {
+      const marker = value as Record<string, unknown>;
+      if ("$keep" in marker && typeof marker.until === "string") namedRoutes.add(marker.until);
+      for (const item of Object.values(marker)) namesOfKeeps(item);
+    }
+  };
+  for (const candidate of fixtures.routes) {
+    for (const name of [candidate.follows, candidate.counts_as, candidate.comments])
+      if (name !== undefined) namedRoutes.add(name);
+    namesOfKeeps([candidate.stdout, candidate.replies, candidate.settled]);
+  }
+  const writes =
+    edit !== undefined ||
+    sent !== undefined ||
+    changedOne !== undefined ||
+    comments !== undefined ||
+    (matched.replies !== undefined && matched.follows === undefined) ||
+    matched.spends !== undefined ||
+    matched.counts_as !== undefined ||
+    namedRoutes.has(matched.match);
+  /** The fixtures this call leaves: what it wrote, or the file as it found it. */
+  const left = writes ? written : fixtures;
+  // The pages of a paged read print as gh 2.98.0 prints them (measured, 2026-11-19, two pages of
+  // cybermonklabs/legion: `pulls/4148/comments?per_page=3` printed one array of the six,
+  // `commits/<sha>/check-runs?…&per_page=1` the two objects one after the other, nothing
+  // between); a `--jq` filter runs over each page, its outputs one after another. A filter that
+  // fails prints what it printed so far and its error, exit 1.
+  const printed = pages ?? [output];
+  let text = pages?.every(Array.isArray)
+    ? JSON.stringify(pages.flat())
+    : printed.map((page) => (typeof page === "string" ? page : JSON.stringify(page))).join("");
+  const filtered = call.filter !== undefined && status === 0;
+  if (filtered) {
+    text = "";
+    for (const page of printed) {
+      const jq = Bun.spawnSync(["jq", "-r", call.filter as string], {
+        env: childEnv,
+        stdin: new TextEncoder().encode(typeof page === "string" ? page : JSON.stringify(page)),
+      });
+      text += jq.stdout.toString();
+      if (jq.exitCode !== 0)
+        return {
+          refused: false,
+          route: matched.match,
+          fixtures: left,
+          writes,
+          stdout: text,
+          stderr: jq.stderr.toString(),
+          status: 1,
+          kept: edit,
+        };
+    }
+  }
+  // `gh api` prints the body GitHub sent as it stands, with no newline after it, whether the
+  // request succeeded or not, and a `--jq` filter's output as jq ends it (measured); every other
+  // command ends what it prints with a newline.
+  return {
+    refused: false,
+    route: matched.match,
+    fixtures: left,
+    writes,
+    stdout:
+      text === "" || (call.command === "api" && !filtered) || text.endsWith("\n")
+        ? text
+        : `${text}\n`,
+    stderr: stderr ?? "",
+    status,
+    kept: edit,
+    publish: matched.publish,
+    ...(reply.watch === true ? { watch: interval } : {}),
+  };
+}
+
+/** fixtures.json of the run as Fixtures parses it. A file it refuses ends this process with status
+ * 2 and the reason, recording no call: the trouble is the rig's, never the agent's. */
+function readFixtures(run: string): Fixtures {
   const parsed = Fixtures.safeParse(JSON.parse(readFileSync(`${run}/fixtures.json`, "utf8")));
   if (!parsed.success) {
     console.error(`gh-standin: ${run}/fixtures.json is refused:\n${z.prettifyError(parsed.error)}`);
@@ -577,9 +1377,10 @@ function readFixtures() {
   }
   return parsed.data;
 }
+
 /** Takes the run's fixtures lock, an exclusive flock(2) on <run>/fixtures.lock, and answers the
  * descriptor that holds it: closing it, or this process ending, releases the lock. */
-function lockFixtures(): number {
+function lockFixtures(run: string): number {
   const lock = openSync(`${run}/fixtures.lock`, "a");
   const flock = Bun.spawnSync(["flock", "--exclusive", "0"], {
     env: childEnv,
@@ -592,306 +1393,10 @@ function lockFixtures(): number {
   }
   return lock;
 }
-if (as === "--check") {
-  readFixtures();
-  process.exit(0);
-}
-const at = new Date().toISOString();
 
-let stdin: string | undefined;
-const readStdin = async () => {
-  stdin ??= await new Response(Bun.stdin.stream()).text();
-  return stdin;
-};
-const files: Record<string, string> = {};
-const readSource = async (source: string) =>
-  source === "-" ? readStdin() : readFileSync(source, "utf8");
-/** The request the routes read (the header), once the call is resolved as gh resolves it; while
- * it is undefined, the call is one the stand-in refuses before any route. */
-let request: string | undefined;
-let lock: number | undefined;
-let route: z.infer<typeof Fixtures>["routes"][number] | undefined;
-/** The body this call left the pull request with, once the routes serve it. */
-let kept: string | undefined;
-/** What became of the settlement a route publishes, where it names one. */
-type Published = { status: number; body: string } | { error: string };
-let published: Published | undefined;
-/** Records the call with the status it exits with, or with none (`null`) for a call that waits
- * until it is killed (a `watch` reply), so the record is written however the call ends;
- * `unmodeled` marks a request the rig does not model, which the scorer takes for a rig error. */
-function record(status: number | null, unmodeled: boolean) {
-  appendFileSync(
-    `${run}/calls.jsonl`,
-    `${JSON.stringify({ at, as, argv: args, request, files, stdin, route: route?.match ?? null, ...(unmodeled ? { unmodeled: true } : {}), body: kept, published, exit: status })}\n`
-  );
-}
-/** Records the call with the status it exits with, then exits. */
-function exit(status: number, unmodeled: boolean): never {
-  record(status, unmodeled);
-  process.exit(status);
-}
-/** Refuses this call as a request the rig does not model, releasing the fixtures lock where it is
- * held, and records it so. */
-function refuse(): never {
-  if (lock !== undefined) closeSync(lock);
-  console.error(
-    as === "gh"
-      ? `rig: request not modeled: gh ${args.join(" ")}`
-      : `unknown command: ${args.join(" ")}`
-  );
-  exit(1, true);
-}
-if (as !== "gh") refuse();
-
-// The call as gh reads it: its command, its positional arguments and its flags.
-const command =
-  args[0] === "api" || args[0]?.startsWith("-") ? (args[0] ?? "") : args.slice(0, 2).join(" ");
-const table = FLAGS[command];
-if (table === undefined) refuse();
-const positional: string[] = [];
-const given: [Flag, string | undefined][] = [];
-for (let index = command.split(" ").length; index < args.length; index += 1) {
-  const arg = args[index] as string;
-  if (!arg.startsWith("-") || arg === "-") {
-    positional.push(arg);
-    continue;
-  }
-  const equals = arg.startsWith("--") ? arg.indexOf("=") : -1;
-  const name = equals >= 0 ? arg.slice(0, equals) : arg.startsWith("--") ? arg : arg.slice(0, 2);
-  // gh refuses a long flag `gh api` does not have before it makes any request.
-  if (command === "api" && arg.startsWith("--") && !GH_API_FLAGS.includes(name)) {
-    process.stderr.write(`unknown flag: ${name}\n\n${GH_API_USAGE}`);
-    exit(1, false);
-  }
-  const known = table[name];
-  if (known === undefined) refuse();
-  if (!known.value) {
-    if (equals >= 0 || (!arg.startsWith("--") && arg.length > 2)) refuse();
-    given.push([known, undefined]);
-    continue;
-  }
-  const attached =
-    equals >= 0
-      ? arg.slice(equals + 1)
-      : !arg.startsWith("--") && arg.length > 2
-        ? arg.slice(2)
-        : undefined;
-  if (attached !== undefined) given.push([known, attached]);
-  else {
-    index += 1;
-    if (index >= args.length) refuse();
-    given.push([known, args[index]]);
-  }
-}
-const flagValue = (long: string) => given.find(([f]) => f.long === long)?.[1];
-const has = (long: string) => given.some(([f]) => f.long === long);
-/** The fields a `--json` call names, which gh prints and no other; undefined with no `--json`. */
-const fields = has("--json") ? (flagValue("--json") ?? "").split(",") : undefined;
-const filter = flagValue("--jq");
-// gh refuses a field not on its list before it makes any request.
-const listed = JSON_FIELDS[command];
-if (fields !== undefined) {
-  if (listed === undefined) refuse();
-  const unknown = fields.find((field) => !listed.includes(field));
-  if (unknown !== undefined) {
-    process.stderr.write(
-      `Unknown JSON field: ${JSON.stringify(unknown)}\nAvailable fields:\n${listed.map((field) => `  ${field}\n`).join("")}`
-    );
-    exit(1, false);
-  }
-}
-
-// What the call hands GitHub: a body, a review, fields and an --input.
-const prEdit = command === "pr edit";
-const prReview = command === "pr review";
-const prComment = command === "pr comment";
-let body: string | undefined;
-/** The `-f`/`-F` fields of a `gh api` call, each as gh sends it: a `-F` value typed as gh types it
- * (true, false, null and an integer as JSON, `@file` the file's text) and a `-f` value a string. */
-const apiFields: Record<string, unknown> = {};
-/** The body of a `gh pr review`, from `-b/--body` or `-F/--body-file`. */
-let reviewBody: string | undefined;
-/** The body of a `gh pr comment`, from `-b/--body` or `-F/--body-file`. */
-let commentBody: string | undefined;
-for (const [{ long }, value] of given) {
-  if (value === undefined) continue;
-  if (prEdit && long === "--body") body = value;
-  else if (prReview && long === "--body") reviewBody = value;
-  else if (prComment && long === "--body") commentBody = value;
-  else if ((prEdit || prReview || prComment) && long === "--body-file") {
-    files[value] = await readSource(value);
-    if (prEdit) body = files[value];
-    else if (prReview) reviewBody = files[value];
-    else commentBody = files[value];
-  } else if (long === "--input") files[value] = await readSource(value);
-  else if (long === "--raw-field" || long === "--field") {
-    const [key = "", ...rest] = value.split("=");
-    const raw = rest.join("=");
-    if (long === "--field" && raw.startsWith("@")) {
-      files[raw.slice(1)] = await readSource(raw.slice(1));
-      apiFields[key] = files[raw.slice(1)] ?? "";
-    } else if (long === "--field" && /^(?:true|false|null|-?\d+)$/.test(raw))
-      apiFields[key] = JSON.parse(raw);
-    else apiFields[key] = raw;
-  }
-}
-const input = flagValue("--input");
-/** The request text of an argument: its whitespace written as \u001f (the header). */
-const spaced = (arg: string) => arg.replace(/\s/g, "\u001f");
-/** A field escaped as Go's url.QueryEscape escapes it, which is how gh writes a GET's fields. */
-const queryEscape = (text: string) =>
-  encodeURIComponent(text)
-    .replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)
-    .replace(/%20/g, "+");
-const flagText = (skip: (long: string) => boolean) =>
-  given
-    .filter(([f]) => !skip(f.long))
-    .flatMap(([f, value]) => (value === undefined ? [f.long] : [f.long, spaced(value)]));
-let method: string | undefined;
-let endpoint: string | undefined;
-let document: Document | undefined;
-if (command === "api") {
-  const [path, ...more] = positional;
-  if (path === undefined || more.length > 0) refuse();
-  method = (
-    flagValue("--method") ??
-    (Object.keys(apiFields).length > 0 || input !== undefined ? "POST" : "GET")
-  ).toUpperCase();
-  let resolved = path.replace(/^https:\/\/api\.github\.com\//, "").replace(/^\//, "");
-  if (/\{(?:owner|repo|branch)\}/.test(resolved)) {
-    const repo = process.env.GH_REPO?.split("/").slice(-2);
-    if (repo === undefined || repo.length !== 2 || resolved.includes("{branch}")) refuse();
-    resolved = resolved
-      .replaceAll("{owner}", repo[0] as string)
-      .replaceAll("{repo}", repo[1] as string);
-  }
-  endpoint = resolved;
-  if (endpoint === "graphql") {
-    const { query, ...variables } = apiFields;
-    if (typeof query !== "string" || method !== "POST" || input !== undefined) refuse();
-    try {
-      document = parse(query, variables);
-    } catch (error) {
-      if (error instanceof Unmodeled) refuse();
-      throw error;
-    }
-    request = [
-      "gh",
-      "api",
-      method,
-      "graphql",
-      spaced(canonical(document)),
-      ...flagText((long) => long === "--method" || long === "--raw-field" || long === "--field"),
-    ].join(" ");
-  } else {
-    // A GET sends its fields as the query, as gh 2.98.0 does (measured in the review of
-    // 76cc2379: `-X GET …/actions/runs -f head_sha=… -f event=pull_request` sends
-    // `GET …/actions/runs?event=pull_request&head_sha=…`): gh adds them to the query the
-    // endpoint names and writes the whole query as Go's url.Values encodes it, every parameter by
-    // name, each escaped as url.QueryEscape escapes it. A GET that also hands over a body
-    // (--input) is not modeled. A REST read gh pages (--paginate) asks for 100 a page where it
-    // names no per_page (measured, 2026-11-19, GH_DEBUG=api: `--paginate …/pulls/4148/comments`
-    // sends `…/pulls/4148/comments?per_page=100`).
-    const queried = method === "GET" && Object.keys(apiFields).length > 0;
-    const paging = method === "GET" && has("--paginate");
-    const [bare = "", named = ""] = endpoint.split(/\?(.*)/s);
-    const pairs: [string, string][] = named
-      .split("&")
-      .filter((pair) => pair !== "")
-      .map((pair): [string, string] => {
-        const [name = "", ...value] = pair.split("=");
-        try {
-          return [
-            decodeURIComponent(name.replace(/\+/g, " ")),
-            decodeURIComponent(value.join("=").replace(/\+/g, " ")),
-          ];
-        } catch {
-          return refuse();
-        }
-      });
-    if (queried) {
-      if (input !== undefined) refuse();
-      pairs.push(
-        ...Object.keys(apiFields).map((key): [string, string] => [key, String(apiFields[key])])
-      );
-    }
-    const perPage = paging && !pairs.some(([name]) => name === "per_page");
-    if (queried)
-      endpoint = `${bare}?${[
-        ...pairs,
-        ...(perPage ? [["per_page", "100"] as [string, string]] : []),
-      ]
-        .map((pair, index) => ({ pair, index }))
-        .sort((a, b) =>
-          a.pair[0] < b.pair[0] ? -1 : a.pair[0] > b.pair[0] ? 1 : a.index - b.index
-        )
-        .map(({ pair: [key, value] }) => `${queryEscape(key)}=${queryEscape(value)}`)
-        .join("&")}`;
-    else if (perPage) endpoint += `${endpoint.includes("?") ? "&" : "?"}per_page=100`;
-    request = [
-      "gh",
-      "api",
-      method,
-      spaced(endpoint),
-      ...flagText(
-        (long) => long === "--method" || (queried && (long === "--raw-field" || long === "--field"))
-      ),
-    ].join(" ");
-  }
-} else
-  request = ["gh", ...command.split(" "), ...positional.map(spaced), ...flagText(() => false)].join(
-    " "
-  );
-/** The query of the call's request, each parameter by its name, decoded as GitHub reads it (a `+`
- * a space, `%XX` its byte); a name given twice keeps its last value. A route program reads it. */
-const query: Record<string, string> = {};
-for (const pair of endpoint?.includes("?")
-  ? endpoint.slice(endpoint.indexOf("?") + 1).split("&")
-  : []) {
-  if (pair === "") continue;
-  const [name = "", ...value] = pair.split("=");
-  try {
-    query[decodeURIComponent(name.replace(/\+/g, " "))] = decodeURIComponent(
-      value.join("=").replace(/\+/g, " ")
-    );
-  } catch {
-    refuse();
-  }
-}
-/** The call's flags as gh read them, each by its long name: its value, or true for a flag that
- * takes none (`-bmain` is `--branch: "main"`). A route program reads them, never the raw argv. */
-const flags: Record<string, string | true> = Object.fromEntries(
-  given.map(([f, value]) => [f.long, value ?? true])
-);
-if (has("--slurp") && (!has("--paginate") || filter !== undefined)) refuse();
-
-// The call holds the run's fixtures lock from its read of fixtures.json to its write of what it
-// changed there, below, and no longer: the answer it prints and the settlement it publishes read
-// nothing of the file. The arguments, and any stdin they name, are read before the lock is taken,
-// so a call whose stdin never closes holds no other call up.
-lock = lockFixtures();
-const fixtures = readFixtures();
-/** The routes this call can match: a route that has answered its `spends` calls is spent, and the
- * call falls through to the next route whose pattern matches it. */
-const routes = fixtures.routes.filter(
-  (candidate) => candidate.spends === undefined || (candidate.answered ?? 0) < candidate.spends
-);
-const asked = request;
-route = routes.find((candidate) => new RegExp(candidate.match, "s").test(asked));
-// A call no route models is refused by name rather than answered with a GitHub error it might
-// never have met: the rig has no answer for it, and a run that met one is the rig's to fix.
-if (route === undefined) refuse();
-const matched = route;
-/** `stdout` as GitHub's next read would answer it, once this call edited the pull request's body:
- * an answer that is an object with a `body` answers the new one. */
-function withBody(stdout: unknown, edit: string): unknown {
-  return typeof stdout === "object" && stdout !== null && "body" in stdout
-    ? { ...stdout, body: edit }
-    : stdout;
-}
 /** The value rig.sh gave the run's agent for `name`: the last line naming it in <run>/pane.env,
  * the last being the one `env -i` takes (launch), or undefined where the file names none. */
-function rigValue(name: string): string | undefined {
+function rigValue(run: string, name: string): string | undefined {
   let pane: string;
   try {
     pane = readFileSync(`${run}/pane.env`, "utf8");
@@ -901,6 +1406,9 @@ function rigValue(name: string): string | undefined {
   const line = pane.split("\n").findLast((candidate) => candidate.startsWith(`${name}=`));
   return line?.slice(name.length + 1);
 }
+
+/** What became of the settlement a route publishes, where it names one. */
+type Published = { status: number; body: string } | { error: string };
 /** Publishes the envelope a route names, as the settlement GitHub's checks would raise: a POST of
  * what the fixture wrote, nothing of it filled in here, to the run's own listener
  * (<ENVOY_URL>/v1/messages/publish, with the bearer the file ENVOY_TOKEN_FILE names, both as
@@ -909,9 +1417,9 @@ function rigValue(name: string): string | undefined {
  * as the rig's other probes are (rig.sh's pg_sql and nats_ready): a listener that takes the
  * request and never answers would otherwise hold the agent's own `gh` call until the run's
  * timeout, and the abort lands in the catch below as the call's `published.error`. */
-async function publish(envelope: unknown): Promise<Published> {
-  const url = rigValue("ENVOY_URL");
-  const tokenFile = rigValue("ENVOY_TOKEN_FILE");
+async function publish(run: string, envelope: unknown): Promise<Published> {
+  const url = rigValue(run, "ENVOY_URL");
+  const tokenFile = rigValue(run, "ENVOY_TOKEN_FILE");
   if (!url || !tokenFile)
     return { error: `${run}/pane.env names no ENVOY_URL or ENVOY_TOKEN_FILE` };
   try {
@@ -927,450 +1435,128 @@ async function publish(envelope: unknown): Promise<Published> {
     return { error: error instanceof Error ? error.message : String(error) };
   }
 }
-/** The text each named group of the route's match took in this call, which `$<name>` in the
- * route's stderr stands for. */
-const groups = new RegExp(matched.match, "s").exec(asked)?.groups ?? {};
-/** The answer this call takes: the reply its route's sequence has reached — the first call takes
- * the first reply, a call past the end takes the last again — or the route's own answer. A route
- * that follows another reaches its sequence by that route's answered calls rather than its own, so
- * the state it answers turns on the call the role makes, not on the reads it makes. */
-const replies = matched.replies ?? [];
-const followed =
-  matched.follows === undefined
-    ? matched
-    : fixtures.routes.find((candidate) => candidate.match === matched.follows);
-const answeredBy = (match: string | undefined) =>
-  fixtures.routes.find((candidate) => candidate.match === match)?.answered ?? 0;
-/** The reviews the role has sent, their inline comments, in the order it sent them, and the ids of
- * the reviews whose body it updated. */
-const keptReviews: Kept = {
-  reviews: fixtures.reviews ?? [],
-  comments: fixtures.review_comments ?? [],
-  edited: fixtures.review_edits ?? [],
-};
-const sequenced = replies[Math.min(followed?.answered ?? 0, replies.length - 1)] ?? matched;
-if (sequenced.unmodeled) refuse();
-/** Whether the role has posted a comment on the pull request, which the stand-in does not keep. */
-const commented = matched.comments !== undefined && answeredBy(matched.comments) > 0;
-const read = keptRead(
-  matched.reviews,
-  keptReviews,
-  { id: groups.id, fields, commented },
-  sequenced
-);
-if (read === null) refuse();
-/** The change this call makes to the review its `id` group names, through a route that carries
- * `review_edit` (review-keep.ts): the review as GitHub answers the change, or GitHub's refusal. */
-const changed =
-  matched.review_edit === undefined
-    ? undefined
-    : changedReview(matched.review_edit, keptReviews, {
-        id: groups.id,
-        input: input === undefined ? undefined : (files[input] ?? ""),
-        fields: apiFields,
-      });
-if (changed === null) refuse();
-/** The review this call changed, as the next read answers it, and what the call answers. */
-const changedOne = changed !== undefined && "review" in changed ? changed.review : undefined;
-const changeAnswer =
-  changed === undefined || "github" in changed ? changed : { stdout: changed.review };
-/** The body a call that posts or edits a comment on the pull request sends: `gh pr comment`'s own,
- * or a REST call's `body` field or the `body` of its --input. */
-function commentText(): string | undefined {
-  if (prComment) return commentBody;
-  if (typeof apiFields.body === "string") return apiFields.body;
-  if (input === undefined) return undefined;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(files[input] ?? "null");
-  } catch {
-    return undefined;
-  }
-  return typeof parsed === "object" &&
-    parsed !== null &&
-    "body" in parsed &&
-    typeof parsed.body === "string"
-    ? parsed.body
-    : undefined;
-}
-/** The comments the role posted on the pull request, kept (INFRA-1303, D9: e-head-3 of the batch
- * of record at 9c3bd9df read back the comment it had just posted, and the rig had kept none), and
- * the kept list this call leaves where it changed it. One comment is kept: a second would need an
- * id and a URL of its own, which the route of `gh pr comment` does not answer, so it is refused as
- * unmodeled. A read of a comment the role did not post answers GitHub's 404 (measured on
- * cybermonklabs/legion, github-answers/issue-comment-404); an edit of one is not modeled, since
- * GitHub's answer to that write is not measured. */
-const keptComments = fixtures.issue_comments ?? [];
-let comments: z.infer<typeof IssueComment>[] | undefined;
-let commentAnswer: z.infer<typeof Reply> | undefined;
-if (matched.issue_comment !== undefined) {
-  const template = fixtures.comment_template;
-  if (template === undefined) refuse();
-  const stamp = at.replace(/\.\d+Z$/, "Z");
-  const namedComment = keptComments.find((comment) => String(comment.id) === groups.id);
-  const text = commentText();
-  switch (matched.issue_comment) {
-    case "post": {
-      if (text === undefined || keptComments.length > 0) refuse();
-      const posted = { ...template, body: text, created_at: stamp, updated_at: stamp };
-      comments = [posted];
-      // `gh pr comment` prints the comment's URL, its route's own answer; the REST POST answers
-      // the comment, as GitHub's 201 does.
-      if (!prComment) commentAnswer = { stdout: posted };
-      break;
-    }
-    case "read":
-      commentAnswer =
-        namedComment === undefined ? { github: "issue-comment-404" } : { stdout: namedComment };
-      break;
-    case "edit": {
-      if (namedComment === undefined || text === undefined) refuse();
-      const edited = { ...namedComment, body: text, updated_at: stamp };
-      comments = keptComments.map((comment) => (comment.id === namedComment.id ? edited : comment));
-      commentAnswer = { stdout: edited };
-      break;
-    }
-    case "list":
-      commentAnswer = { stdout: keptComments };
-      break;
-  }
-}
-const answer: z.infer<typeof Reply> = commentAnswer ?? changeAnswer ?? read ?? sequenced;
-/** The seconds between the frames of a `watch` reply: the call's --interval, else gh's default for
- * the command, 3 for `gh run watch` (pkg/cmd/run/watch/watch.go:21) and 10 for `gh pr checks
- * --watch` (pkg/cmd/pr/checks/checks.go:21), at v2.98.0. One that is not a positive whole number
- * (gh would print its frames with no pause between them, or refuse it) is a state the rig does not
- * model. */
-const interval = Number(flagValue("--interval") ?? (command === "pr checks" ? "10" : "3"));
-if (answer.watch === true && !(Number.isInteger(interval) && interval > 0)) refuse();
-/** The time GitHub stamps on what this call sends, to the second. */
-const sentAt = at.replace(/\.\d+Z$/, "Z");
-/** The review this call sends through a route that keeps one (review-keep.ts). */
-const sent =
-  matched.review === undefined
-    ? undefined
-    : sentReview(
-        matched.review,
-        {
-          prReview,
-          events: ["--approve", "--request-changes", "--comment"].filter(has),
-          body: reviewBody,
-          input: input === undefined ? undefined : (files[input] ?? ""),
-          fields: apiFields,
-        },
-        keptReviews,
-        sentAt
-      );
-if (sent === null) refuse();
 
-// What the call prints, decided before the write below, so every refusal holds the lock.
-// A route that keeps the review and writes no answer of its own answers the review, as GitHub's
-// POST does.
-let output: unknown =
-  sent !== undefined && answer.stdout === undefined ? sent.review : (answer.stdout ?? "");
-// `$<name>` in an answer's stdout or stderr stands for the text the match's group took: the commit
-// a call named, for the combined status of a commit GitHub does not hold, say.
-const named = (text: string, inJson: boolean) =>
-  text.replace(/\$<(\w+)>/g, (whole, name: string) => {
-    const took = groups[name];
-    if (took === undefined) return whole;
-    return inJson ? JSON.stringify(took).slice(1, -1) : took;
-  });
-if (typeof output === "string") output = named(output, false);
-else if (typeof output === "object" && output !== null)
-  output = JSON.parse(named(JSON.stringify(output), true));
-let stderr = answer.stderr === undefined ? undefined : named(answer.stderr, false);
-let status = answer.exit ?? 0;
-// An error GitHub answers, as gh 2.98.0 printed it: the body GitHub sent on stdout, byte for byte,
-// and gh's `gh: <message> (HTTP <status>)` on stderr, exit 1. Each answer is a pair of files under
-// github-answers/, <name>.stdout and <name>.stderr, measured on 2026-11-18 with gh 2.98.0 against
-// api.github.com on cybermonklabs/legion; github-answers/README.txt names the request each one
-// answered, and the one answer stated rather than measured (review-dismiss-422, a write the
-// rig's read-only token cannot make) and where it is stated from. The answers that name a commit
-// were measured for 1111…1111, which stands for the commit the route's `sha` group took.
-if (answer.github !== undefined) {
-  const measured = (part: "stdout" | "stderr") => {
-    const text = readFileSync(`${import.meta.dir}/github-answers/${answer.github}.${part}`, "utf8");
-    return answer.sha === undefined ? text : text.replaceAll(PROBE_SHA, groups[answer.sha] ?? "");
-  };
-  output = measured("stdout");
-  stderr = measured("stderr");
-  status = 1;
-}
-if (matched.graphql === true) {
-  const world = output as { graphql?: unknown; $refs?: Record<string, unknown> };
-  if (
-    document === undefined ||
-    typeof world !== "object" ||
-    world === null ||
-    world.graphql === undefined
-  )
-    refuse();
-  const graphqlDocument = document;
-  // A request GitHub refuses before it reads anything (gh-graphql.ts) answers its errors alone,
-  // whatever the world holds (measured, github-answers/graphql-*).
-  const refused = graphqlDocument.errors.length > 0;
-  let projected: { data?: unknown; errors: unknown[] } = { errors: graphqlDocument.errors };
-  if (!refused)
-    try {
-      projected = project(graphqlDocument, world.graphql, world.$refs ?? {}, (marker) => {
-        if (marker.$keep !== "threads")
-          throw new Unmodeled(`no keep named ${String(marker.$keep)}`);
-        if (answeredBy(String(marker.until)) > 0)
-          throw new Unmodeled("a line comment the stand-in does not keep");
-        return threads(keptReviews.comments);
-      });
-    } catch (error) {
-      if (error instanceof Unmodeled) refuse();
-      throw error;
-    }
-  output = refused
-    ? { errors: projected.errors }
-    : projected.errors.length > 0
-      ? { data: projected.data, errors: projected.errors }
-      : { data: projected.data };
-  if (projected.errors.length > 0) {
-    if (filter !== undefined) refuse();
-    stderr = `gh: ${(projected.errors[0] as { message?: unknown }).message}\n`;
-    status = 1;
+/** The process around parseCall and answer: the run's fixtures lock from the read of
+ * fixtures.json to the write of what the call changed there, and no longer (the arguments, and
+ * any stdin they name, are read before it is taken, so a call whose stdin never closes holds no
+ * other call up); what the call prints; the publish its route names; and its record. */
+async function main(): Promise<never> {
+  const [as = "gh", ...args] = Bun.argv.slice(2);
+  const run = process.env.SKILL_SCENARIO_RUN;
+  if (!run) {
+    console.error("gh-standin: SKILL_SCENARIO_RUN is unset");
+    process.exit(2);
   }
-}
-// A program reads the world's own answer; GitHub's measured error for a state the world does not
-// hold yet (an attempt before the re-run) is answered as it stands.
-// A REST read gh pages (--paginate) gets every page the route's program gives, as gh follows
-// GitHub's `Link: rel="next"` from page to page: GitHub links the next page of a list that
-// states its count (`total_count`) while the pages so far hold fewer, and of a bare array while
-// the page was full and another follows. A route with no program answers its one page.
-let pages: unknown[] | undefined;
-if (matched.program !== undefined && answer.github === undefined) {
-  const world = output;
-  const run = (asked: Record<string, string>): unknown => {
-    const program = Bun.spawnSync(
-      [
-        "jq",
-        "-c",
-        "--argjson",
-        "flags",
-        JSON.stringify(flags),
-        "--argjson",
-        "query",
-        JSON.stringify(asked),
-        "--argjson",
-        "json",
-        String(fields !== undefined),
-        "--argjson",
-        "now",
-        String(Math.floor(Date.parse(at) / 1000)),
-        matched.program as string,
-      ],
-      { env: childEnv, stdin: new TextEncoder().encode(JSON.stringify(world)) }
+  // `--publish <file>` answers no call: it is the publish of the envelope the file holds.
+  if (as === "--publish") {
+    const [file] = args;
+    if (file === undefined) {
+      console.error("usage: gh-standin.ts --publish <envelope file>");
+      process.exit(2);
+    }
+    const result = await publish(run, JSON.parse(readFileSync(file, "utf8")));
+    console.log(JSON.stringify(result));
+    process.exit("status" in result && result.status >= 200 && result.status < 300 ? 0 : 1);
+  }
+  if (as === "--check") {
+    readFixtures(run);
+    process.exit(0);
+  }
+  const at = new Date();
+  type Recorded = Partial<{
+    request: string;
+    stdin: string;
+    body: string;
+    published: Published;
+  }> & {
+    files: Record<string, string>;
+    route: string | null;
+  };
+  /** Records the call with the status it exits with, or with none (`null`) for a call that waits
+   * until it is killed (a `watch` reply), so the record is written however the call ends;
+   * `unmodeled` marks a request the rig does not model, which the scorer takes for a rig error. */
+  function recordCall(status: number | null, record: Recorded, unmodeled = false) {
+    const { request, files, stdin, route, body, published } = record;
+    appendFileSync(
+      `${run}/calls.jsonl`,
+      `${JSON.stringify({ at: at.toISOString(), as, argv: args, request, files, stdin, route, ...(unmodeled ? { unmodeled: true } : {}), body, published, exit: status })}\n`
     );
-    if (program.exitCode !== 0) refuse();
-    return JSON.parse(program.stdout.toString());
-  };
-  output = run(query);
-  if (command === "api" && method === "GET" && endpoint !== "graphql" && has("--paginate")) {
-    /** The list of a page: the page itself, or the one list beside the count of an object. */
-    const listOf = (page: unknown): unknown[] | undefined => {
-      if (Array.isArray(page)) return page;
-      if (typeof page !== "object" || page === null || !("total_count" in page)) return undefined;
-      const lists = Object.values(page).filter(Array.isArray);
-      return lists.length === 1 ? lists[0] : undefined;
-    };
-    const per = Number(query.per_page);
-    let number = Number(query.page ?? "1");
-    pages = [output];
-    for (;;) {
-      const last = pages[pages.length - 1];
-      const list = listOf(last);
-      if (list === undefined || !(per > 0)) break;
-      const more = Array.isArray(last)
-        ? list.length === per
-        : number * per < Number((last as { total_count: unknown }).total_count);
-      if (!more) break;
-      number += 1;
-      const next = run({ ...query, page: String(number) });
-      if (Array.isArray(next) && next.length === 0) break;
-      pages.push(next);
-    }
   }
-}
-if (fields !== undefined && status === 0) {
-  // A route that answers text, or a field its answer does not hold, is not what --json reads; a
-  // call GitHub refuses prints its error, and no fields.
-  const records = Array.isArray(output) ? output : [output];
-  if (
-    records.some(
-      (record) =>
-        typeof record !== "object" ||
-        record === null ||
-        Array.isArray(record) ||
-        fields.some((field) => !(field in record))
-    )
-  )
-    refuse();
-  const picked = (record: Record<string, unknown>) =>
-    Object.fromEntries([...new Set(fields)].sort().map((field) => [field, record[field]]));
-  output = Array.isArray(output) ? output.map(picked) : picked(output as Record<string, unknown>);
-}
-// `--slurp` prints every page in one list, and ends paging.
-if (has("--slurp")) {
-  output = pages ?? [output];
-  pages = undefined;
+  /** Records the call with the status it exits with, then exits. */
+  function exit(status: number, record: Recorded, unmodeled = false): never {
+    recordCall(status, record, unmodeled);
+    process.exit(status);
+  }
+  /** Refuses this call as a request the rig does not model, and records it so. */
+  function refuse(record: Recorded): never {
+    console.error(
+      as === "gh"
+        ? `rig: request not modeled: gh ${args.join(" ")}`
+        : `unknown command: ${args.join(" ")}`
+    );
+    return exit(1, record, true);
+  }
+  if (as !== "gh") return refuse({ files: {}, route: null });
+  // The stdin is read once, the first time the call names it; a call that names none never reads
+  // it, so one whose stdin never closes holds nothing up.
+  let stdin: Promise<string> | undefined;
+  const parsed = await parseCall(args, process.env, (source) => {
+    if (source !== "-") return Promise.resolve(readFileSync(source, "utf8"));
+    stdin ??= new Response(Bun.stdin.stream()).text();
+    return stdin;
+  });
+  if (parsed.kind === "gh") {
+    process.stderr.write(parsed.stderr);
+    return exit(1, { files: {}, route: null });
+  }
+  if (parsed.kind === "refused")
+    return refuse({
+      request: parsed.request,
+      files: parsed.files,
+      stdin: parsed.stdin,
+      route: null,
+    });
+  const { request, files, stdin: read } = parsed.call;
+  const lock = lockFixtures(run);
+  const result = answer(parsed.call, readFixtures(run), at);
+  if (result.refused) {
+    closeSync(lock);
+    return refuse({ request, files, stdin: read, route: result.route });
+  }
+  // A world rows share (red-at-the-head.fixtures.ts's redFixture marks it with the file `shared`)
+  // takes no write: a call that moves it would change what every later row reads, so the order of
+  // rows would decide their results. The call is refused, naming the world, before it writes
+  // anything.
+  if (result.writes && existsSync(`${run}/shared`)) {
+    closeSync(lock);
+    console.error(
+      `gh-standin: ${run} is a world rows share, and gh ${args.join(" ")} would write it: run this call in a world of its own (red-at-the-head.fixtures.ts's ownFixture)`
+    );
+    process.exit(2);
+  }
+  // A call that changes nothing a later call or reader sees leaves the file as it found it
+  // (answer's `writes`). The write is atomic: a sibling temporary file in the run directory,
+  // renamed over fixtures.json, so a reader that takes no lock never parses a half-written file.
+  if (result.writes) {
+    const temporary = `${run}/fixtures.${process.pid}.json`;
+    writeFileSync(temporary, JSON.stringify(result.fixtures));
+    renameSync(temporary, `${run}/fixtures.json`);
+  }
+  closeSync(lock);
+  const recorded = { request, files, stdin: read, route: result.route, body: result.kept };
+  // A run `gh run watch` waits on (the header) is recorded before its first frame, with no exit,
+  // since the call ends only when it is killed.
+  if (result.watch !== undefined) recordCall(null, recorded);
+  if (result.stdout !== "") process.stdout.write(result.stdout);
+  if (result.stderr !== "") process.stderr.write(result.stderr);
+  const published = result.publish === undefined ? undefined : await publish(run, result.publish);
+  // Then its frame again at each interval, as gh prints one each time it reads the run.
+  if (result.watch !== undefined)
+    for (;;) {
+      await Bun.sleep(result.watch * 1000);
+      process.stdout.write(result.stdout);
+    }
+  return exit(result.status, { ...recorded, published });
 }
 
-// The count of calls each route has answered outlives this process in fixtures.json, with the body
-// where this call edited the pull request's, the review it sent with its inline comments, and the
-// review it changed: one read-modify-write of the file carries them all.
-const prPatch = method === "PATCH" && /^repos\/[^/]+\/[^/]+\/pulls\/\d+$/.test(endpoint ?? "");
-if (prPatch && typeof apiFields.body === "string") body = apiFields.body;
-if (prPatch && input !== undefined) {
-  const parsed: unknown = JSON.parse(files[input] ?? "null");
-  if (
-    typeof parsed === "object" &&
-    parsed !== null &&
-    "body" in parsed &&
-    typeof parsed.body === "string"
-  )
-    body = parsed.body;
-}
-const edit = body;
-const edited = fixtures.routes.map((candidate) => ({
-  ...candidate,
-  answered:
-    candidate === matched ||
-    (matched.counts_as !== undefined && candidate.match === matched.counts_as)
-      ? (candidate.answered ?? 0) + 1
-      : candidate.answered,
-  ...(edit === undefined
-    ? {}
-    : {
-        stdout: withBody(candidate.stdout, edit),
-        replies: candidate.replies?.map((reply) => ({
-          ...reply,
-          stdout: withBody(reply.stdout, edit),
-        })),
-        settled:
-          candidate.settled === undefined
-            ? undefined
-            : { ...candidate.settled, stdout: withBody(candidate.settled.stdout, edit) },
-      }),
-}));
-/** Whether this call changes what a later call or reader sees, and so writes fixtures.json: it
- * sends something the stand-in keeps (a body, a review, a change of one, a comment), or it moves a
- * count something reads — the count of a route that serves its own replies in turn or spends
- * itself, of a route another route names (its `follows`, its `counts_as`, its `comments`, or the
- * `until` of a GraphQL keep in its answer), or of the route it counts as. Any other call is a read
- * that leaves the file as it found it: before this every call wrote the file back, in the
- * stand-in's own form, so a row that only read a world rows share still changed what a later row
- * read of it. The names are read from those fields alone, never from the file's text: two routes
- * may share a match (world h's attempt-1 log read stands ahead of the log read of every attempt,
- * with the same match), and a match that appears twice in the file is no route that names it. */
-const namedRoutes = new Set<string>();
-const namesOfKeeps = (value: unknown): void => {
-  if (Array.isArray(value)) for (const item of value) namesOfKeeps(item);
-  else if (typeof value === "object" && value !== null) {
-    const marker = value as Record<string, unknown>;
-    if ("$keep" in marker && typeof marker.until === "string") namedRoutes.add(marker.until);
-    for (const item of Object.values(marker)) namesOfKeeps(item);
-  }
-};
-for (const candidate of fixtures.routes) {
-  for (const name of [candidate.follows, candidate.counts_as, candidate.comments])
-    if (name !== undefined) namedRoutes.add(name);
-  namesOfKeeps([candidate.stdout, candidate.replies, candidate.settled]);
-}
-const writes =
-  edit !== undefined ||
-  sent !== undefined ||
-  changedOne !== undefined ||
-  comments !== undefined ||
-  (matched.replies !== undefined && matched.follows === undefined) ||
-  matched.spends !== undefined ||
-  matched.counts_as !== undefined ||
-  namedRoutes.has(matched.match);
-// A world rows share (rig.test.ts's redFixture marks it with the file `shared`) takes no write: a
-// call that moves it would change what every later row reads, so the order of rows would decide
-// their results. The call is refused, naming the world, before it writes anything.
-if (writes && existsSync(`${run}/shared`)) {
-  closeSync(lock);
-  console.error(
-    `gh-standin: ${run} is a world rows share, and gh ${args.join(" ")} would write it: run this call in a world of its own (rig.test.ts's ownFixture)`
-  );
-  process.exit(2);
-}
-if (writes) {
-  // The rename is what makes the write atomic: the temporary file is a sibling, in the run
-  // directory, so the rename is within one filesystem.
-  const temporary = `${run}/fixtures.${process.pid}.json`;
-  writeFileSync(
-    temporary,
-    JSON.stringify({
-      ...fixtures,
-      routes: edited,
-      ...(sent === undefined
-        ? {}
-        : {
-            reviews: [...keptReviews.reviews, sent.review],
-            review_comments: [...keptReviews.comments, ...sent.comments],
-          }),
-      ...(changedOne === undefined
-        ? {}
-        : {
-            reviews: keptReviews.reviews.map((review) =>
-              review.id === changedOne.id ? changedOne : review
-            ),
-            ...(matched.review_edit === "update"
-              ? { review_edits: [...(keptReviews.edited ?? []), changedOne.id] }
-              : {}),
-          }),
-      ...(comments === undefined ? {} : { issue_comments: comments }),
-    })
-  );
-  renameSync(temporary, `${run}/fixtures.json`);
-}
-closeSync(lock);
-lock = undefined;
-if (edit !== undefined) kept = edit;
-// The pages of a paged read print as gh 2.98.0 prints them (measured, 2026-11-19, two pages of
-// cybermonklabs/legion: `pulls/4148/comments?per_page=3` printed one array of the six,
-// `commits/<sha>/check-runs?…&per_page=1` the two objects one after the other, nothing between);
-// a `--jq` filter runs over each page, its outputs one after another.
-const printed = pages ?? [output];
-let text = pages?.every(Array.isArray)
-  ? JSON.stringify(pages.flat())
-  : printed.map((page) => (typeof page === "string" ? page : JSON.stringify(page))).join("");
-let filtered = false;
-if (filter !== undefined && status === 0) {
-  text = "";
-  filtered = true;
-  for (const page of printed) {
-    const jq = Bun.spawnSync(["jq", "-r", filter], {
-      env: childEnv,
-      stdin: new TextEncoder().encode(typeof page === "string" ? page : JSON.stringify(page)),
-    });
-    text += jq.stdout.toString();
-    if (jq.exitCode !== 0) {
-      if (text !== "") process.stdout.write(text);
-      process.stderr.write(jq.stderr.toString());
-      exit(1, false);
-    }
-  }
-}
-// `gh api` prints the body GitHub sent as it stands, with no newline after it, whether the request
-// succeeded or not, and a `--jq` filter's output as jq ends it (measured); every other command ends
-// what it prints with a newline.
-const shown = (command === "api" && !filtered) || text.endsWith("\n") ? text : `${text}\n`;
-// A run `gh run watch` waits on (the header) is recorded before its first frame, with no exit,
-// since the call ends only when it is killed.
-if (answer.watch === true) record(null, false);
-if (text !== "") process.stdout.write(shown);
-if (stderr) process.stderr.write(stderr);
-if (matched.publish !== undefined) published = await publish(matched.publish);
-// Then its frame again at each interval, as gh prints one each time it reads the run.
-if (answer.watch === true)
-  for (;;) {
-    await Bun.sleep(interval * 1000);
-    process.stdout.write(shown);
-  }
-exit(status, false);
+if (import.meta.main) await main();

@@ -1,10 +1,9 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 
 // A run whose agent never got a model turn (Oh My Pi exits before its first request, as when the
@@ -4181,32 +4180,24 @@ const redTest = "notify > retries a refused send";
  * retention: what gh 2.98.0 prints for GitHub's 410 there (measured), as red_fixture writes it. */
 const redLogError =
   "failed to get run log: HTTP 410: Server Error (https://api.github.com/repos/example/widgets/actions/runs/7001001/logs)";
-const rigFunction = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-/** Each world's facts as rig.sh's red_world prints them, which red_fixture writes into world.json
- * beside the world's red: read from the rig itself, so each row below is scored by the facts a
- * run of its world is given. */
+/** Each world's facts as red-at-the-head.sh's red_world prints them, which red_fixture writes into
+ * world.json beside the world's red, for each world of the rig's table (jq/worlds.json): read from
+ * the rig itself, so each row below is scored by the facts a run of its world is given. */
 const redFacts: Record<string, object> = (() => {
-  const worlds = [..."abcdefghijklmnopqrst"];
-  // The script goes to bash as a file, not as `bash -c SCRIPT`: Linux refuses any one argument
-  // over 131,072 bytes, and a script of rig.sh's functions grows with rig.sh (rig.test.ts's
-  // scriptFile, whose builtWorld CI run 44728976046 refused with E2BIG). It is written at load,
-  // before the beforeAll that makes `work`, so into a directory of its own.
-  const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-red-world-"));
-  const script = path.join(dir, "red-world.sh");
-  try {
-    writeFileSync(
-      script,
-      `${rigFunction("red_world_table")}\n${rigFunction("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`
-    );
-    const printed = Bun.spawnSync(["bash", script, ...worlds]);
-    if (printed.exitCode !== 0) throw new Error(`red_world: ${printed.stderr.toString()}`);
-    const lines = printed.stdout.toString().trim().split("\n");
-    return Object.fromEntries(
-      worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")])
-    );
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const worlds = Object.keys(
+    JSON.parse(readFileSync(path.join(import.meta.dir, "jq", "worlds.json"), "utf8")).worlds
+  );
+  const printed = Bun.spawnSync([
+    "bash",
+    "-c",
+    '. "$1" && shift && for world in "$@"; do red_world "$world" || exit; done',
+    "-",
+    path.join(import.meta.dir, "red-at-the-head.sh"),
+    ...worlds,
+  ]);
+  if (printed.exitCode !== 0) throw new Error(`red_world: ${printed.stderr.toString()}`);
+  const lines = printed.stdout.toString().trim().split("\n");
+  return Object.fromEntries(worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")]));
 })();
 /** The check red_fixture pairs with the red where the head carries an aggregate over a lane: the
  * lane under the red aggregate in `g` and its reviewer variant `q`, the aggregate beside the red
@@ -4217,7 +4208,7 @@ const redPartners: Record<string, string> = {
   q: "test (notify)",
   ...Object.fromEntries([..."ijmnorst"].map((world) => [world, "ci"])),
 };
-/** world.json as rig.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
+/** world.json as red-at-the-head.sh's red_fixture leaves it: worker_fixture's world, the world's red, the
  * failing line its log read answers (`log`), the full name of the test that failed (`test`), the
  * check paired with the red (`partner`, where the world has one) and the world's facts
  * (red_world). The world is `i`, the reviewer on `a`'s red, unless `fields` names another. */
@@ -4898,20 +4889,10 @@ redRun("trial-i-head-125", redReread(redRunsCall("2026-09-30T17:28:45.000Z")));
 redRun("trial-i-head-126", redReread(redRunsCall("2026-09-30T17:29:30.000Z")));
 /** The turns of a world-`i` run whose settlement never came: the assignment's turn, which pressed
  * the re-run at 17:28:30 and ended at 17:29:00, then a turn the phase reminder woke. The rig
- * records no `reminder` wake (record_turn, rig.sh:2732-2736), so this file is written. */
+ * records no `reminder` wake (record_turn), so this file is written. */
 const redReminderTurns =
   "1 assignment 2026-09-30T17:29:00Z exit=0\n2 reminder 2026-09-30T17:31:50Z exit=0\n";
-// The counted set read once on the reminder's wake: the page's bound, no poll.
-redRun("trial-i-head-127", {
-  "calls.jsonl": calls([
-    redLogCall,
-    redRerunCall(),
-    redCountedCall("2026-09-30T17:29:30.000Z", 0),
-    redApproved,
-  ]),
-  "turns.txt": redReminderTurns,
-});
-// The same read in the turn that pressed the re-run, a reminder turn after it: still a poll.
+// The counted set read in the turn that pressed the re-run, a reminder turn after it: still a poll.
 redRun("trial-i-head-128", {
   "calls.jsonl": calls([
     redLogCall,
@@ -4994,7 +4975,7 @@ redRun("trial-i-head-210", {
   ]),
 });
 
-// A run whose settlement no listener heard: rig.sh's rerun_settle noted it in fixture.log, after
+// A run whose settlement no listener heard: red-at-the-head.sh's rerun_settle noted it in fixture.log, after
 // the stand-in's own record of the publish, and the settlement turn ran all the same (214); and
 // the same run whose publish the listener answered 200, which scores as trial-i-head-101 (215).
 /** A run's fixture.log as the rig leaves it: the seed's lines, the stand-in's record of a publish,
@@ -5389,7 +5370,7 @@ redWorldRun(
 );
 
 /** World `t` (`l`'s red with the reviewer): the counted set does not report the red until the rig
- * does, between the two turns (rig.sh's red_report). The role read it in its first turn, ended
+ * does, between the two turns (red-at-the-head.sh's red_report). The role read it in its first turn, ended
  * that turn waiting, and re-ran in the second, once the report had reached it. */
 const redReported = "2026-09-30T17:28:10Z";
 const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28:20.000000Z") => ({
@@ -5407,7 +5388,7 @@ const redReportedRun = (rerun: string, turns: string, record = "2026-09-30T17:28
 const redTwoTurns =
   "1 assignment 2026-09-30T17:28:00Z exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n";
 redWorldRun("trial-t-head-1", "t", {}, redReportedRun("2026-09-30T17:28:30.000Z", redTwoTurns));
-// trial-t-head-1 whose report of the check no listener heard: rig.sh's red_report noted it in
+// trial-t-head-1 whose report of the check no listener heard: red-at-the-head.sh's red_report noted it in
 // fixture.log, and the report turn ran all the same (8); and the same run whose report the
 // listener answered 200, which scores as trial-t-head-1 (9).
 redWorldRun(
@@ -5467,7 +5448,7 @@ redWorldRun(
   redReportedRun("2026-09-30T17:28:30.000Z", "1 assignment 2026-09-30T17:29:00Z exit=0\n")
 );
 // The turn the role first read the counted set in ended in the same second the rig reported the
-// check, which the stamp's second resolution makes the ordinary case (rig.sh's red_report writes
+// check, which the stamp's second resolution makes the ordinary case (red-at-the-head.sh's red_report writes
 // it at second resolution, in the second the turn it follows ends): the turn ended before the
 // report, and the run passes.
 const redSameSecondTurns = `1 assignment ${redReported} exit=0\n2 report 2026-09-30T17:31:50Z exit=0\n`;
@@ -5931,7 +5912,8 @@ test("gh pr checks --watch is a poll, and fails the world", () => {
 });
 
 // Catches: a poll read as a `sleep` or a watch alone. The page has "A read of the head's checks or
-// runs in the turn that pressed the re-run is the poll this forbids, whatever work came between".
+// runs in the turn that pressed the re-run is the poll this forbids, and so are `gh run watch` and
+// `gh pr checks --watch`".
 test("a read of the counted set after the re-run, in the turn that pressed it, is a poll", () => {
   redFails("trial-i-head-122", "waited=false", "subscribed=true polled=true");
   // Catches: a read in the turn the settlement woke taken for a poll: it is the wait's result.
@@ -5951,23 +5933,13 @@ test("a read of the head's runs after the re-run, in the turn that pressed it, i
   expect(rowOf("trial-i-head-126")).toContain("polled=false");
 });
 
-// INFRA-1303 D6, the architect's ruling of 2026-11-19 19:33Z. Catches: a read of the counted set
-// on the phase reminder's wake, after the turn that pressed the re-run, left uncounted as the
-// page's bound (turns.txt's wake field, which redTurns now keeps).
-test("a read on the phase reminder's wake after the pressing turn is the bound, not a poll", () => {
-  expect(rowOf("trial-i-head-127")).toMatch(/^trial-i-head-127\tpass=true\t.* waited=true /);
-  expect(rowOf("trial-i-head-127")).toContain(
-    "polled=false verdict=none accepted=true review=APPROVE bound=1"
-  );
-});
-
 // Catches: a reminder turn in the record taken as leave for a read in the turn that pressed the
-// re-run: that read is a poll, and is no bound.
+// re-run: that read is a poll.
 test("a read in the pressing turn stays a poll when a reminder turn follows it", () => {
   redFails(
     "trial-i-head-128",
     "waited=false",
-    "polled=true verdict=none accepted=true review=APPROVE bound=0"
+    "polled=true verdict=none accepted=true review=APPROVE"
   );
 });
 
