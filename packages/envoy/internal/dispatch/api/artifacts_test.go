@@ -290,53 +290,73 @@ func TestUploadArtifactJSONCreateOnlyWritesNoVersionIntoADocumentTheOwnerHolds(t
 }
 
 // A multipart upload carries create_only as a field, true or false. A file or an image under a
-// name the owner already holds - an issue, or an agent's conversation - is refused with 409
-// ARTIFACT_NAME_TAKEN, which names it as a file or as an image, before its bytes reach the file
-// store, so the refusal leaves no object behind and the held artifact keeps its one version; a
-// markdown file under a new name is made, and the same create again is refused. Any other
-// spelling of the field is 400 ARTIFACT_INPUT, and the upload without it still writes the held
-// file's next version.
+// name the owner already holds - an issue, a project, or an agent's conversation - is refused with
+// 409 ARTIFACT_NAME_TAKEN, which names the held artifact as a file or as an image, before its bytes
+// reach the file store, so the refusal leaves no object behind and the held artifact keeps its one
+// version. create_only is read before the kind: an upload of the other kind under that name (a
+// picture under a held file's name, a file under a held picture's) gets the same 409, not 400
+// ARTIFACT_KIND_MISMATCH. A markdown file under a new name is made, and the same create again is
+// refused. Any other spelling of the field is 400 ARTIFACT_INPUT, and the upload without it still
+// writes the held file's next version.
 func TestUploadArtifactMultipartCreateOnlyStoresNothingUnderAHeldName(t *testing.T) {
 	memory := filestest.NewMemory()
 	handler, _, _ := newTestServer(t, testServerOptions{files: memory})
 	issue := fileIssue(t, handler)
 	path := "/api/v1/issues/" + issue + "/artifacts"
+	project := "/api/v1/projects/FILES/artifacts"
 	agent := "/api/v1/agents/" + agentSession + "/artifacts"
 	type uploaded struct {
 		Artifact model.Artifact `json:"artifact"`
 		Version  model.Version  `json:"version"`
 	}
+	type upload struct {
+		contentType string
+		content     []byte
+	}
 	for _, tc := range []struct {
 		owner, path, name, contentType, noun string
-		held, refused                        []byte
+		held                                 []byte
+		// refused are the create_only uploads under the held name: one of the held artifact's
+		// kind, then one of the other kind.
+		refused []upload
 	}{
-		{owner: "issue", path: path, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("a,b\n"), refused: []byte("c,d\n")},
-		{owner: "issue", path: path, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("issue shot"), refused: pngBytes("issue shot again")},
-		{owner: "agent", path: agent, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("g,h\n"), refused: []byte("i,j\n")},
-		{owner: "agent", path: agent, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("agent shot"), refused: pngBytes("agent shot again")},
+		{owner: "issue", path: path, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("a,b\n"),
+			refused: []upload{{"text/csv", []byte("c,d\n")}, {"image/png", pngBytes("issue picture under rows.csv")}}},
+		{owner: "issue", path: path, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("issue shot"),
+			refused: []upload{{"image/png", pngBytes("issue shot again")}, {"text/csv", []byte("issue rows under shot.png\n")}}},
+		{owner: "project", path: project, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("k,l\n"),
+			refused: []upload{{"text/csv", []byte("m,n\n")}, {"image/png", pngBytes("project picture under rows.csv")}}},
+		{owner: "project", path: project, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("project shot"),
+			refused: []upload{{"image/png", pngBytes("project shot again")}, {"text/csv", []byte("project rows under shot.png\n")}}},
+		{owner: "agent", path: agent, name: "rows.csv", contentType: "text/csv", noun: "a file", held: []byte("g,h\n"),
+			refused: []upload{{"text/csv", []byte("i,j\n")}, {"image/png", pngBytes("agent picture under rows.csv")}}},
+		{owner: "agent", path: agent, name: "shot.png", contentType: "image/png", noun: "an image", held: pngBytes("agent shot"),
+			refused: []upload{{"image/png", pngBytes("agent shot again")}, {"text/csv", []byte("agent rows under shot.png\n")}}},
 	} {
 		first := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name}, tc.name, tc.contentType, tc.held, "alice")
 		if first.Code != http.StatusCreated {
 			t.Fatalf("upload the %s's %s: status=%d body=%s", tc.owner, tc.name, first.Code, first.Body.String())
 		}
 		held := decodeBody[uploaded](t, first).Artifact
-		refused := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name, "create_only": "true"}, tc.name, tc.contentType, tc.refused, "alice")
 		want := fmt.Sprintf("%q names artifact %s (%s) of this owner; %s's name is its own here: give it another name", tc.name, held.Slug, held.Name, tc.noun)
-		if body := decodeBody[struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
-		}](t, refused); refused.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
-			t.Fatalf("create_only upload under the %s's %s: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", tc.owner, tc.name, refused.Code, refused.Body.String(), want)
-		}
-		if stored := memory.MIME(files.SHA256(tc.refused)); stored != "" {
-			t.Fatalf("the refused upload of the %s's %s left its bytes in the file store as %q, want no object", tc.owner, tc.name, stored)
+		for _, attempt := range tc.refused {
+			refused := multipartRequest(t, handler, tc.path, map[string]string{"name": tc.name, "create_only": "true"}, tc.name, attempt.contentType, attempt.content, "alice")
+			if body := decodeBody[struct {
+				Code  string `json:"code"`
+				Error string `json:"error"`
+			}](t, refused); refused.Code != http.StatusConflict || body.Code != "ARTIFACT_NAME_TAKEN" || body.Error != want {
+				t.Fatalf("create_only upload of %s under the %s's %s: status=%d body=%s, want 409 ARTIFACT_NAME_TAKEN %q", attempt.contentType, tc.owner, tc.name, refused.Code, refused.Body.String(), want)
+			}
+			if stored := memory.MIME(files.SHA256(attempt.content)); stored != "" {
+				t.Fatalf("the refused upload of %s under the %s's %s left its bytes in the file store as %q, want no object", attempt.contentType, tc.owner, tc.name, stored)
+			}
 		}
 		read := "/api/v1/artifacts/" + held.ID
 		if tc.owner == "agent" {
 			read = tc.path + "/" + held.Slug
 		}
 		if after := decodeBody[model.Artifact](t, dispatchRequest(t, handler, http.MethodGet, read, nil, "alice")); after.ID != held.ID || len(after.Versions) != 1 {
-			t.Fatalf("the %s's %s after the refused create = %+v, want %s with its one version", tc.owner, tc.name, after, held.ID)
+			t.Fatalf("the %s's %s after the refused creates = %+v, want %s with its one version", tc.owner, tc.name, after, held.ID)
 		}
 	}
 	if odd := multipartRequest(t, handler, path, map[string]string{"name": "other.csv", "create_only": "yes"}, "other.csv", "text/csv", []byte("e,f\n"), "alice"); odd.Code != http.StatusBadRequest || !strings.Contains(odd.Body.String(), `"code":"ARTIFACT_INPUT"`) {
