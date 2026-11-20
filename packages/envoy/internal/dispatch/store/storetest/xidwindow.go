@@ -42,7 +42,7 @@ import (
 // nothing by either source holds no xid to judge (MayHoldNoXid). Inside the window the rig checks
 // two things. Its shape, in every build: the window holds at most the statements the measurement
 // declared (XidShape), and nothing else. And, where the build judges a window's time at all
-// (XidJudgesGaps), D6 of the INFRA-636 plan: every statement-free gap is at most XidMaxGap, and
+// (XidJudgesGaps), the rig's rule D6: every statement-free gap is at most XidMaxGap, and
 // the gaps together take no longer than the statements do.
 //
 // Which transactions are judged is decided by context, not guessed from timing: the caller marks
