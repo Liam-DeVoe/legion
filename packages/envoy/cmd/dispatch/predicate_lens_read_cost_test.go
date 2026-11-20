@@ -706,7 +706,31 @@ type predicateCostRead struct {
 	// headOnly marks the read the base build does not serve at all, which this child adds: it
 	// has no reading at the base build, so it is printed and bound nothing.
 	headOnly bool
-	path     func(shape *predicateCostShape) string
+	// cutAtBase is the code of the one refusal the base build may answer this read with, a read
+	// it cut at a bound of its own: such a reading counts as predicateCostClosureBound, the least
+	// the read took there, so it can only lower the base build's p50 and tighten the bound on
+	// this head. Any other refusal at the base build, and any refusal at this head, fails.
+	cutAtBase string
+	path      func(shape *predicateCostShape) string
+}
+
+// predicateCostClosureBound is the bound main's #4554 puts on an issue's reference closure walk
+// (api's referencesClosureBound): a GET of an issue's references whose walk runs past it answers
+// 503 REFERENCES_TIMEOUT. The base build's walk read 1.8 to 2.3 s over these shapes before that
+// bound, so it is cut there; this head reads the same references in milliseconds.
+const predicateCostClosureBound = 2 * time.Second
+
+// timedAnswer is timed without the status check, for the one read whose refusal at the base
+// build counts as a reading (predicateCostRead's cutAtBase); its caller checks the status.
+func (a *costArm) timedAnswer(t *testing.T, method, path string) (time.Duration, httpAnswer) {
+	t.Helper()
+	start := time.Now()
+	answer, err := a.server.trySend(method, path, "", asUser(costLogin))
+	taken := time.Since(start)
+	if err != nil {
+		t.Fatalf("%s: %s %s: %v", a.name, method, path, err)
+	}
+	return taken, answer
 }
 
 func predicateCostReads() []predicateCostRead {
@@ -733,7 +757,7 @@ func predicateCostReads() []predicateCostRead {
 		{name: "the coverage read (GET /api/v1/issues/{key}/coverage)", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/coverage"
 		}},
-		{name: "the references panel read (GET /api/v1/issues/{key}/references)", path: func(shape *predicateCostShape) string {
+		{name: "the references panel read (GET /api/v1/issues/{key}/references)", cutAtBase: "REFERENCES_TIMEOUT", path: func(shape *predicateCostShape) string {
 			return "/api/v1/issues/" + shape.issue + "/references"
 		}},
 	}
@@ -903,12 +927,31 @@ func TestThePredicateAndTheLensReadsGetNoSlower(t *testing.T) {
 			if read.headOnly || shape.headOnly {
 				measured = []*costArm{head}
 			}
-			taken := costInterleaved(t, read.name, shape.name, sizes.readings, measured, func(subject *costArm, _ int) time.Duration {
+			cut := 0
+			taken := costInterleaved(t, read.name, shape.name, sizes.readings, measured, func(subject *costArm, run int) time.Duration {
 				subject.ready(t)
 				path := read.path(shapes[subject][index])
-				reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
+				if subject != base || read.cutAtBase == "" {
+					reading, _ := subject.timed(t, http.MethodGet, path, "", http.StatusOK)
+					return reading
+				}
+				reading, answer := subject.timedAnswer(t, http.MethodGet, path)
+				if answer.status == http.StatusServiceUnavailable && errorCodeOf(string(answer.body)) == read.cutAtBase {
+					if run >= 0 {
+						cut++
+					}
+					return predicateCostClosureBound
+				}
+				if answer.status != http.StatusOK {
+					t.Fatalf("%s: GET %s: status %d, want 200 or 503 %s: %s", subject.name, path, answer.status, read.cutAtBase, answer.body)
+				}
 				return reading
 			})
+			if read.cutAtBase != "" && slices.Contains(measured, base) {
+				t.Logf("%s over %q: the base build cut %d of its %d readings at its %s bound (%s), each counted as %s; its p50 with them %.1f ms",
+					read.name, shape.name, cut, sizes.readings, predicateCostClosureBound, read.cutAtBase, predicateCostClosureBound,
+					costMilliseconds(taken[base].p50()))
+			}
 			for _, subject := range measured {
 				readings = append(readings, taken[subject])
 				held[cell(read.name, index, subject)] = taken[subject]
