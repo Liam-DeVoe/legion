@@ -211,6 +211,11 @@ type bootConfig struct {
 	// (agentLimits); only DISPATCH_TEST_AGENT_SLOTS, under the test hooks, sets it, so a test
 	// crosses the server's bound of calls at once, which the agent's own slots stay under.
 	AgentSlots int
+	// AgentProcs is the agent's GOMAXPROCS, zero for the CPUs agentEnvironment gives it (as many as
+	// this process schedules on, agentMaxProcs at the most); only DISPATCH_TEST_AGENT_PROCS, under
+	// the test hooks, sets it, so a test on a runner of few CPUs gives the agent production's share
+	// of them: a quarter, 4 of a container's 16.
+	AgentProcs int
 	// TrustFile is SSL_CERT_FILE, the file of certificate authorities crypto/x509 trusts in place
 	// of the system's, which this process hands on to its agent process, so the agent trusts the
 	// chat model's endpoint as the server does; empty for the system's.
@@ -1263,7 +1268,7 @@ func main() {
 		agent = listening
 	} else {
 		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile,
-			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter})
+			agentTestHooks{Loop: boot.AgentHooks, GrowAfter: boot.AgentGrowAfter, Procs: boot.AgentProcs})
 		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, env, limits)
 		agent = supervisor
 	}
@@ -1514,6 +1519,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 		if boot.AgentSlots, err = strconv.Atoi(raw); err != nil || boot.AgentSlots <= 0 || boot.AgentSlots > 64 {
 			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_SLOTS=%q (expected a whole number of runs from 1 to 64)", raw)
+		}
+	}
+	if raw := strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_PROCS")); raw != "" {
+		if !boot.TestHooksEnabled {
+			return bootConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_AGENT_PROCS")
+		}
+		if boot.AgentProcs, err = strconv.Atoi(raw); err != nil || boot.AgentProcs <= 0 || boot.AgentProcs > agentMaxProcs {
+			return bootConfig{}, fmt.Errorf("DISPATCH_TEST_AGENT_PROCS=%q (expected a whole number of CPUs from 1 to %d)", raw, agentMaxProcs)
 		}
 	}
 	boot.TrustFile = strings.TrimSpace(env.get("SSL_CERT_FILE"))

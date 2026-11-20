@@ -2248,6 +2248,31 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_SLOTS": "2"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_AGENT_PROCS": func(t *testing.T) {
+			// The server reads the agent's CPUs under its test hooks and starts the agent with them
+			// as its GOMAXPROCS; unset, the agent gets as many as the server schedules on, 4 at most.
+			if boot := resolveWith(t, map[string]string{}); boot.AgentProcs != 0 {
+				t.Errorf("unset: AgentProcs = %d, want 0 (the CPUs the server gives its agent)", boot.AgentProcs)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_PROCS": " 1 "})
+			if boot.AgentProcs != 1 {
+				t.Errorf("DISPATCH_TEST_AGENT_PROCS=1: AgentProcs = %d", boot.AgentProcs)
+			}
+			if env := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{Procs: boot.AgentProcs}); !slices.Contains(env, "GOMAXPROCS=1") {
+				t.Errorf("the agent's environment with DISPATCH_TEST_AGENT_PROCS=1 is %v, want GOMAXPROCS=1", env)
+			}
+			unset := agentEnvironment(answererConfig{}, "agent.sock", agentLimits(0), "", agentTestHooks{})
+			if at := slices.IndexFunc(unset, func(entry string) bool { return strings.HasPrefix(entry, "GOMAXPROCS=") }); at < 0 {
+				t.Errorf("unset: the agent's environment is %v, want a GOMAXPROCS", unset)
+			} else if procs, err := strconv.Atoi(strings.TrimPrefix(unset[at], "GOMAXPROCS=")); err != nil || procs < 1 || procs > agentMaxProcs {
+				t.Errorf("unset: the agent's environment holds %s, want 1 to %d", unset[at], agentMaxProcs)
+			}
+			for _, invalid := range []string{"0", "5", "a quarter"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_AGENT_PROCS": invalid},
+					fmt.Sprintf("DISPATCH_TEST_AGENT_PROCS=%q (expected a whole number of CPUs from 1 to %d)", invalid, agentMaxProcs))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_AGENT_PROCS": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_AGENT_GROW_AFTER": func(t *testing.T) {
 			// The server hands the wait on to its agent, and the agent refuses a value that is no
 			// positive Go duration before it calls anything.

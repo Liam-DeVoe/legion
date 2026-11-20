@@ -126,12 +126,22 @@ func newAgentSupervisor(end agentEnd, command, env []string, limits agentMemory)
 }
 
 // agentTestHooks is what a server under its own test hooks turns on in its agent: the loop's test
-// hooks (DISPATCH_TEST_AGENT_HOOKS=1, going/agent's hooks.go), and the wait after each start
-// before the agent allocates at full speed (DISPATCH_TEST_AGENT_GROW_AFTER, growAgentHeap), zero
-// for none.
+// hooks (DISPATCH_TEST_AGENT_HOOKS=1, going/agent's hooks.go), the wait after each start before
+// the agent allocates at full speed (DISPATCH_TEST_AGENT_GROW_AFTER, growAgentHeap), zero for
+// none, and the agent's GOMAXPROCS (DISPATCH_TEST_AGENT_PROCS), zero for the CPUs it is given.
 type agentTestHooks struct {
 	Loop      bool
 	GrowAfter time.Duration
+	Procs     int
+}
+
+// procs is the agent's GOMAXPROCS: as many CPUs as the server schedules on, agentMaxProcs at the
+// most, or the hook's where a test sets one.
+func (h agentTestHooks) procs() int {
+	if h.Procs > 0 {
+		return h.Procs
+	}
+	return min(agentMaxProcs, runtime.GOMAXPROCS(0))
 }
 
 // agentEnvironment is the agent's whole environment: the socket it calls the server at, how many
@@ -144,7 +154,7 @@ func agentEnvironment(chat answererConfig, socket string, limits agentMemory, tr
 	env := []string{
 		"DISPATCH_AGENT_SOCKET=" + socket,
 		"DISPATCH_AGENT_SLOTS=" + strconv.Itoa(limits.Slots),
-		"GOMAXPROCS=" + strconv.Itoa(min(agentMaxProcs, runtime.GOMAXPROCS(0))),
+		"GOMAXPROCS=" + strconv.Itoa(hooks.procs()),
 		"GOMEMLIMIT=" + strconv.FormatInt(limits.AgentLimit, 10),
 	}
 	set := func(name, value string) {

@@ -6,7 +6,7 @@ package main
 // the server's heap and the agent's memory under 8 Deep runs at their limits on a Dispatch seeded
 // as large as production, and the server's CPU while the agent works at its soft limit. Each
 // starts a real envoy-dispatch server whose own agent calls a fake chat model over https, the
-// soak's script (agent_soak_test.go) answering it.
+// soak's script (soakModel, agent_harness_test.go) answering it.
 
 import (
 	"cmp"
@@ -577,21 +577,33 @@ func processVariable(t *testing.T, pid int, name string) string {
 	return ""
 }
 
+// cpuAgentShare is the share of the CPUs the agent schedules on in production: 4 (GOMAXPROCS) of
+// a container's 16.
+const cpuAgentShare = 4
+
 // TestTheAgentLeavesTheServerItsCPU: the agent cannot take the server's CPU (check c29). The
 // agent works at its soft limit, its garbage collection included (going/agent's test_soft_limit
 // hook: a live heap of nine tenths of its GOMEMLIMIT, and allocation without pause on each CPU its
 // runtime schedules on). Meanwhile the p99 of one fixed read of the server, an issue, stays under
 // twice its p99 with the agent idle, and /livez, asked every 100 ms, answers each time in under
-// 1 s. Every thread of the agent runs at the lower priority of nice 10, idle and at the load; the
-// test logs the CPUs it runs on, the agent's GOMAXPROCS, and the spread of the read and of a
-// round trip to the database, idle and at the load, which says what a slower p99 is made of.
+// 1 s. Every thread of the agent runs at the lower priority of nice 10, idle and at the load. The
+// agent holds production's share of the runner's CPUs, a quarter, 1 at the least
+// (DISPATCH_TEST_AGENT_PROCS), where production gives it 4 of a container's 16: on a runner of 4
+// CPUs the 4 a server gives its agent would be every one. The test logs the CPUs it runs on, the
+// agent's GOMAXPROCS, and the spread of the read and of a round trip to the database, idle and at
+// the load, which says what a slower p99 is made of.
 func TestTheAgentLeavesTheServerItsCPU(t *testing.T) {
 	fake, model := newSoakModel(t)
 	env := modelEnv(t, fake)
 	env["DISPATCH_TEST_AGENT_GOMEMLIMIT"] = strconv.Itoa(cpuAgentLimit)
+	procs := min(agentMaxProcs, max(1, runtime.GOMAXPROCS(0)/cpuAgentShare))
+	env["DISPATCH_TEST_AGENT_PROCS"] = strconv.Itoa(procs)
 	server := startAgentServer(t, env)
 	server.waitForAgentRenewal(t)
 	pid := server.agentStarted(t, 1, 30*time.Second)
+	if got := processVariable(t, pid, "GOMAXPROCS"); got != strconv.Itoa(procs) {
+		t.Errorf("the agent runs with GOMAXPROCS=%q, want %d, a quarter of the runner's %d CPUs", got, procs, runtime.GOMAXPROCS(0))
+	}
 	server.createProject(t, "CPU", "CPU")
 	key, _ := server.createIssueIn(t, "CPU", "The issue the fixed read reads", "Context.\n")
 	read := "/api/v1/issues/" + key
