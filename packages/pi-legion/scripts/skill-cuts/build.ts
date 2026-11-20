@@ -10,7 +10,7 @@
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
  *       --seed <n> --copies <R4 out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
- *       [--budget-usd <n>]
+ *       [--budget-usd <n>] [--concurrency <n>]
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
  *       the cut's base> --copies <R4 out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
@@ -23,7 +23,28 @@
  * and SESSION_BATCH hashes. The candidates are taken in the order judge.ts's `blindOrder` gives
  * them under `--seed` (the summary records the seed and the order), one case per session, until
  * `--max` cases are built, or the readers' dollars at list price reach `--budget-usd`, when no
- * further reader call starts and the build stops (exit 3) with what it has. For each session:
+ * further reader call starts and the build stops (exit 3) with what it has.
+ *
+ * Up to `--concurrency` sessions (BUILD_CONCURRENCY unless given) are open at once: pulled (one
+ * store query at a time across them) and read, the gateway taking as many calls at once. A
+ * session's outcome is decided in the seeded order, a session that finished waiting for those
+ * before it, so the cases kept are the first `--max` cases of that order, as one session at a time
+ * would keep them, and no more than that many sessions' text is held. Once the build ends (at
+ * `--max`, or at the budget), each session still open is stopped before its next reader call and
+ * recorded with what it spent, as `not-needed` (or as stopped by the budget). With more than one
+ * session open, a session before the one that reached the budget can be stopped by it too.
+ *
+ * **Going on.** The summary records the run's inputs: the cut, the skill, the seed, and the
+ * SHA-256 of `--old`'s files, the sessions file, the copies files read and the count's query
+ * outputs. When `--out` and its summary are there from a run of the same inputs, the build goes on
+ * from them: every session they decided (dropped, or a case the cases file holds) is kept as it
+ * was, with no pull and no reader call, and the build goes on in the same order from the first
+ * session not decided, until `--max` cases in all; the budget counts the dollars already spent.
+ * Inputs that differ are refused (exit 2), naming each; so is a cases file with no summary, and a
+ * summary with no inputs. Each case is appended to the cases file as one whole line and then the
+ * summary is written to a temporary name and renamed, so both stay readable after a kill at any
+ * moment; a case line the summary does not record (a kill between the two) is left out when the
+ * build goes on, and its session is read again. For each session:
  *
  * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE parts a call, paging by offset, and
  *    joined with psql-rows.ts's `pullText`. Its lines are parsed as transcript.ts's entries; the
@@ -219,13 +240,29 @@
  * by its id, and writes the missing ones. The tasks file holds one JSON line per task, labelled
  * before any run: `{"id", "text", "label", "source": "session", "store", "pathHash"}` or
  * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each query's
- * row count (or its error), the messages offered, each task's reason, and the spend.
+ * row count (or its error), the messages offered, each task's reason, and the spend. Its queries,
+ * one per store and day, take most of its time (an hour and more on the real stores), so it goes
+ * on as build-cases does: the summary records the inputs (SKILL.md's SHA-256, the stores and the
+ * window), the terms and each query as it ends, and `<out>.found.jsonl` the messages each found
+ * (path hashes and texts, appended whole before the summary records the query). A run of the same
+ * inputs goes on from them with no terms call and no query already recorded; a finished build is
+ * left as it is; other inputs are refused. The found file is removed once the tasks are written.
  *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
  * `--budget-usd`, with the cases built so far written.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { parseArgs } from "node:util";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -265,7 +302,14 @@ import {
   type TreeEntry,
 } from "./copies";
 import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
-import { BudgetSpent, createGateway, type Gateway, type Spent } from "./gateway";
+import {
+  BudgetSpent,
+  createGateway,
+  type Gateway,
+  type ModelSpend,
+  type Spend,
+  type Spent,
+} from "./gateway";
 import {
   beforeText,
   blindOrder,
@@ -289,6 +333,8 @@ import {
 
 /** Exit statuses. */
 export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
+/** The most sessions build-cases reads at once, unless `--concurrency` says otherwise. */
+export const BUILD_CONCURRENCY = 4;
 /** The most windows of a session the case reader reads, one call each, until it proposes a step. */
 export const READER_WINDOWS = 6;
 /** The most messages the case reader reads from the skill's read on. */
@@ -420,6 +466,73 @@ function writeWhole(file: string, text: string): void {
   const fresh = `${file}.${process.pid}.tmp`;
   writeFileSync(fresh, text);
   renameSync(fresh, file);
+}
+
+/** A file or directory a build reads, and the SHA-256 of what it read there. */
+const Digested = z.strictObject({ path: z.string(), sha256: z.string().regex(/^[0-9a-f]{64}$/) });
+type Digested = z.infer<typeof Digested>;
+
+/** The SHA-256 of the files `files` of `dir` (each a path inside it), each with its name and
+ *  length, so two sets of files differ whenever a name, a length or a byte does. A file that is
+ *  not there counts as one of no bytes, marked missing. */
+function digestOf(dir: string, files: readonly string[]): Digested {
+  const hash = createHash("sha256");
+  for (const file of files) {
+    const where = path.join(dir, file);
+    const bytes = existsSync(where) ? readFileSync(where) : undefined;
+    hash.update(`${file}\0${bytes === undefined ? "missing" : bytes.length}\0`);
+    if (bytes !== undefined) hash.update(bytes);
+  }
+  return { path: dir, sha256: hash.digest("hex") };
+}
+
+/** One model's spend as a summary records it. */
+const ModelSpendRecord = z.strictObject({
+  calls: z.number(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  cacheWrite: z.number(),
+  reasoning: z.number(),
+  usd: z.number(),
+});
+/** The readers' spend as a summary records it (gateway.ts's `Spend`). */
+const SpendRecord = z.strictObject({
+  models: z.record(z.string(), ModelSpendRecord),
+  usd: z.number(),
+});
+
+/** The spend of two runs of one build: each model's calls, tokens and dollars summed. */
+function addSpend(a: Spend, b: Spend): Spend {
+  const models: Record<string, ModelSpend> = { ...a.models };
+  for (const [model, spend] of Object.entries(b.models)) {
+    const known = models[model];
+    models[model] =
+      known === undefined
+        ? spend
+        : {
+            calls: known.calls + spend.calls,
+            input: known.input + spend.input,
+            output: known.output + spend.output,
+            cacheRead: known.cacheRead + spend.cacheRead,
+            cacheWrite: known.cacheWrite + spend.cacheWrite,
+            reasoning: known.reasoning + spend.reasoning,
+            usd: known.usd + spend.usd,
+          };
+  }
+  return { models, usd: a.usd + b.usd };
+}
+
+/** No spend. */
+const NO_SPEND: Spend = { models: {}, usd: 0 };
+
+/** The text of the JSON file `file`, parsed, or a refusal naming it. */
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Refused(`${file} cannot be read as JSON: ${messageFor(error)}`);
+  }
 }
 
 /** A value that is an object, as a record of its fields. */
@@ -2023,7 +2136,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>";
 
@@ -2076,16 +2189,25 @@ function mustBeFile(file: string, what: string): void {
     throw new Refused(`${what} ${file} is not a file`);
 }
 
-/** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`. */
-function readerGateway(config: SkillCutsConfig, keyFile: string, budgetUsd?: number): Gateway {
+/** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`,
+ *  and takes `concurrency` calls at once. */
+function readerGateway(
+  config: SkillCutsConfig,
+  keyFile: string,
+  budgetUsd?: number,
+  concurrency = 1
+): Gateway {
   return createGateway({
     baseUrl: config.gatewayBaseUrl,
     keyFile,
-    concurrency: 1,
+    concurrency,
     timeoutMs: READER_TIMEOUT_MS,
     ...(budgetUsd === undefined ? {} : { budgetUsd }),
   });
 }
+
+/** A session no longer wanted: the build ended while it was open, so it makes no further call. */
+class NotNeeded extends Error {}
 
 /** The candidates of the sessions file `file`, each once. Throws a refusal naming each line at
  *  fault: not JSON, not a candidate, a store the configuration does not name, or a path whose hash
@@ -2185,13 +2307,15 @@ interface SessionRecord {
 }
 
 /** The case of one session's transcript `text`, or why it gives none. Adds what the reader spent
- *  and what its restatement check read to `record`. */
+ *  and what its restatement check read to `record`. Throws NotNeeded before a reader call once
+ *  `session.stopped` is set. */
 async function caseOf(
   run: CaseRun,
   store: { readonly name: string; readonly context: string },
   transcriptPath: string,
   text: string,
-  record: SessionRecord
+  record: SessionRecord,
+  session: { readonly stopped: boolean }
 ): Promise<Outcome> {
   const drop = (reason: DropReason, detail: string): Outcome => ({ drop: reason, detail });
   let entries: SessionEntry[];
@@ -2400,6 +2524,7 @@ async function caseOf(
       earlier.unshift(each);
     }
     let given: CaseAnswer;
+    if (session.stopped) throw new NotNeeded();
     try {
       const result = await runReader(
         "case",
@@ -2561,6 +2686,7 @@ async function caseOf(
   }
   for (const [n, window] of check.windows.entries()) {
     let found: RestateAnswer;
+    if (session.stopped) throw new NotNeeded();
     try {
       const result = await runReader(
         "restate",
@@ -2593,6 +2719,7 @@ async function caseOf(
   // The audit of the real step: the line and the messages before the step as the judge reads them,
   // and no criterion.
   let audit: AuditAnswer;
+  if (session.stopped) throw new NotNeeded();
   try {
     const result = await runReader(
       "audit",
@@ -2724,7 +2851,16 @@ async function reprofileCases(
     ["config", "old", "copies", "count", "reprofile", "out"],
     BUILD_CASES_USAGE
   );
-  for (const flag of ["key-file", "cut", "skill", "sessions", "seed", "max", "budget-usd"]) {
+  for (const flag of [
+    "key-file",
+    "cut",
+    "skill",
+    "sessions",
+    "seed",
+    "max",
+    "budget-usd",
+    "concurrency",
+  ]) {
     if (values[flag] !== undefined) {
       throw new Refused(
         `--reprofile reads no session and calls no reader, so it takes no --${flag}`
@@ -2850,6 +2986,164 @@ async function reprofileCases(
   return EXIT.ok;
 }
 
+/** What a build-cases run is made from, as its summary records it: a resumed run must be made
+ *  from the same. The texts are digests of what the run read (`digestOf`); the paths are only
+ *  for a reader of the summary. */
+const CasesInputs = z.strictObject({
+  cut: z.string(),
+  skill: z.string(),
+  seed: z.string(),
+  old: Digested,
+  sessions: Digested,
+  copies: Digested,
+  count: Digested,
+});
+type CasesInputs = z.infer<typeof CasesInputs>;
+
+/** The files of R4's output that build-cases reads (readCopies, and attribute.ts's readR4). */
+const COPIES_READ = [
+  "installers.tsv",
+  "loaders.tsv",
+  "manifests.tsv",
+  "prefix-table.tsv",
+  "repositories.tsv",
+  "skill-copies.tsv",
+];
+
+/** The query outputs of `countDir` that attribute.ts's readCount reads for `stores`, and its
+ *  run log, as paths inside it, in order. */
+function countFiles(countDir: string, stores: readonly string[]): string[] {
+  const files: string[] = [];
+  for (const store of [...stores].sort()) {
+    const dir = path.join(countDir, store);
+    if (!existsSync(dir)) continue;
+    for (const file of readdirSync(dir).sort()) {
+      if (/^\d{4}-\d{2}-\d{2}(T\d{2})?\.txt$/.test(file)) files.push(`${store}/${file}`);
+    }
+  }
+  return [...files, "run.log"];
+}
+
+/** Where two runs' inputs differ, one phrase each; empty when they are the same. */
+function inputsDiffer(was: CasesInputs, now: CasesInputs): string[] {
+  const differ: string[] = [];
+  for (const key of ["cut", "skill", "seed"] as const) {
+    if (was[key] !== now[key]) differ.push(`--${key} was ${was[key]}, now ${now[key]}`);
+  }
+  for (const key of ["old", "sessions", "copies", "count"] as const) {
+    if (was[key].sha256 !== now[key].sha256) {
+      differ.push(
+        `--${key} was ${was[key].path} (sha256 ${was[key].sha256.slice(0, 12)}), now ${now[key].path} (sha256 ${now[key].sha256.slice(0, 12)})`
+      );
+    }
+  }
+  return differ;
+}
+
+/** A build-cases summary as a resumed run reads it back. */
+const CasesSummary = z.looseObject({
+  command: z.literal("build-cases"),
+  inputs: CasesInputs.optional(),
+  sessions: z.array(
+    z.looseObject({
+      store: z.string(),
+      hash: z.string(),
+      outcome: z.string(),
+      reason: z.string().optional(),
+    })
+  ),
+  cases: z.array(z.looseObject({ id: z.string() })),
+  sessionQueries: z.number(),
+  readerSpend: SpendRecord,
+});
+
+/** One session an earlier run decided: its summary record and, for a case, the case's summary
+ *  record (the case itself stays in the cases file). */
+interface DecidedSession {
+  readonly record: SessionRecord;
+  readonly caseRecord?: Record<string, unknown>;
+}
+
+/** What an earlier run of the same inputs decided, by `<store>\0<hash>`, and what it spent and
+ *  queried. */
+interface PriorBuild {
+  readonly decided: ReadonlyMap<string, DecidedSession>;
+  readonly spend: Spend;
+  readonly sessionQueries: number;
+}
+
+/** Writes the cases file `out` again with only its lines of a case whose id `ids` holds (each
+ *  once, in the file's order), leaving out a line cut short; returns the lines kept, by id. */
+function keepCases(out: string, ids: ReadonlySet<string>): Map<string, string> {
+  const lines = new Map<string, string>();
+  if (existsSync(out)) {
+    for (const line of readFileSync(out, "utf8").split("\n")) {
+      let id: unknown;
+      try {
+        id = (JSON.parse(line) as { id?: unknown }).id;
+      } catch {
+        continue;
+      }
+      if (typeof id === "string" && ids.has(id) && !lines.has(id)) lines.set(id, line);
+    }
+  }
+  writeWhole(out, [...lines.values()].map((line) => `${line}\n`).join(""));
+  return lines;
+}
+
+/**
+ * The earlier run whose files are at `out` and `summaryFile`, or undefined when neither is there.
+ * Refuses a cases file with no summary, a summary that is not one of build-cases or records no
+ * inputs, and a summary of other inputs, naming each difference. A run appends each case to the
+ * cases file and then writes its summary, so a kill can leave a case line (whole, or cut short)
+ * that the summary does not record: the cases file is written again with only the cases the
+ * summary records, and their sessions are decided. A session dropped is decided; one the summary
+ * records as a case that the file lacks, one the budget stopped and one not needed are not.
+ */
+function priorBuild(out: string, summaryFile: string, inputs: CasesInputs): PriorBuild | undefined {
+  if (!existsSync(summaryFile)) {
+    if (existsSync(out)) {
+      throw new Refused(
+        `--out ${out} is there but ${summaryFile} is not, so what built it is not known; give another --out`
+      );
+    }
+    return undefined;
+  }
+  const parsed = CasesSummary.safeParse(readJson(summaryFile));
+  if (!parsed.success) {
+    throw new Refused(
+      `${summaryFile} is no build-cases summary this build can go on from: ${parsed.error.issues.map((issue) => `${issue.path.join(".") || "the file"}: ${issue.message}`).join("; ")}`
+    );
+  }
+  const summary = parsed.data;
+  if (summary.inputs === undefined) {
+    throw new Refused(
+      `${summaryFile} records no inputs (an older build-cases wrote it), so a build cannot go on from it; give another --out`
+    );
+  }
+  const differ = inputsDiffer(summary.inputs, inputs);
+  if (differ.length > 0) {
+    throw new Refused(
+      `--out ${out} holds a build of other inputs, so this one does not go on from it: ${differ.join("; ")}`
+    );
+  }
+  const recorded = new Map(summary.cases.map((each) => [each.id, each]));
+  const lines = keepCases(out, new Set(recorded.keys()));
+  const decided = new Map<string, DecidedSession>();
+  for (const session of summary.sessions) {
+    const record = session as unknown as SessionRecord;
+    const key = `${session.store}\0${session.hash}`;
+    if (session.reason !== undefined) {
+      decided.set(key, { record });
+      continue;
+    }
+    const id = /^case (\S+)$/.exec(session.outcome)?.[1];
+    const caseRecord = id === undefined || !lines.has(id) ? undefined : recorded.get(id);
+    if (caseRecord !== undefined) decided.set(key, { record, caseRecord });
+  }
+  return { decided, spend: summary.readerSpend, sessionQueries: summary.sessionQueries };
+}
+
 /** `skill-cuts build-cases`. */
 async function buildCases(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -2868,6 +3162,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       out: { type: "string" },
       max: { type: "string" },
       "budget-usd": { type: "string" },
+      concurrency: { type: "string" },
     },
     BUILD_CASES_USAGE
   );
@@ -2887,6 +3182,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   if (budget !== undefined && (budget.trim() === "" || !(Number(budgetUsd) >= 0))) {
     throw new Refused(`--budget-usd ${budget} is not a number of dollars of 0 or more`);
   }
+  const concurrency =
+    values.concurrency === undefined ? BUILD_CONCURRENCY : Number(values.concurrency);
+  if (values.concurrency !== undefined && (!/^\d+$/.test(values.concurrency) || concurrency < 1)) {
+    throw new Refused(`--concurrency ${values.concurrency} is not a whole number of 1 or more`);
+  }
   const config = configFrom(given.config);
   const cut = config.cuts.find((each) => each.id === given.cut);
   if (cut === undefined) {
@@ -2902,12 +3202,59 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
 
-  // Paths for the candidates that lack one, per store.
+  // An earlier run of the same inputs at --out: every session it decided is kept as it was, with
+  // no pull and no reader call, and the build goes on from the first session it did not decide.
+  const summaryFile = `${given.out}.summary.json`;
+  const inputs: CasesInputs = {
+    cut: cut.id,
+    skill: given.skill,
+    seed: given.seed,
+    old: digestOf(
+      given.old,
+      files.map((file) => file.path)
+    ),
+    sessions: {
+      ...digestOf(path.dirname(given.sessions), [path.basename(given.sessions)]),
+      path: given.sessions,
+    },
+    copies: digestOf(given.copies, COPIES_READ),
+    count: digestOf(
+      given.count,
+      countFiles(
+        given.count,
+        config.stores.map((store) => store.name)
+      )
+    ),
+  };
+  const prior = priorBuild(given.out, summaryFile, inputs);
+  const decided: ReadonlyMap<string, DecidedSession> = prior?.decided ?? new Map();
+  const priorSpend = prior?.spend ?? NO_SPEND;
+  if (prior === undefined) writeWhole(given.out, "");
+  else {
+    const kept = [...decided.values()].filter((each) => each.caseRecord !== undefined).length;
+    io.out(
+      `build-cases: going on from ${summaryFile}: ${decided.size} sessions decided there (${kept} cases), $${priorSpend.usd.toFixed(4)} of readers spent\n`
+    );
+  }
+  const keyOf = (candidate: { store: string; hash: string }) =>
+    `${candidate.store}\0${candidate.hash}`;
+
+  // The store is read one query at a time, whichever sessions are open.
+  let storeTurn: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(read: () => Promise<T>): Promise<T> => {
+    const next = storeTurn.then(read, read);
+    storeTurn = next.catch(() => undefined);
+    return next;
+  };
+
+  // Paths for the candidates that lack one and are not decided yet, per store.
   const paths = new Map<string, string>();
-  let sessionQueries = 0;
+  let sessionQueries = prior?.sessionQueries ?? 0;
   for (const store of config.stores) {
     const hashes = order
-      .filter((each) => each.store === store.name && each.path === undefined)
+      .filter(
+        (each) => each.store === store.name && each.path === undefined && !decided.has(keyOf(each))
+      )
       .map((each) => each.hash);
     if (hashes.length === 0) continue;
     const resolved = await resolvePaths(config.psqlCommand, store.name, hashes);
@@ -2915,6 +3262,8 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     for (const [hash, filePath] of resolved.paths) paths.set(`${store.name}\0${hash}`, filePath);
   }
 
+  // The budget counts what the earlier runs spent; the gateway takes as many calls at once as
+  // sessions are open.
   const run: CaseRun = {
     config,
     cut,
@@ -2923,19 +3272,26 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     files,
     copies,
     github: new GithubReads(io.gh, copies.branches),
-    gateway: readerGateway(config, given["key-file"], budgetUsd),
+    gateway: readerGateway(
+      config,
+      given["key-file"],
+      budgetUsd === undefined ? undefined : Math.max(0, budgetUsd - priorSpend.usd),
+      concurrency
+    ),
     placer: placing,
     servedIds: new Set(config.servedModels.map(modelId)),
   };
-  const summaryFile = `${given.out}.summary.json`;
-  const cases: Case[] = [];
   const caseRecords: Record<string, unknown>[] = [];
   const sessions: SessionRecord[] = [];
-  const drops: Partial<Record<DropReason, number>> = {};
-  let pulls = 0;
+  let casesBuilt = 0;
   let stopped: string | undefined;
   const write = () => {
-    writeWhole(given.out, cases.map((each) => `${JSON.stringify(each)}\n`).join(""));
+    const drops: Partial<Record<DropReason, number>> = {};
+    let pulls = 0;
+    for (const session of sessions) {
+      if (session.reason !== undefined) drops[session.reason] = (drops[session.reason] ?? 0) + 1;
+      pulls += session.pulls ?? 0;
+    }
     writeWhole(
       summaryFile,
       `${JSON.stringify(
@@ -2944,6 +3300,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
           cut: cut.id,
           skill: given.skill,
           seed: given.seed,
+          inputs,
           order: order.map(({ store, hash }) => ({ store, hash })),
           bounds: {
             readerWindows: READER_WINDOWS,
@@ -2959,26 +3316,42 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
             pullPage: PULL_PAGE,
             max: Number.isFinite(max) ? max : null,
             budgetUsd: budgetUsd ?? null,
+            concurrency,
           },
           stopped: stopped ?? null,
           sessionsTried: sessions.length,
-          casesBuilt: cases.length,
+          casesBuilt,
           drops,
           byModel: byModel(sessions),
           sessions,
           cases: caseRecords,
           sessionQueries,
           pullCalls: pulls,
-          readerSpend: run.gateway.spend(),
+          readerSpend: addSpend(priorSpend, run.gateway.spend()),
         },
         null,
         2
       )}\n`
     );
   };
-  write();
-  for (const [position, candidate] of order.entries()) {
-    if (cases.length >= max) break;
+  // A run that goes on leaves the earlier summary as it is until it decides a session: by then it
+  // has gone past every session the earlier run decided (they come first in the seeded order), so
+  // a kill at any moment leaves a summary that records them all.
+  if (prior === undefined) write();
+
+  // One session's work: its pull, then caseOf, until it is no longer wanted. The promise never
+  // rejects: it gives the outcome, or what stopped it.
+  type Worked =
+    | { readonly outcome: Outcome }
+    | { readonly budget: BudgetSpent }
+    | { readonly notNeeded: true }
+    | { readonly error: unknown };
+  interface Open {
+    readonly record: SessionRecord;
+    readonly wanted: { stopped: boolean };
+    readonly worked: Promise<Worked>;
+  }
+  const work = (candidate: (typeof order)[number]): Open => {
     const store = storeNamed(config, candidate.store);
     const record: SessionRecord = {
       store: store.name,
@@ -2986,46 +3359,112 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       readerUsd: 0,
       outcome: "",
     };
-    sessions.push(record);
+    const wanted = { stopped: false };
     const transcriptPath = candidate.path ?? paths.get(`${store.name}\0${candidate.hash}`);
-    const sessionOutcome = async (): Promise<Outcome> => {
+    const outcome = async (): Promise<Outcome> => {
       if (transcriptPath === undefined) {
         return { drop: "not-in-store", detail: "sessions.sql gave no row of this hash" };
       }
       record.pathHash = pathHash(transcriptPath);
       let pulled: { text: string; calls: number };
       try {
-        pulled = await pullTranscript(config.psqlCommand, store.name, transcriptPath);
+        pulled = await oneAtATime(() => {
+          if (wanted.stopped) throw new NotNeeded();
+          return pullTranscript(config.psqlCommand, store.name, transcriptPath);
+        });
       } catch (error) {
+        if (error instanceof NotNeeded) throw error;
         return { drop: "pull-failed", detail: messageFor(error) };
       }
-      pulls += pulled.calls;
       record.pulls = pulled.calls;
       if (pulled.text === "") return { drop: "pull-failed", detail: "the pull returned no row" };
-      return caseOf(run, store, transcriptPath, pulled.text, record);
+      return caseOf(run, store, transcriptPath, pulled.text, record, wanted);
     };
-    let outcome: Outcome;
-    try {
-      outcome = await sessionOutcome();
-    } catch (error) {
-      if (!(error instanceof BudgetSpent)) throw error;
-      stopped = `the readers' spend reached --budget-usd ${budget}: ${error.message}`;
+    const worked = outcome().then(
+      (each): Worked => ({ outcome: each }),
+      (error: unknown): Worked =>
+        error instanceof NotNeeded
+          ? { notNeeded: true }
+          : error instanceof BudgetSpent
+            ? { budget: error }
+            : { error }
+    );
+    return { record, wanted, worked };
+  };
+
+  // At most `concurrency` sessions are open (being read, or read and waiting for those before
+  // them), so no more than that many sessions' text is held. Their outcomes are decided in the
+  // seeded order, as one at a time would decide them, so the cases kept are the first --max
+  // cases of that order. Once the build ends, each session still open is stopped before its next
+  // reader call, and recorded with what it spent.
+  const open = new Map<number, Open>();
+  let launched = 0;
+  const fill = () => {
+    while (open.size < concurrency && launched < order.length) {
+      const position = launched++;
+      const candidate = order[position];
+      if (candidate === undefined || decided.has(keyOf(candidate))) continue;
+      open.set(position, work(candidate));
+    }
+  };
+  const closeOpen = async (outcome: string) => {
+    for (const each of open.values()) each.wanted.stopped = true;
+    const left = [...open.entries()].sort(([a], [b]) => a - b);
+    open.clear();
+    await Promise.all(left.map(([, each]) => each.worked));
+    for (const [, each] of left) {
+      each.record.outcome = outcome;
+      sessions.push(each.record);
+    }
+  };
+  for (const [position, candidate] of order.entries()) {
+    if (casesBuilt >= max) break;
+    const kept = decided.get(keyOf(candidate));
+    if (kept !== undefined) {
+      sessions.push(kept.record);
+      if (kept.caseRecord !== undefined) {
+        caseRecords.push(kept.caseRecord);
+        casesBuilt += 1;
+      }
+      continue;
+    }
+    fill();
+    const session = open.get(position);
+    if (session === undefined) throw new Error(`session ${position + 1} was not opened`);
+    const worked = await session.worked;
+    open.delete(position);
+    const { record } = session;
+    const store = record.store;
+    if ("error" in worked || "notNeeded" in worked) {
+      await closeOpen("not-needed");
+      // The session whose turn it is was never told to stop.
+      throw "error" in worked ? worked.error : new Error(`session ${position + 1} was stopped`);
+    }
+    if ("budget" in worked) {
+      const spent = addSpend(priorSpend, run.gateway.spend()).usd;
+      stopped = `the readers' spend reached --budget-usd ${budget}: $${spent.toFixed(4)} at list price, so no new reader call starts`;
       record.outcome = "stopped before its case was built: the budget is spent";
+      sessions.push(record);
+      await closeOpen(record.outcome);
       write();
       break;
     }
+    const { outcome } = worked;
+    sessions.push(record);
     if ("drop" in outcome) {
       record.outcome = "dropped";
       record.reason = outcome.drop;
       record.detail = outcome.detail;
-      drops[outcome.drop] = (drops[outcome.drop] ?? 0) + 1;
       io.out(
-        `build-cases: ${position + 1}/${order.length} ${store.name} ${candidate.hash}: dropped (${outcome.drop}) ${outcome.detail}\n`
+        `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: dropped (${outcome.drop}) ${outcome.detail}\n`
       );
     } else {
       const built = outcome.case;
-      cases.push(built);
       record.outcome = `case ${built.id}`;
+      // A case line is appended whole before the summary records it; a run that goes on from a
+      // kill between the two leaves out a line its summary does not record.
+      appendFileSync(given.out, `${JSON.stringify(built)}\n`);
+      casesBuilt += 1;
       caseRecords.push({
         id: built.id,
         pathHash: built.source.pathHash,
@@ -3048,16 +3487,24 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         },
       });
       io.out(
-        `build-cases: ${position + 1}/${order.length} ${store.name} ${candidate.hash}: case ${built.id} (step ${outcome.step}, ${built.model}, ${built.context})\n`
+        `build-cases: ${position + 1}/${order.length} ${store} ${candidate.hash}: case ${built.id} (step ${outcome.step}, ${built.model}, ${built.context})\n`
       );
     }
     write();
   }
+  const left = open.size > 0;
+  if (left) await closeOpen("not-needed");
+  if (left || prior !== undefined) write();
+  // A run that goes on with a smaller --max than the earlier one records fewer cases; the cases
+  // file keeps only those (after the summary, so a kill between leaves lines the next run drops).
+  if (prior !== undefined) {
+    keepCases(given.out, new Set(caseRecords.map((each) => String(each.id))));
+  }
   // The file must load as the behaviour commands load it.
   loadCases(given.out, given.old);
-  const usd = run.gateway.spend().usd;
+  const usd = addSpend(priorSpend, run.gateway.spend()).usd;
   io.out(
-    `build-cases: ${cases.length} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-cases: ${casesBuilt} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
   if (stopped !== undefined) {
     io.err(`build-cases: stopped: ${stopped}`);
@@ -3070,6 +3517,92 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
 // build-tasks
 
 const TaskRow = z.strictObject({ path: z.string().min(1), text: z.string() });
+
+/** One first user message a query of build-tasks found, as `<out>.found.jsonl` keeps it: the
+ *  query (store and day), the file's path hash and the text. */
+const FoundRow = z.strictObject({
+  store: z.string(),
+  day: z.string(),
+  pathHash: z.string().regex(/^[0-9a-f]{64}$/),
+  text: z.string(),
+});
+type FoundRow = z.infer<typeof FoundRow>;
+
+/** One query of build-tasks: its store and day, and its row count, or its error. */
+const TasksQuery = z.strictObject({
+  store: z.string(),
+  day: z.string(),
+  rows: z.number().nullable(),
+  error: z.string().optional(),
+});
+type TasksQuery = z.infer<typeof TasksQuery>;
+
+/** What a build-tasks run is made from: the skill's SKILL.md, the stores and the window. */
+const TasksInputs = z.strictObject({
+  skill: Digested,
+  stores: z.array(z.string()),
+  window: z.strictObject({ start: z.string(), end: z.string() }),
+});
+type TasksInputs = z.infer<typeof TasksInputs>;
+
+/** A build-tasks summary as a resumed run reads it back: a finished one, or one in progress. */
+const TasksSummary = z.looseObject({
+  command: z.literal("build-tasks"),
+  inputs: TasksInputs.optional(),
+  done: z.boolean().optional(),
+  terms: z.array(z.string()).nullable().optional(),
+  queries: z.array(TasksQuery),
+  readerSpend: SpendRecord,
+});
+
+/** The earlier build-tasks run at `out` and `summaryFile`, or undefined when neither is there;
+ *  refuses as build-cases does (`priorBuild`). */
+function priorTasks(
+  out: string,
+  summaryFile: string,
+  inputs: TasksInputs
+): { done: boolean; terms: string[] | undefined; queries: TasksQuery[]; spend: Spend } | undefined {
+  if (!existsSync(summaryFile)) {
+    if (existsSync(out)) {
+      throw new Refused(
+        `--out ${out} is there but ${summaryFile} is not, so what built it is not known; give another --out`
+      );
+    }
+    return undefined;
+  }
+  const parsed = TasksSummary.safeParse(readJson(summaryFile));
+  if (!parsed.success || parsed.data.inputs === undefined) {
+    throw new Refused(
+      `${summaryFile} is no build-tasks summary with its inputs, so a build cannot go on from it; give another --out`
+    );
+  }
+  const was = parsed.data.inputs;
+  const differ: string[] = [];
+  if (was.skill.sha256 !== inputs.skill.sha256) {
+    differ.push(
+      `--skill was ${was.skill.path}, now ${inputs.skill.path}, and its SKILL.md differs`
+    );
+  }
+  if (was.stores.join() !== inputs.stores.join()) {
+    differ.push(`--store was ${was.stores.join(", ")}, now ${inputs.stores.join(", ")}`);
+  }
+  if (was.window.start !== inputs.window.start || was.window.end !== inputs.window.end) {
+    differ.push(
+      `the window was ${was.window.start} to ${was.window.end}, now ${inputs.window.start} to ${inputs.window.end}`
+    );
+  }
+  if (differ.length > 0) {
+    throw new Refused(
+      `--out ${out} holds a build of other inputs, so this one does not go on from it: ${differ.join("; ")}`
+    );
+  }
+  return {
+    done: parsed.data.done === true,
+    terms: parsed.data.terms ?? undefined,
+    queries: parsed.data.queries,
+    spend: parsed.data.readerSpend,
+  };
+}
 
 /** The UTC days of [start, end), as YYYY-MM-DD. */
 function windowDays(start: string, end: string): string[] {
@@ -3122,31 +3655,105 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         : path.basename(path.resolve(given.skill)),
     description: typeof fields.description === "string" ? fields.description : "",
   };
+  // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
+  // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
+  // first query it did not record. A finished build is left as it is.
+  const summaryFile = `${given.out}.summary.json`;
+  const foundFile = `${given.out}.found.jsonl`;
+  const inputs: TasksInputs = {
+    skill: digestOf(given.skill, ["SKILL.md"]),
+    stores,
+    window: { start: config.windowStart, end: config.windowEnd },
+  };
+  const prior = priorTasks(given.out, summaryFile, inputs);
+  if (prior?.done === true) {
+    io.out(`build-tasks: ${summaryFile} records a finished build of these inputs; nothing to do\n`);
+    return EXIT.ok;
+  }
+  const priorSpend = prior?.spend ?? NO_SPEND;
+  const recorded = new Map(
+    (prior?.queries ?? []).map((query) => [`${query.store}\0${query.day}`, query])
+  );
+  const found: FoundRow[] = [];
+  if (existsSync(foundFile)) {
+    for (const line of readFileSync(foundFile, "utf8").split("\n")) {
+      let row: FoundRow;
+      try {
+        row = FoundRow.parse(JSON.parse(line));
+      } catch {
+        continue;
+      }
+      if (typeof recorded.get(`${row.store}\0${row.day}`)?.rows === "number") found.push(row);
+    }
+  }
+  writeWhole(foundFile, found.map((row) => `${JSON.stringify(row)}\n`).join(""));
   const gateway = readerGateway(config, given["key-file"]);
+  const spend = () => addSpend(priorSpend, gateway.spend());
+  let terms = prior?.terms;
+  const queries: TasksQuery[] = [];
+  const progress = () =>
+    writeWhole(
+      summaryFile,
+      `${JSON.stringify(
+        {
+          command: "build-tasks",
+          skill: skill.name,
+          inputs,
+          done: false,
+          terms: terms ?? null,
+          queries,
+          readerSpend: spend(),
+        },
+        null,
+        2
+      )}\n`
+    );
 
-  const proposal = await runReader("tasks", { skill, messages: [] } satisfies TasksInput, gateway);
-  const terms = TasksAnswer.parse(proposal.answer).terms;
-  io.out(`build-tasks: terms ${terms.map((term) => JSON.stringify(term)).join(", ")}\n`);
+  if (terms === undefined) {
+    const proposal = await runReader(
+      "tasks",
+      { skill, messages: [] } satisfies TasksInput,
+      gateway
+    );
+    terms = TasksAnswer.parse(proposal.answer).terms;
+    progress();
+  }
+  const searched = terms;
+  io.out(`build-tasks: terms ${searched.map((term) => JSON.stringify(term)).join(", ")}\n`);
 
-  const queries: { store: string; day: string; rows: number | null; error?: string }[] = [];
-  const found: { store: string; path: string; text: string }[] = [];
   for (const store of stores) {
     for (const day of windowDays(config.windowStart, config.windowEnd)) {
+      const done = recorded.get(`${store}\0${day}`);
+      if (done !== undefined) {
+        queries.push(done);
+        continue;
+      }
+      let query: TasksQuery;
       try {
         const rows = await storeRows(
           config.psqlCommand,
           store,
-          tasksSql(mtimeRange(day), config.windowStart, config.windowEnd, terms)
+          tasksSql(mtimeRange(day), config.windowStart, config.windowEnd, searched)
         );
-        queries.push({ store, day, rows: rows.length });
-        for (const row of rows) found.push({ store, ...TaskRow.parse(row) });
+        const lines = rows.map((each) => {
+          const row = TaskRow.parse(each);
+          return { store, day, pathHash: pathHash(row.path), text: row.text };
+        });
+        // The query's messages are appended whole before the summary records the query; a run
+        // that goes on from a kill between the two leaves them out and runs the query again.
+        appendFileSync(foundFile, lines.map((row) => `${JSON.stringify(row)}\n`).join(""));
+        found.push(...lines);
+        query = { store, day, rows: rows.length };
       } catch (error) {
-        queries.push({ store, day, rows: null, error: messageFor(error) });
+        query = { store, day, rows: null, error: messageFor(error) };
         io.err(`build-tasks: ${store} ${day}: ${messageFor(error)}`);
       }
+      queries.push(query);
+      progress();
+      io.out(`build-tasks: ${store} ${day}: ${query.rows ?? "no"} rows\n`);
     }
   }
-  const distinct = new Map<string, { store: string; path: string; text: string }>();
+  const distinct = new Map<string, FoundRow>();
   for (const row of found) {
     const key = row.text.trim();
     if (key !== "" && !distinct.has(key)) distinct.set(key, row);
@@ -3175,22 +3782,23 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       label: task.label,
       source: "session" as const,
       store: message.store,
-      pathHash: pathHash(message.path),
+      pathHash: message.pathHash,
     };
   });
   writeWhole(given.out, tasks.map((task) => `${JSON.stringify(task)}\n`).join(""));
   const count = (label: string, source: string) =>
     tasks.filter((task) => task.label === label && task.source === source).length;
-  const summaryFile = `${given.out}.summary.json`;
   writeWhole(
     summaryFile,
     `${JSON.stringify(
       {
         command: "build-tasks",
         skill: skill.name,
+        inputs,
+        done: true,
         stores,
         window: { start: config.windowStart, end: config.windowEnd },
-        terms,
+        terms: searched,
         queries,
         messagesFound: found.length,
         messagesDistinct: distinct.size,
@@ -3208,14 +3816,16 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
             written: count("near-miss", "written"),
           },
         },
-        readerSpend: gateway.spend(),
+        readerSpend: spend(),
       },
       null,
       2
     )}\n`
   );
+  // The messages found are in the tasks file where a task names one; the rest are not kept.
+  rmSync(foundFile, { force: true });
   io.out(
-    `build-tasks: ${tasks.length} tasks (${tasks.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered; $${gateway.spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
+    `build-tasks: ${tasks.length} tasks (${tasks.filter((task) => task.source === "session").length} from sessions) from ${offered.length} first user messages offered; $${spend().usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
   return EXIT.ok;
 }

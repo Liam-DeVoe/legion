@@ -1948,6 +1948,195 @@ test("build-tasks proposes terms, reads first user messages per store and day, a
   expect(summary.messagesOffered).toBe(2);
 }, 30_000);
 
+/** The lines of the stand-in store's log since `from` characters, parsed. */
+const psqlLines = (from: number) =>
+  readFileSync(psqlLog, "utf8")
+    .slice(from)
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as { kind: string; rows: number });
+
+/** `summary` with each dollar figure of its spend rounded, since a run that goes on adds its
+ *  spend to the earlier run's, which can differ from one running sum in the last bit. */
+function roundedSpend(summary: Record<string, unknown>): Record<string, unknown> {
+  const spend = summary.readerSpend as { usd: number; models: Record<string, { usd: number }> };
+  const round = (usd: number) => Number(usd.toFixed(9));
+  return {
+    ...summary,
+    readerSpend: {
+      usd: round(spend.usd),
+      models: Object.fromEntries(
+        Object.entries(spend.models).map(([model, each]) => [
+          model,
+          { ...each, usd: round(each.usd) },
+        ])
+      ),
+    },
+  };
+}
+
+/** An io whose `out` throws once `after` sessions are decided, as a kill after them would end the
+ *  run: the next session's work is done, and its outcome is not written. */
+function killedAfter(after: number, lines: string[]): BuildIo {
+  let decided = 0;
+  return {
+    ...io(lines),
+    out: (text) => {
+      lines.push(text);
+      if (/^build-cases: \d+\/\d+ /.test(text) && ++decided > after) throw new Error("killed");
+    },
+  };
+}
+
+describe("build-cases goes on from where a run stopped", () => {
+  const names = [
+    "good",
+    "quoted",
+    "secret",
+    "legion",
+    "no-step",
+    "read-wins",
+    "unshipped",
+    "openai",
+  ];
+  const once = path.join(scratch, "resume", "once", "cases.jsonl");
+  const killed = path.join(scratch, "resume", "killed", "cases.jsonl");
+  let sessions = "";
+  const lines: string[] = [];
+  let resumedRequests: RecordedRequest[] = [];
+  let resumedPulls: { kind: string; rows: number }[] = [];
+  const codes: number[] = [];
+  beforeAll(async () => {
+    sessions = sessionsFile("resume.jsonl", names);
+    const args = (out: string) => buildArgs(sessions, out, "5", "--concurrency", "1");
+    codes.push(await main(args(once), io([])));
+    codes.push(await main(args(killed), killedAfter(3, lines)));
+    const from = recorder.requests.length;
+    const logged = readFileSync(psqlLog, "utf8").length;
+    codes.push(await main(args(killed), io(lines)));
+    resumedRequests = recorder.requests.slice(from);
+    resumedPulls = psqlLines(logged);
+  }, 120_000);
+
+  test("a build killed after 3 sessions and run again gives the cases and summary of one uninterrupted run, with no pull and no reader call for those 3", () => {
+    expect(codes).toEqual([0, 1, 0]);
+    expect(lines.join("")).toContain("going on from");
+    expect(readFileSync(killed, "utf8")).toBe(readFileSync(once, "utf8"));
+    const summary = (out: string) =>
+      roundedSpend(
+        JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as Record<string, unknown>
+      );
+    expect(summary(killed)).toEqual(summary(once));
+    // The first 3 sessions of the seeded order were decided before the kill.
+    const order = summaryOf(once).order.map(
+      (each) => names.find((name) => fileHash(sessionPath(name)) === each.hash) ?? ""
+    );
+    for (const name of order.slice(0, 3)) {
+      expect(resumedRequests.some((request) => request.body.includes(`(case ${name})`))).toBe(
+        false
+      );
+    }
+    expect(resumedRequests.some((request) => request.body.includes(`(case ${order[3]})`))).toBe(
+      true
+    );
+    const later = summaryOf(once).sessions.slice(3);
+    expect(resumedPulls.filter((each) => each.kind === "pull")).toHaveLength(
+      later.reduce((total, each) => total + (each.pulls ?? 0), 0)
+    );
+  });
+
+  test("a run that goes on from other inputs is refused, naming each difference, and leaves the files as they were", async () => {
+    const before = readFileSync(`${killed}.summary.json`, "utf8");
+    const refused: string[] = [];
+    expect(await main(buildArgs(sessions, killed, "6"), io(refused))).toBe(2);
+    expect(refused.join("\n")).toContain("--seed was 5, now 6");
+    const other = sessionsFile("resume-other.jsonl", names.slice(1));
+    expect(await main(buildArgs(other, killed, "5"), io(refused))).toBe(2);
+    expect(refused.join("\n")).toContain(`--sessions was ${sessions}`);
+    expect(refused.join("\n")).toContain("holds a build of other inputs");
+    expect(readFileSync(`${killed}.summary.json`, "utf8")).toBe(before);
+  });
+});
+
+test("--concurrency 3 keeps the same cases, in the same order, as one session at a time", async () => {
+  const names = [
+    "good",
+    "quoted",
+    "secret",
+    "legion",
+    "no-step",
+    "read-wins",
+    "openai",
+    "subagent",
+  ];
+  const sessions = sessionsFile("concurrency.jsonl", names);
+  const outs = [1, 3].map((n) => path.join(scratch, `concurrency-${n}`, "cases.jsonl"));
+  for (const [index, n] of [1, 3].entries()) {
+    const out = outs[index] ?? "";
+    expect(
+      await main(buildArgs(sessions, out, "9", "--max", "3", "--concurrency", `${n}`), io([]))
+    ).toBe(0);
+  }
+  const [one, three] = outs.map((out) => summaryOf(out));
+  expect(readFileSync(outs[1] ?? "", "utf8")).toBe(readFileSync(outs[0] ?? "", "utf8"));
+  expect(three?.order).toEqual(one?.order ?? []);
+  expect(three?.casesBuilt).toBe(3);
+  // The sessions decided are the same; a session still open when the third case was decided is
+  // recorded as not needed, after them.
+  const decided = (summary: Summary | undefined) =>
+    (summary?.sessions ?? []).filter((each) => each.outcome !== "not-needed");
+  expect(decided(three)).toEqual(decided(one));
+  const notNeeded = (three?.sessions ?? []).slice(decided(three).length);
+  expect(notNeeded.every((each) => each.outcome === "not-needed")).toBe(true);
+  expect(notNeeded.length).toBeLessThanOrEqual(2);
+}, 120_000);
+
+test("build-tasks killed after its first query and run again gives the tasks and summary of one uninterrupted run, with no terms call and only the query left", async () => {
+  const skillDir = path.join(setupDir, "old", "alpha");
+  const args = (out: string) => [
+    "build-tasks",
+    "--config",
+    config,
+    "--key-file",
+    keyFile,
+    "--skill",
+    skillDir,
+    "--store",
+    "store_a",
+    "--out",
+    out,
+  ];
+  const once = path.join(scratch, "tasks-once", "tasks.jsonl");
+  const killed = path.join(scratch, "tasks-killed", "tasks.jsonl");
+  expect(await main(args(once), io([]))).toBe(0);
+  const lines: string[] = [];
+  const kill: BuildIo = {
+    ...io(lines),
+    out: (text) => {
+      lines.push(text);
+      if (/^build-tasks: store_a \d{4}-\d{2}-\d{2}: /.test(text)) throw new Error("killed");
+    },
+  };
+  expect(await main(args(killed), kill)).toBe(1);
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  expect(await main(args(killed), io(lines))).toBe(0);
+  // Only the tasks reader's pick of tasks: its terms were recorded.
+  expect(recorder.requests.slice(from)).toHaveLength(1);
+  expect(psqlLines(logged)).toHaveLength(1);
+  expect(readFileSync(killed, "utf8")).toBe(readFileSync(once, "utf8"));
+  const summary = (out: string) =>
+    roundedSpend(
+      JSON.parse(readFileSync(`${out}.summary.json`, "utf8")) as Record<string, unknown>
+    );
+  expect(summary(killed)).toEqual(summary(once));
+  expect(existsSync(`${killed}.found.jsonl`)).toBe(false);
+  // A finished build is left as it is.
+  const again: string[] = [];
+  expect(await main(args(killed), io(again))).toBe(0);
+  expect(again.join("")).toContain("nothing to do");
+}, 60_000);
+
 test("removeSecrets takes out each secret shape and counts it, and leaves plain text alone", () => {
   const token = fixtureSecret("tok");
   const cases: [string, string, number][] = [
