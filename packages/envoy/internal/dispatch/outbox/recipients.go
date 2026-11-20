@@ -506,13 +506,17 @@ func registryUnanswered(err error) bool {
 // a mention of the comment still decides (mentionDeliveries.decidesCopyFor), which stays in the
 // list so that the mention rule runs for it - holding the event while that send is live, and
 // keeping the fallback row the pass publishes when it fails (destinations.leftTo). A session the
-// comment may yet name - an attempt that names no session yet and whose role the batch could
-// name no holder for is still to be sent, and its sender may pin it to that session - is neither:
-// its copy waits in the event's list until the sender has pinned the attempt, and is decided
-// then (creditWaits, mentionDeliveries.creditCopyOf). The comment's edit follows the comment's
-// copy: it reaches such a session where that session's mention failed, and waits while that
-// mention, or the comment's copy that follows it, is still to be decided
-// (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes both ask it.
+// comment may yet name - an attempt that names no session yet is still to be sent, and its
+// sender may pin it to that session - is neither: where the batch could name no holder for that
+// attempt's role and the attempt is within unnamedForwardBound, its copy waits in the event's
+// list until the sender has pinned the attempt, and is decided then (creditWaits); past that
+// bound, or where the batch resolved the role to another session, the copy is held as a
+// fallback row that the pass publishes only should the attempt be pinned to that session and
+// fail (creditHeldAsARow, mentionDeliveries.creditCopyOf). The comment's edit follows the
+// comment's copy: it reaches such a session where that session's mention failed, and waits while
+// that mention, or the comment's copy that follows it, is still to be decided, within that same
+// bound (mentionDeliveries.editCreditCopyOf). addPrimaryDocumentAuthors and addAuthorRoutes both
+// ask it.
 type creditFilter struct {
 	leavesOut bool
 	// mentions is what the comment's mentions did, as the batch read them: the reading the
@@ -537,15 +541,26 @@ const (
 	// waiting, makes no send this read, holds its key against the owner's later events, and the
 	// event is read again (destinations.waitForCredits, destination.waiting, planChains).
 	creditWaits
+	// creditHeldAsARow: an attempt of the comment that names no session yet still owes a send,
+	// past the bound the copy waits such an attempt out for or with its role resolved to another
+	// session, and its sender may yet pin it to this one. The copy is held as a
+	// comment_fallback_copies row of that session's own topic, which holds nothing of the event
+	// and which the fallback pass publishes under the key of that session's failed mention, or
+	// settles with nothing sent (destinations.holdForCredits, fallbackCopy.creditOf).
+	creditHeldAsARow
 )
 
 // newCreditFilter reads the rule for event, once for a route that asks it, and reads the one thing
 // that decides a session and is not in the destination build already: what the comment's mentions
 // did. A new comment's are the reading the build holds (eventDestinations), and an edit's are the
 // reading of the comment it edits (lookup.mentionDeliveries), which this filter alone reads and
-// which keys none of the edit's copies. An edit whose payload names no mention names nobody that
-// way, so it asks nothing. The edit's reading is asked wherever the thread rule may apply,
-// whether or not it does: the batch's first pass runs before the registry is read
+// which keys none of the edit's copies. Either reading is the store's - the comment's attempts,
+// and the comment_mentions rows they are opened under - and the edit's is never its payload's:
+// the API reads the edited comment back without its mentions (editComment, loadComment in
+// internal/dispatch/api), so an edit's payload names none whatever the comment names. So the
+// edit's reading is asked of every edit with a comment id, and a comment no attempt was recorded
+// for answers the empty reading, which names nobody. It is asked wherever the thread rule may
+// apply, whether or not it does: the batch's first pass runs before the registry is read
 // (threadHearing.hear), and it must register every id the second pass reads (wanted). A read that
 // failed ends the event's destinations, as every other lookup does.
 //
@@ -560,8 +575,11 @@ func newCreditFilter(event model.Event, routing routing, look lookup, d *destina
 	if !filter.leavesOut && !takesThreadRule(event, routing) {
 		return filter, nil
 	}
-	if event.Type == "comment.edited" && payloadHasMentions(event.Payload) {
-		reading, err := look.mentionDeliveries(payloadString(event.Payload, "id"))
+	if event.Type != "comment.edited" {
+		return filter, nil
+	}
+	if commentID := payloadString(event.Payload, "id"); commentID != "" {
+		reading, err := look.mentionDeliveries(commentID)
 		if err != nil {
 			return creditFilter{}, err
 		}

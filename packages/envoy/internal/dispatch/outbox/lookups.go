@@ -486,10 +486,13 @@ func loadDocumentSessionAuthors(ctx context.Context, db queryer, ids []string) (
 // (mentionDeliveries.fallbackKeys; that flag and the sent one together say whether the group has
 // settled at all, which is what mentionDeliveries.settledKeys holds a key for), and whether an
 // attempt of it still owed a send was created more than the bound a role route's forward waits
-// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That last
-// one is read of every group and carried by the unpinned ones alone: the attempts of a session
+// an unnamed mention out for ago (unnamedForwardBound, unpinnedRoleMentions.record). That one
+// is read of every group and carried by the unpinned ones alone: the attempts of a session
 // the reading can name decide their copies by their state, and the state of one past this bound
-// is mentionResending whichever side of it the attempt is. What mode those
+// is mentionResending whichever side of it the attempt is. The last column is whether any
+// attempt of the group, settled or not, was created more than that bound ago, which the
+// comment's first attempts, made by its own write, answer for the whole comment
+// (mentionDeliveries.writtenPastTheBound). What mode those
 // attempts went in does not matter: every attempt of one mention sends under the mention's own
 // key (model.CommentMentionIdempotencyKey),
 // so the mode comes from comment_mentions - one row per (comment, target), which is what makes
@@ -511,7 +514,8 @@ var mentionDeliveryQuery = `
 	       bool_or(d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `),
 	       bool_or(d.state = 'failed' or (d.state = 'pending' and ` + model.MentionAbandonedSQL("d") + `)),
 	       bool_or(d.state = 'pending' and ` + model.MentionResumedSQL("d") +
-	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `)
+	` and d.created_at < now() - ` + unnamedForwardBoundInterval + `),
+	       bool_or(d.created_at < now() - ` + unnamedForwardBoundInterval + `)
 	from comment_deliveries d
 	left join comment_mentions m on m.comment_id = d.comment_id and m.target = d.target
 	where d.comment_id = any($1::text[]::uuid[])
@@ -569,11 +573,13 @@ func (m settledMention) beats(current settledMention) bool {
 // destinations fallback rows own (mentionDeliveries), in two statements. Two events ask for a
 // comment: a comment.created that names a mentioned session, which takes the whole reading, both
 // the destinations it adds and the routes a mention's target suppresses (eventDestinations), and
-// a comment.edited whose payload names a mention, whose credits filter asks it which sessions a
-// document credits alone the comment's mentions name or may yet name (creditFilter,
-// mentionDeliveries.editCreditCopyOf) and adds none of its keys to the edit's copies. Every other
-// event, resolutions and reopenings included, asks for no comment and suppresses nothing. A
-// comment no attempt was recorded for answers empty sets, so it suppresses nothing either.
+// a comment.edited whose credits filter may leave a session a document credits alone out, which
+// asks it which of those sessions the comment's mentions name or may yet name (creditFilter,
+// mentionDeliveries.editCreditCopyOf) and adds none of its keys to the edit's copies: an edit's
+// payload names no mention of the comment, so the edit asks for every comment it edits there.
+// Every other event, resolutions and reopenings included, asks for no comment and suppresses
+// nothing. A comment no attempt was recorded for answers empty sets, so it suppresses nothing
+// either.
 //
 // An attempt that names no session is read under its target alone, as every reading here is, and
 // its target's role is recorded beside it with the state the attempt is in
@@ -598,13 +604,19 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 	}
 	var commentID, target, mode string
 	var sessionID *string
-	var sent, resending, sending, abandoned, failedSend, pastForwardBound bool
+	var sent, resending, sending, abandoned, failedSend, pastForwardBound, writtenPastBound bool
 	chosen := map[string]*fallbackChoice{}
 	_, err = pgx.ForEachRow(rows,
 		[]any{&commentID, &sessionID, &target, &mode, &sent, &resending, &sending, &abandoned, &failedSend,
-			&pastForwardBound},
+			&pastForwardBound, &writtenPastBound},
 		func() error {
 			deliveries := of(commentID)
+			if writtenPastBound && !deliveries.writtenPastTheBound {
+				// The reading is held by value, so the flag is written back to the map it is
+				// read from (mentionDeliveries.writtenPastTheBound).
+				deliveries.writtenPastTheBound = true
+				found.mentions[commentID] = deliveries
+			}
 			state := mentionStateOf(sent, resending, sending, abandoned)
 			if sessionID == nil && (state == mentionSending || state == mentionResending) {
 				// An attempt of this target names no session and its send is still coming:

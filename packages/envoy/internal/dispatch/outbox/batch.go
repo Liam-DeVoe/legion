@@ -312,7 +312,12 @@ type chain struct {
 // leaves such a session out, waits for the mention of the comment that decides whether it goes
 // (creditWaits): one such an attempt may yet be pinned to, and for the comment's edit one whose
 // mention of the comment, or the comment's copy that follows it, is still to settle; should that
-// mention fail, this copy is that session's one copy of the event.
+// mention fail, this copy is that session's one copy of the event. Neither wait runs past
+// unnamedForwardBound, but for a live attempt's own lease: past it, and where the batch resolved
+// the attempt's role to another session, a new comment's copy of such a session is no
+// destination of the list at all but a credit's comment_fallback_copies row, which holds nothing
+// back (creditHeldAsARow, destinations.holdForCredits), and the edit's is decided without the
+// wait (mentionDeliveries.editCreditCopyOf).
 //
 // A copy a comment_fallback_copies row has taken over (destination.heldAsARow) is the other
 // side of that: it goes on no chain, sends nothing and holds nothing, the row being another
