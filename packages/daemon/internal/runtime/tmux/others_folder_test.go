@@ -59,7 +59,7 @@ func TestARecordedSessionInAFolderAnotherUserDeniesReadsMissingNotAStoreFault(t 
 				t.Fatal(err)
 			}
 			recorded := recorded(sessions)
-			got, searched, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+			got, searched, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
 			if err != nil || got != "" {
 				t.Errorf("sessionFileOf(%s) = %q, %v, %v; want nothing found and no error", recorded, got, searched, err)
 			}
@@ -127,7 +127,7 @@ func TestARecordedSessionInAFolderOfThisUserThatDeniesItIsAStoreFault(t *testing
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(folder, 0o700) })
-	if got, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane"))); !errors.Is(err, runtime.ErrSessionStore) {
+	if got, _, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane"))); !errors.Is(err, runtime.ErrSessionStore) {
 		t.Fatalf("sessionFileOf of a session in this user's own denied folder = %q, %v, want runtime.ErrSessionStore", got, err)
 	}
 }

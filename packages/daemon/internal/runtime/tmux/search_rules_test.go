@@ -31,7 +31,7 @@ func TestSessionFileOfPassesOverAFileBesideTheFoldersOfASessionsDirectory(t *tes
 		}
 	}
 	t.Run("a session found nowhere reads missing", func(t *testing.T) {
-		got, searched, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
+		got, searched, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
 		if err != nil || got != "" || len(searched) != 2 {
 			t.Fatalf("sessionFileOf beside a file of the sessions directory = %q, %v, %v; want nothing found in both directories, no error", got, searched, err)
 		}
@@ -39,7 +39,7 @@ func TestSessionFileOfPassesOverAFileBesideTheFoldersOfASessionsDirectory(t *tes
 	t.Run("a carried session is still found", func(t *testing.T) {
 		carried := filepath.Join(pane, "--pod-work--", name)
 		writeSession(t, carried, time.Now())
-		got, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
+		got, _, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(pane))
 		if err != nil || got != carried {
 			t.Fatalf("sessionFileOf beside a file of the sessions directory = %q, %v; want %s", got, err, carried)
 		}
@@ -55,7 +55,7 @@ func TestSessionFileOfTakesTheRecordedNameOnEqualTimes(t *testing.T) {
 	other := filepath.Join(sessions, "--pod-work--", "2026-10-21T09-00-00-000Z_ses-abc.jsonl")
 	writeSession(t, named, at)
 	writeSession(t, other, at)
-	got, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(filepath.Join(t.TempDir(), "pane")))
+	got, _, _, err := sessionFileOf(filepath.Join(sessions, "--legion-workspace--", name), paneAt(filepath.Join(t.TempDir(), "pane")))
 	if err != nil || got != named {
 		t.Fatalf("sessionFileOf over two sessions of equal time = %q, %v; want the one of the recorded name, %s", got, err, named)
 	}
@@ -75,12 +75,12 @@ func TestSessionFileOfPassesOverACandidateThatIsNotThere(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorded := filepath.Join(sessions, "--legion-workspace--", name)
-	if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != "" {
+	if got, _, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != "" {
 		t.Fatalf("sessionFileOf beside a link to nothing = %q, %v; want nothing found, no error", got, err)
 	}
 	carried := filepath.Join(pane, "--pod-work--", name)
 	writeSession(t, carried, time.Now())
-	if got, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
+	if got, _, _, err := sessionFileOf(recorded, paneAt(pane)); err != nil || got != carried {
 		t.Fatalf("sessionFileOf beside a link to nothing = %q, %v; want the carried %s", got, err, carried)
 	}
 }
@@ -99,12 +99,12 @@ func TestSessionFileOfRefusesARecordedPathUnderAFileByName(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorded := filepath.Join(sessions, "--a-file--", name)
-	got, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
+	got, _, _, err := sessionFileOf(recorded, paneAt(filepath.Join(t.TempDir(), "pane-sessions")))
 	if got != "" || err == nil || errors.Is(err, runtime.ErrSessionStore) || !errors.Is(err, syscall.ENOTDIR) || !strings.Contains(err.Error(), recorded) {
 		t.Fatalf("sessionFileOf of a recorded path under a file = %q, %v; want a refusal naming %s that is no runtime.ErrSessionStore", got, err, recorded)
 	}
 	other := filepath.Join(t.TempDir(), "other", "--gone--", name)
-	if got, _, err := sessionFileOf(other, paneAt(sessions)); err != nil || got != "" {
+	if got, _, _, err := sessionFileOf(other, paneAt(sessions)); err != nil || got != "" {
 		t.Fatalf("control: sessionFileOf with that file beside the pane's folders = %q, %v; want nothing found, no error", got, err)
 	}
 }

@@ -25,7 +25,7 @@ func TestAResumeOfAMissingSessionStartsFreshUnchargedAndReportsTheLoss(t *testin
 	h := newBareHarness(t)
 	var reported []Claim
 	var details []string
-	h.deps.SessionLost = func(c Claim, detail string) {
+	h.deps.SessionLost = func(c Claim, _ SessionLoss, detail string) {
 		reported = append(reported, c)
 		details = append(details, detail)
 	}
@@ -46,7 +46,7 @@ func TestAResumeOfAMissingSessionStartsFreshUnchargedAndReportsTheLoss(t *testin
 		t.Errorf("claim %+v after the lost session, want it recording none", c)
 	}
 	built := h.specs.last(t)
-	if !built.SessionLost {
+	if built.SessionLost != SessionLossGone {
 		t.Error("the fresh agent's spec was built for a claim that does not know its session was lost")
 	}
 	if len(reported) != 1 {
@@ -285,7 +285,7 @@ func TestOneOutageWhoseTriesLaunchIsToldOnceUntilAnAgentRegisters(t *testing.T) 
 func TestALostSessionIsReportedOnceEvenWhenItsFreshSpawnFails(t *testing.T) {
 	h := newBareHarness(t)
 	var reported []string
-	h.deps.SessionLost = func(_ Claim, detail string) { reported = append(reported, detail) }
+	h.deps.SessionLost = func(_ Claim, _ SessionLoss, detail string) { reported = append(reported, detail) }
 	h.store.PutClaim(h.ctx, queuedClaim())
 	h.start(queuedClaim())
 	h.reach(StateIdle)
