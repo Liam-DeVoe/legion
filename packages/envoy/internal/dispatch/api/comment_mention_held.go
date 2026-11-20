@@ -72,11 +72,12 @@ func (m *mentionSender) heldSamples(now time.Time) (count int64, oldest time.Dur
 // registerHeldGauges adds to registry the two gauges of the sends this server's mention sender
 // holds behind an earlier event, with no label: envoy_dispatch_mention_sends_held, how many, and
 // envoy_dispatch_mention_send_held_oldest_seconds, how long the oldest has waited, in whole
-// seconds. They are one gauge group (metrics.NewGaugeGroupFunc), so a scrape reads both from one
-// heldSamples: a scrape that counts a send reads that send's age, even when a try of it starts
-// during the scrape. They read the sender register built, so a test that replaces it registers
-// none (withMentionClaimRefresh) - nor does a nil registry.
-func (s *server) registerHeldGauges(registry *metrics.Registry) {
+// seconds, as of now: register's time.Now, the clock each send's wait is stamped by (heldSince).
+// They are one gauge group (metrics.NewGaugeGroupFunc), so a scrape reads now once and both
+// gauges from one heldSamples: a scrape that counts a send reads that send's age, even when a try
+// of it starts during the scrape. They read the sender register built, so a test that replaces it
+// registers none (withMentionClaimRefresh) - nor does a nil registry.
+func (s *server) registerHeldGauges(registry *metrics.Registry, now func() time.Time) {
 	if registry == nil {
 		return
 	}
@@ -91,7 +92,7 @@ func (s *server) registerHeldGauges(registry *metrics.Registry) {
 			Help: "How long the oldest comment mention send has waited behind an earlier event of its owner, in whole seconds",
 		},
 	}, func() []int64 {
-		count, oldest := sender.heldSamples(time.Now())
+		count, oldest := sender.heldSamples(now())
 		return []int64{count, int64(oldest / time.Second)}
 	})
 }

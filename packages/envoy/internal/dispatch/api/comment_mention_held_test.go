@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,6 +169,38 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}
 	if got := strings.Count(logs.String(), warning); got != 1 {
 		t.Fatalf("%d WARN lines in all, want the one", got)
+	}
+}
+
+// One scrape reads the held sends' count and the oldest one's age from one sample of the sender.
+// The clock the gauges read takes the held send off its lane at its second read, as a try of the
+// send that starts during a scrape does (next), so a scrape that read the sender twice - two
+// gauge functions, one after the other - would count the send and read the age of none. The age
+// is exact: the clock stands 4 s past the moment the send began to wait.
+func TestAScrapeReadsTheHeldSendPairFromOneSample(t *testing.T) {
+	since := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	lane := heldLane(laneKey{recipient: "session:s1"}, "A-1")
+	sender := &mentionSender{
+		mu:    new(sync.Mutex),
+		lanes: map[laneKey][]mentionSend{lane: {{mention: ResolvedMention{Target: "session:s1"}, heldSince: since}}},
+		waits: map[laneKey]heldWait{lane: {session: "s1", by: model.MentionCopyHolder{EventID: 1}}},
+	}
+	var reads atomic.Int64
+	now := func() time.Time {
+		if reads.Add(1) == 2 {
+			sender.mu.Lock()
+			sender.lanes[lane] = sender.lanes[lane][1:]
+			sender.mu.Unlock()
+		}
+		return since.Add(4 * time.Second)
+	}
+	registry := metrics.New()
+	(&server{mentions: sender}).registerHeldGauges(registry, now)
+	body := scrape(t, registry)
+	if !strings.Contains(body, "envoy_dispatch_mention_sends_held 1\n") ||
+		!strings.Contains(body, "envoy_dispatch_mention_send_held_oldest_seconds 4\n") || reads.Load() != 1 {
+		t.Fatalf("one scrape read the gauges' clock %d times and the gauges %q; want one read, and one send held for 4 s",
+			reads.Load(), heldLines(body))
 	}
 }
 
