@@ -419,7 +419,9 @@ export async function runDispatchCli(
       refusal = await writingRulesRefusal({
         tool: parsed.tool,
         dir,
-        client: new DispatchClient(config.url, config.credential, io.fetchImpl ?? fetch),
+        client: new DispatchClient(config.url, config.credential, io.fetchImpl ?? fetch, {
+          retryNoRoute: false,
+        }),
         passesCheck: async () =>
           (
             await checkDispatchCall({

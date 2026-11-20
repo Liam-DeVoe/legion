@@ -283,14 +283,28 @@ test("on an issue page 2 picks the card's second option with the card in hand, a
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    // Every change of the issue's fields the page sends, the priority's among them.
+    const patches: string[] = [];
+    page.on("request", (request) => {
+      if (
+        request.method() === "PATCH" &&
+        new URL(request.url()).pathname === `/api/v1/issues/${seeded.issueKey}`
+      ) {
+        patches.push(request.postData() ?? "");
+      }
+    });
     const hand = await openSurface(page, "conversation", seeded);
     await hand.grab();
     await page.keyboard.press("2");
     await expect(hand.card.locator("[data-ask-option]").nth(1)).toBeChecked();
-    await expect.poll(() => getIssue(seeded.issueKey)).toMatchObject({ priority: null });
+    // The keys' handlers are synchronous, so a priority write the press let through had left
+    // before a request the page issues next is answered: that answer is the barrier.
+    await page.evaluate(() => fetch("/auth/whoami").then(({ status }) => status));
+    expect(patches).toHaveLength(0);
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
     await page.keyboard.press("2");
     await expect.poll(() => getIssue(seeded.issueKey)).toMatchObject({ priority: 2 });
+    expect(patches).toHaveLength(1);
   } finally {
     await alice.close();
   }

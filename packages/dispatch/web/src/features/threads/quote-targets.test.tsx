@@ -1,8 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
-import { cleanup, render } from "@testing-library/react";
+import { act, cleanup, render } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { type ReactNode, useRef } from "react";
 
-import { quotableSelection, quoteSelection, useQuoteTarget } from "./quote-reply";
+import { KeymapProvider } from "../shell/KeymapProvider";
+import { useKeymapScope } from "../shell/keymap";
+import {
+  type QuoteTarget,
+  quotableSelection,
+  quoteSelection,
+  useQuoteTarget,
+  useSelectionBarKeys,
+} from "./quote-reply";
 
 afterEach(() => {
   window.getSelection()?.removeAllRanges();
@@ -12,15 +21,20 @@ afterEach(() => {
 /** A text a reader may quote, or, with `quote` null, one whose thread takes no reply now. */
 function Text({
   children,
+  define,
   id,
   quote,
 }: {
   children: ReactNode;
+  /** Where the text offers Define, as an ask's words do. */
+  define?: () => void;
   id: string;
   quote: ((blocks: readonly string[]) => void) | null;
 }): ReactNode {
   const ref = useRef<HTMLDivElement>(null);
-  useQuoteTarget(ref, quote === null ? null : { quote });
+  const target: QuoteTarget | null =
+    quote === null ? null : define === undefined ? { quote } : { define, quote };
+  useQuoteTarget(ref, target);
   return (
     <div className="dispatch-markdown" data-testid={id} ref={ref}>
       {children}
@@ -137,4 +151,43 @@ test("while a field has the focus, the words selected are the reader's own", () 
   container.querySelector<HTMLInputElement>('[data-testid="option"]')?.focus();
   selectIn(container, "comment");
   expect(quotableSelection()).not.toBeNull();
+});
+
+/** A page that draws texts a reader may quote, with its own scope and the selection bar's keys,
+ *  as the issue page has them. */
+function Page({ children }: { children: ReactNode }): ReactNode {
+  useKeymapScope("issue");
+  useSelectionBarKeys("issue");
+  return children;
+}
+
+// The selection bar offers Define (`d`) over an ask's words on every page that draws an ask,
+// and a selection made with the mouse leaves the focus where the press put it, outside the ask's
+// card, whose own `d` acts only while the focus is inside it: the page's `d` defines the words.
+test("on a page, d defines the selected words of an ask wherever the focus is, and of nothing else", async () => {
+  const user = userEvent.setup();
+  const defined: string[] = [];
+  const { container } = render(
+    <KeymapProvider>
+      <Page>
+        <Text define={() => defined.push("ask")} id="ask" quote={() => {}}>
+          <p>Ship the release today?</p>
+        </Text>
+        <Text id="comment" quote={() => {}}>
+          <p>A comment.</p>
+        </Text>
+        <button data-testid="elsewhere" type="button">
+          Elsewhere
+        </button>
+      </Page>
+    </KeymapProvider>
+  );
+  act(() => container.querySelector<HTMLButtonElement>('[data-testid="elsewhere"]')?.focus());
+  selectIn(container, "ask");
+  await user.keyboard("d");
+  expect(defined).toEqual(["ask"]);
+  // A comment offers no Define, so `d` over its words does nothing.
+  selectIn(container, "comment");
+  await user.keyboard("d");
+  expect(defined).toEqual(["ask"]);
 });

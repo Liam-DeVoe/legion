@@ -36,7 +36,12 @@ import { MentionComposer } from "../conversation/MentionComposer";
 import { passageItem, ReplyQuote } from "../conversation/ReplyQuote";
 import type { SaveCommentEdit } from "../conversation/send-request";
 import { useUnsentDrafts } from "../conversation/unsent-drafts";
-import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
+import {
+  isOriginalToggleKey,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "../inbox/ask-rewrite";
 import { RewriteBadge } from "../inbox/RewriteBadge";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
@@ -460,17 +465,7 @@ export function ThreadCard({
         // A card whose root was rewritten takes the focus, so `w` can reach it.
         tabIndex={rootRewritten ? -1 : undefined}
         onKeyDown={(event) => {
-          if (
-            event.key === "w" &&
-            !event.metaKey &&
-            !event.ctrlKey &&
-            !event.altKey &&
-            rootRewritten &&
-            !(
-              event.target instanceof HTMLElement &&
-              (event.target.isContentEditable || event.target.closest("input, textarea") !== null)
-            )
-          ) {
+          if (rootRewritten && isOriginalToggleKey(event)) {
             event.preventDefault();
             toggleOriginal(root.id);
             return;

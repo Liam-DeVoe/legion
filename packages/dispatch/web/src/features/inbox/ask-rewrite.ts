@@ -54,6 +54,27 @@ export function useOriginalShown(id: string): boolean {
   );
 }
 
+/** Whether `event`, pressed on a rewritten text that holds the focus, is the `w` that shows or
+ *  hides its original wording: no modifier, and not typed into a field inside the text. */
+export function isOriginalToggleKey(event: {
+  readonly altKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly key: string;
+  readonly metaKey: boolean;
+  readonly target: EventTarget | null;
+}): boolean {
+  return (
+    event.key === "w" &&
+    !event.metaKey &&
+    !event.ctrlKey &&
+    !event.altKey &&
+    !(
+      event.target instanceof HTMLElement &&
+      (event.target.isContentEditable || event.target.closest("input, textarea") !== null)
+    )
+  );
+}
+
 /** Where the words a reader selected stand, as `POST /api/v1/definitions` names it: in an ask,
  *  a decision block's included (`ask_id`), or in a document of an issue or a project, by its id
  *  (`document`), which Dispatch reads at its latest version. */

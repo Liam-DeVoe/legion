@@ -34,7 +34,6 @@ import {
   DISPATCH_GENERATED_TEXT_HEADER,
   legacyDispatchIssueSubject,
   type SessionAnswer,
-  shellCommandLine,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
 import {
@@ -14994,15 +14993,13 @@ console.log(JSON.stringify(args));
         expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
         expect(frames[0]?.message.id).toEndWith(`:${DIRECT_MESSAGE_ID}`);
         expect(frames[0]?.message.parts).toEqual([
-          { text: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``, type: "text" },
+          { text: "!printf hi\n\n```\nhi\n```", type: "text" },
         ]);
 
         // The agent: read at its next turn, with no turn started for it.
         expect(sends).toEqual([
           {
-            content: expect.stringContaining(
-              `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``
-            ),
+            content: expect.stringContaining("!printf hi\n\n```\nhi\n```"),
             options: { deliverAs: "nextTurn", triggerTurn: false },
           },
         ]);
@@ -15013,7 +15010,7 @@ console.log(JSON.stringify(args));
             body: {
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
-              body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+              body: "!printf hi\n\n```\nhi\n```",
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -15040,7 +15037,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!pwd -P")}\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
+          body: `!pwd -P\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
         });
       }, 20_000);
 
@@ -15057,7 +15054,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: `${shellCommandLine("!true")}\n\nThe command printed nothing.`,
+          body: "!true\n\nThe command printed nothing.",
         });
       }, 20_000);
 
@@ -15071,7 +15068,8 @@ console.log(JSON.stringify(args));
         await delivered(1);
         await replied(1);
 
-        const answer = `${shellCommandLine("!exit 3")}\n\nThe command printed nothing.\n\nThe command ended with exit status 3.`;
+        const answer =
+          "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
         expect(streamFrames()[0]?.message.parts).toEqual([{ text: answer, type: "text" }]);
         expect(replies[0]?.body).toMatchObject({ body: answer });
       }, 20_000);
@@ -15087,7 +15085,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!printf early; sleep 600")}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
+          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
         });
       }, 20_000);
 
@@ -15106,11 +15104,11 @@ console.log(JSON.stringify(args));
         await replied(2);
 
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toMatchObject({
-          body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is still running !sleep 600.`,
+          body: "!printf hi\n\nThe command was not run: this session is still running !sleep 600.",
         });
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toMatchObject(
           {
-            body: `${shellCommandLine("!sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.`,
+            body: "!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after 1000 ms.",
           }
         );
       }, 20_000);
@@ -15127,7 +15125,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
             new RegExp(
-              `^\`\`\`\\n!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\`\`\`\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
+              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
             )
           ),
         });
@@ -15146,7 +15144,7 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
-            /^```\n!!printf hi\n```\n\n```\n.*!printf.*\n```\n\nThe command ended with exit status 127\.$/s
+            /^!!printf hi\n\n```\n.*!printf.*\n```\n\nThe command ended with exit status 127\.$/s
           ),
         });
         // Nothing is hidden from the model: it reads the same report.
@@ -15167,9 +15165,7 @@ console.log(JSON.stringify(args));
         await delivered(1);
         await replied(1);
 
-        expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!printf 'a\\0b'")}\n\n\`\`\`\nab\n\`\`\``,
-        });
+        expect(replies[0]?.body).toMatchObject({ body: "!printf 'a\\0b'\n\n```\nab\n```" });
         expect(JSON.stringify(replies[0]?.body)).not.toContain("\\u0000");
         expect(JSON.stringify(streamFrames()[0]?.message.parts)).not.toContain("\\u0000");
         await until(
@@ -15333,7 +15329,7 @@ console.log(JSON.stringify(args));
           await replied(1);
 
           expect(replies[0]?.body).toMatchObject({
-            body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is no longer the one open here.`,
+            body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
           });
           // No command ran, so no report reached any of the three surfaces.
           expect(streamFrames()).toEqual([]);
@@ -15401,7 +15397,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!touch ran")}\n\nThe command was not run: this session is no longer the one open here.`,
+          body: "!touch ran\n\nThe command was not run: this session is no longer the one open here.",
         });
         // Nothing ran: neither directory holds the file the command would have written.
         expect(existsSync(join(other, "ran"))).toBe(false);
@@ -15699,7 +15695,7 @@ console.log(JSON.stringify(args));
             body: {
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
-              body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+              body: "!printf hi\n\n```\nhi\n```",
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -15828,7 +15824,7 @@ console.log(JSON.stringify(args));
               body: {
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
-                body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+                body: "!printf hi\n\n```\nhi\n```",
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -15914,7 +15910,7 @@ console.log(JSON.stringify(args));
               body: {
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
-                body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is no longer the one open here.`,
+                body: "!printf hi\n\nThe command was not run: this session is no longer the one open here.",
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -15983,7 +15979,7 @@ console.log(JSON.stringify(args));
         expect(replies.find((reply) => reply.path.includes(NEXT_MESSAGE_ID))?.body).toEqual({
           actor: { id: "ses_after_shell", kind: "session" },
           attempt: 1,
-          body: `${shellCommandLine("!touch ran; printf second")}\n\n\`\`\`\nsecond\n\`\`\``,
+          body: "!touch ran; printf second\n\n```\nsecond\n```",
         });
         expect(existsSync(join(other, "ran"))).toBe(true);
         expect(existsSync(join(work, "ran"))).toBe(false);
@@ -15996,7 +15992,7 @@ console.log(JSON.stringify(args));
         expect(replies.find((reply) => reply.path.includes(DIRECT_MESSAGE_ID))?.body).toEqual({
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
-          body: `${shellCommandLine("!touch running; until [ -f go ]; do sleep 0.05; done; printf first")}\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
+          body: `!touch running; until [ -f go ]; do sleep 0.05; done; printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
       }, 20_000);
 
@@ -16023,7 +16019,7 @@ console.log(JSON.stringify(args));
         writeFileSync(join(work, "go"), "");
         await replied(1);
 
-        const report = `${shellCommandLine("!touch running; until [ -f go ]; do sleep 0.05; done; printf hi")}\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
+        const report = `!touch running; until [ -f go ]; do sleep 0.05; done; printf hi\n\n\`\`\`\nhi\n\`\`\`\n\n${withheldOutput}`;
         expect(replies[0]?.body).toMatchObject({ body: report });
         const frames = streamFrames();
         expect(frames).toHaveLength(1);
@@ -16072,7 +16068,7 @@ console.log(JSON.stringify(args));
         // is the end of the command, and its words are the stop rather than an exit status.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!echo $$ > pid; exec sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped.`,
+          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
       }, 20_000);
 
@@ -16100,7 +16096,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is shutting down.`,
+          body: "!printf hi\n\nThe command was not run: this session is shutting down.",
         });
         expect(sends).toEqual([]);
         expect(streamFrames()).toEqual([]);

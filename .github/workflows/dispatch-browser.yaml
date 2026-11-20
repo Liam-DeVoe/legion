@@ -419,25 +419,11 @@ jobs:
           path: packages/dispatch/e2e/test-results
 
   # why: .github/ci-notes/dispatch-browser.md#the-ask-card-job-the-lane-it-runs-on-and-its-budgets
-  # 4 + 12 min plus 135 s = 18 min 15 s -> 19 min.
+  # 4 + 5 + 2 min plus 170 s and 120 s = 15 min 50 s -> 16 min.
   ask-card:
     if: inputs.lane == 'pull-request'
     runs-on: ubuntu-24.04
-    timeout-minutes: 19
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    timeout-minutes: 16
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -473,9 +459,25 @@ jobs:
         timeout-minutes: 4
         run: bunx playwright install chromium
         working-directory: packages/dispatch
+      - name: Pull the ask-card stack's Postgres image
+        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-pulls-its-stacks-postgres-image
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+      - name: Read the connections the ask-card stack's Postgres must allow
+        # why: .github/ci-notes/dispatch-browser.md#why-the-two-process-job-reads-its-stacks-connection-limit-in-a-step-of-its-own
+        id: connections
+        timeout-minutes: 2
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       - name: Browser-test the ask card against the stand-in model
-        timeout-minutes: 12
-        run: bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu ask-card-quote
+        # 255 s x 1.15 = 293 s -> 5 min.
+        timeout-minutes: 5
+        run: |
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
+          bun run e2e -- --project=chromium ask-card-rewrite ask-card-define ask-card-reviewer ask-card-menu ask-card-quote
         working-directory: packages/dispatch
       # `if: failure()`, as the embedder job's upload is, for the reason it gives. The folder
       # holds the reviewer's server log too (e2e/reviewer-server.ts writes it there).

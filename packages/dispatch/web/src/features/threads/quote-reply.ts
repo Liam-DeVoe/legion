@@ -234,10 +234,24 @@ export function quoteSelection(): boolean {
   return true;
 }
 
-/** `q`, in `scope`'s section of the shortcut help: quotes the selected words of an ask, a comment,
- *  a reply or a message on the page in a reply. */
-export function useQuoteReplyKey(scope: KeymapScope): void {
-  useKeymap(scope, [quoteReplyKey("Quote selected words in a reply", quoteSelection)]);
+/** The selection bar's two keys, in `scope`'s section of the shortcut help: `q` quotes the
+ *  selected words of an ask, a comment, a reply or a message on the page in a reply, and `d`
+ *  opens Define on the selected words of an ask, wherever the focus is. An ask card's own `d`
+ *  (`ask-card-keys.ts`) acts only while the focus is inside the card, and a selection made with
+ *  the mouse leaves the focus where the press put it, outside the card. */
+export function useSelectionBarKeys(scope: KeymapScope): void {
+  useKeymap(scope, [
+    quoteReplyKey("Quote selected words in a reply", quoteSelection),
+    {
+      id: "define-selected-ask-words",
+      keys: "d",
+      label: "Define selected words of an ask",
+      // The palette's own field takes the selection, so a row of it would define nothing.
+      palette: false,
+      run: () => quotableSelection()?.target.define?.(),
+      when: () => quotableSelection()?.target.define !== undefined,
+    },
+  ]);
 }
 
 /** The binding `q` is, for a host that decides when it applies and what it quotes. */

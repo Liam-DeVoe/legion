@@ -596,7 +596,11 @@ export function AskCard({
       handOn: open ? () => setHandOnOpen(true) : undefined,
       hasSelection: () => selectionInCard() !== null,
       rewrite: isApproval || !open ? undefined : startRewrite,
-      send: () => formRef.current?.requestSubmit(),
+      // An answer sent before a pasted picture lands would go without it, so the card's key
+      // waits for the upload, as Answer and the answer box's own modified Enter do.
+      send: () => {
+        if (!uploading) formRef.current?.requestSubmit();
+      },
       stopAskingBack,
       toggleOriginal:
         shownRewrite?.state === "rewritten"

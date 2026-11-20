@@ -88,7 +88,6 @@ export interface WritingRulesState {
 export interface WritingRulesSettingsRead {
   readonly readAt: string;
   readonly refusal: boolean;
-  readonly extra: readonly string[];
 }
 
 const NO_WRITING_RULES: WritingRulesState = { compactions: 0, shownForCompaction: null };
@@ -102,14 +101,14 @@ function count(value: unknown): number | null {
 function writingRulesState(value: unknown): WritingRulesState {
   if (typeof value !== "object" || value === null) return NO_WRITING_RULES;
   const kept: { compactions?: unknown; shownForCompaction?: unknown; settings?: unknown } = value;
-  const settings: { readAt?: unknown; refusal?: unknown; extra?: unknown } =
+  const settings: { readAt?: unknown; refusal?: unknown } =
     typeof kept.settings === "object" && kept.settings !== null ? kept.settings : {};
   const { readAt, refusal } = settings;
   return {
     compactions: count(kept.compactions) ?? 0,
     shownForCompaction: count(kept.shownForCompaction),
     ...(typeof readAt === "string" && typeof refusal === "boolean"
-      ? { settings: { readAt, refusal, extra: stringList(settings.extra) } }
+      ? { settings: { readAt, refusal } }
       : {}),
   };
 }

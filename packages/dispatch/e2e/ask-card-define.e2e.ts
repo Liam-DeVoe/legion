@@ -294,6 +294,9 @@ test("a definition is its reader's alone, counted as her Define use, and its wor
     name: "Mirror runbook",
   });
   await setModelRules([defineRule(WORDS, MEANING, [])]);
+  // The UTC day the first Define is counted on, read before it: a run that crosses midnight UTC
+  // counts its two uses on two days.
+  const first = new Date().toISOString().slice(0, 10);
   const alice = await asUser(browser, "alice");
   const ids: string[] = [];
   try {
@@ -329,21 +332,22 @@ test("a definition is its reader's alone, counted as her Define use, and its wor
   expect((await listMyDefinitions({}, { login: "bob" })).items ?? []).toHaveLength(0);
 
   // R8: each Define use is alice's question about those words, counted on the day, project and
-  // person, and her words route lists the words. The day's rows of every project and person
-  // come a page at a time, so every page is read.
-  const day = new Date().toISOString().slice(0, 10);
+  // person, and her words route lists the words. The rows of every day the two uses can fall on,
+  // of every project and person, come a page at a time, so every page is read, and alice's uses
+  // in the project are summed over those days.
+  const last = new Date().toISOString().slice(0, 10);
   const rows: WritingCheckRow[] = [];
   for (let offset = 0; ; ) {
-    const counts = await getWritingCheckCounts({ first: day, last: day, limit: 200, offset });
+    const counts = await getWritingCheckCounts({ first, last, limit: 200, offset });
     const page = counts.items ?? [];
     rows.push(...page);
     offset += page.length;
     if (page.length === 0 || offset >= counts.total) break;
   }
-  const row = rows.find(
-    (candidate) => candidate.project === PROJECT && candidate.person === "alice"
-  );
-  expect(row?.define_uses).toBe(2);
+  const uses = rows
+    .filter((candidate) => candidate.project === PROJECT && candidate.person === "alice")
+    .reduce((sum, candidate) => sum + candidate.define_uses, 0);
+  expect(uses).toBe(2);
   const words = ((await getReaderWords("alice")).items ?? []).map((entry) => entry.word);
   expect(words).toEqual(expect.arrayContaining([WORDS, "cold start"]));
 });

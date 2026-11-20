@@ -2491,6 +2491,32 @@ describe("the written rules before AskGate's marker", () => {
     expect(`${sent.stdout}${sent.stderr}`).not.toContain("AskGate");
     expect(ledger("ses-1").filter((line) => "askgate" in line)).toEqual([]);
   });
+
+  // A Dispatch older than the settings route answers it `no route`, and has no refusal: the write
+  // goes on after that one answer, with none of the waits a write's `no route` is retried after
+  // (1, 2 and 4 s), which would come back on every session's first write.
+  test("a Dispatch with no settings route is asked once, and the write goes on", async () => {
+    let settingsAsks = 0;
+    const noSettingsRoute = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      if (request.method === "GET" && pathname === "/api/v1/settings/writing-rules") {
+        settingsAsks += 1;
+        return Response.json(
+          { code: "NOT_FOUND", error: `no route for GET ${pathname}` },
+          { status: 404 }
+        );
+      }
+      return fetch(request);
+    }) as typeof fetch;
+
+    const sent = await run(MESSAGE, omp, "", noSettingsRoute);
+    expect(sent.code).toBe(0);
+    expect(settingsAsks).toBe(1);
+    expect(
+      requests.filter((r) => r.method === "POST" && r.path === "/api/v1/issues/DSP-1/messages")
+    ).toHaveLength(1);
+  }, 20_000);
 });
 
 // A reader of a transcript, the skill-scenario scorer among them, finds a refusal the CLI printed

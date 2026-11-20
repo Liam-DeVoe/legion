@@ -1,10 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { act, screen, waitFor, within } from "@testing-library/react";
+// biome-ignore lint/style/noRestrictedImports: a paste of a file, which user-event's paste does not carry
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
 
+import { settle } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import type { Ask, TextRewrite } from "../../api/types";
+import type { AnswerAskInput, Ask, TextRewrite } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { AskCard } from "./AskCard";
@@ -353,5 +355,65 @@ test("of two cards on a page, the one holding the focus has the keys, and the co
     expect(rows).not.toContain("Show or hide the original wording");
   } finally {
     view.unmount();
+  }
+});
+
+// The card's send key (`$mod+Enter`) acts from anywhere in the card, and like Answer it waits for
+// a picture pasted into the answer to finish uploading: an answer sent before the upload lands
+// goes without the picture, whose link then lands in the draft of an ask already answered.
+test("the card's send key sends nothing while a picture pasted into the answer uploads", async () => {
+  const user = userEvent.setup();
+  const sent: AnswerAskInput[] = [];
+  const { promise: landed, resolve: land } = Promise.withResolvers<void>();
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
+    await landed;
+    return { artifact: { name: "shot.png", slug: "shot-png" }, version: { number: 1 } } as never;
+  });
+  const ask = openAsk();
+  const { view } = renderCard(
+    <KeymapProvider>
+      <AskCard
+        answerAsk={(_id, input) => {
+          sent.push(input);
+          // Never answered: the row reads what was sent, not what the card does after.
+          return Promise.withResolvers<Ask>().promise;
+        }}
+        ask={ask}
+        initialThread={thread(ask)}
+      />
+    </KeymapProvider>
+  );
+  try {
+    const answer = (await card().findByLabelText("Your answer")) as HTMLTextAreaElement;
+    // An answer this card sends: an option picked, and a note in the box.
+    await user.click(await card().findByRole("radio", { name: /^Ship/ }));
+    await user.click(answer);
+    await user.paste("This one");
+    fireEvent.paste(answer, {
+      clipboardData: {
+        files: [new File([new Uint8Array([137, 80, 78, 71])], "shot.png", { type: "image/png" })],
+      },
+    });
+    await card().findByText("Uploading file…");
+    // The box sends nothing itself while the picture uploads, and leaves the press to the card's
+    // key, which must send nothing either.
+    await user.keyboard("{Control>}{Enter}{/Control}");
+    await act(settle);
+    expect(sent).toEqual([]);
+
+    land();
+    await waitFor(() =>
+      expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
+    );
+    // Answer sends it once the picture is in.
+    await user.click(card().getByRole("button", { name: "Answer" }));
+    await waitFor(() =>
+      expect(sent.map((input) => input.text)).toEqual([
+        "This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
+      ])
+    );
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
   }
 });

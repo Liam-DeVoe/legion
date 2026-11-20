@@ -623,7 +623,13 @@ test("the design's 29 pictures, taken from the build beside the demo's", async (
           // The style applies on the next frame; a tenth of a second is several frames.
           await page.waitForTimeout(100);
         }
-        await page.screenshot({ caret: caret ? "initial" : "hide", path: `${out}/${name}.png` });
+        // CSS animations - the Rewriting… badge's pulse, Define's waiting dots - run on no clock
+        // the page's fake one holds, so each picture stops them at their start.
+        await page.screenshot({
+          animations: "disabled",
+          caret: caret ? "initial" : "hide",
+          path: `${out}/${name}.png`,
+        });
         taken.add(name);
       });
     } finally {
@@ -991,7 +997,11 @@ test("the design's 29 pictures, taken from the build beside the demo's", async (
 
   expect([...taken].sort()).toEqual([...PICTURES].sort());
   const demo = process.env.DISPATCH_E2E_ASK_CARD_DEMO;
-  if (demo !== undefined && demo !== "" && existsSync(demo)) {
+  if (demo !== undefined && demo !== "") {
+    // A run named for the comparison makes it: a directory that is not there fails the row.
+    expect(existsSync(demo), `DISPATCH_E2E_ASK_CARD_DEMO names ${demo}, which does not exist`).toBe(
+      true
+    );
     const comparisons = comparePictures(PICTURES, out, demo, out);
     await testInfo.attach("ask-card-pictures", {
       body: JSON.stringify(comparisons, null, 2),

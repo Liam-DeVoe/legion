@@ -1,3 +1,7 @@
+import { setTimeout as sleep } from "node:timers/promises";
+
+import type { Page } from "@playwright/test";
+
 import { setLiveSessions } from "./agents";
 import {
   createAsk,
@@ -12,7 +16,7 @@ import { asTester, OPTIONS, PROJECT, REVIEW_PROMPT, seedProject, TESTER } from "
 import type { FakeModelRule } from "./fake-model";
 import { modelRequests, setModelRules } from "./fake-model-helpers";
 import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
-import { expectInboxCount } from "./inbox-threads";
+import { expectInboxCount, inboxCountBadge } from "./inbox-threads";
 import { atReviewer, expect, REVIEWER_MODEL, type ReviewerServer, test } from "./reviewer-server";
 
 /**
@@ -74,6 +78,42 @@ function asWriter(reviewer: ReviewerServer) {
   return { ...asTester, baseUrl: reviewer.url };
 }
 
+/** How long a held text may stay held in these rows: the review's 2 s, the writer's 2 s window
+ *  and up to the reviewer's 10-second sweep, with room to spare. */
+const HOLD_MS = 30_000;
+
+/**
+ * Reads the held text `id` until it posts, and before each read counts with `shown` what the
+ * open page draws of it: every count taken while the text was held is 0. The count comes first
+ * and the state after it, so a text still held at that read was held while the page was counted,
+ * and a text that shows anywhere in the hold - the review, the writer's window, the wait for the
+ * sweep - fails the row where one look at one instant would pass it. A post commits with the
+ * text's `posted` state, so `posting` is still held.
+ */
+async function expectHiddenUntilPosted(id: string, shown: () => Promise<number>): Promise<void> {
+  const deadline = Date.now() + HOLD_MS;
+  let counts = 0;
+  for (;;) {
+    const count = await shown();
+    const { state } = await getHeld(id);
+    if (state === "posted") break;
+    expect(state, `the held text ${id} failed`).not.toBe("failed");
+    expect(count, `what the page drew of ${id} while it was ${state}`).toBe(0);
+    counts += 1;
+    expect(Date.now(), `${id} was still ${state} after ${HOLD_MS} ms`).toBeLessThan(deadline);
+    await sleep(200);
+  }
+  // A text that posted before the first count proves nothing of its hold.
+  expect(counts, `${id} posted before the page was counted once`).toBeGreaterThan(0);
+}
+
+/** What the open Inbox draws of held asks: its rows, its count, and alice's Inbox as read. */
+async function inboxShown(page: Page): Promise<number> {
+  const rows = await page.locator("[data-inbox-row]").count();
+  const counted = /\d/.test((await inboxCountBadge(page).textContent()) ?? "") ? 1 : 0;
+  return rows + counted + (await getInbox({ login: "alice" })).length;
+}
+
 const ASKED = `Ship the flip audit?\nThe mirror run is done. ${VACUOUS}`;
 const ASK_REWRITE =
   "Ship the flip audit?\nThe mirror's first run fails on one row; ship it today or wait for a fix.";
@@ -111,13 +151,9 @@ test("a held ask reaches the open Inbox only once it posts, rewritten, marked by
     );
     const id = heldId(written);
     expect(id).not.toBe("");
-    // The time an ask that posts at once takes to reach an open Inbox over its live socket,
-    // which a held ask must not: this is the claim's absence window, inside the review's 2 s.
-    await page.waitForTimeout(1_500);
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
-    await expectInboxCount(page, 0);
-    expect(await getInbox({ login: "alice" })).toHaveLength(0);
-    expect(["reviewing", "awaiting_writer"]).toContain((await getHeld(id)).state);
+    // The ask shows nowhere while it is held, at any count before it posts: not in the page's
+    // rows, not in its count, not in alice's Inbox.
+    await expectHiddenUntilPosted(id, () => inboxShown(page));
 
     // The setting posts the reviewer's rewrite once the window ends: the Inbox shows it, with
     // no reload, under the badge alone.
@@ -166,10 +202,8 @@ test("a held comment reaches the open Conversation once it posts, its badge in i
     const id = heldId(await createComment(key, { body: COMMENTED }, asWriter(reviewer)));
     expect(id).not.toBe("");
     const turn = page.locator(`[data-turn="comment:${id}"]`);
-    // The time a comment that posts at once takes to reach the open Conversation, which a held
-    // comment must not: the absence window, inside the review's 2 s.
-    await page.waitForTimeout(1_500);
-    await expect(turn).toHaveCount(0);
+    // The comment shows nowhere in the open Conversation while it is held.
+    await expectHiddenUntilPosted(id, () => turn.count());
 
     await expect(turn).toBeVisible({ timeout: 30_000 });
     await turn.getByRole("button", { name: "Expand thread" }).click();
@@ -208,10 +242,8 @@ test("a held message reaches the issue's messages once it posts, and its badge s
     const id = heldId(await createMessage(key, { body: COMMENTED }, asWriter(reviewer)));
     expect(id).not.toBe("");
     const turn = page.locator(`[data-turn="message:${id}"]`);
-    // The time a message that posts at once takes to reach the open Conversation, which a held
-    // message must not: the absence window, inside the review's 2 s.
-    await page.waitForTimeout(1_500);
-    await expect(turn).toHaveCount(0);
+    // The message shows nowhere in the open Conversation while it is held.
+    await expectHiddenUntilPosted(id, () => turn.count());
 
     await expect(turn).toBeVisible({ timeout: 30_000 });
     const badge = turn.locator("[data-ask-rewrite]");
@@ -295,10 +327,8 @@ test("an ask the reviewer finds nothing in reaches the open Inbox as written, wi
     const id = heldId(
       await createAsk(key, { options: [...OPTIONS], question }, asWriter(reviewer))
     );
-    // The time an ask that posts at once takes to reach an open Inbox, which an ask under review
-    // must not: the absence window, inside the review's 1.5 s.
-    await page.waitForTimeout(1_000);
-    await expect(page.locator("[data-inbox-row]")).toHaveCount(0);
+    // The ask shows nowhere in the open Inbox while the review runs.
+    await expectHiddenUntilPosted(id, () => inboxShown(page));
 
     const row = inboxRow(page, id);
     await expect(row).toBeVisible({ timeout: 30_000 });

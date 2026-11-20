@@ -143,7 +143,6 @@ async function askedSettings(
   const read: WritingRulesSettingsRead = {
     readAt: new Date(call.now).toISOString(),
     refusal: answer?.refusal === "on",
-    extra: answer?.extra ?? [],
   };
   try {
     updateWritingRules(call.dir, (now) => ({ ...now, settings: read }));

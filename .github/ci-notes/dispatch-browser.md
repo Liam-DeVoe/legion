@@ -30,10 +30,8 @@ workflow_dispatch and the nightly run pay for the rest, each of which has the wa
 them.
 
 A reusable workflow, not a composite action, for the reason docs-site.yaml's head comment
-gives: `services:` is a job-level key and a composite action's step keys do not include
-timeout-minutes, and this file needs both: the second on its steps, and the first on its ask-card
-job, whose stack runs on the job's own Postgres service, where the two-process and embedder jobs'
-Postgres became the harness's own. That is also why the shard and alone jobs repeat
+gives: a composite action's step keys do not include timeout-minutes, and this file needs it on
+its steps. That is also why the shard and alone jobs repeat
 their step lists rather than sharing one - they are kept textually identical where they are the
 same, so a reader can diff them.
 
@@ -938,22 +936,39 @@ share is full, at the 150 rows e2e/__tests__/pull-request-lane.test.ts holds it 
 (dispatch://INFRA-1407's R1), so they carry no `@pr` and the pull-request lane runs them
 here. On the full lane the shard job runs them with every untagged row, so this job runs on
 the pull-request lane alone, and no row runs twice in one run. It is the embedder job's shape:
-one Chromium install, one stack on the job's own Postgres service, and the server built once
-so the harness and the reviewer's own server (e2e/reviewer-server.ts) both find it current.
+one Chromium install, one stack on the harness's own Postgres, and the server built once so the
+harness and the reviewer's own server (e2e/reviewer-server.ts) both find it current. Both
+servers serve that stack's one database, which the reviewer's server reads from the stack's
+manifest as every other server of the stack does.
+
+Its Postgres is a `docker run` of the image its "Pull the ask-card stack's Postgres image" step
+pulls, started by the harness per Playwright run (e2e/harness-postgres.ts), with its connection
+limit read by a step of its own (DISPATCH_E2E_PG_CONNECTIONS), as the embedder and two-process
+jobs' are, and not a `services:` container: a service runs with crash safety on and the image's
+other defaults, which is what failed merge-group run 44456291758 on a disk stall
+(.github/ci-notes/dispatch-browser.md#what-the-two-process-job-runs), and it has no step that
+gives the stack's connection limit.
 
 Like the embedder job its rows upload no blob report: the merge job joins the shard and alone
 legs, and this job's own conclusion is what the caller's `dispatch-browser` job reads. It is
 in the merge job's `needs` and in that job's name filter, where it gets a null leg and is
 passed over by reading one, exactly as embedder is.
 
-The ask-card job's budgets were derived from the embedder job's, whose steps these are: its
-install step's 4 min, and for the browser step the rows' own seconds - about forty rows, of 2 to
-25 s each by their `SLOW(>=2s)` notes, so about six minutes at the run's one worker, doubled for
-the retry a failed row takes. The job budget is those two plus the embedder job's 135 s for
-every step without one, rounded up: 4 + 12 min plus 135 s = 19 min. Measured on pull
-request #3981's run at 698fef20 (job 134701463267), before the quote rows joined: the job took
-5 min 43 s, the browser step 200 s and the install 5 s. The quote rows add nine Chromium rows of
-4 to 13 s each (a pod's run, 2026-11-18), about a minute, so both budgets keep their room.
+The ask-card job's budgets follow this file's rule, from the job's own runs: the two latest that
+ran it, read from GitHub's jobs API on 2026-11-20, both on pull request #3981 and both with the
+quote rows. Run 44557664075 (job 135678256428, fb63391f) took 432 s, the browser step 255 s and
+the install 8 s; run 44541397676 (job 135620579087, 531b0a61) took 429 s, the browser step 250 s
+and the install 9 s. The eight later runs of the pull request skipped the job, being full-lane
+runs. An earlier run, at 698fef20 (job 134701463267), before the quote rows joined, took 200 s
+in the browser step. So the browser step is 255 s x 1.15 = 293 s -> 5 min, the install step
+keeps the 4 min of
+.github/ci-notes/dispatch-browser.md#why-the-chromium-install-takes-no-apt-and-no-cache-and-what-its-budget-is,
+and every step without a budget took at most 170 s (429 - 250 - 9), a figure that still holds
+the 20 to 23 s the runner spent starting the `services:` container these runs had. The move to
+the harness's Postgres added the embedder job's two steps at that job's figures: the pull at
+120 s and the connections read at its two-minute floor. The browser step now also starts the
+stack's container, which those runs did not measure. 4 + 5 + 2 min plus 170 s and 120 s =
+15 min 50 s -> 16 min.
 
 ## Why the ask-card job's server build carries the lane in its name
 

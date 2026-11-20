@@ -2172,14 +2172,15 @@ mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
 # The steps that read the stacks' connection limit before a browser step starts its stacks
 # (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
-# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder and
-# two-build jobs' own, outside their browser steps' budgets. One script; a name per job, since the
-# check finds a step by name across the workflow. Pinned whole, since `go run` is not a form the
-# simple form reduces.
+# shard and alone jobs, whose containers have no Go, and the visual, multiprocess, embedder,
+# ask-card and two-build jobs' own, outside their browser steps' budgets. One script; a name per
+# job, since the check finds a step by name across the workflow. Pinned whole, since `go run` is
+# not a form the simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
 BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
 BROWSER_MP_CONNECTIONS_STEP = "Read the connections the multiprocess stack's Postgres must allow"
 BROWSER_EMBEDDER_CONNECTIONS_STEP = "Read the connections the embedder stack's Postgres must allow"
+BROWSER_ASK_CARD_CONNECTIONS_STEP = "Read the connections the ask-card stack's Postgres must allow"
 TWO_BUILDS_CONNECTIONS_STEP = "Read the connections the two-build stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
@@ -3062,8 +3063,8 @@ GATES = [
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host for the shard and alone jobs, whose
-        # containers have no Go, and in the visual, multiprocess and embedder jobs before their
-        # timed browser steps.
+        # containers have no Go, and in the visual, multiprocess, embedder and ask-card jobs
+        # before their timed browser steps.
         *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
@@ -3072,7 +3073,8 @@ GATES = [
           for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
                             (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP),
                             (BROWSER_MP, BROWSER_MP_CONNECTIONS_STEP),
-                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP))],
+                            (BROWSER_EMBEDDER, BROWSER_EMBEDDER_CONNECTIONS_STEP),
+                            (BROWSER_ASK_CARD, BROWSER_ASK_CARD_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole

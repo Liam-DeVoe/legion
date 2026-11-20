@@ -37,7 +37,12 @@ import {
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
-import { originalWording, toggleOriginal, useOriginalShown } from "../inbox/ask-rewrite";
+import {
+  isOriginalToggleKey,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "../inbox/ask-rewrite";
 import { RewriteBadge } from "../inbox/RewriteBadge";
 import { writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
@@ -384,14 +389,22 @@ function MessageTurn({
 }): ReactNode {
   const author = item.root.author;
   // A message the reviewer rewrote before the reader saw it: its badge beside the author and
-  // time shows the agent's wording in place.
+  // time, or `w` while the message holds the focus, shows the agent's wording in place.
   const original = originalWording(item.root.rewrite, useOriginalShown(item.root.id));
+  const rewritten = item.root.rewrite?.state === "rewritten";
   return (
     <li
       aria-current={current ? "true" : undefined}
       className={`group mt-2 rounded-lg px-2 py-1 ${surfaceMutedHoverBg}`}
       data-turn={item.id}
+      onKeyDown={(event) => {
+        if (!rewritten || !isOriginalToggleKey(event)) return;
+        event.preventDefault();
+        toggleOriginal(item.root.id);
+      }}
       ref={register}
+      // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
+      tabIndex={rewritten ? -1 : undefined}
     >
       <div className="flex gap-3">
         <Avatar actor={author} />
@@ -403,6 +416,7 @@ function MessageTurn({
               onToggle={() => toggleOriginal(item.root.id)}
               rewrite={item.root.rewrite}
               showingOriginal={original !== undefined}
+              toggleKey="w"
             />
             {item.unread ? <UnreadMark /> : null}
           </p>

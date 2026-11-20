@@ -33,7 +33,7 @@ import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { StepsTab } from "../steps/StepsTab";
-import { useQuoteReplyKey } from "../threads/quote-reply";
+import { useSelectionBarKeys } from "../threads/quote-reply";
 import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
 import { CollaboratorsTab } from "./CollaboratorsTab";
@@ -268,8 +268,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // palette-only issue actions into this same scope; it never pushes one of its own.
   const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
   useKeymapScope("issue");
-  // Quote reply on words of a comment, a message or an ask on the page (`threads/quote-reply.ts`).
-  useQuoteReplyKey("issue");
+  // Quote reply and Define on words of a comment, a message or an ask on the page
+  // (`threads/quote-reply.ts`).
+  useSelectionBarKeys("issue");
   useKeymap("issue", [
     {
       id: "status",

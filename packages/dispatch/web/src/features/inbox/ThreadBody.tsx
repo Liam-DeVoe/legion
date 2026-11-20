@@ -69,7 +69,12 @@ import { threadLayout, unreadWrites } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { type RepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { AskCard } from "./AskCard";
-import { originalWording, toggleOriginal, useOriginalShown } from "./ask-rewrite";
+import {
+  isOriginalToggleKey,
+  originalWording,
+  toggleOriginal,
+  useOriginalShown,
+} from "./ask-rewrite";
 import { RewriteBadge } from "./RewriteBadge";
 
 /** One message of a thread, whatever route it was read from. */
@@ -116,12 +121,20 @@ function ThreadTurnView({
   unread: boolean;
 }): ReactNode {
   const original = originalWording(turn.rewrite, useOriginalShown(turn.id));
+  const rewritten = turn.rewrite?.state === "rewritten";
   return (
-    <div
+    <article
       className={`rounded-lg p-2 text-sm ${surfaceMutedBg}`}
       data-inbox-thread-first-unread={first === true ? "" : undefined}
       data-inbox-thread-turn={turn.id}
       data-inbox-thread-unread={unread ? "" : undefined}
+      onKeyDown={(event) => {
+        if (!rewritten || !isOriginalToggleKey(event)) return;
+        event.preventDefault();
+        toggleOriginal(turn.id);
+      }}
+      // A rewritten message takes the focus, as a margin card does, so `w` can reach it.
+      tabIndex={rewritten ? -1 : undefined}
     >
       <p className={`mb-1 flex flex-wrap items-center gap-x-2 text-xs ${textMutedOnSurfaceMuted}`}>
         <span>
@@ -131,6 +144,7 @@ function ThreadTurnView({
           onToggle={() => toggleOriginal(turn.id)}
           rewrite={turn.rewrite}
           showingOriginal={original !== undefined}
+          toggleKey="w"
         />
         {unread ? (
           <span
@@ -147,7 +161,7 @@ function ThreadTurnView({
         />
       </div>
       {turn.note}
-    </div>
+    </article>
   );
 }
 

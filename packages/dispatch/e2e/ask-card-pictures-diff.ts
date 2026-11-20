@@ -22,9 +22,14 @@ export interface PictureComparison {
   readonly width: number;
   readonly height: number;
   /** How many pixels differ, and their share of the picture, from 0 to 1. A picture whose size
-   *  is not the demo's differs everywhere. */
+   *  is not the demo's differs everywhere, and says so (`demoWidth`, `demoHeight`). */
   readonly changed: number;
   readonly share: number;
+  /** The demo's picture's size, which differs from this one's where `sizeMismatch` is true: a
+   *  viewport or a device pixel ratio other than the demo's, not a change of what is drawn. */
+  readonly demoWidth: number;
+  readonly demoHeight: number;
+  readonly sizeMismatch: boolean;
 }
 
 /** The width and height a PNG's header gives. */
@@ -42,8 +47,17 @@ export function comparePicture(
 ): PictureComparison {
   const { width, height } = sizeOf(built);
   const demoSize = sizeOf(demo);
+  const sizes = { demoHeight: demoSize.height, demoWidth: demoSize.width };
   if (demoSize.width !== width || demoSize.height !== height) {
-    return { changed: width * height, height, name, share: 1, width };
+    return {
+      ...sizes,
+      changed: width * height,
+      height,
+      name,
+      share: 1,
+      sizeMismatch: true,
+      width,
+    };
   }
   const run = spawnSync("bunx", [pixelmatch, built, demo, diff, "0.1"], { encoding: "utf8" });
   // pixelmatch exits 0 where nothing differs and 66 where something does; anything else is no
@@ -59,7 +73,15 @@ export function comparePicture(
       `${pixelmatch} gave no count of the pixels of ${name} that differ: ${run.stdout}`
     );
   }
-  return { changed, height, name, share: changed / (width * height), width };
+  return {
+    ...sizes,
+    changed,
+    height,
+    name,
+    share: changed / (width * height),
+    sizeMismatch: false,
+    width,
+  };
 }
 
 /** Compares every picture named in `names` in `builtDir` with the demo's of the same name in
@@ -84,10 +106,15 @@ export function comparePictures(
   writeFileSync(
     join(outDir, "report.md"),
     [
-      "| Picture | Changed pixels | Share |",
-      "| --- | ---: | ---: |",
+      "| Picture | Changed pixels | Share | Note |",
+      "| --- | ---: | ---: | --- |",
       ...comparisons.map(
-        (one) => `| ${one.name} | ${one.changed} | ${(one.share * 100).toFixed(2)}% |`
+        (one) =>
+          `| ${one.name} | ${one.changed} | ${(one.share * 100).toFixed(2)}% | ${
+            one.sizeMismatch
+              ? `size ${one.width}x${one.height}, the demo's ${one.demoWidth}x${one.demoHeight}: not compared`
+              : ""
+          } |`
       ),
       "",
     ].join("\n")

@@ -40,8 +40,7 @@ const server = Bun.serve({
     const { pathname } = new URL(request.url);
     // A Dispatch whose written rules are off, so it refuses no write to show them
     // (writing-rules.ts): AskGate's behaviour is this file's subject, and the rules are not. The
-    // rules are read before AskGate's marker, so every gated call reads them; an answer at once
-    // spares each call the waits an older Dispatch's `no route` answer is retried after.
+    // rules are read before AskGate's marker, so every gated call reads them.
     if (pathname === "/api/v1/settings/writing-rules") {
       return Response.json({ refusal: "off", extra: [] });
     }

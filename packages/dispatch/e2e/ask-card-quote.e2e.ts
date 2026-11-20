@@ -14,7 +14,8 @@ import {
   requestApproval,
   withOpenedAsk,
 } from "./api";
-import { asTester, PROJECT, seedProject, seedSurface, selectWords } from "./ask-card";
+import { asTester, defineRule, PROJECT, seedProject, seedSurface, selectWords } from "./ask-card";
+import { setModelRules } from "./fake-model-helpers";
 import { inboxPane, inboxRow, selectRow } from "./inbox-pane";
 import {
   asSession,
@@ -154,6 +155,30 @@ async function selectAcross(from: Locator, start: string, to: Locator, end: stri
   } finally {
     await last.dispose();
   }
+}
+
+/**
+ * Selects `words`, the first text under `scope` that holds them, with the mouse, as a reader's
+ * drag does: the press and the drag put the focus where a click on that text puts it.
+ */
+async function dragOver(page: Page, scope: Locator, words: string): Promise<void> {
+  const ends = await scope.evaluate((root, wanted) => {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+      const at = node.textContent?.indexOf(wanted) ?? -1;
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + wanted.length);
+      const box = range.getBoundingClientRect();
+      return { from: box.left + 1, to: box.right - 1, y: box.top + box.height / 2 };
+    }
+    throw new Error(`no text holds ${JSON.stringify(wanted)}`);
+  }, words);
+  await page.mouse.move(ends.from, ends.y);
+  await page.mouse.down();
+  await page.mouse.move(ends.to, ends.y, { steps: 8 });
+  await page.mouse.up();
 }
 
 /** That `box` holds `value` exactly, has the focus, and has the cursor at its end. */
@@ -338,6 +363,28 @@ test("on an issue's page Quote reply opens a compact card's box, follows typed t
   expect(await barActions(page)).toEqual(["Quote replyq", "Defined"]);
   await page.keyboard.press("q");
   await expectQuoted(changedCard.locator("[data-ask-answer]"), "> **mirror**\n\n");
+});
+
+// The card's own `d` acts while the focus is inside the card; a reader who selects an ask's words
+// with the mouse on an issue's page leaves the focus where the press put it, and the page's `d`
+// defines the words there.
+// SLOW(>=2s): an issue page, a drag over an ask's question, and its definition.
+test("on an issue's page d defines the words of an ask's question selected with the mouse", async ({
+  page,
+}) => {
+  await page.setViewportSize(WIDE);
+  await seedProject();
+  const { askId, issueKey } = await seedAsk(ORDER_QUESTION, ORDER_OPTIONS, "Move order");
+  const meaning = "The service of record whose rows the mirror copies.";
+  await setModelRules([defineRule("ledger", meaning, [])]);
+  await page.goto(`/issues/${issueKey}/conversation`);
+  const card = page.locator(`[data-turn] [data-ask-card="${askId}"]`);
+  await expect(card).toBeVisible();
+  await dragOver(page, card.locator("[data-ask-question]"), "ledger");
+  expect(await barActions(page)).toEqual(["Quote replyq", "Defined"]);
+  expect(await card.evaluate((element) => element.contains(document.activeElement))).toBe(false);
+  await page.keyboard.press("d");
+  await expect(page.locator("[data-define-popover]")).toContainText(meaning);
 });
 
 // SLOW(>=2s): the Conversation tab and the spec, each with a thread opened by a quote.
