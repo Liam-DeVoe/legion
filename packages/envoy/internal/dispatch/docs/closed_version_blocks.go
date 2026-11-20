@@ -45,8 +45,8 @@ func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexed
 // document's live text has moved past its latest version, whatever its issue's status
 // (windowDocument): the version's own stored rendering, with only the blocks the index's rows or
 // the live document also hold (closedVersionBlocks), read in the caller's transaction, which
-// holds the document owner's lock. live and liveBlocks are the document as the server serves it
-// (TextWithBlocks).
+// holds the document owner's lock. live and liveBlocks are the document as it stands
+// (TextWithBlocksAsItStands).
 //
 // A version this build cannot read back is no reason to leave the document without windows for
 // ever: the failure is logged under warning, with artifactID and the error, and the stored
@@ -73,9 +73,9 @@ func heldVersionBlocks(
 
 // closedVersionBlocks is the rendering of the version whose stored markdown is stored, with each
 // block of it that a row of the document's index (indexed, by id) or a block of the live document
-// - live, with liveBlocks (TextWithBlocks) - accounts for, under that row's or live block's id. A
-// block of the version that neither accounts for, and a live block that matches no block of it,
-// are left out, so each block written from this rendering is text that version holds.
+// - live, with liveBlocks (TextWithBlocksAsItStands) - accounts for, under that row's or live
+// block's id. A block of the version that neither accounts for, and a live block that matches no
+// block of it, are left out, so each block written from this rendering is text that version holds.
 //
 // The passes run in order, each matching only blocks the passes before it left unmatched: typed
 // blocks by id (matchTypedBlocks); the rows, first aligned with the live blocks that have one

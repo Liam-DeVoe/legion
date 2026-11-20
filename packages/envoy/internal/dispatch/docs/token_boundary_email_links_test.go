@@ -17,7 +17,7 @@ import (
 // email rule reads it (unwritableAddresses), so the room holds the rule's tree, whose rendering does
 // not read back, until its settlement gives the address the base's link. Before Dispatch answers any
 // token for the document in that window, the room takes that repair (INFRA-4224, round 8): a read
-// outside every transaction runs the settlement first (settleBeforeAnswer), and a write, or
+// outside every transaction runs the settlement first (readBeforeAnswer), and a write, or
 // an answer taken inside a write's transaction, writes the repair into its own fork
 // (applyLiveWritten, writeOwedEmailLinks). Each token a caller can hold then names a tree the
 // document stores as itself, and an edit passing it as its document precondition is applied.
@@ -147,6 +147,38 @@ func TestAPreconditionRefusalBeforeTheSettlementNamesTheTokenOfTheTreeWithTheBas
 				requireTokenSurvivesSettlement(t, service, artifactID, "the edit under the refusal's token", outcome.Token)
 			})
 		}
+	}
+}
+
+// An agent reads the document's text and token (GET /text) on the process that holds the room, and
+// uploads its change of that text (ReplaceText) naming the token, as every upload names the token
+// of the version it replaces. The upload checks that token inside its mutation against the tree
+// the write starts from, the one the repair before mutate leaves (applyLiveWritten), so the read
+// must answer that tree's token: it runs the settlement first (readBeforeAnswer), and the upload
+// under its token is applied. With the read answering the room's tree as the rule left it, the
+// upload's repair before mutate moved the tree the token is checked against, and the upload was
+// refused as stale with no write between the read and the upload.
+func TestAnUploadUnderTheTokenAReadAnswersBeforeTheSettlementIsApplied(t *testing.T) {
+	for _, shape := range unwritableAddresses {
+		t.Run(shape, func(t *testing.T) {
+			service, artifactID, _, _ := roomTypedByBrowser(t, "First.\n\n"+shape+"\n")
+			if service.srv.GetDoc(artifactID) == nil {
+				t.Fatal("this process holds no room of the document, so nothing here is tested")
+			}
+			markdown, token, err := service.TextWithToken(context.Background(), artifactID)
+			if err != nil {
+				t.Fatalf("read the document's text and token: %v", err)
+			}
+			upload := strings.Replace(markdown, "First.", "First, uploaded.", 1)
+			if upload == markdown {
+				t.Fatalf("the read answered %q, which holds no \"First.\" for the upload to change", markdown)
+			}
+			canonical, err := joinedReplaceTextNaming(service, artifactID, upload, tokenBoundaryWriter, &model.EditPrecondition{Document: token})
+			if err != nil {
+				t.Fatalf("an upload under the token the read answered was refused: %v", err)
+			}
+			waitForDocumentText(t, service, artifactID, canonical)
+		})
 	}
 }
 

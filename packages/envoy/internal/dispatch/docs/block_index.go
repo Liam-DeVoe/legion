@@ -471,13 +471,13 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 }
 
 // windowDocument writes the windows of one document whose windows do not stand for its blocks,
-// in a transaction of its own: it reads the document the server serves (TextWithBlocks) with no
-// transaction held, then, under the document owner's advisory lock, which every version write
-// takes first, writes the windows of the stored latest version's blocks (lockArtifactOwner,
-// refs.WriteDocumentWindows). It writes no block row and no reference: the index of this
-// document's blocks stands, and only its windows are missing. Since a version write records its
-// blocks and leaves their windows here (refs.BlockIndexing.Queue, INFRA-988), this is where
-// every window a document holds is written, a tick behind the write.
+// in a transaction of its own: it reads the document the server serves, as it stands
+// (TextWithBlocksAsItStands), with no transaction held, then, under the document owner's advisory
+// lock, which every version write takes first, writes the windows of the stored latest version's
+// blocks (lockArtifactOwner, refs.WriteDocumentWindows). It writes no block row and no reference:
+// the index of this document's blocks stands, and only its windows are missing. Since a version
+// write records its blocks and leaves their windows here (refs.BlockIndexing.Queue, INFRA-988),
+// this is where every window a document holds is written, a tick behind the write.
 //
 // What is windowed is the text the version write indexed: the stored markdown of the latest
 // version, whatever the document's settlement state and whatever its issue's status. Where the
@@ -493,7 +493,7 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 // same way, as indexOwedDocument indexes one: its blocks came from its version's own markdown,
 // which is what is embedded.
 func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, error) {
-	markdown, blocks, err := s.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := s.TextWithBlocksAsItStands(ctx, artifactID)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:
@@ -885,10 +885,10 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 
 // indexOwedDocument indexes one owed document at its latest version with the full version index
 // (indexRenderedVersion): references, excerpts, blocks, block texts and the indexed version. It
-// reads the document the server serves (TextWithBlocks) with no transaction held, then, under the
-// document owner's lock, which every version write holds first, re-checks that the latest version
-// is still the one listed and the document still owed; otherwise another writer has indexed it or
-// will, and it does nothing.
+// reads the document the server serves, as it stands (TextWithBlocksAsItStands), with no
+// transaction held, then, under the document owner's lock, which every version write holds
+// first, re-checks that the latest version is still the one listed and the document still owed;
+// otherwise another writer has indexed it or will, and it does nothing.
 //
 // The live text is indexed only where it is the latest version's text: when the document owes no
 // settlement, or owes one but its live markdown equals the version's stored markdown byte for
@@ -914,7 +914,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if document.version == 0 {
 		return false, false, nil
 	}
-	markdown, blocks, err := s.TextWithBlocks(ctx, document.id)
+	markdown, blocks, err := s.TextWithBlocksAsItStands(ctx, document.id)
 	unreadable := false
 	switch {
 	case ctx.Err() != nil:

@@ -687,7 +687,7 @@ func decisionTextSum(text string) string {
 // `## Replaced`, and each `###` heading under it, with every block after the heading up to the
 // next heading of its level or higher.
 func (s *server) decisionSections(ctx context.Context, artifactID string) (string, []decisionSection, error) {
-	markdown, blocks, err := s.deps.Docs.TextWithBlocks(ctx, artifactID)
+	markdown, blocks, err := s.deps.Docs.TextWithBlocksAsItStands(ctx, artifactID)
 	if err != nil {
 		return "", nil, err
 	}

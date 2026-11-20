@@ -42,6 +42,11 @@ func (d *readCountingDocs) TextWithBlocks(ctx context.Context, artifactID string
 	return d.API.TextWithBlocks(ctx, artifactID)
 }
 
+func (d *readCountingDocs) TextWithBlocksAsItStands(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
+	d.reads.Add(1)
+	return d.API.TextWithBlocksAsItStands(ctx, artifactID)
+}
+
 func referenceExcerptHandler(t *testing.T) (http.Handler, *store.Store, *docs.Service, *readCountingDocs) {
 	t.Helper()
 	var service *docs.Service

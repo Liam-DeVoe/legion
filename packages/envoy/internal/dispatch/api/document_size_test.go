@@ -58,6 +58,11 @@ func (w *renderWatch) TextWithBlocks(ctx context.Context, artifactID string) (st
 	return w.API.TextWithBlocks(ctx, artifactID)
 }
 
+func (w *renderWatch) TextWithBlocksAsItStands(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error) {
+	w.record("TextWithBlocksAsItStands", artifactID)
+	return w.API.TextWithBlocksAsItStands(ctx, artifactID)
+}
+
 func (w *renderWatch) BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error) {
 	w.record("BlockPath", artifactID)
 	return w.API.BlockPath(ctx, artifactID, blockID)

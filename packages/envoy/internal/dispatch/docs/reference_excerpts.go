@@ -518,19 +518,19 @@ func (s *Service) ReconcileReferenceExcerpts(ctx context.Context) (documents int
 	return s.reconcileReferenceExcerpts(ctx, referenceExcerptSchedule.retryBase)
 }
 
-// reconcileReferenceExcerpts reads each document of one batch of drift as the caller sees it
-// (TextWithBlocks), with no transaction or connection held, and stores its mentions' excerpts at
-// the version the drift named. A document whose stored history does not load or whose tree is
-// outside the schema has no block to show, so its mentions are stored with none and keep the
-// document's name until its next version. A document holding an element this build does not know
-// (ErrDocNewerContent) is one a newer build wrote while two builds serve one database: its
-// mentions stay owed, for a build that reads it, and it is deferred so the batches after it are
-// read. A document it cannot read or record for any other reason is logged and deferred too
-// (refs.DeferExcerpts, retryBase after its first failure), its mentions left owed, so one document
-// never holds back the rest of its batch nor the batches after it; a recorded document's backoff
-// row is deleted. documents counts the ones recorded, and full reports a full batch at least one
-// of whose documents left the drift a batch reads - recorded or deferred - so the next batch reads
-// documents this one did not.
+// reconcileReferenceExcerpts reads each document of one batch of drift as the caller sees it, as
+// it stands (TextWithBlocksAsItStands), with no transaction or connection held, and stores its
+// mentions' excerpts at the version the drift named. A document whose stored history does not
+// load or whose tree is outside the schema has no block to show, so its mentions are stored with
+// none and keep the document's name until its next version. A document holding an element this
+// build does not know (ErrDocNewerContent) is one a newer build wrote while two builds serve one
+// database: its mentions stay owed, for a build that reads it, and it is deferred so the batches
+// after it are read. A document it cannot read or record for any other reason is logged and
+// deferred too (refs.DeferExcerpts, retryBase after its first failure), its mentions left owed,
+// so one document never holds back the rest of its batch nor the batches after it; a recorded
+// document's backoff row is deleted. documents counts the ones recorded, and full reports a full
+// batch at least one of whose documents left the drift a batch reads - recorded or deferred - so
+// the next batch reads documents this one did not.
 func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time.Duration) (documents int, full bool, err error) {
 	drifted, err := refs.DriftedExcerpts(ctx, s.store.Pool, referenceExcerptBatch)
 	if err != nil {
@@ -549,7 +549,7 @@ func (s *Service) reconcileReferenceExcerpts(ctx context.Context, retryBase time
 	}
 	for _, document := range drifted {
 		var excerpts map[refs.Target]model.GraphExcerpt
-		markdown, blocks, err := s.TextWithBlocks(ctx, document.FromID)
+		markdown, blocks, err := s.TextWithBlocksAsItStands(ctx, document.FromID)
 		switch {
 		case ctx.Err() != nil:
 			return documents, false, ctx.Err()
