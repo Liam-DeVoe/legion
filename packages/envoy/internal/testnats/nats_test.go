@@ -314,6 +314,37 @@ func TestTheNextAccountMeetsNoStreamThatServedADirectGet(t *testing.T) {
 	}
 }
 
+// A test that reloads its own server right after a direct get on it, as a KV get is, meets no
+// data race. nats-server v2.15.1 reads its options without their lock as it serves the get
+// (getDirectRequest, server/stream.go:6365) and the reload replaces them under that lock (setOpts,
+// server/server.go:1224); the relay's barrier orders the two (Server.Reload). Each round is one
+// more chance for the race detector to find them unordered.
+func TestAReloadRightAfterADirectGetOnTheSameServerIsNoRace(t *testing.T) {
+	const rounds = 50
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: "served"})
+	if err != nil {
+		t.Fatalf("create bucket: %v", err)
+	}
+	if _, err := kv.Put("key", []byte("1")); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	for round := range rounds {
+		if _, err := kv.Get("key"); err != nil {
+			t.Fatalf("the direct get of round %d: %v", round, err)
+		}
+		if err := server.Reload(t, hostOnlyConfig); err != nil {
+			t.Fatalf("the reload of round %d: %v", round, err)
+		}
+	}
+}
+
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
 // such a server enforces no nkey users, and every refusal a test expects of it would pass for the
 // wrong reason. A server started with no configuration, which asks for no credential, stands in
