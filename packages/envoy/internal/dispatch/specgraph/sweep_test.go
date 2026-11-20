@@ -73,13 +73,13 @@ func notRepoPaths(path string) []string {
 // job that has not ended. So each member that a rule reads is in a record of some scenario, and
 // each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
 // Each sweep fails an input whose files are its base's (sweepAgainst), so that a writer that writes
-// nothing fails by name, and each sweep reads back each write that it makes, by its key and its
-// value, against the write that it means: each file that it writes by its name and its bytes, with
-// each other file of the base unchanged and no file added (filesRead), and the value in the file,
-// each kind through its own path: a string or an added member (treeWithRead), null or a member or
-// element left out (treeChangedRead), a key renamed (treeRenamedRead), and a refusal of CI as the
-// reader reads it (refusalRead), so that a writer that writes another value, or writes it at
-// another place or under another file name, fails by name too. One right, which sweepInputs gives
+// nothing fails by name, and each sweep reads back each write that it makes against the write that
+// it means, which it gives apart from the writer's call (filesRead): each file by its name, with each
+// other file of the base unchanged and no file added; a JSON file as the tree of the base's file
+// with the one change that the input names, built anew from the base and compared whole; a text
+// file by its bytes; and a refusal of CI as the reader reads it (refusalRead). So a writer that
+// writes another value, writes it at another place, under another key or under another file name,
+// or changes another place of the file too, fails by name. One right, which sweepInputs gives
 // the input where it writes it: a repository path of a tree written " " is a real path, since git
 // holds a file of that name (git ls-tree of a tree that holds one lists the path " "), so the tree
 // changed at a path that a tie covers, and a result there, a failure among them, carries no more
@@ -306,8 +306,7 @@ const plantedOnElsewhere = `a planted_on that names a commit of the history coun
 // withoutResult is the states of base with result i of results.json taken out.
 func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
-	fsys := maps.Clone(base)
-	editTree(t, fsys, "results.json", func(v any) any { return treeChangedRead(t, v, []string{strconv.Itoa(i)}, true) })
+	fsys := changedFile(t, base, "results.json", treeChanged(fileTree(t, base, "results.json"), []string{strconv.Itoa(i)}, true), treeChange{place: []string{strconv.Itoa(i)}, out: true})
 	states, err := sweepStates(fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
@@ -401,10 +400,9 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							continue
 						}
 						for _, v := range values[m[1]] {
-							data := encodeTree(t, treeWithRead(t, tree, append(slices.Clone(place), m[0]), v))
-							fsys := maps.Clone(base)
-							fsys[file] = &fstest.MapFile{Data: data}
-							filesRead(t, base, fsys, map[string][]byte{file: data})
+							// The read back takes the member and its value from the input's words,
+							// apart from the writer's call.
+							fsys := changedFile(t, base, file, treeWith(tree, append(slices.Clone(place), m[0]), v), treeChange{place: append(slices.Clone(place), m[0]), value: v})
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
@@ -498,24 +496,22 @@ type sweepInput struct {
 const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
 
 // sweepInputs is each input of the sweep of the scenario base, and base with each JSON file written
-// again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base.
+// again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base. Each input
+// is read back against the change that its words name, which the sweep gives apart from the
+// writer's call (filesRead).
 func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	t.Helper()
 	var inputs []sweepInput
 	roundTrip := maps.Clone(base)
-	with := func(what, name string, data []byte) *sweepInput {
-		fsys := maps.Clone(base)
-		if data == nil {
-			delete(fsys, name)
-		} else {
-			fsys[name] = &fstest.MapFile{Data: data}
-		}
-		inputs = append(inputs, sweepInput{what: what, fsys: fsys})
-		filesRead(t, base, fsys, map[string][]byte{name: data})
+	with := func(what, name string, written any, want treeChange) *sweepInput {
+		inputs = append(inputs, sweepInput{what: what, fsys: changedFile(t, base, name, written, want)})
 		return &inputs[len(inputs)-1]
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
-		with(name+" taken out", name, nil)
+		out := maps.Clone(base)
+		delete(out, name)
+		filesRead(t, base, out, map[string][]byte{name: nil}, nil)
+		inputs = append(inputs, sweepInput{what: name + " taken out", fsys: out})
 		if path.Ext(name) != ".json" {
 			continue
 		}
@@ -524,7 +520,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			t.Fatalf("%s: %v", name, err)
 		}
 		roundTrip[name] = &fstest.MapFile{Data: encodeTree(t, tree)}
-		with(name+" as null", name, []byte("null"))
+		with(name+" as null", name, nil, treeChange{})
 		var walk func(v any, at []string)
 		walk = func(v any, at []string) {
 			switch v := v.(type) {
@@ -533,9 +529,9 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				paths := slices.ContainsFunc(sweepPaths[name].keysOf, func(p []string) bool { return placeMatches(p, at) })
 				for _, key := range slices.Sorted(maps.Keys(v)) {
 					place := append(slices.Clone(at), key)
-					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChangedRead(t, tree, place, false)))
+					with(name+" "+treePointer(place)+" as null", name, treeChanged(tree, place, false), treeChange{place: place})
 					if !entries {
-						with(name+" "+treePointer(place)+" left out", name, encodeTree(t, treeChangedRead(t, tree, place, true)))
+						with(name+" "+treePointer(place)+" left out", name, treeChanged(tree, place, true), treeChange{place: place, out: true})
 					}
 					var renames []string
 					if entries {
@@ -546,7 +542,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 					}
 					for _, renamed := range renames {
 						if _, taken := v[renamed]; !taken {
-							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, encodeTree(t, treeRenamedRead(t, tree, place, renamed)))
+							in := with(fmt.Sprintf("%s %s as the key %q", name, treePointer(place), renamed), name, treeRenamed(tree, place, renamed), treeChange{place: place, value: renamed, renamed: true})
 							if paths && renamed == " " {
 								in.right = pathOfOneSpace
 							}
@@ -557,7 +553,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 			case []any:
 				for i, x := range v {
 					place := append(slices.Clone(at), strconv.Itoa(i))
-					with(name+" "+treePointer(place)+" as null", name, encodeTree(t, treeChangedRead(t, tree, place, false)))
+					with(name+" "+treePointer(place)+" as null", name, treeChanged(tree, place, false), treeChange{place: place})
 					walk(x, place)
 				}
 			case string:
@@ -567,7 +563,7 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 				}
 				for _, form := range forms {
 					if form != v {
-						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, encodeTree(t, treeWithRead(t, tree, at, form)))
+						with(fmt.Sprintf("%s %s as %q", name, treePointer(at), form), name, treeWith(tree, at, form), treeChange{place: at, value: form})
 					}
 				}
 			}
@@ -735,8 +731,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		if r.setup != nil {
 			r.setup(t, base)
 		}
-		without := maps.Clone(base)
-		editTree(t, without, r.file, func(v any) any { return treeChangedRead(t, v, r.place, true) })
+		without := changedFile(t, base, r.file, treeChanged(fileTree(t, base, r.file), r.place, true), treeChange{place: r.place, out: true})
 		for _, read := range []struct {
 			fsys fstest.MapFS
 			want string
@@ -761,7 +756,8 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 }
 
 // editTree changes the JSON file name of fsys by change, which takes its tree and gives the new one,
-// and reads the file back (filesRead).
+// and reads the file back by its name, with each other file unchanged (filesRead); the value that
+// change writes is the caller's to read back.
 func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any) {
 	t.Helper()
 	var tree any
@@ -771,17 +767,21 @@ func editTree(t *testing.T, fsys fstest.MapFS, name string, change func(any) any
 	before := maps.Clone(fsys)
 	data := encodeTree(t, change(tree))
 	fsys[name] = &fstest.MapFile{Data: data}
-	filesRead(t, before, fsys, map[string][]byte{name: data})
+	filesRead(t, before, fsys, map[string][]byte{name: data}, nil)
 }
 
 // filesRead fails the test unless fsys, which a writer of a sweep made from a copy of base, holds
-// each file of written with its bytes, or no such file where they are nil, which takes the file
-// out, and each other file of base with the base's bytes, and no other file: the read back of a
-// write by the file's name and its bytes, so that a writer that writes under another name, writes
-// other bytes, or changes another file too, fails by name.
-func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte) {
+// what the sweep means it to hold, which the caller gives apart from the writer's call: each file of
+// written with its bytes, or no such file where they are nil, which takes the file out; each JSON
+// file of changed as the tree of the base's file with its one change (treeChange.on), as the reader
+// decodes it, compared whole; each other file of base with the base's bytes; and no other file. So
+// a writer that writes under another file name, writes another value, writes it at another place
+// or under another key, or changes another place or another file too, fails by name.
+func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte, changed map[string]treeChange) {
 	t.Helper()
+	meant := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(written)) {
+		meant[name] = true
 		file, held := fsys[name]
 		switch data := written[name]; {
 		case data == nil && held:
@@ -792,21 +792,165 @@ func filesRead(t *testing.T, base, fsys fstest.MapFS, written map[string][]byte)
 			t.Fatalf("the sweep wrote %d bytes to %s, and the scenario holds %d other bytes there", len(data), name, len(file.Data))
 		}
 	}
+	for _, name := range slices.Sorted(maps.Keys(changed)) {
+		meant[name] = true
+		change := changed[name]
+		file, held := fsys[name]
+		if !held {
+			t.Fatalf("the sweep changed %s at %s, and the scenario holds no file of that name", name, treePointer(change.place))
+		}
+		var got any
+		if err := json.Unmarshal(file.Data, &got); err != nil {
+			t.Fatalf("the sweep changed %s at %s, and the file is no JSON: %v", name, treePointer(change.place), err)
+		}
+		want := change.on(t, fileTree(t, base, name))
+		if at, differ := treeDiff(got, want, nil); differ {
+			x, xHeld := treeAt(got, at)
+			w, wHeld := treeAt(want, at)
+			t.Fatalf("the sweep changed %s at %s, and the file differs from that change at %s: it holds %s there (held %t), where it should hold %s (held %t)",
+				name, treePointer(change.place), treePointer(at), encodeTree(t, x), xHeld, encodeTree(t, w), wHeld)
+		}
+	}
+	names := slices.Sorted(maps.Keys(meant))
 	for _, name := range slices.Sorted(maps.Keys(fsys)) {
-		if _, wrote := written[name]; wrote {
+		if meant[name] {
 			continue
 		}
 		if was, held := base[name]; !held || !bytes.Equal(fsys[name].Data, was.Data) {
-			t.Fatalf("the sweep wrote %q, and the scenario holds %s, which the base does not hold as it is (held %t)", slices.Sorted(maps.Keys(written)), name, held)
+			t.Fatalf("the sweep wrote %q, and the scenario holds %s, which the base does not hold as it is (held %t)", names, name, held)
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(base)) {
-		if _, wrote := written[name]; !wrote {
-			if _, held := fsys[name]; !held {
-				t.Fatalf("the sweep wrote %q, and the scenario no longer holds %s", slices.Sorted(maps.Keys(written)), name)
+		if _, held := fsys[name]; !meant[name] && !held {
+			t.Fatalf("the sweep wrote %q, and the scenario no longer holds %s", names, name)
+		}
+	}
+}
+
+// treeChange is one change of a JSON tree as a sweep means it, which the sweep gives apart from the
+// writer that makes it, for the read back of the write (filesRead): at place, the value value, null
+// for nil; or, with out, the member or element taken out; or, with renamed, the member under the
+// name that value holds.
+type treeChange struct {
+	place        []string
+	value        any
+	out, renamed bool
+}
+
+// on is the JSON tree v, which the caller decoded for it alone, with the change c made in place, its
+// value as the reader decodes it (a number as a float64). It shares no code of the package with the
+// writers of the sweeps (treeWith, treeChanged and treeRenamed, which copy the tree on the path that
+// they change), so that a writer that also writes at another place fails the read back.
+func (c treeChange) on(t *testing.T, v any) any {
+	t.Helper()
+	if !c.renamed {
+		var x any
+		data, err := json.Marshal(c.value)
+		if err == nil {
+			err = json.Unmarshal(data, &x)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.value = x
+	}
+	if len(c.place) == 0 && !c.out && !c.renamed {
+		return c.value
+	}
+	if len(c.place) > 0 {
+		parent, _ := treeAt(v, c.place[:len(c.place)-1])
+		last := c.place[len(c.place)-1]
+		switch p := parent.(type) {
+		case map[string]any:
+			x, held := p[last]
+			switch {
+			case !c.out && !c.renamed:
+				p[last] = c.value
+				return v
+			case held:
+				delete(p, last)
+				if c.renamed {
+					p[c.value.(string)] = x
+				}
+				return v
+			}
+		case []any:
+			if i, err := strconv.Atoi(last); err == nil && i >= 0 && i < len(p) && !c.renamed {
+				if !c.out {
+					p[i] = c.value
+					return v
+				}
+				return treeChange{place: c.place[:len(c.place)-1], value: slices.Delete(p, i, i+1)}.on(t, v)
 			}
 		}
 	}
+	t.Fatalf("the sweep means a change at %s, where the base holds no member or element", treePointer(c.place))
+	return nil
+}
+
+// treeDiff is the first place, by the order of the names, where the JSON trees a and b differ (a
+// member that one holds and the other does not, a list of another length, a value of another type
+// or another value), and whether they differ.
+func treeDiff(a, b any, at []string) ([]string, bool) {
+	switch x := a.(type) {
+	case map[string]any:
+		y, object := b.(map[string]any)
+		if !object {
+			return at, true
+		}
+		names := slices.Collect(maps.Keys(x))
+		for name := range y {
+			if _, held := x[name]; !held {
+				names = append(names, name)
+			}
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			xv, inA := x[name]
+			yv, inB := y[name]
+			place := append(slices.Clone(at), name)
+			if !inA || !inB {
+				return place, true
+			}
+			if p, differ := treeDiff(xv, yv, place); differ {
+				return p, true
+			}
+		}
+		return nil, false
+	case []any:
+		y, list := b.([]any)
+		if !list || len(x) != len(y) {
+			return at, true
+		}
+		for i := range x {
+			if p, differ := treeDiff(x[i], y[i], append(slices.Clone(at), strconv.Itoa(i))); differ {
+				return p, true
+			}
+		}
+		return nil, false
+	}
+	return at, !reflect.DeepEqual(a, b)
+}
+
+// changedFile is a copy of base with the JSON file name written as the tree written, which a writer
+// of a sweep made, read back against want, the change that the sweep means, which the caller gives
+// apart from the writer's call (filesRead).
+func changedFile(t *testing.T, base fstest.MapFS, name string, written any, want treeChange) fstest.MapFS {
+	t.Helper()
+	fsys := maps.Clone(base)
+	fsys[name] = &fstest.MapFile{Data: encodeTree(t, written)}
+	filesRead(t, base, fsys, nil, map[string]treeChange{name: want})
+	return fsys
+}
+
+// fileTree is the JSON tree of the file name of fsys, decoded anew for its caller.
+func fileTree(t *testing.T, fsys fstest.MapFS, name string) any {
+	t.Helper()
+	var tree any
+	if err := json.Unmarshal(fsys[name].Data, &tree); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+	return tree
 }
 
 // refusalRead fails the test unless the scenario fsys, to which the refusal sweep added CI's
@@ -866,37 +1010,6 @@ func treeChanged(v any, place []string, leftOut bool) any {
 	panic(fmt.Sprintf("no value at %q", place))
 }
 
-// treeChangedRead is treeChanged(v, place, leftOut), read back: the copy holds null at place, or,
-// with leftOut, its object or list equals the one before with that member or element taken out, so
-// that a sweep whose writer of null or of a left-out value writes nothing fails by name.
-func treeChangedRead(t *testing.T, v any, place []string, leftOut bool) any {
-	t.Helper()
-	c := treeChanged(v, place, leftOut)
-	if !leftOut {
-		if got, held := treeAt(c, place); !held || got != nil {
-			t.Fatalf("the sweep wrote null at %s, and the tree holds %v there (held %t)", treePointer(place), got, held)
-		}
-		return c
-	}
-	parent := place[:len(place)-1]
-	before, _ := treeAt(v, parent)
-	after, held := treeAt(c, parent)
-	var want any
-	switch p := before.(type) {
-	case map[string]any:
-		w := maps.Clone(p)
-		delete(w, place[len(place)-1])
-		want = w
-	case []any:
-		i, _ := strconv.Atoi(place[len(place)-1])
-		want = slices.Delete(slices.Clone(p), i, i+1)
-	}
-	if !held || !reflect.DeepEqual(after, want) {
-		t.Fatalf("the sweep left out %s, and the tree holds %s there", treePointer(place), encodeTree(t, after))
-	}
-	return c
-}
-
 // treeWith is a copy of the JSON tree v with x at place.
 func treeWith(v any, place []string, x any) any {
 	if len(place) == 0 {
@@ -914,18 +1027,6 @@ func treeWith(v any, place []string, x any) any {
 		return c
 	}
 	panic(fmt.Sprintf("no value at %q", place))
-}
-
-// treeWithRead is treeWith(v, place, x), read back: it fails the test unless the copy holds x at
-// place, so that a sweep whose engine writes nothing, or another value, fails by name, where it
-// would read each input as its base and pass.
-func treeWithRead(t *testing.T, v any, place []string, x any) any {
-	t.Helper()
-	c := treeWith(v, place, x)
-	if got, held := treeAt(c, place); !held || !reflect.DeepEqual(got, x) {
-		t.Fatalf("the sweep wrote %s at %s, and the tree holds %v there (held %t)", encodeTree(t, x), treePointer(place), got, held)
-	}
-	return c
 }
 
 // treeAt is the value of the JSON tree v at place, and whether v holds one there.
@@ -968,24 +1069,6 @@ func treeRenamed(v any, place []string, renamed string) any {
 	c[renamed] = c[place[len(place)-1]]
 	delete(c, place[len(place)-1])
 	return treeWith(v, place[:len(place)-1], c)
-}
-
-// treeRenamedRead is treeRenamed(v, place, renamed), read back: the new key holds the old value, the
-// old key is gone, and the object has as many members as before, so that a sweep whose writer of a
-// renamed key writes nothing fails by name.
-func treeRenamedRead(t *testing.T, v any, place []string, renamed string) any {
-	t.Helper()
-	c := treeRenamed(v, place, renamed)
-	parent, old := place[:len(place)-1], place[len(place)-1]
-	before, _ := treeAt(v, parent)
-	after, held := treeAt(c, parent)
-	beforeObject, _ := before.(map[string]any)
-	afterObject, object := after.(map[string]any)
-	_, oldHeld := afterObject[old]
-	if !held || !object || oldHeld || len(afterObject) != len(beforeObject) || !reflect.DeepEqual(afterObject[renamed], beforeObject[old]) {
-		t.Fatalf("the sweep renamed %s to %q, and the tree holds %s there", treePointer(place), renamed, encodeTree(t, after))
-	}
-	return c
 }
 
 // treePointer is the JSON pointer of place.
