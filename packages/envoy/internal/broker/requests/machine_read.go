@@ -1946,14 +1946,17 @@ type ApproverGrant struct {
 //
 // A pod whose account BROKER_POD_OPERATORS maps to a person is that person's own session here:
 // its enrollment's operator is the person its login was made for, so its grants are listed to
-// that person alone. This list reads the enrollment row, not the live setting that
-// requests.Machine.requester reads. So the person still sees the pod's grants, and may revoke
-// them, after the setting drops the entry or maps it to another person.
+// that person alone. The list selects a pod's grants by the enrollment row's operator, so the
+// person still finds them after the setting drops the entry or maps it to another person, but from
+// then on the pod acts for no person (unmappedPersonPod), so the grant no longer names them as its
+// operator (operatorOf): they see, and may revoke, each such grant they may see, and a grant of a
+// private project they are not on is hidden from them as from anyone outside it.
 //
 // The enrollment each grant is listed under is joined on the grants row's own enrollment_id, so a
 // grant that followed its session to another box is listed once, naming the box the session runs
-// on now. A grant is listed to its approver and to that enrollment's operator whatever project it
-// touches (namedOnGrant), as RevokeByApprover lets them end it whatever Dispatch answers: a grant
+// on now. A grant is listed to its approver and to the person that enrollment acts for whatever
+// project it touches (namedOnGrant, operatorOf), as RevokeByApprover lets them end it whatever
+// Dispatch answers: a grant
 // of a secret no project tags goes on releasing after its person leaves a project its session
 // names, and its own people must still see it to end it. Whether any other reader may see it reads
 // the projects of both credentials its request has had, that one and the enrollment that asked

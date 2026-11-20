@@ -69,4 +69,16 @@ func TestAnUnmappedPersonsPodNamesNoOperatorOnItsGrant(t *testing.T) {
 	if err := m.Store.Pool.QueryRow(t.Context(), `select revoked_at is not null from grants where id=$1`, grantID).Scan(&revoked); err != nil || revoked {
 		t.Fatalf("grant %s revoked = %v, %v after dave's refused revoke; want it still live", grantID, revoked, err)
 	}
+
+	// The control: once BROKER_POD_OPERATORS maps the account to dave again, the pod acts for
+	// dave, so the grant names him as its operator and he keeps the exemption, though PRIV does
+	// not list him: he lists the grant and ends it.
+	m.PodOperators[dave.account] = dave.person
+	if !listed(dave.person) {
+		t.Errorf("dave, whose pod the setting maps to him again, does not list grant %s", grantID)
+	}
+	if err := m.RevokeByApprover(t.Context(), grantID, dave.person, record.HumanActor(dave.person)); err != nil {
+		t.Errorf("dave's revoke of grant %s once the setting maps the pod to him again = %v; want it ended", grantID, err)
+	}
+	requireRevokedBy(t, m, grantID, dave.person)
 }

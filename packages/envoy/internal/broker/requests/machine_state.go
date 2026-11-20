@@ -2703,21 +2703,22 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // a grant already revoked (by its session, or by an earlier withhold, after the operator's Live
 // grants list was loaded) withholds the same names, recorded as a grant.withheld audit row rather
 // than a second grant.revoked. Another person's revoke (an approver's of the grant) ends the grant
-// alone and withholds nothing: the session is not theirs. It locks the session's row in the
-// statement that reads the grant, before it writes the grant: the order every writer that locks
-// both takes them in, and the one lock Create and ApplyDecision read the withheld names under, so a
-// request deciding on the session as this runs either is written first, and then ended here if it
-// got a withheld name, or decides with the name withheld. A revoke that ends nothing and withholds
-// nothing new succeeds and changes nothing.
+// alone and withholds nothing: the session is not theirs. It locks the session's row before it
+// reads or writes the grant: the order every writer that locks both takes them in, and the one
+// lock Create and ApplyDecision read the withheld names under, so a request deciding on the
+// session as this runs either is written first, and then ended here if it got a withheld name, or
+// decides with the name withheld. A revoke that ends nothing and withholds nothing new succeeds
+// and changes nothing.
 // The enrollment it reads the operator off, and the one withhold writes against, is the enrollment
 // the grants row names now, so an approver's revoke reaches a grant that moved and an operator's
 // withholds from the box the session runs on. The person rule reads the grant on the pool, before
 // the transaction, since it may ask Dispatch, and the transaction reads it again (revokeJudged).
 // An adoption that moves the grant between the two reads would let the transaction decide on a row
 // the rule did not judge: a login exempt as the old enrollment's operator could then pass
-// mayRevoke's arm for a grant whose approver is record.AnyoneApprover without the rule. So the
-// transaction decides only on the enrollment and approver the rule judged, and starts again from
-// the rule when either moved, at most revokeJudgeAttempts times.
+// mayRevoke's arm for a grant whose approver is record.AnyoneApprover without the rule, and an
+// operator's withhold would land on the box the session left. So the transaction decides only on
+// the enrollment and approver the rule judged, and starts again from the rule when either moved,
+// at most revokeJudgeAttempts times.
 func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor string) error {
 	for attempt := 1; ; attempt++ {
 		judged, err := m.hideUnseenGrant(ctx, grantID, login)
@@ -2747,7 +2748,16 @@ var errGrantMovedSinceJudged = errors.New("the grant moved to another session af
 // a session's process restarts, so a second attempt finds the grant still; a third is margin.
 const revokeJudgeAttempts = 3
 
-// revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it.
+// revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it. It
+// locks the enrollment the rule judged first, in a statement of its own, and reads the grant in a
+// later one. Every writer that moves a grant off an enrollment locks that enrollment's row before
+// it moves the grant: an adoption takes its predecessors for update (enroll.adopt), and the end
+// that hands a claim's rows to another pod (enroll.handOver) runs under the end's own lock of the
+// enrollment. So the lock waits for such a move in flight to commit, and the later read, which
+// sees what committed before it started, sees the grant where the move left it. One statement that
+// read the grant and locked its enrollment together would read the grant as it was when the
+// statement began, before the move it waited on, and decide on the old holder. Once the lock is
+// held, nothing moves the grant off that enrollment until this transaction ends.
 func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string, judged grantJudged) error {
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
@@ -2756,8 +2766,10 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	defer tx.Rollback(ctx)
 	var session, requestID string
 	var approver, operator *string
-	if err := tx.QueryRow(ctx, `select g.enrollment_id, g.request_id, g.approver, e.operator
-		from grants g join enrollments e on e.id=g.enrollment_id where g.id=$1 for no key update of e`, grantID).Scan(&session, &requestID, &approver, &operator); err != nil {
+	if err := tx.QueryRow(ctx, `select operator from enrollments where id=$1 for no key update`, judged.holder).Scan(&operator); err != nil {
+		return err
+	}
+	if err := tx.QueryRow(ctx, `select enrollment_id, request_id, approver from grants where id=$1`, grantID).Scan(&session, &requestID, &approver); err != nil {
 		return err
 	}
 	if session != judged.holder || record.CanonicalLogin(deref(approver)) != judged.approver {

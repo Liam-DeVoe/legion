@@ -657,9 +657,11 @@ another person:
   old enrollment it still names the first person;
 - the grant log (`GET /v1/grant-log`), the first person's **Live grants** (`GET /v1/grants`) and
   the record of each request's approval keep naming the first person, since they read the
-  enrollment's record. That person still sees the pod's grants and may revoke them. Each new
-  request's `request.created` row records, in its own detail, the person the broker decided for:
-  none.
+  enrollment's record. Their **Live grants** still finds the pod's grants, but the pod no longer
+  acts for them, so a grant does not name them as its operator: they see and may revoke each one
+  they may see, and a grant of a private project they are not on, which the pod may get through
+  its exchange entry, is hidden from them as from anyone outside the project. Each new request's
+  `request.created` row records, in its own detail, the person the broker decided for: none.
 
 After a move, have the second person revoke the pod's login on Dispatch's machine-login page, which
 ends the old enrollment, or replace the pod.
