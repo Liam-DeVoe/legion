@@ -329,9 +329,10 @@ export interface IssueTreeReads {
   /** The decisions read. The tree reads its `decisions` member, which this build's server
    *  answers from the store: each agent's decision, a `decision` block of any document of the
    *  issue, and each answered ask, which is a person's decision (`tree-drafts.ts`'s
-   *  `addDecisions`); and of its `entries` only the readings each one lists, which place a
-   *  reading under the node its `part_of` reaches (`addReadingParents`). It reads no
-   *  `document`, which names no decision. */
+   *  `addDecisions`); and of its `entries` who decided each agent's decision (`decided_by`),
+   *  which that member does not carry and which is the decision's author (`addDecisions`), and
+   *  the readings each one lists, which place a reading under the node its `part_of` reaches
+   *  (`addReadingParents`). It reads no `document`, which names no decision. */
   readonly decisions?: IssueDecisions;
   /** The issue's comments, each a node of the tree (`addTurns`), with each body's reading. */
   readonly comments?: readonly (Comment & Pick<CommentWithTrees, "body_tree">)[];
