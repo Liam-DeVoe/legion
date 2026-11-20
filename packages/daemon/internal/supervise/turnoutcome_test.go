@@ -340,10 +340,12 @@ func TestTheWindowKeepsOnlyTheNewestReportsTheRunCanBeDerivedFrom(t *testing.T) 
 	h.wantRefusedRun(0)
 }
 
-// The run is a record, so it is counted whole: a run of 25 refused turns reads 25, past the window
-// of launch_failure_limit reports the claim keeps, and it reads the same after a restart, which
-// reads the window back from the store. A clean turn ends it, and the next refusal starts a run of
-// one; a run broken inside what the window dropped is not carried into the run that follows.
+// The run is a record, so it is counted whole: a run of 25 refused turns reads 25, past the
+// launch_failure_limit reports the claim keeps whole, since it keeps a key for each turn of the run
+// while the run goes on and the provider's words for the newest limit of them alone. It reads the
+// same after a restart, which reads the reports back from the store. A clean turn ends it, the
+// old run's keys go down to the bound, and the next refusal starts a run of one; a run broken
+// before the clean turn is not carried into the run that follows.
 func TestTheRefusedRunCountsTheWholeRunPastTheWindow(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -353,14 +355,23 @@ func TestTheRefusedRunCountsTheWholeRunPastTheWindow(t *testing.T) {
 		h.report(uint64(turn), true, "the provider is overloaded")
 		h.wantRefusedRun(turn)
 	}
-	if kept := h.claim().TurnOutcomes; len(kept) != limit {
-		t.Fatalf("the window keeps %d reports, want the launch failure limit of %d: %+v", len(kept), limit, kept)
+	kept := h.claim().TurnOutcomes
+	if len(kept) != 25 {
+		t.Fatalf("the claim keeps %d reports of a run of 25, want a key for each turn: %+v", len(kept), kept)
+	}
+	for i, o := range kept {
+		if worded := o.Message != ""; worded != (i >= 25-limit) {
+			t.Fatalf("report %d of the run keeps the provider's words %q, want them on the newest %d alone: %+v", o.Sequence, o.Message, limit, kept)
+		}
 	}
 	h.restart()
 	h.wantRefusedRun(25)
 
 	h.report(26, false, "")
 	h.wantRefusedRun(0)
+	if kept := h.claim().TurnOutcomes; len(kept) != limit {
+		t.Fatalf("after the clean turn the claim keeps %d reports, want the launch failure limit of %d: %+v", len(kept), limit, kept)
+	}
 	for turn := 27; turn <= 27+limit; turn++ {
 		h.report(uint64(turn), true, "the provider is overloaded again")
 	}
@@ -368,8 +379,8 @@ func TestTheRefusedRunCountsTheWholeRunPastTheWindow(t *testing.T) {
 	h.wantState(StateIdle)
 }
 
-// A report older than everything a full window keeps is dropped: it cannot shorten a run derived
-// over the newest reports, so there is nothing for it to say and no room to say it in.
+// A report older than the newest clean one the claim keeps is in no run a reader reads, so once
+// the bound is reached it is dropped: there is nothing for it to say and no room to say it in.
 func TestAReportOlderThanAFullWindowIsDropped(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
@@ -391,6 +402,74 @@ func TestAReportOlderThanAFullWindowIsDropped(t *testing.T) {
 	if kept := h.claim().TurnOutcomes; len(kept) != limit || kept[0].Sequence != 11 {
 		t.Fatalf("the window keeps %+v, want the same %d newest reports", kept, limit)
 	}
+}
+
+// A producer retries a report until it lands (pi-legion's retryWhileDaemonRestarts), so a turn's
+// report can arrive twice, the second time after more newer reports than the launch failure limit.
+// The claim keeps every key of the run it counts, so the repeat finds its turn and counts nothing:
+// five refused turns read five and tell the controller nothing, and the sixth distinct turn, not
+// a repeat, is the one that tells it, once.
+func TestARepeatOfATurnThatLeftTheBoundChangesNoCount(t *testing.T) {
+	var notices []string
+	h := idleClaimTold(t, &notices)
+	if limit := testLimits().LaunchFailures; limit >= 5 {
+		t.Fatalf("the case needs a launch failure limit under 5 so that turn 1 leaves the bound; it is %d", limit)
+	}
+	for turn := uint64(1); turn <= 5; turn++ {
+		h.ownTurnRefused(turn, "overloaded_error", 529)
+	}
+	for _, repeat := range []uint64{1, 2, 5} {
+		h.reportRefused(repeat, "overloaded_error", 529)
+		h.wantRefusedRun(5)
+	}
+	if len(notices) != 0 {
+		t.Fatalf("after 5 refused turns and three repeated reports the controller was told %q, want nothing before the sixth turn", notices)
+	}
+
+	h.ownTurnRefused(6, "overloaded_error", 529)
+	h.reportRefused(3, "overloaded_error", 529)
+	h.wantRefusedRun(6)
+	if want := "6 turns in a row ended in a provider error (HTTP 529); the claim holds no task, so the daemon has nothing to send again"; len(notices) != 1 || notices[0] != want {
+		t.Fatalf("after the sixth refused turn the controller was told %q, want once: %q", notices, want)
+	}
+}
+
+// A report that arrives late lands in the place of its turn, however many newer reports came
+// first: behind a clean turn it joins no run, inside the run a refused one joins it and a clean
+// one ends it there, and a refused one older than the run's own clean start stays out of it.
+func TestALateReportCountsByItsTurnWhereverTheRunHasGotTo(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateIdle)
+	if limit := testLimits().LaunchFailures; limit > 3 {
+		t.Fatalf("the case needs a launch failure limit of 3 or under so that turn 1's report comes after a bound of newer ones; it is %d", limit)
+	}
+	h.report(2, false, "")
+	for turn := uint64(3); turn <= 5; turn++ {
+		h.report(turn, true, "overloaded_error")
+	}
+	h.wantRefusedRun(3)
+	h.report(1, true, "overloaded_error") // behind the clean turn 2
+	h.wantRefusedRun(3)
+
+	// Turns 7 to 12 refused, turn 9's report still on its way.
+	h.report(6, false, "")
+	for _, turn := range []uint64{7, 8, 10, 11, 12} {
+		h.report(turn, true, "overloaded_error")
+	}
+	h.wantRefusedRun(5)
+	h.report(9, true, "overloaded_error") // refused: it joins the run
+	h.wantRefusedRun(6)
+
+	// Turns 14 to 18 refused, turn 16's report still on its way; it was clean.
+	h.report(13, false, "")
+	for _, turn := range []uint64{14, 15, 17, 18} {
+		h.report(turn, true, "overloaded_error")
+	}
+	h.wantRefusedRun(4)
+	h.report(16, false, "") // clean: the run starts again after it
+	h.wantRefusedRun(2)
+	h.report(14, true, "overloaded_error") // a repeat from before the late clean turn
+	h.wantRefusedRun(2)
 }
 
 // The reports survive a daemon restart. A later refusal remains a report and does not fail the

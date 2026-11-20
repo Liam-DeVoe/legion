@@ -312,10 +312,11 @@ type Claim struct {
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
-	// reported, in (generation, sequence) order. The launch failure limit supplies the bounded
-	// storage size, and an older refused report is counted into the next one so the run reads
-	// whole (recordTurnOutcome). They are a record: what decides is the status a refused report
-	// carries (turnOutcome). They go with the session whose turns they are (freshRun).
+	// reported, in (generation, sequence) order: the newest launch failure limit of them, and past
+	// that bound the whole trailing run of refused turns, one key a turn, so the run reads whole and
+	// each of its turns counts once (recordTurnOutcome). They are a record: what decides is the
+	// status a refused report carries (turnOutcome). They go with the session whose turns they are
+	// (freshRun).
 	TurnOutcomes []TurnOutcome
 	// LastDeathCause is why the claim's process was last found gone — the runtime's own account of
 	// the death (runtime.Observation.Detail: an OOM kill, a node that went away, a pod the cluster

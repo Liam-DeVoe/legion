@@ -24,29 +24,20 @@ import (
 // moves the run of provider errors (Claim.ProviderErrorRun) by one. The turn's end on the worker
 // stream (StreamTurnEnd) and every turn ordinal the daemon keeps take no part in this, so no two
 // counters can drift. A turn no report arrived for — the process died before it could send one —
-// is a key the window never holds, which counts neither way.
+// is a key the claim never holds, which counts neither way.
 //
-// Run is how many refused turns the entry stands for when the window's bound has counted older
-// refused reports into it (recordTurnOutcome), and zero for an entry that stands for its own turn
-// alone (turns).
-//
-// The tags are the shape the store keeps the window in (the claims table's turn_outcomes), which
+// The tags are the shape the store keeps the reports in (the claims table's turn_outcomes), which
 // is the one place a report is written.
 type TurnOutcome struct {
 	Generation uint64 `json:"generation"`
 	Sequence   uint64 `json:"sequence"`
 	Refused    bool   `json:"refused"`
 	Message    string `json:"message,omitempty"`
-	Run        int    `json:"run,omitempty"`
 }
 
-// turns is how many turns of the run the entry counts: its own, and the older refused turns the
-// window's bound counted into it.
-func (o TurnOutcome) turns() int { return max(o.Run, 1) }
-
 // compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
-// the producer's own sequence. It is the order the window is kept in and the run is derived in, so
-// a report that arrives late or out of order lands in its own place rather than at the end.
+// the producer's own sequence. It is the order the reports are kept in and the run is derived in,
+// so a report that arrives late or out of order lands in its own place rather than at the end.
 func compareTurnOutcomes(a, b TurnOutcome) int {
 	if by := cmp.Compare(a.Generation, b.Generation); by != 0 {
 		return by
@@ -60,55 +51,66 @@ func compareTurnOutcomes(a, b TurnOutcome) int {
 // keeps its first maxRefusalMessage-1 runes and "…" (redact.Runes).
 const maxRefusalMessage = 500
 
-// turnOutcomeWindow is how many recent reports a claim keeps. The launch failure limit supplies
-// the existing bounded storage size; a refused report the bound drops is counted into the next
-// one where the run goes on through both (recordTurnOutcome), so the bound holds the storage and
-// not the count.
+// turnOutcomeWindow is how many reports a claim keeps whole, the provider's words included, and
+// how many it keeps at all when its newest report is clean. The launch failure limit supplies the
+// bound; the trailing run of refused turns is kept past it, one key a turn (recordTurnOutcome).
 func (m *Machine) turnOutcomeWindow() int { return max(m.deps.Limits.LaunchFailures, 1) }
 
-// recordTurnOutcome puts a report in the claim's window, in (generation, sequence) order, and
-// trims the window to its bound (turnOutcomeWindow). A report whose key the window already holds
-// replaces it, so a producer that repeats one changes nothing. The oldest entry the bound drops is
-// counted into the entry after it when both are refused (TurnOutcome.Run): the run goes on
-// through the two, so the run a reader derives from the window (RefusedRun) is the whole run
-// however long it gets. A dropped entry whose run the next entry does not continue ended before
-// it, and counts toward no run a reader reads. No other count is kept: every reader derives what
-// it needs from the window as it stands, which is what makes a late report and an in-order one
-// leave the same answer. A report so late that its key is older than every entry the window keeps
-// is counted in the place the bound gives it, the window's oldest end.
+// recordTurnOutcome puts a report among the claim's reports, in (generation, sequence) order, and
+// trims them. A report whose key the claim already keeps replaces it, so a producer that repeats
+// one changes nothing.
+//
+// The trim keeps the newest turnOutcomeWindow reports and, past them, every report from the
+// newest clean one on: the trailing run of refused turns, and the clean turn before it that it
+// started after. So every turn the run a reader derives (RefusedRun) counts is a key the claim
+// still keeps, for as long as the run can grow, and each counts once whenever its report arrives:
+// a repeat of a turn of the run finds its key and changes nothing, a late report of a turn inside
+// the run lands in its own place and joins it, and a late clean one ends the run there. A report
+// older than the newest clean one is in no run a reader reads, so the trim drops it once the bound
+// is reached. A clean turn ends the run, and the trim then drops the old run's keys down to the
+// bound. Past the bound a kept report keeps its key and outcome and drops the provider's words, so
+// a long run costs a key a turn and no more. No count is kept anywhere: every reader derives what
+// it needs from the reports as they stand, which is what makes a late report and an in-order one
+// leave the same answer.
 //
 // The message is the provider's text, so it is kept as the daemon keeps a far side's text
 // (storetext.FarSideText: made valid, then read whole by the URL rule) before redact.Runes cuts
-// it, so the window in memory is the window the store holds, and the cut cannot leave half a
+// it, so the reports in memory are the reports the store holds, and the cut cannot leave half a
 // credential.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) {
 	o.Message = redact.Runes(storetext.FarSideText(o.Message), maxRefusalMessage)
-	at, found := slices.BinarySearchFunc(m.claim.TurnOutcomes, o, compareTurnOutcomes)
-	if found {
-		if o.Refused {
-			// The repeat of an entry the bound counted older turns into still stands for them.
-			o.Run = m.claim.TurnOutcomes[at].Run
-		}
-		m.claim.TurnOutcomes[at] = o
+	outcomes := m.claim.TurnOutcomes
+	if at, found := slices.BinarySearchFunc(outcomes, o, compareTurnOutcomes); found {
+		outcomes[at] = o
 	} else {
-		m.claim.TurnOutcomes = slices.Insert(m.claim.TurnOutcomes, at, o)
+		outcomes = slices.Insert(outcomes, at, o)
 	}
-	for len(m.claim.TurnOutcomes) > m.turnOutcomeWindow() {
-		if dropped, next := m.claim.TurnOutcomes[0], &m.claim.TurnOutcomes[1]; dropped.Refused && next.Refused {
-			next.Run = next.turns() + dropped.turns()
+	window := m.turnOutcomeWindow()
+	newestClean := -1
+	for i := len(outcomes) - 1; i >= 0; i-- {
+		if !outcomes[i].Refused {
+			newestClean = i
+			break
 		}
-		m.claim.TurnOutcomes = slices.Delete(m.claim.TurnOutcomes, 0, 1)
 	}
+	if drop := min(len(outcomes)-window, newestClean); drop > 0 {
+		outcomes = slices.Delete(outcomes, 0, drop)
+	}
+	for i := range len(outcomes) - window {
+		outcomes[i].Message = ""
+	}
+	m.claim.TurnOutcomes = outcomes
 }
 
 // RefusedRun is the run of refused turns the claim's reports end with, in the order the turns
-// ran, counted whole however long it is (recordTurnOutcome). It is derived on every read and
-// stored nowhere. It is a record: the controller's notice reads it beside the prompt results' run
-// (Claim.errorRun), and it bounds nothing.
+// ran: the refused reports after the newest clean one, each of which the claim keeps however long
+// the run gets (recordTurnOutcome). It is derived on every read and stored nowhere. It is a record:
+// the controller's notice reads it beside the prompt results' run (Claim.errorRun), and it bounds
+// nothing.
 func (c Claim) RefusedRun() int {
 	run := 0
 	for i := len(c.TurnOutcomes) - 1; i >= 0 && c.TurnOutcomes[i].Refused; i-- {
-		run += c.TurnOutcomes[i].turns()
+		run++
 	}
 	return run
 }
