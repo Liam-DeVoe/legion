@@ -73,8 +73,14 @@ function separatorReference(
   if (name === undefined) {
     const digits = hex ?? decimal ?? "";
     const code = Number.parseInt(digits, hex === undefined ? 10 : 16);
-    return code < 0x80 && SEPARATORS.includes(String.fromCharCode(code))
-      ? String.fromCharCode(code)
+    if (code < 0x80 && SEPARATORS.includes(String.fromCharCode(code))) {
+      return String.fromCharCode(code);
+    }
+    // A reference of a full-width separator (`&#xFF0F;`, `&#65295;`) is that separator to a
+    // reader of the page too.
+    const ascii = code - 0xfee0;
+    return code >= 0xff01 && code <= 0xff5e && SEPARATORS.includes(String.fromCharCode(ascii))
+      ? String.fromCharCode(ascii)
       : reference;
   }
   const separator = Object.hasOwn(NAMED_SEPARATORS, name) ? NAMED_SEPARATORS[name] : undefined;
@@ -109,7 +115,8 @@ function decodeSeparators(field: string): string {
  * it can read every URL in the field with certainty, and `undefined` otherwise. The grammar is
  * Go's `redact.Remote`, step for step:
  *  0. The field is first read with each full-width form of printable ASCII as that character and
- *     each HTML character reference of a URL's separators as that separator, until none is left
+ *     each HTML character reference of a URL's separator, or of its full-width form, as that
+ *     separator, until none is left
  *     ({@link decodeSeparators}). Where that reading differs from the field, steps 1 to 8 read it:
  *     a field they cannot read is not readable, and one whose reading removes anything prints as
  *     that reading. Otherwise steps 1 to 8 read the field as it came.

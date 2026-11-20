@@ -1669,6 +1669,68 @@
       "field": "\"://issuer.example/?access_token=not-a-secret-token\"",
       "readable": false,
       "secrets": ["not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-full-width-hex",
+      "category": "html-reference-full-width",
+      "field": "https&#xFF1A;&#xFF0F;&#xFF0F;not-a-secret-user&#xFF1A;not-a-secret-password&#xFF20;issuer.example&#xFF0F;path&#xFF1F;access_token&#xFF1D;not-a-secret-token",
+      "readable": true,
+      "printed": "https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-full-width-hex-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#xFF1A;&#xFF0F;&#xFF0F;not-a-secret-user&#xFF1A;not-a-secret-password&#xFF20;issuer.example&#xFF0F;path&#xFF1F;access_token&#xFF1D;not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-full-width-decimal",
+      "category": "html-reference-full-width",
+      "field": "https&#65306;&#65295;&#65295;not-a-secret-user&#65306;not-a-secret-password&#65312;issuer.example&#65295;path&#65311;access_token&#65309;not-a-secret-token",
+      "readable": true,
+      "printed": "https://issuer.example/path?access_token=",
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-full-width-decimal-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"https&#65306;&#65295;&#65295;not-a-secret-user&#65306;not-a-secret-password&#65312;issuer.example&#65295;path&#65311;access_token&#65309;not-a-secret-token\"",
+      "readable": false,
+      "secrets": ["not-a-secret-user", "not-a-secret-password", "not-a-secret-token"]
+    },
+    {
+      "id": "html-ref-full-width-userinfo",
+      "category": "html-reference-full-width",
+      "field": "<p>Continue at https&#xff1a;&#xff0f;&#xff0f;not-a-secret-user&#xff1a;not-a-secret-password&#xff20;issuer.example&#xff0f; to sign in</p>",
+      "readable": true,
+      "printed": "<p>Continue at https://issuer.example/ to sign in</p>",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "html-ref-full-width-userinfo-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"<p>Continue at https&#xff1a;&#xff0f;&#xff0f;not-a-secret-user&#xff1a;not-a-secret-password&#xff20;issuer.example&#xff0f; to sign in</p>\"",
+      "readable": true,
+      "printed": "\"<p>Continue at https://issuer.example/ to sign in</p>\"",
+      "secrets": ["not-a-secret-user", "not-a-secret-password"]
+    },
+    {
+      "id": "r4-full-width-reference-text",
+      "category": "html-reference-full-width",
+      "field": "Ｑ＆Ａ &#xFF01; &#65311; done",
+      "readable": true,
+      "printed": "Ｑ＆Ａ &#xFF01; &#65311; done",
+      "secrets": []
+    },
+    {
+      "id": "r4-full-width-reference-text-quoted",
+      "category": "html-reference-full-width",
+      "field": "\"Ｑ＆Ａ &#xFF01; &#65311; done\"",
+      "readable": true,
+      "printed": "\"Ｑ＆Ａ &#xFF01; &#65311; done\"",
+      "secrets": []
     }
   ]
 }

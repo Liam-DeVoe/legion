@@ -22,8 +22,9 @@ const WordsNotReadable = "(not printed: the answer's words hold a URL the rule c
 //     them as full-width forms, which a reader of either sees as the separators. So the rule first
 //     reads the field with each full-width form of printable ASCII (U+FF01 to U+FF5E) as that
 //     ASCII character, and each character reference of '/', ':', '@', '?', '#', '=', '&', '%' or
-//     '\' - decimal, hexadecimal or named, its ';' optional where a page's reader takes it without
-//     one - as that separator, until none is left (decodeSeparators). Where that reading differs
+//     '\', or of its full-width form - decimal, hexadecimal or named, its ';' optional where a
+//     page's reader takes it without one - as that separator, until none is left
+//     (decodeSeparators). Where that reading differs
 //     from the field, the rule reads it by steps 1 to 8: a field it cannot read is not readable,
 //     and one whose reading removes anything prints as that reading. Otherwise the field is read
 //     by steps 1 to 8 as it came, so a field whose references hide nothing prints as before.
@@ -598,6 +599,11 @@ func separatorReference(ref string) string {
 		v, err := strconv.ParseUint(digits, base, 32)
 		if err == nil && v < 0x80 && strings.IndexByte(separators, byte(v)) >= 0 {
 			return string(rune(v))
+		}
+		// A reference of a full-width separator (&#xFF0F;, &#65295;) is that separator to a reader
+		// of the page too.
+		if err == nil && isFullWidth(rune(v)) && strings.IndexByte(separators, byte(v-0xFEE0)) >= 0 {
+			return string(rune(v - 0xFEE0))
 		}
 		return ref
 	}

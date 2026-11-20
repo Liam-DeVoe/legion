@@ -73,6 +73,7 @@ const REQUIRED_CATEGORIES = [
   "r4-full-width-text",
   "path-parameter",
   "scheme-not-a-scheme",
+  "html-reference-full-width",
 ];
 
 interface RemoteRow {

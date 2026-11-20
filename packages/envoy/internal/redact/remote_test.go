@@ -25,7 +25,7 @@ var remoteCategories = []string{
 	"r4-clean-url", "r4-prose-after-url", "r4-percent", "r4-email-without-url", "r4-not-a-url",
 	"r4-empty", "r4-unreadable-clean", "html-reference", "r4-html-text", "brace-escape",
 	"percent-u-escape", "long-unicode-escape", "octal-escape", "full-width", "r4-full-width-text",
-	"path-parameter", "scheme-not-a-scheme",
+	"path-parameter", "scheme-not-a-scheme", "html-reference-full-width",
 }
 
 // remoteRow is one row of testdata/remote.json.
