@@ -132,7 +132,7 @@ func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, 
 	}
 	if unread != nil {
 		for _, p := range proved {
-			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateUnread, unread.ciCase, unread.detail)
+			p.check.CI = ciUnconcluded(*p.check, p.name, model.CIStateUnread, unread.ciCase, unread.detail, words)
 		}
 		return nil
 	}

@@ -4969,7 +4969,20 @@ Each item below names a path with its method and identity, then its purpose.
   The result is appended as `result.recorded` on the check's own issue, naming the recording issue.
   A closed issue, the recording one or the check's, takes a result only for a check whose `when` is `after_merge` or `default_branch` — the production check after the merge
   — and refuses every other with `409 ISSUE_CLOSED`; every other write on a closed issue stays refused.
-  The answer is `{result, line}`, `line` the pull-request body line the result implies, which carries no link to Dispatch.
+  The answer is `{result, line}`, `line` the pull-request body line the result implies.
+  It is `- Check <id> (<when>): <verdict> at <commit>, recorded by <role>.` and the reading.
+  The reading keeps only plain words: visible letters, digits and `. , ; : ! ? ' " - ( ) /`.
+  It drops a word holding another rune, a URL, a private or Tailscale host, this Dispatch's host or an issue key of a project this Dispatch holds.
+  It also checks every word under NFKC and cuts what remains to 80 runes at a word boundary, with `…` when it cut text.
+  A reading with no kept word says `The reading holds only words this line leaves out.`, and an empty reading says `The role recorded no reading.`
+  No line is stored: each is read from the projects Dispatch holds when it answers.
+
+- `/api/v1/issues/{key}/results/dry-run` (POST; cookie, trusted header, or bearer)
+
+  The dry run of a result's record takes the record's body and makes the refusals that occur before the record writes.
+  Otherwise it answers `200 {line}`, the line the record would answer, and records neither a row nor an event.
+  A closed issue, a screenshot and a check reworded while the record writes are judged by the record alone.
+  The dry run is a path of its own, so an older release answers `404` rather than accepting an ignored record flag.
 
 - `/api/v1/issues/{key}/coverage` (GET; cookie, trusted header, or bearer)
 

@@ -104,6 +104,7 @@ var writeClasses = map[string]writeScope{
 	"POST /api/v1/issues/{key}/asks":                       scopeProject,
 	"POST /api/v1/issues/{key}/comments":                   scopeProject,
 	"POST /api/v1/issues/{key}/results":                    scopeProject,
+	"POST /api/v1/issues/{key}/results/dry-run":            scopeProject,
 	"POST /api/v1/issues/{key}/handoffs/{phase}":           scopeProject,
 	"PUT /api/v1/issues/{key}/design-gates":                scopeProject,
 	"PUT /api/v1/issues/{key}/role-holders":                scopeProject,

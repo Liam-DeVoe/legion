@@ -537,7 +537,8 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
+	reader := newComparisonReader(s, at)
+	if err := s.deriveCIResults(r.Context(), reader, issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -551,7 +552,6 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// Every head GitHub has to be asked for is learned before the first check is answered, so
 	// two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn).
-	reader := newComparisonReader(s, at)
 	reader.learn(r.Context(), checks)
 	for index := range checks {
 		reader.answer(r.Context(), &checks[index])
@@ -1416,7 +1416,7 @@ func (s *server) readThroughPullRequests(ctx context.Context, sha string, repo *
 		return
 	}
 	if _, _, err := delivery.ReadThroughCommitPulls(
-		ctx, s.deps.Store.Pool, s.deps.GitHub, s.deps.Events, *repo, sha, time.Now()); err != nil {
+		ctx, s.deps.Store.Pool, s.deps.GitHub, *repo, sha, time.Now()); err != nil {
 		slog.Info("dispatch: GitHub named no pull request for a recorded result's commit",
 			"repo", *repo, "commit", sha, "error", err)
 	}
