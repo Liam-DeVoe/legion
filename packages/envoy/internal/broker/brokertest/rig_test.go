@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,8 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/wire"
+	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
 // TestNewRigConnectsAndServesHealthz is the rig's own smoke test: NewRig migrates a real schema
@@ -29,6 +32,30 @@ func TestNewRigConnectsAndServesHealthz(t *testing.T) {
 	status, body := rig.Req(t, http.MethodGet, "/healthz", nil, nil)
 	if status != http.StatusOK {
 		t.Fatalf("GET /healthz = %d, want 200: %s", status, body)
+	}
+}
+
+// TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson: the rig's broker answers GET
+// /v1/person-access from the exchange entries its token exchange trades on, as cmd/broker gives the
+// API the one set it gives the OAuth provider. ExchangePerson is named by the two account entries
+// and the workflow entry, with or without the Google entry a rig taking person trades adds, which
+// names no person; a person no entry names counts none.
+func TestTheRigsPersonAccessCountsTheExchangeEntriesNamingAPerson(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		options []Option
+	}{
+		{"a rig", nil},
+		{"a rig taking Google person trades", []Option{WithPersonSignIns(oidctest.New(t), "leaver-machine@example.iam.gserviceaccount.com")}},
+	} {
+		rig := NewRig(t, c.options...)
+		for person, want := range map[string]int{ExchangePerson: 3, "bob@example.com": 0} {
+			status, body := rig.Req(t, http.MethodGet, "/v1/person-access?person="+url.QueryEscape(person), map[string]string{"Authorization": "Bearer " + rig.UIToken}, nil)
+			var answer wire.PersonAccessResponse
+			if err := json.Unmarshal(body, &answer); err != nil || status != http.StatusOK || answer.Person != person || answer.ExchangeEntries != want {
+				t.Errorf("%s: GET /v1/person-access?person=%s = %d %s, want 200 naming %s with exchange_entries %d", c.name, person, status, body, person, want)
+			}
+		}
 	}
 }
 
