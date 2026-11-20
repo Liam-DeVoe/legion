@@ -19,8 +19,9 @@ import (
 // test's own default; the guard keeps all three, so a developer may set any of them by hand. It
 // drops the migrated template isolatedOutboxPool clones its databases from (testpg.Main), makes
 // the one database this run's tests write in (testdb.RunDatabaseMain), removes the directory the
-// tests' Envoy binaries were built into (testbuild.Main), and removes the NATS container the
-// package's tests share (testnats.Main).
+// tests' Envoy binaries were built into (testbuild.Main), removes the NATS container the
+// package's tests share (testnats.Main), and removes the directory the move and release tests'
+// one build of `legion` went into (removeLegionBuild).
 //
 // The run's database is legion_daemon_run_<random> on the server LEGION_TEST_PG_DSN names,
 // dropped when the run ends; testDSN hands it to every test, and a daemon migrates Legion's
@@ -52,7 +53,7 @@ func TestMain(m *testing.M) {
 	fixtureenv.MustGuard("LEGION_KEPT_PROPERTY_SEED", "LEGION_KEPT_PROPERTY_RUNS", "LEGION_KEPT_PROPERTY_STEPS")
 	os.Exit(testpg.Main("legion_daemon_test", func() int {
 		return testdb.RunDatabaseMain("legion_daemon_run", func() int {
-			return testbuild.Main(func() int { return testnats.Main(m) })
+			return testbuild.Main(func() int { return removeLegionBuild(testnats.Main(m)) })
 		})
 	}))
 }

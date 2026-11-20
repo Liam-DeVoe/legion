@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,16 +50,59 @@ var goHomes = func() []string {
 	return homes
 }()
 
-// buildLegion builds this checkout's `legion` into a directory of t's, the command every step of a
-// move runs as an operator runs it. It builds with the caches of the process's own homes
-// (goHomes), whatever homes the test has set since.
+// legionBuild is this test binary's one build of `legion`, which every buildLegion of the process
+// answers. The move and release tests that run the command each built their own before, four
+// builds inside the race step's one package deadline (dispatch://INFRA-3583). dir is the
+// directory made for it under os.TempDir, which TestMain removes once the tests are done
+// (removeLegionBuild), since a test's own temporary directory is gone before the next test runs;
+// by is the test whose call built it, and took is how long its `go build` ran.
+var legionBuild struct {
+	once   sync.Once
+	dir    string
+	binary string
+	by     string
+	took   time.Duration
+	err    error
+}
+
+// buildLegion answers this checkout's `legion`, the command every step of a move runs as an
+// operator runs it, built once per test binary (legionBuild): the first call builds it and logs
+// how long that took, every later call logs that it reuses that build, and a failed build fails
+// every caller with the build's output.
 func buildLegion(t *testing.T) string {
 	t.Helper()
+	built := false
+	legionBuild.once.Do(func() {
+		built = true
+		legionBuild.by = t.Name()
+		dir, err := os.MkdirTemp("", "daemon-test-legion-")
+		if err != nil {
+			legionBuild.err = fmt.Errorf("make the directory to build legion into: %w", err)
+			return
+		}
+		legionBuild.dir = dir
+		legionBuild.binary = filepath.Join(dir, "legion")
+		legionBuild.took, legionBuild.err = compileLegion(legionBuild.binary)
+	})
+	if legionBuild.err != nil {
+		t.Fatal(legionBuild.err)
+	}
+	if built {
+		t.Logf("built legion in %s", legionBuild.took.Round(time.Millisecond))
+	} else {
+		t.Logf("reused the legion built by %s (its build took %s): %s", legionBuild.by, legionBuild.took.Round(time.Millisecond), legionBuild.binary)
+	}
+	return legionBuild.binary
+}
+
+// compileLegion builds this checkout's ./cmd/legion into binary and answers how long the build
+// ran. It builds with the caches of the process's own homes (goHomes), whatever homes the test
+// that called buildLegion has set since.
+func compileLegion(binary string) (time.Duration, error) {
 	module, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
-		t.Fatal(err)
+		return 0, err
 	}
-	binary := filepath.Join(t.TempDir(), "legion")
 	started := time.Now()
 	build := exec.Command("go", "build", "-o", binary, "./cmd/legion")
 	build.Dir = module
@@ -68,10 +112,25 @@ func buildLegion(t *testing.T) string {
 	})
 	build.Env = slices.Concat(environ, goHomes, []string{"GOFLAGS="})
 	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build legion from %s: %v\n%s", module, err, out)
+		return 0, fmt.Errorf("build legion from %s: %v\n%s", module, err, out)
 	}
-	t.Logf("built legion in %s", time.Since(started).Round(time.Millisecond))
-	return binary
+	return time.Since(started), nil
+}
+
+// removeLegionBuild removes the directory legionBuild's `legion` was built into, if a test built
+// it, once the tests are done, and answers code: 1 instead of 0 when the removal failed, so a
+// directory left behind is a red run, as testbuild.Main answers for the Envoy binaries'.
+func removeLegionBuild(code int) int {
+	if legionBuild.dir == "" {
+		return code
+	}
+	if err := os.RemoveAll(legionBuild.dir); err != nil {
+		fmt.Fprintf(os.Stderr, "remove the directory legion was built into, %s: %v\n", legionBuild.dir, err)
+		if code == 0 {
+			code = 1
+		}
+	}
+	return code
 }
 
 // idleRigCommand is one run of the `legion` command: what it printed, its exit, and the error of a
