@@ -24,13 +24,13 @@ import (
 const testRelease int64 = 11
 
 // withSavedWorkspace gives the rig's runtime both halves of a restore over st: the one take that
-// chooses between the issue's two copies and spends their attempts, and the keep the launcher's
-// report runs, routed on the restore id alone by the store that owns both tables
-// (store.KeepRestoredWorkspaceCopy) — the same two methods the daemon wires onto these options
-// in production (daemon's sandboxRuntime).
+// chooses between the issue's two copies and spends their attempts, bound to the rig's project
+// (takeCopies), and the keep the launcher's report runs, routed on the restore id alone by the
+// store that owns both tables (store.KeepRestoredWorkspaceCopy) — the same two methods the daemon
+// wires onto these options in production (daemon's sandboxRuntime).
 func withSavedWorkspace(st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
+		o.SavedWorkspaceBundle = takeCopies(st)
 		o.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 	})
 }
@@ -165,6 +165,28 @@ func sentBookmarks(b runtime.WorkspaceBundle) map[string]string {
 	return map[string]string{"side": b.Bookmarks["side"]}
 }
 
+// bundleStore is a migrated store whose issues table records testTree under the rig's project,
+// as the release that saved a copy of it leaves it: the store answers a take only for an issue
+// the asking project records (store.Store.TakeWorkspaceCopyForRestore).
+func bundleStore(t *testing.T) *store.Store {
+	t.Helper()
+	st := migratedStore(t)
+	if _, err := st.Pool().Exec(context.Background(), `insert into issues
+		(key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'LEGION', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, testTree); err != nil {
+		t.Fatalf("record %s: %v", testTree, err)
+	}
+	return st
+}
+
+// takeCopies is st's take of an issue's saved copies for a pod of the rig's project, as the
+// daemon wires it into the runtime (internal/daemon's savedWorkspaceCopy).
+func takeCopies(st *store.Store) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
+		return st.TakeWorkspaceCopyForRestore(ctx, testProject, issue, podUID)
+	}
+}
+
 // frameTypes names what a launcher was sent, for a failure an operator reads.
 func frameTypes(frames []shimwire.Frame) []string {
 	types := make([]string, 0, len(frames))
@@ -182,7 +204,7 @@ func frameTypes(frames []shimwire.Frame) []string {
 // issue's own branch and its rescue branch, and the daemon logs, in one line, the commit the
 // bundle held each of those two on.
 func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	logs := &logBuffer{}
 	saved := savedWorkspaceBundle()
 	// The copy holds a local bookmark of the issue's rescue branch on a commit of its own, as the
@@ -266,7 +288,7 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 // would `jj edit` that workspace back to the saved head and move each bookmark
 // `--allow-backwards` over all of it.
 func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
 	const refusal = "git bundle unbundle: object not found"
@@ -319,7 +341,7 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 // pod by the uid the save recorded, so it is the pod's identity and no time that leaves the
 // bundle for its replacement.
 func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	g := newRig(t, nil, withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.spawn(spec)
@@ -407,7 +429,7 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 // which is the whole of the work, since the teardown of that newer release took the disk it came
 // off.
 func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	ctx := context.Background()
 	first := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, first)
@@ -417,7 +439,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	second.Bundle, second.Head, second.Release = []byte("PACK the work of the second release"), "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", first.Release+1
 	saveReleaseBundle(t, st, second)
 
-	d := newLaunchers(nil, st.TakeWorkspaceCopyForRestore, st.KeepRestoredWorkspaceCopy, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(nil, takeCopies(st), st.KeepRestoredWorkspaceCopy, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, _, err := bundleFrames(testTree, first)
@@ -426,7 +448,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: frames[0].ID, Release: first.Release, OK: true})
 
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, testTree, "pod-uid")
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, testProject, testTree, "pod-uid")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +474,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 // not finish leaves it knowing nothing of what that pod's workspace now holds, and the role that
 // starts spends the bundle when it registers.
 func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
 	const refusal = "launcher_bundle sequence rebuilt to another digest than its slices declared"
@@ -542,7 +564,7 @@ func bundleBody(t *testing.T, frames []shimwire.Frame) (shimwire.WorkspaceBundle
 // the launcher's report, which keeps the copy as this pod's own because its restore id names it
 // (store.MinRunningWorkspaceCopyRestoreID).
 func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	logs := &logBuffer{}
 	taken := runningWorkspaceCopy("pod-the-cadence-copied")
 	saveRunningCopy(t, st, taken)
@@ -592,7 +614,7 @@ func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
 // back, so the older copy would be applied over everything pushed in between. Its bytes stay in
 // the database all the same, for an operator who wants them.
 func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	logs := &logBuffer{}
 	// The release saved its bundle, a wake cancelled nothing of it, and the cadence took a copy
 	// of the same workspace after it: the copy is the newer work.
@@ -623,7 +645,7 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 		t.Fatalf("the store holds %d bytes of the release bundle (held=%t, %v), want its %d kept for an operator",
 			size, held, err, len(saved.Bundle))
 	}
-	restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-this-one")
+	restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testProject, testTree, "pod-after-this-one")
 	if later := restore.ReleaseBundle; err != nil || later.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after this one was answered %d bytes of the release bundle (%v, %v), want nothing: this restore spent its attempt",
 			len(later.Bundle.Bundle), later.Take, err)
@@ -643,7 +665,7 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 // same, since a pod that restored it would put it over the newer work. Its line says the newer
 // one was answered nothing here rather than naming no copy at all.
 func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	ctx := context.Background()
 	logs := &logBuffer{}
 	saved := savedWorkspaceBundle()
@@ -685,7 +707,7 @@ func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *te
 			t.Fatalf("the closed copy logged %s, want it to carry %s", line, want)
 		}
 	}
-	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, testTree, "pod-after-this-one"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, testProject, testTree, "pod-after-this-one"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after this one was answered %d bytes of the release bundle (%v, %v), want nothing: this pod closed it",
 			len(restore.ReleaseBundle.Bundle.Bundle), restore.ReleaseBundle.Take, err)
 	}
@@ -700,7 +722,7 @@ func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *te
 // the copy was taken off, and that release would save it again. The store's own side of this is
 // TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy.
 func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	logs := &logBuffer{}
 	taken := runningWorkspaceCopy("pod-the-cadence-copied")
 	saveRunningCopy(t, st, taken)
@@ -727,7 +749,7 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 	if err := st.RecordPodRegistration(g.ctx, testTree, string(g.pod(SandboxName(spec.Claim)).UID)); err != nil {
 		t.Fatal(err)
 	}
-	restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-the-failure")
+	restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testProject, testTree, "pod-after-the-failure")
 	if after := restore.Running; err != nil || after.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after the failed restore was answered %d bytes (%v, %v), want nothing", len(after.Bundle.Bundle), after.Take, err)
 	}
@@ -747,7 +769,7 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 // on what was pushed, and the bytes stay in the database for an operator. Every time is the
 // store's, so the copies are saved in the order the case needs: the bundle, the copy, the push.
 func TestARestoreSendsNoRunningCopyOlderThanTheIssuesNewestPushAndLogsThePushItWouldRollBack(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	ctx := context.Background()
 	logs := &logBuffer{}
 	earlier := savedWorkspaceBundle()

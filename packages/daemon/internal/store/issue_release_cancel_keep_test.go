@@ -12,6 +12,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -58,9 +59,9 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 
 	// A wake cancels the release, and the resume it queues cannot be built.
 	refused := errors.New("the resume could not be encoded")
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, func(claim.Role, uint64) (IdleReleaseRow, error) {
 		return IdleReleaseRow{}, refused
-	}, record.OutOfWorkflow); !errors.Is(err, refused) {
+	}, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); !errors.Is(err, refused) {
 		t.Fatalf("a cancel whose resume could not be built = %v, want %v", err, refused)
 	}
 	if row := heldCopyRow(t, st, releaseBundleCopies, rootIssue); !row.held {
@@ -70,8 +71,8 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 		t.Fatalf("a cancel that failed left the running copy %+v, want none written", row)
 	}
 
-	resumed, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
-	if err != nil || len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
+	cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
+	if resumed := cancelled.Resumed; err != nil || len(resumed) != 1 || resumed[0] != claim.RoleArchitect {
 		t.Fatalf("the cancel resumed %v (%v), want the one claim the release suspended", resumed, err)
 	}
 	if row := heldCopyRow(t, st, releaseBundleCopies, rootIssue); row.held {
@@ -85,13 +86,13 @@ func TestACancelAfterTheSaveStoredItsBundleKeepsItAsTheResumedPodsRunningCopy(t 
 	}
 
 	// The pod the roles resume in restarts its roles container: its own disk holds the work.
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-being-released")
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-being-released")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod the roles resume in was answered %v of a release bundle and %v of a running copy (%v), want nothing",
 			restore.ReleaseBundle.Take, restore.Running.Take, err)
 	}
 	// An eviction of that pod before any woken turn brings a pod that is sent the work.
-	restore, err = st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-after-an-eviction")
+	restore, err = st.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-after-an-eviction")
 	sent := restore.Running.Bundle
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || !bytes.Equal(sent.Bundle, saved.Bundle) ||
 		sent.Head != saved.Head || !slices.Equal(sent.Tips, saved.Tips) || !maps.Equal(sent.Bookmarks, saved.Bookmarks) ||
@@ -127,7 +128,7 @@ func TestACancelLeavesARunningCopyNewerThanItsReleasesBundleAsItIs(t *testing.T)
 	}
 	before := storedRunningCopy(t, st, rootIssue)
 
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
 	if row := heldCopyRow(t, st, releaseBundleCopies, rootIssue); row.held {
@@ -162,7 +163,7 @@ func TestACancelledReleaseKeepsTheRunningCopyItsFailedSaveLeft(t *testing.T) {
 	releasedClaim(t, st, claim.RoleArchitect)
 
 	// The save stored nothing, and the release is cancelled.
-	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
 	}
 	if releaseMarked(t, st) {
@@ -171,11 +172,11 @@ func TestACancelledReleaseKeepsTheRunningCopyItsFailedSaveLeft(t *testing.T) {
 	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held || row.size != taken.Size() {
 		t.Fatalf("after the cancel the store holds the running copy %+v, want the %d bytes the failed save left", row, taken.Size())
 	}
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-being-released")
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-being-released")
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod the roles resume in was answered %v of its own copy (%v), want nothing", restore.Running.Take, err)
 	}
-	restore, err = st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-after-an-eviction")
+	restore, err = st.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-after-an-eviction")
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || string(restore.Running.Bundle.Bundle) != string(taken.Bundle) {
 		t.Fatalf("the pod after an eviction was answered %v of %q (%v), want the copy sent", restore.Running.Take, restore.Running.Bundle.Bundle, err)
 	}

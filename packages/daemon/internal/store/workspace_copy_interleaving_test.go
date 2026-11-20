@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -225,6 +226,7 @@ func runningCopySource(t *testing.T, s *Store, issue string) string {
 func runCopyOrder(t *testing.T, s *Store, issue string, order []copyAct) (sends int, excepted bool) {
 	t.Helper()
 	ctx := context.Background()
+	recordCopyIssues(t, s, issue)
 	names := make([]string, len(order))
 	for i, act := range order {
 		names[i] = act.String()
@@ -264,7 +266,7 @@ func runCopyOrder(t *testing.T, s *Store, issue string, order []copyAct) (sends 
 				o.pushed |= o.a
 			}
 		case actAsk:
-			restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, interleavingReplacementPod)
+			restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, interleavingReplacementPod)
 			if err != nil {
 				t.Fatalf("%s: the replacement pod's first ask: %v", o.name, err)
 			}
@@ -289,7 +291,7 @@ func runCopyOrder(t *testing.T, s *Store, issue string, order []copyAct) (sends 
 			}
 			o.saved, o.idle = o.a, true
 		case actCancel:
-			if _, _, err := s.CancelIssueRelease(ctx, "legion", issue, resumeRow, record.OutOfWorkflow); err != nil {
+			if _, err := s.CancelIssueRelease(ctx, "legion", issue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
 				t.Fatalf("%s: cancel the release: %v", o.name, err)
 			}
 			o.idle = false
@@ -297,7 +299,7 @@ func runCopyOrder(t *testing.T, s *Store, issue string, order []copyAct) (sends 
 	}
 
 	// B ends from outside the pod with no act of its own — no copy, no release — and C first asks.
-	restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, interleavingNextPod)
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, interleavingNextPod)
 	if err != nil {
 		t.Fatalf("%s: the next pod's first ask: %v", o.name, err)
 	}

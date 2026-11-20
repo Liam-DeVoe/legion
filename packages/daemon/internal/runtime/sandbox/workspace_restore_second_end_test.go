@@ -31,7 +31,7 @@ import (
 // pod-three's creationTimestamp would send pod-three nothing; the rule before this one also spent
 // the copy's one attempt on that refusal, and the work went with pod-two.
 func TestARestoreSendsTheKeptCopyToAPodTheAPIServerStampedSecondsBeforeIt(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	taken := runningWorkspaceCopy("pod-one")
 	saveRunningCopy(t, st, taken)
 	g := newRig(t, nil, withSavedWorkspace(st))
@@ -70,7 +70,7 @@ func TestARestoreSendsTheKeptCopyToAPodTheAPIServerStampedSecondsBeforeIt(t *tes
 // and the copy's write, both by the store's clock, and the copy stays unspent, so the pod after
 // this one is sent the work.
 func TestARestoreLeavesACopyWrittenAfterThePodFirstAskedForThePodAfterIt(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	logs := &logBuffer{}
 	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
 	// The take of the pod before this one begins, and its bundler reads that pod's workspace.
@@ -139,7 +139,7 @@ func TestARestoreLeavesACopyWrittenAfterThePodFirstAskedForThePodAfterIt(t *test
 // that is sent the same work, where a copy stamped at the bundle's own time would be refused as
 // older than the push and the work lost with the pod that restored it.
 func TestARestoreSendsAReleaseBundleOlderThanTheIssuesNewestPushAndThePodAfterASecondEndIsSentItToo(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	ctx := context.Background()
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
@@ -216,7 +216,7 @@ func sentTo(t *testing.T, g *rig, spec runtime.SpawnSpec, pod string) shimwire.W
 // (store.KeepRestoredRunningWorkspaceCopy): a second end brings a third pod, which is sent the same
 // work.
 func TestARestoredRunningCopyIsSentToThePodAfterASecondEndBeforeAnyTurn(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	taken := runningWorkspaceCopy("pod-one")
 	saveRunningCopy(t, st, taken)
 	g := newRig(t, nil, withSavedWorkspace(st))
@@ -246,7 +246,7 @@ func TestARestoredRunningCopyIsSentToThePodAfterASecondEndBeforeAnyTurn(t *testi
 // (store.KeepRestoredWorkspaceBundle), so a second end of pod-two before any turn of it brings a
 // third pod that is sent the release's work.
 func TestARestoredReleaseBundleIsSentToThePodAfterASecondEndBeforeAnyTurn(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	saved.PodUID = "pod-one"
 	saveReleaseBundle(t, st, saved)

@@ -339,16 +339,44 @@ var (
 // half-changed and the pod given neither. A failure anywhere in it leaves every row as it was, the
 // first ask's included.
 //
+// project is the token of the daemon whose pod asks (claim.ProjectToken), and an issue's copies
+// are project's only where project records the issue (issues.project, the Dispatch key the token
+// lowercases). Where it does not, the take answers an empty runtime.WorkspaceRestore and records
+// nothing at all: no take of either copy, and not the pod's first ask. Neither table names a
+// project, and the mark of the release that saved a bundle, which does, is gone once the release
+// has finished, so the issue's record stands in for it. That holds because the one writer of a
+// release bundle is the save of an idle release (PutWorkspaceBundle, run by internal/daemon's
+// bundleIssueWorkspace from the release's save row): a daemon's outbox runs only the rows of its
+// own project's keys (record's DueRows), and a release only marks a pod whose issue its project
+// records (ReleaseIdleIssue, readIdleView). So a bundle of an issue this project does not record
+// was saved by another project's daemon on a database the two share, for that daemon's own pod,
+// and so was the running copy a cancel of that release moves it into (CancelIssueRelease). The
+// operator's spawn makes a claim of such an issue under this project's token, and a new pod of
+// that claim would otherwise spend the other daemon's attempt — a refusal or a supersession at
+// once, a send once a role of the pod registers — and leave that daemon's pod nothing to restore.
+// Its first ask could spend it too: each first ask drops all but the issue's newest
+// maxWorkspaceRestoreAsks records, and a copy sent to a pod whose record is gone reads as spent
+// (heldCopy), so asks of this project's pods could push out the record of the other daemon's pod
+// the copy was sent to before any role of it registered.
+//
+// The rule withholds one copy that is this daemon's own: the cadence copies a pod of every claim
+// of the daemon's own project (internal/daemon's runningCopyClaim), the operator's spawn's among
+// them, so the running copy of an issue this project does not record can have come off this
+// project's pod, and the next pod of that claim is answered nothing of it. The row names no
+// project, so the store cannot tell that copy from another daemon's, and withholding it costs a
+// restore where taking it could spend another daemon's work.
+//
 // The take holds the issue's copy lock from its first statement (lockWorkspaceCopies), so every
 // write of a copy either committed before the take read anything or stamps its write time after
-// the take committed. The pod's first ask is recorded whatever the issue holds, and before
-// anything of the copies is read: a pod that asks while the issue holds no copy has begun its work
-// all the same, and a copy written after that ask must find it. Every pod's launcher asks at its
-// first role start (internal/runtime/sandbox's launchers.start), so a pod that existed before a
-// copy was written asked before it. The ask's time is the store's clock read under that lock, as a
-// copy's write time is (PutRunningWorkspaceCopy, PutWorkspaceBundle); a copy's `at` is the store's
-// clock when its take began (BeginWorkspaceCopy), and a push's time is the store's clock when its
-// record was written (RecordIssuePush), so the decision compares one clock alone.
+// the take committed. The pod's first ask, of an issue project records, is recorded whatever the
+// issue holds, and before anything of the copies is read: a pod that asks while the issue holds no
+// copy has begun its work all the same, and a copy written after that ask must find it. Every
+// pod's launcher asks at its first role start (internal/runtime/sandbox's launchers.start), so a
+// pod that existed before a copy was written asked before it. The ask's time is the store's clock
+// read under that lock, as a copy's write time is (PutRunningWorkspaceCopy, PutWorkspaceBundle); a
+// copy's `at` is the store's clock when its take began (BeginWorkspaceCopy), and a push's time is
+// the store's clock when its record was written (RecordIssuePush), so the decision compares one
+// clock alone.
 //
 // One comparison of a copy's time with another clock is left, and it is on the pod's side: the
 // launcher applies no copy to a workspace whose creation record, stamped by its own node's clock,
@@ -378,7 +406,10 @@ var (
 // notice tells the roles. A running copy nothing restored holds no pod: the work it holds is on the
 // disk it was taken off, so an idle release of that pod saves it again as a release bundle, and
 // the idle rule reads workspace_bundles alone (workspaceBundleUnrestored).
-func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
+func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, project, issue, podUID string) (runtime.WorkspaceRestore, error) {
+	if project == "" {
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs the project whose pod asks", issue)
+	}
 	if podUID == "" {
 		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs the pod it is sent to", issue)
 	}
@@ -387,6 +418,16 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID s
 		restore = runtime.WorkspaceRestore{}
 		if err := lockWorkspaceCopies(ctx, tx, issue); err != nil {
 			return err
+		}
+		var recorded bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from issues where key = $1 and lower(project) = $2)`,
+			issue, project).Scan(&recorded); err != nil {
+			return fmt.Errorf("read whether project %s records %s: %w", project, issue, err)
+		}
+		// The issue's copies are no copies of this project's: nothing is answered and nothing
+		// recorded, the pod's first ask included.
+		if !recorded {
+			return nil
 		}
 		var err error
 		if restore.FirstAsked, err = firstRestoreAsk(ctx, tx, issue, podUID); err != nil {

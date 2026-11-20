@@ -23,7 +23,7 @@ import (
 // The runtime's restore hop runs over the real store, and the registration is the store's own
 // record of it, which the daemon makes before it answers a registration.
 func TestAnUnspentCopyComesBackAfterAnUnregisteredPodEndsAndNotOnceARoleRegistered(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	g := newRig(t, nil, withSavedWorkspace(st))
 	spec := workerSpec(t)
 	// The issue holds nothing at its pod's first role start, and the copy of the pod before that
@@ -72,7 +72,7 @@ func TestAnUnspentCopyComesBackAfterAnUnregisteredPodEndsAndNotOnceARoleRegister
 	sentNothing("that pod's restarted container", four)
 	five := secondEnd(t, g, spec, time.Now().UTC())
 	sentNothing("the pod after it", five)
-	if restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, "pod-six"); err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
+	if restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testProject, testTree, "pod-six"); err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the store answered a later pod %v (%v), want nothing", restore.Running.Take, err)
 	}
 }
@@ -95,7 +95,7 @@ func countedTakes(o *Options, st *store.Store, takes *atomic.Int32, pause time.D
 		case <-ctx.Done():
 			return runtime.WorkspaceRestore{}, ctx.Err()
 		}
-		return st.TakeWorkspaceCopyForRestore(ctx, issue, podUID)
+		return st.TakeWorkspaceCopyForRestore(ctx, testProject, issue, podUID)
 	}
 	o.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 }
@@ -107,7 +107,7 @@ func countedTakes(o *Options, st *store.Store, takes *atomic.Int32, pause time.D
 // with the launcher process it models.
 func unspentCopyPod(t *testing.T) (*rig, *atomic.Int32, *store.Store, string) {
 	t.Helper()
-	st := migratedStore(t)
+	st := bundleStore(t)
 	takes := new(atomic.Int32)
 	g := newRig(t, nil, withCountedTakes(st, takes, 0))
 	spec := workerSpec(t)
@@ -230,7 +230,7 @@ func TestAnUnspentCopyIsTakenAndSentOncePerLauncherProcess(t *testing.T) {
 // The negative control is the turn given back right before relaunch calls launchers.start, where
 // the six starts meet inside their hops and each takes the copies and sends the copy.
 func TestAnUnspentCopyIsTakenAndSentOnceWhenSixRolesOfOnePodSpawnTogether(t *testing.T) {
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saveRunningCopy(t, st, runningWorkspaceCopy("pod-one"))
 	takes := new(atomic.Int32)
 	g := newRig(t, nil, withCountedTakes(st, takes, 100*time.Millisecond))

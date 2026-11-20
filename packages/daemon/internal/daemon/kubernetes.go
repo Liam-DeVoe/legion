@@ -622,8 +622,8 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// transaction. A refused or closed copy is spent there; a sent one is spent once a role of
 		// the pod it was sent to registers (store.Store.RecordPodRegistration, which the
 		// supervisor's Deps.PodRegistered calls), and is sent again to the next start of the issue
-		// while none has.
-		opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
+		// while none has. The take is bound to this daemon's project (savedWorkspaceCopy).
+		opts.SavedWorkspaceBundle = savedWorkspaceCopy(st, opts.Project)
 		// A launcher's restore report keeps the copy it names as the restoring pod's own running
 		// copy, so the work outlives a second end of that pod before its first turn. Which of the
 		// two tables the report names is read off its id, and that rule belongs to the store that
@@ -666,6 +666,17 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		}
 		listener.SetLauncherResolver(rt.LauncherResolver())
 		return rt, nil
+	}
+}
+
+// savedWorkspaceCopy is st's take of an issue's saved workspace copies for a pod of project, the
+// runtime's project token (sandbox.Options.Project), in the shape the runtime calls it
+// (runtime.SavedWorkspaceBundle). A copy is project's only where project records its issue
+// (store.Store.TakeWorkspaceCopyForRestore): on a database shared with another project's daemon,
+// a copy of that project's issue is that daemon's, whatever pod of this daemon asks.
+func savedWorkspaceCopy(st *store.Store, project string) runtime.SavedWorkspaceBundle {
+	return func(ctx context.Context, issue, podUID string) (runtime.WorkspaceRestore, error) {
+		return st.TakeWorkspaceCopyForRestore(ctx, project, issue, podUID)
 	}
 }
 

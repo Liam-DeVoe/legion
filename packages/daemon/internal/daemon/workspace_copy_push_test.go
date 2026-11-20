@@ -112,7 +112,7 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 		t.Fatalf("the cadence stored %d copies, want only the one taken after the push: the copy read before it is not stored", len(lines))
 	}
 	// It is the copy the pod that replaces this one is sent: it is not older than the push.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if sent := restore.Running; err != nil || sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(atPush.Bundle) {
 		t.Fatalf("the pod that replaces this one was answered %q (%v, %v), want the copy taken after the push", sent.Bundle.Bundle, sent.Take, err)
 	}
@@ -250,7 +250,7 @@ func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsRefusedWhenTheSaveStoresIts
 	if rig.copied(t) {
 		t.Fatal("the copy the push owed behind the save was stored beside the bundle")
 	}
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the next pod was answered %v of the bundle and %v of a running copy (%v), want the bundle sent and no running copy held",
 			restore.ReleaseBundle.Take, restore.Running.Take, err)
@@ -335,7 +335,7 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 	// read.
 	restored := func(pod string) (runtime.WorkspaceBundleTake, runtime.WorkspacePush) {
 		t.Helper()
-		restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, pod)
+		restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, pod)
 		if err != nil {
 			t.Fatalf("restore for %s: %v", pod, err)
 		}

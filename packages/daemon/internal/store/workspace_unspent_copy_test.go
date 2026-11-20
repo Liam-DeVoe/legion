@@ -59,10 +59,12 @@ func saveUnspentCopy(t *testing.T, s *Store, kind unspentCopyKind, issue string,
 	}
 }
 
-// askFor is the take of pod's role start, which fails the test on an error.
+// askFor is the take of pod's role start by a pod of the project that records issue
+// (recordCopyIssues), which fails the test on an error.
 func askFor(t *testing.T, s *Store, issue, pod string) runtime.WorkspaceRestore {
 	t.Helper()
-	restore, err := s.TakeWorkspaceCopyForRestore(context.Background(), issue, pod)
+	recordCopyIssues(t, s, issue)
+	restore, err := s.TakeWorkspaceCopyForRestore(context.Background(), copyProject, issue, pod)
 	if err != nil {
 		t.Fatalf("the take of %s for %s: %v", issue, pod, err)
 	}

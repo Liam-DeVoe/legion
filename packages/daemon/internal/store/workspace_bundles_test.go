@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"maps"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -18,6 +19,23 @@ import (
 // name (TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttempt).
 const releasedPodUID = "pod-being-released"
 
+// copyProject is the token of the project whose pods ask for the saved copies of the INFRA issues
+// of these tests, and recordCopyIssues records each of issues under that project, as the release
+// or the claim whose pod saved its copies leaves it: an issue's copies are a project's to take
+// only where the project records the issue (TakeWorkspaceCopyForRestore). A row the test wrote
+// before stands as it is.
+const copyProject = "infra"
+
+func recordCopyIssues(t *testing.T, s *Store, issues ...string) {
+	t.Helper()
+	for _, issue := range issues {
+		if _, err := s.Pool().Exec(context.Background(), `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+			values ($1, $1, 'INFRA', 'root', 'implementing', 1, 'in_progress', 'A', 1) on conflict (key) do nothing`, issue); err != nil {
+			t.Fatalf("record %s: %v", issue, err)
+		}
+	}
+}
+
 // A released issue's bundle round-trips whole — its bytes, the commit its working copy sat on, the
 // heads it carries, the bookmarks that pointed into it, the release that saved it and the pod its
 // work came off — survives a second release replacing it, and goes when the restore is confirmed.
@@ -27,6 +45,7 @@ const releasedPodUID = "pod-being-released"
 func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
+	recordCopyIssues(t, s, "INFRA-945")
 	// The node the released pod ran on is a day ahead of the database.
 	shimClock := time.Now().UTC().Add(24 * time.Hour)
 	saved := runtime.WorkspaceBundle{
@@ -37,7 +56,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 		At:        shimClock,
 		PodUID:    releasedPodUID,
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-0"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-0"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("an issue never released reads %v, %v; want no bundle", restore.ReleaseBundle.Take, err)
 	}
 	before := storeClock(t, s)
@@ -47,7 +66,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	}
 	after := storeClock(t, s)
 	row := heldCopyRow(t, s, releaseBundleCopies, "INFRA-945")
-	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-1")
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-1")
 	read := restore.ReleaseBundle.Bundle
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("read the saved bundle: %v, %v", restore.ReleaseBundle.Take, err)
@@ -76,7 +95,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, copyBegun(t, s), again); err != nil {
 		t.Fatal(err)
 	}
-	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-2")
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-2")
 	read = restore.ReleaseBundle.Bundle
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || string(read.Bundle) != "PACK newer" || read.Head != again.Head || read.Release != 12 {
 		t.Fatalf("after a second release the bundle is %q at %s of release %d (%v, %v), want the newer one", read.Bundle, read.Head, read.Release, restore.ReleaseBundle.Take, err)
@@ -88,7 +107,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
 		t.Fatal(err)
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-3"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-3"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("after the launcher confirmed the restore the bundle reads %v, %v; want none", restore.ReleaseBundle.Take, err)
 	}
 	// A confirmation that arrives twice finishes rather than failing.
@@ -127,6 +146,7 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
+	recordCopyIssues(t, s, "INFRA-945")
 	first := runtime.WorkspaceBundle{Bundle: []byte("PACK first"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", PodUID: releasedPodUID}
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, copyBegun(t, s), first); err != nil {
 		t.Fatal(err)
@@ -143,7 +163,7 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-945"); row.held {
 		t.Fatalf("a report of release 11 wrote the running copy %+v, want nothing written", row)
 	}
-	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-2")
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-2")
 	if kept := restore.ReleaseBundle; err != nil || kept.Take != runtime.WorkspaceBundleSend || string(kept.Bundle.Bundle) != "PACK second" || kept.Bundle.Release != 12 {
 		t.Fatalf("a report of release 11 left %q of release %d (%v, %v), want the second release's bundle kept",
 			kept.Bundle.Bundle, kept.Bundle.Release, kept.Take, err)
@@ -153,7 +173,7 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 	if err := s.KeepRestoredWorkspaceBundle(ctx, "INFRA-945", "pod-2", 12); err != nil {
 		t.Fatal(err)
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-3"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-3"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("after the report of release 12 the bundle reads %v, %v; want none", restore.ReleaseBundle.Take, err)
 	}
 	if err := s.KeepRestoredWorkspaceBundle(ctx, "INFRA-945", "pod-2", 12); err != nil {
@@ -165,12 +185,86 @@ func TestARestoreConfirmationKeepsOnlyTheBundleOfTheReleaseItNames(t *testing.T)
 	}
 }
 
+// The one writer of a release bundle is the save of an idle release, which an outbox row runs
+// (internal/daemon's bundleIssueWorkspace), and a daemon's outbox runs only the rows of its own
+// project's keys, of a release its idle rule marked over a record of its own project
+// (readIdleView). So the copies of an issue another project records were saved by that project's
+// daemon, for its own pod, on a database the two daemons share. The operator's spawn makes a
+// claim of that issue under this project's token, and a new pod of that claim is answered nothing
+// of either copy and records nothing: no attempt on either row, and not its first ask either, so a
+// role of it registering spends nothing, and the other daemon's next pod is sent its own copy. The
+// copies of an issue this project records are taken as before, and a take that names no project
+// is refused, since whose copies they are rests on the project.
+func TestARestoreTakesNoCopyOfAnIssueAnotherProjectRecords(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	const otherIssue, spawned = "OTHER-8", "pod-of-legions-spawn"
+	if _, err := s.Pool().Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
+		values ($1, $1, 'OTHER', 'root', 'implementing', 1, 'in_progress', 'A', 1)`, otherIssue); err != nil {
+		t.Fatalf("record %s as OTHER's issue: %v", otherIssue, err)
+	}
+	others := runtime.WorkspaceBundle{Bundle: []byte("PACK of OTHER's released pod"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		PodUID: "pod-other-released"}
+	if err := s.PutWorkspaceBundle(ctx, otherIssue, 21, copyBegun(t, s), others); err != nil {
+		t.Fatalf("save OTHER's bundle of %s: %v", otherIssue, err)
+	}
+	othersRunning := runtime.WorkspaceBundle{Bundle: []byte("PACK of OTHER's running pod"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
+		PodUID: "pod-other-running"}
+	if err := s.PutRunningWorkspaceCopy(ctx, otherIssue, copyBegun(t, s), othersRunning); err != nil {
+		t.Fatalf("save OTHER's running copy of %s: %v", otherIssue, err)
+	}
+
+	for range 2 {
+		restore, err := s.TakeWorkspaceCopyForRestore(ctx, "legion", otherIssue, spawned)
+		if err != nil || !reflect.DeepEqual(restore, runtime.WorkspaceRestore{}) {
+			t.Fatalf("legion's pod of %s was answered %+v (%v), want nothing: the copies are OTHER's", otherIssue, restore, err)
+		}
+	}
+	registerIn(t, s, otherIssue, spawned)
+	for _, copies := range []copyTable{releaseBundleCopies, runningCopyCopies} {
+		if row := heldCopyRow(t, s, copies, otherIssue); !row.held || row.attemptPod != "" || row.outcome != "" {
+			t.Fatalf("legion's pod of %s left OTHER's %s as %+v, want the row untouched", otherIssue, copies.kind, row)
+		}
+	}
+	var asks int
+	if err := s.Pool().QueryRow(ctx, `select count(*) from workspace_restore_asks where issue = $1`, otherIssue).Scan(&asks); err != nil {
+		t.Fatalf("read the recorded asks of %s: %v", otherIssue, err)
+	}
+	if asks != 0 {
+		t.Fatalf("legion's pod of %s left %d recorded asks, want none", otherIssue, asks)
+	}
+	// OTHER's own next pod is sent its running copy, the newer of its two, and the bundle is closed
+	// against that pod: legion's asks spent neither.
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "other", otherIssue, "pod-of-others-replacement")
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || string(restore.Running.Bundle.Bundle) != string(othersRunning.Bundle) ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSuperseded {
+		t.Fatalf("OTHER's pod of %s was answered %v of its running copy (%q) and %v of its bundle (%v), want the running copy sent over the bundle",
+			otherIssue, restore.Running.Take, restore.Running.Bundle.Bundle, restore.ReleaseBundle.Take, err)
+	}
+
+	seedRunningRoot(t, s, 1)
+	own := runtime.WorkspaceBundle{Bundle: []byte("PACK of legion's pod"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
+		PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, rootIssue, 22, copyBegun(t, s), own); err != nil {
+		t.Fatalf("save the bundle of %s: %v", rootIssue, err)
+	}
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "legion", rootIssue, "pod-replacement")
+	if read := restore.ReleaseBundle; err != nil || read.Take != runtime.WorkspaceBundleSend || string(read.Bundle.Bundle) != string(own.Bundle) || read.Bundle.Release != 22 {
+		t.Fatalf("legion's pod of %s was answered %v of %q of release %d (%v), want its own release's work",
+			rootIssue, read.Take, read.Bundle.Bundle, read.Bundle.Release, err)
+	}
+	if _, err := s.TakeWorkspaceCopyForRestore(ctx, "", rootIssue, "pod-of-no-project"); err == nil {
+		t.Fatal("a take that named no project was answered")
+	}
+}
+
 // The idle rule releases no pod of an issue whose stored bundle no pod has restored, and the row's
 // own presence is that record: it is there from the save until the launcher of the pod it was sent
 // to reports the restore.
 func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
+	recordCopyIssues(t, s, "INFRA-945")
 	unrestored := func() bool {
 		t.Helper()
 		var held bool
@@ -193,7 +287,7 @@ func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {
 	if !unrestored() {
 		t.Fatal("an issue whose release saved a bundle reads as holding nothing")
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-that-restored-it"); err != nil ||
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, "INFRA-945", "pod-that-restored-it"); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod after the release was answered %v (%v), want the bundle sent", restore.ReleaseBundle.Take, err)
 	}
@@ -214,6 +308,7 @@ func TestARestoreConfirmationFromAPodNotSentTheBundleKeepsNothingAndLiftsNoHold(
 	ctx := context.Background()
 	s := migratedStore(t)
 	const issue = "INFRA-945"
+	recordCopyIssues(t, s, issue)
 	held := func(why string) {
 		t.Helper()
 		var unrestored bool
@@ -232,7 +327,7 @@ func TestARestoreConfirmationFromAPodNotSentTheBundleKeepsNothingAndLiftsNoHold(
 		}
 	}
 	// A pod whose first role start asked before the save: it works on what its fetch provisioned.
-	if _, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-working-before-the-save"); err != nil {
+	if _, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-working-before-the-save"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutWorkspaceBundle(ctx, issue, 11, copyBegun(t, s), runtime.WorkspaceBundle{Bundle: []byte("PACK the first release"),
@@ -241,7 +336,7 @@ func TestARestoreConfirmationFromAPodNotSentTheBundleKeepsNothingAndLiftsNoHold(
 	}
 	// That pod is sent nothing of the bundle written after its first ask, and nothing is
 	// recorded on the bundle.
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-working-before-the-save"); err != nil ||
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-working-before-the-save"); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleLeftForNextPod {
 		t.Fatalf("a pod that first asked before the save was answered %v (%v), want the bundle left for the next pod", restore.ReleaseBundle.Take, err)
 	}
@@ -255,7 +350,7 @@ func TestARestoreConfirmationFromAPodNotSentTheBundleKeepsNothingAndLiftsNoHold(
 		Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", PodUID: "pod-of-the-second-release"}); err != nil {
 		t.Fatal(err)
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two"); err != nil ||
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-two"); err != nil ||
 		restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("pod-two was answered %v (%v), want the second release's bundle sent", restore.ReleaseBundle.Take, err)
 	}
@@ -289,6 +384,7 @@ func TestAConfirmedReleaseBundleIsKeptAsTheRestoringPodsRunningCopyInOneTransact
 	ctx := context.Background()
 	s := migratedStore(t)
 	const issue = "INFRA-945"
+	recordCopyIssues(t, s, issue)
 	saved := runtime.WorkspaceBundle{Bundle: bytes.Repeat([]byte("PACK the release's work "), 64),
 		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", Tips: []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
 		Bookmarks: map[string]string{"side": "da4f9f492e9f8349389c243743e0a000cd1c676f"}, PodUID: releasedPodUID}
@@ -296,7 +392,7 @@ func TestAConfirmedReleaseBundleIsKeptAsTheRestoringPodsRunningCopyInOneTransact
 		t.Fatal(err)
 	}
 	savedAt := heldCopyRow(t, s, releaseBundleCopies, issue).writtenAt
-	restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two")
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-two")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("pod-two was answered %v of the bundle and %v of a running copy (%v), want the bundle sent and no running copy",
 			restore.ReleaseBundle.Take, restore.Running.Take, err)
@@ -342,7 +438,7 @@ func TestAConfirmedReleaseBundleIsKeptAsTheRestoringPodsRunningCopyInOneTransact
 	}
 
 	// The pod that restored the work is answered nothing of it: its own workspace holds it.
-	restore, err = s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two")
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-two")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone || restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("pod-two asking again was answered %v and %v (%v), want nothing", restore.ReleaseBundle.Take, restore.Running.Take, err)
 	}
@@ -350,7 +446,7 @@ func TestAConfirmedReleaseBundleIsKeptAsTheRestoringPodsRunningCopyInOneTransact
 		t.Fatalf("pod-two's own ask spent the attempt of its kept copy on %q", row.attemptPod)
 	}
 	// The pod after it, made by a second end before any turn of pod-two, is sent the work whole.
-	restore, err = s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-three")
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-three")
 	sent := restore.Running.Bundle
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || !bytes.Equal(sent.Bundle, saved.Bundle) ||
 		sent.Head != saved.Head || !slices.Equal(sent.Tips, saved.Tips) || !maps.Equal(sent.Bookmarks, saved.Bookmarks) ||
@@ -378,12 +474,13 @@ func TestAConfirmedReleaseBundleLeavesANewerRunningCopyAsItIs(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	const issue = "INFRA-945"
+	recordCopyIssues(t, s, issue)
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the release's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		PodUID: releasedPodUID}
 	if err := s.PutWorkspaceBundle(ctx, issue, 11, copyBegun(t, s), saved); err != nil {
 		t.Fatal(err)
 	}
-	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, "pod-two"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, copyProject, issue, "pod-two"); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("pod-two was answered %v (%v), want the bundle sent", restore.ReleaseBundle.Take, err)
 	}
 	newer := runtime.WorkspaceBundle{Bundle: []byte("PACK a newer copy"), Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",

@@ -55,7 +55,7 @@ func TestACopyReadBeforeAPushAndWrittenAfterItsRecordIsNotRestored(t *testing.T)
 	rig.awaitAsks(t, 2)
 	rig.awaitQuiet(t)
 
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}

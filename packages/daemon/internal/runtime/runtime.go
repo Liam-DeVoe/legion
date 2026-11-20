@@ -240,7 +240,8 @@ type WorkspaceBundler interface {
 
 // SavedWorkspaceBundle answers what the daemon holds of an issue's workspace for the pod of
 // podUID to restore, and what that ask did to each copy it holds
-// (store.Store.TakeWorkspaceCopyForRestore). An issue holds up to two: the bundle its last idle
+// (store.Store.TakeWorkspaceCopyForRestore, bound to the daemon's project where the daemon wires
+// it). An issue holds up to two: the bundle its last idle
 // release saved and the copy taken while its pod ran. It is the other half of WorkspaceBundler,
 // handed to the runtime so that the runtime, which alone knows when a replacement pod's launcher
 // is up, can carry the saved work back into the new workspace before any role of that pod starts.
@@ -257,7 +258,9 @@ type WorkspaceBundler interface {
 //
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
 // and whose cadence took nothing, one whose release a wake cancelled, one whose copy is spent
-// already, and the pod the work was taken off, or the pod that restored it, asking
+// already, one the daemon's project does not record, whose copies another project's daemon saved
+// (the whole answer is then empty, and not even the pod's ask is recorded), and the pod the work
+// was taken off, or the pod that restored it, asking
 // for its own workspace's work back. The runtime calls this at every start of every
 // role, and both the pod a release is stopping and the pod a cadence copies go on starting roles,
 // so such a start is one of those calls; the decision knows that pod by the uid the copy recorded

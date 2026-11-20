@@ -60,19 +60,19 @@ func servedLeakCheck() *fakeLeakCheck {
 // does when its next pod starts: the bundle is what a refused start must take nothing of.
 func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 	t.Helper()
-	st := migratedStore(t)
+	st := bundleStore(t)
 	saved := savedWorkspaceBundle()
 	saveReleaseBundle(t, st, saved)
 	return st, saved
 }
 
 // withLeakCheckAndStore hands the runtime source as its reader of the leak check and st's saved
-// workspace copies, through the one take and confirmation the daemon wires
-// (store.TakeWorkspaceCopyForRestore, KeepRestoredWorkspaceCopy).
+// workspace copies, through the one take, bound to the rig's project, and the confirmation the
+// daemon wires (store.TakeWorkspaceCopyForRestore, KeepRestoredWorkspaceCopy).
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceCopyForRestore, st.KeepRestoredWorkspaceCopy
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = takeCopies(st), st.KeepRestoredWorkspaceCopy
 	})
 }
 
@@ -244,7 +244,7 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, string(pod.UID))
+			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testProject, testTree, string(pod.UID))
 			if err != nil {
 				t.Fatal(err)
 			}

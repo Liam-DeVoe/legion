@@ -572,12 +572,13 @@ func (r *idleWakeRig) newRuntime(ctx context.Context, listener *stream.Listener,
 	opts.Conns, opts.StreamURL, opts.Store = listener, address, st
 	// The restore of a replaced pod, as the daemon's own factory hands it to the runtime it
 	// builds (sandboxRuntime): the one take that chooses between the issue's two saved copies,
-	// and what the launcher's confirmation keeps. Without both no pod of this rig is ever offered
-	// either copy. They cost a rig whose releases save none one transaction of two indexed reads
-	// per role start, each answering no row: the save of a workspace with nothing unpushed stores
-	// nothing and deletes what the issue had (outbox.bundleIssueWorkspace), and this rig's role
-	// processes bundle an empty workspace.
-	opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
+	// bound to the rig's project (savedWorkspaceCopy), and what the launcher's confirmation keeps.
+	// Without both no pod of this rig is ever offered either copy. They cost a rig whose releases
+	// save none one transaction per role start, whose two indexed reads of the copies each answer
+	// no row: the save of a workspace with nothing unpushed stores nothing and deletes what the
+	// issue had (outbox.bundleIssueWorkspace), and this rig's role processes bundle an empty
+	// workspace.
+	opts.SavedWorkspaceBundle = savedWorkspaceCopy(st, opts.Project)
 	opts.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 	opts.Tokens = idleRigTokens{}
 	opts.GitHubCredential = func(_ context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {

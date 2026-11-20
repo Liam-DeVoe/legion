@@ -163,7 +163,7 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 
 	// The pod that replaces the released one is sent the bundle against the second push, and its
 	// launcher's report of the restore moves the row out of the bundle table.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -225,7 +225,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 	}
 
 	// The pod that replaces the released one asks for the bundle and works on.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the next pod was answered %+v (%v), want the release bundle sent", restore, err)
 	}

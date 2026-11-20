@@ -75,7 +75,7 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 
 	// The pod that replaces the released one restores the issue's work, and its launcher's
 	// report of the restore confirms the copy it was sent.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 
 	// The pod that replaces the released one is sent the bundle against the push it read, and
 	// its launcher's report of the restore moves the row out of the bundle table.
-	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it")
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.w.projectID, rig.issue.Key, "pod-that-replaces-it")
 	if err != nil {
 		t.Fatal(err)
 	}
