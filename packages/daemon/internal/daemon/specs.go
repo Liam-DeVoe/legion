@@ -20,7 +20,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 var _ supervise.Specs = specs{}
@@ -114,6 +116,12 @@ type specs struct {
 	// through the workflow); nil for a daemon with no workflow, whose launches work no repository.
 	hostWorkspaces  bool
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// ensureReviewClone makes the reviewer's own clone of an issue on the daemon's host, or brings
+	// the one there to the current head, at every reviewer launch (outbox.ensureReviewClone,
+	// through the workflow), once ensureWorkspace has made sure of the shared clone it is cloned
+	// from: the directory a tmux reviewer works in (reviewerGit). nil for a daemon with no
+	// workflow, whose launches work no repository.
+	ensureReviewClone func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 }
 
 // rolePromptPath is where a claim's role prompt is kept for every launch of it.
@@ -214,9 +222,15 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	// may have no workspace here — its issue ran in another runtime's pods before, or its tree's
 	// linger removed it — and a pane cannot start without one. Provisioning checks out the issue's
 	// branch legion/<KEY> when GitHub has it, so whatever the claim pushed is there.
+	var reviewerEnv map[string]string
 	if s.hostWorkspaces && s.ensureWorkspace != nil && !spec.Repository.IsZero() {
 		if err := s.ensureWorkspace(ctx, c.Issue, spec.Repository, spec.DefaultBranch); err != nil {
 			return runtime.SpawnSpec{}, fmt.Errorf("the workspace of %s: %w", c.Token, err)
+		}
+		if c.Role == claim.RoleReviewer {
+			if reviewerEnv, err = s.reviewerGit(ctx, c, spec.Repository, spec.DefaultBranch); err != nil {
+				return runtime.SpawnSpec{}, err
+			}
 		}
 	}
 	architect, err := s.ownerOf(ctx, c)
@@ -254,11 +268,39 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 		}
 		spec.Env = id.Env()
 	}
-	// After the git identity, which replaces spec.Env rather than merging into it: the refusal
-	// cooldowns are merged into whatever map the launch holds by then. The stall limits are
-	// merged after the fork, onto every launch (SpawnSpec).
+	// After the git identity, which replaces spec.Env rather than merging into it: the reviewer's
+	// git and the refusal cooldowns are merged into whatever map the launch holds by then. The
+	// stall limits are merged after the fork, onto every launch (SpawnSpec).
+	maps.Copy(spec.Env, reviewerEnv)
 	passthrough(spec.Env, refusalCooldownVariables...)
 	return spec, nil
+}
+
+// reviewerGit is a tmux reviewer's own clone and git (workspace/reviewgit.go): its clone of the
+// issue's repository, made or brought to the current head (ensureReviewClone), at the directory
+// the tmux runtime starts its pane in (workspace.ReviewLocation), and the environment its git runs
+// under. That is the shim InstallReviewGit writes at each reviewer launch, first on a PATH that is
+// otherwise the daemon's own — the PATH every pane inherits, which the runtime then puts its
+// launcher directory in front of, so the launcher's git wrapper hands each command on to the
+// shim — no global or system configuration, and the GIT_CONFIG pairs every pod's role carries
+// (sandbox.GitConfigPairs), then the fsmonitor off and the hooks at /dev/null
+// (workspace.ReviewGitConfig), which git reads last and so takes. The pod's pairs are there for
+// `legion gh`, which hands the git gh runs only a caller's pairs that are one of those
+// (cmd/legion's ghChildGitConfig): they hold that git's fsmonitor off and its hooks at /dev/null
+// too, and point github.com at the credential helper the review clone itself names. A pod's
+// reviewer is told its own by the Sandbox runtime (mainEnvironment), which refuses these names in
+// a spec.
+func (s specs) reviewerGit(ctx context.Context, c supervise.Claim, repo ghrepo.Repository, defaultBranch string) (map[string]string, error) {
+	if s.ensureReviewClone != nil {
+		if err := s.ensureReviewClone(ctx, c.Issue, repo, defaultBranch); err != nil {
+			return nil, fmt.Errorf("the review clone of %s: %w", c.Token, err)
+		}
+	}
+	git, err := workspace.InstallReviewGit(workspace.ReviewGitDir(s.stateDir))
+	if err != nil {
+		return nil, fmt.Errorf("the reviewer's git of %s: %w", c.Token, err)
+	}
+	return git.Env(os.Getenv("PATH"), sandbox.GitConfigPairs()), nil
 }
 
 // ownerOf is the architect c's addressing names (addressingFragment), read again at each launch:

@@ -1242,6 +1242,16 @@ func (w *workflowRuntime) ensureWorkspace(ctx context.Context, issue string, rep
 	return w.outbox.ensureWorkspace(ctx, issue, repo, defaultBranch)
 }
 
+// ensureReviewClone makes the reviewer's own clone of an issue on the daemon's host, or brings the
+// one there to the current head, at every reviewer launch (outbox.ensureReviewClone), through the
+// outbox, which orders it with every other provision of the shared clone it is made from.
+func (w *workflowRuntime) ensureReviewClone(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error {
+	if w.outbox == nil {
+		return fmt.Errorf("provision the review clone of %s: the workflow's outbox is not attached yet", issue)
+	}
+	return w.outbox.ensureReviewClone(ctx, issue, repo, defaultBranch)
+}
+
 // enqueueOutbox writes outbox rows of issue, due now, in one transaction of its own, which owns
 // the commit hook that write registers (projectRecords, intake.OnCommit) so each row's lane is
 // woken as it commits — exactly as the re-hold of a notice does (reholdNotice). It is what

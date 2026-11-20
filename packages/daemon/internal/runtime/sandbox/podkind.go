@@ -99,11 +99,12 @@ func (issuePod) claimToken(project, issue string, role claim.Role) (claim.Token,
 }
 
 // prepare refuses a spec with no repository, which the workspace is provisioned from, and resolves
-// the workspace's place on the issue's disk. It runs at every launch and expects nothing of that
-// disk, which is created with the pod and deleted with it (INFRA-80): only a new or replacement pod
-// provisions its workspace (provision, which relaunch runs only when it replaces the pod), and a
-// role launched into the live pod finds the workspace the roles before it left. docs/kubernetes.md,
-// "The disk dies with its pod", states which launch is which.
+// the workspace's place on the issue's disk, and the reviewer's own clone of the issue beside it
+// (workspace.ReviewLocation), which the reviewer works in. It runs at every launch and expects
+// nothing of that disk, which is created with the pod and deleted with it (INFRA-80): only a new
+// or replacement pod provisions its workspace (provision, which relaunch runs only when it
+// replaces the pod), and a role launched into the live pod finds the workspace the roles before
+// it left. docs/kubernetes.md, "The disk dies with its pod", states which launch is which.
 func (issuePod) prepare(l *launch) error {
 	spec := l.spec
 	if spec.Repository.IsZero() {
@@ -113,7 +114,12 @@ func (issuePod) prepare(l *launch) error {
 	if err != nil {
 		return err
 	}
-	l.workspace = working.Dir
+	l.workspace, l.roleWorkspace = working.Dir, working.Dir
+	if spec.Role == claim.RoleReviewer {
+		if l.roleWorkspace, err = workspace.ReviewLocation(TreeRoot, spec.Repository, spec.Issue); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -307,13 +313,18 @@ func (issuePod) mainVolumes(r *Runtime) []corev1.Volume {
 	return volumes
 }
 
-// agentEnv tells each agent its tree, issue and workspace, the issue key it stamps into its
-// commits where the project names its repository (LEGION_ISSUE_TRAILER, left out of an agent that
-// stamps none), where its gh reads its credentials, and uv's directories on the issue's volume.
+// agentEnv tells each agent its tree, issue and workspace (roleWorkspace: the reviewer's own clone
+// for the reviewer, with the default branch its role-init checks that clone out at where origin
+// no longer holds the issue's branch), the issue key it stamps into its commits where the project
+// names its repository (LEGION_ISSUE_TRAILER, left out of an agent that stamps none), where its gh
+// reads its credentials, and uv's directories on the issue's volume.
 func (issuePod) agentEnv(l launch) []corev1.EnvVar {
-	var trailer []corev1.EnvVar
+	var trailer, review []corev1.EnvVar
 	if l.spec.IssueTrailer != "" {
 		trailer = []corev1.EnvVar{{Name: "LEGION_ISSUE_TRAILER", Value: l.spec.IssueTrailer}}
+	}
+	if l.spec.Role == claim.RoleReviewer {
+		review = []corev1.EnvVar{{Name: "LEGION_DEFAULT_BRANCH", Value: l.spec.DefaultBranch}}
 	}
 	return slices.Concat(
 		[]corev1.EnvVar{
@@ -321,7 +332,8 @@ func (issuePod) agentEnv(l launch) []corev1.EnvVar {
 			{Name: "LEGION_ISSUE", Value: l.spec.Issue},
 		},
 		trailer,
-		[]corev1.EnvVar{{Name: "LEGION_WORKSPACE", Value: l.workspace}},
+		[]corev1.EnvVar{{Name: "LEGION_WORKSPACE", Value: l.roleWorkspace}},
+		review,
 		ghAgentEnv(l),
 		[]corev1.EnvVar{
 			{Name: "UV_PYTHON_INSTALL_DIR", Value: uvPythonDir(l.spec.Issue)},

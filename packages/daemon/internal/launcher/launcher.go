@@ -856,6 +856,15 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	}
 	m.mu.Unlock()
 	env := mergeEnv(os.Environ(), command.Env)
+	// What this start does for the pod works the issue's own workspace — the lock sweep, the one
+	// restore, the recreated notice — and the reviewer's LEGION_WORKSPACE is its own clone of the
+	// issue (workspace.IssueWorkspace), so those read issueEnv; the child gets env.
+	issueEnv := env
+	if own := envValue(env, "LEGION_WORKSPACE"); own != "" {
+		if issue := workspace.IssueWorkspace(own); issue != own {
+			issueEnv = mergeEnv(env, []string{"LEGION_WORKSPACE=" + issue})
+		}
+	}
 	// The generation's own directory comes first, since everything else of the generation lives in
 	// it: the session database's connection file and the socket its proxy binds, which the resume
 	// lookup reaches the table through and which the child must find already bound.
@@ -883,7 +892,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	recreated := false
 	var sessions *pgx.Conn
 	if command.ResumeFile != "" {
-		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
+		if recreated, sessions, err = resumable(ctx, issueEnv, command.ResumeFile, clientURL, m.stderr); err != nil {
 			return abandon(err)
 		}
 	}
@@ -894,12 +903,12 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// that had none sweeps it here, before the restore below runs real git and jj against that
 	// clone, where a stale lock would fail it (gitLockSweep.learn). A launcher that runs no sweep
 	// holds none here, and its restore runs over the clone as it stands.
-	m.gitLocks.learn(ctx, envValue(env, "LEGION_WORKSPACE"))
+	m.gitLocks.learn(ctx, envValue(issueEnv, "LEGION_WORKSPACE"))
 	// The pod's one workspace-bundle restore, if a release saved one: after writeFiles, which
 	// clears the role's private directory, and before any role of the pod runs, so no role works
 	// a workspace that is half restored. Every other role's start waits here for this one. A
 	// restore that fails still starts the role, with a notice of what was lost in the log.
-	outcome := m.restore.apply(ctx, env)
+	outcome := m.restore.apply(ctx, issueEnv)
 	if outcome.Notice != "" {
 		m.logf("launcher: %s", outcome.Notice)
 	}

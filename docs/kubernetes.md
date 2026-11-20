@@ -3251,7 +3251,7 @@ What it may delete, and what one entry is in each:
 - `/legion/scratch/bun/install/cache` — one immediate child that is a directory.
   The root itself is a live `flock` target, which is why no root of this list is ever unlinked.
 
-What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, `/legion/scratch/leak-check`, and the two children of the cache home above.
+What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/reviews`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, `/legion/scratch/leak-check`, and the two children of the cache home above.
 `packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process knows none of those paths except the leak check's, which it takes from the installer's own constant, and a test holds every path the pod renderer puts on the volume, the start environment of the implementer on each backend that runs it included, to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
 
 The trimmer writes its lines behind the prefix `architect: volume trim: ` in the `roles` container's log, every one but the lines of the stack that follow the line of a panic it recovered from, which carry `architect: ` alone: among them one at its start naming the settings in force, one per interval reading naming what it decided, and one per sweep naming the bytes it freed, or, where its last reading of the volume is above its first, the bytes the volume grew by while it ran, and why it stopped, or, for a sweep the settings stopped, that they did.
@@ -4679,7 +4679,7 @@ They are an issue pod's role's; `<generation>` is the role's own generation coun
 | `LEGION_CREDENTIAL_HELPER` | the runtime sets it in no container | — |
 | `DISPATCH_TOKEN_FILE` | `/var/run/legion/private/g<generation>/DISPATCH_TOKEN` | `manifest.go`, over `generationDir`, `names.go` |
 | `LEGION_ROOT_WORKSPACE` | the runtime sets it in no container | — |
-| `LEGION_WORKSPACE` | `/legion/workspaces/<owner>/<repo>/<key-lower>` | `podkind.go`, over `workspace.Location`, `internal/workspace/provision.go` |
+| `LEGION_WORKSPACE` | `/legion/workspaces/<owner>/<repo>/<key-lower>`; the reviewer's is its own clone of the issue, `/legion/reviews/<owner>/<repo>/<key-lower>` | `podkind.go`, over `workspace.Location` and `workspace.ReviewLocation`, `internal/workspace/provision.go` |
 | `LEGION_BOOT_TOKEN_FILE` | `/var/run/legion/private/g<generation>/LEGION_BOOT_TOKEN` | `launcherCommand`, `launcher.go` |
 | `LEGION_TERMINATION_GRACE_SECONDS` | the runtime sets it in no container; the pod's grace reaches the shim as its `--stop-grace` argument | `launcherCommand`, `launcher.go` |
 | `ENVOY_TOKEN_FILE` | `/var/run/legion/private/g<generation>/ENVOY_TOKEN` | `manifest.go` |
@@ -4732,9 +4732,22 @@ Every role is also told it outside any clone, as five git configuration entries 
 `GIT_CONFIG_COUNT=5`, `credential.https://github.com.helper` reset to empty and then set to `!legion git-credential`, `credential.https://github.com.useHttpPath=true`, `core.fsmonitor` set to empty and `core.hooksPath=/dev/null`.
 The issue's roles share the clone and each can write its `.git/config` and hooks, so the last two keep a role's `git status` or `git commit` from running an fsmonitor program or a hook another role planted, with the credentials of the role that runs git.
 They pin those two settings and no others, and they do not make the roles of one issue a boundary against each other.
-Every role can write the whole issue volume, and the roles share the pod's network namespace, so code one role plants runs in a sibling, with the sibling's credentials, through any of these:
 
-- the checkout, which the roles share by design: a test the tester runs, a script or build step the reviewer runs;
+The reviewer is the one role that works in no shared checkout.
+Its `LEGION_WORKSPACE` is its own clone of the issue, `/legion/reviews/<owner>/<repo>/<key-lower>` (`workspace.ReviewLocation`), which its role-init makes in the reviewer's own namespace once that is built, before its shim starts there (`roleWorkspace`, `internal/launcher/roleinit_linux.go`):
+a `git clone --no-checkout` of the issue's shared clone, origin's branches as the shared clone records them, origin set to GitHub with the shared clone's credential helper, a detached checkout of the issue's branch at origin (else the default branch the reviewer is told as `LEGION_DEFAULT_BRANCH`), and jj colocated with it (`workspace.ProvisionReviewClone`).
+At each later start of the reviewer the clone is brought to the head the shared clone then records, from the shared clone's objects and with no network, the reviewer's earlier writes kept in a change of their own.
+Every git of that work reads no global or system configuration and runs no fsmonitor or hook.
+Every other role's role-init covers `/legion/reviews` with an empty memory filesystem of its own, so no other role sees the clone or writes it, and what such a role writes there never reaches the volume.
+The reviewer's agent is told `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and the five pairs above followed by `core.fsmonitor=false` and `core.hooksPath=/dev/null` (`gitConfigEnvFor`, `manifest.go`);
+and the image's git wrapper, `/opt/legion/bin/git`, gives each git command of the reviewer's those two settings immediately before the subcommand, and `--no-ext-diff --no-textconv` after a `diff`, `log`, `show`, `format-patch`, `whatchanged`, `blame` or `annotate`, refusing one of those that names `--ext-diff` or `--textconv` itself (`packages/daemon/docker/git`), so no diff driver, text conversion, hook or fsmonitor command a configuration names runs under the reviewer's claim, including the configuration of a repository the head commits inside its own tree.
+The clone costs the volume one checkout of the repository's tree: git hard-links its objects to the shared clone's, which share the volume.
+Those object files are the one part of the clone another role still reaches, through the shared clone's own links to them: a role that rewrites one in place, which no git command does, changes what the reviewer's git reads, though it runs nothing there.
+The launcher's lock sweep and restore and the shim's release bundle work the issue's workspace whichever role asks (`workspace.IssueWorkspace`), and the clone goes with the pod's disk ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
+
+Every role can write the whole issue volume, the reviewer's clone excepted as above, and the roles share the pod's network namespace, so code one role plants runs in a sibling, with the sibling's credentials, through any of these:
+
+- the checkout, which the implementer and the tester share by design, and the head's committed code, which the reviewer checks out in its own clone: a test the tester runs, a script or build step the reviewer runs;
 
 - the clone's other git settings that run a program or route a request:
   a filter driver (`filter.<name>.clean` with `.git/info/attributes`), `diff.external`, a `textconv`, `core.pager`, `gpg.program`, an `ext::` transport, and `http.proxy`, which sends the sibling's GitHub token through a proxy the planting role runs, with no program of its own run in the sibling at all;

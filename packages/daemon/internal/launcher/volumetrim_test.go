@@ -87,6 +87,7 @@ type fixtureFile struct {
 var fixtureProtectedFiles = map[string]string{
 	"workspaces":                       "cybermonklabs/legion/infra-2009/packages/daemon/go.mod",
 	"repos":                            "github.com/cybermonklabs/legion/.jj/repo/store/op_heads",
+	"reviews":                          "cybermonklabs/legion/legion-208/.jj/repo/store/op_heads",
 	"feed":                             "issue.json",
 	"scratch/state":                    "planner/omp/profile.json",
 	"scratch/data":                     "omp/sessions.sqlite",

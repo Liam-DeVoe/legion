@@ -83,18 +83,29 @@ func (s *shim) bundleWorkspace(request shimwire.BundleWorkspace) {
 }
 
 // runBundle builds the bundle with the jj and git of PATH — the ones the pane's or pod's own
-// shell runs, since no runtime pins either on a pane or a pod — in the workspace the shim's
-// environment names in LEGION_WORKSPACE, which the runtime sets on every role. It reads the
-// working copy's commit first, which is the one jj snapshot the save makes; every read after it
-// is --ignore-working-copy, so the whole save describes one state of the workspace. The bundle is
-// written under the process's temporary directory, never in the workspace, and removed. The
-// budget is a bound on the shim's command context (s.commands) rather than a context of its own,
-// so the shim's own end ends the save's jj and git at once and a command that outlives the budget
-// is still reported as a timeout.
+// shell runs, since no runtime pins either on a pane or a pod — in the issue's workspace: the one
+// the shim's environment names in LEGION_WORKSPACE, which the runtime sets on every role, or, for
+// the reviewer, whose LEGION_WORKSPACE is its own clone of the issue, the issue's workspace beside
+// it (workspace.IssueWorkspace), since a release keeps the work every other role left there.
+// It reads the working copy's commit first, which is the one jj snapshot the save makes (a
+// reviewer's makes none, below); every
+// read after it is --ignore-working-copy, so the whole save describes one state of the workspace.
+// The bundle is written under the process's temporary directory, never in the workspace, and
+// removed. The budget is a bound on the shim's command context (s.commands) rather than a context
+// of its own, so the shim's own end ends the save's jj and git at once and a command that outlives
+// the budget is still reported as a timeout.
 func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error) {
-	dir := envValue(s.cfg.Env, "LEGION_WORKSPACE")
+	own := envValue(s.cfg.Env, "LEGION_WORKSPACE")
+	dir := workspace.IssueWorkspace(own)
 	if dir == "" {
 		return workspaceSave{}, errors.New("worker-shim: LEGION_WORKSPACE is not set; no workspace to bundle")
+	}
+	// A reviewer's shim works in its own clone and runs no program the shared workspace names, so
+	// it reads that workspace as its last snapshot left it: a snapshot would run the working-copy
+	// filters a configuration there names, under the reviewer's claim.
+	var snapshot []string
+	if dir != own {
+		snapshot = []string{"--ignore-working-copy"}
 	}
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -123,7 +134,7 @@ func (s *shim) runBundle(request shimwire.BundleWorkspace) (workspaceSave, error
 		return workspace.OutputLines(out), nil
 	}
 
-	head, err := run(nil, jj, "log", "-R", dir, "-r", "@", "--no-graph", "-T", "commit_id")
+	head, err := run(nil, slices.Concat([]string{jj, "log", "-R", dir}, snapshot, []string{"-r", "@", "--no-graph", "-T", "commit_id"})...)
 	if err != nil {
 		return workspaceSave{}, err
 	}

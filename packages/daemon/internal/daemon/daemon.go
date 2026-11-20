@@ -395,6 +395,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
+		plan.ensureReviewClone = workflow.ensureReviewClone
 		plan.owner = workflow.owningArchitect
 		// The arms a launch runs in are read from the daemon's own store (launchVariants), not
 		// from here: the operator's spawn draws a tree's experiments with no workflow
@@ -768,6 +769,10 @@ type plan struct {
 	// ensureWorkspace provisions an issue's workspace on the daemon's host when a launch finds it
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
+	// ensureReviewClone makes the reviewer's own clone of an issue on the daemon's host, or brings
+	// the one there to the current head, at every reviewer launch
+	// (workflowRuntime.ensureReviewClone); nil without a workflow.
+	ensureReviewClone func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 	// owner is the architect that owns a claim on an issue that is not its tree's root, read from
 	// the claims the store records at each launch (workflowRuntime.owningArchitect), which the
 	// launch's addressing names; nil without a workflow.
@@ -1641,7 +1646,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
-			variants: launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
+			ensureReviewClone: p.ensureReviewClone,
+			variants:          launchVariants(st, cfg.ExperimentsDeclared(), cfg.StateDir),
 		},
 		Identity:                adoptIdentity(p.identity, p.repository),
 		IssueInTurn:             sup.claimInTurn,

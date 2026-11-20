@@ -59,6 +59,10 @@ var heldStarts = map[string]heldStart{
 	"(*" + launcherPackage + ".pidGuard).start -> (*os/exec.Cmd).Start":    {1, "the guard itself: it records the child's pid under the lock every reap holds"},
 	"(*" + launcherPackage + ".roleProcess).start -> (*os/exec.Cmd).Start": {1, "a generation: its manager records the pid under its own lock as it starts it, and the orphan reaper skips every manager's child"},
 	launcherPackage + ".runRoleShim -> (*os/exec.Cmd).Start":               {1, "role-init's shim, in role-init's own process: role-init's reaper skips its pid"},
+	// A reviewer's role-init makes or refreshes the reviewer's own clone (roleWorkspace) with the
+	// workspace package's runner before it starts the shim, and role-init reaps nothing until the
+	// shim runs (runRoleShim's loop), so no reap can take the exit of a git or jj it waits for.
+	"(github.com/sjawhar/legion/daemon/internal/workspace.execRunner).Run -> (*os/exec.Cmd).Run": {1, "the reviewer's own clone, made by role-init before runRoleShim, whose loop is role-init's first reap"},
 	// The session proxy's Cloud SQL connector reaches Google's credential and client-certificate
 	// code, which can start a helper the machine's own configuration names. A pod names none: it
 	// signs in as its own identity from the metadata server.
