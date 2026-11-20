@@ -42,6 +42,7 @@ daemon_envoy_deps: &daemon_envoy_deps
   - 'packages/envoy/brokertest/*'
   - 'packages/envoy/natsgrant/*'
   - 'packages/envoy/clitest/*'
+  - 'packages/envoy/heldprocess/*'
   - 'packages/envoy/dispatchbody/*'
   # why: .github/ci-notes/ci.md#daemon_envoy_deps-the-airlocks-rules-its-decision-and-its-header-swap
   - 'packages/envoy/internal/broker/airlock/*'
