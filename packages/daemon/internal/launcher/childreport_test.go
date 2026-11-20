@@ -8,6 +8,7 @@ package launcher
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,47 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
+
+// The controller pod's shim is handed the container's own stdout and stderr, so its descriptors
+// are those files and no pipe through the launcher (command), but for a child whose report the
+// launcher reads, one that dials a URL file's store itself (start): its standard error passes
+// through the launcher, to the same file and to the report. Each child says what its standard
+// error is itself, from /proc.
+func TestOnlyAChildWhoseReportIsReadHasItsStandardErrorPipedThroughTheLauncher(t *testing.T) {
+	container, err := os.CreateTemp(t.TempDir(), "container-stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = container.Close() })
+	m := &manager{cfg: Config{Stdout: container, Stderr: container}}
+	for name, tc := range map[string]struct {
+		report *childReport
+		pipe   bool
+	}{
+		"a child the launcher reads no report of is handed the container's own file": {},
+		"a child that dials a URL file's store itself writes through the launcher":   {report: &childReport{}, pipe: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			seen := filepath.Join(t.TempDir(), "stderr")
+			process, err := m.command(shimwire.LauncherStart{Generation: 1, Argv: []string{"/bin/sh", "-c", `readlink /proc/self/fd/2 > "$1"`, "sh", seen}},
+				os.Environ(), tc.report)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := process.cmd.Run(); err != nil {
+				t.Fatalf("the child: %v", err)
+			}
+			body, err := os.ReadFile(seen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.TrimSpace(string(body))
+			if piped := strings.HasPrefix(got, "pipe:"); piped != tc.pipe || !piped && got != container.Name() {
+				t.Fatalf("the child's standard error is %q, want a pipe %t (the container's file is %s)", got, tc.pipe, container.Name())
+			}
+		})
+	}
+}
 
 // The lines are the pinned Oh My Pi's own, as it wrote them for each store, with only the URL
 // file's path shortened, and the form an Oh My Pi that prints a server's SQLSTATE after its code
