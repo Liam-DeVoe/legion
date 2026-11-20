@@ -130,9 +130,10 @@ func TestTheImagesGhIsTheWrapperInstallWrites(t *testing.T) {
 	}
 }
 
-// Where the image's git leads path, Install puts two private 0700 scripts in a 0700 bin under root
-// and nothing else: the launcher, which execs the installing legion, and gh, which execs its
-// `legion gh` (the wrapper that picks the owner's gh directory).
+// Where the image's git leads path, Install puts private 0700 scripts in a 0700 bin under root
+// and nothing else: the launcher, which execs the installing legion, gh, which execs its
+// `legion gh` (the wrapper that picks the owner's gh directory), and jj, since path holds no jj
+// that is the image's.
 func TestInstallInstallsThePrivateLauncherAndTheGhWrapper(t *testing.T) {
 	image := standInImageGit(t)
 	root := t.TempDir()
@@ -163,7 +164,7 @@ func TestInstallInstallsThePrivateLauncherAndTheGhWrapper(t *testing.T) {
 			t.Fatalf("%s = %q, want %q", name, contents, want)
 		}
 	}
-	for dir, want := range map[string][]string{root: {"bin"}, bin: {"gh", "legion"}} {
+	for dir, want := range map[string][]string{root: {"bin"}, bin: {"gh", "jj", "legion"}} {
 		if names := entryNames(t, dir); !slices.Equal(names, want) {
 			t.Fatalf("%s holds %q after Install, want %q", dir, names, want)
 		}
@@ -176,7 +177,7 @@ func TestInstallInstallsThePrivateLauncherAndTheGhWrapper(t *testing.T) {
 // Where the first git on path is not the image's, the image's git later on path included, and
 // where path holds no git at all, Install writes bin's git too: a 0700 script that execs the
 // installing legion's `legion git --after` with bin's own absolute path, both single-quoted. bin
-// then holds gh, git and legion.
+// then holds gh, git, jj and legion.
 func TestInstallWritesTheGitWrapperWhereTheImagesGitDoesNotLeadPath(t *testing.T) {
 	image := standInImageGit(t)
 	for name, path := range map[string]string{
@@ -202,8 +203,8 @@ func TestInstallWritesTheGitWrapperWhereTheImagesGitDoesNotLeadPath(t *testing.T
 			} else if info.Mode().Perm() != 0o700 {
 				t.Fatalf("git mode = %o, want 0700", info.Mode().Perm())
 			}
-			if names := entryNames(t, bin); !slices.Equal(names, []string{"gh", "git", "legion"}) {
-				t.Fatalf("bin holds %q after Install, want gh, git and legion", names)
+			if names := entryNames(t, bin); !slices.Equal(names, []string{"gh", "git", "jj", "legion"}) {
+				t.Fatalf("bin holds %q after Install, want gh, git, jj and legion", names)
 			}
 		})
 	}
@@ -229,8 +230,8 @@ func TestInstallWritesNoGitWrapperWhereTheImagesGitLeadsPath(t *testing.T) {
 	if _, err := os.Stat(stale); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("bin/git after an Install whose path the image's git leads: %v, want it removed", err)
 	}
-	if names := entryNames(t, LauncherDir(root)); !slices.Equal(names, []string{"gh", "legion"}) {
-		t.Fatalf("bin holds %q after Install, want gh and legion", names)
+	if names := entryNames(t, LauncherDir(root)); !slices.Equal(names, []string{"gh", "jj", "legion"}) {
+		t.Fatalf("bin holds %q after Install, want gh, jj and legion", names)
 	}
 	shell := exec.Command("sh", "-c", "command -v git")
 	shell.Env = []string{"PATH=" + Path(path, root)}
