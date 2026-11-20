@@ -1135,7 +1135,9 @@ cleanup() {
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
   stop_marked_processes "$work" || true
-  remove_containers containers
+  # Its three containers are made by name (`docker run -d --name`, and session_db_start's), not by
+  # lib/rig.sh's start_container, so they are removed by those names.
+  docker rm -f -v "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
   # namespace_clean fails loudly when the namespace differs from its snapshot, and its `fail` is an
