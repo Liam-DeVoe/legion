@@ -4473,7 +4473,7 @@ Each item below names a path with its method and identity, then its purpose.
   A socket rotates with 4001 at a random age from 30 to 60 minutes, and under `DISPATCH_IDENTITY=iap` also once the IAP assertion its upgrade carried expires (reason `credential expired`, Identity, above);
   it closes with 1012 on restart, 1008 when its caller stops resolving, and 1013 when the hub queue fills.
 
-- `/ws/doc/{room}` (GET; cookie)
+- `/ws/doc/{room}` (GET; the browser identity the deployment configures: the sign-in cookie, or the IAP assertion under `DISPATCH_IDENTITY=iap`)
 
   A person's document socket.
   A room the person may not read, a document of a project they do not see, is refused exactly as a room no document holds is (`404`).
