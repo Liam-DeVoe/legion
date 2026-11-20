@@ -199,6 +199,38 @@ func TestAProcessThatExitedOnAStoreThatStoppedAnsweringIsWaitedOutUncharged(t *t
 	}
 }
 
+// An outage that ends, the store answering a start that launches, and returns ten minutes later is
+// an outage of its own: the issue and the controller are told of it at once, not an hour after the
+// first report. The hourly rule holds while one outage lasts
+// (TestAStartTheSessionStoreCannotAnswerWaitsAndIsReportedHourly).
+func TestAStoreFaultAfterTheStoreAnsweredAStartIsToldAtOnce(t *testing.T) {
+	h := newBareHarness(t)
+	var faults []string
+	h.deps.SessionStoreFault = func(_ Claim, detail string) { faults = append(faults, detail) }
+	h.store.PutClaim(h.ctx, queuedClaim())
+	h.start(queuedClaim())
+	h.reach(StateIdle)
+	diesOnTheStore := func() {
+		h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now(),
+			Detail: "role tester reports generation exited (code 1, signal )", StoreFault: true}})
+	}
+
+	diesOnTheStore()
+	if len(faults) != 1 {
+		t.Fatalf("the first outage was told %d times, want once", len(faults))
+	}
+	// The minute's try finds the store answering, and the same session launches.
+	h.advance(sessionStoreRetry)
+	h.wantState(StateLaunching)
+	h.reach(StateReady)
+
+	h.advance(10 * time.Minute)
+	diesOnTheStore()
+	if len(faults) != 2 {
+		t.Fatalf("an outage ten minutes after the store answered a start was told %d times in all, want twice: at once", len(faults))
+	}
+}
+
 // The loss of a recorded session is reported before the fresh agent starts, so a fresh spawn that
 // fails, charged as a launch failure, still leaves the loss reported once: the retry is a spawn of
 // a claim that records no session, which reports nothing.

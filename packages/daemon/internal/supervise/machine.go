@@ -1405,7 +1405,8 @@ type Machine struct {
 	// is their own lock, held only to set, clear or call them, so a suspension can reach them
 	// while the decision that started the launch holds mu for minutes (stopStart, startable).
 	// storeFaultTold is when the issue and the controller were last told the session store could
-	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore).
+	// not answer, so a start that retries every minute reports once an hour (startWaitsForStore),
+	// and zero once a start the store answered launched (launchNow).
 	startMu        sync.Mutex
 	cancelStart    context.CancelFunc
 	startStopped   bool
@@ -2599,6 +2600,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool, cause str
 			// (start, Resume), so a stop an earlier try of this same launch could not make is no
 			// longer what anyone must be told of.
 			m.stopUnconfirmed = false
+			// The store answered this start, so a store fault after it is a new outage, told at
+			// once (tellStoreFault).
+			m.storeFaultTold = time.Time{}
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
 			m.armBoot()
@@ -2759,9 +2763,10 @@ func (m *Machine) waitForStore(ctx context.Context, message string, cause, logge
 }
 
 // tellStoreFault reports the session store fault to the issue and the controller, at the first
-// start that met it and at most once an hour after that (Deps.SessionStoreFault). The hour is
-// counted from the last report rather than from the first fault, so an outage that ends and
-// returns is reported again.
+// start that met it and at most once an hour after that while it lasts (Deps.SessionStoreFault).
+// The hour is counted from the last report rather than from the first fault, and a start the store
+// answers ends the outage (launchNow), so an outage that ends and returns is reported again at
+// once, however soon it returns.
 func (m *Machine) tellStoreFault(cause error) {
 	if m.deps.SessionStoreFault == nil {
 		return
