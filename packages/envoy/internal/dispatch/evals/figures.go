@@ -9,10 +9,13 @@ import (
 	"hash/fnv"
 	"maps"
 	"math"
+	"runtime"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -615,11 +618,20 @@ func compareFigureCuts(a, b figureCut) int {
 	return cmp.Or(strings.Compare(a.repo, b.repo), strings.Compare(a.deployRepo, b.deployRepo))
 }
 
+// figureFoldWorkers is the most goroutines one fold of stored figures folds a group's ranges and
+// days on at once (foldMovedDays), 4, and never more than the CPUs the process may use. The fold
+// runs inside the server that answers the page reads, in the write of the rows it folds, so it
+// takes a few of the server's CPUs and leaves the rest to those reads: it was 0.69 s of the 2.03 s
+// of CPU a production rule's rewrite took at ten times INFRA's size (k8's breakdown at c6c68919),
+// one range after another.
+const figureFoldWorkers = 4
+
 // foldMovedDays folds, in q, the stored figures of each day moved names (by eval, deploy
 // repository and repository) and of every range whose span holds one, up to scope.through: one read
 // of each cut's rows of the moved evals over every day those ranges span, then each range and day
-// folded once, however many moved days it holds.
-func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, moved map[figureGroupKey]map[time.Time]bool) (figureWrites, error) {
+// folded once, however many moved days it holds, each group's on up to workers goroutines at once
+// (addGroup). The rows it answers are in no order: writeFigures sorts them by their keys.
+func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, entries map[string]Entry, moved map[figureGroupKey]map[time.Time]bool, workers int) (figureWrites, error) {
 	var writes figureWrites
 	for _, cut := range figureCuts(moved) {
 		var evalIDs []string
@@ -643,7 +655,6 @@ func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, e
 			return figureWrites{}, err
 		}
 		for _, evalID := range evalIDs {
-			group := groups[evalID]
 			targets := map[rangeFigureKey]bool{}
 			days := slices.SortedFunc(maps.Keys(moved[figureGroupKey{eval: evalID, deployRepo: cut.deployRepo, repo: cut.repo}]), time.Time.Compare)
 			for _, day := range days {
@@ -653,39 +664,79 @@ func foldMovedDays(ctx context.Context, q delivery.Querier, scope figureScope, e
 					}
 				}
 			}
-			for target := range targets {
-				writes.addRange(group, target)
+			dayKeys := make([]dayFigureKey, len(days))
+			for index, day := range days {
+				dayKeys[index] = dayFigureKey{repo: cut.repo, day: day, eval: evalID, deployRepo: cut.deployRepo}
 			}
-			for _, day := range days {
-				writes.addDay(group, dayFigureKey{repo: cut.repo, day: day, eval: evalID, deployRepo: cut.deployRepo})
-			}
+			writes.addGroup(groups[evalID], slices.Collect(maps.Keys(targets)), dayKeys, workers)
 		}
 	}
 	return writes, nil
 }
 
-// addRange adds the stored row of target, a range of group's rows, or its deletion where it holds
-// none (group nil: the eval holds no row the read spans).
-func (w *figureWrites) addRange(group *figureGroup, target rangeFigureKey) {
+// addGroup adds the stored row of each of ranges and days, ranges and days of group's rows, or its
+// deletion where it holds none (group nil: the eval holds no row the read spans), each folded on
+// one of up to workers goroutines at once. The folds share the group, which newFigureGroup sorted
+// before any of them began, since none writes into its rows or parts: rangeFigure and dayFigure
+// read them, and a day's stamp sorts a list of its own (rowsStamp); FoldStatistics' folds add the
+// parts up (measures.FoldSeries) and merge their samples (measures.MergedSamples), which reads
+// the parts' lists as they stand where each ascends and otherwise merges and sorts a list of its
+// own, and a quantile selects its ranks across those lists (SortedSamples' Quantile, At and kth)
+// with indexes of its own; and each fold writes only the statistics it makes (writable).
+func (w *figureWrites) addGroup(group *figureGroup, ranges []rangeFigureKey, days []dayFigureKey, workers int) {
+	type fold struct {
+		figures []byte
+		oldest  time.Time
+		stamp   int64
+		held    bool
+	}
+	folds := make([]fold, len(ranges)+len(days))
 	if group != nil {
-		if figures, oldest, held := group.rangeFigure(target.days, target.end); held {
-			w.ranges = append(w.ranges, rangeFigureRow{rangeFigureKey: target, key: group.key, figures: figures, oldest: oldest})
-			return
+		foldEach(len(folds), workers, func(index int) {
+			one := &folds[index]
+			if index < len(ranges) {
+				one.figures, one.oldest, one.held = group.rangeFigure(ranges[index].days, ranges[index].end)
+				return
+			}
+			one.figures, one.stamp, one.held = group.dayFigure(days[index-len(ranges)].day)
+		})
+	}
+	for index, target := range ranges {
+		if one := folds[index]; one.held {
+			w.ranges = append(w.ranges, rangeFigureRow{rangeFigureKey: target, key: group.key, figures: one.figures, oldest: one.oldest})
+		} else {
+			w.goneRanges = append(w.goneRanges, target)
 		}
 	}
-	w.goneRanges = append(w.goneRanges, target)
+	for index, target := range days {
+		if one := folds[len(ranges)+index]; one.held {
+			w.days = append(w.days, dayFigureRow{dayFigureKey: target, key: group.key, figures: one.figures, stamp: one.stamp})
+		} else {
+			w.goneDays = append(w.goneDays, target)
+		}
+	}
 }
 
-// addDay adds the stored day row of target, a day of group's rows, or its deletion where the day
-// holds none.
-func (w *figureWrites) addDay(group *figureGroup, target dayFigureKey) {
-	if group != nil {
-		if figures, stamp, held := group.dayFigure(target.day); held {
-			w.days = append(w.days, dayFigureRow{dayFigureKey: target, key: group.key, figures: figures, stamp: stamp})
-			return
+// foldEach runs fold of each index below n on up to workers goroutines at once, each taking the
+// next index as it finishes one, since a group's ranges differ in length and its folds in cost; on
+// the calling goroutine alone where workers is 1 or less.
+func foldEach(n, workers int, fold func(index int)) {
+	if workers = min(workers, n); workers <= 1 {
+		for index := range n {
+			fold(index)
 		}
+		return
 	}
-	w.goneDays = append(w.goneDays, target)
+	var next atomic.Int64
+	var folding sync.WaitGroup
+	for range workers {
+		folding.Go(func() {
+			for index := int(next.Add(1) - 1); index < n; index = int(next.Add(1) - 1) {
+				fold(index)
+			}
+		})
+	}
+	folding.Wait()
 }
 
 // readFigureGroups reads, in q, the listed rows of cut (its repository the empty string for the
@@ -736,7 +787,7 @@ func refoldFigures(ctx context.Context, tx pgx.Tx, scope figureScope, entries ma
 	if err != nil || len(moved) == 0 {
 		return err
 	}
-	writes, err := foldMovedDays(ctx, tx, scope, entries, moved)
+	writes, err := foldMovedDays(ctx, tx, scope, entries, moved, min(runtime.GOMAXPROCS(0), figureFoldWorkers))
 	if err != nil {
 		return err
 	}
@@ -775,6 +826,15 @@ func entriesByID(entries []Entry) map[string]Entry {
 // parameters, and a whole build's batch of a large project holds tens of thousands of rows.
 const figureChunk = 5000
 
+// sortByKey sorts each of w's lists in the byte order of its rows' keys, the order writeFigures
+// sends them in.
+func (w figureWrites) sortByKey() {
+	slices.SortFunc(w.ranges, func(a, b rangeFigureRow) int { return compareRangeKeys(a.rangeFigureKey, b.rangeFigureKey) })
+	slices.SortFunc(w.goneRanges, compareRangeKeys)
+	slices.SortFunc(w.days, func(a, b dayFigureRow) int { return compareDayFigureKeys(a.dayFigureKey, b.dayFigureKey) })
+	slices.SortFunc(w.goneDays, compareDayFigureKeys)
+}
+
 // writeFigures writes w's rows of scope's project's stored figures in tx, each recording
 // scope.build as the build that folded it: each range and day row upserted only where its fold key,
 // figures, oldest updated_at or stamp moved, so a fold that moved nothing writes nothing (a row
@@ -784,10 +844,7 @@ const figureChunk = 5000
 // rather than deadlock.
 func writeFigures(ctx context.Context, tx pgx.Tx, scope figureScope, w figureWrites) error {
 	project := scope.project
-	slices.SortFunc(w.ranges, func(a, b rangeFigureRow) int { return compareRangeKeys(a.rangeFigureKey, b.rangeFigureKey) })
-	slices.SortFunc(w.goneRanges, compareRangeKeys)
-	slices.SortFunc(w.days, func(a, b dayFigureRow) int { return compareDayFigureKeys(a.dayFigureKey, b.dayFigureKey) })
-	slices.SortFunc(w.goneDays, compareDayFigureKeys)
+	w.sortByKey()
 	for chunk := range slices.Chunk(w.ranges, figureChunk) {
 		repos, ns, ends, evalIDs := make([]string, len(chunk)), make([]int32, len(chunk)), make([]time.Time, len(chunk)), make([]string, len(chunk))
 		deployRepos, keys, figures, oldest := make([]string, len(chunk)), make([]int64, len(chunk)), make([][]byte, len(chunk)), make([]time.Time, len(chunk))

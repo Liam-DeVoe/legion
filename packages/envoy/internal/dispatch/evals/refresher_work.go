@@ -33,12 +33,13 @@ import (
 //     request the run ships now (delivery/containment.go's rule, DeliveryDay.linked) and of each
 //     it shipped when that pull request was last counted (shipped_by), whose rows hold the
 //     completion of the run that ships it as their deploy time.
-//   - settings: a change of the delivery settings rewrites, in one transaction, every day of the
-//     delivery and CI evals it moves from their first input day on, and begins no walk
-//     (settings_rewrite.go: settingsMoves names what each setting moves, and the pass finds the
-//     change by comparing the settings it reads with those the rows stand built under, so one that
-//     moves no eval rewrites nothing, a move of the deploy repository among them, whose evals are
-//     kept for every repository that holds a run, deploy_repos.go); a change of repo_projects
+//   - settings: a change of the delivery settings rewrites, in one transaction, the days of the
+//     delivery and CI evals it moves whose rows it can move, from their first input day on, and
+//     begins no walk (settings_rewrite.go: settingsMoves names what each setting moves and
+//     movedDeliveryDays the days it can move, and the pass finds the change by comparing the
+//     settings it reads with those the rows stand built under, so one that moves no eval
+//     rewrites nothing, a move of the deploy repository among them, whose evals are kept for
+//     every repository that holds a run, deploy_repos.go); a change of repo_projects
 //     (whose change names the repository) begins the delivery walk again, and every project's
 //     Legion walk too, since the mapping decides the project a row counts for and the repository
 //     an issue or a filing with none of its own resolves to (ReadLegionDay).

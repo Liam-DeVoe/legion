@@ -3,8 +3,11 @@ package evals
 import (
 	"fmt"
 	"maps"
+	"math/rand/v2"
+	"os"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -582,4 +586,509 @@ func TestAProductionRuleChangeRewritesEachRepositoryThatHoldsDeploys(t *testing.
 	walking.settle(t)
 	rewriting.expectSameAsWalk(t, "the apply step named", walking)
 	t.Logf("the apply step moved rows of %v; %s's %d rows and %d members stand", moved, checksOnly, len(untouched), len(untouchedMembers))
+}
+
+// builtDeliveryDays is the days of the delivery writes a pass's report holds, YYYY-MM-DD, each once
+// and sorted: the days a settings rewrite built and wrote, which it records as the walk does.
+func builtDeliveryDays(report refreshed) []string {
+	days := map[string]bool{}
+	for day := range report.days {
+		if day.family == walkDelivery {
+			days[day.day.Format(time.DateOnly)] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(days))
+}
+
+// rowsWritten is how many day rows appeared, went or had their updated_at moved from before to
+// after.
+func rowsWritten(before, after map[string]DayRow) int {
+	written := 0
+	for key, row := range after {
+		if old, held := before[key]; !held || !old.UpdatedAt.Equal(row.UpdatedAt) {
+			written++
+		}
+	}
+	for key := range before {
+		if _, kept := after[key]; !kept {
+			written++
+		}
+	}
+	return written
+}
+
+// dayRowWrites reads, by its key, the transaction that last wrote each day row and the row's
+// updated_at (xmins).
+const dayRowWrites = `select project_key || ' ' || eval_id || ' ' || deploy_repo || ' ' || series || ' ' || repo || ' ' || day::text,
+	xmin::text || ' at ' || updated_at::text from eval_days`
+
+// writtenState is the transaction that last wrote each day row (and the row's updated_at), each
+// member and each stored figures row, by its key: what a pass that writes nothing leaves as it was.
+type writtenState struct {
+	rows, members, figures map[string]string
+}
+
+func (r *refresherRig) writtenState(t *testing.T) writtenState {
+	t.Helper()
+	figures := map[string]string{}
+	for line, row := range r.storedFigures(t) {
+		figures[line] = row.xmin
+	}
+	return writtenState{rows: r.xmins(t, dayRowWrites), members: r.xmins(t, memberXmins), figures: figures}
+}
+
+// expectUnwritten checks that r holds every day row, member and stored figures row before held,
+// each as the transaction before names last wrote it, and no other.
+func (r *refresherRig) expectUnwritten(t *testing.T, what string, before writtenState) {
+	t.Helper()
+	after := r.writtenState(t)
+	show := func(written string) string { return "written by " + written }
+	for _, table := range []struct {
+		name          string
+		before, after map[string]string
+	}{
+		{"day rows", before.rows, after.rows},
+		{"members", before.members, after.members},
+		{"stored figures", before.figures, after.figures},
+	} {
+		if differ := sameValues(table.after, table.before, show); len(differ) > 0 {
+			t.Errorf("%s: the pass wrote %s, first ones:\n\t%s", what, table.name, strings.Join(differ, "\n\t"))
+		}
+	}
+}
+
+// deliveryState is what a database's delivery and CI evals hold: their day rows (deliveryValues),
+// the members and their stored figures (deliveryFigureValues), none with the moment or the build of
+// its write.
+type deliveryState struct {
+	rows    map[string]DayRow
+	members map[string]string
+	figures map[string]string
+}
+
+func (r *refresherRig) deliveryState(t *testing.T) deliveryState {
+	t.Helper()
+	return deliveryState{rows: r.deliveryValues(t), members: r.memberLines(t), figures: deliveryFigureValues(r.storedFigures(t))}
+}
+
+// TestAProductionJobNameNoRunHoldsBuildsNoDay: over a settled history, a production job name no run
+// holds, listed beside the one that is, moves the production rule's names, and so the evals the
+// rule moves and production-deploy (settingsMoves), but no run's verdict and no deploy card's part.
+// The pass that reads it builds no delivery day, which its report says (the rewrite records there
+// each day it builds and writes, as the walk does), writes no day row, member or stored figure
+// (each as the transaction that last wrote it, and each day row's updated_at), logs no eval_days
+// change, and records the new settings as the ones the rows stand built under.
+func TestAProductionJobNameNoRunHoldsBuildsNoDay(t *testing.T) {
+	r, deliveries := newSettingsRig(t, walkBatch)
+	settings := deliveries.Settings
+	settings.ProductionJobNames = append(slices.Clone(settings.ProductionJobNames), "production-release / apply-v2")
+	slugs, _ := settingsMoves(deliveries.Settings, settings)
+	if len(slugs) == 0 {
+		t.Fatal("the name moves no eval by settingsMoves, and the check needs a change the rewrite answers")
+	}
+	seq, before := r.latestSeq(t), r.writtenState(t)
+	r.putSettings(t, settings, alice)
+	report, _ := r.pass(t)
+	if built := builtDeliveryDays(report); len(built) > 0 {
+		t.Errorf("the pass built the delivery days %v, want none", built)
+	}
+	r.expectUnwritten(t, "a production job name no run holds", before)
+	if changed := r.evalDayChanges(t, seq); len(changed) > 0 {
+		t.Errorf("the pass logged the eval_days changes %v, want none", changed)
+	}
+	recorded, err := r.registry.readBuiltUnder(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recorded == nil || !sameBuiltSettings(*recorded, settings) {
+		t.Fatalf("the rows stand built under %+v, want the new settings, production jobs %v", recorded, settings.ProductionJobNames)
+	}
+	t.Logf("the change moves %v by settingsMoves; the pass built the delivery days %v and recorded the production jobs %v",
+		slugs, builtDeliveryDays(report), recorded.ProductionJobNames)
+}
+
+// The jobs and the step of the history a series of production rule changes runs over
+// (newRuleChangeRig): ruleSecondJob names the production job of every deploy run started on the
+// history's second day, and no setting names it at first; ruleSecondStep is the apply step the
+// production jobs of the runs started on its fourth day record, skipped on each whose run id is a
+// multiple of 3; and no run holds a job of ruleNoRunJobs.
+const (
+	ruleSecondJob  = "production-release / apply-v2"
+	ruleSecondStep = "tofu apply"
+)
+
+var ruleNoRunJobs = []string{"production-release / apply-v3", "production-release / apply-v4"}
+
+// newRuleChangeRig is newSettingsRig's history with the production jobs of its second day named
+// ruleSecondJob and those of its fourth day recording ruleSecondStep, walked whole again: a rule
+// that names ruleSecondJob beside the first name moves the verdicts of the second day's runs alone,
+// and each apply step those of the runs whose jobs record it alone.
+func newRuleChangeRig(t *testing.T) (*refresherRig, deliverytest.Fixture) {
+	t.Helper()
+	r, deliveries := newSettingsRig(t, walkBatch)
+	second, fourth := deliveries.From.AddDate(0, 0, 1), deliveries.From.AddDate(0, 0, 3)
+	r.exec(t, "name the production jobs of the second day "+ruleSecondJob, `
+		update delivery_run_jobs job set name = $2
+		from delivery_runs run
+		where job.repo = $1 and job.name = $3 and run.repo = job.repo and run.run_id = job.run_id
+			and run.started_at >= $4 and run.started_at < $5
+	`, deliveries.DeployRepo, ruleSecondJob, deliveries.Settings.ProductionJobNames[0], second, second.AddDate(0, 0, 1))
+	r.exec(t, "record the apply step of the fourth day's production jobs as "+ruleSecondStep, `
+		update delivery_run_jobs job set apply_step = $2,
+			apply_step_conclusion = case when job.run_id % 3 = 0 then 'skipped' else 'success' end
+		from delivery_runs run
+		where job.repo = $1 and job.apply_step is not null and run.repo = job.repo and run.run_id = job.run_id
+			and run.started_at >= $3 and run.started_at < $4
+	`, deliveries.DeployRepo, ruleSecondStep, fourth, fourth.AddDate(0, 0, 1))
+	r.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	r.settle(t)
+	return r, deliveries
+}
+
+// ruleChange is one change of a series of production rule changes: its kind and the settings it
+// saves.
+type ruleChange struct {
+	kind     string
+	settings delivery.DeliverySettings
+}
+
+// ruleChanges is a series of at least twelve changes of the production rule of settings, drawn by
+// rng, in which each kind below is at least once: a name some run holds added (the first name or
+// ruleSecondJob), a name no run holds added, a name removed, a name renamed, a name renamed to one
+// no run holds, and the apply step set, changed and cleared (settingsApplyStep, ruleSecondStep).
+// Each change is one its settings admit (a name removed from a rule of two names or more), and
+// until every kind has been drawn, half of them, and every one after the twelfth, are of a kind not
+// drawn yet where one is admitted.
+func ruleChanges(t *testing.T, rng *rand.Rand, settings delivery.DeliverySettings) []ruleChange {
+	t.Helper()
+	held := []string{settings.ProductionJobNames[0], ruleSecondJob}
+	steps := []string{settingsApplyStep, ruleSecondStep}
+	absent := func(listed, from []string) []string {
+		var missing []string
+		for _, name := range from {
+			if !slices.Contains(listed, name) {
+				missing = append(missing, name)
+			}
+		}
+		return missing
+	}
+	add := func(from []string) func(*delivery.DeliverySettings) bool {
+		return func(s *delivery.DeliverySettings) bool {
+			missing := absent(s.ProductionJobNames, from)
+			if len(missing) == 0 {
+				return false
+			}
+			s.ProductionJobNames = append(s.ProductionJobNames, missing[rng.IntN(len(missing))])
+			return true
+		}
+	}
+	rename := func(from []string) func(*delivery.DeliverySettings) bool {
+		return func(s *delivery.DeliverySettings) bool {
+			missing := absent(s.ProductionJobNames, from)
+			if len(missing) == 0 {
+				return false
+			}
+			s.ProductionJobNames[rng.IntN(len(s.ProductionJobNames))] = missing[rng.IntN(len(missing))]
+			return true
+		}
+	}
+	kinds := []struct {
+		name   string
+		change func(*delivery.DeliverySettings) bool
+	}{
+		{"a name some runs hold added", add(held)},
+		{"a name no run holds added", add(ruleNoRunJobs)},
+		{"a name removed", func(s *delivery.DeliverySettings) bool {
+			if len(s.ProductionJobNames) < 2 {
+				return false
+			}
+			i := rng.IntN(len(s.ProductionJobNames))
+			s.ProductionJobNames = slices.Delete(s.ProductionJobNames, i, i+1)
+			return true
+		}},
+		{"a name renamed", rename(slices.Concat(held, ruleNoRunJobs))},
+		{"a name renamed to one no run holds", rename(ruleNoRunJobs)},
+		{"the apply step set", func(s *delivery.DeliverySettings) bool {
+			if s.ProductionApplyStepName != nil {
+				return false
+			}
+			s.ProductionApplyStepName = new(steps[rng.IntN(len(steps))])
+			return true
+		}},
+		{"the apply step changed", func(s *delivery.DeliverySettings) bool {
+			if s.ProductionApplyStepName == nil {
+				return false
+			}
+			other := steps[0]
+			if *s.ProductionApplyStepName == other {
+				other = steps[1]
+			}
+			s.ProductionApplyStepName = new(other)
+			return true
+		}},
+		{"the apply step cleared", func(s *delivery.DeliverySettings) bool {
+			if s.ProductionApplyStepName == nil {
+				return false
+			}
+			s.ProductionApplyStepName = nil
+			return true
+		}},
+	}
+	var series []ruleChange
+	drawn := map[string]bool{}
+	for len(series) < 12 || len(drawn) < len(kinds) {
+		if len(series) == 60 {
+			t.Fatalf("60 changes left the kinds %v undrawn", drawn)
+		}
+		fresh := len(series) >= 12 || rng.IntN(2) == 0
+		made := false
+		for _, onlyFresh := range []bool{fresh, false} {
+			for _, k := range rng.Perm(len(kinds)) {
+				if made || onlyFresh && drawn[kinds[k].name] {
+					continue
+				}
+				candidate := settings
+				candidate.ProductionJobNames = slices.Clone(settings.ProductionJobNames)
+				if kinds[k].change(&candidate) {
+					settings, drawn[kinds[k].name], made = candidate, true, true
+					series = append(series, ruleChange{kind: kinds[k].name, settings: candidate})
+				}
+			}
+		}
+	}
+	return series
+}
+
+// TestASeededSeriesOfProductionRuleChangesRewritesWhatAWholeWalkWrites: two databases load one
+// history (newRuleChangeRig) and walk it whole. A seeded series of at least twelve changes of the
+// production rule (ruleChanges: a name some runs hold added, a name no run holds added, a name
+// removed, a name renamed, a name renamed to one no run holds, and the apply step set, changed and
+// cleared) is saved in both, one after another; the test prints the seed, and
+// EVALS_RULE_CHANGES_SEED draws a series again. After each change one pass of the first rewrites
+// what it moves, and the second walks every day again from no record of its rows' settings; the
+// first then holds the same day rows, members and stored figures as the second (expectSameAsWalk).
+// A change after which the whole walk holds what it held before moves no verdict and no card's
+// part: its pass builds no day (its report holds none) and writes no day row, member or figure.
+// Each change is logged with the days its pass built and the day rows it wrote.
+func TestASeededSeriesOfProductionRuleChangesRewritesWhatAWholeWalkWrites(t *testing.T) {
+	seed := rand.Uint64()
+	if given := os.Getenv("EVALS_RULE_CHANGES_SEED"); given != "" {
+		parsed, err := strconv.ParseUint(given, 10, 64)
+		if err != nil {
+			t.Fatalf("EVALS_RULE_CHANGES_SEED=%q is no seed: %v", given, err)
+		}
+		seed = parsed
+	}
+	t.Logf("the series' seed is %d: EVALS_RULE_CHANGES_SEED=%d draws it again", seed, seed)
+	rewriting, deliveries := newRuleChangeRig(t)
+	walking, _ := newRuleChangeRig(t)
+	rewriting.expectSameAsWalk(t, "the first whole walk", walking)
+	series := ruleChanges(t, rand.New(rand.NewPCG(seed, 0)), deliveries.Settings)
+
+	quiet := 0
+	for index, change := range series {
+		step := "no step"
+		if change.settings.ProductionApplyStepName != nil {
+			step = "the step " + *change.settings.ProductionApplyStepName
+		}
+		what := fmt.Sprintf("change %d, %s (production jobs %q, %s)", index+1, change.kind, change.settings.ProductionJobNames, step)
+		walked := walking.deliveryState(t)
+		rewriting.putSettings(t, change.settings, alice)
+		walking.putSettings(t, change.settings, alice)
+		rows, state := rewriting.dayRows(t), rewriting.writtenState(t)
+		report, _ := rewriting.pass(t)
+		built, written := builtDeliveryDays(report), rowsWritten(rows, rewriting.dayRows(t))
+
+		walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+		walking.settle(t)
+		rewriting.expectSameAsWalk(t, what, walking)
+		if reflect.DeepEqual(walking.deliveryState(t), walked) {
+			quiet++
+			if len(built) > 0 {
+				t.Errorf("%s: the whole walk holds what it held before, and the pass built the days %v", what, built)
+			}
+			rewriting.expectUnwritten(t, what, state)
+		}
+		t.Logf("%s: the pass built %d days %v and wrote %d day rows", what, len(built), built, written)
+	}
+	if quiet == 0 {
+		t.Errorf("every change of the series moved the whole walk's rows, and a name no run holds added moves none")
+	}
+}
+
+// TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToTheOldFirstDay: two
+// databases load one history under a production rule whose one job no run holds, and walk it
+// whole: no deploy reaches production and no pull request ships, so the deploy repository's lead
+// times hold no row and no first day. The rule then names the history's production job, under which
+// the repository's first pull request ships first: containment ships every pull request merged
+// before an apply's creation, so a rule that ships any ships the first, and the first shipped pull
+// request moves earlier only from none. One pass of the first rewrites the change, and the lead
+// times' rows of every day from the new first day up to the old one, which is none, so through
+// today, are the second's whole walk's: today's zero rows among them, which no input of today moves
+// (movedDeliveryDays' first days). The first then holds what the second's whole walk holds.
+func TestAProductionRuleThatShipsAnEarlierPullRequestFirstRewritesTheDaysUpToTheOldFirstDay(t *testing.T) {
+	rigs := make([]*refresherRig, 2)
+	var deliveries deliverytest.Fixture
+	for i := range rigs {
+		rigs[i] = newRefresherRig(t)
+		deliveries = deliverytest.Seed(t, rigs[i].database.Pool, deliverytest.Spec{Days: 5})
+		none := deliveries.Settings
+		none.ProductionJobNames = []string{"production-release / apply-v0"}
+		rigs[i].putSettings(t, none, alice)
+		rigs[i].settle(t)
+	}
+	rewriting, walking := rigs[0], rigs[1]
+	leadTimes := func(r *refresherRig) map[string]DayRow {
+		rows := map[string]DayRow{}
+		for key, row := range r.deliveryValues(t) {
+			if row.DeployRepo == deliveries.DeployRepo && slices.Contains(leadTimeSlugs, slugOf(row.ProjectKey, row.EvalID)) {
+				rows[key] = row
+			}
+		}
+		return rows
+	}
+	if held := leadTimes(rewriting); len(held) > 0 {
+		t.Fatalf("under a rule no run holds the lead times of %s hold %d rows, and the check needs none", deliveries.DeployRepo, len(held))
+	}
+	for _, r := range rigs {
+		r.putSettings(t, deliveries.Settings, alice)
+	}
+	report, _ := rewriting.pass(t)
+	walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walking.settle(t)
+
+	shipped := leadTimes(rewriting)
+	if differ := sameValues(shipped, leadTimes(walking), rowFacts); len(differ) > 0 {
+		t.Errorf("the lead times' rows differ from the whole walk's, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	var first, last time.Time
+	for _, row := range shipped {
+		if first.IsZero() || row.Day.Before(first) {
+			first = row.Day
+		}
+		if row.Day.After(last) {
+			last = row.Day
+		}
+	}
+	if !measures.Midnight(last).Equal(refresherToday) {
+		t.Errorf("the lead times' rows end on %s, want today's zero rows, %s", last.Format(time.DateOnly), refresherToday.Format(time.DateOnly))
+	}
+	rewriting.expectSameAsWalk(t, "the history's production job named", walking)
+	t.Logf("the lead times of %s hold %d rows from %s through %s; the pass built the days %v",
+		deliveries.DeployRepo, len(shipped), first.Format(time.DateOnly), last.Format(time.DateOnly), builtDeliveryDays(report))
+}
+
+// TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites: two databases load
+// one history in which the push runs of its first two days name their staging gate's job
+// `staging-e2e / legacy`, which no card follows, and those after them whose run id is even
+// `staging-e2e / run-v2`, and walk it whole. The staging gate is renamed to `staging-e2e / run-v2`,
+// a job only some push runs hold. One pass of the first rewrites what the rename moves and builds
+// none of the first two days, whose push runs hold no job either name follows, so the gate's part
+// of each is the same under both; the first then holds what the second's whole walk holds.
+func TestAStagingGateRenamedToAJobSomePushRunsHoldRewritesWhatAWholeWalkWrites(t *testing.T) {
+	const legacy, renamed = "staging-e2e / legacy", "staging-e2e / run-v2"
+	rigs := make([]*refresherRig, 2)
+	var deliveries deliverytest.Fixture
+	for i := range rigs {
+		rigs[i], deliveries = newSettingsRig(t, walkBatch)
+		rigs[i].exec(t, "name the staging gate's jobs anew", `
+			update delivery_run_jobs job set name = case when run.started_at < $4 then $5::text else $6::text end
+			from delivery_runs run
+			where job.repo = $1 and job.name = $2 and run.repo = job.repo and run.run_id = job.run_id and run.kind = $3
+				and (run.started_at < $4 or job.run_id % 2 = 0)
+		`, deliveries.DeployRepo, *deliveries.Settings.StagingE2EJobName, string(delivery.DeliveryRunKindDeploy),
+			deliveries.From.AddDate(0, 0, 2), legacy, renamed)
+		rigs[i].exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+		rigs[i].settle(t)
+	}
+	rewriting, walking := rigs[0], rigs[1]
+	rewriting.expectSameAsWalk(t, "the first whole walk", walking)
+	settings := deliveries.Settings
+	settings.StagingE2EJobName = new(renamed)
+	rewriting.putSettings(t, settings, alice)
+	walking.putSettings(t, settings, alice)
+	before := rewriting.dayRows(t)
+	report, _ := rewriting.pass(t)
+	built, third := builtDeliveryDays(report), deliveries.From.AddDate(0, 0, 2).Format(time.DateOnly)
+	if len(built) == 0 || built[0] < third {
+		t.Errorf("the pass built the days %v, want some and none before %s", built, third)
+	}
+	written := rowsWritten(before, rewriting.dayRows(t))
+	walking.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walking.settle(t)
+	rewriting.expectSameAsWalk(t, "the staging gate renamed to a job some push runs hold", walking)
+	t.Logf("the staging gate renamed to %s: the pass built the days %v and wrote %d day rows", renamed, built, written)
+}
+
+// TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites: over a settled history of thirty
+// days, foldMovedDays folds the stored figures of every day of every eval and repository of a
+// project that holds a listed row, once on one worker and once on figureFoldWorkers, and the two
+// answer the same rows, byte for byte, in the order writeFigures sends them (sortByKey): a group's
+// folds share its rows and parts and write into neither (addGroup). Run it under -race, by name,
+// which fails a fold that writes into what the others read.
+func TestAParallelFoldOfTheStoredFiguresWritesWhatOneWorkerWrites(t *testing.T) {
+	r := newRefresherRig(t)
+	deliveries := deliverytest.Seed(t, r.database.Pool, deliverytest.Spec{Days: 30})
+	r.settle(t)
+	ctx, project := t.Context(), deliveries.Project
+	scope, folded, err := readFigureScope(ctx, r.database.Pool, r.build, project)
+	if err != nil || !folded {
+		t.Fatalf("read how far the figures of %s are folded: folded %t, %v", project, folded, err)
+	}
+	entries, err := readEntries(ctx, r.database.Pool, project, nil)
+	if err != nil {
+		t.Fatalf("read the evals of %s: %v", project, err)
+	}
+	rows, err := r.database.Pool.Query(ctx, `
+		select distinct eval_id, deploy_repo, repo, day from eval_days where project_key = $1 and listed and day < $2
+	`, project, scope.through)
+	if err != nil {
+		t.Fatalf("read the days of %s's listed rows: %v", project, err)
+	}
+	moved := map[figureGroupKey]map[time.Time]bool{}
+	var group figureGroupKey
+	var day time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&group.eval, &group.deployRepo, &group.repo, &day}, func() error {
+		if moved[group] == nil {
+			moved[group] = map[time.Time]bool{}
+		}
+		moved[group][day.UTC()] = true
+		return nil
+	}); err != nil {
+		t.Fatalf("read the days of %s's listed rows: %v", project, err)
+	}
+	fold := func(workers int) figureWrites {
+		t.Helper()
+		writes, err := foldMovedDays(ctx, r.database.Pool, scope, entriesByID(entries), moved, workers)
+		if err != nil {
+			t.Fatalf("fold the figures of %s on %d workers: %v", project, workers, err)
+		}
+		writes.sortByKey()
+		return writes
+	}
+	one, parallel := fold(1), fold(figureFoldWorkers)
+	if !reflect.DeepEqual(parallel, one) {
+		t.Errorf("on %d workers the fold answers %d ranges, %d gone ranges, %d days and %d gone days, and on one %d, %d, %d and %d, or other bytes",
+			figureFoldWorkers, len(parallel.ranges), len(parallel.goneRanges), len(parallel.days), len(parallel.goneDays),
+			len(one.ranges), len(one.goneRanges), len(one.days), len(one.goneDays))
+		for index := range min(len(one.ranges), len(parallel.ranges)) {
+			if !reflect.DeepEqual(parallel.ranges[index], one.ranges[index]) {
+				t.Errorf("the first range that differs: %+v on %d workers, %+v on one", parallel.ranges[index], figureFoldWorkers, one.ranges[index])
+				break
+			}
+		}
+	}
+	ranges := map[figureGroupKey]int{}
+	for _, row := range one.ranges {
+		ranges[figureGroupKey{eval: row.eval, deployRepo: row.deployRepo, repo: row.repo}]++
+	}
+	most := 0
+	for _, count := range ranges {
+		most = max(most, count)
+	}
+	if most < 200 {
+		t.Errorf("the group of most ranges folds %d, and the check needs a group of many", most)
+	}
+	t.Logf("%d groups folded %d ranges (at most %d in a group) and %d days on one worker and on %d",
+		len(moved), len(one.ranges), most, len(one.days), figureFoldWorkers)
 }

@@ -50,10 +50,11 @@
 -- staging_apply_job_name; evals.settingsMoves says which evals each moves). The deploy repository
 -- is none of them: the rows of the evals that read it are kept for every repository that holds a
 -- delivery run (eval_days.deploy_repo, 20261117100006), and a read chooses among them. A pass that
--- reads delivery settings other than these rewrites, before it writes a day under them, every day
--- of the evals the difference moves, in one transaction that records the settings it read here
--- (evals.rewriteSettings); a pass that finds no row begins the delivery walk again, which builds
--- every day under the settings it reads, and records them.
+-- reads delivery settings other than these rewrites, before it writes a day under them, the days
+-- of the evals the difference moves whose rows it can move (evals.movedDeliveryDays), every day
+-- of them where the delivery walk still has days to write, in one transaction that records the
+-- settings it read here (evals.rewriteSettings); a pass that finds no row begins the delivery walk
+-- again, which builds every day under the settings it reads, and records them.
 --   updated_at when the row was last recorded.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this

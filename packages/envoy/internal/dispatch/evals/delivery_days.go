@@ -413,7 +413,8 @@ func (d deliveryRead) linked(member string) []dayItem {
 
 // attribution is what a day's rows are attributed to their projects by: the project of each issue
 // the pull requests name (readIssueProjects) and repo_projects. readDeliveryDay attributes one
-// day's rows by it, and the refresher's rewrite of a settings change every day's (rewriteSettings).
+// day's rows by it, and the refresher's rewrite of a settings change the rows of each day it
+// builds (rewriteSettings).
 type attribution struct {
 	issues map[string]string
 	repos  repoProjects
