@@ -34,7 +34,10 @@ func TestAnOhMyPiResumeWhoseStoreCannotServeAConnectionNowIsAStoreFault(t *testi
 	} {
 		t.Run(name, func(t *testing.T) {
 			urlFile := filepath.Join(t.TempDir(), "dsn")
-			if err := replaceURLFile(urlFile, "postgres://legion@"+testdb.Refusing(t, tc.code, tc.message)+"/none?sslmode=disable&connect_timeout=1"); err != nil {
+			// A dial bound past the lookup's own: on a loaded machine a one-second bound can end
+			// the last attempt first, and that attempt's timeout would stand in place of the
+			// server's answer the test names; an attempt the lookup's bound cuts short does not.
+			if err := replaceURLFile(urlFile, "postgres://legion@"+testdb.Refusing(t, tc.code, tc.message)+"/none?sslmode=disable&connect_timeout=5"); err != nil {
 				t.Fatal(err)
 			}
 			g := newRig(t)
