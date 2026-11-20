@@ -362,6 +362,10 @@ It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
 own arguments, but for a commit id of a hidden commit, hidden by the step's rewrite or before the
 push: the push gets the one visible commit that replaced it, where there is one.
+That holds for a commit id anywhere inside a revision argument's revset, such as `C1 | C2`, `::C`,
+`C-` or `present(C)`, whole or as a prefix of one commit, and every other word of the argument
+(`@`, a bookmark, a change id, a function, a string, a number) reaches the push as written; where
+jj refuses the argument with a word replaced, it reaches the push as written.
 It changes no commit that a remote bookmark holds and no immutable commit.
 It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
 the table.
@@ -384,8 +388,8 @@ Two commits of that set whose ids start the same, another issue's under tmux inc
 run that the step cannot read.
 A commit's timestamps are whole seconds, so a rewrite in the same second as an earlier rewrite of
 the same commit asks jj for a commit that exists already, which jj refuses.
-In a retry of a refused push that names the hidden commit that the first push's rewrite replaced,
-the step takes that commit, and the push sends it.
+In a retry of a refused push that names a hidden commit of a divergent change, which the first
+push's rewrite replaced, the step takes the commit that the rewrite made, and the push sends it.
 In any other case, such as a retry after a `jj undo`, the step prints one line, and the push runs
 as after a dry run that the step cannot read.
 A process with no table runs no step, such as a controller or a pane of an earlier release.
