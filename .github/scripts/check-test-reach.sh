@@ -126,8 +126,8 @@ from pathlib import Path
 import yaml
 
 import go_test_steps as steps
-from ci_filter_coverage import called_workflows, script_lines, step_workdir
-from go_build_tags import EXTRA_ARCH, EXTRA_OS, NOT_TAG_PATTERN, NOT_TAGS, go_skips_dir
+from ci_filter_coverage import called_workflows, script_lines, squash, step_workdir
+from go_build_tags import EXTRA_ARCH, EXTRA_OS, go_skips_dir, is_tag
 
 ROOT = Path.cwd()
 WORKFLOWS = ".github/workflows"
@@ -428,11 +428,6 @@ GOARCH = frozenset({"386", "amd64", "arm", "arm64", "loong64", "mips", "mipsle",
 GO_RELEASES = frozenset(f"go1.{minor}" for minor in range(1, 40))
 
 
-def platform_name(name: str) -> bool:
-    return (name in GOOS or name in GOARCH or name in NOT_TAGS or bool(NOT_TAG_PATTERN.fullmatch(name))
-            or ("." in name and name.split(".", 1)[0] in GOARCH))
-
-
 CONSTRAINT_TOKEN = re.compile(r"\s*(\(|\)|!|&&|\|\||[^\s()!&|]+)")
 
 
@@ -517,7 +512,7 @@ class GoFile:
 
     @property
     def tool(self) -> bool:
-        return any(TOOL_LINE.match(line) for line in self.text.splitlines()[:HEAD_LINES])
+        return any(TOOL_LINE.match(line) for line in head(self.path))
 
 
 def go_header(text: str) -> tuple[str | None, int, str]:
@@ -601,7 +596,6 @@ def go_tree(files: list[str]) -> GoTree:
         is_test = path.endswith("_test.go")
         tests = []
         if is_test:
-            starts = [0] + [m.end() for m in re.finditer("\n", text)]
             for match in GO_TEST_FUNC.finditer(text):
                 name = match.group(1)
                 if name == "TestMain":
@@ -643,7 +637,7 @@ class GoRun:
     env: frozenset[str]
 
     def __post_init__(self) -> None:
-        self.true = frozenset(truths(self.tags, self.race, self.goarch))
+        self.true = truths(self.tags, self.race, self.goarch)
         self.directory_set = set(self.directories)
         self._files: dict[str, list[GoFile]] = {}
         self._pattern = None
@@ -911,11 +905,10 @@ def tag_findings(tree: GoTree, runs: list[GoRun]) -> list[Finding]:
     for go_file in tree.files.values():
         if not go_file.is_test or go_file.constraint is None:
             continue
-        tags = [name for name in constraint_names(go_file.constraint) if not platform_name(name)]
+        tags = [name for name in constraint_names(go_file.constraint) if is_tag(name, (GOOS, GOARCH))]
         if not tags:
             continue
-        if any(go_file.directory in run.directories and go_file.builds(run.true, "linux", run.goarch)
-               for run in runs):
+        if any(run.builds(go_file) for run in runs):
             continue
         found.append(Finding("tag", go_file.path, go_file.constraint_line, ",".join(dict.fromkeys(tags)),
                              f"no required step's go test builds {go_file.directory} with "
@@ -932,8 +925,7 @@ def skip_findings(tree: GoTree, runs: list[GoRun]) -> list[Finding]:
                 for name, line in go_file.tests:
                     if name not in run.skip:
                         continue
-                    if any(other.step is not run.step and directory in other.directories
-                           and go_file.builds(other.true, "linux", other.goarch) and other.runs(name)
+                    if any(other.step is not run.step and other.builds(go_file) and other.runs(name)
                            for other in runs):
                         continue
                     found.append(Finding("skip", go_file.path, line, name,
@@ -945,8 +937,7 @@ def go_runners(tree: GoTree, runs: list[GoRun], go_file: GoFile, test: str | Non
     """The required go tests that run `test` of `go_file`, or any test of its package (and of each
     package whose tests import it, for a helper package) where `test` is None."""
     if test is not None:
-        return [run for run in runs if go_file.directory in run.directories
-                and go_file.builds(run.true, "linux", run.goarch) and run.runs(test)]
+        return [run for run in runs if run.builds(go_file) and run.runs(test)]
     directories = {go_file.directory}
     if not go_file.is_test:
         target = tree.import_path(go_file.directory)
@@ -955,7 +946,7 @@ def go_runners(tree: GoTree, runs: list[GoRun], go_file: GoFile, test: str | Non
                 directories.add(other.directory)
     found = []
     for run in runs:
-        for directory in directories & set(run.directories):
+        for directory in directories & run.directory_set:
             if any(run.runs(name) for f in run.files(tree, directory) for name, _ in f.tests):
                 found.append(run)
                 break
@@ -1970,7 +1961,7 @@ def ts_gates(tree: TsTree, files: list[str]) -> list[Gate]:
                     body += blank[tail:balanced(blank, tail)]
             if TS_GUARDED.search(body):
                 sites.append(((open_at + 1, close - 1), blank.count("\n", 0, match.start()) + 1))
-        tool = any(TOOL_LINE.match(line) for line in read_text(path).splitlines()[:HEAD_LINES])
+        tool = any(TOOL_LINE.match(line) for line in head(path))
         for span, line in sites:
             variables, chained = tree.chain(path, span)
             if not variables:
@@ -2066,6 +2057,7 @@ def repository_script(cwd: str, words: list[str]) -> str | None:
 class BunReader:
     def __init__(self, files: list[str]):
         self.files = files
+        self.file_set = set(files)
         self.tests = bun_test_files(files)
         self.packages: dict[str, dict] = {}
 
@@ -2165,7 +2157,7 @@ class BunReader:
         for word in filters:
             if word.startswith(("./", "/", "../")):
                 target = join(cwd, word)
-                if target in set(self.files):
+                if target in self.file_set:
                     chosen.add(target)
                 else:
                     chosen |= {f for f in under if f.startswith(f"{target}/")}
@@ -2257,10 +2249,9 @@ def variable_findings(rows: dict[str, Row], gates: list[Gate], flows: Workflows,
                       go: list[GoRun], bun: list[BunRun]) -> list[Finding]:
     found = []
     setters: dict[str, set[str]] = defaultdict(set)
-    for step in flows.steps:
-        if step.part.required and not step.skipped:
-            for variable in step.env | step.exported | env_written(step.script) | inline_env(step.script):
-                setters[variable].add(step.part.job)
+    for step in required_steps(flows):
+        for variable in step.env | step.exported | env_written(step.script) | inline_env(step.script):
+            setters[variable].add(step.part.job)
     for run in [*bun, *go]:
         for variable in run.env:
             setters[variable].add(run.step.part.job)
@@ -2356,8 +2347,6 @@ def class_fails(row: Row, gate: Gate, variable: str, tree: GoTree, go: list[GoRu
             return ""
         return ("its row's class is prerequisite, and this gate neither calls testprereq.Require, "
                 "requireOrSkip or skipWithout nor reads GITHUB_ACTIONS and fails there")
-    if gate.tool:
-        return ""
     return "its row's class is tool, and this gate is in no Benchmark and in no file that carries the tool line"
 
 
@@ -2495,10 +2484,6 @@ def package_script_texts(reader: BunReader, cwd: str, words: list[str], seen: se
 
 # ------------------------------------------------------------------------- rule 5: schedules
 TEST_COMMAND = re.compile(r"\bgo\s+(?:-C\s+\S+\s+)?test\b(?!.*\s-c\b)|\bbun\s+test\b|\bplaywright\s+test\b|\.test\.sh\b|_test\.sh\b")
-
-
-def squash(text: str) -> str:
-    return " ".join(text.split())
 
 
 def schedule_findings(files: list[str], flows: Workflows, reader: BunReader) -> list[Finding]:

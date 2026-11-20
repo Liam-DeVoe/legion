@@ -9,8 +9,8 @@
 // answers every turn with one text block, <reply> (default `ready`): stage2-tmux-supervision.sh
 // and clean-session-stop-tmux.sh run it so. A proof whose agents must call tools, or answer what
 // they were asked, runs a script of its own instead, a module that hands `runStandin` its reply and
-// takes the same three arguments: lib/session-settings-model.ts, lib/user-turns-model.ts and
-// lib/session-delivery-model.ts.
+// takes the same three arguments: lib/session-settings-model.ts, lib/user-turns-model.ts,
+// lib/session-delivery-model.ts and lib/plugin-smoke-model.ts.
 //
 // It serves on a port the kernel chose and writes that port to <port-file> once it answers, so the
 // caller reads it as it reads a held port (lib/port-file.sh). Every request must carry the
@@ -68,6 +68,11 @@ export type TurnReply = (turn: Turn) => readonly Block[];
 /** A reply of one text block. */
 export function text(value: string): Block[] {
   return [{ type: "text", text: value }];
+}
+
+/** `value` as one word of a shell command. */
+export function quoted(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /** The prompt the model is running on — the last user messages that carry text and no tool result,

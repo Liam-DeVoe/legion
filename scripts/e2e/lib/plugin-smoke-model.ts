@@ -21,12 +21,15 @@
 // beside that result. The stop-time self-check is answered PROCEEDING, and AskGate's two reviews of
 // a Dispatch write with the verdicts that let it through.
 import { isSelfCheck } from "../../../packages/pi-shared/test/omp-harness.ts";
-import { lastPrompt, runStandin, type Turn, text, toolCall } from "./messages-standin";
-
-/** `value` as one word of a shell command. */
-function quoted(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
+import {
+  afterToolResult,
+  lastPrompt,
+  quoted,
+  runStandin,
+  type Turn,
+  text,
+  toolCall,
+} from "./messages-standin";
 
 const DELIVERY_ROLE = /Call the envoy_role_set tool with role="([^"]+)"\./;
 const DELIVERY_PAYLOAD = /smoke-delivery-payload-[0-9a-f]+/;
@@ -85,7 +88,7 @@ runStandin((turn) => {
     });
     if (call !== undefined) return [call];
   }
-  if ((turn.messages.at(-1)?.results.length ?? 0) > 0) return text("Done.");
+  if (afterToolResult(turn)) return text("Done.");
   const prompt = lastPrompt(turn);
   if (prompt !== undefined && prompt.calls.length === 0) {
     const role = DELIVERY_ROLE.exec(prompt.text)?.[1] ?? ROUNDTRIP_ROLE.exec(prompt.text)?.[1];

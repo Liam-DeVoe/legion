@@ -226,21 +226,20 @@ def expand(text: str, variables: dict[str, str]) -> str:
     return SHELL_VAR.sub(one, text)
 
 
-def documents(load: Callable[[str], object] = yaml.safe_load) -> dict:
-    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path, each read
-    with `load` (a reader that keeps line numbers may pass its own). A job of ci.yaml keeps its
-    id, its `needs: changes` and its whole `if:` there and holds its steps in the
+def documents() -> dict:
+    """ci.yaml and every workflow a job of it calls, keyed by repository-relative path. A job of
+    ci.yaml keeps its id, its `needs: changes` and its whole `if:` there and holds its steps in the
     `ci-job-<id>.yaml` its `uses:` names, so ci.yaml alone holds none of the `go test` steps. The
     set is the one check-ci-filters.sh reads, derived with that check's own `called_workflows`;
     it is loaded here rather than through `ci_filter_coverage`'s `workflow_documents`, which
     roots itself at the current working directory and appends to the checker's problem list,
     because this module roots itself at its own path and refuses instead."""
-    found = {WORKFLOW: load((ROOT / WORKFLOW).read_text()) or {}}
+    found = {WORKFLOW: yaml.safe_load((ROOT / WORKFLOW).read_text()) or {}}
     for path, job_id in called_workflows(found[WORKFLOW]).items():
         if not (ROOT / path).is_file():
             raise Refused(f"job {job_id} of {WORKFLOW} calls {path}, which is not in the "
                           f"repository, so the steps it runs are read by nothing here")
-        found[path] = load((ROOT / path).read_text()) or {}
+        found[path] = yaml.safe_load((ROOT / path).read_text()) or {}
     return found
 
 

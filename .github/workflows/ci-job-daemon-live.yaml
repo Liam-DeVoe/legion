@@ -98,9 +98,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # handoff_records_live_test.go and step_records_live_test.go run
+      # handoff_records_live_test.go, review_range_live_test.go on its rig,
+      # step_records_live_test.go and plan_ratings_live_test.go run
       # `bun packages/envoy-client/bin/dispatch.ts`, and the first also
-      # `bun scripts/e2e/completion-head.ts`, which import the workspace's packages; both fail on
+      # `bun scripts/e2e/completion-head.ts`, which import the workspace's packages; each fails on
       # GitHub Actions without bun.
       - name: Setup Bun
         uses: ./.github/actions/setup-bun

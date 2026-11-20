@@ -39,8 +39,8 @@ name: CI job daemon-go
 # repository's skills, are internal/daemon's three that load a plugin on the real Oh My Pi — the
 # `bun pm pack` of the two plugins and the two prompt probes, one of which stages each plugin's
 # partition of skills/ with scripts/pi-plugin-prepack.sh — which are
-# .github/workflows/ci-job-plugin-pack.yaml's now, the whole-daemon live tests, one of which
-# runs the `dispatch` CLI under bun, which are .github/workflows/ci-job-daemon-live.yaml's, and
+# .github/workflows/ci-job-plugin-pack.yaml's now, the whole-daemon live tests, four of which
+# run the `dispatch` CLI under bun, which are .github/workflows/ci-job-daemon-live.yaml's, and
 # the five live proofs that drive real Oh My Pi panes, each of which packs both plugins, which are
 # .github/workflows/ci-job-agent-harness.yaml's; the race step below skips the three groups by
 # name. The one Bun install here is the CodeGraph CLI's, in its own directory, which is no
@@ -260,9 +260,9 @@ jobs:
       # on the real Oh My Pi and staying in this step (TestThePromptReferenceProbeOnTheRealOhMyPi):
       # they run in .github/workflows/ci-job-plugin-pack.yaml, so that their reads — bun.lock and
       # skills/ among them — are that job's inputs and not this suite's. The daemon-live job's
-      # nine whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
+      # ten whole-daemon live tests, which DAEMON_LIVE_TESTS names: they run in
       # .github/workflows/ci-job-daemon-live.yaml, so that the bun install and the `dispatch`
-      # CLI three of them run are that job's inputs, and none of them holds this step's package
+      # CLI four of them run are that job's inputs, and none of them holds this step's package
       # time for the minutes each takes. The agent-harness job's five live proofs that drive
       # real Oh My Pi panes, which AGENT_HARNESS_TESTS names, and its Claude Code backend proof on
       # tmux, which AGENT_HARNESS_TMUX_TESTS names: they run in

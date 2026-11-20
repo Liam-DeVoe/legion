@@ -385,10 +385,11 @@ func (r *Rig) ServiceAccountToken(namespace, account, audience string, lifetime 
 		args = append(args, "--audience", audience)
 	}
 	out, err := r.kubectl(nil, args...)
-	if token := strings.TrimSpace(out); err != nil || token == "" {
+	token := strings.TrimSpace(out)
+	if err != nil || token == "" {
 		return "", fmt.Errorf("kubectl create token %s/%s: %v: printed %d bytes", namespace, account, err, len(token))
 	}
-	return strings.TrimSpace(out), nil
+	return token, nil
 }
 
 // IssuerClient is an HTTP client of this process that trusts the cluster's own authority alone,

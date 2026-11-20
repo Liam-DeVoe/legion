@@ -16,12 +16,14 @@
 //   AskGate's two reviews of a Dispatch write with their verdicts that let it through.
 // - Anything else (an Envoy card, a title) is answered `ok`.
 import { isSelfCheck, isSummarization } from "../../../packages/pi-shared/test/omp-harness.ts";
-import { afterToolResult, lastPrompt, runStandin, text, toolCall } from "./messages-standin";
-
-/** `value` as one word of a shell command. */
-function quoted(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
+import {
+  afterToolResult,
+  lastPrompt,
+  quoted,
+  runStandin,
+  text,
+  toolCall,
+} from "./messages-standin";
 
 const SPEC_ASK =
   /With `dispatch issue` in project (\S+), create an issue titled "([^"]+)" whose spec's first section says `([^`]+)` and whose second section repeats that time\./;

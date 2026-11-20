@@ -376,7 +376,7 @@ func (r *kindTreeRig) seedRoot(title string, at phase.Phase, mid ...claim.Role) 
 	t := r.t
 	t.Helper()
 	key := r.newIssue(title, "")
-	r.dispatch.user(http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"status": "in_progress"}, http.StatusOK, nil)
+	r.setStatus(key, "in_progress")
 	listed := r.dispatch.issue(key)
 	if at != phase.Admitted && listed.PrimaryArtifactID == "" {
 		t.Fatalf("Dispatch shows no primary document for %s, which its design gate names", key)
@@ -543,17 +543,20 @@ type kindState struct {
 		Active  []string `json:"active"`
 		Waiting []string `json:"waiting"`
 	} `json:"admission"`
-	Capabilities []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Detail string `json:"detail"`
-	} `json:"capabilities"`
+	Capabilities      []kindCapability `json:"capabilities"`
 	ControllerLocator *struct {
 		SessionID string `json:"sessionId"`
 	} `json:"controllerLocator"`
 	Issues map[string]struct {
 		Phase string `json:"phase"`
 	} `json:"issues"`
+}
+
+// kindCapability is one row of the state's capabilities.
+type kindCapability struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
 }
 
 func (r *kindTreeRig) state() kindState {
@@ -1085,8 +1088,8 @@ func (s *kindStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		Stream bool `json:"stream"`
 	}
 	_ = json.Unmarshal(body, &request)
-	seen := kindSeen{at: time.Now(), body: string(body), turn: blocksText(turnOf(request.messagesRequest)), stream: request.Stream}
 	text := string(body)
+	seen := kindSeen{at: time.Now(), body: text, turn: blocksText(turnOf(request.messagesRequest)), stream: request.Stream}
 	switch {
 	case strings.Contains(text, compactSummaryMarker):
 		s.text(w, request.Stream, "The session so far, written as text: the task, the decisions and what is still open.")
@@ -1113,17 +1116,8 @@ func (s *kindStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	s.text(w, request.Stream, "WAITING for the proof's next instruction ("+s.marker+").")
 }
 
-// text answers with one text block: streamed when the request streams, as one message when it
-// does not, which is how Claude Code asks for some of its own side requests.
+// text answers with one text block (answerAnthropicText), under the stand-in's provider and the
+// rig's model.
 func (s *kindStandin) text(w http.ResponseWriter, streamed bool, text string) {
-	if streamed {
-		streamAnthropicText(w, "kind", text)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "answered", "type": "message", "role": "assistant", "model": kindTreeModel,
-		"content": []map[string]string{{"type": "text", "text": text}}, "stop_reason": "end_turn", "stop_sequence": nil,
-		"usage": map[string]int{"input_tokens": 1000, "output_tokens": 16},
-	})
+	answerAnthropicText(w, streamed, "kind", kindTreeModel, text)
 }

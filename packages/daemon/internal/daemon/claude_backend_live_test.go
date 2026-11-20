@@ -1232,17 +1232,8 @@ func (s *claudeStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// text answers a request with one text block: streamed when the request streams, as one message
-// when it does not, which is how Claude Code asks for some of its own side requests.
+// text answers a request with one text block (answerAnthropicText), under this stand-in's
+// provider and model.
 func (s *claudeStandin) text(w http.ResponseWriter, streamed bool, text string) {
-	if streamed {
-		streamAnthropicText(w, s.name, text)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"id": "answered", "type": "message", "role": "assistant", "model": s.name + standinModelID,
-		"content": []map[string]string{{"type": "text", "text": text}}, "stop_reason": "end_turn", "stop_sequence": nil,
-		"usage": map[string]int{"input_tokens": 1000, "output_tokens": 16},
-	})
+	answerAnthropicText(w, streamed, s.name, s.name+standinModelID, text)
 }

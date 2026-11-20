@@ -1434,7 +1434,7 @@ suite (dispatch://INFRA-1413, A4).
 
 ## Why the daemon's whole-daemon live tests have an output of their own
 
-The nine whole-daemon live tests of the daemon's Go suite, in a job of their own: three of
+The ten whole-daemon live tests of the daemon's Go suite, in a job of their own: four of
 them run the `dispatch` CLI under bun, so with them in daemon-go a lockfile change ran the
 daemon's whole Go suite. No `full-ci` term: the job comes back on every push that selects
 it, as daemon-go does.
@@ -1444,7 +1444,8 @@ it, as daemon-go does.
 The agent harness: a job of parts, each driving real agents on model stand-ins for up to
 24 minutes, the first of them the five live proofs of the daemon's Go suite that drive real
 Oh My Pi panes, the second the scripts and the Go test that drive them on tmux, the third
-the scripts that drive sessions through Dispatch and Envoy. A slow suite, gated as
+and fourth the scripts that drive sessions through Dispatch and Envoy, the fifth the four
+live scripts of the Oh My Pi plugin. A slow suite, gated as
 .github/ci-notes/ci.md#the-twelve-slow-suites-whose-runner-time-dwarfs-every-other-jobs-the
 says.
 
@@ -1775,10 +1776,10 @@ builds both steps' text).
 
 ## Why the daemon's whole-daemon live tests are a job of their own
 
-The nine whole-daemon live tests of the daemon's Go suite that
+The ten whole-daemon live tests of the daemon's Go suite that
 .github/scripts/ci_job_reads.py's DAEMON_LIVE_TESTS names: each boots the whole daemon over
 this job's PostgreSQL and the package's test NATS server and drives it with no agent. They
-were the drivers of nine scripts under scripts/e2e, which no job of this router ran; they
+were the drivers of ten scripts under scripts/e2e, which no job of this router ran; they
 run here on each pull request and merge group whose paths select them, and the daemon-go race
 step skips them by name (.github/scripts/ci_job_reads.py builds both steps' text). Not
 fail-open: their tests were in no job that `changes` failing runs.

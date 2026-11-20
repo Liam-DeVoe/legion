@@ -540,6 +540,22 @@ func streamAnthropicText(w http.ResponseWriter, provider, text string) {
 		fmt.Sprintf(`{"type":"text_delta","text":%q}`, text))
 }
 
+// answerAnthropicText answers one Anthropic Messages request with one text block: streamed
+// (streamAnthropicText) when the request streams, and as one message of model when it does not,
+// which is how Claude Code asks for some of its own side requests.
+func answerAnthropicText(w http.ResponseWriter, streamed bool, provider, model, text string) {
+	if streamed {
+		streamAnthropicText(w, provider, text)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"id": "answered", "type": "message", "role": "assistant", "model": model,
+		"content": []map[string]string{{"type": "text", "text": text}}, "stop_reason": "end_turn", "stop_sequence": nil,
+		"usage": map[string]int{"input_tokens": 1000, "output_tokens": 16},
+	})
+}
+
 // streamAnthropicBlock answers one Anthropic Messages request with one content block, which opens
 // as block and is written whole by the one delta after it, and a message that stops for stop, as
 // that harness's `messageStream` writes either kind of block: a text block ends the turn

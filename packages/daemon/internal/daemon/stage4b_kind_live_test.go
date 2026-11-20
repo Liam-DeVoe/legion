@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -65,6 +66,12 @@ const (
 var (
 	stage4bImageRows = []string{"eval-js", "eval-python", "browser", "lsp", "codegraph", "skills", "toolchain"}
 	stage4bLiveRows  = []string{"subagents", "web-search", "mcp", "repository-extensions", "dispatch-envoy-tools", "github"}
+)
+
+// What the daemon's log may not hold: a token route, and a live capability row read open.
+var (
+	stage4bTokenRoute  = regexp.MustCompile(`/legion/v1/(gh-token|git-credential|provisioning-credential)`)
+	stage4bLiveRowOpen = regexp.MustCompile(`^capability (subagents|web-search|mcp|repository-extensions|dispatch-envoy-tools|github) is open`)
 )
 
 // stage4bLive is one run: the rig, the tree, and what one checkpoint reads for the next.
@@ -117,11 +124,7 @@ func (r *stage4bLive) bootCheck() {
 	var state kindState
 	r.await("the capability report to carry the probe's verdict on every image row", time.Minute, func() bool {
 		state = r.state()
-		return !slices.ContainsFunc(state.Capabilities, func(row struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Detail string `json:"detail"`
-		}) bool {
+		return !slices.ContainsFunc(state.Capabilities, func(row kindCapability) bool {
 			return slices.Contains(stage4bImageRows, row.Name) && row.Status == "unchecked"
 		})
 	})
@@ -395,7 +398,7 @@ func (r *stage4bLive) githubCredential() {
 	if bin, err := r.roleExec(pod, claim.RoleImplementer, "sh", "-c", "command -v gh"); err != nil || bin != "/opt/legion/bin/gh" {
 		t.Errorf("the implementer's gh is %q (%v), want the image's wrapper /opt/legion/bin/gh", bin, err)
 	}
-	status, _ := r.roleExec(pod, claim.RoleImplementer, "sh", "-c", "LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR="+stage4bGhOwnersDir+
+	status, _ := r.agentShell(pod, claim.RoleImplementer, "LEGION_GH_PATH=/usr/local/bin/gh LEGION_GH_OWNERS_DIR="+stage4bGhOwnersDir+
 		" GH_CONFIG_DIR="+configDir+" GH_TOKEN= GITHUB_TOKEN= GH_HOST= gh auth status 2>&1")
 	if !strings.Contains(status, "x-access-token") {
 		t.Errorf("gh auth status in the implementer's namespaces names no x-access-token account: %s", status)
@@ -458,7 +461,7 @@ func (r *stage4bLive) githubCredential() {
 		}
 	}
 	if routes := r.logs(func(l loggedRecord) bool {
-		return regexp.MustCompile(`/legion/v1/(gh-token|git-credential|provisioning-credential)`).MatchString(l.Message + fmt.Sprint(l.Attrs))
+		return stage4bTokenRoute.MatchString(l.Message + fmt.Sprint(l.Attrs))
 	}); len(routes) > 0 {
 		t.Errorf("the daemon log names a token route: %+v", routes[0])
 	}
@@ -488,10 +491,34 @@ func (r *stage4bLive) githubCredential() {
 	r.note("in %s the implementer's gh is %s[bot] and the architect's %s[bot], from their own hosts.yml; the implementer's push by its App reached the listener", pod, r.implement.Slug, r.review.Slug)
 }
 
-// viewer is the login gh answers GraphQL's viewer with in role's namespaces of pod.
+// viewer is the login gh answers GraphQL's viewer with in role's namespaces of pod, run as the
+// role's agent runs it (agentShell).
 func (r *stage4bLive) viewer(pod string, role claim.Role) string {
-	out, _ := r.roleExec(pod, role, "sh", "-c", "gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login")
+	out, _ := r.agentShell(pod, role, "gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login")
 	return strings.TrimSpace(out)
+}
+
+// agentGhEnv is what a role's agent hands its gh that an exec into the role's namespaces does not
+// have: the shared public leak check every `legion gh` resolves before it writes or reads
+// (leakguard.CheckVar, which the runtime sets in each role's environment and the container's own
+// exec does not carry), the real gh and the bundle it reads, and the PATH that puts the image's
+// wrapper first.
+var agentGhEnv = []string{leakguard.CheckVar, "LEGION_GH_PATH", "LEGION_GH_OWNERS_DIR", "GH_CONFIG_DIR", "PATH"}
+
+// agentShell runs script in role's namespaces of pod with agentGhEnv as role's agent holds it
+// (agentEnviron), so a command there meets what the agent's own bash would.
+func (r *stage4bLive) agentShell(pod string, role claim.Role, script string) (string, error) {
+	env, err := r.agentEnviron(pod, role)
+	if err != nil {
+		return "", fmt.Errorf("read the %s's agent environment in %s: %w", role, pod, err)
+	}
+	var exports strings.Builder
+	for _, name := range agentGhEnv {
+		if value := kindEnvValue(env, name); value != "" {
+			fmt.Fprintf(&exports, "export %s='%s'; ", name, strings.ReplaceAll(value, "'", `'\''`))
+		}
+	}
+	return r.roleExec(pod, role, "sh", "-c", exports.String()+script)
 }
 
 // agentEnviron is the environment of role's agent in pod, the child of its worker-shim, one
@@ -588,11 +615,7 @@ func stage4bTime(t *testing.T, value any) time.Time {
 // read open.
 func (r *stage4bLive) fullAgent() {
 	t := r.t
-	var rows []struct {
-		Name   string `json:"name"`
-		Status string `json:"status"`
-		Detail string `json:"detail"`
-	}
+	var rows []kindCapability
 	r.await("the six live capability rows to read present", 5*time.Minute, func() bool {
 		rows = rows[:0]
 		for _, row := range r.state().Capabilities {
@@ -600,11 +623,7 @@ func (r *stage4bLive) fullAgent() {
 				rows = append(rows, row)
 			}
 		}
-		return len(rows) == len(stage4bLiveRows) && !slices.ContainsFunc(rows, func(row struct {
-			Name   string `json:"name"`
-			Status string `json:"status"`
-			Detail string `json:"detail"`
-		}) bool {
+		return len(rows) == len(stage4bLiveRows) && !slices.ContainsFunc(rows, func(row kindCapability) bool {
 			return row.Status != "present"
 		})
 	})
@@ -633,7 +652,7 @@ func (r *stage4bLive) fullAgent() {
 		t.Errorf("the daemon log holds no %q line for tree 1's planner process %s", stage4bReported, locator.Incarnation)
 	}
 	if opened := r.logs(func(l loggedRecord) bool {
-		return regexp.MustCompile(`^capability (subagents|web-search|mcp|repository-extensions|dispatch-envoy-tools|github) is open`).MatchString(l.Message)
+		return stage4bLiveRowOpen.MatchString(l.Message)
 	}); len(opened) > 0 {
 		t.Errorf("the daemon log holds a live row open: %+v", opened[0])
 	}

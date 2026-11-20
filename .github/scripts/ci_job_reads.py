@@ -1620,14 +1620,13 @@ def hold_whole_files(job, package, files, tests, files_name, tests_name, both_st
 # real Dispatch and run the real `dispatch` CLI and scripts/e2e/completion-head.ts under bun, and
 # step_records_live_test.go and plan_ratings_live_test.go the real Dispatch and the CLI, which read
 # the installed workspace, the second also scripts/e2e/plan-ratings-read.sh against that Dispatch.
-# They run
-# once per run of the router, in that job, by name, so that the bun install and the sources the
-# CLI loads are that job's inputs and not the daemon's whole Go suite's, and the daemon-go race
-# step, which runs their package, skips them by name (DAEMON_RACE_SKIP below). Each file of
-# DAEMON_LIVE_FILES is taken whole, so DAEMON_LIVE_TESTS names every test of each of them, and
-# hold_whole_files() is what holds that rather than a reader noticing. Both step texts are built
-# from this one list, and check-ci-filters.sh pins each step's whole script, so the -run and the
-# -skip cannot come to name different tests.
+# They run once per run of the router, in that job, by name, so that the bun install and the
+# sources the CLI loads are that job's inputs and not the daemon's whole Go suite's, and the
+# daemon-go race step, which runs their package, skips them by name (DAEMON_RACE_SKIP below). Each
+# file of DAEMON_LIVE_FILES is taken whole, so DAEMON_LIVE_TESTS names every test of each of them,
+# and hold_whole_files() is what holds that rather than a reader noticing. Both step texts are
+# built from this one list, and check-ci-filters.sh pins each step's whole script, so the -run and
+# the -skip cannot come to name different tests.
 DAEMON_LIVE_FILES = ["behind_entry_fence_live_test.go", "child_adoption_live_test.go", "conflict_no_takeover_live_test.go",
                      "handoff_records_live_test.go", "merge_wait_readable_live_test.go",
                      "phase_entry_converge_live_test.go", "plan_ratings_live_test.go", "review_range_live_test.go",
@@ -3448,7 +3447,7 @@ GATES = [
     ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
       + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
-    # The daemon-live job: the nine whole-daemon live tests of internal/daemon in
+    # The daemon-live job: the ten whole-daemon live tests of internal/daemon in
     # DAEMON_LIVE_TESTS, which the daemon-go race step skips by name. The step runs those tests
     # alone, and compiles the package they are in to do it, so this filter is that package's
     # whole test closure - the Dispatch server outbox_scratch_dispatch_test.go's RULES row builds
