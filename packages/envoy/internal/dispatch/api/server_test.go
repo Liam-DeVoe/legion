@@ -160,6 +160,9 @@ type testServerOptions struct {
 	// metrics is the registry the server adds its held-send gauges to (Deps.Metrics); nil is
 	// none, as every test that reads no gauge leaves it.
 	metrics *metrics.Registry
+	// parentStatusRule turns DISPATCH_PARENT_STATUS_RULE on for the server.
+	// It reaches no dependency yet: Deps has no ParentStatusRule to set.
+	parentStatusRule bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
