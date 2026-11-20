@@ -1010,37 +1010,67 @@ func TestAPublishToARoleNoClaimCanNameIsRefusedAndKeepsNothing(t *testing.T) {
 
 // A keep that fails for a reason other than the stream lacking the kept lane's subject keeps
 // nothing, so the publish is answered as a publish that kept nothing is (roleSend.noHolder): the
-// 404 that names the role's state, recorded role_unclaimed for a role nobody claims, with nothing
-// on the kept lane. A full stream is such a reason: the stream captures the kept lane and refuses
-// the copy because it holds its byte limit (bus.ErrStreamFull). Only a keep the stream refuses for
-// want of the kept lane's subject is answered 503 at once
+// 404 that names the role's state, with nothing on the kept lane, for both states the listener
+// keeps for (roleKeepable): unclaimed, recorded role_unclaimed, for a role nobody claims, and
+// holder_lapsed naming the holder, recorded role_lapsed, for a claim whose holder is not live. A
+// full stream is such a reason: the stream captures the kept lane and refuses the copy because it
+// holds its byte limit (bus.ErrStreamFull). Only a keep the stream refuses for want of the kept
+// lane's subject is answered 503 at once
 // (TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOnce).
 func TestAPublishWhoseKeepTheFullStreamRefusesIsRefusedAndKeepsNothing(t *testing.T) {
-	client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
-	harness := newListenerDeliveryHarnessOn(t, client)
-	deps := harness.publishDeps(t)
-	const role = "kept-full-stream"
-	bustest.FillStream(t, client, 64)
+	for _, row := range []struct {
+		name    string
+		role    string
+		holder  string // the session the role's claim names, which the store holds no session for; "" for no claim
+		reason  roles.State
+		outcome requestOutcome
+		body    string // the whole 404 body, where the row pins it; the other row reads its fields
+	}{
+		{
+			name: "a role nobody claims", role: "kept-full-stream", reason: roles.Unclaimed, outcome: outcomeRoleUnclaimed,
+			body: "{\"error\":\"no holder for role kept-full-stream\",\"reason\":\"unclaimed\",\"claim_revision\":0}\n",
+		},
+		{name: "a claim whose holder is not live", role: "kept-full-lapsed", holder: "ses_kept_full_lapsed", reason: roles.Lapsed, outcome: outcomeRoleLapsed},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			client := setupPublishTestClient(t, bus.WithStreamMaxBytes(16<<10))
+			harness := newListenerDeliveryHarnessOn(t, client)
+			deps := harness.publishDeps(t)
+			if row.holder != "" {
+				if _, err := harness.registry.SetRole(row.holder, "test-machine", row.role, false); err != nil {
+					t.Fatalf("claim %s for %s, a session the store does not hold: %v", row.role, row.holder, err)
+				}
+			}
+			bustest.FillStream(t, client, 64)
 
-	recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) },
-		postJSON("/v1/messages/publish", `{"topic":"`+contracts.RoleTopicPrefix+role+`","source":"agent","message":"nobody holds this and the stream is full"}`))
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("publish to an unheld role whose keep the full stream refused: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
-	}
-	if body := recorder.Body.String(); body != "{\"error\":\"no holder for role "+role+"\",\"reason\":\"unclaimed\",\"claim_revision\":0}\n" {
-		t.Fatalf("body = %q", body)
-	}
-	assertRecordFields(t, record, map[string]any{"outcome": string(outcomeRoleUnclaimed), "status": float64(http.StatusNotFound)})
-	assertNothingKept(t, client, role)
+			recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc { return publishHandler(deps, logger) },
+				postJSON("/v1/messages/publish", `{"topic":"`+contracts.RoleTopicPrefix+row.role+`","source":"agent","message":"no live session holds this and the stream is full"}`))
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("publish to %s whose keep the full stream refused: status %d, body %s; want 404", row.name, recorder.Code, recorder.Body.String())
+			}
+			var refusal listenerwire.RoleRefusal
+			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
+				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
+			}
+			if refusal.Reason != row.reason || refusal.Holder != row.holder {
+				t.Fatalf("the refusal is %s; want reason %s naming holder %q", recorder.Body.String(), row.reason, row.holder)
+			}
+			if body := recorder.Body.String(); row.body != "" && body != row.body {
+				t.Fatalf("body = %q, want %q", body, row.body)
+			}
+			assertRecordFields(t, record, map[string]any{"outcome": string(row.outcome), "status": float64(http.StatusNotFound)})
+			assertNothingKept(t, client, row.role)
 
-	// The keep was made, and the full stream refused it: without this record, a publish that never
-	// tried to keep would answer the same 404.
-	for _, logged := range logRecordsNamed(harness.logs.String(), roleKeepFailedLine, role) {
-		if failure, _ := logged["error"].(string); strings.Contains(failure, bus.ErrStreamFull.Error()) {
-			return
-		}
+			// The keep was made, and the full stream refused it: without this record, a publish that
+			// never tried to keep would answer the same 404.
+			for _, logged := range logRecordsNamed(harness.logs.String(), roleKeepFailedLine, row.role) {
+				if failure, _ := logged["error"].(string); strings.Contains(failure, bus.ErrStreamFull.Error()) {
+					return
+				}
+			}
+			t.Fatalf("no %q record names role %s with an error holding %q; the listener log:\n%s", roleKeepFailedLine, row.role, bus.ErrStreamFull, harness.logs.String())
+		})
 	}
-	t.Fatalf("no %q record names role %s with an error holding %q; the listener log:\n%s", roleKeepFailedLine, role, bus.ErrStreamFull, harness.logs.String())
 }
 
 // A keep that lands after a concurrent claim's drain has read the lane still reaches that holder:
