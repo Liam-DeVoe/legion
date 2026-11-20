@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -64,17 +65,18 @@ var todaysSteps = planSteps("", 0, defaultTask, config.Project{}.RunsByDefault()
 func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }
 
 // walk is the walk of issue's run: its plan rows, or today's line with Stored false
-// (todaysWalk). A run whose rows hold no task or more than one, or a step whose role runs as no
-// phase, is an error: no plan this release takes writes one (plan.Validate, plan.Supported).
+// (todaysWalk). A run whose rows hold no task or more than one (record.StoredPlan.Task, the one
+// rule for the task a run is on), or a step whose role runs as no phase, is an error: no plan
+// this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
 		return todaysWalk(), err
 	}
-	if len(stored.Tasks) != 1 {
-		return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds %d tasks, and this release walks one", issue.Key, issue.Generation, len(stored.Tasks))
+	task, err := stored.Task()
+	if err != nil {
+		return Walk{}, fmt.Errorf("walk %s: %w", issue.Key, err)
 	}
-	task := stored.Tasks[0]
 	steps := stored.Steps[task.Task]
 	line := plan.Line(namedSteps(steps), builtinDeployment)
 	if at := slices.Index(line, ""); at >= 0 {
@@ -304,32 +306,34 @@ func (w Walk) returnOf(issue record.Issue, trigger TriggerKind, target phase.Pha
 
 // returnStep is the phase of step n of w's task, the step that the report of the failed step
 // standing at failed names as the one its task returns to (returnTo), or why that report is
-// refused, which changes nothing: an issue with no plan rows has no step to name, a place past the
-// task's last step names no step of it, and the failed step itself or a later one is not earlier
-// (the spec's words: a report that names a step of another task, or a step that is not earlier).
-// The sentences take the route's shape for a returnTo it refuses before the workflow reads one
-// (api's INVALID_RETURN_TO). A failed phase that is no step of the task's line is an error: the
-// route takes returnTo only on the tester's fail, whose phase a task without a tester step never
-// enters.
-func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Phase, string, error) {
+// refused, which changes nothing: an issue with no plan rows has no step to name, a failed phase
+// that runs no step of the task's line now names no step to return from, a place past the task's
+// last step names no step of it, and the failed step itself or a later one is not earlier (the
+// spec's words: a report that names a step of another task, or a step that is not earlier). The
+// sentences take the route's shape for a returnTo it refuses before the workflow reads one (api's
+// INVALID_RETURN_TO). The failed phase is off the line where a later version of the plan took its
+// step away while the report was on its way: the report is of a run the daemon ended without it
+// (leftItsPhase), and the route takes returnTo on every tester's fail.
+func returnStep(issue record.Issue, w Walk, failed phase.Phase, n int) (phase.Phase, string) {
 	if !w.Stored {
 		return "", fmt.Sprintf("returnTo is %d, and %s has no plan of tasks in Legion's record, so it has no step to name; send the fail again without returnTo; nothing was recorded",
-			n, issue.Key), nil
+			n, issue.Key)
 	}
 	at, _ := w.PlaceOf(failed)
 	if at.Kind != record.PlaceStep {
-		return "", "", fmt.Errorf("judge returnTo %d of %s: the failed phase %s is no step of the line %v of its task %s", n, issue.Key, failed, w.Line, w.Task)
+		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has no step that runs as %s now (its steps are %s), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+			n, w.Task, issue.Key, failed, strings.Join(plan.Words(namedSteps(w.Steps)), " "))
 	}
 	role := w.Steps[at.Position-1].Role
 	switch {
 	case n > len(w.Steps):
 		return "", fmt.Sprintf("returnTo is %d, and task %s of %s has steps 1 to %d, so it names no step of the task whose step %d (%s) failed; send the fail again naming an earlier step of that task, or without returnTo; nothing was recorded",
-			n, w.Task, issue.Key, len(w.Steps), at.Position, role), nil
+			n, w.Task, issue.Key, len(w.Steps), at.Position, role)
 	case n >= at.Position:
 		return "", fmt.Sprintf("returnTo is %d, and step %d (%s) of task %s of %s is not before step %d (%s), the step that failed; send the fail again naming an earlier step, or without returnTo; nothing was recorded",
-			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role), nil
+			n, n, w.Steps[n-1].Role, w.Task, issue.Key, at.Position, role)
 	}
-	return w.steps()[n-1], "", nil
+	return w.steps()[n-1], ""
 }
 
 // table is the table of w's line: Table for a run with no plan rows, which is TableOf(phase.Order)

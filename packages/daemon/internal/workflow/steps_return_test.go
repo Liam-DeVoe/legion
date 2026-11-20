@@ -472,3 +472,91 @@ func TestReturnToNamesAnEarlierStep(t *testing.T) {
 		}
 	})
 }
+
+// A tester's fail can arrive after a later version of the plan took its step off the task's line:
+// the owner stopped task a in testing and gave version 3, `implementer reviewer`, which started
+// the task again at its implementer. The fail is a report of a run the daemon ended without it
+// (leftItsPhase), and returnTo names no step of the task now, so it is refused 409 RETURN_REFUSED
+// with what to send instead, and records nothing, as every returnTo the task's steps cannot take
+// is. The same fail naming no step is then taken on the tester's own row and moves nothing. Before,
+// the walk's error answered the route 500 FACT_APPLY_FAILED at every retry of the same fail.
+func TestALateFailNamingAStepOnALineThatLostItsPhaseIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "tester", "reviewer")
+	move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
+	move(t, pool, engine, root.Key, TriggerImplementationReady, "", record.PhaseRow{})
+	assertWalksAt(t, pool, engine, root.Key, phase.Testing, record.TaskPlace{Kind: record.PlaceStep, Position: 2})
+	// The claim the daemon started the tester under, which is what makes its fail the report of a
+	// run (record.Store.RoleRun).
+	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ('test-claim', 'LEGION', 'LEGION-208', 'LEGION-208', 'tester', 1, 'ses-tester', '', 'working', 0, 0, 0, 0)`); err != nil {
+		t.Fatalf("seed the tester's claim: %v", err)
+	}
+	apply := applyFacts(t, pool, engine)
+	if result := apply("stop", ownersStop(t, issueOf(t, pool, engine, root.Key), "a")); result.Refusal != nil {
+		t.Fatalf("the owner's stop of task a in testing was refused: %+v", result.Refusal)
+	}
+	later := intake.PlanGiven{Issue: root.Key, Generation: root.Generation, GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)),
+		Plan: plan.Plan{ArtifactID: "plan-artifact", Version: 3, Tasks: []plan.Task{{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}},
+			Text: "Build the widget."}}}}
+	if result := apply("version 3", later); result.Refusal != nil {
+		t.Fatalf("version 3 of the plan, over the stopped task, was refused: %+v", result.Refusal)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+	before := standingOf(t, pool, engine, root.Key, true)
+
+	assertRefusedReturnTo(t, pool, engine, root.Key, apply("late fail", failedTest(root.Key, 1, "test-1")),
+		"returnTo is 1, and task a of LEGION-208 has no step that runs as testing now (its steps are implementer reviewer), so this fail names no step of the task to return to; send the fail again without returnTo; nothing was recorded",
+		before)
+
+	if result := apply("late fail again", failedTest(root.Key, 0, "test-1")); result.Refusal != nil {
+		t.Fatalf("the tester's late fail sent again without returnTo was refused: %+v", result.Refusal)
+	}
+	assertWalksAt(t, pool, engine, root.Key, phase.Implementing, record.TaskPlace{Kind: record.PlaceStep, Position: 1})
+	if row := roleRowOf(t, pool, engine, root.Key, claim.RoleTester); !row.Completed() || row.HandoffRecord != "test-1" {
+		t.Fatalf("the tester's row = %+v, want its late fail recorded, naming test-1", row)
+	}
+}
+
+// The walk takes the task a run is on by the store's one rule (record.StoredPlan.Task): the plan's
+// one task. A plan of two tasks, which no plan of this release writes, is no walk, and the error
+// is the rule's own, naming the plan and its count of tasks. The control is the same issue with
+// its plan of one task, which walks it. Each walk is read in a transaction of its own and with no
+// boot pass, which would read the same walk first.
+func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
+	pool := migratedPool(t)
+	engine := returnEngine()
+	root := stepRoot(t, pool, phase.Admitted)
+	seedStepsPlan(t, pool, root.Key, root.Generation, "implementer", "reviewer")
+	walkOf := func() (Walk, error) {
+		var w Walk
+		var walked error
+		seedRecord(t, pool, func(tx pgx.Tx) error {
+			w, walked = engine.walk(t.Context(), tx, root)
+			return nil
+		})
+		return w, walked
+	}
+	if w, err := walkOf(); err != nil || !w.Stored || w.Task != "a" {
+		t.Fatalf("the walk of a plan of one task = %+v, %v, want task a", w, err)
+	}
+
+	first := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "a", PlanVersion: 3, BlockText: "Build the widget.", State: record.TaskWaiting}
+	second := record.PlanTask{Issue: root.Key, Generation: root.Generation, Task: "b", PlanVersion: 3, BlockText: "Document the widget.", State: record.TaskWaiting}
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 3, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+			GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
+		steps := []record.PlanStep{
+			{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: string(plan.TypeImplementation)},
+			{Issue: root.Key, Generation: root.Generation, Task: "b", Position: 1, Role: "implementer", Type: string(plan.TypeImplementation)},
+		}
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{first, second}, steps)
+	})
+	_, err := walkOf()
+	if want := "walk LEGION-208: the plan of LEGION-208 at generation 1 holds 2 tasks, and this release walks one"; err == nil || err.Error() != want {
+		t.Fatalf("the walk of a plan of two tasks = %v, want the error %q", err, want)
+	}
+}

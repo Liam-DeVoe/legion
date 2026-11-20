@@ -948,9 +948,9 @@ func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err != nil {
 		return "", nil, err
 	}
-	target, why, err := returnStep(issue, w, reported, fact.ReturnTo)
-	if err != nil || why == "" {
-		return target, nil, err
+	target, why := returnStep(issue, w, reported, fact.ReturnTo)
+	if why == "" {
+		return target, nil, nil
 	}
 	return "", refused("RETURN_REFUSED", why).Refusal, nil
 }
