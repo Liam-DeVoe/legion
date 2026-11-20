@@ -1984,8 +1984,9 @@ SQL
 # each GitHub read and write the role prompts, the skills and this round's agents' transcripts name:
 # `gh pr view`, `gh pr diff`, `gh pr checks` (exit 8 while a check runs; `--required` is GitHub's
 # "no required checks"), `gh pr list`, `gh pr edit`, `gh pr ready`, `gh pr merge`, `gh repo view`,
-# `gh auth status` and `gh --version`; the REST read and PATCH of each pull request; GraphQL (review
-# threads, the base's branch protection rule, which is none, and the head's check rollup); the check
+# `gh auth status` and `gh --version`; the REST read and PATCH of each pull request, and the list of
+# its commits (its one commit, the head on the base); GraphQL (review threads, the base's branch
+# protection rule, which is none, and the head's check rollup); the check
 # runs and the combined status of each head (state `pending`, as GitHub answers a commit with no
 # status); the workflow runs of each head and their jobs; the repository; its branches (each
 # `protected: false`), each branch's protection read (403, "Resource not accessible by
@@ -2164,6 +2165,17 @@ ${line:-- Check k1 (before_merge): not yet run}
       base_commit:{sha:$main}, merge_base_commit:{sha:$main},
       commits:[{sha:.head, commit:{message:.subject, author:{name:"Fixture", email:"fixture@example.invalid"}}}],
       files:[.files[] | {filename:.path, additions, deletions, changes:(.additions + .deletions)}]};
+    # A pull request'"'"'s commits, as GitHub lists them (pulls/<n>/commits): its one commit, the head,
+    # whose parent is the base.
+    def pullcommits: .head as $h | ([$trees[] | select(.sha == $h)][0]) as $t |
+      [{sha:$h, node_id:"C_rig", url:"\(api)/commits/\($h)", html_url:"https://github.com/\($repo)/commit/\($h)",
+        comments_url:"\(api)/commits/\($h)/comments",
+        commit:{url:"\(api)/git/commits/\($h)", message:$t.message, tree:{sha:$t.tree, url:"\(api)/git/trees/\($t.tree)"},
+          author:{name:"Fixture", email:"fixture@example.invalid", date:$at},
+          committer:{name:"Fixture", email:"fixture@example.invalid", date:$at}, comment_count:0},
+        author:null, committer:null,
+        parents:(if $t.parent == "" then [] else
+          [{sha:$t.parent, url:"\(api)/commits/\($t.parent)", html_url:"https://github.com/\($repo)/commit/\($t.parent)"}] end)}];
     # A commit'"'"'s files, as the contents, trees, blobs and commit reads answer them. A ref names the
     # commit by its sha, by a branch at it, or, for the base, by nothing.
     def refsOf($t): [$t.sha] + [$branches[] | select(.sha == $t.sha) | .name] ;
@@ -2216,11 +2228,12 @@ ${line:-- Check k1 (before_merge): not yet run}
       # GraphQL: the pull request a query names, by its number or its variable n, else the first.
       [$others[] | {match:"^gh api .*graphql(?=.*(number: ?\(.number)\\b|\\bn=\(.number)\\b))", stdout:graphql}] +
       [{match:"^gh api .*graphql", stdout:($first | graphql)}] +
-      # Each pull request'"'"'s reviews and comments, and its head'"'"'s check runs and combined status.
+      # Each pull request'"'"'s reviews, comments and commits, and its head'"'"'s check runs and combined status.
       [$pulls[] | {match:"^gh api .*pulls/\(.number)/reviews/[0-9]+([ ?]|$)", lookup:"review", pull:.number},
         {match:"^gh api .*pulls/\(.number)/reviews", stdout:reviews, list:"reviews", pull:.number},
         {match:"^gh api .*issues/\(.number)/comments([ ?]|$)", stdout:[], list:"comments", pull:.number},
         {match:"^gh api .*pulls/\(.number)/comments([ ?]|$)", stdout:[]},
+        {match:"^gh api .*pulls/\(.number)/commits([ ?]|$)", stdout:pullcommits},
         {match:"^gh api .*commits/\(.head)/check-runs", stdout:runs},
         {match:"^gh api .*commits/\(.head)/status", stdout:{state:"pending", sha:.head, total_count:0, statuses:[],
           commit_url:"\(api)/commits/\(.head)", url:"\(api)/commits/\(.head)/status"}}] +

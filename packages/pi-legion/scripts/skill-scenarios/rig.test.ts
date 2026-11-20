@@ -2330,10 +2330,10 @@ describe("heads_fixture", () => {
     ]);
   });
 
-  // Each GitHub read the heads scenarios' agents made in the fifth round of runs, one call of each
-  // endpoint in the form an agent wrote it, and the reads the role prompts and skills name. The
-  // round's agents named two repositories, since the pane's addressing named another than the
-  // world's; the addressing now reads rig-world.json, so each call names the world's.
+  // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
+  // call of each endpoint in the form an agent wrote it, and the reads the role prompts and skills
+  // name. The round's agents named two repositories, since the pane's addressing named another than
+  // the world's; the addressing now reads rig-world.json, so each call names the world's.
   const ROUND_CALLS = [
     "gh --version",
     "gh auth status",
@@ -2348,6 +2348,7 @@ describe("heads_fixture", () => {
     "gh api repos/example/widgets/pulls/702/comments",
     "gh api --paginate repos/example/widgets/pulls/703/reviews --jq .[] | [.id,.state,.user.login] | @tsv",
     "gh api repos/example/widgets/pulls/702 --jq {head:.head.sha,base:.base.ref,mergeable_state}",
+    "gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .commit.message] | @tsv",
     "gh api repos/example/widgets/actions/runs?head_sha={702}&per_page=100 --jq .workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv",
     "gh api repos/example/widgets/actions/runs/1/jobs --jq .jobs[] | [.id, .name, .status, .conclusion] | @tsv",
     "gh api repos/example/widgets/commits/{703}/check-runs --paginate --jq .check_runs[] | [.name, .status, .conclusion, .started_at] | @tsv",
@@ -2417,6 +2418,15 @@ describe("heads_fixture", () => {
       });
     }
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+    // A pull request's commits, as GitHub lists them: its one commit, the head on the base. A
+    // reviewer of reviewer-own-head read #702's so, where the stand-in had no route for it.
+    expect(
+      gh("gh api repos/example/widgets/pulls/702/commits --jq .[] | [.sha, .parents[0].sha] | @tsv")
+    ).toEqual({
+      code: 0,
+      stdout: `${heads["702"]}\t${git(path.join(run, "remote.git"), "rev-parse", "main")}\n`,
+      stderr: "",
+    });
     // The reads a reviewer makes of the base, as GitHub answers them for a base with no protection.
     expect(gh("gh api repos/example/widgets/branches/main --jq .protected")).toEqual({
       code: 0,
