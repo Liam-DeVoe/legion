@@ -15,4 +15,6 @@ body: |-
   and no user's attributes file changes git's merge. One exception is a driver that a
   configuration defines with an empty name (`merge..driver`). The repository's own attributes
   (`.gitattributes` and `$GIT_DIR/info/attributes`) and the machine's system attributes file
-  still apply.
+  still apply. The list also sets `diff.algorithm` to `histogram`. git's merge uses histogram
+  whatever a configuration says. The entry keeps a configured value that git cannot parse from
+  failing the merge.

@@ -19,9 +19,10 @@ import (
 )
 
 // mergeTreeOptions sets git's merge options to their documented defaults (git v2.47.3,
-// Documentation/config/merge.txt and gitattributes(5)), sets merge.default empty, and points
-// core.attributesFile at /dev/null, so neither a global or repository merge option, nor a default
-// driver, nor the user's attributes file changes the merge. merge.renames "Defaults to the value
+// Documentation/config/merge.txt and gitattributes(5)), sets merge.default empty, points
+// core.attributesFile at /dev/null and sets diff.algorithm to histogram, so neither a global or
+// repository merge option, nor a default driver, nor the user's attributes file changes the
+// merge, and no configured diff.algorithm fails it. merge.renames "Defaults to the value
 // of diff.renames", which defaults to true; merge.directoryRenames "Defaults to conflict";
 // merge.renameLimit "currently defaults to 7000"; merge.conflictStyle "The default is merge";
 // merge.renormalize is off unless a configuration sets it. merge.default names the merge driver
@@ -36,7 +37,11 @@ import (
 // a user's attributes file with `f merge=union`, makes git merge a content conflict cleanly. What
 // still applies is the repository's own attributes (the .gitattributes of the working copy or of
 // git's index when git runs in a git worktree, and $GIT_DIR/info/attributes) and the machine's
-// system attributes file, as for any git merge in the repository. The merge (mergeTree) and the
+// system attributes file, as for any git merge in the repository. merge-ort, git's merge, uses
+// histogram whatever a configuration says (merge-ort.c's merge_start hardcodes it), so a
+// configured diff.algorithm changes no merge. git reads that value first, though
+// (merge-recursive.c's merge_recursive_config), and dies on one it cannot parse. The entry keeps
+// a configured value git cannot parse from failing the merge. The merge (mergeTree) and the
 // reading command (Comparison) both give git this list. A caller outside the package reads it
 // through MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
 var mergeTreeOptions = [...]string{
@@ -47,6 +52,7 @@ var mergeTreeOptions = [...]string{
 	"-c", "merge.renormalize=false",
 	"-c", "merge.default=",
 	"-c", "core.attributesFile=/dev/null",
+	"-c", "diff.algorithm=histogram",
 }
 
 // MergeTreeOptions is the option list the merge gives `git merge-tree`, as a copy. A person who

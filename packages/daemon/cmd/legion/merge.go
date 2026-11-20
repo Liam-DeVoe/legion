@@ -53,7 +53,7 @@ const mergeRefusedNextStep = "Next step: act on the reason above.\nDo not make t
 // the merge on stdout, and 3 for a refusal or a failure, with the reason on stderr and nothing
 // made. A count of revisions other than two is a refusal. A commit of an earlier run that the
 // merge keeps, because another commit stands on it, a bookmark other than a carrier's names it, a
-// tracked remote bookmark holds it or it is a working-copy commit, and a bookmark of a carrier's
+// remote bookmark holds it or it is a working-copy commit, and a bookmark of a carrier's
 // name that it leaves on a commit no legion merge wrote, are named on stderr too, and the merge
 // goes on.
 func runMerge(ctx context.Context, runner jjmerge.Runner, repository, message string, revisions []string, stdout, stderr io.Writer) int {

@@ -20,8 +20,10 @@
 #
 # merge-tree gets the option list `legion merge` gives it, in the same order (jjmerge's
 # mergeTreeOptions): git's merge options at their documented defaults, an empty merge.default,
-# which names no driver, and core.attributesFile at /dev/null. So each file holds the merge that
-# `legion merge` reads, and a configuration could change it only as it changes that merge.
+# which names no driver, core.attributesFile at /dev/null, and diff.algorithm at histogram.
+# merge-ort uses histogram whatever a configuration says, and the entry keeps a configured value
+# git cannot parse from failing the merge. So each file holds the merge that `legion merge`
+# reads, and a configuration could change it only as it changes that merge.
 set -euo pipefail
 
 if [ $# -ne 1 ]; then
@@ -76,7 +78,7 @@ capture() {
   local status=0
   g -c merge.renames=true -c merge.directoryRenames=conflict -c merge.renameLimit=7000 \
     -c merge.conflictStyle=merge -c merge.renormalize=false -c merge.default= \
-    -c core.attributesFile=/dev/null \
+    -c core.attributesFile=/dev/null -c diff.algorithm=histogram \
     merge-tree --write-tree -z a b >"$out/$1.z" || status=$?
   if [ "$status" -gt 1 ]; then
     echo "capture.sh: git merge-tree of $1 exited $status" >&2

@@ -251,7 +251,7 @@ func TestLegionMergeKeepsALeftoverMergeABookmarkNames(t *testing.T) {
 			if got := r.template(stopped, `self.contained_in("bookmarks()") ++ " " ++ self.contained_in("mutable()")`); got != "false true" {
 				r.t.Fatalf("the pushed merge reads %q, want no local bookmark on it and mutable", got)
 			}
-			return "a tracked remote bookmark is on it or on a commit above it"
+			return "a remote bookmark is on it or on a commit above it"
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -277,32 +277,30 @@ func TestLegionMergeKeepsALeftoverMergeABookmarkNames(t *testing.T) {
 	}
 }
 
-// The sweep takes for a carrier only a commit of the carriers' own author, legion-merge@localhost,
-// with no parent in the repository or on another carrier. A role's commit on root() that a
-// carrier's bookmark names has no parent in the repository either: the run leaves it visible
-// with its bookmark, and names the bookmark on stderr. A role's commit on a carrier that a run
-// wrote is TestLegionMergeKeepsARolesWorkOnALeftoverCarrier's.
-func TestLegionMergeTellsACarrierByItsAuthor(t *testing.T) {
+// A role's commit on root() that a carrier's bookmark names has no parent in the repository, as a
+// carrier has none, and only its author tells it from a carrier: the sweep takes for a carrier
+// only a commit of the carriers' own author, legion-merge@localhost. The run leaves the role's
+// commit visible with its bookmark, and names the bookmark on stderr. A role's commit on a
+// carrier that a run wrote is TestLegionMergeKeepsARolesWorkOnALeftoverCarrier's.
+func TestLegionMergeLeavesARolesCommitOnRootThatACarriersBookmarkNames(t *testing.T) {
 	const bookmark = "legion-merge-default-0123456789abcdef-g"
-	t.Run("a role's commit on root() that a carrier's bookmark names", func(t *testing.T) {
-		r := newMergeRepo(t)
-		r.minimalCase(2)
-		r.commit("work", []string{"root()"}, map[string]string{"work": "the role's work\n"})
-		work := r.id("work")
-		r.jj("bookmark", "delete", "work")
-		r.jj("bookmark", "create", bookmark, "-r", work)
-		r.workOn("base")
-		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
-		if code != 0 {
-			t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-		}
-		if got := r.template(work, `hidden ++ " " ++ bookmarks`); got != "false "+bookmark {
-			t.Errorf("the role's commit %s reads %q, want it visible with its bookmark %s\nstderr:\n%s", work, got, bookmark, stderr)
-		}
-		if want := "legion merge: left the bookmark " + bookmark + " where it is, on commit " + work + ", which is not a commit a legion merge wrote.\n"; !strings.Contains(stderr, want) {
-			t.Errorf("stderr lacks %q:\n%s", want, stderr)
-		}
-	})
+	r := newMergeRepo(t)
+	r.minimalCase(2)
+	r.commit("work", []string{"root()"}, map[string]string{"work": "the role's work\n"})
+	work := r.id("work")
+	r.jj("bookmark", "delete", "work")
+	r.jj("bookmark", "create", bookmark, "-r", work)
+	r.workOn("base")
+	code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+	if code != 0 {
+		t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+	}
+	if got := r.template(work, `hidden ++ " " ++ bookmarks`); got != "false "+bookmark {
+		t.Errorf("the role's commit %s reads %q, want it visible with its bookmark %s\nstderr:\n%s", work, got, bookmark, stderr)
+	}
+	if want := "legion merge: left the bookmark " + bookmark + " where it is, on commit " + work + ", which is not a commit a legion merge wrote.\n"; !strings.Contains(stderr, want) {
+		t.Errorf("stderr lacks %q:\n%s", want, stderr)
+	}
 }
 
 // A bookmark of a carrier's shape under this workspace's prefix, on a commit of the repository

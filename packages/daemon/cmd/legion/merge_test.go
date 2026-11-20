@@ -352,7 +352,10 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 // defines before its built-in one of the same name, so a merge.default of text does not close it.
 // What still chooses a path's merge driver is the repository's own attributes (the .gitattributes
 // of the working copy or of git's index when git runs in a git worktree, and
-// $GIT_DIR/info/attributes) and the machine's system attributes file.
+// $GIT_DIR/info/attributes) and the machine's system attributes file. B3's history with
+// diff.algorithm=bogus in the repository's configuration gives B3's jj conflict at f, not exit 3:
+// merge-ort uses histogram whatever a configuration says, but git dies on a diff.algorithm it
+// cannot parse unless the list sets one.
 func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 	t.Run("git's merge options", func(t *testing.T) {
 		r := newMergeRepo(t)
@@ -388,6 +391,23 @@ func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 			if out, err := r.fixture.Try(r.ws, args...); err != nil {
 				t.Fatalf("%s = %v, want a clean merge under the setting it leaves open:\n%s", strings.Join(args, " "), err, out)
 			}
+		}
+		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
+		if code != 1 {
+			t.Fatalf("legion merge = %d, want 1\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
+		}
+		if got := strings.Fields(r.read("resolve", "-r", "@-", "--list")); !slices.Equal(got, []string{"f", "2-sided", "conflict"}) {
+			t.Errorf("jj resolve -r @- --list = %q, want f alone", got)
+		}
+	})
+	t.Run("a diff.algorithm git cannot parse", func(t *testing.T) {
+		r := newMergeRepo(t)
+		r.contentConflict()
+		r.git("config", "diff.algorithm", "bogus")
+		// The control: git's own merge dies on the value.
+		args := []string{"git", "merge-tree", "--write-tree", r.id(mergeFirst), r.id("main")}
+		if out, err := r.fixture.Try(r.ws, args...); err == nil || !strings.Contains(out, "unknown value for config 'diff.algorithm': bogus") {
+			t.Fatalf("%s = %v, want git to die on diff.algorithm:\n%s", strings.Join(args, " "), err, out)
 		}
 		code, stdout, stderr := r.merge("-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
 		if code != 1 {

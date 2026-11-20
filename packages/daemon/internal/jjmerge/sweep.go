@@ -56,7 +56,7 @@ func (m *merger) own(run string) bool {
 // its bookmarks, and the run names it on stderr (keep), when a commit outside them stands on it
 // (a role's commit on a carrier or on a merge a killed run left), when it is any workspace's
 // working-copy commit, when a bookmark other than a carrier bookmark of such a run names it, or
-// when a tracked remote bookmark holds it: an abandon would move that commit onto other parents,
+// when a remote bookmark holds it (held): an abandon would move that commit onto other parents,
 // delete that bookmark, or hide a commit that a remote holds. A bookmark of a carrier's name on a
 // commit that is no carrier (notCarriers), a commit of the repository, makes that commit no
 // member: the commit, the bookmark and its git ref stay where they are, and the run names the
@@ -232,11 +232,13 @@ func (m *merger) marked(ctx context.Context, ours func(run string) bool) ([]stri
 // below it, since an abandon of a commit moves the commits above it. A commit of set stays when a
 // commit outside set stands on it, when it is any workspace's working-copy commit, when a local
 // bookmark names it that is none of swept, the bookmarks of the runs the sweep takes, or when a
-// tracked remote bookmark is on it or on a commit above it (held). jj deletes each bookmark of a
-// commit it abandons and says nothing of it, and a tracked remote bookmark, as a push leaves it,
-// keeps the commit it holds mutable. A commit that only an untracked remote bookmark holds is
-// immutable, since jj's builtin_immutable_heads() holds untracked_remote_bookmarks(), so no set
-// holds it. keep names each commit that stays on stderr, one line each, with why it stays.
+// remote bookmark is on it or on a commit above it (held). jj deletes each bookmark of a commit it
+// abandons and says nothing of it. held reads every remote bookmark, tracked or untracked. Under
+// jj's default immutable_heads() only a tracked one can hold a commit of set: a tracked remote
+// bookmark, as a push leaves it, keeps the commit it holds mutable, and a commit that only an
+// untracked remote bookmark holds is immutable, since builtin_immutable_heads() holds
+// untracked_remote_bookmarks(), so no set holds it. keep names each commit that stays on stderr,
+// one line each, with why it stays.
 func (m *merger) keep(ctx context.Context, set string, swept []string) ([]string, error) {
 	held, err := m.held(ctx, set, swept)
 	if err != nil {
@@ -272,11 +274,14 @@ func (m *merger) keep(ctx context.Context, set string, swept []string) ([]string
 
 // held is why each commit of set stays on its own, read with one jj log: it is a working-copy
 // commit, a local bookmark that is none of swept, the bookmarks of the runs the sweep takes, names
-// it, or a tracked remote bookmark is on it or on a commit above it. The revset reads
-// `::remote_bookmarks()`, and a commit of set is in it only below a tracked one, since the commit
-// of an untracked remote bookmark and each commit below it are immutable (keep). A commit of set
-// with no such reason is not in the map. jj prints each commit's id, the two answers, the count of
-// its local bookmarks and their names, each ended by NUL, which no name holds.
+// it, or a remote bookmark is on it or on a commit above it. The revset reads
+// `::remote_bookmarks()`, every remote bookmark, tracked or untracked, so the reason does not
+// call the bookmark tracked. Under jj's default immutable_heads() only a tracked one can hold a
+// commit of set, since the commit of an untracked remote bookmark and each commit below it are
+// immutable (keep). Under another immutable_heads(), such as `present(trunk()) | tags()`, an
+// untracked one can hold a commit of set too. A commit of set with no such reason is not in the
+// map. jj prints each commit's id, the two answers, the count of its local bookmarks and their
+// names, each ended by NUL, which no name holds.
 func (m *merger) held(ctx context.Context, set string, swept []string) (map[string][]string, error) {
 	out, err := m.jj(ctx, "log", "--no-graph", "-r", set+" & (working_copies() | bookmarks() | ::remote_bookmarks())", "-T",
 		`commit_id ++ "\0" ++ self.contained_in("working_copies()") ++ "\0" ++ self.contained_in("::remote_bookmarks()") ++ "\0" ++ local_bookmarks.len() ++ "\0" ++ local_bookmarks.map(|b| b.name() ++ "\0").join("")`)
@@ -308,7 +313,7 @@ func (m *merger) held(ctx context.Context, set string, swept []string) (map[stri
 			why = append(why, "the bookmarks "+strings.Join(names, " ")+" name it")
 		}
 		if remote {
-			why = append(why, "a tracked remote bookmark is on it or on a commit above it")
+			why = append(why, "a remote bookmark is on it or on a commit above it")
 		}
 		if len(why) > 0 {
 			held[id] = why
