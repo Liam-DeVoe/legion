@@ -10,8 +10,10 @@ import (
 // TestSecretFormCallbacksKeepExitCodesChecked: checkExitCodes follows an exit code from each root
 // (the argument main passes to os.Exit, and each registered secret-form handler) down through the
 // functions it returns, and refuses an undocumented code wherever on that path it is planted: in
-// a handler, in a command the root returns, and in a helper that command returns. An int helper no
-// exit path reaches is no exit code.
+// a handler, in a command the root returns, in a helper that command returns, and in a helper
+// that a helper declared before its command returns, which only a closure followed until nothing
+// new is added reaches. It checks the argument of os.Exit itself as an exit code too. An int
+// helper no exit path reaches is no exit code.
 func TestSecretFormCallbacksKeepExitCodesChecked(t *testing.T) {
 	const source = `package main
 const exitUsageError = 2
@@ -34,6 +36,11 @@ func listMachines() int { return exitUsageError }
 		{"real undocumented handler exit", "return exitUsageError", "return 17", "exit code 17"},
 		{"undocumented exit in a command the root returns", "{ return 1 }", "{ return 17 }", "exit code 17"},
 		{"undocumented exit in a helper that command returns", "listMachines() int { return exitUsageError }", "listMachines() int { return 17 }", "exit code 17"},
+		{"undocumented exit below a helper declared before its command",
+			"func cmdList() int { if false { return 1 }; return listMachines() }\nfunc listMachines() int { return exitUsageError }",
+			"func listMachines() int { return machineExit() }\nfunc cmdList() int { if false { return 1 }; return listMachines() }\nfunc machineExit() int { return 17 }",
+			"exit code 17"},
+		{"undocumented os.Exit argument", "os.Exit(dispatch())", "os.Exit(17)", "exit code 17"},
 		{"foreign handler", "command{}, good", "command{}, foreign.Run", "checked local exit-code function"},
 		{"literal callback", "command{}, good", "command{}, func() int { return 17 }", "checked local exit-code function"},
 		{"changed row", "return form.run()", "form.run = foreign.Run; return form.run()", "cannot be reassigned"},
