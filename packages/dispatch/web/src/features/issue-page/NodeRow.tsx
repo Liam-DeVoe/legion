@@ -31,7 +31,7 @@ import {
 import { useAgentText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { ReferenceHostIs } from "../refs/reference-host";
-import { buildReferencePath, parseNodeReference } from "../refs/routes";
+import { parseNodeReference, referenceHref } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
 import { type Clamp, clampRedrawn, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
@@ -1174,7 +1174,7 @@ function Chip({
   const word = ambiguous ? undefined : documentWord(target);
   const words = ambiguous ? chip.ref : (word ?? chipWords(chip.name));
   if (!gone && words === "") return null;
-  const route = chip.gone || target === undefined || target.kind === "person" ? undefined : target;
+  const href = chip.gone || target === undefined ? undefined : referenceHref(target);
   // The page's word for a document is the page's, and a target's own words are its author's.
   const marks = word === undefined ? authorText : pageChrome;
   return (
@@ -1184,7 +1184,7 @@ function Chip({
       {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {gone ? (
         <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
-      ) : route === undefined ? (
+      ) : href === undefined ? (
         // An address as written may run longer than the line, so it alone may wrap.
         <span className={ambiguous ? undefined : "whitespace-nowrap"} data-chip-name="" {...marks}>
           {words}
@@ -1197,7 +1197,7 @@ function Chip({
           className={`dispatch-inline-link font-medium whitespace-nowrap underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
           data-chip-name=""
           tabIndex={tabStops ? undefined : -1}
-          to={buildReferencePath(route)}
+          to={href}
           {...marks}
         >
           {words}
@@ -1214,8 +1214,8 @@ function Chip({
  *  follows it. */
 function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean }): ReactNode {
   const parent = line.reference === undefined ? undefined : parseNodeReference(line.reference);
-  const route = parent === undefined || parent.kind === "person" ? undefined : parent;
-  return route === undefined ? (
+  const href = parent === undefined ? undefined : referenceHref(parent);
+  return href === undefined ? (
     <span className="min-w-0 break-words" {...authorText}>
       {line.line}
     </span>
@@ -1223,7 +1223,7 @@ function ParentLink({ line, tabStops }: { line: ParentLine; tabStops: boolean })
     <Link
       className={`dispatch-inline-link min-w-0 break-words underline decoration-page-bullet underline-offset-[3px] ${pageQuietText}`}
       tabIndex={tabStops ? undefined : -1}
-      to={buildReferencePath(route)}
+      to={href}
       {...authorText}
     >
       {line.line}

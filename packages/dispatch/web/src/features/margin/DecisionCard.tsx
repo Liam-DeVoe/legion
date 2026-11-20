@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import {
@@ -12,10 +12,9 @@ import {
   textMutedOnSelectedCard,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import { decisionHeadingTree } from "../issue/decision-heading";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { usePlainHeadline } from "../refs/plain-text";
 import { parseDispatchReference, referenceHref } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { regionOrigin } from "./ThreadList";
@@ -44,19 +43,14 @@ export function DecisionCard({
   // person (R5) - leaves the heading as plain words.
   const href = route === undefined ? undefined : referenceHref(route);
   const active = selected || hovered;
-  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   const source = textSourceOf(
     "artifact",
     item.documentId,
     route !== undefined && "key" in route ? route.key : undefined
   );
-  const { reads, text } = usePlainHeadline(headingTree, decision.heading, {
-    source,
-    surface: "decision-heading-words",
-  });
-  // Until the engine has answered, the heading as written, which the reading list's
-  // `decision-heading-words` says is a load state: a card is never left with no name.
-  const heading = text?.text ?? decision.heading;
+  // The heading's plain words name the card and word its link (the reading list's
+  // `decision-heading-words`); the heading's reading draws it where there is no link.
+  const { reads, tree: headingTree, words: heading } = useDecisionHeadingWords(decision, source);
   return (
     <article
       aria-current={selected ? "true" : undefined}

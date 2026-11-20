@@ -29,8 +29,7 @@ import {
 } from "../../theme/classes";
 import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { issueDecisionsQuery } from "../doc/spec-marks";
-import { decisionHeadingTree } from "../issue/decision-heading";
-import { usePlainHeadline } from "../refs/plain-text";
+import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";
@@ -190,15 +189,12 @@ function DecisionControls({
   };
   // Read once per answer of the decisions read, which is when the decision is a new object.
   const quote = useMemo(() => anchorQuote(decision), [decision]);
-  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   // The heading as plain words, which Keep and Change are named after: a write's label and a
-  // form's name hold no markup. Until the engine has answered, the heading as written, which is
-  // the load state the reading list's `decision-heading-words` accepts.
-  const { reads, text: heading } = usePlainHeadline(headingTree, decision.heading, {
-    source: textSourceOf("artifact", documentId, issueKey),
-    surface: "decision-heading-words",
-  });
-  const name = heading?.text ?? decision.heading;
+  // form's name hold no markup (the reading list's `decision-heading-words`).
+  const { reads, words: name } = useDecisionHeadingWords(
+    decision,
+    textSourceOf("artifact", documentId, issueKey)
+  );
   const keep = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
@@ -305,8 +301,8 @@ function ChangeComposer({
    *  form, and not when the form comes back with its row's body. */
   focusField: boolean;
   issueKey: string;
-  /** The decision's heading as plain words (`usePlainHeadline`), which the form and its write
-   *  are named after. */
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
+   *  write are named after. */
   name: string;
   onDone: () => void;
   quote: string;

@@ -1681,6 +1681,12 @@ const NOT_STORED_TEXTS: readonly { file: string; written: string; holds: string 
     written: "first.reason",
   },
   {
+    file: `${FEATURES}/issue-page/IssueActionsMenu.tsx`,
+    holds:
+      "the page's own words for one of the issue's actions, or for its write while it saves (`CONTROL_LABELS`, `ANSWER_LINES`), as the old header's Pin, Close and Reopen draw theirs",
+    written: "action.text",
+  },
+  {
     file: `${FEATURES}/issue-page/NodeRow.tsx`,
     holds: "whether the reader picked this option: a boolean, drawn nowhere",
     written: "picks.includes(option.label)",
@@ -2262,10 +2268,11 @@ const CI_WORKFLOW = ".github/workflows/ci.yaml";
 
 /**
  * The globs of `dispatch_references`, the paths filter of `CI_WORKFLOW`'s `changes` job that
- * starts the reference rows on a pull request. A dorny/paths-filter step's `filters` input is
- * either the filters themselves, one YAML string, or the path of a file that holds them, which
- * is how the job reads them now (`.github/ci-filters.yaml`), so a path is read from the
- * repository and a string is parsed as it stands. The filter is read from whichever step
+ * starts the reference rows on a pull request. The job's dorny/paths-filter step names the file
+ * that holds its filters (`.github/ci-filters.yaml`), so the file the input names is read from
+ * the repository. An input that is no file's path - filters written inline, which the action
+ * also takes - is read as no filters at all, so the guard row below that reads the filter fails
+ * rather than this reading YAML the job does not. The filter is read from whichever step
  * declares it, and a reading that finds it in none or in more than one finds no filter. A
  * filter may name a group of others through its anchor, so the list is flattened, as
  * dorny/paths-filter flattens it. The step reads its patterns with the `some-with-excludes`
@@ -2276,14 +2283,17 @@ function referenceFilter(): { include: Bun.Glob[]; exclude: Bun.Glob[] } {
   const workflow = Bun.YAML.parse(readFileSync(join(REPO_ROOT, CI_WORKFLOW), "utf8")) as {
     jobs?: { changes?: { steps?: { with?: { filters?: string } }[] } };
   };
-  const filtersOf = (input: string): string =>
-    /^[\w./-]+\.ya?ml$/u.test(input.trim())
-      ? readFileSync(join(REPO_ROOT, input.trim()), "utf8")
-      : input;
   const declaring = (workflow.jobs?.changes?.steps ?? [])
-    .map((step) => step.with?.filters)
+    .map((step) => step.with?.filters?.trim())
     .filter((input): input is string => input !== undefined)
-    .map((input) => Bun.YAML.parse(filtersOf(input)) as Record<string, unknown> | null)
+    .map((input) =>
+      /^[\w./-]+\.ya?ml$/u.test(input)
+        ? (Bun.YAML.parse(readFileSync(join(REPO_ROOT, input), "utf8")) as Record<
+            string,
+            unknown
+          > | null)
+        : null
+    )
     .filter((groups) => groups?.dispatch_references !== undefined);
   const patterns = (declaring.length === 1 ? [declaring[0]?.dispatch_references] : [])
     .flat(Number.POSITIVE_INFINITY)

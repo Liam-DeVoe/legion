@@ -1263,6 +1263,26 @@ test("a link in a row's words to the address the reader is at replaces it", asyn
   }
 });
 
+// A party - here a role - is never asked of the batched read, so a row has no name for one and
+// its link keeps the words its writer wrote, as the row's own link pass keeps them over words
+// drawn from their reading (`linkRowReferences`). Words drawn as stored draw it the same way,
+// never as its short form, and link it to the agents list that role filters (`referenceHref`).
+test("a role in words drawn as stored reads as its writer wrote it and links to its agents", async () => {
+  const role = "dispatch://role/reviewer";
+  const drawn = drawWordsAt("/issues/CORE-1", `Ask ${role} to look.`, undefined, new Map());
+  try {
+    const link = await waitFor(() => {
+      const found = drawn.view.container.querySelector(`a[data-row-reference="${role}"]`);
+      expect(found).not.toBeNull();
+      return found;
+    });
+    expect(link?.textContent, "the role is drawn in other words than its writer's").toBe(role);
+    expect(link?.getAttribute("href")).toBe("/agents?role=reviewer");
+  } finally {
+    drawn.view.unmount();
+  }
+});
+
 /** Lays every element out `height` px tall for the rows drawn until the answer is called: no
  *  DOM of a unit test lays anything out, and the cut reads the words' own boxes
  *  (`clamp-measurer.ts`'s `measureClamp`). An element's words run `height` px, or what `words`
@@ -1519,6 +1539,71 @@ test("an option's press keeps the focus, and only a waiting question's are in th
     expect(option?.className).not.toContain("text-page-waiting-text");
   } finally {
     other.unmount();
+  }
+});
+
+// R9, and a reference's host: an option's words are the ask's stored text, drawn by the renderer,
+// so a reference in them reads as its target. In an option the reader presses the press is the
+// option's, so the reference sits in a `control` host and draws no link inside the button. In
+// an option nobody presses it is a link, out of the tab order as every control inside a row is,
+// and in it at the default order in a view whose rows take tab stops (`tabStops`).
+test("a reference in an option draws no link inside its press, and elsewhere a link in the tab order only with tabStops", async () => {
+  const label = "Follow dispatch://CORE-7";
+  const asked = node({
+    id: "ask-1",
+    options: [{ label, labelTree: displayTree(label) }],
+    reference: "dispatch://CORE-1/ask/ask-1",
+    state: "open",
+    text: "Which way does the header go?",
+    type: "ask",
+    waiting: true,
+  });
+  const writer = { answer: undefined, pick: () => {} } as unknown as OutlineWriter;
+  const drawOptions = (answering: OutlineWriter | undefined, tabStops: boolean) => {
+    // The reference names CORE-7, whose summary the cache holds, so it resolves at once.
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(["issue-summary", "CORE-7"], {
+      documents: [],
+      key: "CORE-7",
+      project: "CORE",
+      status: "in_progress",
+      title: "Draw the header",
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <NodeOptions body={false} node={asked} tabStops={tabStops} writer={answering} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
+  const pressable = drawOptions(writer, false);
+  try {
+    const option = pressable.container.querySelector(`[data-pick-option="${label}"]`);
+    if (option === null) throw new Error("the open question draws no option to press");
+    await waitFor(() => expect(option.textContent).toContain("CORE-7 Draw the header"));
+    expect(option.querySelector("a"), "a reference inside the option's press is a link").toBeNull();
+    expect(option.querySelector('[data-dispatch-ref="dispatch://CORE-7"]')).not.toBeNull();
+  } finally {
+    pressable.unmount();
+  }
+  for (const tabStops of [false, true]) {
+    const view = drawOptions(undefined, tabStops);
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector('[data-node-option] a[href="/issues/CORE-7"]');
+        expect(found?.textContent).toBe("CORE-7 Draw the header");
+        return found;
+      });
+      await waitFor(() =>
+        expect(
+          link?.getAttribute("tabindex"),
+          tabStops ? "the link left the tab order" : "the link kept its tab stop"
+        ).toBe(tabStops ? null : "-1")
+      );
+    } finally {
+      view.unmount();
+    }
   }
 });
 

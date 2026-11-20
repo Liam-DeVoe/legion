@@ -30,12 +30,12 @@ import {
 import { MentionField } from "../conversation/MentionField";
 import { blockFragment } from "../refs/block-reference";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { PlainText, usePlainHeadline } from "../refs/plain-text";
+import { PlainText } from "../refs/plain-text";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { decisionHeadingTree } from "./decision-heading";
+import { decisionHeadingTree, useDecisionHeadingWords } from "./decision-heading";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -243,8 +243,8 @@ function ChangeComposer({
 }: {
   documentId: string;
   issueKey: string;
-  /** The decision's heading as plain words (`usePlainHeadline`), which the form and its write
-   *  are named after. */
+  /** The decision's heading as plain words (`useDecisionHeadingWords`), which the form and its
+   *  write are named after. */
   name: string;
   onDone: () => void;
   quote: string;
@@ -422,15 +422,12 @@ function WaitingDecision({
   // against (`pmdoc.FindQuote`). A block drawn from its markdown, with no reading, quotes that
   // markdown (`markdownBlocks`).
   const quote = blocks[0]?.text;
-  const headingTree = useMemo(() => decisionHeadingTree(decision), [decision]);
   // The heading as plain words, which the Keep and the Change are named after: a write's label
-  // and a form's name hold no markup. Until the engine has answered, the heading as written,
-  // which is the load state the reading list's `decision-heading-words` accepts.
-  const { reads, text: heading } = usePlainHeadline(headingTree, decision.heading, {
-    source: textSourceOf("artifact", documentId, issueKey),
-    surface: "decision-heading-words",
-  });
-  const name = heading?.text ?? decision.heading;
+  // and a form's name hold no markup (the reading list's `decision-heading-words`).
+  const { reads, words: name } = useDecisionHeadingWords(
+    decision,
+    textSourceOf("artifact", documentId, issueKey)
+  );
   const keep = useKeyedWrite({
     inline: true,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
