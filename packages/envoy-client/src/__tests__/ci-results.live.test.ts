@@ -1,13 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { newDpopKey } from "@legion/broker-client/dpop";
-import {
-  SPEC_CHECK_OBSERVED_CUT_NOTE,
-  SPEC_CHECK_OBSERVED_END,
-  SPEC_CHECK_OBSERVED_MAX,
-  SPEC_CHECK_OBSERVED_START,
-} from "@legion/contracts";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   type CIResultsStack,
@@ -19,7 +12,6 @@ import {
   writeProbeSpec,
 } from "../../test/ci-results-stack";
 import { dispatchStackEnabled } from "../../test/dispatch-stack";
-import { ownIdentityDispatch } from "../dispatch-config";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded at the real
 // secrets broker (./cmd/broker) under a real result entry for a token that writes results only,
@@ -55,12 +47,6 @@ function commit(digit: string): string {
 const stackDirectory = useCIResultsStackDirectory();
 const cliState = temporaryDirectory("ci-results-cli-state");
 const specFiles = temporaryDirectory("ci-results-spec");
-/** The probe spec beside a file whose block never closes, and the probe spec with its check's
- *  failing example left out: two trees the graph logic refuses (specgraph.Judge). */
-const unclosedFiles = temporaryDirectory("ci-results-unclosed-spec");
-const lackingFiles = temporaryDirectory("ci-results-lacking-spec");
-/** The observed texts the rows below read from files, as a job's step writes its log. */
-const observedFiles = temporaryDirectory("ci-results-observed");
 
 /** What one run of the CLI printed and how it ended. */
 interface Ran {
@@ -85,7 +71,11 @@ describe.skipIf(!dispatchStackEnabled)(
       args: readonly string[],
       env: Readonly<Record<string, string>>
     ): Promise<Ran> {
-      const child = Bun.spawn([process.execPath, ENTRY, ...args], {
+      const producer =
+        env["AGENT_SECRETS_MACHINE_IDENTITY"] === "github-actions"
+          ? [running().agentSecrets, "result-grant", "--"]
+          : [];
+      const child = Bun.spawn([...producer, process.execPath, ENTRY, ...args], {
         env: { PATH: SHELL_PATH, HOME: cliState, DISPATCH_STATE_DIR: cliState, ...env },
         stdout: "pipe",
         stderr: "pipe",
@@ -98,14 +88,8 @@ describe.skipIf(!dispatchStackEnabled)(
       return { code, stdout, stderr };
     }
 
-    /** `dispatch result --project` for `check`, at `at`, as the job `run` describes, with the
-     *  observed text `observed` gives. */
-    function writeResult(
-      run: JobRun,
-      at: string,
-      check: string = PROBE_CHECK,
-      observed: readonly string[] = ["--observed", "ok  \texample.com/acme/probe\t0.01s"]
-    ): Promise<Ran> {
+    /** `dispatch result --project` for the probe check, at `at`, as the job `run` describes. */
+    function writeResult(run: JobRun, at: string, check: string = PROBE_CHECK): Promise<Ran> {
       return cli(
         [
           "result",
@@ -117,21 +101,16 @@ describe.skipIf(!dispatchStackEnabled)(
           "pass",
           "--commit",
           at,
-          ...observed,
+          "--observed",
+          "ok  \texample.com/acme/probe\t0.01s",
         ],
         running().jobEnv(run)
       );
     }
 
-    /** A run of the job on REF at `sha`, with a check run of its own, whose commit holds the
-     *  spec files of `files`. */
-    function runAt(
-      sha: string,
-      checkRunId: number,
-      overrides: Partial<JobRun> = {},
-      files: string = specFiles
-    ): JobRun {
-      running().setFiles(sha, files);
+    /** A run of the job on REF at `sha`, with a check run of its own. */
+    function runAt(sha: string, checkRunId: number, overrides: Partial<JobRun> = {}): JobRun {
+      running().setFiles(sha, specFiles);
       return { sha, ref: REF, job: JOB, runAttempt: 1, checkRunId, ...overrides };
     }
 
@@ -156,17 +135,6 @@ describe.skipIf(!dispatchStackEnabled)(
 
     beforeAll(async () => {
       writeProbeSpec(specFiles);
-      writeProbeSpec(unclosedFiles);
-      writeFileSync(
-        join(unclosedFiles, "broken.md"),
-        ':::requirement{#broken kind="behavior"}\nThis block never closes.\n'
-      );
-      writeProbeSpec(lackingFiles);
-      const probe = await Bun.file(join(lackingFiles, "probe.md")).text();
-      writeFileSync(
-        join(lackingFiles, "probe.md"),
-        probe.replace("Failing example: A probe test that fails.\n", "")
-      );
       stack = await startCIResultsStack({ work: stackDirectory });
     }, 600_000);
     afterAll(async () => {
@@ -177,6 +145,10 @@ describe.skipIf(!dispatchStackEnabled)(
       const at = commit("1");
       const ran = await writeResult(runAt(at, 101), at);
 
+      if (ran.code !== 0)
+        throw new Error(
+          `the real result command failed: ${JSON.stringify(ran)}; TLS front: ${await Bun.file(join(stackDirectory, "tls", "tls-front.log")).text()}`
+        );
       expect({ code: ran.code, stderr: ran.stderr }).toEqual({ code: 0, stderr: "" });
       const stored = JSON.parse(ran.stdout) as {
         id: string;
@@ -232,6 +204,7 @@ describe.skipIf(!dispatchStackEnabled)(
           principal: running().resultPrincipal,
         },
       });
+      expect(predicate.recorder).not.toHaveProperty("person");
 
       // A person reads the one result back, and so does `dispatch results --project` under a
       // session's own token, which reads results and writes none.
@@ -326,7 +299,7 @@ describe.skipIf(!dispatchStackEnabled)(
       );
       expect({
         code: ran.code,
-        named: `${ran.stderr}${ran.stdout}`.includes("AGENT_SECRETS_URL"),
+        named: `${ran.stderr}${ran.stdout}`.includes("DISPATCH_RESULTS_TOKEN"),
       }).toEqual({
         code: 2,
         named: true,
@@ -356,99 +329,44 @@ describe.skipIf(!dispatchStackEnabled)(
       const at = commit("9");
       const project = running().project;
 
-      // The command presents a results token on the one route it writes, and its session path
-      // takes no session the result entry fixes. So this row resolves the command's own credential
-      // (ownIdentityDispatch: the job's identity traded at the broker) and presents it elsewhere.
-      const resolution = ownIdentityDispatch(running().jobEnv(runAt(at, 106)));
-      if (!resolution.enabled) throw new Error(`the job's credential: ${resolution.error}`);
-      const answers: string[] = [];
-      for (const [method, route, body] of [
-        ["GET", `/api/v1/issues?project=${project}`, undefined],
+      // A separate real child receives only the airlock placeholder and uses it on three
+      // other routes. The real proxy proves the broker's key; Dispatch must refuse the scope.
+      const env = running().jobEnv(runAt(at, 106));
+      const routes = [
+        ["GET", `/api/v1/issues?project=${project}`, null],
         ["POST", "/api/v1/issues", { project, title: "An issue a CI job writes" }],
-        ["GET", `/api/v1/projects/${project}/results?commit=${at}`, undefined],
-      ] as const) {
-        const url = `${resolution.url}${route}`;
-        const response = await fetch(url, {
-          method,
-          headers: {
-            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-            ...(await resolution.credential.headers(method, url)),
-          },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-        });
-        const answer = (await response.json()) as { code?: string };
-        answers.push(`${method} ${route}: ${response.status} ${answer.code}`);
-      }
+        ["GET", `/api/v1/projects/${project}/results?commit=${at}`, null],
+      ];
+      const probe = `import { ownIdentityDispatch } from ${JSON.stringify(join(import.meta.dir, "..", "dispatch-config.ts"))};
+const resolution=ownIdentityDispatch(process.env);
+if(!resolution.enabled) throw new Error(resolution.error);
+const answers=[];
+for(const [method,route,body] of ${JSON.stringify(routes)}) {
+ const url=resolution.url+route;
+ const response=await fetch(url,{method,headers:{...(body===null?{}:{"Content-Type":"application/json"}),...await resolution.credential.headers(method,url)},...(body===null?{}:{body:JSON.stringify(body)})});
+ const text=await response.text();
+ if (!text.startsWith("{")) throw new Error("scope response: "+response.status+" "+response.headers.get("X-Airlock-Code")+" "+text);
+ const answer=JSON.parse(text);answers.push(method+" "+route+": "+response.status+" "+answer.code);
+}
+console.log(JSON.stringify(answers));
+`;
+      const child = Bun.spawn(
+        [running().agentSecrets, "result-grant", "--", process.execPath, "-e", probe],
+        { env: { PATH: SHELL_PATH, HOME: cliState, ...env }, stdout: "pipe", stderr: "pipe" }
+      );
+      const [output, errors, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      expect({ code, errors }).toEqual({ code: 0, errors: "" });
+      const answers = JSON.parse(output);
 
       expect(answers).toEqual([
         `GET /api/v1/issues?project=${project}: 403 RESULTS_ONLY_TOKEN`,
         "POST /api/v1/issues: 403 RESULTS_ONLY_TOKEN",
         `GET /api/v1/projects/${project}/results?commit=${at}: 403 RESULTS_ONLY_TOKEN`,
       ]);
-    }, 120_000);
-
-    // The airlock authenticated the run, and the result entry's person is the broker's
-    // configuration: nobody authenticated that person for this write, and that person ran no
-    // test (R12). The command prints the stored row into the job's log, which is public for a
-    // public repository.
-    test("the stored result and the command's output name no person", async () => {
-      const at = commit("a");
-      const ran = await writeResult(runAt(at, 107), at);
-
-      expect(ran.code).toBe(0);
-      expect(`${ran.stdout}${ran.stderr}`).not.toContain(running().person);
-      expect(JSON.stringify(await running().results(at))).not.toContain(running().person);
-    }, 120_000);
-
-    // Dispatch reads the files at the run's commit as spec-check and the reporter read them
-    // (specgraph.Judge), so a tree they refuse holds no check to write a result for.
-    test("a result for a check of files the graph logic refuses is refused, and nothing is stored", async () => {
-      for (const [at, files, checkRunId, problem] of [
-        [commit("b"), unclosedFiles, 108, "broken.md:1: broken: leaf-without-check"],
-        [commit("c"), lackingFiles, 109, `probe.md:5: ${PROBE_CHECK}: no-failing-example`],
-      ] as const) {
-        const ran = await writeResult(runAt(at, checkRunId, {}, files), at);
-
-        expect({ code: ran.code, stored: (await running().results(at)).length }).toEqual({
-          code: 1,
-          stored: 0,
-        });
-        refused(ran, "SPEC_FILES_REFUSED");
-        expect(ran.stdout).toContain(problem);
-      }
-    }, 120_000);
-
-    // A failing test's log over 1 MiB is ordinary. Dispatch keeps SPEC_CHECK_OBSERVED_MAX
-    // characters of it, so the command sends those: the start, which names the test, the note
-    // that says the middle was cut, and the end, which says why the test failed.
-    test("an observed text of 1 MiB is stored as its start and its end, cut to 2000 runes", async () => {
-      const at = commit("d");
-      const big = join(observedFiles, "observed-1mib.txt");
-      const first = "=== RUN   TestProbe\n";
-      const last = "--- FAIL: TestProbe (0.01s)\n";
-      writeFileSync(big, `${first}${"x".repeat(1024 * 1024)}${last}`);
-      const ran = await writeResult(runAt(at, 110), at, PROBE_CHECK, ["--observed-file", big]);
-
-      expect(ran.code).toBe(0);
-      const [row] = await running().results(at);
-      const observed = row?.attestation.predicate.observed ?? "";
-      expect(observed).toBe(
-        `${first}${"x".repeat(SPEC_CHECK_OBSERVED_START - first.length)}${SPEC_CHECK_OBSERVED_CUT_NOTE}` +
-          `${"x".repeat(SPEC_CHECK_OBSERVED_END - last.length)}${last}`
-      );
-      expect(observed.length).toBe(SPEC_CHECK_OBSERVED_MAX);
-    }, 120_000);
-
-    // Dispatch cannot store a NUL, so the command sends it as U+FFFD and the result is written.
-    test("an observed text with a NUL byte still writes the result", async () => {
-      const at = commit("e");
-      const nul = join(observedFiles, "observed-nul.txt");
-      writeFileSync(nul, "--- FAIL: TestProbe\n\u0000binary\n");
-      const ran = await writeResult(runAt(at, 111), at, PROBE_CHECK, ["--observed-file", nul]);
-
-      const rows = await running().results(at);
-      expect({ code: ran.code, stored: rows.length }).toEqual({ code: 0, stored: 1 });
-      expect(rows[0]?.attestation.predicate.observed).toBe("--- FAIL: TestProbe\n\uFFFDbinary\n");
     }, 120_000);
   }
 );

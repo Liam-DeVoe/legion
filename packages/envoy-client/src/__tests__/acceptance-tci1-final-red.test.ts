@@ -16,6 +16,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { runDispatchCli } from "../dispatch-cli";
 import { parseCommand } from "../dispatch-command";
 
@@ -76,7 +77,7 @@ describe("an empty id flag that goes into a URL path", () => {
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: "acceptance-red",
           DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
-          DISPATCH_TOKEN: "session-token",
+          DISPATCH_TOKEN: fixtureSecret("session"),
         },
         {
           stdout: (text: string) => {

@@ -13,6 +13,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { leastAnswerFor } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 
@@ -81,7 +82,7 @@ describe("another call's stored answer, naming no key back", () => {
           DISPATCH_HOST: "omp",
           DISPATCH_SESSION_ID: "acceptance-red-final2",
           DISPATCH_URL: `http://127.0.0.1:${dispatch.port}`,
-          DISPATCH_TOKEN: "session-token",
+          DISPATCH_TOKEN: fixtureSecret("session"),
         },
         {
           stdout: (text: string) => {

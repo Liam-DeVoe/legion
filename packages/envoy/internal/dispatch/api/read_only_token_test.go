@@ -2,7 +2,7 @@
 // broker minted from a read entry, the scope read alone beside the project scope none, a service
 // and no person — reaches the routes readScopeRoutes names and nothing else. Every other row of
 // the table and GET /ws/live answer it 403 READ_ONLY_TOKEN before the route's handler, before the
-// sign-in check and before its Idempotency-Key is read (refuseLimitedToken), register refuses a
+// sign-in check and before its Idempotency-Key is read (refuseReadOnlyToken), register refuses a
 // list that names anything but a GET row it mounts, and the route the list names writes nothing
 // for such a caller but its proof's replay row and the caches Dispatch rebuilds.
 //
@@ -29,6 +29,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -65,7 +66,15 @@ func (c *brokerCaller) presentingProbe(t *testing.T, route apiRoute, token strin
 // when it is that refusal: 403 with the code READ_ONLY_TOKEN and no WWW-Authenticate challenge,
 // since no scope makes the route the token's to call.
 func notTheReadOnlyRefusal(response *httptest.ResponseRecorder) string {
-	return notTheLimitedRefusal(response, contracts.DispatchReadOnlyToken)
+	var refusal refusalAnswer
+	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
+	switch {
+	case response.Code != http.StatusForbidden || refusal.Code != contracts.DispatchReadOnlyToken:
+		return "answered " + http.StatusText(response.Code) + " " + strings.TrimSpace(response.Body.String())
+	case response.Header().Get("WWW-Authenticate") != "":
+		return "carries the challenge " + response.Header().Get("WWW-Authenticate")
+	}
+	return ""
 }
 
 // readOnlyTable is the table register mounts with its test hooks in: every row a read-only token
@@ -75,27 +84,121 @@ func readOnlyTable() []apiRoute {
 }
 
 // TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler builds every row's own
-// chain as register does and sends each a read-only token: every row the list does not name
-// answers 403 READ_ONLY_TOKEN and never runs its handler, the row the list names runs it once,
-// and GET /ws/live opens no socket (walkEveryChainWith).
+// chain as register does (routeHandler) with the row's handler replaced by a recorder, and sends
+// each a read-only token with a body and a valid Idempotency-Key. Every row the list does not name
+// answers 403 READ_ONLY_TOKEN and never runs its handler; the row the list names runs it once.
+// GET /ws/live is walked the same way through its own chain (liveSocketHandler), with the socket
+// replaced. A row is counted once its assertions have run, and the count is held to the rows the
+// registered server mounts (its route index, one entry a row), so a walk that skipped a row, or
+// walked none, fails.
 func TestEveryRowTheReadListDoesNotNameRefusesAReadOnlyTokenBeforeItsHandler(t *testing.T) {
-	walkEveryChainWith(t, readOnlyLimitedToken())
+	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
+	caller := newBrokerCaller(t)
+	const token = "a-read-only-token-walking-every-chain"
+	rig.broker.Says(token, readOnlyToken(caller.jkt))
+
+	table := readOnlyTable()
+	replays := rig.served.keyedReplays()
+	walked, listed := 0, 0
+	for _, route := range table {
+		name := route.Method + " " + route.Pattern
+		ran := 0
+		route.Handler = func(w http.ResponseWriter, _ *http.Request) {
+			ran++
+			w.WriteHeader(http.StatusNoContent)
+		}
+		response := httptest.NewRecorder()
+		rig.served.routeHandler(route, replays[name]).ServeHTTP(response, caller.presentingProbe(t, route, token))
+		if route.ReadScope {
+			listed++
+			if ran != 1 || response.Code != http.StatusNoContent {
+				t.Errorf("%s is on the read list, and its handler ran %d times (status=%d body=%s), want once",
+					name, ran, response.Code, response.Body.String())
+			}
+		} else {
+			if ran != 0 {
+				t.Errorf("%s ran its handler %d times for a read-only token, want none", name, ran)
+			}
+			if why := notTheReadOnlyRefusal(response); why != "" {
+				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
+			}
+		}
+		walked++
+	}
+
+	socketOpened := 0
+	live := rig.served.liveSocketHandler(func(http.ResponseWriter, *http.Request) { socketOpened++ })
+	response := httptest.NewRecorder()
+	live.ServeHTTP(response, caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
+	if socketOpened != 0 {
+		t.Errorf("GET %s opened the socket %d times for a read-only token, want none", liveSocketPattern, socketOpened)
+	}
+	if why := notTheReadOnlyRefusal(response); why != "" {
+		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+	}
+
+	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
+	}
+	if listed != len(readScopeRoutes) {
+		t.Fatalf("%d rows carry the read list's mark, want the list's %d (%v)", listed, len(readScopeRoutes), readScopeRoutes)
+	}
+	t.Logf("walked %d rows of the table (test hooks in) and GET %s: %d listed, %d refused, every refusal %s",
+		walked, liveSocketPattern, listed, walked-listed+1, contracts.DispatchReadOnlyToken)
 }
 
-// readListAnswers is what each route of the read list answers the mounted walk below for a
-// project with no architecture source: its handler's own answer, which a request the gate refused
-// could not carry. A route added to the list adds its answer here.
+// readListAnswers is what each route of the read list answers the mounted walk below at its probe
+// path, which names a project with no architecture source and an issue Dispatch does not hold: its
+// handler's own answer, which a request the gate refused could not carry. A route added to the
+// list adds its answer here.
 var readListAnswers = map[string]limitedAnswer{
 	"GET /api/v1/projects/{key}/architecture": {http.StatusNotFound, "SOURCE_NOT_FOUND"},
+	"GET /api/v1/issues/{key}/steps":          {http.StatusNotFound, "NOT_FOUND"},
+	"GET /api/v1/projects/{key}/plans":        {http.StatusNotFound, "PROJECT_NOT_FOUND"},
 }
 
 // TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone walks the server register mounted,
 // test hooks in, with a read-only token: every row the list does not name and GET /ws/live answer
 // 403 READ_ONLY_TOKEN; GET /ws/doc/{room}, which reads no broker token at all, answers 401; and
-// the listed route answers its handler's own 404 SOURCE_NOT_FOUND for a project with no source
-// (walkTheMountedServerWith).
+// each listed route answers its handler's own refusal of its probe path (readListAnswers).
+// A row is counted once its assertions have run, and the count is held to the rows the
+// registered server mounts, as the walk above is.
 func TestTheMountedServerServesAReadOnlyTokenOnTheReadListAlone(t *testing.T) {
-	walkTheMountedServerWith(t, readOnlyLimitedToken())
+	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
+	caller := newBrokerCaller(t)
+	const token = "a-read-only-token-walking-the-mounted-server"
+	rig.broker.Says(token, readOnlyToken(caller.jkt))
+
+	table := readOnlyTable()
+	walked := 0
+	for _, route := range table {
+		name := route.Method + " " + route.Pattern
+		response := rig.serve(caller.presentingProbe(t, route, token))
+		if !route.ReadScope {
+			if why := notTheReadOnlyRefusal(response); why != "" {
+				t.Errorf("%s %s, want 403 %s", name, why, contracts.DispatchReadOnlyToken)
+			}
+		} else if want, known := readListAnswers[name]; !known {
+			t.Errorf("%s is on the read list and readListAnswers says nothing of what it answers", name)
+		} else if refusal := decodeBody[refusalAnswer](t, response); response.Code != want.status || refusal.Code != want.code {
+			t.Errorf("%s answered %d %s, want its handler's %d %s", name, response.Code, response.Body.String(), want.status, want.code)
+		}
+		walked++
+	}
+
+	live := rig.serve(caller.presenting(t, http.MethodGet, liveSocketPattern, token, nil))
+	if why := notTheReadOnlyRefusal(live); why != "" {
+		t.Errorf("GET %s %s, want 403 %s", liveSocketPattern, why, contracts.DispatchReadOnlyToken)
+	}
+	room := "/ws/doc/00000000-0000-0000-0000-000000000001"
+	if document := rig.serve(caller.presenting(t, http.MethodGet, room, token, nil)); document.Code != http.StatusUnauthorized {
+		t.Errorf("GET %s answered %d %s, want 401: the document socket takes a cookie alone", room, document.Code, document.Body.String())
+	}
+
+	if mounted := len(rig.served.routeIndex); walked == 0 || walked != mounted {
+		t.Fatalf("walked %d rows, want every one of the %d the server mounts", walked, mounted)
+	}
+	t.Logf("walked %d rows of the mounted table (test hooks in), GET %s and GET /ws/doc/{room}", walked, liveSocketPattern)
 }
 
 // registerRefusal is the refusal Register panics with on the table as it stands, and empty when
@@ -247,8 +350,13 @@ var (
 	writeWord = regexp.MustCompile(`(?i)\b(insert|update|delete)\b`)
 	// upsertUpdate is an insert's own conflict clause, whose table is the insert's.
 	upsertUpdate = regexp.MustCompile(`(?i)\bdo\s+update\b`)
-	// sourcesRead is the listed route's first read, of the project's architecture sources.
+	// sourcesRead is the architecture's first read, of the project's architecture sources.
 	sourcesRead = regexp.MustCompile(`(?i)\bfrom\s+architecture_sources\b`)
+	// stepsRead is the steps read's one read, of the tuples that make each run part of its issue.
+	stepsRead = regexp.MustCompile(`(?i)\bfrom\s+workflow_tuples\b`)
+	// plansRead is the plans read's one read of the project's finished issues, joined through
+	// their tuples to their runs and plans.
+	plansRead = regexp.MustCompile(`(?is)\bfrom\s+issues\s+i\b.*\bworkflow_tuples\b`)
 )
 
 // writesOf answers each write statement makes, as "<verb> <table>", and false when it holds a
@@ -279,13 +387,16 @@ func readOnlyTreeFiles(nonce string) map[string]string {
 	}
 }
 
-// TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches sends the route the read list names, with a
-// read-only token, Dispatch-Trees: 1, a cold display cache and a stale route_roster, and reads
-// every statement the request ran - its handler's and the tree store it detaches - through a
-// tracer on the one pool the server and the verifier's replay store share. Every insert, update
-// and delete is to dpop_proofs, text_trees or route_roster: the proof's replay row and the two
-// caches Dispatch rebuilds from what it holds. The positive controls are the proof's insert, a
-// tree's insert and the read of architecture_sources, so a tracer that saw nothing cannot pass.
+// TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches sends each route the read list names, with
+// a read-only token, and reads every statement the request ran - its handler's and the work it
+// detaches - through a tracer on the one pool the server and the verifier's replay store share.
+// The architecture is read with Dispatch-Trees: 1, a cold display cache and a stale route_roster,
+// the steps of an issue the daemon wrote a run of, and the plans of the project once that issue is
+// done. Every insert, update and delete is to dpop_proofs, text_trees or route_roster: the proof's
+// replay row and the two caches Dispatch rebuilds from what it holds. The positive controls are
+// each proof's insert, a tree's insert, the read of architecture_sources, the read of
+// workflow_tuples and the read of the project's finished issues, so a tracer that saw nothing
+// cannot pass.
 func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	database := storetest.Open(t)
 	marked := &markedStatements{}
@@ -380,8 +491,52 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 	}
 
 	statements := marked.take()
+	if !requireOnlyProofAndCaches(t, statements, sourcesRead) {
+		t.Errorf("the tracer saw no insert into text_trees among %d statements: it did not see the trees the read stored", len(statements))
+	}
+
+	// The steps of an issue: the daemon writes one run, over its own credential and outside the
+	// counted read, and the read-only token reads it back.
+	issue := rig.asPerson(t, http.MethodPost, "/api/v1/issues", map[string]any{"project": project, "title": "A run to read"})
+	if issue.Code != http.StatusCreated {
+		t.Fatalf("create an issue in %s: status=%d body=%s", project, issue.Code, issue.Body.String())
+	}
+	issueKey := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, issue).Key
+	putStepOK(t, rig.handler, issueKey, "6f1d2c3b-4a59-4e7d-8c6b-5a4f3e2d1c0b", implementerStart(daemonSessionOf(project)))
+	marked.take()
+	request = caller.presenting(t, http.MethodGet, "/api/v1/issues/"+issueKey+"/steps", token, nil)
+	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+	response = rig.serve(request)
+	if read := decodeBody[model.IssueSteps](t, response); response.Code != http.StatusOK || len(read.Tasks) != 1 {
+		t.Fatalf("the read-only token's read of the steps of %s: status=%d body=%s, want 200 and its one task", issueKey, response.Code, response.Body.String())
+	}
+	requireOnlyProofAndCaches(t, marked.take(), stepsRead)
+
+	// The plans of the project, once the issue is done: the person closes it and the daemon
+	// writes its plan, outside the counted read, and the read-only token lists it.
+	if closed := rig.asPerson(t, http.MethodPatch, "/api/v1/issues/"+issueKey, map[string]any{"status": "done"}); closed.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", issueKey, closed.Code, closed.Body.String())
+	}
+	putPlanRecordOK(t, rig.handler, issueKey, "0c4b2f7e-3d1a-4b8c-9e6f-1a2b3c4d5e6f", defaultPlanBody(daemonSessionOf(project), 1))
+	marked.take()
+	request = caller.presenting(t, http.MethodGet, "/api/v1/projects/"+project+"/plans", token, nil)
+	request = request.WithContext(context.WithValue(request.Context(), countedRead{}, true))
+	response = rig.serve(request)
+	if read := decodeBody[model.ProjectPlans](t, response); response.Code != http.StatusOK || len(read.Issues) != 1 || read.Issues[0].Plan == nil {
+		t.Fatalf("the read-only token's read of the plans of %s: status=%d body=%s, want 200 and %s with its plan", project, response.Code, response.Body.String(), issueKey)
+	}
+	requireOnlyProofAndCaches(t, marked.take(), plansRead)
+}
+
+// requireOnlyProofAndCaches fails unless every write of statements is to the proof's replay row or
+// a cache Dispatch rebuilds, the proof's insert among them, and handlerRead, the handler's own
+// read, is among them too. It answers whether a tree was stored.
+func requireOnlyProofAndCaches(t *testing.T, statements []string, handlerRead *regexp.Regexp) bool {
+	t.Helper()
 	allowed := map[string]bool{"dpop_proofs": true, "text_trees": true, "route_roster": true}
-	var proofInserted, treeInserted, readSources bool
+	var proofInserted, treeInserted, readByHandler bool
 	var written []string
 	for _, statement := range statements {
 		writes, readable := writesOf(statement)
@@ -397,16 +552,14 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 			proofInserted = proofInserted || (verb == "insert" && table == "dpop_proofs")
 			treeInserted = treeInserted || (verb == "insert" && table == "text_trees")
 		}
-		readSources = readSources || sourcesRead.MatchString(statement)
+		readByHandler = readByHandler || handlerRead.MatchString(statement)
 	}
 	if !proofInserted {
 		t.Errorf("the tracer saw no insert into dpop_proofs among %d statements: it did not see the request's proof spent", len(statements))
 	}
-	if !treeInserted {
-		t.Errorf("the tracer saw no insert into text_trees among %d statements: it did not see the trees the read stored", len(statements))
-	}
-	if !readSources {
-		t.Errorf("the tracer saw no read of architecture_sources among %d statements: it did not see the handler's reads", len(statements))
+	if !readByHandler {
+		t.Errorf("the tracer saw no statement matching %s among %d statements: it did not see the handler's reads", handlerRead, len(statements))
 	}
 	t.Logf("the request ran %d statements, whose writes were %v", len(statements), written)
+	return treeInserted
 }

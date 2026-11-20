@@ -74,6 +74,18 @@ const CASES: readonly WriteRowCase[] = [
     call: (client) => client.related("ACME", { title: "A title" }),
   },
   {
+    method: "dryRunResult",
+    route: "POST /api/v1/issues/{key}/results/dry-run",
+    call: (client) =>
+      client.dryRunResult("ACME-1", {
+        check: "k1",
+        role: "implementer",
+        verdict: "pass",
+        commit: "1".repeat(40),
+        actor,
+      }),
+  },
+  {
     method: "updateIssue",
     route: "PATCH /api/v1/issues/{key}",
     call: (client) => client.updateIssue("ACME-1", { status: "todo", actor }),
@@ -429,9 +441,13 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
     expect(driven).toEqual(Object.keys(WRITE_ROWS).sort());
   });
 
-  test("the routes that store nothing are the round trip and the related-item check", () => {
+  test("the round trip, related-item check and dry-run result store nothing", () => {
     const stores = Object.entries(WRITE_ROWS).filter(([, row]) => !rowStores(row));
-    expect(stores.map(([method]) => method).sort()).toEqual(["markdownRoundTrip", "related"]);
+    expect(stores.map(([method]) => method).sort()).toEqual([
+      "dryRunResult",
+      "markdownRoundTrip",
+      "related",
+    ]);
   });
 
   // A newer Dispatch may answer a member the row does not name, at any depth, and an older client

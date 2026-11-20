@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { SQL, type Subprocess } from "bun";
+import { resultsTLSFiles } from "./ci-results-tls";
 import { type DispatchStack, startDispatchStack, testDatabaseServer } from "./dispatch-stack";
 import {
   awaitReady,
@@ -53,8 +54,7 @@ const REPOSITORY = "local-org/local-repo";
 const WORKFLOW = ".github/workflows/ci-results.yaml";
 /** The refs the entry takes: every branch of two segments, such as `refs/heads/topic/one`. */
 const REF_PATTERN = "refs/heads/*/*";
-/** The person the entry acts for, which a result entry needs (`exchange.checkGrant`) and which no
- *  stored result, no answer of Dispatch and no output of `dispatch result --project` names. */
+/** The person the entry acts for. */
 const PERSON = "ada@example.com";
 /** The audience a job asks its runner to mint its token for, which the broker requires. */
 const ACTIONS_AUDIENCE = "dispatch-ci-results-local";
@@ -127,16 +127,14 @@ export interface StoredResult {
   readonly id: string;
   readonly seq: number;
   readonly attestation: {
-    readonly predicate: {
-      readonly check: string;
-      readonly verdict: string;
-      readonly observed: string;
-    };
+    readonly predicate: { readonly check: string; readonly verdict: string };
   };
 }
 
 /** The running stack. */
 export interface CIResultsStack {
+  /** The real producer binary; child commands never trade an OIDC identity themselves. */
+  readonly agentSecrets: string;
   /** The Dispatch server, and the agent token it takes, which is a session's own. */
   readonly dispatch: DispatchStack;
   /** The broker's base URL, as `AGENT_SECRETS_URL` takes it. */
@@ -145,7 +143,7 @@ export interface CIResultsStack {
   readonly github: FakeGitHubActions;
   readonly project: string;
   readonly repository: string;
-  /** The person the result entry acts for: the broker's configuration, which no result names. */
+  /** The person the result entry acts for. */
   readonly person: string;
   /** The session and the principal every results token of the entry writes under. */
   readonly resultSession: string;
@@ -225,6 +223,7 @@ export async function startCIResultsStack(options: {
   const { work } = options;
   // Read first: a run with no DSN fails before anything starts that would need a stop.
   const postgres = testDatabaseServer();
+  const tls = await resultsTLSFiles(path.join(work, "tls"));
   const github = startFakeGitHubActions({ installations: { [REPOSITORY]: INSTALLATION } });
   const database = `ci_results_broker_${crypto.randomUUID().replaceAll("-", "")}`;
   const admin = new SQL(postgres);
@@ -234,6 +233,7 @@ export async function startCIResultsStack(options: {
   let created = false;
   const stop = async (): Promise<void> => {
     // Dispatch reads the broker, and the broker reads the issuer and the stand-in.
+    await tls.stop();
     await dispatch?.stop();
     if (broker !== undefined) await stopProcess(broker, "SIGTERM");
     if (issuer !== undefined) await stopProcess(issuer, "SIGTERM");
@@ -245,9 +245,9 @@ export async function startCIResultsStack(options: {
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,
-      packages: ["./cmd/broker", "./cmd/dev-oidc-issuer"],
+      packages: ["./cmd/broker", "./cmd/dev-oidc-issuer", "./cmd/agent-secrets"],
       stack: "CI results",
-      binaries: "./cmd/broker and ./cmd/dev-oidc-issuer",
+      binaries: "./cmd/broker, ./cmd/dev-oidc-issuer and ./cmd/agent-secrets",
     });
 
     // The cluster's issuer: Dispatch's own token at the broker, rewritten before it lapses, and
@@ -279,6 +279,13 @@ export async function startCIResultsStack(options: {
     databaseUrl.pathname = `/${database}`;
     const fakeSecrets = path.join(work, "fake-secrets.json");
     writeFileSync(fakeSecrets, JSON.stringify({ secrets: [] }), { mode: 0o600 });
+    const rulesFile = path.join(work, "airlock.json");
+    writeFileSync(
+      rulesFile,
+      JSON.stringify({
+        secrets: [{ name: "DISPATCH_RESULTS_TOKEN", kind: "dpop", hosts: [tls.host] }],
+      })
+    );
     const brokerLog = path.join(work, "broker.log");
     broker = spawnLogged(
       [path.join(bin, "broker")],
@@ -293,6 +300,14 @@ export async function startCIResultsStack(options: {
         BROKER_SECRETS_PREFIX: SECRETS_PREFIX,
         BROKER_SECRETS_KMS_KEY_ARN: SECRETS_KMS_KEY_ARN,
         BROKER_FAKE_SECRETS_FILE: fakeSecrets,
+        BROKER_AIRLOCK_RULES_FILE: rulesFile,
+        BROKER_AIRLOCK_LISTEN_ADDR: "127.0.0.1:0",
+        BROKER_AIRLOCK_PROXY_URL: "http://127.0.0.1:0",
+        BROKER_AIRLOCK_CA_CERT_FILE: tls.ca,
+        BROKER_AIRLOCK_CA_KEY_FILE: tls.key,
+        BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE: tls.ca,
+        BROKER_AIRLOCK_TEST_RESOLVE: `${tls.host}=${tls.address}`,
+        BROKER_AIRLOCK_TEST_DIAL_ALLOW: `${tls.host}:443 ${tls.address}:443`,
         BROKER_K8S_OIDC_ISSUER: issuerUrl,
         BROKER_K8S_OIDC_AUDIENCE: CLUSTER_AUDIENCE,
         BROKER_API_ACCOUNTS: `dispatch=${DISPATCH_ACCOUNT}`,
@@ -330,6 +345,7 @@ export async function startCIResultsStack(options: {
     dispatch = await startDispatchStack({
       work: dispatchWork,
       env: {
+        DISPATCH_SERVER_URL: tls.url,
         DISPATCH_AGENT_SECRETS_URL: brokerUrl,
         DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE: accountToken,
         DISPATCH_GITHUB_API_BASE: github.url,
@@ -337,6 +353,7 @@ export async function startCIResultsStack(options: {
         DISPATCH_APP_PEM_B64: String(appKey),
       },
     });
+    await tls.start(dispatch.url);
 
     const server = dispatch;
     const asPerson = async (method: string, route: string, body?: unknown): Promise<unknown> => {
@@ -356,6 +373,7 @@ export async function startCIResultsStack(options: {
     // and the legs of one push share its run.
     const runIds = new Map<string, number>();
     return {
+      agentSecrets: path.join(bin, "agent-secrets"),
       dispatch,
       brokerUrl,
       github,
@@ -380,7 +398,7 @@ export async function startCIResultsStack(options: {
           forged: run.forged === true,
         });
         return {
-          DISPATCH_URL: server.url,
+          DISPATCH_URL: tls.url,
           AGENT_SECRETS_URL: brokerUrl,
           AGENT_SECRETS_MACHINE_IDENTITY: "github-actions",
           AGENT_SECRETS_MACHINE_AUDIENCE: ACTIONS_AUDIENCE,
@@ -414,10 +432,13 @@ export async function startCIResultsStack(options: {
 
 /** The CLI of this checkout, as a shell outside the package runs it. */
 const CLI = `bun ${path.resolve(import.meta.dir, "..", "bin", "dispatch.ts")}`;
-/** The module the CLI resolves a CI job's credential with (`ownIdentityDispatch`). */
-const OWN_IDENTITY = path.resolve(import.meta.dir, "..", "src", "dispatch-config.ts");
 
 /** Resolves on the first Ctrl-C or SIGTERM. */
+/** Quotes one value for a POSIX shell without interpreting its contents. */
+function shellWord(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
 function untilInterrupted(): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();
   process.once("SIGINT", () => resolve());
@@ -441,10 +462,10 @@ async function forgeOnly(): Promise<void> {
     forged: true,
   });
   console.log(`export ACTIONS_ID_TOKEN_REQUEST_URL='${request.requestUrl}'`);
-  console.log(`export ACTIONS_ID_TOKEN_REQUEST_TOKEN='${request.requestToken}'`);
+  console.log(`export ACTIONS_ID_TOKEN_REQUEST_TOKEN=${shellWord(request.requestToken)}`);
   console.log("export AGENT_SECRETS_MACHINE_IDENTITY=github-actions");
   console.error(
-    "ci-results-stack: each token is signed by a key no issuer publishes; set DISPATCH_URL to Dispatch's, and AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_AUDIENCE to the broker's, then run dispatch result --project. Ctrl-C stops."
+    "ci-results-stack: each token is signed by a key no issuer publishes; set AGENT_SECRETS_URL and AGENT_SECRETS_MACHINE_AUDIENCE to the broker's, then run agent-secrets result-grant -- dispatch result --project. Ctrl-C stops."
   );
   await untilInterrupted();
   await github.stop();
@@ -474,25 +495,20 @@ async function wholeStack(): Promise<void> {
     };
     const job = stack.jobEnv(run);
     const forged = stack.jobEnv({ ...run, checkRunId: 2, forged: true });
-    const result = `${CLI} result --project ${stack.project} --verdict pass`;
+    const result = `${shellWord(stack.agentSecrets)} result-grant -- ${CLI} result --project ${stack.project} --verdict pass`;
     console.log("# One job of a push run of local-org/local-repo at the commit below:");
     for (const [name, value] of Object.entries(job)) console.log(`export ${name}='${value}'`);
     console.log("# The try line: one stored result, then a session's read of it:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${tested}`);
     console.log(
-      `env -u AGENT_SECRETS_URL DISPATCH_HOST=omp DISPATCH_SESSION_ID=ci-results-try DISPATCH_TOKEN='${stack.dispatch.token}' ${CLI} results --project ${stack.project} --commit ${tested}`
+      `env -u AGENT_SECRETS_URL DISPATCH_TOKEN=${shellWord(stack.dispatch.token)} ${CLI} results --project ${stack.project} --commit ${tested}`
     );
     console.log("# Each control is refused:");
     console.log(`${result} --check ${PROBE_CHECK} --commit ${other}   # another commit`);
     console.log(`${result} --check ${OTHER_JOBS_CHECK} --commit ${tested}   # another job`);
-    // No command presents a results token on another route: the session path of the CLI takes
-    // no session a result entry fixes. So the job's own credential, as `dispatch result
-    // --project` resolves it, is presented by hand, and only the answer's status and code print.
+    console.log(`${CLI} issues --project ${stack.project}   # another route`);
     console.log(
-      `bun -e 'import { ownIdentityDispatch } from "${OWN_IDENTITY}"; const d = ownIdentityDispatch(process.env); const url = d.url + "/api/v1/issues?project=${stack.project}"; const r = await fetch(url, { headers: await d.credential.headers("GET", url) }); console.log(r.status, (await r.json()).code)'   # another route`
-    );
-    console.log(
-      `ACTIONS_ID_TOKEN_REQUEST_TOKEN='${forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN}' ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
+      `ACTIONS_ID_TOKEN_REQUEST_TOKEN=${shellWord(forged.ACTIONS_ID_TOKEN_REQUEST_TOKEN ?? "")} ${result} --check ${PROBE_CHECK} --commit ${tested}   # a forged token`
     );
     console.error("ci-results-stack: ready; Ctrl-C stops the stack.");
     await untilInterrupted();

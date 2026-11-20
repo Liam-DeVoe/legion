@@ -33,7 +33,7 @@ export interface KeyedLayerOptions {
  * an `Idempotency-Key` names that key back, as `TestEveryKeyedAnswerNamesItsKey` holds every
  * Dispatch answer to a keyed write to, unless the stand-in named a key itself or the row's answer
  * names none (`options.namesNoKey`), none of whose 2xx the client takes as its call's answer
- * (`DispatchClient.#writtenRow`). Every other answer is as the stand-in gave it.
+ * (`DispatchClient.#writePayload`). Every other answer is as the stand-in gave it.
  */
 export function keyedLayer<Args extends [Request | string | URL, ...unknown[]]>(
   answer: (...args: Args) => Response | Promise<Response>,

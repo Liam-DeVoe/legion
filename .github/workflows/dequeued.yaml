@@ -55,7 +55,7 @@ on:
 
 jobs:
   cancel-dequeued:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
     # cannot hold a runner, and it is above the minute the timeline read can wait.
     timeout-minutes: 5
@@ -71,6 +71,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # shellcheck disable=SC2016 # These are GraphQL variables, not shell variables.
           query='query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
@@ -85,6 +86,7 @@ jobs:
           }'
           # The nodes come oldest first, so the selection is the last removal after the index of
           # the last entry: a removal before that index belongs to an earlier turn in the queue.
+          # shellcheck disable=SC2016 # This is jq's local $nodes/$added scope, not the shell's.
           select='.data.repository.pullRequest.timelineItems.nodes as $nodes
             | ([$nodes | to_entries[]
                 | select(.value.__typename == "AddedToMergeQueueEvent") | .key] | last) as $added

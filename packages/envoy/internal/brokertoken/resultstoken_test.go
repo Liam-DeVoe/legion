@@ -71,6 +71,9 @@ func sameCaller(got, want brokertoken.Caller) bool {
 // (cmd/dispatch, brokerTokenVerifier) on the routes its read and results lists name.
 func TestAResultsTokenIsRefusedWhereNotServed(t *testing.T) {
 	caller := newSigner(t)
+	if decided, err := brokertoken.SessionCaller(resultsToken(caller.jkt, time.Hour)); !errors.Is(err, brokertoken.ErrNotASession) || !reflect.DeepEqual(decided, brokertoken.Caller{}) {
+		t.Fatalf("SessionCaller admitted a results token without a route-scoped verifier: %+v, %v", decided, err)
+	}
 	for _, readOnly := range []bool{false, true} {
 		rig := newRig(t, func(options *brokertoken.Options) { options.ServesReadOnly = readOnly })
 		const token = "a-results-token-where-none-is-served"

@@ -430,37 +430,42 @@ func (v *Verifier) live(ctx context.Context, r *http.Request) (string, Introspec
 	if err != nil {
 		return "", Introspection{}, shapeNotASession, err
 	}
-	if !answer.Active {
-		return "", Introspection{}, shapeNotASession, ErrNotActive
-	}
-	if answer.Thumbprint == "" {
-		return "", Introspection{}, shapeNotASession, ErrKeyMismatch
-	}
-	// A token names a person or a service: an exchange decided one of the two for every token
-	// issued for acting as a session, and one that names neither is no session's credential
-	// whatever else it carries.
-	//
-	// The rest is the shape and the list the Projects beside it are read under. The shape is the
-	// project scope read together with the OAuth scope: a project-scope word this package does
-	// not know, or a shape the broker mints no token in, is a token it cannot read, and is refused
-	// here rather than taken as a token that names no project at all (ErrNotASession). A
-	// read-only token passes only a verifier whose service serves one, and a results token only a
-	// verifier whose service serves results tokens. A named token is an operator's entry's, which
-	// names one project, or none for an account entry that names none, and always a person: a
-	// named answer naming two or more projects, which a reader holding a write to one project
-	// would take as no limit at all, or naming none and no person, is the same case. A list no
-	// exchange mints (oauthwire.ValidProjects) and a service's token naming a project, which the
-	// exchange refuses to mint, are refused for the same reason.
-	shape := shapeOf(answer)
-	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
-		shape == shapeNotASession || (shape == shapeReadOnly && !v.servesReadOnly) ||
-		(shape == shapeResults && !v.servesResults) ||
-		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
-		(answer.Person == "" && len(answer.Projects) > 0) ||
-		oauthwire.ValidProjects(answer.Projects) != nil {
-		return "", Introspection{}, shapeNotASession, ErrNotASession
+	shape, err := sessionShape(answer, v.servesReadOnly, v.servesResults)
+	if err != nil {
+		return "", Introspection{}, shapeNotASession, err
 	}
 	return token, answer, shape, nil
+}
+
+// SessionCaller reads the broker's answer for a service that accepts ordinary session tokens.
+// It never admits a read-only or results token: only a verifier whose service opts into those
+// capabilities can admit them, and that service must then restrict every route accordingly.
+func SessionCaller(answer Introspection) (Caller, error) {
+	shape, err := sessionShape(answer, false, false)
+	if err != nil {
+		return Caller{}, err
+	}
+	return callerOf(answer, shape), nil
+}
+
+// sessionShape is the shared validation boundary for introspection readers and HTTP verifiers.
+// Reading a shape once preserves both the limited-token restrictions and the current caller API.
+func sessionShape(answer Introspection, servesReadOnly, servesResults bool) (tokenShape, error) {
+	if !answer.Active {
+		return shapeNotASession, ErrNotActive
+	}
+	if answer.Thumbprint == "" {
+		return shapeNotASession, ErrKeyMismatch
+	}
+	shape := shapeOf(answer)
+	if answer.Session == "" || (answer.Person == "" && answer.Service == "") || answer.ClientID != ExchangeClientID ||
+		shape == shapeNotASession || (shape == shapeReadOnly && !servesReadOnly) ||
+		(shape == shapeResults && !servesResults) ||
+		(answer.ProjectScope == ProjectScopeNamed && (len(answer.Projects) > 1 || (len(answer.Projects) == 0 && answer.Person == ""))) ||
+		(answer.Person == "" && len(answer.Projects) > 0) || oauthwire.ValidProjects(answer.Projects) != nil {
+		return shapeNotASession, ErrNotASession
+	}
+	return shape, nil
 }
 
 // tokenShape is what an answer's project scope and its OAuth scope together make of a token

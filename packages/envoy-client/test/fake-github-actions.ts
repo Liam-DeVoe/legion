@@ -1,4 +1,5 @@
 import { createHash, generateKeyPairSync, type KeyObject, sign } from "node:crypto";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 // The stand-in of GitHub that a CI job's result path meets twice: once as the issuer of the
 // job's OIDC token, which the secrets broker verifies (BROKER_EXCHANGE_GITHUB_ISSUER), and once
@@ -99,6 +100,9 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   // reads as a run's token until the broker checks the signature.
   const forger = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const installations = new Map(Object.entries(options.installations ?? {}));
+  const installationTokens = new Map(
+    [...installations.values()].map((id) => [id, fixtureSecret("install")])
+  );
   const runs = new Map<string, ActionsRun>();
   const checkRuns = new Map<string, ActionsRun>();
   // "<owner>/<name>@<sha>:<dir>" → file name → blob id, and blob id → content.
@@ -156,10 +160,6 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
           repository: run.repository,
           repository_owner: owner,
           workflow_ref: workflowRef,
-          // A job written directly in its workflow, as each job here is, gets job_workflow_ref
-          // equal to workflow_ref (measured on real runs on 2026-11-16), though GitHub's OIDC
-          // reference describes the claim for a reusable workflow. The broker refuses a token
-          // without it.
           job_workflow_ref: workflowRef,
           ref: run.ref,
           ref_type: "branch",
@@ -190,7 +190,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
       if (request.method === "POST" && mint !== null) {
         return Response.json(
           {
-            token: `ghs_local_${mint[1]}`,
+            token: installationTokens.get(Number(mint[1])),
             expires_at: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
           },
           { status: 201 }
@@ -204,7 +204,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
         const rest = repositoryRead[3] ?? "";
         const id = installations.get(repository);
         if (id === undefined) return notFound(repository);
-        if (request.headers.get("Authorization") !== `Bearer ghs_local_${id}`) {
+        if (request.headers.get("Authorization") !== `Bearer ${installationTokens.get(id)}`) {
           return Response.json({ message: "Requires authentication" }, { status: 401 });
         }
 
@@ -259,7 +259,7 @@ export function startFakeGitHubActions(options: FakeGitHubActionsOptions = {}): 
   return {
     url,
     addRun(run: ActionsRun): ActionsTokenRequest {
-      const requestToken = `actions-request-${crypto.randomUUID()}`;
+      const requestToken = fixtureSecret("actions");
       runs.set(requestToken, run);
       checkRuns.set(`${run.repository}#${run.checkRunId}`, run);
       return { requestUrl: `${url}/_actions/token?api-version=2.0`, requestToken };

@@ -91,16 +91,10 @@ So no argument of the command reaches this refusal: a program that ran every com
 
 ## A write whose outcome is unknown
 
-A write whose attempts run out throws the last attempt's own error, with its usual message.
-The exception is a last answer that alone would say that the write never took effect, while an earlier attempt may have reached Dispatch.
-Such an answer is a gateway's 408 or 429, Dispatch's own 429, or `409 KEY_IN_FLIGHT`, and the call then ends as a `DispatchWriteUnsettledError`.
-That error is deliberately not a `DispatchServiceError`, because a caller reads a `DispatchServiceError` as a refusal that Dispatch decided.
-Its message gives the last answer and the number of attempts.
-It then says whether an earlier attempt may have reached Dispatch, or whether Dispatch was still running one.
-It says that the write may or may not have taken effect.
-Where an answer named the call's key back, or the call asked again under that key, the message says that Dispatch finishes an attempt that it received.
-It then says to read the write back before you send it again, because a new command sends it under a new key.
-Otherwise it says to check whether the write took effect before you send it again.
+Once an attempt may have reached a handler, a call without a definitive keyed answer throws `DispatchWriteUnsettledError`, not the last attempt's raw error.
+It carries the write's key as `key` and the last safe error as `last` and `cause`.
+It is deliberately not a `DispatchServiceError`, which a caller reads as a refusal Dispatch decided.
+The message gives the last answer, attempt count and possible effect, and says to read the write back before a new command sends a new key.
 
 A write that ends with no answer at all is a `DispatchWriteUnsettledError` too, and its message names the request.
 The client cut off its last attempt for silence ("made no progress for 20 s, so it was cut off").
@@ -120,11 +114,11 @@ It is the stored result, a replay, a landed answer, or the handler's refusal.
 An echoed 401 is no verdict, because it can come after the handler committed.
 `422 KEY_REUSED` is no verdict either, because it says only that this request did not run.
 A no-route answer, Dispatch's check of the token, a dead token or a credential that could not present proves nothing of the earlier attempt.
-The client throws the caller's own cancellation as it is.
+Before any attempt may have reached a handler, the caller's cancellation remains its own error. After a possible landing it is the unsettled error's `last` and `cause`.
 
 `writeOutcomeUnknown(error)` says whether a write's error leaves its outcome unknown.
 It does for a `DispatchWriteUnsettledError`, for a gateway's answer with `mayHaveReachedDispatch`, and for Dispatch's own 5xx.
-It also does for a transport failure after an attempt that may have reached Dispatch, which the client throws as it is.
+A transport failure after an attempt that may have reached Dispatch is wrapped in `DispatchWriteUnsettledError` as well.
 A connection that never opened reached nothing: the host refused it, its name did not resolve, or no route reached the host.
 So did a tunnel that a proxy refused to open, which Bun reports as `ERR_PROXY_TUNNEL`.
 A request that Dispatch's check of its broker token turned away before any handler ran reached nothing too.

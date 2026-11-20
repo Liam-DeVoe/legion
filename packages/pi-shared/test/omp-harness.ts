@@ -17,6 +17,7 @@ import {
 import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { Terminal } from "@xterm/headless";
 import { linkOmpNatives } from "./omp-natives";
 
@@ -296,15 +297,21 @@ export const DEFAULT_STANDIN_PROVIDERS: readonly StandinProvider[] = [
  * Writes the profile under `home`: the stand-in at `base` as its providers, each keyed by a
  * literal like a plain API-key caller, every model role on the first model of the first provider,
  * and every provider a devbox or runner could answer from without it disabled, so no turn reaches
- * a real model. `config` lines are appended to config.yml. `providers` names what the case's own
- * models are — a fallback chain needs a second model to step to — and defaults to the single
- * `standin/standin-model` every other case runs on.
+ * a real model. `config` lines are appended to config.yml. The option `providers` names what the
+ * case's own models are — a fallback chain needs a second model to step to — and defaults to the
+ * single `standin/standin-model` every other case runs on. The option `registered` names the
+ * providers a case's own extension registers at runtime (`pi.registerProvider`): models.yml
+ * carries none of them, but `enabledModels` must still name each, or the session lists none of its
+ * models and `set_model` answers "Model not found".
  */
 export async function writeStandinProfile(
   home: string,
   base: string,
   config: readonly string[] = [],
-  providers: readonly StandinProvider[] = DEFAULT_STANDIN_PROVIDERS
+  {
+    providers = DEFAULT_STANDIN_PROVIDERS,
+    registered = [],
+  }: { providers?: readonly StandinProvider[]; registered?: readonly string[] } = {}
 ): Promise<void> {
   const agent = path.join(home, ".omp", "agent");
   const first = providers[0];
@@ -343,6 +350,7 @@ export async function writeStandinProfile(
     [
       "enabledModels:",
       ...providers.map(({ provider }) => `  - ${provider}/*`),
+      ...registered.map((provider) => `  - ${provider}/*`),
       "disabledProviders: [amazon-bedrock, bedrock-mantle, google, google-vertex, ollama, llama.cpp, lm-studio]",
       "modelRoles:",
       ...["default", "smol", "slow", "plan", "task", "commit", "tiny", "vision", "advisor"].map(
@@ -472,6 +480,25 @@ function ompEnv(options: { readonly home: string; readonly bin?: string }): {
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
   };
+}
+
+/** The transcript files under `sessions`, oldest first: one per life of a session, each named
+ *  `<timestamp>_<sessionId>.jsonl`, which sorts chronologically. */
+async function transcripts(sessions: string): Promise<string[]> {
+  return (await readdir(sessions, { recursive: true }))
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort()
+    .map((file) => path.join(sessions, file));
+}
+
+/** The session a resume reopens (`--resume <id>` among `spawnRpc`'s `args`): the newest
+ *  transcript's id under `sessions`, the `<sessionId>` of its name. */
+export async function resumeId(sessions: string): Promise<string> {
+  const newest = (await transcripts(sessions)).at(-1);
+  if (newest === undefined) throw new Error(`no transcript to resume under ${sessions}`);
+  const named = /^[^_]+_(.+)\.jsonl$/.exec(path.basename(newest));
+  if (named?.[1] === undefined) throw new Error(`cannot read a session id from ${newest}`);
+  return named[1];
 }
 
 export interface Interactive {
@@ -634,7 +661,7 @@ export interface Refusal {
   readonly explanation?: string;
   /** Text the model streamed before the refusal, committed by the time it came. The host walks
    * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1625-1653` and `:2693-2703`
+   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1782-1816` and `:3153-3163`
    * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
    * which of the two walks a case proves. */
   readonly text?: string;
@@ -643,7 +670,7 @@ export interface Refusal {
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3117-3126` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3185-3193` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It
@@ -925,6 +952,11 @@ export async function runLegionPane(
 ): Promise<LegionPane> {
   const { name, role, tree, issue } = options;
   const claimToken = `legion-${name}-${issue.toLowerCase()}-${role}`;
+  // The pane's secrets: the boot token its registration spends, the secret the stand-in daemon
+  // answers it with, and its Dispatch bearer.
+  const bootToken = fixtureSecret("boot");
+  const claimSecret = fixtureSecret("claim");
+  const dispatchToken = fixtureSecret("dsp");
   // The daemon's golden registration answer (`packages/daemon/internal/api`), so a field the
   // daemon adds to it reaches the stand-in's `claims/register`.
   const registered: Record<string, unknown> = JSON.parse(
@@ -992,7 +1024,7 @@ export async function runLegionPane(
         issue,
         role,
         generation: 1,
-        secret: `${name}-secret`,
+        secret: claimSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -1019,7 +1051,7 @@ export async function runLegionPane(
       ...deliveryFor(url.pathname, body, sessionID),
     });
   });
-  await writeStandinProfile(home, base, options.config ?? [], options.providers);
+  await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
@@ -1048,9 +1080,7 @@ export async function runLegionPane(
         env: {
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
-          ...(options.dispatch
-            ? { DISPATCH_URL: base, DISPATCH_TOKEN: `${name}-dispatch-token` }
-            : {}),
+          ...(options.dispatch ? { DISPATCH_URL: base, DISPATCH_TOKEN: dispatchToken } : {}),
           ...((options.legion ?? true)
             ? {
                 LEGION_DAEMON_URL: base,
@@ -1058,7 +1088,7 @@ export async function runLegionPane(
                 LEGION_TREE: tree,
                 LEGION_ISSUE: issue,
                 LEGION_GENERATION: "1",
-                LEGION_BOOT_TOKEN: `${name}-boot`,
+                LEGION_BOOT_TOKEN: bootToken,
                 LEGION_STATE_DIR: state,
                 LEGION_WORKSPACE: workspace,
               }
@@ -1107,23 +1137,6 @@ export async function runLegionPane(
   const prompts = typeof options.prompt === "string" ? [options.prompt] : options.prompt;
   await live(prompts, []);
 
-  /** The pane's transcript files, oldest first: one per life, each named
-   * `<timestamp>_<sessionId>.jsonl`, which sorts chronologically. */
-  const transcripts = async (): Promise<string[]> =>
-    (await readdir(sessions, { recursive: true }))
-      .filter((file) => file.endsWith(".jsonl"))
-      .sort()
-      .map((file) => path.join(sessions, file));
-
-  /** The session a resume reopens: the newest transcript's id, the `<sessionId>` of its name. */
-  const resumeId = async (): Promise<string> => {
-    const newest = (await transcripts()).at(-1);
-    if (newest === undefined) throw new Error(`no transcript to resume under ${sessions}`);
-    const named = /^[^_]+_(.+)\.jsonl$/.exec(path.basename(newest));
-    if (named?.[1] === undefined) throw new Error(`cannot read a session id from ${newest}`);
-    return named[1];
-  };
-
   const turns = (): Request[] =>
     requests.filter(
       (request) => request.path === "/anthropic/v1/messages" && !isSelfCheck(request)
@@ -1154,7 +1167,7 @@ export async function runLegionPane(
     // than be withheld (dispatch://INFRA-2188).
     transcriptEntries: async (customType) => {
       const entries: unknown[] = [];
-      for (const file of await transcripts()) {
+      for (const file of await transcripts(sessions)) {
         for (const line of (await readFile(file, "utf8")).split("\n").filter(Boolean)) {
           const entry: unknown = JSON.parse(line);
           if (typeof entry !== "object" || entry === null) continue;
@@ -1166,7 +1179,10 @@ export async function runLegionPane(
     },
     resume: async (more, prompt) => {
       scripted.push(...more);
-      await live(typeof prompt === "string" ? [prompt] : prompt, ["--resume", await resumeId()]);
+      await live(typeof prompt === "string" ? [prompt] : prompt, [
+        "--resume",
+        await resumeId(sessions),
+      ]);
     },
     workspace,
   };

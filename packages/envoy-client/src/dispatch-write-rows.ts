@@ -1,6 +1,6 @@
 /**
  * The row of each keyed write of `DispatchClient` (each POST and PATCH): what the method's callers
- * read of its 2xx answer, which `#writtenRow` checks before any caller reads it. Dispatch answers a
+ * read of its 2xx answer, which `#writePayload` checks before any caller reads it. Dispatch answers a
  * write's 2xx only after the write committed, so a 2xx that names the call's key back and is not
  * this row is a landing whose answer was lost (`ANSWER_LOST`), never a failure of the call. A 2xx
  * that names no key back is no answer of the call's, whatever it holds.
@@ -183,7 +183,7 @@ function storesNothing<Row extends z.ZodType>(row: Row): Row {
 }
 
 /** Whether the route whose 2xx `row` reads stores what it is sent. A 2xx of one that stores
- *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writtenRow`). */
+ *  nothing and gives no answer made nothing, so it is no landing (`DispatchClient.#writePayload`). */
 export function rowStores(row: z.ZodType): boolean {
   return !STORE_NOTHING.has(row);
 }
@@ -288,6 +288,8 @@ export const WRITE_ROWS = {
       commit_sha: z.string(),
     }),
   }),
+  /** A validation-only result preview records nothing. */
+  dryRunResult: storesNothing(z.looseObject({ line: z.string(), result: z.unknown() })),
   retractResult: z.looseObject({
     result_id: z.string(),
     reason: z.string(),

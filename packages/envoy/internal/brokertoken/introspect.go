@@ -98,6 +98,12 @@ func expiryOf(answer Introspection) time.Time {
 // that serves one, so a Caller marked either way is one such a verifier accepted. The run of a
 // results answer is copied, so a reader of the Caller shares nothing with the answer the cache
 // keeps for the next request.
+// a read-only answer names none, which sessionCaller holds it to. The service is carried as the
+// broker answered it, which is set exactly where the person is not (sessionCaller refuses an
+// answer naming neither). ReadOnly is shapeOf's verdict on the answer, which sessionCaller reached
+// and hands over as shape: callerOf runs only on an answer sessionCaller accepted, and
+// sessionCaller lets a read-only answer through only with its switch set, which only a verifier
+// that serves one sets, so a Caller marked read-only is one such a verifier accepted.
 func callerOf(answer Introspection, shape tokenShape) Caller {
 	caller := Caller{
 		Session: answer.Session, Person: answer.Person, Service: answer.Service,

@@ -12,6 +12,7 @@ import {
   pathKeepsBytesOf,
   typedBlockIdAttribute,
 } from "@legion/contracts";
+import { goBlankPattern } from "@legion/contracts/go-blank";
 import { actorText } from "../actor-text";
 import { commandName } from "../dispatch-command";
 import { DispatchAnswerMissingError, type DispatchClient } from "../dispatch-http";
@@ -31,7 +32,6 @@ import {
   toolImage,
 } from "../dispatch-pictures";
 import { messageFor } from "../errors";
-import { goBlankPattern } from "../go-space";
 import { decisionBlockLines, declinedAskLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
 import { otherAdviceLines, renderAdvice } from "./advice";
@@ -436,7 +436,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
   const checkLines = decisionBlockLines(edited.advice, {
     project: resolved.artifact.project,
     text: editAskText,
-    configUrl: linkBase,
+    linkBase,
   });
   // The issue's declined asks follow the blocks' own checks; renderAdvice's cadence line must
   // stay the result's last line. A project document stands on no issue, and the server sends
