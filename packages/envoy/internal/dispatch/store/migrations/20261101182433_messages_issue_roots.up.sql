@@ -1,10 +1,10 @@
 -- 20261101182433_messages_issue_roots.up.sql
 -- GET /api/v1/issues/{key}/messages reads an issue's root messages, `where issue_key = $1 and
 -- in_reply_to is null order by created_at, id` (api/messages.go listIssueRootMessagesQuery), and
--- no index of messages leads with issue_key: messages_in_reply_to (0013, renamed in 0016) leads
--- with the parent and messages_search (0061) is the text index, so every read of an issue's
--- threads scans the whole table. The key is (issue_key, created_at, id), the read's predicate and
--- then its order, so the plan takes one range of the index and sorts nothing.
+-- no index of messages leads with issue_key: messages_in_reply_to (0033) leads with the parent
+-- and messages_search (0061) is the text index, so every read of an issue's threads scans the
+-- whole table. The key is (issue_key, created_at, id), the read's predicate and then its order,
+-- so the plan takes one range of the index and sorts nothing.
 -- It is not partial on in_reply_to is null, though every row this read wants satisfies that:
 -- the reference closure reads an issue's messages whatever they reply to (refs/closure.go), and
 -- a whole index serves both reads where a partial one would serve one of them.
