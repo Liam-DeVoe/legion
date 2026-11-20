@@ -44,20 +44,21 @@ const (
 	// its first batch, out of what the ending of the replaced holder's sessions may spend (tryHold):
 	// the sum of the bounds of what runs between the ending and the first batch's first send -
 	// serve's read of its client's status before the first scan, bounded at statusReadBound, and
-	// the first scan's reads, bounded at firstBatchReadBound. So an ending that answers just
+	// the first batch's reads, left at least firstBatchReadBound. So an ending that answers just
 	// before its deadline, or is cut there, leaves the first batch to start within takeOverWithin
-	// of the stop, or its reads to fail by their bound and the take-over to be logged late.
+	// of the stop, or its reads to fail by the take-over's budget and the take-over to be logged
+	// late.
 	firstBatchShare = statusReadBound + firstBatchReadBound
-	// firstBatchReadBound is the least the reads of a take-over's first scan before its first
+	// firstBatchReadBound is the least the reads of a take-over's first batch before its first
 	// send are left (Deps.readsBy): its claim of events (readRows), the lookups of their
 	// destinations (resolveDestinations) and the reads of their roles' holders
-	// (resolveRoleHolders), a few statements, milliseconds on a healthy database, as one status
-	// read is. They run until the take-over's budget (tryHold), which leaves them at least this
-	// much after an ending that ran to its deadline and a status read that took its bound, and more
-	// after an ending that answered sooner, so a bound that ends them is one past which the first
-	// batch would start late anyway. A first scan whose reads run past it logs the take-over late
-	// and scans again at once with no bound (scan); a role holder whose read it cut is backed off
-	// as any failed read of one is.
+	// (resolveRoleHolders). They run until the take-over's budget (tryHold, Outbox.firstReadsBy),
+	// which leaves them at least this much after an ending that ran to its deadline and a status
+	// read that took its bound, and more after an ending that answered sooner, so a bound that ends
+	// them is one past which the first batch would start late anyway. A first batch whose reads
+	// run past the budget logs the take-over late and the scan reads again at once with no bound
+	// (scan); a role holder whose read it cut is backed off as any failed read of one is. The
+	// batches the scan starts after the first read with no bound.
 	firstBatchReadBound = 250 * time.Millisecond
 	// natsLossGrace is how long the holder's NATS connection may stay down before the holder gives
 	// the hold up, so that a process whose NATS works can publish instead. It is what
@@ -214,11 +215,11 @@ type Outbox struct {
 	// beside its first scan, which that ending holds none of (endLateSessions). Only Run's
 	// goroutine reads and writes it.
 	unended uuid.UUID
-	// firstReadsBy is the take-over's budget, by which the reads of the next scan's batches must
-	// answer (Deps.readsBy): tryHold sets it when it ended the replaced holder's sessions by the
-	// ending's deadline, and scan takes and clears it, so only the take-over's first scan is
-	// bounded, and only when the take-over is not late already. Only Run's goroutine reads and
-	// writes it.
+	// firstReadsBy is the take-over's budget, by which the reads of the next scan's first batch
+	// must answer (Deps.readsBy): tryHold sets it when it ended the replaced holder's sessions by
+	// the ending's deadline, and scan takes it for its first batch and clears it, so only the
+	// take-over's first batch is bounded, and only when the take-over is not late already. Only
+	// Run's goroutine reads and writes it.
 	firstReadsBy time.Time
 }
 
@@ -785,10 +786,12 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			default:
 				inflight++
 				o.claims.Add(1)
+				// Only the scan's first batch carries the take-over's budget (firstReadsBy): its
+				// start is the one takeOverWithin is about. A batch started after it - the next
+				// one, once it returns, or one a wake starts beside it - reads with no bound,
+				// since a budget that has passed meanwhile would cut its reads at once.
 				batch := deps
-				if !by.IsZero() {
-					batch.readsBy = by
-				}
+				batch.readsBy, by = by, time.Time{}
 				go func() {
 					ran := ranBatch{}
 					ran.batch, ran.err = scanBatch(batches, batch, hold, o.instance)

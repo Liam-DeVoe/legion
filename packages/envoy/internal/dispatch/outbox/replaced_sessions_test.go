@@ -537,7 +537,7 @@ func (p *slowStatusPublisher) Connected() bool {
 // scan's reads' (firstBatchReadBound). In the first row the status read and the first batch's
 // read of the events each take their bound less 100 ms, and the batch starts within the six
 // seconds on the database's clock. In the second the read takes 100 ms more than the whole share,
-// so it would end past the take-over's budget, which bounds the first scan's reads: the read
+// so it would end past the take-over's budget, which bounds the first batch's reads: the read
 // is cut, the take-over is logged late with that cause, and the next scan, with no bound,
 // publishes the event at once.
 func TestAStandbyWhoseEndingAnswersJustBeforeItsDeadlineStartsItsFirstBatchWithinTheSixSeconds(t *testing.T) {
@@ -871,7 +871,8 @@ func (h *heldRecord) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEnd
 // keeps the hold: the ending, the batch's statement and the hold's renewal each take a connection
 // of production's outbox pool (store's outboxPoolSize) at once, so the renewal waits behind
 // neither, and the batch is recorded published. The second row, whose ending answers, is the same
-// with no late take-over.
+// with no late take-over: its first batch's record ends past the take-over's budget, so the batch
+// the scan starts after it reads past that budget too, with no bound (scan).
 func TestAHolderKeepsItsHoldWhileALateEndingAndASlowFirstRecordShareTheOutboxPool(t *testing.T) {
 	for _, row := range []struct {
 		name   string

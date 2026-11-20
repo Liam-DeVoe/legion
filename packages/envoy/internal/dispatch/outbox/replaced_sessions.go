@@ -27,11 +27,11 @@ const replacedSessionsLine = "dispatch outbox: replaced the publisher hold's lap
 // lateTakeOverLine is the line logged at WARN, with one of the causes below, when a take-over
 // that replaced a lapsed row may start its first batch past takeOverWithin: tryHold's, when it
 // did not end the previous holder's sessions by the ending's deadline, and scan's, when the first
-// scan's reads did not answer within their bound.
+// batch's reads did not answer by the take-over's budget.
 const lateTakeOverLine = "dispatch outbox: late take-over of the publisher hold"
 
 // The causes tryHold names on lateTakeOverLine, and scan the last of them, when the take-over's
-// first scan's reads did not answer within firstBatchReadBound.
+// first batch's reads did not answer by the take-over's budget.
 const (
 	lateCauseTakeAfterDeadline = "the take came after the ending's deadline"
 	lateCauseEndingTimedOut    = "the ending of its sessions did not answer by its deadline"

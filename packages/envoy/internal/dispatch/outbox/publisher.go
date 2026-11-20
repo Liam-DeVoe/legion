@@ -144,12 +144,13 @@ type Deps struct {
 	// readsBy, when set, is the moment by which a batch's reads before its first send - its claim
 	// of events (readRows), the lookups of their destinations (resolveDestinations) and the reads
 	// of their roles' holders (resolveRoleHolders) - must have answered (reads). The outbox's scan
-	// sets it for the batches of a take-over's first scan (firstBatchReadBound) and no other.
+	// sets it, to the take-over's budget, for the first batch of a take-over's first scan and no
+	// other (Outbox.firstReadsBy).
 	readsBy time.Time
 }
 
 // errReadsBound marks a batch whose reads ran past Deps.readsBy (boundedRead): a take-over's
-// first scan whose reads did not answer within firstBatchReadBound.
+// first batch whose reads did not answer by the take-over's budget.
 var errReadsBound = errors.New("the batch's reads did not answer within their bound")
 
 // reads is ctx bounded by d.readsBy when it is set, and ctx itself when it is not.
