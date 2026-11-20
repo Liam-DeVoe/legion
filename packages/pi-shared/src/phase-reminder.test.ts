@@ -415,9 +415,9 @@ test("a refused turn below the limit reminds once, after the delay and not befor
   expect(timers).toHaveLength(2);
 });
 
-// At `launch_failure_limit` the daemon fails the claim, which is its own word that this session
-// is finished: the retry runs in a session of its own, in which the phase's task is given again.
-// The timer the last refused turn armed still fires, and its record check drops the reminder, so
+// A provider error that cannot clear fails the claim, which is the daemon's own word that this
+// session is finished: the retry runs in a session of its own, in which the phase's task is given
+// again. The timer the refused turn armed still fires, and its record check drops the reminder, so
 // nothing is written into a session nobody can act on.
 test("a refused turn at the limit, whose claim the daemon failed, reminds nothing", async () => {
   const { reminder, timers, sent } = rig({ state: claimFailed });
@@ -430,6 +430,54 @@ test("a refused turn at the limit, whose claim the daemon failed, reminds nothin
   await fireLast(timers);
 
   expect(sent).toEqual([]);
+});
+
+/** The daemon's state with this role's claim on the provider-error ladder: `run` turns in a row
+ * ended in a provider error, and the claim holds the task the ladder sends again. */
+const onTheLadder = (run: number) =>
+  ({
+    issues: {
+      "LEGION-208": {
+        phase: "implementing",
+        workers: {
+          implementer: {
+            claim: { state: "idle", providerErrorRun: run, pendingTask: { phase: "implementing" } },
+          },
+        },
+      },
+    },
+  }) as unknown as LegionState;
+
+// The daemon's provider-error ladder sends the task again after its own pause, which grows to ten
+// minutes. A reminder after each refused turn would put a prompt in front of the same session
+// before the ladder's pause is over, so a reminder owed while the ladder holds the task is dropped.
+// The ladder's next send starts a turn, and that turn's end decides the next reminder.
+test("a session refused three times in a row on the ladder gets no reminder between its sends", async () => {
+  const { reminder, timers, sent } = rig({ state: onTheLadder(3) });
+
+  for (let send = 1; send <= 3; send++) {
+    reminder.turnStarted();
+    expect(await reminder.settle({ kind: "refused", message: "Overloaded" })).toBeUndefined();
+    expect(timers).toHaveLength(send);
+    await fireLast(timers);
+  }
+
+  expect(sent).toEqual([]);
+});
+
+// The control: a claim with no run of provider errors is reminded as before, after a refused turn
+// and after a turn the worker ended with its phase open.
+test("a claim off the ladder is still reminded after a refused turn and after an open settle", async () => {
+  const { reminder, timers, sent } = rig({ state: onTheLadder(0) });
+
+  expect(await reminder.settle({ kind: "refused", message: "Overloaded" })).toBeUndefined();
+  await fireLast(timers);
+  expect(sent).toEqual([REMINDER]);
+
+  reminder.turnStarted();
+  expect(await reminder.settle(said("Pushed."))).toBeUndefined();
+  await fireLast(timers);
+  expect(sent).toEqual([REMINDER, REMINDER]);
 });
 
 // The daemon failing this role's claim is its word that the session is finished: the retry runs

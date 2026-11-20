@@ -256,7 +256,11 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
    * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
    * what stops Claude Code's reminder, which has no
-   * refused-turn settle of its own for a turn the provider never answered. Everything else fails
+   * refused-turn settle of its own for a turn the provider never answered. The reminder is also
+   * dropped while the daemon's provider-error ladder holds this claim's task (`providerErrorRun`
+   * and `pendingTask` on the claim): the ladder sends that task again after its own pause, and a
+   * reminder before then is one more prompt into a session the provider is refusing. The ladder's
+   * send starts a turn, and that turn's end decides the next reminder. Everything else fails
    * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
    * be nudged.
    */
@@ -287,12 +291,23 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
-    const state = record.workers[claim.role]?.claim.state;
-    if (state === "failed") {
+    const held = record.workers[claim.role]?.claim;
+    if (held?.state === "failed") {
       deps.log.debug("legion: the daemon has failed this claim; no reminder is sent", {
         issue: claim.issue,
         role: claim.role,
       });
+      return { reminds: false, record };
+    }
+    if ((held?.providerErrorRun ?? 0) > 0 && held?.pendingTask !== undefined) {
+      deps.log.debug(
+        "legion: the daemon's provider-error ladder holds this claim's task; no reminder is sent",
+        {
+          issue: claim.issue,
+          role: claim.role,
+          providerErrorRun: held.providerErrorRun,
+        }
+      );
       return { reminds: false, record };
     }
     return { reminds: true, record };
@@ -474,10 +489,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // The provider refused this turn, so the worker read nothing and said nothing: the state
         // stands, and this settle returns no continuation, because the host would turn it into
         // one more turn at once and the provider would refuse that one too. One timer is armed
-        // all the same, because a turn no daemon task started has no other wake. The daemon does
-        // not fail the claim for a refused turn. A session the provider keeps refusing is reminded
-        // once per reminder delay, each reminder counts, and the architect is told once the count
-        // reaches its limit.
+        // all the same, because a turn no daemon task started has no other wake. When the timer
+        // fires, its record check drops the reminder while the daemon's provider-error ladder
+        // holds the claim's task: the ladder sends it again after its own pause.
         advance(turn);
         continued = false;
         armReminder(reminderText(""), deps.limits.reminderMs);
