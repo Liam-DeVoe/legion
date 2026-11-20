@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"weak"
@@ -368,28 +370,12 @@ func fallBackEmailLinks(tree *pmdoc.Node, rendered string) (*pmdoc.Node, bool, e
 	return fallen, changed, nil
 }
 
-// versionedEmailLinks is rendered, the live tree a snapshot or a named version takes between a
-// browser's edit and its settlement, as the settlement's repair will leave it (planRepairs): where
-// the renderer cannot write its email links so that they read back, the tree with the base's
-// links (fallBackEmailLinks), rendered again, with rendered's head, and fell true. So the version's
-// markdown, token and index name one tree. The room keeps its own tree until its settlement, which
-// that edit has armed.
-func versionedEmailLinks(rendered renderedTree) (versioned renderedTree, fell bool, err error) {
-	fallen, changed, err := fallBackEmailLinks(rendered.tree, rendered.markdown)
-	if err != nil || !changed {
-		return rendered, false, err
-	}
-	markdown, offsets, err := renderTreeWithOffsets(fallen)
-	if err != nil {
-		return renderedTree{}, false, err
-	}
-	return renderedTree{tree: fallen, markdown: markdown, offsets: offsets, head: rendered.head}, true, nil
-}
-
 // fallBackEmailLinksLive gives doc's tree as it stands the base's email links where its own do not
 // read back (fallBackEmailLinks), in one transaction tagged with origin (rewriteLive), and writes
-// nothing where the tree reads back or no fallback does. Its caller decides from a read of its own
-// whether the tree needs it, so a document that does not opens no transaction.
+// nothing where the tree reads back or no fallback does. Its two callers - the settlement's repair
+// of the room (commitRepairs) and a live write's repair of its fork (applyLiveWritten) - decide
+// from a read of their own whether the tree needs it, so a document that does not opens no
+// transaction.
 func fallBackEmailLinksLive(doc *crdt.Doc, origin any) error {
 	var fallErr error
 	_, err := rewriteLive(doc, origin, func(live *pmdoc.Node) bool {
@@ -416,6 +402,54 @@ func textHoldsAt(tree *pmdoc.Node) bool {
 		return !holds
 	})
 	return holds
+}
+
+// changesTextHoldingAt reports whether after, the tree a write over before leaves, holds a
+// textblock whose own text holds an `@` (ownTextHoldsAt) and that before does not hold: no
+// textblock of before under the same block id equals it (pmdoc.Node.Equal), each of before's
+// standing for one of after's, so a copy the write made beside its original is the write's. A
+// textblock with no id is compared with before's that have none. It walks after, and before only
+// where after holds such a textblock, and renders and parses nothing. A textblock is compared
+// whole, not by its text alone (pmdoc.BlockText): a replace can take the link off an address and
+// leave the text as it was. And BlockText leaves out a block with no id, which a write makes: the
+// half a split leaves, or the paragraph a retype wraps (pmdoc.RetypeBlock).
+func changesTextHoldingAt(before, after *pmdoc.Node) bool {
+	written := map[string][]*pmdoc.Node{}
+	left := 0
+	pmdoc.Walk(after, func(node *pmdoc.Node) bool {
+		if ownTextHoldsAt(node) {
+			id := blockID(node)
+			written[id] = append(written[id], node)
+			left++
+		}
+		return true
+	})
+	if left == 0 {
+		return false
+	}
+	pmdoc.Walk(before, func(node *pmdoc.Node) bool {
+		if !ownTextHoldsAt(node) {
+			return true
+		}
+		id := blockID(node)
+		if index := slices.IndexFunc(written[id], node.Equal); index >= 0 {
+			written[id] = slices.Delete(written[id], index, index+1)
+			left--
+		}
+		return left > 0
+	})
+	return left > 0
+}
+
+// ownTextHoldsAt reports whether a text node directly under node holds an `@`: only a textblock
+// holds text nodes, and they are its own text.
+func ownTextHoldsAt(node *pmdoc.Node) bool {
+	for _, child := range node.Children {
+		if child.Type == "text" && strings.IndexByte(child.Text, '@') >= 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func renderTree(tree *pmdoc.Node) (string, error) {

@@ -37,10 +37,12 @@ body: |-
   email link the writer wrote, or one whose text starts `_www.`. Where the renderer cannot write
   an address as the rule reads it so that the text reads back, Dispatch gives that address its
   earlier reading: in a write of a whole text, in every edit, in an accepted or a rejected
-  suggestion, in a snapshot or a named version taken before the document's settlement, and in
-  the settlement of a document edited in the browser editor. So none of those refuses a text the
-  earlier release stores. Every reader keeps the rule's reading, so a text the browser
-  editor reads before it is saved can hold one link fewer than the version stores. An address
+  suggestion, in the settlement of a document edited in the browser editor, and before Dispatch
+  answers a document's token while that settlement is owed (a read, an edit, a snapshot or a
+  named version), so every token a caller holds names the tree the document stores. So none of
+  those refuses a text the earlier release stores. Every reader keeps the rule's reading, so a
+  text the browser editor reads before it is saved can hold one link fewer than the version
+  stores, until its settlement or the next answer of its token. An address
   split by inline markup keeps its earlier reading, and a link the
   writer wrote is never changed. The browser editor reads by the same rule, and the display tree
   version is now 4, so every display tree stored before is read again. Where a write's text reads
