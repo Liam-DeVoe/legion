@@ -854,7 +854,7 @@ row6_predecessor() {
 # is refused the role under that id; A then runs a `/clear` handoff whose claim names X, which B
 # registers now, and that claim is refused by the predecessor rule.
 row5_claude() {
-  local role x x2 state record instance_a instance_b holder holder_instance read_at clear_at handoff_at
+  local role x x2 state record instance_a instance_b holder holder_instance read_at clear_at handoff_at started
   role="$(role_for r5cc)"
   x="$(session_for r5ccx)"
   x2="$(session_for r5ccx2)"
@@ -875,7 +875,11 @@ row5_claude() {
   # took, and the row below needs B to have registered X last, which two servers heartbeating
   # against each other would settle by coin toss.
   launch_claude cc-b "$x" "$state" "$claude_heartbeat_ms" cc-a
-  renew_claude_until_started "$claude_first_claim_timeout" cc-a cc-b
+  # A start that has not ended by the loop's deadline fails this row by name, and the run goes on.
+  started=ended
+  renew_claude_until_started "$claude_first_claim_timeout" cc-a cc-b || started="not ended"
+  expect "process B ended its start within ${claude_first_claim_timeout}s of its launch (its ready line, then a tool it answered as a started server), while A answered for its claim" \
+    "$started" "ended"
   expect_true "process B made its first claim within ${claude_first_claim_timeout}s of its launch, while A answered for its claim" \
     made_claim cc-b "$x" "$x"
   # A answers once more, and the row reads the role at once: this row is what happens while the

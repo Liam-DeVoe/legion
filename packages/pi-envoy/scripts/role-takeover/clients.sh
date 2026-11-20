@@ -32,8 +32,9 @@
 #   client_reply_timeout   how long a client may take to answer one command
 #   listener_wait_timeout  how long a renewal may take to reach the listener
 #   run_id                 this run's id, which renew_claude's topic carries
-# and defines refuse, wait_for, pick_port and port_open, and the scenario_pids and scenario_fds
-# its teardown kills and closes, which every process and descriptor started here is added to.
+# and defines refuse, note, wait_for, pick_port and port_open, and the scenario_pids and
+# scenario_fds its teardown kills and closes, which every process and descriptor started here is
+# added to.
 
 # ---- the clients ---------------------------------------------------------------------------------
 declare -A proxy_url proxy_log client_fd client_out client_pid
@@ -168,9 +169,12 @@ post() {
   printf '%s\n' "$(jq -c --arg id "$posted" '. + {id: $id}' <<<"$body")" >&"${client_fd[$label]}"
 }
 
-# answer_to LABEL ID: that client's answer to the command ID, empty while it has not answered.
+# answer_to LABEL ID: that client's answer to the command ID, empty while it has not answered. Not
+# having answered yet is a normal state (a posted command is read back on a later pass), so the
+# empty answer comes with status 0: grep's 1 for no match would otherwise fail an assignment from
+# this under the smoke's errexit and end the whole run with no row table.
 answer_to() {
-  grep -F "\"id\":\"${2}\"" "${client_out[$1]}" 2>/dev/null | tail -n 1
+  grep -F "\"id\":\"${2}\"" "${client_out[$1]}" 2>/dev/null | tail -n 1 || true
 }
 
 # has_answered LABEL ID: that client has answered the command ID.
@@ -450,7 +454,10 @@ renew_claude_until_claimed() {
 # directories) is file work a loaded machine stretches past the window too, so the holder answers
 # through it. The tool call is posted and its answer read on a later pass, never waited on: a
 # claimant whose start has stalled answers late, and the holder answering meanwhile is the point.
-# Refused, as claude_started is, when CLAIMANT has not started within SECONDS.
+# A probe still unanswered on a pass is that normal state, and the loop reads it again on the
+# next. 1 when CLAIMANT has not ended its start within SECONDS, after a note of where it stands
+# (no ready line, or the last answer its probe got), so the row that needs the start fails by its
+# own name and the run goes on to its row table; refused only when the client refuses the probe.
 renew_claude_until_started() {
   local deadline=$((SECONDS + $1)) holder="$2" claimant="$3" probe="" answer=""
   while :; do
@@ -469,9 +476,12 @@ renew_claude_until_started() {
       probe="$posted"
     fi
     if ((SECONDS >= deadline)); then
-      client_ready "$claimant" ||
-        refuse "the ${claimant} Claude Code channel server did not start: $(tail -n 10 "${work}/logs/${claimant}.err") $(tail -n 10 "${work}/logs/${claimant}-channel.err" 2>/dev/null)"
-      refuse "the ${claimant} Claude Code channel server answered no tool within ${1}s: ${answer:-no answer}"
+      if client_ready "$claimant"; then
+        note "   the ${claimant} Claude Code channel server answered no tool as a started server within ${1}s: ${answer:-its probe ${probe:-} has no answer}"
+      else
+        note "   the ${claimant} Claude Code channel server wrote no ready line within ${1}s: $(tail -n 10 "${work}/logs/${claimant}.err") $(tail -n 10 "${work}/logs/${claimant}-channel.err" 2>/dev/null)"
+      fi
+      return 1
     fi
     sleep 0.2
   done
