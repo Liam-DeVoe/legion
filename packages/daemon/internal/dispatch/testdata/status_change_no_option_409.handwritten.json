@@ -1,0 +1,13 @@
+{
+  "code": "PARENT_STATUS_CONFLICT",
+  "error": "LEGION-1 cannot move to backlog while an issue under it is in work: LEGION-2 [in_progress]; name what happens to it with include_children or unlink_children",
+  "issues": [
+    {
+      "key": "LEGION-2",
+      "title": "A child at work under it",
+      "status": "in_progress",
+      "relation": "child"
+    }
+  ],
+  "changed": []
+}

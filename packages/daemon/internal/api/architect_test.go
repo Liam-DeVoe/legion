@@ -174,6 +174,11 @@ func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (d
 	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
 }
 
+// ChangeStatus is the status-change route, which no architect route calls.
+func (r *statusRecorder) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("the architect routes send no status change")
+}
+
 func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("the architect routes hand nothing over")
 }

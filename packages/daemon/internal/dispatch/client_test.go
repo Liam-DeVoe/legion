@@ -1,12 +1,17 @@
 package dispatch
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strconv"
@@ -289,6 +294,260 @@ func TestSetStatusSendsDaemonActorAndAnswersTheWrittenIssue(t *testing.T) {
 		!written.HandedOver || written.ResolvedRepo != "acme/widgets" || len(written.BlockedBy) != 1 || written.Claim != nil || written.ClaimUnread {
 		t.Fatalf("written issue = %#v, want LEGION-4 as the PATCH answered it, at sequence 12", written)
 	}
+}
+
+// A status change posts its status and each option it names to the route, under the daemon's own
+// session as every write of the client goes, fenced on the sequence its caller read, and under the
+// request key its caller gives. An option it does not name and a fence it does not give stay off
+// the wire, and an empty key sends no header, so Dispatch runs that call unkeyed.
+func TestChangeStatusPostsItsOptionsUnderTheDaemonSessionAndItsKey(t *testing.T) {
+	type sent struct {
+		keys []string
+		body map[string]any
+	}
+	var calls []sent
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.EscapedPath() != "/api/v1/issues/LEGION-1/status-change" {
+			t.Fatalf("request = %s %s, want POST /api/v1/issues/LEGION-1/status-change", r.Method, r.URL.EscapedPath())
+		}
+		assertBearer(t, r)
+		var body map[string]any
+		decodeJSON(t, r, &body)
+		calls = append(calls, sent{keys: r.Header.Values("Idempotency-Key"), body: body})
+		writeJSON(t, w, map[string]any{"issue": map[string]any{"key": "LEGION-1", "status": "backlog", "last_seq": 9}, "changed": []any{}})
+	}))
+	defer server.Close()
+
+	client := New(server.URL, dispatchToken)
+	for _, change := range []StatusChange{
+		{Status: "backlog", ExpectedSequence: 7, IncludeChildren: true, IdempotencyKey: "outbox-12-1"},
+		{Status: "todo", UnlinkChildren: true, IncludeParent: true, DryRun: true},
+	} {
+		if _, err := client.ChangeStatus(context.Background(), "LEGION-1", change); err != nil {
+			t.Fatalf("change status %+v: %v", change, err)
+		}
+	}
+	actor := map[string]any{"kind": "session", "id": "legion-daemon:LEGION"}
+	want := []sent{
+		{keys: []string{"outbox-12-1"}, body: map[string]any{"status": "backlog", "expected_sequence": float64(7), "include_children": true, "actor": actor}},
+		{body: map[string]any{"status": "todo", "unlink_children": true, "include_parent": true, "dry_run": true, "actor": actor}},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("status changes sent = %#v, want %#v", calls, want)
+	}
+}
+
+// Each answer Dispatch gives a status change, and each of its request key's answers, as the client
+// reads them: the answers of testdata, whose README says how each was captured from a real
+// Dispatch or that it is written by hand until a Dispatch serves the route. Every file there has
+// its case here, so a capture that takes a hand-written file's place is read too.
+func TestChangeStatusReadsEachSavedAnswerOfDispatch(t *testing.T) {
+	ctx := context.Background()
+	change := StatusChange{Status: "backlog", ExpectedSequence: 7, IncludeChildren: true, IdempotencyKey: "outbox-12-1"}
+	cases := []struct {
+		answer string
+		read   func(t *testing.T, client *HTTPClient)
+	}{
+		{"status_change_no_route.http", func(t *testing.T, client *HTTPClient) {
+			// A Dispatch older than the route: no handler ran, and the write is taken once the
+			// release that serves the route is live.
+			_, err := client.ChangeStatus(ctx, "CORE-1", change)
+			if !NoRoute(err) {
+				t.Fatalf("status change against a Dispatch without the route = %v, want its router's 404 (NoRoute)", err)
+			}
+			if refusal := refusalOf(t, err); refusal.Issues != nil || refusal.Changed != nil {
+				t.Fatalf("the router's 404 = %#v, want no issues and no committed steps", refusal)
+			}
+		}},
+		{"key_reused.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-4", change)
+			assertRefusal(t, err, http.StatusUnprocessableEntity, "KEY_REUSED")
+		}},
+		{"key_in_flight.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-7", change)
+			assertRefusal(t, err, http.StatusConflict, "KEY_IN_FLIGHT")
+		}},
+		{"key_committed.http", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "CORE-1", change)
+			assertRefusal(t, err, http.StatusConflict, "KEY_COMMITTED")
+		}},
+		{"key_replayed.http", func(t *testing.T, client *HTTPClient) {
+			// Captured on the PATCH that answered it, the route it is read from here: a repeat
+			// under its key is answered the first answer again, which reads as that answer did.
+			written, err := client.SetStatusAt(ctx, Issue{Key: "CORE-5", LastSeq: 3}, "todo")
+			if err != nil {
+				t.Fatalf("a replayed answer = %v, want the issue it answered", err)
+			}
+			if written.Key != "CORE-5" || written.Project != "CORE" || written.Status != "todo" || written.LastSeq != 4 ||
+				written.Parent != nil || written.PrimaryArtifactID != "32c04a24-77e7-4e95-877c-a6a424dd7ecb" {
+				t.Fatalf("replayed issue = %#v, want CORE-5 at todo and sequence 4 as the first answer gave it", written)
+			}
+		}},
+		{"status_change_include_children_200.handwritten.json", func(t *testing.T, client *HTTPClient) {
+			result, err := client.ChangeStatus(ctx, "LEGION-1", change)
+			if err != nil {
+				t.Fatalf("status change: %v", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-1 backlog parent=none seq=9" || !result.Issue.HandedOver {
+				t.Fatalf("named issue = %s (%#v), want LEGION-1 at backlog and its own step's sequence", got, result.Issue)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-2 backlog parent=LEGION-1 previous=5 issue=LEGION-2 backlog parent=LEGION-1 seq=6",
+				"LEGION-1 backlog parent=none previous=8 issue=LEGION-1 backlog parent=none seq=9")
+		}},
+		{"status_change_dry_run_200.handwritten.json", func(t *testing.T, client *HTTPClient) {
+			dryRun := change
+			dryRun.DryRun = true
+			result, err := client.ChangeStatus(ctx, "LEGION-1", dryRun)
+			if err != nil {
+				t.Fatalf("dry run: %v", err)
+			}
+			if got := issueSummary(&result.Issue); got != "LEGION-1 in_progress parent=none seq=7" {
+				t.Fatalf("named issue = %s, want LEGION-1 as it stands", got)
+			}
+			assertChanged(t, result.Changed,
+				"LEGION-2 backlog parent=LEGION-1 previous=5 issue=none",
+				"LEGION-1 backlog parent=none previous=7 issue=none")
+		}},
+		{"status_change_stale_sequence_409.handwritten.json", func(t *testing.T, client *HTTPClient) {
+			// Read as the PATCH's ISSUE_CHANGED is: the caller reads the issue again.
+			_, err := client.ChangeStatus(ctx, "LEGION-1", change)
+			refusal := assertRefusal(t, err, http.StatusConflict, "ISSUE_CHANGED")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a stale read the caller reads again", err)
+			}
+			assertChanged(t, refusal.Changed)
+		}},
+		{"status_change_no_option_409.handwritten.json", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "LEGION-1", StatusChange{Status: "backlog", ExpectedSequence: 7})
+			if !ParentStatusConflict(err) {
+				t.Fatalf("status change = %v, want PARENT_STATUS_CONFLICT", err)
+			}
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a refusal its caller decides on", err)
+			}
+			refusal := refusalOf(t, err)
+			if want := []ConflictIssue{{Key: "LEGION-2", Status: "in_progress"}}; !reflect.DeepEqual(refusal.Issues, want) {
+				t.Fatalf("refusal's issues = %#v, want %#v", refusal.Issues, want)
+			}
+			assertChanged(t, refusal.Changed)
+		}},
+		{"status_change_midway_refused_409.handwritten.json", func(t *testing.T, client *HTTPClient) {
+			_, err := client.ChangeStatus(ctx, "LEGION-1", change)
+			refusal := assertRefusal(t, err, http.StatusConflict, "ISSUE_CHANGED")
+			if _, permanent := PermanentRefusal(err); permanent {
+				t.Fatalf("PermanentRefusal(%v) = permanent, want a stale read the caller reads again", err)
+			}
+			assertChanged(t, refusal.Changed,
+				"LEGION-3 backlog parent=LEGION-1 previous=4 issue=LEGION-3 backlog parent=LEGION-1 seq=5")
+		}},
+	}
+	read := map[string]bool{}
+	for _, testCase := range cases {
+		read[testCase.answer] = true
+		t.Run(testCase.answer, func(t *testing.T) {
+			testCase.read(t, New(replayingDispatch(t, testCase.answer).URL, dispatchToken))
+		})
+	}
+	saved, err := os.ReadDir("testdata")
+	if err != nil {
+		t.Fatalf("list the saved answers: %v", err)
+	}
+	for _, entry := range saved {
+		if entry.Name() != "README" && !read[entry.Name()] {
+			t.Errorf("testdata/%s is read by no case", entry.Name())
+		}
+	}
+}
+
+// replayingDispatch is a server that answers every request with the saved answer name of
+// testdata: a .http file is one whole answer as `curl --include` printed it, and a
+// .handwritten.json file the JSON body of an answer whose status ends its name
+// (`<case>_<status>.handwritten.json`).
+func replayingDispatch(t *testing.T, name string) *httptest.Server {
+	t.Helper()
+	path := filepath.Join("testdata", name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	status, header, body := http.StatusOK, http.Header{"Content-Type": {"application/json"}}, data
+	if strings.HasSuffix(name, ".http") {
+		saved, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(data)), nil)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		defer saved.Body.Close()
+		if body, err = io.ReadAll(saved.Body); err != nil {
+			t.Fatalf("read the body of %s: %v", path, err)
+		}
+		status, header = saved.StatusCode, saved.Header
+		header.Del("Content-Length")
+	} else {
+		stem, handwritten := strings.CutSuffix(name, ".handwritten.json")
+		if status, err = strconv.Atoi(stem[strings.LastIndex(stem, "_")+1:]); !handwritten || err != nil {
+			t.Fatalf("%s is neither a .http capture nor a <case>_<status>.handwritten.json body", path)
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for key, values := range header {
+			w.Header()[key] = values
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// refusalOf is err as the *Error Dispatch's refusal is, failing the test when it is none.
+func refusalOf(t *testing.T, err error) *Error {
+	t.Helper()
+	var refusal *Error
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %T %v, want Dispatch's refusal (*dispatch.Error)", err, err)
+	}
+	return refusal
+}
+
+// assertRefusal is refusalOf, holding the refusal to its status and code and to a message that
+// says something, and to no issues: only a PARENT_STATUS_CONFLICT names any.
+func assertRefusal(t *testing.T, err error, status int, code string) *Error {
+	t.Helper()
+	refusal := refusalOf(t, err)
+	if refusal.Status != status || refusal.Code != code || refusal.Message == "" || refusal.Issues != nil {
+		t.Fatalf("refusal = %#v, want %d %s with its message and no issues", refusal, status, code)
+	}
+	return refusal
+}
+
+// assertChanged holds a status change's entries, in order, to want, each on one line: its key,
+// status, parent and previous sequence, and its issue as issueSummary writes it.
+func assertChanged(t *testing.T, entries []StatusChangeEntry, want ...string) {
+	t.Helper()
+	var got []string
+	for _, entry := range entries {
+		got = append(got, fmt.Sprintf("%s %s parent=%s previous=%d issue=%s",
+			entry.Key, entry.Status, parentOf(entry.Parent), entry.PreviousLastSeq, issueSummary(entry.Issue)))
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("changed = %q, want %q", got, want)
+	}
+}
+
+// issueSummary is an issue's key, status, parent and sequence on one line, "none" for no issue.
+func issueSummary(issue *Issue) string {
+	if issue == nil {
+		return "none"
+	}
+	return fmt.Sprintf("%s %s parent=%s seq=%d", issue.Key, issue.Status, parentOf(issue.Parent), issue.LastSeq)
+}
+
+func parentOf(parent *string) string {
+	if parent == nil {
+		return "none"
+	}
+	return *parent
 }
 
 // A claim release is a DELETE on the issue's claim, under the daemon's own session. It sends a

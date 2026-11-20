@@ -1,0 +1,97 @@
+Dispatch's answers to the daemon's status writes, which client_test.go serves from an httptest
+server to HTTPClient.ChangeStatus and HTTPClient.SetStatusAt, one case for each file here.
+
+A file comes in one of two forms:
+
+  <name>.http                       one whole answer as `curl --include` prints it: the status
+                                    line, every header and the body, with CRLF line ends.
+  <name>_<status>.handwritten.json  the JSON body of an answer no Dispatch served yet, its HTTP
+                                    status the number that ends its name. It is written by hand
+                                    from the status-change route's interface (INFRA-4731, as the
+                                    plan of INFRA-4730 gives it in "The interfaces this work
+                                    depends on"), each issue in it in the shape of a captured PATCH
+                                    answer (key_replayed.http). A capture from a Dispatch that
+                                    serves the route replaces each, and the file it leaves holds
+                                    what the route really answers.
+
+Captured on 2026-11-20 between 15:47:21Z and 15:47:57Z from `bun run dispatch:local`
+(packages/dispatch/e2e/local-instance.ts), built from this repository at commit 25c0b17968b3,
+whose Dispatch serves no status-change route. It ran with DATABASE_URL naming a new database of
+its own, and the commands below use the URL it printed as $URL, its agent token e2e-token and the
+issues its seed files (CORE-1 to CORE-7). Each command writes the file named beside it:
+
+  status_change_no_route.http  the router's 404 of a Dispatch older than the route, which the
+                               client reads as NoRoute:
+      curl -sS --include -X POST -H 'Accept: application/json' -H 'Authorization: Bearer e2e-token' \
+        -H 'Content-Type: application/json' -H 'Idempotency-Key: capture-no-route-1' \
+        "$URL/api/v1/issues/CORE-1/status-change" \
+        -d '{"status":"backlog","unlink_children":true,"actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+The request key's answers are the same on every POST and PATCH route (keyedWrites in
+packages/envoy/internal/dispatch/api/request_keys.go), so these were captured on the issue PATCH.
+Each command below sends, besides the Idempotency-Key it names, the headers of the first one:
+Accept: application/json, Authorization: Bearer e2e-token and Content-Type: application/json.
+
+  key_reused.http     422 KEY_REUSED: a second PATCH under one key with another body; the first,
+                      under the same key, was answered 200.
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-reused-1' "$URL/api/v1/issues/CORE-4" \
+        -d '{"status":"backlog","actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-reused-1' "$URL/api/v1/issues/CORE-4" \
+        -d '{"status":"todo","actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+  key_replayed.http   the repeat of a finished PATCH under its key: the first answer's status and
+                      body again, with Idempotency-Replayed: ?1. The same command was run twice;
+                      this is the second answer, whose body is byte for byte the first's.
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-replayed-1' "$URL/api/v1/issues/CORE-5" \
+        -d '{"status":"todo","expected_sequence":3,"actor":{"kind":"session","id":"legion-daemon:CORE"}}'
+
+  key_in_flight.http  409 KEY_IN_FLIGHT with Retry-After: 1: the repeat of a PATCH whose first run
+                      still runs. Dispatch's slow-write hook (DISPATCH_TEST_HOOKS=1, which
+                      dispatch:local sets; slow_write_hook.go) holds the first run five seconds,
+                      and the repeat is sent one second after it:
+      curl -sS ... -X POST "$URL/api/v1/writes/_test/slow" \
+        -d '{"method":"PATCH","path":"/api/v1/issues/CORE-7","delay_ms":5000}'
+      curl -sS --include -X PATCH ... -H 'Idempotency-Key: capture-key-in-flight-1' "$URL/api/v1/issues/CORE-7" \
+        -d '{"status":"backlog","actor":{"kind":"session","id":"legion-daemon:CORE"}}' &
+      sleep 1
+      (the same PATCH again, in the foreground: this answer)
+      curl -sS ... -X POST "$URL/api/v1/writes/_test/slow" \
+        -d '{"method":"PATCH","path":"/api/v1/issues/CORE-7","delay_ms":0}'
+
+  key_committed.http  409 KEY_COMMITTED: the repeat of a write that committed and kept no answer.
+                      The agent-token mint is the route that answers so on demand
+                      (answerHoldsSecret in request_keys.go: its answer holds a secret, so its key
+                      keeps none), and it takes a person, here alice by dev sign-in. The first
+                      answer, 201 with the new token, was not kept:
+      curl -sS -o /dev/null -c jar "$URL/auth/_dev/signin?login=alice&next=/"
+      curl -sS -o /dev/null -X POST -b jar -H "Origin: $URL" -H 'Accept: application/json' \
+        -H 'Content-Type: application/json' -H 'Idempotency-Key: capture-key-committed-1' \
+        "$URL/api/v1/me/agent-tokens" -d '{"name":"capture-key-committed"}'
+      (the same POST again, with --include in place of -o /dev/null: this answer)
+
+Hand-written, each the answer to a call on LEGION-1, a parent at work with LEGION-2 (and, in the
+midway refusal, LEGION-3) at work under it:
+
+  status_change_include_children_200.handwritten.json
+                      backlog with include_children, fenced at 7: LEGION-2's step, then LEGION-1's.
+  status_change_dry_run_200.handwritten.json
+                      the same call with dry_run: the entries it would make, no issue in them.
+  status_change_stale_sequence_409.handwritten.json
+                      the same call fenced at a stale sequence: 409 ISSUE_CHANGED, nothing changed.
+  status_change_no_option_409.handwritten.json
+                      backlog with no option: 409 PARENT_STATUS_CONFLICT naming LEGION-2.
+  status_change_midway_refused_409.handwritten.json
+                      backlog with include_children while a person writes LEGION-1 between two
+                      steps: 409 ISSUE_CHANGED with the entry of the step that committed.
+
+Once INFRA-4731's route is merged in, the first four are captured from `bun run dispatch:local`
+run with DISPATCH_PARENT_STATUS_RULE=on (and again off) on a seeded parent with an open child,
+one `curl --include` of the route per answer into status_change_<case>.http, and the midway
+refusal and the keyed repeat of a run that stopped by TestCaptureStatusChangeAnswers
+(internal/daemon/status_change_capture_test.go, build tag capture, run by hand):
+
+  go -C packages/daemon test -tags capture -count=1 -run '^TestCaptureStatusChangeAnswers$' ./internal/daemon/
+
+which writes status_change_midway_refused.http and status_change_keyed_repeat.http here. Each
+capture then takes the place of the hand-written file of its case, and client_test.go's case
+names the capture.

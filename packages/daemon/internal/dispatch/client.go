@@ -153,6 +153,33 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	return response.issue(), nil
 }
 
+// ChangeStatus writes change.Status on the issue key through POST
+// /api/v1/issues/{key}/status-change, the route that takes the options the PATCH does not
+// (StatusChange), as the daemon's own session, the actor every write of this client carries, and
+// under change.IdempotencyKey. Dispatch writes one issue at a time, each step in a transaction of
+// its own, in an order that keeps each parent's status in line with its children's after every
+// commit, and answers the named issue as the PATCH answers it with an entry for each issue the
+// call changed. Every refusal is an *Error that carries the entries of the steps that committed
+// before it (Error.Changed): 409 ISSUE_CHANGED for a stale ExpectedSequence, read as SetStatusAt's
+// is; 409 PARENT_STATUS_CONFLICT with the issues that hold the rule (Error.Issues); and the request
+// key's own answers, 422 KEY_REUSED, 409 KEY_IN_FLIGHT and 409 KEY_COMMITTED. A Dispatch older than
+// the route answers its router's 404 (NoRoute).
+func (c *HTTPClient) ChangeStatus(ctx context.Context, key string, change StatusChange) (StatusChangeResult, error) {
+	var response statusChangeResponse
+	if err := c.requestKeyed(ctx, http.MethodPost, "/api/v1/issues/"+url.PathEscape(key)+"/status-change", change.IdempotencyKey, statusChangeWrite{
+		Status:           change.Status,
+		ExpectedSequence: change.ExpectedSequence,
+		IncludeChildren:  change.IncludeChildren,
+		UnlinkChildren:   change.UnlinkChildren,
+		IncludeParent:    change.IncludeParent,
+		DryRun:           change.DryRun,
+		Actor:            daemonActor(key),
+	}, &response); err != nil {
+		return StatusChangeResult{}, err
+	}
+	return StatusChangeResult{Issue: response.Issue.issue(), Changed: statusChangeEntries(response.Changed)}, nil
+}
+
 // ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
 // the daemon's own session. The actor body is required, not an extra: Dispatch's route decodes
 // the request and refuses one that carries no Content-Type: application/json, which request sets
@@ -543,6 +570,12 @@ func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
 }
 
 func (c *HTTPClient) request(ctx context.Context, method, path string, body, into any) error {
+	return c.requestKeyed(ctx, method, path, "", body, into)
+}
+
+// requestKeyed is request under the request key key, which Dispatch's Idempotency-Key header
+// carries; an empty key sends no header, as every route but the status change does.
+func (c *HTTPClient) requestKeyed(ctx context.Context, method, path, key string, body, into any) error {
 	bounded, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
@@ -562,6 +595,9 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 	request.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
+	}
+	if key != "" {
+		request.Header.Set(idempotencyKeyHeader, key)
 	}
 
 	response, err := c.httpClient.Do(request)
@@ -628,8 +664,28 @@ func dispatchError(status int, statusText string, payload []byte) *Error {
 	if response.Error == "" {
 		response.Error = statusText
 	}
-	return &Error{Status: status, Code: response.Code, Message: response.Error}
+	refusal := &Error{Status: status, Code: response.Code, Message: response.Error}
+	// A status write's refusal names the issues that hold it and the status-change steps that
+	// committed before it. They are read apart from the code and the message, so the refusal of
+	// another route whose body holds a member of either name in another shape keeps both.
+	var members struct {
+		Issues  []conflictIssueResponse     `json:"issues"`
+		Changed []statusChangeEntryResponse `json:"changed"`
+	}
+	if json.Unmarshal(payload, &members) == nil {
+		for _, issue := range members.Issues {
+			refusal.Issues = append(refusal.Issues, ConflictIssue{Key: issue.Key, Status: issue.Status})
+		}
+		refusal.Changed = statusChangeEntries(members.Changed)
+	}
+	return refusal
 }
+
+// idempotencyKeyHeader is the request header a write names its intent with, the same on every
+// retry of that intent: Dispatch's contracts.IdempotencyKeyHeader (packages/envoy/internal/contracts,
+// generated from IDEMPOTENCY_KEY_HEADER in packages/contracts), which this module cannot import,
+// since it is internal to Envoy's. No mechanism shares the value, so the spellings change together.
+const idempotencyKeyHeader = "Idempotency-Key"
 
 type issueSummaryResponse struct {
 	Key          string         `json:"key"`
@@ -803,6 +859,59 @@ type daemonWrite struct {
 	ExpectedSequence int64    `json:"expected_sequence,omitempty"`
 	Body             string   `json:"body,omitempty"`
 	Actor            actor    `json:"actor"`
+}
+
+// statusChangeWrite is the body of a status-change call: the status, the expected sequence and the
+// actor as the PATCH's daemonWrite carries them, and the route's own options, each left out when
+// false. It is a type of its own so that no option can ride a PATCH, which a Dispatch ignores.
+type statusChangeWrite struct {
+	Status           string `json:"status"`
+	ExpectedSequence int64  `json:"expected_sequence,omitempty"`
+	IncludeChildren  bool   `json:"include_children,omitempty"`
+	UnlinkChildren   bool   `json:"unlink_children,omitempty"`
+	IncludeParent    bool   `json:"include_parent,omitempty"`
+	DryRun           bool   `json:"dry_run,omitempty"`
+	Actor            actor  `json:"actor"`
+}
+
+// statusChangeResponse is the status-change route's answer: the named issue as the PATCH answers
+// it and an entry for each issue the call changed.
+type statusChangeResponse struct {
+	Issue   issueResponse               `json:"issue"`
+	Changed []statusChangeEntryResponse `json:"changed"`
+}
+
+// statusChangeEntryResponse is one entry of a status-change answer's changed list, its issue null
+// on a dry run.
+type statusChangeEntryResponse struct {
+	Key             string         `json:"key"`
+	Status          string         `json:"status"`
+	Parent          *string        `json:"parent"`
+	PreviousLastSeq int64          `json:"previous_last_seq"`
+	Issue           *issueResponse `json:"issue"`
+}
+
+// statusChangeEntries is a changed list as StatusChangeEntry values, nil for an empty one.
+func statusChangeEntries(responses []statusChangeEntryResponse) []StatusChangeEntry {
+	var entries []StatusChangeEntry
+	for _, response := range responses {
+		entry := StatusChangeEntry{
+			Key: response.Key, Status: response.Status, Parent: response.Parent, PreviousLastSeq: response.PreviousLastSeq,
+		}
+		if response.Issue != nil {
+			issue := response.Issue.issue()
+			entry.Issue = &issue
+		}
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+// conflictIssueResponse is one issue a PARENT_STATUS_CONFLICT refusal names; its title and its
+// relation to the written issue are left undecoded.
+type conflictIssueResponse struct {
+	Key    string `json:"key"`
+	Status string `json:"status"`
 }
 
 // artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,

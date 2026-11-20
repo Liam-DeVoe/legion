@@ -1,0 +1,157 @@
+{
+  "issue": {
+    "key": "LEGION-1",
+    "project": "LEGION",
+    "number": 1,
+    "title": "The parent at work",
+    "status": "backlog",
+    "priority": null,
+    "rank": "M1",
+    "labels": [
+      "legion"
+    ],
+    "parent": null,
+    "blocked_by": [],
+    "advances": [],
+    "advances_revision": 0,
+    "assignee": null,
+    "claim": null,
+    "components": {
+      "mode": "inherit",
+      "ids": [],
+      "unknown": [],
+      "reason": null,
+      "inherited_from": null
+    },
+    "external_links": [],
+    "route": null,
+    "repo": null,
+    "resolved_repo": null,
+    "created_by": {
+      "kind": "user",
+      "id": "smoke",
+      "proven": true
+    },
+    "created_at": "2026-11-20T09:00:00.000000Z",
+    "updated_at": "2026-11-20T10:00:00.200000Z",
+    "closed_at": null,
+    "primary_artifact_id": "",
+    "verification_artifact_id": "",
+    "plan_artifact_id": "",
+    "decisions_artifact_id": "",
+    "last_seq": 9,
+    "advice": {
+      "issue_status": "backlog",
+      "session_writes_since_human": 1,
+      "your_open_asks": []
+    }
+  },
+  "changed": [
+    {
+      "key": "LEGION-2",
+      "status": "backlog",
+      "parent": "LEGION-1",
+      "previous_last_seq": 5,
+      "issue": {
+        "key": "LEGION-2",
+        "project": "LEGION",
+        "number": 2,
+        "title": "A child at work under it",
+        "status": "backlog",
+        "priority": null,
+        "rank": "M2",
+        "labels": [
+          "legion"
+        ],
+        "parent": "LEGION-1",
+        "blocked_by": [],
+        "advances": [],
+        "advances_revision": 0,
+        "assignee": null,
+        "claim": null,
+        "components": {
+          "mode": "inherit",
+          "ids": [],
+          "unknown": [],
+          "reason": null,
+          "inherited_from": null
+        },
+        "external_links": [],
+        "route": null,
+        "repo": null,
+        "resolved_repo": null,
+        "created_by": {
+          "kind": "user",
+          "id": "smoke",
+          "proven": true
+        },
+        "created_at": "2026-11-20T09:00:00.000000Z",
+        "updated_at": "2026-11-20T10:00:00.100000Z",
+        "closed_at": null,
+        "primary_artifact_id": "",
+        "verification_artifact_id": "",
+        "plan_artifact_id": "",
+        "decisions_artifact_id": "",
+        "last_seq": 6,
+        "advice": {
+          "issue_status": "backlog",
+          "session_writes_since_human": 1,
+          "your_open_asks": []
+        }
+      }
+    },
+    {
+      "key": "LEGION-1",
+      "status": "backlog",
+      "parent": null,
+      "previous_last_seq": 8,
+      "issue": {
+        "key": "LEGION-1",
+        "project": "LEGION",
+        "number": 1,
+        "title": "The parent at work",
+        "status": "backlog",
+        "priority": null,
+        "rank": "M1",
+        "labels": [
+          "legion"
+        ],
+        "parent": null,
+        "blocked_by": [],
+        "advances": [],
+        "advances_revision": 0,
+        "assignee": null,
+        "claim": null,
+        "components": {
+          "mode": "inherit",
+          "ids": [],
+          "unknown": [],
+          "reason": null,
+          "inherited_from": null
+        },
+        "external_links": [],
+        "route": null,
+        "repo": null,
+        "resolved_repo": null,
+        "created_by": {
+          "kind": "user",
+          "id": "smoke",
+          "proven": true
+        },
+        "created_at": "2026-11-20T09:00:00.000000Z",
+        "updated_at": "2026-11-20T10:00:00.200000Z",
+        "closed_at": null,
+        "primary_artifact_id": "",
+        "verification_artifact_id": "",
+        "plan_artifact_id": "",
+        "decisions_artifact_id": "",
+        "last_seq": 9,
+        "advice": {
+          "issue_status": "backlog",
+          "session_writes_since_human": 1,
+          "your_open_asks": []
+        }
+      }
+    }
+  ]
+}

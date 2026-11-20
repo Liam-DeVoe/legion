@@ -166,6 +166,11 @@ func (d *outboxDispatch) SetStatus(_ context.Context, _ string, status string) (
 func (d *outboxDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
 	return d.SetStatus(ctx, issue.Key, status)
 }
+
+// ChangeStatus is the status-change route, which no test of this stand-in drives.
+func (d *outboxDispatch) ChangeStatus(context.Context, string, dispatch.StatusChange) (dispatch.StatusChangeResult, error) {
+	return dispatch.StatusChangeResult{}, errors.New("outboxDispatch takes no status change")
+}
 func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
 	d.handOvers = append(d.handOvers, fmt.Sprintf("%s %s %v", issue.Key, status, issue.Labels))
 	if d.handOverHook != nil {
