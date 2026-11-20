@@ -1474,6 +1474,18 @@ Dispatch's boot ignores and logs one, so the project it meant is never provision
 with an `envoyImage` whose `envoy-dispatch` reads the list: a binary that
 does not know the setting ignores it, and no project of that deployment can be made private.
 
+`privateBeforeFullSwitch` (a list of project keys) is the keys of the projects the deployment makes
+private before their full switch: Dispatch hides such a project from every person and credential
+that does not see it, as any private project, while its namespace, stores and bus gate come with
+its full switch, so its switch to private needs no provisioning and no bus record, and still needs
+a complete store. It renders `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=<KEY>,<KEY>` right after
+`DISPATCH_PRIVATE_PROJECTS`, sorted and each key once; empty or unset renders nothing, so the pod is
+the one it always was. An entry that is not a project key is ignored as one of `privateProjects` is:
+it does not render, and `pulumi preview` prints a warning naming it. A key `privateProjects` also
+names takes its full switch. Set it only with an `envoyImage` whose `envoy-dispatch` reads the
+setting: a binary that does not know it ignores it, and the project's switch stays
+`409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+
 `appClientId`, `appId` (the App's numeric ID, as a string of digits), `appPrivateKeySecretName`
 and `appPrivateKeySecretKey` (plain: the name and key of an existing Kubernetes Secret in the
 component's namespace holding the App's PEM private key, as GKE SecretSync copies it from Secret

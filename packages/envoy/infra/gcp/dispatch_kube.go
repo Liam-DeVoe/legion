@@ -795,6 +795,10 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	if len(s.privateProjects) > 0 {
 		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_PROJECTS", strings.Join(s.privateProjects, ",")))
 	}
+	// The same for the projects private before their full switch, right after.
+	if len(s.privateBeforeFullSwitch) > 0 {
+		appEnv = append(appEnv, valueEnv("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH", strings.Join(s.privateBeforeFullSwitch, ",")))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.

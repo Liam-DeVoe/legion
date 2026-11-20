@@ -889,7 +889,7 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	// read is the state as the boot leaves it: read once, before the listener serves.
 	read := func() *privateProjectsState {
 		t.Helper()
-		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil)
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, nil, nil)
 		if err != nil {
 			t.Fatalf("the first read of the private projects: %v", err)
 		}
@@ -928,6 +928,60 @@ func TestHealthzSaysOnlyThatAnUnprovisionedPrivateProjectDegradesIt(t *testing.T
 	}
 	if !maps.EqualFunc(health, withoutFields, func(a, b json.RawMessage) bool { return string(a) == string(b) }) {
 		t.Errorf("/healthz with an unprovisioned private project = %s, want the body without one plus degraded alone, %s", body, without)
+	}
+}
+
+// /healthz says that a project is private before its full switch, with the fixed reason code
+// private_before_full_switch and nothing else: no key and no count, as for an unprovisioned private
+// project (R2), and 200 with ok true, since the operator chose that state. The reason is the
+// project's state, not the list's: a key on DISPATCH_PRIVATE_BEFORE_FULL_SWITCH whose project is
+// public answers no reason, and one DISPATCH_PRIVATE_PROJECTS names too is fully switched and
+// answers none either. A private project neither list names still answers
+// private_project_unprovisioned beside it.
+func TestHealthzSaysOnlyThatAProjectIsPrivateBeforeItsFullSwitch(t *testing.T) {
+	database := storetest.Open(t)
+	probe := func(list, beforeFullSwitch []string) (int, map[string]json.RawMessage, string) {
+		t.Helper()
+		state, err := startPrivateProjectsState(t.Context(), database.Pool, list, beforeFullSwitch)
+		if err != nil {
+			t.Fatalf("the first read of the private projects: %v", err)
+		}
+		response := httptest.NewRecorder()
+		dispatchHandler(http.NewServeMux(), metrics.New(), database, nil, nil, nil, "", nil, issuers{}, state, nil).
+			ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		var health map[string]json.RawMessage
+		if err := json.Unmarshal(response.Body.Bytes(), &health); err != nil {
+			t.Fatalf("decode /healthz %s: %v", response.Body.String(), err)
+		}
+		return response.Code, health, response.Body.String()
+	}
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee) values ('DAYONE', 'Day one', 'alice@example.com')`); err != nil {
+		t.Fatalf("seed DAYONE: %v", err)
+	}
+	if code, health, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || health["degraded"] != nil {
+		t.Fatalf("/healthz with DAYONE listed and public = %d %s, want 200 and no degraded", code, body)
+	}
+	if _, err := database.Pool.Exec(context.Background(), `update projects set visibility = 'private' where key = 'DAYONE'`); err != nil {
+		t.Fatalf("make DAYONE private: %v", err)
+	}
+	code, health, body := probe(nil, []string{"DAYONE"})
+	if code != http.StatusOK || string(health["ok"]) != "true" || string(health["degraded"]) != `["`+privateBeforeFullSwitchReason+`"]` {
+		t.Fatalf("/healthz with DAYONE private before its full switch = %d %s, want 200, ok true and degraded [%q]", code, body, privateBeforeFullSwitchReason)
+	}
+	if strings.Contains(body, "DAYONE") {
+		t.Errorf("/healthz with no credential = %s: it names a private project's key", body)
+	}
+	if code, health, body := probe([]string{"DAYONE"}, []string{"DAYONE"}); code != http.StatusOK || health["degraded"] != nil {
+		t.Fatalf("/healthz with DAYONE private and on both lists = %d %s, want 200 and no degraded: it took its full switch", code, body)
+	}
+	if _, err := database.Pool.Exec(context.Background(),
+		`insert into projects (key, name, default_assignee, visibility) values ('OFFL', 'Off both lists', 'alice@example.com', 'private')`); err != nil {
+		t.Fatalf("seed OFFL: %v", err)
+	}
+	want := `["` + unprovisionedPrivateProjectReason + `","` + privateBeforeFullSwitchReason + `"]`
+	if code, health, body := probe(nil, []string{"DAYONE"}); code != http.StatusOK || string(health["degraded"]) != want {
+		t.Fatalf("/healthz with DAYONE private before its full switch and OFFL on neither list = %d %s, want 200 and degraded %s", code, body, want)
 	}
 }
 

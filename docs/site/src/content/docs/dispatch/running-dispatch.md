@@ -378,40 +378,52 @@ reads it from the file its `dispatch_token_file` names. A token that lists proje
 project, so it lists every project in the daemon's `projects`. Every write of the daemon's agents
 is then attributed to the person who made the token.
 
-A project can be made private only once the deployment has provisioned it.
+A project can be made private only once the deployment names it, in one of two settings.
 `DISPATCH_PRIVATE_PROJECTS` holds, comma-separated, the keys of the projects whose private
-namespace, stores and grants the deployment has made; on a deployment built by `envoy-infra`'s
-`gcp:Dispatch`, the component's `privateProjects` input, a list of keys, renders it. An entry that
-is not a project key, the old value `1` included, stops the start. Unset or empty, no project can
-be made private.
+namespace, stores and grants the deployment has made; their switch to private is their full
+switch. `DISPATCH_PRIVATE_BEFORE_FULL_SWITCH` holds, in the same form, the keys of the projects it
+makes private before their full switch (below). On a deployment built by `envoy-infra`'s
+`gcp:Dispatch`, the component's `privateProjects` and `privateBeforeFullSwitch` inputs, each a
+list of keys, render them. An entry that is not a project key, the old value `1` included, is
+ignored with an ERROR line at start naming it. With both unset or empty, no project can be made
+private.
 
 The owner switches a project private on its Access tab
 (`PATCH /api/v1/projects/{key}/access` with `{"visibility": "private"}`), and Dispatch checks, in
 this order:
 
-1. With an empty list, every switch to private is `409 PRIVATE_PROJECTS_OFF`, before anything is
-   read.
+1. With both lists empty, every switch to private is `409 PRIVATE_PROJECTS_OFF`, before anything
+   is read.
 2. A caller who does not see the project is `404 PROJECT_NOT_FOUND`, as for a key no project
    holds, and one who sees it but does not own it is `403 PROJECT_OWNER_REQUIRED`.
-3. A key the list does not name is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
+3. A key neither list names is `409 PRIVATE_PROJECT_NOT_PROVISIONED`.
 4. A store that cannot hold the project private yet is `409 PRIVATE_PROJECTS_INCOMPLETE`, naming
    what repairs it: each row of the project that has no node naming its project, with the cure
    the project census prints for it (`envoy-dispatch backfill-graph-store`, or none for a node
    that names another project, which a person compares with its row),
    `envoy-dispatch backfill-session-projects` until the sessions' projects are filled, and
    `envoy-dispatch scrub-access-events` until the stored access events are scrubbed.
-5. Last, in the same transaction, Dispatch writes the project's key in the hub's
-   `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold the
-   project's messages back from a token that does not list it. When the hub refuses that write,
+5. Last, for a project's full switch, in the same transaction, Dispatch writes the project's key
+   in the hub's `envoy_private_projects` bucket, the record by which Envoy's listeners are to hold
+   the project's messages back from a token that does not list it. When the hub refuses that write,
    as a hub without its auth service does, or Dispatch has no bus to write it to, the switch is
    `409 PRIVATE_PROJECTS_UNAVAILABLE` and nothing changes. This release of Dispatch has no writer
-   of that bucket, so every switch that passes steps 1 to 4 is
-   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project can be made private until a release carries the
+   of that bucket, so every full switch that passes steps 1 to 4 is
+   `409 PRIVATE_PROJECTS_UNAVAILABLE`: no project takes its full switch until a release carries the
    writer.
 
 Of these, only the owner check of step 2 applies to a switch to public.
 
-A project the database holds private that the list does not name, because its key was taken off
+A project private before its full switch is the outside person's project on their first day. Its
+switch to private skips steps 3 and 5: it needs no provisioning and writes no record, while step 4
+still applies. Dispatch then hides it from every person and credential that does not see it, as
+any private project, while its namespace, its stores and its bus gate come with its full switch.
+So nobody takes it for a fully switched project, its access carries
+`"private_before_full_switch": true` while it is private, the server logs at INFO, at start, each
+such project as private before its full switch, and `/healthz` says one exists (below). A key both
+settings name takes its full switch.
+
+A project the database holds private that neither list names, because its key was taken off
 the list or the list was emptied, stays private. Nothing of it reaches anyone who could not see
 it before, and every change of its visibility but its owner's switch to public is refused.
 Dispatch still starts and serves every other project: it logs an ERROR line naming the project and
@@ -428,8 +440,8 @@ So to take a key off the list, make the project public first, and only then remo
 start Dispatch also logs, at INFO, the listed keys no private project holds yet. With a list, each
 server logs an ERROR line as it starts, and then once an hour, while the store cannot hold a
 private project for one of the reasons of step 4, naming the reason and what repairs it. Every
-response carries `Dispatch-Private-Projects: 1` while the list names a project, the database holds
-a private one, or the server's last read of the database's private projects failed, and
+response carries `Dispatch-Private-Projects: 1` while either list names a project, the database
+holds a private one, or the server's last read of the database's private projects failed, and
 `Dispatch-Private-Projects: 0` otherwise.
 
 ## Health check
@@ -469,11 +481,12 @@ balancer's or Kubernetes' readiness probe at it.
 - `outbox_publisher` is whether this server is the one publishing notifications to NATS now. One
   server publishes at a time, so a healthy server can say `false`, and it always does when NATS is
   turned off. It never decides `ok` or the status.
-- `degraded` is `["private_project_unprovisioned"]` while the database holds a private project
-  that `DISPATCH_PRIVATE_PROJECTS` does not name ([Private projects](#private-projects)), as the
-  server's last read found it: it reads every 30 seconds, so a probe adds no read. It names no
-  project and counts none, because the check answers anyone; the project's key is in the ERROR
-  line. It is absent when there is none, and it never decides `ok` or the status.
+- `degraded` lists fixed reasons, as the server's last read found them: it reads every 30 seconds,
+  so a probe adds no read. `private_project_unprovisioned` is there while the database holds a
+  private project that neither list names, and `private_before_full_switch` while it holds a
+  project private before its full switch ([Private projects](#private-projects)). Neither names a
+  project or counts one, because the check answers anyone; the project's key is in the server's
+  log. It is absent when neither holds, and it never decides `ok` or the status.
 
 A check that needs NATS, the bucket or sign-in asserts `nats: true`, `files: true` or `signin: true`
 itself.

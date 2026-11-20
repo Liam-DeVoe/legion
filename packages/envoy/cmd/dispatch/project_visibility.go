@@ -24,11 +24,12 @@ const projectVisibilityUsage = "project-visibility: make a project public with `
 // makeProjectPublic runs `envoy-dispatch project-visibility <KEY> public`: it makes project KEY
 // public without the server, in one transaction that appends project.access_changed as
 // projectVisibilityActor (access.SetVisibility), as the owner's own switch from the Access tab
-// does. It is the repair of a private project the deployment's DISPATCH_PRIVATE_PROJECTS no longer
-// names, beside putting the key back on that list. It makes no bus call. The hub's private-projects
-// record has no writer in this build: main leaves routes.AppContextOptions.BusProjects nil, so
-// every switch to private answers 409 PRIVATE_PROJECTS_UNAVAILABLE and no key is written there,
-// and none is deleted when a project is made public. It exits 0 once the change commits, 2 for
+// does. It is the repair of a private project neither DISPATCH_PRIVATE_PROJECTS nor
+// DISPATCH_PRIVATE_BEFORE_FULL_SWITCH names any longer, beside putting the key back on a list. It
+// makes no bus call. The hub's private-projects record has no writer in this build: main leaves
+// routes.AppContextOptions.BusProjects nil, so every full switch to private answers 409
+// PRIVATE_PROJECTS_UNAVAILABLE, a switch before the full one writes no record, so no key is written
+// there, and none is deleted when a project is made public. It exits 0 once the change commits, 2 for
 // wrong arguments, a value other than public or a key no project holds, writing nothing, and 1
 // when the database cannot be opened or written.
 func makeProjectPublic(ctx context.Context, args []string, databaseURL string, stdout, stderr io.Writer) int {

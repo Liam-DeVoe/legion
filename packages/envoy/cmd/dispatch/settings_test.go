@@ -1139,6 +1139,39 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				}
 			})
 		},
+		"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": func(t *testing.T) {
+			// The list's own reading is TestThePrivateBeforeFullSwitchSettingIsAListOfKeys. Its
+			// reader: the owner's switch of PRIV to private, which with PRIV on it alone needs no
+			// bus, though this router is given none, and with another key on it alone is refused
+			// for want of PRIV on either list.
+			t.Run("router", func(t *testing.T) {
+				database := storetest.Open(t)
+				if _, err := database.Pool.Exec(context.Background(), `
+					insert into projects (key, name, default_assignee) values ('PRIV', 'Private', 'alice@example.com');
+					insert into session_projects_filled default values;
+					insert into access_events_scrubbed default values;
+				`); err != nil {
+					t.Fatalf("seed alice's project PRIV: %v", err)
+				}
+				for _, row := range []struct {
+					value string
+					want  int
+					code  string
+				}{
+					{"OTHER", http.StatusConflict, "PRIVATE_PROJECT_NOT_PROVISIONED"},
+					{"PRIV", http.StatusOK, ""},
+				} {
+					request := signedIn(t, httptest.NewRequest(http.MethodPatch, "/api/v1/projects/PRIV/access", strings.NewReader(`{"visibility":"private"}`)), "alice@example.com")
+					request.Header.Set("Content-Type", "application/json")
+					request.Header.Set("Sec-Fetch-Site", "same-origin")
+					response := httptest.NewRecorder()
+					routerFor(t, resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": row.value}), routes.AppContextOptions{Store: database}).ServeHTTP(response, request)
+					if response.Code != row.want || errorCode(response) != row.code {
+						t.Errorf("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=%q: PATCH PRIV private answered %d %s, want %d %s", row.value, response.Code, response.Body.String(), row.want, row.code)
+					}
+				}
+			})
+		},
 		"DISPATCH_APP_CLIENT_ID": func(t *testing.T) {
 			if clientID, source, err := loadApp(t, map[string]string{"DISPATCH_APP_CLIENT_ID": "Iv1.env"}); err != nil || clientID != "Iv1.env" || source != "env" {
 				t.Errorf("set: client %q from %q, %v; want the variable over app.json", clientID, source, err)
@@ -2498,10 +2531,50 @@ func TestThePrivateProjectsSettingIsAListOfKeys(t *testing.T) {
 		}
 		var logged cmdtest.LockedBuffer
 		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
-		reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
+		reportIgnoredPrivateProjects(privateProjectsVariable, boot.PrivateProjectsIgnored)
 		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
 		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
 			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming it and the switch's refusal", entry, logged.String())
+		}
+	}
+}
+
+// DISPATCH_PRIVATE_BEFORE_FULL_SWITCH is read exactly as DISPATCH_PRIVATE_PROJECTS is: the
+// comma-separated keys of the projects the deployment makes private before their full switch, each
+// entry trimmed, empty ones dropped, the list deduplicated and sorted. An entry that is no project
+// key is never read as a key: the boot keeps the keys beside it, ignores that entry and logs one
+// ERROR line naming the setting, the entry and the 409 PRIVATE_PROJECT_NOT_PROVISIONED a switch of
+// the project it meant gets, and neither list reads the other's entries. Control: a setting that
+// read the entry would put it on the list.
+func TestThePrivateBeforeFullSwitchSettingIsAListOfKeys(t *testing.T) {
+	boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": " PRIV, ALPHA ,PRIV,"})
+	if !slices.Equal(boot.PrivateBeforeFullSwitch, []string{"ALPHA", "PRIV"}) || len(boot.PrivateBeforeFullSwitchIgnored) != 0 || len(boot.PrivateProjects) != 0 {
+		t.Errorf(`DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=" PRIV, ALPHA ,PRIV,": PrivateBeforeFullSwitch = %q, ignored %q, PrivateProjects %q; want [ALPHA PRIV], none ignored, no provisioned project`,
+			boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored, boot.PrivateProjects)
+	}
+	for name, overrides := range map[string]map[string]string{"unset": {}, "empty": {"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": ""}} {
+		if boot := resolveWith(t, overrides); len(boot.PrivateBeforeFullSwitch) != 0 || len(boot.PrivateBeforeFullSwitchIgnored) != 0 {
+			t.Errorf("%s: PrivateBeforeFullSwitch = %q, ignored %q; want no project and nothing ignored", name, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored)
+		}
+	}
+	if boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_PROJECTS": "FULL,1", "DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "DAYONE"}); !slices.Equal(boot.PrivateProjects, []string{"FULL"}) ||
+		!slices.Equal(boot.PrivateBeforeFullSwitch, []string{"DAYONE"}) || !slices.Equal(boot.PrivateProjectsIgnored, []string{"1"}) || len(boot.PrivateBeforeFullSwitchIgnored) != 0 {
+		t.Errorf("both settings set: PrivateProjects %q ignored %q, PrivateBeforeFullSwitch %q ignored %q; want [FULL] ignoring 1, and [DAYONE] ignoring none",
+			boot.PrivateProjects, boot.PrivateProjectsIgnored, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored)
+	}
+	for _, entry := range []string{"1", "priv"} {
+		boot := resolveWith(t, map[string]string{"DISPATCH_PRIVATE_BEFORE_FULL_SWITCH": "ALPHA," + entry + ",PRIV"})
+		if !slices.Equal(boot.PrivateBeforeFullSwitch, []string{"ALPHA", "PRIV"}) || !slices.Equal(boot.PrivateBeforeFullSwitchIgnored, []string{entry}) {
+			t.Errorf("DISPATCH_PRIVATE_BEFORE_FULL_SWITCH=ALPHA,%s,PRIV: PrivateBeforeFullSwitch = %q, ignored %q; want [ALPHA PRIV], %q ignored",
+				entry, boot.PrivateBeforeFullSwitch, boot.PrivateBeforeFullSwitchIgnored, entry)
+		}
+		var logged cmdtest.LockedBuffer
+		logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+		reportIgnoredPrivateProjects(privateBeforeFullSwitchVariable, boot.PrivateBeforeFullSwitchIgnored)
+		lines := strings.Split(strings.TrimSpace(logged.String()), "\n")
+		if len(lines) != 1 || !strings.Contains(lines[0], "level=ERROR") || !strings.Contains(lines[0], `entry=`+entry) ||
+			!strings.Contains(lines[0], "setting=DISPATCH_PRIVATE_BEFORE_FULL_SWITCH") || !strings.Contains(lines[0], "PRIVATE_PROJECT_NOT_PROVISIONED") {
+			t.Errorf("the boot's report of the ignored entry %q logged %q, want one ERROR line naming the setting, the entry and the switch's refusal", entry, logged.String())
 		}
 	}
 }
