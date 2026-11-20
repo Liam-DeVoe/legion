@@ -148,7 +148,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 
 // The reader of 201 takes every field of register_plan's answer as optional, since no plugin code
 // reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
-// the reader no longer refuses a task written without `steps`, and the daemon holds that instead:
+// the reader takes a task written without `steps`, and the daemon holds what it does not check:
 // every task of the answer, as shapeAnswer writes it to a caller at OwnerPlanContract, carries
 // `steps` as a list, never null and never absent, a task whose block names none included.
 // TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.

@@ -2928,9 +2928,8 @@ package api
 // DaemonAPIVersion` at refs/pull/<n>/head for each of the 297 open pull requests, made between
 // 2026-11-20T21:51:54Z and 21:52:06Z, read all 297 and found 193 declared by twelve, 194 by
 // #4030, 195 by #4590, 196 by eleven, 197 by #4553 and #4578, 198 by #4175 and #4589, 199 by
-// #3831, #4495 and #4661, 200 by #4065, and nothing at 201. A reading 52 minutes earlier had found
-// 199 free, and three heads took it before this merge was pushed. From this entry the last number
-// of answers.go's SupportedContracts is `api.OwnerPlanContract`, and `shapedAnswersContract`
-// stays 193. Read the base's own number and every open pull request again at the next merge
-// rather than from this line.)
+// #3831, #4495 and #4661, 200 by #4065, and nothing at 201. From this entry the last number of
+// answers.go's SupportedContracts is `api.OwnerPlanContract`, and `shapedAnswersContract` stays
+// 193. Read the base's own number and every open pull request again at the next merge rather than
+// from this line.)
 const DaemonAPIVersion = 201
