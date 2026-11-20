@@ -8,7 +8,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"sort"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -23,13 +24,15 @@ import (
 )
 
 // The meaning-search bench: a synthetic corpus of production's size and shape, the partition pass
-// over it, and a full member's meaning search measured on it. Each step is env-gated so CI never
-// runs it, and each is run by a build of its own over its own copy of the corpus: the corpus is
-// built by the build before embeddings was partitioned (6cfd282231), so both builds read the same
-// rows, and the build after it partitions a copy (TestPartitionEmbeddingsOnBenchCorpus) before it
-// searches it. The order is TestBuildMeaningSearchBenchCorpus with the earlier build, a copy of the
+// over it, and a meaning search measured on it, by a full member or a restricted one, at each
+// search width the run names. Each step is env-gated so CI never runs it, and each is run by a
+// build of its own over its own copy of the corpus: the corpus is built by the build before
+// embeddings was partitioned (the base of this change), so both builds read the same rows, and
+// the build after it partitions a copy (TestPartitionEmbeddingsOnBenchCorpus) before it searches
+// it. The order is TestBuildMeaningSearchBenchCorpus with the earlier build, a copy of the
 // database for each build, TestPartitionEmbeddingsOnBenchCorpus with this one on its copy, then
-// TestMeaningSearchOnBenchCorpus with each build on its own copy, in turn.
+// TestMeaningSearchOnBenchCorpus with each build on its own copy, in turn, and
+// TestExactNearestOnBenchCorpus once, for the exact answers each build's is read against.
 
 // benchCorpusSQL builds the corpus on a migrated database that holds no issue: production's
 // counts of 2026-11-17 times bench_corpus.scale (embedqueue/testdata/coverage_corpus.sql's,
@@ -321,14 +324,15 @@ func TestPartitionEmbeddingsOnBenchCorpus(t *testing.T) {
 	}
 }
 
-// TestMeaningSearchOnBenchCorpus measures a full member's meaning search on
-// DISPATCH_BENCH_DATABASE_URL: the 40 queries of bench_queries, each searched once to warm and then
-// DISPATCH_BENCH_ROUNDS times (10 when unset), logs p50, p95 and the maximum, and writes each
-// query's hits, kind/id in order, as one JSON line to DISPATCH_BENCH_HITS_FILE when it is set, so
-// two builds' answers can be compared rank for rank. With DISPATCH_BENCH_EXACT set it also reads
-// each query's exact 20 nearest items by a sequential scan of every vector and logs how many of
-// them each answer holds. The reader is alice, a full member, and no project is private, so every
-// partition is read (searchReaderPartitions' fast path).
+// TestMeaningSearchOnBenchCorpus measures a meaning search on DISPATCH_BENCH_DATABASE_URL at each
+// width DISPATCH_BENCH_WIDTHS names (benchWidths), as the reader DISPATCH_BENCH_READER names
+// (benchReader): the reader's 40 queries (benchReaderQueries) are searched once at every width, to
+// warm and to record each answer, and then DISPATCH_BENCH_ROUNDS rounds (10 when unset; 0 records
+// the answers alone), each round searching every query at every width in turn, so that whatever
+// slows the machine during the run slows every width alike. It logs each width's p50, p95 and
+// maximum, and writes each width's answers, kind/id in order, one JSON line a query, to
+// DISPATCH_BENCH_HITS_DIR/<width>.jsonl when that is set, so two builds' answers, and two widths',
+// can be compared rank for rank and against the exact nearest items (TestExactNearestOnBenchCorpus).
 func TestMeaningSearchOnBenchCorpus(t *testing.T) {
 	databaseURL := os.Getenv("DISPATCH_BENCH_DATABASE_URL")
 	if databaseURL == "" {
@@ -337,7 +341,7 @@ func TestMeaningSearchOnBenchCorpus(t *testing.T) {
 	rounds := 10
 	if listed := os.Getenv("DISPATCH_BENCH_ROUNDS"); listed != "" {
 		parsed, err := strconv.Atoi(listed)
-		if err != nil || parsed < 1 {
+		if err != nil || parsed < 0 {
 			t.Fatalf("DISPATCH_BENCH_ROUNDS = %q", listed)
 		}
 		rounds = parsed
@@ -351,61 +355,304 @@ func TestMeaningSearchOnBenchCorpus(t *testing.T) {
 	if err := database.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
-	queries := benchQueries(t, database)
+	reader := benchReader(t, database)
+	queries := benchReaderQueries(t, database, reader)
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
 	for i, vector := range queries {
 		embedder.vectors[benchQueryText(i)] = vector
 	}
 	handler := newBenchMeaningHandler(t, database, embedder)
+	widths := benchWidths(t)
+	built := searchMeaningScan
+	t.Cleanup(func() { searchMeaningScan = built })
 
-	hits := make([][]string, len(queries))
-	for i := range queries {
-		hits[i] = benchSearch(t, handler, i)
-	}
-	var latencies []time.Duration
-	for range rounds {
+	hits := make([][][]string, len(widths))
+	for w, width := range widths {
+		benchReadBack(t, database, width)
+		searchMeaningScan = width.settings
+		hits[w] = make([][]string, len(queries))
+		empty := 0
 		for i := range queries {
-			started := time.Now()
-			benchSearch(t, handler, i)
-			latencies = append(latencies, time.Since(started))
+			hits[w][i] = benchSearch(t, handler, reader, i)
+			if len(hits[w][i]) == 0 {
+				empty++
+			}
+		}
+		if empty == len(queries) {
+			t.Fatalf("%s at width %s: no query answers a hit, so the bench measures nothing", reader.name, width.name)
+		}
+		t.Logf("bench hits: reader=%s width=%s: %d of %d queries answer no hit", reader.name, width.name, empty, len(queries))
+	}
+	latencies := make([][]time.Duration, len(widths))
+	for range rounds {
+		for w, width := range widths {
+			searchMeaningScan = width.settings
+			for i := range queries {
+				started := time.Now()
+				benchSearch(t, handler, reader, i)
+				latencies[w] = append(latencies[w], time.Since(started))
+			}
 		}
 	}
-	sort.Slice(latencies, func(i, j int) bool { return latencies[i] < latencies[j] })
-	p50 := latencies[(len(latencies)-1)/2]
-	p95 := latencies[(len(latencies)*95+99)/100-1]
-	t.Logf("bench search: %d meaning searches: p50=%v p95=%v max=%v", len(latencies), p50, p95, latencies[len(latencies)-1])
+	dir := os.Getenv("DISPATCH_BENCH_HITS_DIR")
+	for w, width := range widths {
+		if measured := slices.Sorted(slices.Values(latencies[w])); len(measured) > 0 {
+			p50 := measured[(len(measured)-1)/2]
+			p95 := measured[(len(measured)*95+99)/100-1]
+			t.Logf("bench search: reader=%s width=%s: %d meaning searches: p50=%v p95=%v max=%v",
+				reader.name, width.name, len(measured), p50, p95, measured[len(measured)-1])
+			if dir != "" {
+				summary, err := json.Marshal(map[string]any{
+					"searches": len(measured), "p50_ms": p50.Seconds() * 1000, "p95_ms": p95.Seconds() * 1000,
+					"max_ms": measured[len(measured)-1].Seconds() * 1000,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, width.name+".latency.json"), summary, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		if dir != "" {
+			benchWriteLines(t, filepath.Join(dir, width.name+".jsonl"), "hits", hits[w])
+		}
+	}
+}
 
-	if path := os.Getenv("DISPATCH_BENCH_HITS_FILE"); path != "" {
-		file, err := os.Create(path)
+// TestExactNearestOnBenchCorpus reads the exact 20 nearest items of each of the reader's 40 queries
+// (benchReader, benchReaderQueries) on DISPATCH_BENCH_DATABASE_URL, by a sequential scan of every
+// vector the reader may read (benchExactNearest), and writes them, one JSON line a query, to
+// DISPATCH_BENCH_EXACT_FILE: what each width's recall@20 is read against.
+func TestExactNearestOnBenchCorpus(t *testing.T) {
+	databaseURL, path := os.Getenv("DISPATCH_BENCH_DATABASE_URL"), os.Getenv("DISPATCH_BENCH_EXACT_FILE")
+	if databaseURL == "" || path == "" {
+		t.Skip("DISPATCH_BENCH_DATABASE_URL must name a bench corpus copy and DISPATCH_BENCH_EXACT_FILE the file to write")
+	}
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(database.Pool.Close)
+	if err := database.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	reader := benchReader(t, database)
+	queries := benchReaderQueries(t, database, reader)
+	exact := make([][]string, len(queries))
+	for i, vector := range queries {
+		exact[i] = benchExactNearest(t, database, vector, 20, reader.projects)
+		if len(exact[i]) == 0 {
+			t.Fatalf("query %d of %s has no item above the meaning floor: its recall reads nothing", i, reader.name)
+		}
+	}
+	benchWriteLines(t, path, "exact", exact)
+	t.Logf("bench exact: reader=%s: the exact nearest items of %d queries written to %s", reader.name, len(queries), path)
+}
+
+// benchWidth is one setting of the meaning scan the bench measures: its name, the settings
+// searchMeaningScan holds under it, and the parameters it sets in place of the build's own.
+type benchWidth struct {
+	name      string
+	settings  []string
+	overrides map[string]string
+}
+
+// benchWidths is the widths DISPATCH_BENCH_WIDTHS names, `;`-separated, each
+// `<name>:<parameter>=<value>[,<parameter>=<value>...]`: the build's own searchMeaningScan with
+// each named parameter's `set local` given that value, or added where the build sets none. Unset,
+// it is one width, "built", the build's settings as they are.
+func benchWidths(t *testing.T) []benchWidth {
+	t.Helper()
+	listed := os.Getenv("DISPATCH_BENCH_WIDTHS")
+	if listed == "" {
+		return []benchWidth{{name: "built", settings: searchMeaningScan}}
+	}
+	var widths []benchWidth
+	for _, field := range strings.Split(listed, ";") {
+		name, changes, ok := strings.Cut(strings.TrimSpace(field), ":")
+		if !ok || name == "" || changes == "" {
+			t.Fatalf("DISPATCH_BENCH_WIDTHS entry %q: want <name>:<parameter>=<value>[,...]", field)
+		}
+		width := benchWidth{name: name, settings: slices.Clone(searchMeaningScan), overrides: map[string]string{}}
+		for _, change := range strings.Split(changes, ",") {
+			parameter, value, ok := strings.Cut(change, "=")
+			if !ok || parameter == "" || value == "" {
+				t.Fatalf("DISPATCH_BENCH_WIDTHS entry %q: %q is no <parameter>=<value>", field, change)
+			}
+			width.overrides[parameter] = value
+			setting := "set local " + parameter + " = " + value
+			if at := slices.IndexFunc(width.settings, func(s string) bool { return strings.HasPrefix(s, "set local "+parameter+" = ") }); at >= 0 {
+				width.settings[at] = setting
+			} else {
+				width.settings = append(width.settings, setting)
+			}
+		}
+		widths = append(widths, width)
+	}
+	return widths
+}
+
+// benchReadBack reads, in a transaction holding width's settings as beginMeaningScan applies them,
+// the scan's two parameters a width changes, logs them, and fails where a parameter width sets
+// reads otherwise, so each width's lines say what the searches under it ran on.
+func benchReadBack(t *testing.T, database *store.Store, width benchWidth) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, strings.Join(width.settings, "; ")); err != nil {
+		t.Fatalf("width %s: apply %q: %v", width.name, width.settings, err)
+	}
+	read := map[string]string{}
+	for _, parameter := range []string{"hnsw.ef_search", "hnsw.iterative_scan"} {
+		var value string
+		if err := tx.QueryRow(ctx, `select current_setting($1)`, parameter).Scan(&value); err != nil {
+			t.Fatalf("width %s: read %s: %v", width.name, parameter, err)
+		}
+		read[parameter] = value
+	}
+	for parameter, want := range width.overrides {
+		var value string
+		if err := tx.QueryRow(ctx, `select current_setting($1)`, parameter).Scan(&value); err != nil || value != want {
+			t.Fatalf("width %s: %s reads %q (%v), want %q", width.name, parameter, value, err, want)
+		}
+	}
+	t.Logf("bench width: %s: hnsw.ef_search=%s hnsw.iterative_scan=%s", width.name, read["hnsw.ef_search"], read["hnsw.iterative_scan"])
+}
+
+// benchReaderOf is whose search the bench measures: alice, a full member no access list names, who
+// reads every project, or a restricted member whose list names projects and no other.
+type benchReaderOf struct {
+	name     string
+	login    string
+	projects []string // nil: every project
+}
+
+// benchReader is the reader DISPATCH_BENCH_READER names. Unset, it is alice. Set, it is a
+// comma-separated list of project keys, and the reader a restricted member (an outside
+// collaborator) whose access list names those projects alone: every bench project is public, so
+// those are all he sees, and his meaning arms read their partitions and the one of no project
+// (searchReaderPartitions). He is written into the tables the access routes write, and writing him
+// again changes nothing, so each build's copy of the corpus may be read by him in turn.
+//
+// A reader who is not open sees an item only where the graph store holds its node under a project
+// he sees (refs.VisibleKind: a node with no row is unscoped, which only an open viewer passes), and
+// benchCorpusSQL loads with the owners' triggers off, so it writes no node and no artifact's
+// ref_key. So for his projects' items it writes both as the owners' writes would have: each
+// artifact's ref_key (artifacts_ref_key's expression, migration 0071), and each issue's, document's,
+// comment's, message's and ask's node, naming its project. That is what a deployment holds for
+// every item (graphcensus keeps it so), and alice's search reads the same rows either way, since
+// with no private project an open viewer passes a node with no row.
+func benchReader(t *testing.T, database *store.Store) benchReaderOf {
+	t.Helper()
+	listed := os.Getenv("DISPATCH_BENCH_READER")
+	if listed == "" {
+		return benchReaderOf{name: "alice", login: "alice"}
+	}
+	projects := strings.Split(listed, ",")
+	login := "bench-" + strings.ToLower(strings.Join(projects, "-")) + "@outside.example"
+	seedPeople(t, database, login)
+	ctx := context.Background()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	// The owners' triggers stay off for these writes, as they were for the load: an update of an
+	// artifact would otherwise queue its embedding again and change the corpus being measured.
+	if _, err := tx.Exec(ctx, `set local session_replication_role = replica`); err != nil {
+		t.Fatalf("write %s's items' nodes with the owners' triggers off: %v", login, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		update artifacts set ref_key = coalesce(issue_key, project_key) || '/' || slug
+		 where ref_key is null and project_key = any($1)`, projects); err != nil {
+		t.Fatalf("give %v's documents their ref_key: %v", projects, err)
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event, project_key)
+		select 'issue', i.key, 'issue', 'project', 'live', i.created_at, i.created_by, 0, i.project_key
+		  from issues i where i.project_key = any($1)
+		union all
+		select 'artifact', a.ref_key, 'document', 'project', 'live', a.created_at, a.created_by, 0, a.project_key
+		  from artifacts a where a.project_key = any($1)
+		union all
+		select 'comment', c.id::text, 'comment', 'project', 'live', c.created_at, c.author, 0, i.project_key
+		  from comments c join issues i on i.key = c.issue_key where i.project_key = any($1)
+		union all
+		select 'message', m.id::text, 'message', 'project', 'live', m.created_at, m.author, 0, i.project_key
+		  from messages m join issues i on i.key = m.issue_key where i.project_key = any($1)
+		union all
+		select 'ask', k.id::text, 'ask', 'project', 'live', k.created_at, k.author, 0, i.project_key
+		  from asks k join issues i on i.key = k.issue_key where i.project_key = any($1)
+		on conflict do nothing`, projects); err != nil {
+		t.Fatalf("write %v's items' nodes: %v", projects, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit %v's items' nodes: %v", projects, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `update people set member_kind = 'restricted' where email = $1`, login); err != nil {
+		t.Fatalf("make %s restricted: %v", login, err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into project_access (project_key, principal_kind, principal, added_by)
+		select key, 'person', $2, '{"kind": "user", "id": "alice"}' from projects where key = any($1)
+		on conflict do nothing`, projects, login); err != nil {
+		t.Fatalf("list %s on %v: %v", login, projects, err)
+	}
+	var kind string
+	var named, unnamed int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select member_kind from people where email = $1),
+		       (select count(*) from project_access where principal_kind = 'person' and principal = $1),
+		       (select count(*) from issues i where i.project_key = any($2)
+		           and not exists (select 1 from graph_nodes n where n.kind = 'issue' and n.id = i.key and n.project_key = i.project_key))
+		     + (select count(*) from artifacts a where a.project_key = any($2)
+		           and not exists (select 1 from graph_nodes n where n.kind = 'artifact' and n.id = a.ref_key and n.project_key = a.project_key))`,
+		login, projects).Scan(&kind, &named, &unnamed); err != nil || kind != "restricted" || named != len(projects) || unnamed != 0 {
+		t.Fatalf("%s reads member kind %q, %d listings and %d issues or documents of his projects with no node (%v), want restricted, %d and 0",
+			login, kind, named, unnamed, err, len(projects))
+	}
+	return benchReaderOf{name: "restricted:" + listed, login: login, projects: projects}
+}
+
+// benchReaderQueries is the reader's 40 queries: bench_queries for alice, and for a restricted
+// member 40 of the same make over his own projects, taken in turn - a topic of the project plus
+// one vector of the pool at 0.5, normalised - so that each has near items he may read, as a
+// person's search of his own project's work has.
+func benchReaderQueries(t *testing.T, database *store.Store, reader benchReaderOf) [][]float32 {
+	t.Helper()
+	if reader.projects == nil {
+		return benchQueries(t, database)
+	}
+	return benchVectors(t, database, `
+		select l2_normalize(t.v + noise.v05)::text
+		  from generate_series(0, 39) q
+		  join bench_topics t on t.key = ($1::text[])[1 + q % cardinality($1::text[])] and t.t = (q / cardinality($1::text[])) % 8
+		  join bench_noise noise on noise.n = (q * 2654435761 + 1013904223) % 4096
+		 order by q`, reader.projects)
+}
+
+// benchWriteLines writes one JSON line a query to path, {"query": i, field: values[i]}.
+func benchWriteLines(t *testing.T, path, field string, values [][]string) {
+	t.Helper()
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for i, value := range values {
+		line, err := json.Marshal(map[string]any{"query": i, field: value})
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer file.Close()
-		for i, answer := range hits {
-			line, err := json.Marshal(map[string]any{"query": i, "hits": answer})
-			if err != nil {
-				t.Fatal(err)
-			}
-			fmt.Fprintln(file, string(line))
+		if _, err := fmt.Fprintln(file, string(line)); err != nil {
+			t.Fatalf("write %s: %v", path, err)
 		}
-	}
-	if os.Getenv("DISPATCH_BENCH_EXACT") != "" {
-		var found, wanted int
-		for i, vector := range queries {
-			exact := benchExactNearest(t, database, vector, 20)
-			held := 0
-			for _, item := range exact {
-				for _, hit := range hits[i] {
-					if hit == item {
-						held++
-						break
-					}
-				}
-			}
-			found, wanted = found+held, wanted+len(exact)
-			t.Logf("bench exact: query %d holds %d of its exact %d nearest", i, held, len(exact))
-		}
-		t.Logf("bench exact: recall@20 %d of %d (%.3f)", found, wanted, float64(found)/float64(wanted))
 	}
 }
 
@@ -456,38 +703,40 @@ func TestExplainMeaningSearchOnBenchCorpus(t *testing.T) {
 	}
 	rows.Close()
 	alice := model.Actor{Kind: "user", ID: "alice", Viewer: &model.Viewer{Person: "alice", Open: true, Sees: projects}}
-	for _, i := range which {
-		arguments := searchMeaningQueryArguments(
-			searchParameters{text: benchQueryText(i), limit: 20, who: alice}, queries[i], (&fakeEmbedder{}).Identity())
-		for round := range 2 {
-			tx, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, setting := range searchMeaningScan {
-				if _, err := tx.Exec(ctx, setting); err != nil {
-					t.Fatalf("%s: %v", setting, err)
-				}
-			}
-			plan, err := tx.Query(ctx, "explain (analyze, buffers) "+searchQueryMeaning, arguments...)
-			if err != nil {
-				t.Fatalf("explain query %d: %v", i, err)
-			}
-			var lines []string
-			for plan.Next() {
-				var line string
-				if err := plan.Scan(&line); err != nil {
+	for _, width := range benchWidths(t) {
+		for _, i := range which {
+			arguments := searchMeaningQueryArguments(
+				searchParameters{text: benchQueryText(i), limit: 20, who: alice}, queries[i], (&fakeEmbedder{}).Identity())
+			for round := range 2 {
+				tx, err := database.Pool.Begin(ctx)
+				if err != nil {
 					t.Fatal(err)
 				}
-				lines = append(lines, line)
-			}
-			plan.Close()
-			if err := plan.Err(); err != nil {
-				t.Fatalf("explain query %d: %v", i, err)
-			}
-			_ = tx.Rollback(ctx)
-			if round == 1 {
-				t.Logf("bench explain: query %d, %d plan lines:\n%s", i, len(lines), strings.Join(lines, "\n"))
+				for _, setting := range width.settings {
+					if _, err := tx.Exec(ctx, setting); err != nil {
+						t.Fatalf("%s: %v", setting, err)
+					}
+				}
+				plan, err := tx.Query(ctx, "explain (analyze, buffers) "+searchQueryMeaning, arguments...)
+				if err != nil {
+					t.Fatalf("explain query %d: %v", i, err)
+				}
+				var lines []string
+				for plan.Next() {
+					var line string
+					if err := plan.Scan(&line); err != nil {
+						t.Fatal(err)
+					}
+					lines = append(lines, line)
+				}
+				plan.Close()
+				if err := plan.Err(); err != nil {
+					t.Fatalf("explain query %d: %v", i, err)
+				}
+				_ = tx.Rollback(ctx)
+				if round == 1 {
+					t.Logf("bench explain: width %s, query %d, %d plan lines:\n%s", width.name, i, len(lines), strings.Join(lines, "\n"))
+				}
 			}
 		}
 	}
@@ -501,9 +750,15 @@ func benchQueryText(i int) string {
 
 func benchQueries(t *testing.T, database *store.Store) [][]float32 {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select v::text from bench_queries order by n`)
+	return benchVectors(t, database, `select v::text from bench_queries order by n`)
+}
+
+// benchVectors is the vectors statement reads, one a row, as text.
+func benchVectors(t *testing.T, database *store.Store, statement string, arguments ...any) [][]float32 {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), statement, arguments...)
 	if err != nil {
-		t.Fatalf("read bench_queries: %v", err)
+		t.Fatalf("read the bench's query vectors: %v", err)
 	}
 	defer rows.Close()
 	var queries [][]float32
@@ -524,14 +779,14 @@ func benchQueries(t *testing.T, database *store.Store) [][]float32 {
 		queries = append(queries, vector)
 	}
 	if err := rows.Err(); err != nil || len(queries) == 0 {
-		t.Fatalf("read bench_queries: %d queries, %v", len(queries), err)
+		t.Fatalf("read the bench's query vectors: %d queries, %v", len(queries), err)
 	}
 	return queries
 }
 
-func benchSearch(t *testing.T, handler http.Handler, i int) []string {
+func benchSearch(t *testing.T, handler http.Handler, reader benchReaderOf, i int) []string {
 	t.Helper()
-	response := searchRequest(t, handler, url.Values{"q": {benchQueryText(i)}, "limit": {"20"}}.Encode())
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/search?"+url.Values{"q": {benchQueryText(i)}, "limit": {"20"}}.Encode(), nil, reader.login)
 	if response.Code != http.StatusOK {
 		t.Fatalf("search %d: status=%d body=%s", i, response.Code, response.Body.String())
 	}
@@ -543,8 +798,9 @@ func benchSearch(t *testing.T, handler http.Handler, i int) []string {
 }
 
 // benchExactNearest is the limit items nearest vector by their nearest vector, read exactly by a
-// sequential scan, as search names them (kind/id).
-func benchExactNearest(t *testing.T, database *store.Store, vector []float32, limit int) []string {
+// sequential scan, as search names them (kind/id), of the rows of projects and of no project, or
+// of every row where projects is nil.
+func benchExactNearest(t *testing.T, database *store.Store, vector []float32, limit int, projects []string) []string {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -568,9 +824,10 @@ func benchExactNearest(t *testing.T, database *store.Store, vector []float32, li
 			                 when 'ask_part' then 'ask/' || split_part(split_part(id, '#', 1), '/', 2) end as item,
 			       max(1 - (embedding <=> $1::vector)) as r
 			  from embeddings where embedding is not null and model = $2
+			   and ($5::bool or project_key is null or project_key = any($6::text[]))
 			 group by 1
 		) items where item is not null and r >= $4 order by r desc limit $3`,
-		"["+strings.Join(literal, ",")+"]", embed.BedrockModel, limit, searchMeaningFloor)
+		"["+strings.Join(literal, ",")+"]", embed.BedrockModel, limit, searchMeaningFloor, projects == nil, append([]string{}, projects...))
 	if err != nil {
 		t.Fatalf("read the exact nearest items: %v", err)
 	}
