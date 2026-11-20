@@ -64,7 +64,7 @@ export const parentLives = 'read -r _ _ _ ppid _ </proc/$$/stat && [ "$ppid" = "
  *  descriptor of this process, which the child then holds open, or "pipe", a pipe whose other end
  *  this process holds, which a stand-in that reads it to its end reads until this process ends.
  *  `command` lives as long as the row needs it (`untilThisEnds`), never for a fixed time, which
- *  the source check of `harness-postgres-removal.test.ts` refuses (`fixedLives`). */
+ *  the source check of `harness-postgres-source-rules.test.ts` refuses (`fixedLives`). */
 export function standIn(cwd: string, command: readonly string[], stdin?: number | "pipe"): StandIn {
   const child: Subprocess = Bun.spawn([...command], {
     cwd,

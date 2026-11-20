@@ -107,7 +107,7 @@ jobs:
       # its own and exports when it ends, in whole seconds since the epoch, as its script's first
       # line (LEGION_TEST_STEP_ENDS_AT): a row whose step ends first ends there, naming what it
       # waited for, and removes what it made, where the step's own clock would name no row
-      # (harness-postgres-removal.test.ts reads every workflow for such a step), and a file's hook
+      # (harness-postgres-source-rules.test.ts reads every workflow for such a step), and a file's hook
       # that removes a directory may take what the step leaves, and no more
       # (e2e/__tests__/step-end.ts). The limit is dispatch-browser.yaml's rule, the measured
       # maximum plus 15 per cent rounded up to a whole minute: this step took 116 to 148 s in the

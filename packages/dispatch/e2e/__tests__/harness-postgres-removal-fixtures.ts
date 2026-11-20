@@ -553,7 +553,7 @@ export const rowRoomMs = 60_000;
 /** A row's own limit: everything it waits for (`waitsMs`), the waits of its `finally`
  *  (`Waits.ends`), and its room above them, `rowRoomMs` or its own (`Waits.roomMs`). Every row of
  *  the files these fixtures serve that counts its waits (`rowOf`) states its limit so, and no
- *  other way, which a row of `harness-postgres-removal.test.ts` reads from their source
+ *  other way, which `harness-postgres-source-rules.test.ts` reads from their source
  *  (`limitsNotSummed`). */
 export function rowMs(waits: Waits): number {
   const ends = (waits.ends ?? []).reduce<number>(
