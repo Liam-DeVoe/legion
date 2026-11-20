@@ -6,15 +6,18 @@ package helper
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/proof"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 )
 
 const noCredentialMsg = "no machine credential; run: agent-secrets machine login, and have a human approve it"
@@ -249,9 +252,12 @@ func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testi
 // The broker refuses the credential (401 LAUNCHER_INVALID) on one enroll, and two are out by
 // then: the session's own, which the login woke, and the row's enroll-session-key. Each row sets
 // which of the two the refusal meets. Either way the helper holds no credential once it has
-// handled the refusal. The session key's enroll drops the credential before its own reply. The
-// session's enroll drops it on the enroll loop's goroutine, which can be after that reply, so
-// that row holds the drop until the reply is back and then waits for the drop.
+// handled the refusal. The session key's enroll drops the credential before its own reply: the
+// drop runs on the goroutine of the call the broker refused, before that call returns the answer
+// the reply carries. Row 1 decides that by order (enrollOrder), not by a read after the reply: a
+// drop on any other goroutine has no order with the reply, and it can land before the read all the
+// same. The session's enroll drops it on the enroll loop's goroutine, which can be after the key's
+// reply, so that row holds the drop until the reply is back and then waits for the drop.
 func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
 	for _, row := range []struct {
 		name string
@@ -266,6 +272,9 @@ func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			r := newRig(t, "")
 			b := r.srv.Broker
+			order := &enrollOrder{RoundTripper: r.fake.srv.Client().Transport}
+			b.HTTP = &http.Client{Transport: order}
+			b.testClearHook = func() { order.record("cleared") }
 			// Once hold is set, the next drop that reaches dropOutsideRefresh closes held and waits
 			// for letDrop. No goroutine of the helper can drop a credential before the login below.
 			held := make(chan struct{})
@@ -341,20 +350,60 @@ func TestSignAnswersNoCredentialWhileTheHelperHoldsNone(t *testing.T) {
 					}
 				})
 			}
-			if key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"}); key.OK || key.Code != row.keyCode {
+			key := r.call(t, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"})
+			order.record("replied")
+			if key.OK || key.Code != row.keyCode {
 				t.Fatalf("enroll-session-key beside a refused credential: %+v; want %s", key, row.keyCode)
 			}
 			if row.sessionRefused {
 				// The reply came back while the loop's drop waited. Let the drop go, and wait for it.
 				releaseDrop()
 				waitFor(t, func() bool { return !b.HasCredential() })
-			} else if b.HasCredential() {
-				t.Fatal("a refused credential must be cleared before the reply to the enroll it refused")
+			} else if got := order.read(); len(got) != 3 || got[0].what != "refused" || got[1] != (orderEvent{"cleared", got[0].goroutine}) || got[2].what != "replied" {
+				t.Fatalf("a refused credential must be cleared before the reply to the enroll it refused, on the goroutine of the call the broker refused: recorded %+v; want refused and cleared on one goroutine, then replied", got)
 			}
 			open() // in the first row the session's enroll goes on now, and meets the fake's 503
 			expect("after the broker refused the credential", CodeNoCredential)
 		})
 	}
+}
+
+// enrollOrder is the order row 1 of TestSignAnswersNoCredentialWhileTheHelperHoldsNone decides by.
+// It is the transport of the helper's broker calls, and it records, as they happen, each enroll
+// the fake broker refuses with a 401, each clear of the helper's credential (Broker.testClearHook)
+// and the reply to the test's enroll-session-key, each with the id of the goroutine it happened on
+// (goroutinetest.ID). A transport's RoundTrip runs on the goroutine that sends the request, so a
+// refusal's goroutine is the call the broker refused.
+type enrollOrder struct {
+	http.RoundTripper
+	mu     sync.Mutex
+	events []orderEvent
+}
+
+// orderEvent is one event enrollOrder recorded: what happened, and on which goroutine.
+type orderEvent struct {
+	what      string
+	goroutine uint64
+}
+
+func (o *enrollOrder) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := o.RoundTripper.RoundTrip(req)
+	if err == nil && req.Method == http.MethodPost && req.URL.Path == "/v1/enrollments" && resp.StatusCode == http.StatusUnauthorized {
+		o.record("refused")
+	}
+	return resp, err
+}
+
+func (o *enrollOrder) record(what string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.events = append(o.events, orderEvent{what, goroutinetest.ID()})
+}
+
+func (o *enrollOrder) read() []orderEvent {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.events)
 }
 
 // TestARegisterWaitWaitsForAConfirmationThatNeedsNoCredential: a renew of an inherited enrollment
