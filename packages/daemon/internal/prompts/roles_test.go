@@ -347,13 +347,19 @@ func TestTheMergerQueuesAFailedChecksEjectionOnceMore(t *testing.T) {
 		"the issue goes back only on the second such removal of that head",
 		"no role re-runs a group build",
 		"carrying the facts `skill://legion-worker/references/red-at-the-head.md` names for the record",
+		// The two enqueue budgets of one head, each told apart by its comment's first line
+		// (INFRA-1303's review round 2, R2-15).
+		"the first line `failed_checks requeue of <head sha>`",
+		"begins with the line `merge_conflict requeue of <head sha>`",
 	} {
 		if !strings.Contains(merger, want) {
 			t.Errorf("roles/merger.md does not say %q", want)
 		}
 	}
-	if strings.Contains(merger, "is work to fix, so send the issue back") {
-		t.Error("roles/merger.md still sends the issue back on the first `failed_checks` ejection")
+	for _, old := range []string{"is work to fix, so send the issue back", "That is work to fix. Send the issue back"} {
+		if strings.Contains(merger, old) {
+			t.Errorf("roles/merger.md still sends the issue back on the first `failed_checks` ejection: %q", old)
+		}
 	}
 }
 
