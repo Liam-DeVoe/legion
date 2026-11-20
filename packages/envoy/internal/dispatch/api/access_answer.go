@@ -48,7 +48,7 @@ func (s *server) requireAccessAccount(w http.ResponseWriter, r *http.Request) bo
 }
 
 // getAccessProject answers project {key}'s membership answer for ?person=, which may be left out
-// to read the project alone (visible false, member_kind none).
+// to read the project alone (member_kind none, and visible whether the project is public).
 func (s *server) getAccessProject(w http.ResponseWriter, r *http.Request) {
 	pool, err := s.readyPool()
 	if err != nil {

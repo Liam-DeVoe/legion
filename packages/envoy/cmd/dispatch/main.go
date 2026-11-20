@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -30,7 +29,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -62,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/principal"
 	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/listenfd"
@@ -551,6 +550,7 @@ func main() {
 	serviceTokens := serviceTokenVerifier(boot)
 	if serviceTokens != nil {
 		slog.Info("dispatch: verifying service-account tokens", "issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
+		warnEveryServiceAccountAdmitted(boot)
 		go serviceTokens.Run(ctx)
 	}
 
@@ -617,6 +617,12 @@ func main() {
 		os.Exit(1)
 	}
 	built.BrokerTokens = brokerTokens
+	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
+	// the probe answers from the moment the server does, and a process with no bus simply leaves
+	// the outbox's counter at zero. The API adds the gauges of the mention sends it holds behind
+	// an earlier event to it (api.Deps.Metrics), and the outbox those of its fallback copies.
+	met := metrics.New()
+	built.Metrics = met
 	if brokerTokens != nil {
 		slog.Info("dispatch: deciding access tokens the secrets broker issued", "broker", redact.URL(boot.AgentSecretsURL))
 	}
@@ -788,10 +794,6 @@ func main() {
 	// shutdown waits for before it closes the pool; it stays nil with no outbox.
 	var outboxPublisher *outbox.Outbox
 	var outboxStopped chan struct{}
-	// The registry /metrics serves (dispatchHandler), built whether or not NATS is configured:
-	// the probe answers from the moment the server does, and a process with no bus simply leaves
-	// the outbox's counter at zero.
-	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
 		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
@@ -823,6 +825,7 @@ func main() {
 			KeptLanes:        natsClient,
 			PublishFailures:  outboxPublishFailures,
 			RoleForwardsHeld: outboxRoleForwardsHeld,
+			Metrics:          met,
 		})
 		outboxStopped = make(chan struct{})
 		go func() {
@@ -1563,11 +1566,18 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		}
 		boot.DevSignIn = true
 	}
+	return boot, nil
+}
+
+// warnEveryServiceAccountAdmitted logs one WARN when the deployment verifies service-account tokens
+// and names no account: every account whose token the issuer signs for the audience is then
+// admitted, as before DISPATCH_OIDC_ACCOUNTS existed. main calls it beside the line that says the
+// tokens are verified; resolveBootConfig only reads the environment.
+func warnEveryServiceAccountAdmitted(boot bootConfig) {
 	if boot.OIDCAudience != "" && len(boot.OIDCAccounts) == 0 {
 		slog.Warn("dispatch: DISPATCH_OIDC_ACCOUNTS is unset, so every service account whose token the issuer signs for the audience is admitted; list the accounts that call Dispatch to admit only them",
 			"issuer", boot.OIDCIssuer, "audience", boot.OIDCAudience)
 	}
-	return boot, nil
 }
 
 // commaList is the comma-separated list the setting name holds, each entry trimmed; a value blank
@@ -1584,11 +1594,6 @@ func commaList(env settingValues, name string) []string {
 	}
 	return entries
 }
-
-// serviceAccountSubject is a Kubernetes service account's subject as its projected token carries
-// it: the namespace a DNS label, the name a DNS subdomain, the form the secrets broker holds its own
-// service-account settings to (internal/broker/config, serviceAccountPattern).
-var serviceAccountSubject = regexp.MustCompile(`^system:serviceaccount:[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?:[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?$`)
 
 // checkAccessSettings refuses what boot's access settings cannot mean. Each list of service
 // accounts names accounts of the verifier DISPATCH_OIDC_AUDIENCE turns on, so either set without it
@@ -1611,7 +1616,7 @@ func checkAccessSettings(boot bootConfig) error {
 			if account == "" {
 				return fmt.Errorf("%s entry %d of %d is empty", list.name, index+1, len(list.accounts))
 			}
-			if !serviceAccountSubject.MatchString(account) {
+			if !principal.ServiceAccountSubject.MatchString(account) {
 				return fmt.Errorf("%s entry %d of %d is not a Kubernetes service account's subject, system:serviceaccount:<namespace>:<name>", list.name, index+1, len(list.accounts))
 			}
 		}
@@ -1624,7 +1629,7 @@ func checkAccessSettings(boot bootConfig) error {
 		}
 	}
 	if fallback := boot.ProjectOwnerFallback; fallback != "" {
-		if login, err := access.PersonPrincipal(fallback); err != nil || login != fallback {
+		if err := principal.CheckPersonLogin(fallback); err != nil {
 			return fmt.Errorf("DISPATCH_PROJECT_OWNER_FALLBACK must be a lowercase email, the one a full member signed in with; got a value of %d characters", len(fallback))
 		}
 	}
@@ -1957,6 +1962,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
 }

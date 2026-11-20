@@ -169,13 +169,13 @@ const projectCopiesLock = `select pg_advisory_xact_lock($1, hashtext($2))`
 // with a namespace of its own by each family of locks that uses it: the copy locks, the owner
 // locks (store.LockOwner, "OWNR"), the owner lock gate (store.OwnerLockGateNamespace, "OWNG"),
 // duty's leases (duty.leaseNamespace, "LOOP"), a conditional edit's admission
-// (conditionalEditQueueLockNamespace), the test hooks (the api package's testHookLockNamespace,
-// "HOOK", taken only under DISPATCH_TEST_HOOKS) and the delivery change log (store migration
-// 0100's delivery_change_log), and with the hashtext of a name by the issue-dependency locks (api's
-// lockProjectIssueDependencies and the deployment's own, lockDeploymentIssueDependencies), the
-// repository-mapping locks (one mapping's write, api's lockRepoProjectWrite, and the rename
-// graph's own, api's refuseRepoRenameChain) and the Slack channels' lock (access's
-// lockSlackChannels); no two of those first keys are equal.
+// (conditionalEditQueueLockNamespace) and the test hooks (the api package's
+// testHookLockNamespace, "HOOK", taken only under DISPATCH_TEST_HOOKS), and with the hashtext of
+// a name by the issue-dependency locks (api's lockProjectIssueDependencies and the deployment's
+// own, lockDeploymentIssueDependencies), the repository-mapping locks (one mapping's write,
+// api's lockRepoProjectWrite, and the rename graph's own, api's refuseRepoRenameChain), the Slack
+// channels (access's lockSlackChannels), and the delivery change log (store migration 0100's
+// delivery_change_log, 6900); no two of those first keys are equal.
 const copiedAsksLockNamespace int32 = 0x434F5059
 
 // lockProjectCopies serialises, for a project document, its project's copy bookkeeping: a
@@ -211,7 +211,7 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // rename graph's own (api's refuseRepoRenameChain, hashtext('dispatch-repo-rename')), the Slack
 // channels' (access's lockSlackChannels, hashtext('dispatch-slack-channel')) and the delivery
 // change log's (store migration 0100's delivery_change_log, 6900), so a copy lock cannot collide
-// with any of those. hashtext is 32 bits wide, so two projects can still
+// with one of those. hashtext is 32 bits wide, so two projects can still
 // share the second key. They then take turns on their copy bookkeeping and on nothing else, and
 // cannot deadlock: a holder takes the copy lock before any doc_settlements_pending row and before
 // any event append (TestCopyLockComesBeforeEveryPendingRowAndEvent), and an append takes only its

@@ -15,9 +15,11 @@ import (
 // person's member kind as the answer spells it, whether the rule lets that person see the project,
 // and the project's Slack channels with when that list last changed. It names no repositories. A
 // person no people row holds reads as the broker reads them, a full member, since the broker signs
-// in only people of its own sign-in domain; the answer still names their kind none. An unknown
-// project is ErrProjectNotFound; a project the person cannot see still answers, with visible
-// false.
+// in only people of its own sign-in domain; the answer still names their kind none. A question
+// naming no person reads as the rule reads a viewer with no person: it sees the project only when
+// the project is public, so visible says whether it is, as the broker reads it
+// (projectaccess.Client.States). An unknown project is ErrProjectNotFound; a project the person
+// cannot see still answers, with visible false.
 func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAnswer, error) {
 	login := model.CanonicalLogin(person)
 	answer := model.AccessAnswer{Person: login}
@@ -26,7 +28,8 @@ func Answer(ctx context.Context, q Querier, key, person string) (model.AccessAns
 			select (select member_kind from people where email = $2) as member_kind
 		)
 		select p.key, p.visibility, coalesce(p.owner, ''), coalesce(person.member_kind, 'none'),
-			$2 <> '' and coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false),
+			case when $2 = '' then p.visibility = 'public'
+			else coalesce(`+PersonSeesProjectSQL("$2", "coalesce(person.member_kind, 'full')", "p")+`, false) end,
 			p.slack_channels, p.slack_channels_changed_at
 		from projects p, person
 		where p.key = $1

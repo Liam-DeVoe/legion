@@ -944,11 +944,20 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 		},
 		"DISPATCH_NATS_DISABLED": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"}); !boot.NATSDisabled {
+			boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "1"})
+			if !boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=1: NATS on")
 			}
-			if boot := resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"}); boot.NATSDisabled {
+			// No outbox runs without NATS, so no mention's send waits on events nothing will send.
+			if options := appContextOptions(boot, routes.AppContextOptions{}); options.OutboxPublishes {
+				t.Error("DISPATCH_NATS_DISABLED=1: the router is handed OutboxPublishes = true, want false")
+			}
+			boot = resolveWith(t, map[string]string{"DISPATCH_NATS_DISABLED": "true"})
+			if boot.NATSDisabled {
 				t.Error("DISPATCH_NATS_DISABLED=true: NATS off, want only 1 to turn it off")
+			}
+			if options := appContextOptions(boot, routes.AppContextOptions{}); !options.OutboxPublishes {
+				t.Error("NATS on: the router is handed OutboxPublishes = false, want true: the outbox publishes, and a mention's send keeps its order behind the events it still owes")
 			}
 		},
 		"ENVOY_URL": func(t *testing.T) {
@@ -1524,12 +1533,16 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 					}
 					return lines
 				}
-				resolveWith(t, verifying(""))
+				boot := resolveWith(t, verifying(""))
+				if lines := warnings(); len(lines) != 0 {
+					t.Fatalf("resolveBootConfig logged %v; it only reads the environment, and main logs the warning", lines)
+				}
+				warnEveryServiceAccountAdmitted(boot)
 				if lines := warnings(); len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["audience"] != "dispatch" {
 					t.Fatalf("an audience and no list logged %v, want one WARN naming the audience", lines)
 				}
-				resolveWith(t, verifying(listed))
-				resolveWith(t, nil)
+				warnEveryServiceAccountAdmitted(resolveWith(t, verifying(listed)))
+				warnEveryServiceAccountAdmitted(resolveWith(t, nil))
 				if lines := warnings(); len(lines) != 1 {
 					t.Errorf("a list, then no audience, logged the warning again: %v", lines)
 				}
