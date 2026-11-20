@@ -33,8 +33,10 @@ type GhRequest struct {
 	// caller's where Sent is not nil, and the argv's tables are consulted for none of them.
 	//
 	// Nil is a caller that parsed nothing, and the guard then reads all of it from the argv with
-	// tables of its own (readGhArgv). `legion gh` hands nil only from the answers of its parse
-	// that send nothing (`--version`, a group with no leaf, `--help`), so in this binary the
+	// tables of its own (readGhArgv). `legion gh` hands nil only for a command its parse finds
+	// sends nothing: `gh --version` alone, `gh` with no command, a group with no leaf, a leaf
+	// whose help is asked for, by `--help` or by a `-h` no option of the leaf takes, and `gh
+	// help`, with a command or without (cmd/legion's ghTarget.sent). So in this binary the
 	// tables are the fail-closed answer for a future caller that hands the guard bare arguments,
 	// not a path any write takes today.
 	//
@@ -723,10 +725,13 @@ func (sent *GhSent) UsesStdin(use StdinUse) {
 	}
 }
 
-// StdinSent is whether any use of standard input is named (UsesStdin): whether the call sends its
-// standard input to GitHub as content, which decides whether GhCall reads it (GhRequest.Sent).
+// StdinSent is whether the call sends its standard input to GitHub as content, which decides
+// whether GhCall reads it (GhRequest.Sent): true where any use of it is named (UsesStdin), and
+// true where StdinUse is a known use however it got there, since StdinUse is the one field of
+// standard input another package can set: a GhSent written there as a literal with a known use
+// sends its input too. The zero GhSent sends none.
 func (sent *GhSent) StdinSent() bool {
-	return sent.stdinNamed
+	return sent.stdinNamed || sent.StdinUse != StdinUnknown
 }
 
 // argument records args[i], as it was written, as "the gh call's argument <i>".

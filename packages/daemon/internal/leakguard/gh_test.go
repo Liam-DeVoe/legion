@@ -302,7 +302,9 @@ func TestAGhCallsCleanBodyFileIsCleared(t *testing.T) {
 // input they name. The entries that answer nothing are the tables' boundary, and each is a call
 // that must not be refused over a file nobody named. A file option given `-` and a field given
 // `@-` name no file but standard input, which the tables answer apart (sent, GhSent.StdinSent),
-// for the guard to read as GhRequest.Sent says.
+// for the guard to read as GhRequest.Sent says. A GhSent written as a literal, as a caller in
+// another package writes one, can set StdinUse and no other field of standard input: it sends
+// that input where StdinUse is a known use, and the zero GhSent sends none.
 func TestTheFilesAGhCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -455,6 +457,16 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 			}
 		})
 	}
+	t.Run("a literal of a known use of standard input", func(t *testing.T) {
+		for _, use := range []StdinUse{StdinRequestBody, StdinField, StdinText} {
+			if !(&GhSent{StdinUse: use}).StdinSent() {
+				t.Errorf("GhSent{StdinUse: %v} sends no standard input, want it sent", use)
+			}
+		}
+		if (&GhSent{}).StdinSent() {
+			t.Error("the zero GhSent sends standard input, want none")
+		}
+	})
 }
 
 // The files the caller parsed are the files read, and the table is not consulted for a caller
@@ -582,8 +594,13 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 		reports(t, refusal(t, err).Lines, stdin+", GraphQL string 2: "+leakguardtest.PairClass)
 	})
 	t.Run("a query no option is known for", func(t *testing.T) {
-		// A parse that names the field and no use, as one naming two uses of the input does.
-		sent := &GhSent{stdinNamed: true, stdinFields: []string{graphQLQuery}}
+		// A parse that names the field and no use, as one naming two uses of the input does: the
+		// field's `@-`, and then `--input -`, in the order cmd/legion's ghSentFiles reads them.
+		sent := stdinParse("--field", graphQLQuery, StdinField)
+		sent.UsesStdin(StdinRequestBody)
+		if sent.StdinUse != StdinUnknown || !sent.StdinSent() {
+			t.Fatalf("the parse %+v names a use of standard input, or sends none, so this row proves nothing", sent)
+		}
 		call := func(query string) GhRequest {
 			return GhRequest{Args: []string{"api", "graphql", "-F", "query=@-"}, Stdin: strings.NewReader(query), Sent: sent}
 		}

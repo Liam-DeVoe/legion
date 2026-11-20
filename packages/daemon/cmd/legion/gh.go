@@ -759,12 +759,15 @@ func ghWrapperFile(path string) (bool, error) {
 // content, the use it makes of standard input, leakguard.StdinUnknown where no option names it (a
 // file option's `-`, a field's `@-`, `gh workflow run --json`) or two name it with different
 // uses, and whether any of them names it, so that the command sends its standard input as
-// content as well. It is never nil for a command that has a leaf, so the guard reads none of it
-// out of the argv again (leakguard.GhRequest.Sent), and nil in the zero target of one that has
-// none. writesNothing is whether the call is in a read grammar (ghWritesNothing), so that under
-// the shared check that rule was proven against the guard runs that check alone for it (runGh's
-// ghReadCall). Such a call sends no file: no grammar names an option of ghSentFileOptions
-// (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
+// content as well. It is nil in the zero target ghTargetOf answers a command that sends nothing —
+// `gh --version` alone, `gh` with no command, a group with no leaf, a leaf whose help is asked
+// for, by `--help` or by a `-h` no option of the leaf takes, and `gh help`, with a command or
+// without — and in the targets of the two exact reads, which runGh builds without ghTargetOf and
+// hands no guard. For every other command it is never nil, so the guard reads none of it out of
+// the argv again (leakguard.GhRequest.Sent). writesNothing is whether the call is in a read
+// grammar (ghWritesNothing), so that under the shared check that rule was proven against the
+// guard runs that check alone for it (runGh's ghReadCall). Such a call sends no file: no grammar
+// names an option of ghSentFileOptions (TestGhReadGrammarNamesEachOptionAsItsHelpDoes).
 type ghTarget struct {
 	dir, owner, repo string
 	command          string

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -3033,6 +3034,29 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 	}
 }
 
+// ghSentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
+// its exported methods Names and UsesStdin (sentNames, sentUsesStdin), the two ghSentFiles builds
+// its answer with. Its fields of standard input past StdinUse are leakguard's own and no literal
+// here can set them, so an answer to compare whole is built so.
+func ghSentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
+	sent := &leakguard.GhSent{}
+	for _, step := range steps {
+		step(sent)
+	}
+	return sent
+}
+
+// sentNames is the step of ghSentBy that names path as option's value (leakguard.GhSent.Names).
+func sentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.Names(option, path, field, use) }
+}
+
+// sentUsesStdin is the step of ghSentBy that names standard input with use alone
+// (leakguard.GhSent.UsesStdin).
+func sentUsesStdin(use leakguard.StdinUse) func(*leakguard.GhSent) {
+	return func(sent *leakguard.GhSent) { sent.UsesStdin(use) }
+}
+
 // The files a call would send to GitHub as content are read out of the same parse that reads the
 // owner, so the leak guard reads each file's text (leakguard.GhRequest.Sent) and needs no second
 // reader of the argv. The parse knows each option's arity from the leaf's own help, which is what
@@ -3042,141 +3066,135 @@ func TestLegionGhStartsNoGhForASignalThatCameBeforeTheForwarding(t *testing.T) {
 // carries the field's name. A value of `-`, an `@-`, a field given a literal and a raw field name
 // no file to open; a `-` and an `@-` are standard input instead, which the parse answers is sent,
 // with the use the option that named it makes of it, or none where two options with different
-// uses did. `gh workflow run --json`, at a last value of true, names it as a request body;
-// `--json` of any other command takes the fields to print and names none. Each command here has a
-// leaf, so its answer is never nil, a command that sends nothing among them: the guard then reads
-// nothing of it from the argv again.
+// uses did, and with the name of each field whose value it is: `query` in a `gh api graphql`
+// call is what makes the guard read that input one GraphQL literal at a time. `gh workflow run
+// --json`, at a last value of true, names it as a request body; `--json` of any other command
+// takes the fields to print and names none. Each command here has a leaf, so its answer is never
+// nil, a command that sends nothing among them: the guard then reads nothing of it from the argv
+// again. The answer is compared whole, since the names of the fields of standard input are
+// leakguard's own and can be seen no other way.
 func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		argv []string
-		want []leakguard.GhFile
-		// stdin is the use of standard input the parse answers, leakguard.StdinUnknown for none,
-		// and sent whether it answers that the call sends standard input at all.
-		stdin leakguard.StdinUse
-		sent  bool
+		// want is the parse's whole answer, built by the calls ghSentFiles makes for it.
+		want *leakguard.GhSent
 	}{
 		{
 			name: "a short cluster whose last letter is the option",
 			argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "a short option with its value attached by an equals sign",
 			argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "a separate --body-file",
 			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
-			want: []leakguard.GhFile{{Option: "--body-file", Path: "body.md"}},
+			want: ghSentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 		},
 		{
 			name: "gh api's field read from a file",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
-			want: []leakguard.GhFile{{Option: "--field", Path: "body.md", Field: "body"}},
+			want: ghSentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 		},
 		{
 			name: "gh api's request body",
 			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
-			want: []leakguard.GhFile{{Option: "--input", Path: "request.json"}},
+			want: ghSentBy(sentNames("--input", "request.json", "", leakguard.StdinRequestBody)),
 		},
 		{
 			name: "a raw field, which sends its value literally",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(),
 		},
 		{
 			name: "a field given a literal value",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
-			want: []leakguard.GhFile{},
+			want: ghSentBy(),
 		},
 		{
-			name:  "a body option whose value is standard input",
-			argv:  []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinText,
-			sent:  true,
+			name: "a body option whose value is standard input",
+			argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
+			want: ghSentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
 		},
 		{
-			name:  "a short option whose value is standard input",
-			argv:  []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinText,
-			sent:  true,
+			name: "a short option whose value is standard input",
+			argv: []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
+			want: ghSentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
 		},
 		{
-			name:  "a field read from standard input",
-			argv:  []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinField,
-			sent:  true,
+			name: "a field read from standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
+			want: ghSentBy(sentNames("--field", "-", "body", leakguard.StdinField)),
 		},
 		{
-			name:  "gh workflow run's field read from standard input",
-			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinField,
-			sent:  true,
+			name: "a GraphQL query read from standard input",
+			argv: []string{"api", "graphql", "-F", "query=@-"},
+			want: ghSentBy(sentNames("--field", "-", "query", leakguard.StdinField)),
 		},
 		{
-			name:  "gh api's request body on standard input",
-			argv:  []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinRequestBody,
-			sent:  true,
+			// The options are read in the order their names sort, so the field before --input.
+			name: "a GraphQL query read from standard input beside a request body on it",
+			argv: []string{"api", "graphql", "--input", "-", "-F", "query=@-"},
+			want: ghSentBy(sentNames("--field", "-", "query", leakguard.StdinField),
+				sentNames("--input", "-", "", leakguard.StdinRequestBody)),
 		},
 		{
-			name:  "gh workflow run's inputs as JSON on standard input",
-			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinRequestBody,
-			sent:  true,
+			name: "gh workflow run's field read from standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
+			want: ghSentBy(sentNames("--field", "-", "notes", leakguard.StdinField)),
 		},
 		{
-			name:  "gh workflow run's --json=true, which sends standard input as its inputs",
-			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinRequestBody,
-			sent:  true,
+			name: "gh api's request body on standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
+			want: ghSentBy(sentNames("--input", "-", "", leakguard.StdinRequestBody)),
 		},
 		{
-			name:  "gh workflow run's --json whose last value is false",
-			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinUnknown,
+			name: "gh workflow run's inputs as JSON on standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
+			want: ghSentBy(sentUsesStdin(leakguard.StdinRequestBody)),
 		},
 		{
-			name:  "gh workflow run's --json beside a field read from standard input",
-			argv:  []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinUnknown,
-			sent:  true,
+			name: "gh workflow run's --json=true, which sends standard input as its inputs",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
+			want: ghSentBy(sentUsesStdin(leakguard.StdinRequestBody)),
 		},
 		{
-			name:  "another command's --json, which names the fields to print",
-			argv:  []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinUnknown,
+			name: "gh workflow run's --json whose last value is false",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
+			want: ghSentBy(),
 		},
 		{
-			name:  "two fields read from standard input",
-			argv:  []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinField,
-			sent:  true,
+			name: "gh workflow run's --json beside a field read from standard input",
+			argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
+			want: ghSentBy(sentNames("--field", "-", "notes", leakguard.StdinField),
+				sentUsesStdin(leakguard.StdinRequestBody)),
 		},
 		{
-			name:  "two different options naming standard input",
-			argv:  []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
-			want:  []leakguard.GhFile{},
-			stdin: leakguard.StdinUnknown,
-			sent:  true,
+			name: "another command's --json, which names the fields to print",
+			argv: []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
+			want: ghSentBy(),
 		},
 		{
+			name: "two fields read from standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
+			want: ghSentBy(sentNames("--field", "-", "title", leakguard.StdinField),
+				sentNames("--field", "-", "body", leakguard.StdinField)),
+		},
+		{
+			name: "two different options naming standard input",
+			argv: []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
+			want: ghSentBy(sentNames("--field", "-", "body", leakguard.StdinField),
+				sentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		},
+		{
+			// Named once, by the option whose name sorts first.
 			name: "the same file named twice",
 			argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
-			want: []leakguard.GhFile{{Option: "--field", Path: "body.md", Field: "body"}},
+			want: ghSentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3187,11 +3205,8 @@ func TestGhTargetOfReadsTheFilesTheCallWouldSend(t *testing.T) {
 			if target.sent == nil {
 				t.Fatalf("ghTargetOf(%q) handed no parse of what the call sends, so the guard would read the argv again", tc.argv)
 			}
-			if !slices.Equal(target.sent.Files, tc.want) {
-				t.Fatalf("ghTargetOf(%q) read the files %v, want %v", tc.argv, target.sent.Files, tc.want)
-			}
-			if target.sent.StdinUse != tc.stdin || target.sent.StdinSent() != tc.sent {
-				t.Errorf("ghTargetOf(%q) read standard input as used %v, sent %t; want %v, sent %t", tc.argv, target.sent.StdinUse, target.sent.StdinSent(), tc.stdin, tc.sent)
+			if !reflect.DeepEqual(target.sent, tc.want) {
+				t.Errorf("ghTargetOf(%q) read what the call sends as %+v, want %+v", tc.argv, target.sent, tc.want)
 			}
 		})
 	}
