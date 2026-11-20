@@ -624,7 +624,7 @@ func TestAcceptDuringTheSendLeavesTheSettleItsReceipt(t *testing.T) {
 			if accepted.Code != http.StatusOK {
 				t.Errorf("accept from inside the send: status=%d body=%s", accepted.Code, accepted.Body.String())
 			} else {
-				accepts = append(accepts, decodeBody[acceptedAttempt](t, accepted))
+				accepts = append(accepts, decodeBodyOrError[acceptedAttempt](t, accepted))
 			}
 			_, _ = w.Write([]byte(`{"event_id":"target-envelope","recipient":"s1"}`))
 		default:

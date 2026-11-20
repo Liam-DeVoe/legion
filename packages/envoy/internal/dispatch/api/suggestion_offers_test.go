@@ -294,7 +294,9 @@ func TestSuggestionRolesOfAnAskCreateLeaveNoDecisionRow(t *testing.T) {
 func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T) {
 	fixture := seedCrossProjectOffers(t, "XSWEEP", "XSWEEPO", 1)
 	srv := directServer(fixture.deps)
-	from := time.Now().Add(-time.Minute)
+	// The report window is read off the clock that stamps the offer row, the database's: from
+	// before the ask that offers it to after the sweep.
+	from := databaseNow(t, fixture.database.Pool)
 
 	_, askID := askTheQuestion(t, fixture, "/api/v1/issues/"+fixture.host+"/asks")
 	recorded := readOfferRows(t, fixture.database, "source_ask_id = $1 and role = 'other_project'", askID)
@@ -310,7 +312,7 @@ func TestSuggestionOfferIsSweptAndStaysIgnoredWithoutLaterActivity(t *testing.T)
 		t.Fatalf("after the sweep the row is %v, want it swept, still ignored and with no detail", swept)
 	}
 
-	to := time.Now().Add(time.Minute)
+	to := databaseNow(t, fixture.database.Pool)
 	stamp := func(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
 	report, body := getRelatedChecks(t, fixture.handler, url.Values{
 		"project": {"XSWEEP"}, "from": {stamp(from)}, "to": {stamp(to)},

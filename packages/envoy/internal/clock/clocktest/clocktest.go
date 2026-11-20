@@ -1,8 +1,5 @@
 // Package clocktest is Envoy's one fake clock: a clock.Clock that moves only when the test
 // moves it, and that tells the test what the code has armed on it.
-// packages/daemon/internal/clock/clocktest and packages/envoy/internal/clock/clocktest hold the same
-// code, because Go's internal rule keeps one module from importing the other's (packages/envoy/infra
-// imports Envoy's through its replace), so a change to one is made to the other.
 //
 // # Two fakes
 //
@@ -69,8 +66,10 @@ import (
 // Held make one.
 type Fake struct {
 	mu sync.Mutex
-	// held is whether Now reads the wall clock plus added (Held) rather than now (New).
+	// held is whether Now reads the wall clock plus added (Held) rather than now (New), and wall
+	// is that wall clock: time.Now, or the one a test of this package names (HeldOn).
 	held  bool
+	wall  func() time.Time
 	now   time.Time
 	added time.Duration
 	// stepped is every step StepWall has made, which Now reads on top of the fake's moment and the
@@ -87,7 +86,7 @@ var _ clock.Clock = (*Fake)(nil)
 func New(start time.Time) *Fake { return &Fake{now: start} }
 
 // Held is a fake whose Now is the wall clock plus what Advance and Set have added.
-func Held() *Fake { return &Fake{held: true} }
+func Held() *Fake { return &Fake{held: true, wall: time.Now} }
 
 // Now is the fake's moment plus every step StepWall has made.
 func (c *Fake) Now() time.Time {
@@ -116,28 +115,28 @@ func (c *Fake) StepWall(d time.Duration) {
 
 func (c *Fake) nowLocked() time.Time {
 	if c.held {
-		return time.Now().Add(c.added)
+		return c.wall().Add(c.added)
 	}
 	return c.now
 }
 
 func (c *Fake) setLocked(at time.Time) {
 	if c.held {
-		c.added = at.Sub(time.Now())
+		c.added = at.Sub(c.wall())
 		return
 	}
 	c.now = at
 }
 
-// Advance moves the fake d forward, firing every timer due by then. A fake moves back only by Set.
+// Advance moves the fake d forward, firing every timer due by then. A fake moves back only by Set:
+// the move reads the fake's present and begins under one hold of its lock, and another move that
+// took the fake past the target while a timer fired leaves it there.
 func (c *Fake) Advance(d time.Duration) {
 	if d < 0 {
 		panic(fmt.Sprintf("clocktest: Advance(%v): a fake moves back only by Set", d))
 	}
 	c.mu.Lock()
-	target := c.nowLocked().Add(d)
-	c.mu.Unlock()
-	c.moveTo(target)
+	c.moveLocked(c.nowLocked().Add(d), false)
 }
 
 // Set moves the fake to at, earlier or later, firing every timer due by then. A timer keeps the
@@ -157,22 +156,26 @@ func (c *Fake) SetWhen(to func(now time.Time, armed []time.Time) (time.Time, boo
 		c.mu.Unlock()
 		return armed, false
 	}
-	c.moveLocked(target)
+	c.moveLocked(target, true)
 	return armed, true
 }
 
 func (c *Fake) moveTo(target time.Time) {
 	c.mu.Lock()
-	c.moveLocked(target)
+	c.moveLocked(target, true)
 }
 
 // moveLocked is moveTo begun under the hold of the lock its caller took: each later pass takes
-// the lock again (the loop's post statement), and the last lets it go.
-func (c *Fake) moveLocked(target time.Time) {
+// the lock again (the loop's post statement), and the last lets it go. back is whether the move
+// may end before the fake's present, as a Set may; a move that may not ends at target only when
+// target is ahead, since another move can take the fake past it while a timer of this one fires.
+func (c *Fake) moveLocked(target time.Time, back bool) {
 	for ; ; c.mu.Lock() {
 		next := c.dueLocked(target)
 		if next == nil {
-			c.setLocked(target)
+			if back || target.After(c.nowLocked()) {
+				c.setLocked(target)
+			}
 			c.mu.Unlock()
 			return
 		}

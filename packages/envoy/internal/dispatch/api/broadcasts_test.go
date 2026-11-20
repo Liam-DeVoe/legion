@@ -880,6 +880,7 @@ func TestBroadcastAnswersBeforeDeliveringAndStillReachesEveryRecipient(t *testin
 // the same session.
 func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
 	// The worker announces itself when it parks, so the takeover below happens while it is
 	// held rather than at a moment this test guessed.
 	parked := make(chan struct{}, 1)
@@ -921,6 +922,9 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
+	// Deferred after the listener's Close, so it runs first: a failure below lets the parked
+	// handler go before Close waits for it.
+	defer releaseOnce()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 
 	created := decodeBody[broadcastResponse](t, postBroadcast(t, handler, map[string]any{
@@ -943,7 +947,7 @@ func TestBroadcastWorkerSkipsARecipientTakenOverFromTheAgentCard(t *testing.T) {
 	if change.Code != http.StatusCreated {
 		t.Fatalf("mode change: status=%d body=%s", change.Code, change.Body.String())
 	}
-	close(release)
+	releaseOnce()
 
 	// The broadcast's delivery runs as the server's detached work: once that has returned, the
 	// worker has done all it will, a send of an attempt it wrongly opened included.

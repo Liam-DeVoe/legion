@@ -218,7 +218,7 @@ func aRetryStillInFlightWhenTheLaneArrives(
 		answered <- dispatchRequest(t, lane.handler, http.MethodPost,
 			"/api/v1/comments/"+lane.queued+"/deliveries", map[string]any{"delivery": "steer"}, "alice")
 	}()
-	<-reached
+	testwait.Receive(t, "the Retry's send to reach the stalled listener", reached)
 
 	lane.release()
 	awaitUnclaimedPendingAttempt(t, lane.database, lane.queued, "session:s1")
@@ -236,7 +236,7 @@ func TestARetryInFlightThatFailsLeavesTheQueuedAttemptToTheSweep(t *testing.T) {
 
 	lane.listener.refuseSends("s1")
 	releaseRetry()
-	if retried := decodeBody[commentDeliveryRead](t, <-answered); retried.Attempt != 2 || retried.State != "failed" {
+	if retried := decodeBody[commentDeliveryRead](t, testwait.Receive(t, "the Retry to answer", answered)); retried.Attempt != 2 || retried.State != "failed" {
 		t.Fatalf("the Retry = %#v, want its own attempt 2, failed", retried)
 	}
 	lane.listener.allowSends("s1")
@@ -268,7 +268,7 @@ func TestARetryInFlightThatIsSentSupersedesTheAttemptTheLaneStoodDownFrom(t *tes
 	runOutboxBeside(t, lane.deps, published)
 
 	releaseRetry()
-	if retried := decodeBody[commentDeliveryRead](t, <-answered); retried.Attempt != 2 || retried.State != "sent" {
+	if retried := decodeBody[commentDeliveryRead](t, testwait.Receive(t, "the Retry to answer", answered)); retried.Attempt != 2 || retried.State != "sent" {
 		t.Fatalf("the Retry = %#v, want its own attempt 2, sent", retried)
 	}
 	settled := waitForCommentDeliveries(t, lane.database, lane.queued, "both attempts settled", bothMentionAttemptsSettled)
@@ -294,7 +294,7 @@ func TestARetryInFlightThatIsSentSupersedesTheAttemptTheLaneStoodDownFrom(t *tes
 // opened.
 func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
 	listener, state := newMentionListener(t)
-	// A clock that stands still: the sends this test stalls are released by the test, and no
+	// A clock whose timers never fire: the sends this test stalls are released by the test, and no
 	// window of the listener client's may settle one behind its back.
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{
 		envoyURL: listener.URL, clock: clocktest.Held(),
@@ -308,7 +308,7 @@ func TestAKeyedRepeatSendsTheAttemptAFailedRetryOvertook(t *testing.T) {
 	defer release()
 
 	postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the stalled listener", reached)
 	keyed := map[string]any{"body": "second", "mentions": []map[string]any{{"target": "session:s1"}}}
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	queued := decodeMentionedComment(t,
@@ -510,7 +510,7 @@ func TestTheSweepSettlesAnOvertakenAttemptNoSenderSettled(t *testing.T) {
 	lane, releaseRetry, answered := aRetryStillInFlightWhenTheLaneArrives(t)
 	lane.listener.refuseSends("s1")
 	releaseRetry()
-	if retried := decodeBody[commentDeliveryRead](t, <-answered); retried.Attempt != 2 || retried.State != "failed" {
+	if retried := decodeBody[commentDeliveryRead](t, testwait.Receive(t, "the Retry to answer", answered)); retried.Attempt != 2 || retried.State != "failed" {
 		t.Fatalf("the Retry = %#v, want its own attempt 2, failed: s1's host refused its send", retried)
 	}
 	lane.listener.allowSends("s1")

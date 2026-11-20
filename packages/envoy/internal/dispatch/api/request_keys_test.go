@@ -232,7 +232,7 @@ func TestARepeatWhileTheFirstRunsIsInFlight(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 
 	repeat := rig.send(t, "a", map[string]any{"n": 1}, "alice", "slow")
 	if code, _ := refusalOf(t, repeat); repeat.Code != http.StatusConflict || code != contracts.IdempotencyKeyInFlight ||
@@ -491,7 +491,7 @@ func TestEveryKeyedAnswerNamesItsKey(t *testing.T) {
 	names("a 5xx", rig.send(t, "broken", nil, "alice", "echo-2"), http.StatusInternalServerError, "echo-2")
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "slow", nil, "alice", "echo-3") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	names("a key in flight", rig.send(t, "slow", nil, "alice", "echo-3"), http.StatusConflict, "echo-3")
 	releaseOnce()
 	names("the slow run", awaitResponse(t, answered), http.StatusCreated, "echo-3")
@@ -549,7 +549,7 @@ func TestALapsedHolderIsTakenOver(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "stalled") }()
-	<-running
+	testwait.Receive(t, "the held keyed handler to run", running)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -751,7 +751,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 	})
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- rig.send(t, "a", nil, "alice", "slow-write") }()
-	<-holding
+	testwait.Receive(t, "the keyed handler to reach its held write", holding)
 	if _, err := rig.database.Pool.Exec(context.Background(),
 		`update request_keys set leased_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatalf("lapse the lease: %v", err)
@@ -760,7 +760,7 @@ func TestAHolderThatLostItsKeyCommitsNoWrite(t *testing.T) {
 		t.Fatalf("the repeat past the lease: status=%d body=%s, want run 2", takeover.Code, takeover.Body.String())
 	}
 	releaseOnce()
-	if err := <-slow; err != errRequestKeyTakenOver {
+	if err := testwait.Receive(t, "the slow holder's write to return once released", slow); err != errRequestKeyTakenOver {
 		t.Fatalf("the slow holder's commit = %v, want %v", err, errRequestKeyTakenOver)
 	}
 	if first := awaitResponse(t, answered); first.Code != http.StatusConflict {

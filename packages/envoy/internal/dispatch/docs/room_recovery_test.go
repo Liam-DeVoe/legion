@@ -136,7 +136,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 	// publish do, so nothing but the recovery this test pins ends it.
 	loaded := make(chan error, 1)
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
-	<-persist.failed
+	testwait.Receive(t, "warmLiveDocument to reach the injected failure", persist.failed)
 	if err := testwait.Receive(t, "the load that meets its own room's failure to return rather than wait for the recovery that waits for it", loaded); !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("a load that meets its own room's failure = %v, want ErrServiceUnavailable", err)
 	}
@@ -211,16 +211,17 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	t.Cleanup(release)
 	persist.armed.Store(true)
 	go func() { _ = service.warmLiveDocument(context.Background(), artifactID) }()
-	<-persist.loading
+	testwait.Receive(t, "warmLiveDocument to reach the held load", persist.loading)
 	// The refusal is handled only once the failure's recovery has finished - the window in
 	// which the publish would fail the replacement room instead of the failed one - so the hook
-	// closes refused there, and this row waits for the refusal itself rather than for the
+	// sends refused there, and this row waits for the refusal itself rather than for the
 	// failure that causes it: the failure is this store's, set before the publish has even met
-	// it, while the refusal is what the row goes on to assert about.
-	refused := make(chan struct{})
+	// it, while the refusal is what the row goes on to assert about. The hook runs on the
+	// publish's goroutine, so it hands the recovery's outcome to this one, which fails on it.
+	recovery := testwait.Context(t)
+	refused := make(chan error, 1)
 	service.afterPublishRefused = func(room string) {
-		awaitRecovered(t, service, room)
-		close(refused)
+		refused <- service.awaitRoomRecovery(recovery, room)
 	}
 	// The publish runs on a goroutine of its own so that this one can hold the load until the
 	// publish has reached it.
@@ -233,11 +234,14 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	release()
 	// Nothing waits on persist.failed any more: the refusal is the event this row turns on, and
 	// the load that closes failed is the one that causes it, so the wait below orders everything
-	// failed could. A recovery that hangs is reported by awaitRecovered above, which says more.
-	testwait.Receive(t, "the publish to be refused by the room whose load failed (nothing here is tested until it is)", refused)
+	// failed could. A recovery that hangs ends at the shared wait's deadline, and its error says
+	// more.
+	if err := testwait.Receive(t, "the publish to be refused by the room whose load failed (nothing here is tested until it is)", refused); err != nil {
+		t.Fatalf("the failed room did not recover: %v", err)
+	}
 	// The publish has let go of its write's room, as it had by this point when it ran on this
 	// goroutine, so the retry below opens its own write on that room.
-	<-published
+	testwait.Receive(t, "ledger.publish to return after the refusal", published)
 
 	if service.roomFailed(artifactID) {
 		t.Fatal("the refused publish failed the room that replaced the one it was refused by")
@@ -743,7 +747,7 @@ func TestAWriteWhoseRoomFailsBeforeItsFirstAppendFailsFast(t *testing.T) {
 
 	store.failing.Store(true)
 	editLiveTree(t, service, artifactID, appendBlocks(t, "typed"))
-	<-store.entered
+	testwait.Receive(t, "the room's append to reach the failing store", store.entered)
 	fail := func() {
 		close(store.release)
 		waitForRoomFailure(t, service, artifactID)

@@ -722,12 +722,12 @@ func TestHorizonResetDiscardsAnObservationInFlight(t *testing.T) {
 		_, err := horizon.Safe(ctx)
 		done <- err
 	}()
-	<-gated.observed // the observation has read the old log and committed
+	testwait.Receive(t, "the gated observation to read the old log and commit", gated.observed)
 	resetEventLog(ctx, t, database)
 	head := commitHorizonEvent(ctx, t, database)
 	horizon.Reset()
 	close(gated.release)
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "Safe to return across the reset once the gate was released", done); err != nil {
 		t.Fatalf("Safe across the reset: %v", err)
 	}
 	if safe, err := horizon.Await(ctx); err != nil || safe != head {
@@ -760,7 +760,7 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 		_, err := horizon.Safe(ctx)
 		stale <- err
 	}()
-	<-gated.observed // the stale observation has read the log and committed
+	testwait.Receive(t, "the stale observation to read the log and commit", gated.observed)
 	id := commitHorizonEvent(ctx, t, database)
 	type result struct {
 		safe int64
@@ -778,10 +778,10 @@ func TestHorizonSafeWaitsOutAnObservationInFlightBeforeTheCall(t *testing.T) {
 	default:
 	}
 	close(gated.release)
-	if err := <-stale; err != nil {
+	if err := testwait.Receive(t, "the Safe that ran the stale observation to return once the gate was released", stale); err != nil {
 		t.Fatalf("Safe that ran the stale observation: %v", err)
 	}
-	got := <-called
+	got := testwait.Receive(t, "the Safe called after the commit to return once the gate was released", called)
 	if got.err != nil {
 		t.Fatalf("Safe after committing id %d: %v", id, got.err)
 	}

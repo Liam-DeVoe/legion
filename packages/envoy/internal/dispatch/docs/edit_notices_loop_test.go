@@ -22,7 +22,7 @@ import (
 func newEditNoticeSweeper(t *testing.T, database *store.Store, fake *clocktest.Fake) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	return service
 }
 
@@ -59,7 +59,7 @@ func startEditNoticeHub(t *testing.T, database *store.Store) (wake <-chan struct
 	}()
 	stop = sync.OnceFunc(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the edit-notice hub's Run to return once its context ended", done)
 	})
 	t.Cleanup(stop)
 	testwait.Receive(t, "the hub to connect", connected)
@@ -208,6 +208,9 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	logs := captureLogs(t)
 	leases := excerptLeases(t, database)
 	taken, release := make(chan struct{}), make(chan struct{})
+	// A failed wait below still lets the lease holder go, so it never stays parked past the test.
+	releaseLease := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseLease)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
@@ -233,8 +236,8 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	if edits := humanEdits(t, database, document); len(edits) != 0 {
 		t.Fatalf("the sweep sent %d notices while the lease was held elsewhere; want none", len(edits))
 	}
-	close(release)
-	if !<-held {
+	releaseLease()
+	if !testwait.Receive(t, "the other caller's lease to be given back once it was released", held) {
 		t.Fatal("the other caller never held the lease, so the sweep was free to run")
 	}
 	fake.Set(awaitOneSweepTimer(t, fake, "the sweep's timer for its retry once the lease is free", func(time.Time) bool { return true }))

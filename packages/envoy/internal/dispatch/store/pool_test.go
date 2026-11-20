@@ -479,9 +479,9 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 		defer close(closed)
 		database.Pool.Close()
 	}()
-	testwait.Eventually(t, "Close to refuse the other separate pools, which it does from the moment it begins", func() bool {
+	testwait.Until(t, "Close to refuse the other separate pools, which it does from the moment it begins", func() (error, bool) {
 		_, err := database.Pool.Rooms()
-		return errors.Is(err, ErrPoolClosed)
+		return err, errors.Is(err, ErrPoolClosed)
 	})
 	if _, err := database.Pool.Healthy(ctx); err != nil {
 		t.Fatalf("health probe while Close waits for a connection in use: %v, want an answer", err)

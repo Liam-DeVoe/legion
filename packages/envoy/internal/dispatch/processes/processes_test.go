@@ -290,7 +290,7 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 	}()
 	defer func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "RunPruneOn to return once its context ended", done)
 	}()
 	tick := pruning.AwaitArmed(t, "the prune loop's first tick", 1)
 	pruning.Set(tick[0])

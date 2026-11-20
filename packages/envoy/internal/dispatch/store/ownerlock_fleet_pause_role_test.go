@@ -20,8 +20,8 @@ import (
 // database's own drop, and it drops any role it finds, so this test leaves nothing either way.
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
 	ctx := context.Background()
-	// The role spans the cluster, so it is looked for on the server's postgres database, which
-	// outlives the test's own.
+	// The role spans the cluster, so it is looked for on a database of the test's own
+	// (AdminURL), which outlives the store's.
 	adminURL := testdb.DispatchServer.AdminURL(t)
 	var role string
 	t.Cleanup(func() {

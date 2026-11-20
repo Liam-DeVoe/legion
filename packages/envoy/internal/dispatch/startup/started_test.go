@@ -334,7 +334,7 @@ func TestTwoAnnouncersAtOnceAnnounceAndPublishOnce(t *testing.T) {
 	close(start)
 	// The first process to finish is not the one whose publish is held, so it has passed while
 	// that publish was in flight.
-	<-finished
+	testwait.Receive(t, "the first process to finish its passes", finished)
 	publisher.release()
 	passes.Wait()
 	if err := ctx.Err(); err != nil {

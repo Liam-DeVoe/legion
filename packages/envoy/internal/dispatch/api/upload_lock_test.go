@@ -59,7 +59,7 @@ func TestProjectDocumentUploadTakesItsOwnerRowBeforeTheRoomLock(t *testing.T) {
 		t.Fatalf("release the document owner: %v", err)
 	}
 
-	response := <-uploaded
+	response := testwait.Receive(t, "the upload to answer once the locks are let go", uploaded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -278,7 +278,7 @@ func TestProjectDocumentUploadOwnerLockLeavesTheForeignKeyFree(t *testing.T) {
 		t.Fatalf("release the room lock: %v", err)
 	}
 
-	response := <-uploaded
+	response := testwait.Receive(t, "the upload to answer once the room lock is let go", uploaded)
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}

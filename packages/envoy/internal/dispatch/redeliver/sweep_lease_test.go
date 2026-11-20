@@ -87,6 +87,9 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 	// inside it is one shutdown cut short, which reports false whether or not it held the lease
 	// (duty.Exclusive). The other process this caller stands for is not shutting down.
 	taken, release := make(chan struct{}), make(chan struct{})
+	// Registered before any wait or check below, so a failure there still lets the holder go.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(context.Background(), leases, webhookRedeliveryLease, time.Time{}, 0, func(context.Context) {
@@ -105,12 +108,12 @@ func TestARunningSweepWhoseLeaseIsHeldElsewhereListsNothing(t *testing.T) {
 		defer close(done)
 		sweeper.Run(ctx, time.Hour, leases)
 	}()
-	testwait.Until(t, "the running sweep to report skipping the "+webhookRedeliveryLease+" lease", func() (string, bool) {
-		return logs.String(), logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) > 0
+	testwait.Until(t, "the running sweep to report skipping the "+webhookRedeliveryLease+" lease", func() (*lockedBuffer, bool) {
+		return logs, logs.count("dispatch duty: leased pass skipped", "lease="+webhookRedeliveryLease) > 0
 	})
 	cancel()
 	testwait.Receive(t, "the running sweep to return once its context ended", done)
-	close(release)
+	releaseHolder()
 	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the sweep was free to list")
 	}

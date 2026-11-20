@@ -743,7 +743,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	}
 
 	releaseLease()
-	if held := <-ran; !held {
+	if held := testwait.Receive(t, "the other caller's duty.Exclusive to return once the lease was released", ran); !held {
 		t.Fatalf("the other caller never held the %s lease, so the take-over was free", consumerLease(bus.DispatchDeliveryDurable))
 	}
 	takenOver := awaitPushBound(t, natsClient, "the intake did not take the durable over once the lease was free")

@@ -35,16 +35,17 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 }
 
 // A write of each kind the index holds - an issue, and a document, a comment, an ask and a
-// message - is returned by a search of its own words within 60 seconds of the write, and the
-// blocks of the document, the comment, the ask and the message are indexed as windows under
-// them over that same wait.
+// message - is returned by a search of its own words as soon as the write and the block-index
+// tick have run, well inside the sixty seconds check k5 allows (requireIndexed reads once), and
+// the blocks of the document, the comment, the ask and the message are indexed as windows under
+// them by then.
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 
 	corpus := seedSearchCorpus(t, handler)
 	// An item's and a document's windows are the block-index tick's to write, not the write's
 	// (INFRA-988), and no tick runs behind a test server, so the test runs the one the
-	// deployment's reconciler would have run in the seconds this check allows.
+	// deployment's reconciler would run before it searches.
 	windowOwedOwners(t, deps)
 
 	for _, item := range []struct{ query, kind, id string }{

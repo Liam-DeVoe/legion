@@ -126,6 +126,20 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 	return "B"
 }
 
+// buffers is both processes' whole output, labelled, which a failure about the pair prints: which
+// process bound a durable or ran a pass, and why the other did not, is in the two logs read
+// together, and a message carrying one of them (waitForLog) leaves the job that failed without
+// the half saying what the other process was doing. It is read when it is printed, so a wait whose
+// reading carries it (testwait.Until, readWith) copies neither output on its attempts.
+func (p *dispatchPair) buffers() pairBuffers { return pairBuffers{p} }
+
+// pairBuffers is a pair's output as buffers gives it, read by String.
+type pairBuffers struct{ pair *dispatchPair }
+
+func (b pairBuffers) String() string {
+	return fmt.Sprintf("A:\n%s\nB:\n%s", b.pair.a.Output.String(), b.pair.b.Output.String())
+}
+
 // ───── the API a row drives ─────────────────────────────────────────────────
 
 // uniqueProjectKey is prefix with six random characters after it, within the project key's own
@@ -228,19 +242,19 @@ func streamHead(t *testing.T, js natsgo.JetStreamContext) uint64 {
 // ───── the delivery durables ────────────────────────────────────────────────
 
 // waitForDurableHolder waits for exactly one of the pair to log that it bound durable, and
-// answers which.
+// answers which. Its failure prints both processes' output.
 func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string) *dispatchProcess {
 	t.Helper()
 	bound := `msg="dispatch delivery: NATS consumer bound"`
 	var holder *dispatchProcess
-	testwait.Eventually(t, fmt.Sprintf("one of the pair to log that it bound %s", durable), func() bool {
+	testwait.Until(t, fmt.Sprintf("one of the pair to log that it bound %s", durable), func() (fmt.Stringer, bool) {
 		switch {
 		case pair.a.logged(bound, "name="+durable):
 			holder = pair.a
 		case pair.b.logged(bound, "name="+durable):
 			holder = pair.b
 		}
-		return holder != nil
+		return pair.buffers(), holder != nil
 	})
 	return holder
 }

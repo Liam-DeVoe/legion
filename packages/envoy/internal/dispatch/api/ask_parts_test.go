@@ -357,7 +357,7 @@ func TestARestoredDecidedWordingMovesTheAsksPartRevision(t *testing.T) {
 	}
 	requireAskParts(t, database, ask.ID, "the earlier release's rewording", "b1@3 b2@3 b3@1 b4@2", 3)
 
-	restoring := time.Now().UTC()
+	restoring := databaseNow(t, database.Pool)
 	restored, copies, err := documentService.RestoreDecidedWordings(context.Background())
 	if err != nil || restored != 1 || copies != 0 {
 		t.Fatalf("the boot's restoration restored %d asks and marked %d copies owed (%v), want the one ask", restored, copies, err)
@@ -728,8 +728,8 @@ func TestAnAnsweredAsksPartEdgesAreListedSince(t *testing.T) {
 	theAnswer := answeredEventID(t, database, source.Key)
 
 	since := url.Values{"from": {askRef}, "since": {strconv.FormatInt(beforeTheAnswer, 10)}}
-	awaitSinceRead(t, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10),
-		func() model.GraphReferences { return readGraph(t, handler, since) },
+	awaitSinceRead(t, "?from= the ask since the log's head before the answer, wanting the answer part's mention stamped with event "+strconv.FormatInt(theAnswer, 10), handler,
+		func(bounded http.Handler) model.GraphReferences { return readGraph(t, bounded, since) },
 		func(read model.GraphReferences) bool {
 			if len(read.Edges) != 1 {
 				return false

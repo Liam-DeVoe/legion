@@ -105,9 +105,12 @@ func RunLeased(ctx context.Context, leases Leases, name string, interval time.Du
 	RunLeasedOn(ctx, clock.Real(), leases, name, interval, first, pass)
 }
 
-// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased, and a test's
-// clocktest.Fake, which brings each tick only when the test moves it there.
+// RunLeasedOn is RunLeased with its ticks on c: clock.Real from RunLeased (a nil c is clock.Real
+// too), and a test's clocktest.Fake, which brings each tick only when the test moves it there.
 func RunLeasedOn(ctx context.Context, c clock.Clock, leases Leases, name string, interval time.Duration, first FirstTick, pass func(context.Context)) {
+	if c == nil {
+		c = clock.Real()
+	}
 	start := c.Now()
 	due := start.Add(interval)
 	timer := c.NewTimer(interval)

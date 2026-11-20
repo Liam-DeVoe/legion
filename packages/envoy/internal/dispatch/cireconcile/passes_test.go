@@ -134,38 +134,42 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 		}
 		once = true
 		close(let)
-		<-done
+		testwait.Receive(t, "the held lease's duty.Exclusive to return once its body was let go", done)
 	}
 	t.Cleanup(release)
 	return release, held, ran
 }
 
 // waitForPass waits until the recent passes answer want for id. The pass it is waiting on runs
-// in a goroutine of its own, so there is nothing to wait on but the row.
+// in a goroutine of its own, so there is nothing to wait on but the row. The give-up prints the
+// recent passes it read last.
 func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
-	return testwait.Until(t, fmt.Sprintf("pass %d to read as %q", id, want), func() (PassRecord, bool) {
-		for _, pass := range recent(t, pool) {
+	passes := testwait.Until(t, fmt.Sprintf("pass %d to read as %q", id, want), func() ([]PassRecord, bool) {
+		passes := recent(t, pool)
+		for _, pass := range passes {
 			if pass.ID == id && pass.State == want {
-				return pass, true
+				return passes, true
 			}
 		}
-		return PassRecord{}, false
+		return passes, false
 	})
+	return passOf(t, passes, id)
 }
 
 // waitForRow waits until the table holds a pass of this instance with no end time, which is the
-// row a pass writes when it starts, and answers its id.
+// row a pass writes when it starts, and answers its id. The give-up prints the read's last error.
 func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 	t.Helper()
-	return testwait.Until(t, "an open pass row of "+instance, func() (int64, bool) {
-		var id int64
+	var id int64
+	testwait.Until(t, "an open pass row of "+instance, func() (error, bool) {
 		err := pool.QueryRow(t.Context(), `
 			select id from ci_reconcile_passes where instance = $1 and ended_at is null
 			order by started_at desc, id desc limit 1
 		`, instance).Scan(&id)
-		return id, err == nil
+		return err, err == nil
 	})
+	return id
 }
 
 // A pass that is still reading GitHub reads as running: its row has no end time, its process is
@@ -454,7 +458,7 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 	replica := h.replica()
 	replica.Instance = func() string { return other }
 	release, _, finished := holdLease(t, h.pool, replica.Pass)
-	<-finished
+	testwait.Receive(t, "the other process's pass inside the held lease to finish", finished)
 	defer release()
 
 	passes := recent(t, h.pool)
@@ -492,10 +496,11 @@ func TestAKilledPassReadsAsEndedWithoutCompletingWhileAnotherProcessHoldsTheLeas
 // running for ever.
 func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *testing.T) {
 	h := newHarness(t, reviewerAppID)
-	killed := registerProcess(t, h.pool, processes.LiveWindow+time.Second)
+	age := processes.LiveWindow + time.Second
+	killed := registerProcess(t, h.pool, age)
 	open := seedPass(t, h.pool, killed, time.Minute)
 	release, taken, _ := holdLease(t, h.pool, nil)
-	<-taken
+	testwait.Receive(t, "the test's hold to take the ci-reconcile lease", taken)
 	defer release()
 
 	held, err := duty.LeaseHeld(t.Context(), h.pool, Lease)
@@ -514,7 +519,7 @@ func TestTheLivenessRuleEndsTheNewestPassOfAProcessThatStoppedHeartbeating(t *te
 	}
 	if passes[0].State != PassStateAbandoned {
 		t.Fatalf("the killed process's newest pass reads %q, want %q: its heartbeat is %s old and the live window is %s",
-			passes[0].State, PassStateAbandoned, 5*time.Second, processes.LiveWindow)
+			passes[0].State, PassStateAbandoned, age, processes.LiveWindow)
 	}
 }
 

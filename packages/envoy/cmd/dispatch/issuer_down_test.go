@@ -51,7 +51,7 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 	})
 	process.waitHealthy(t)
 
-	if status, health := process.health(t); status != http.StatusOK || !health.OK || health.SignIn == nil || *health.SignIn || health.ServiceTokens == nil || *health.ServiceTokens {
+	if status, health := process.health(t, testwait.Context(t)); status != http.StatusOK || !health.OK || health.SignIn == nil || *health.SignIn || health.ServiceTokens == nil || *health.ServiceTokens {
 		t.Fatalf("/healthz while both issuers are down = %d %+v, want 200 ok with signin and service_tokens false", status, health)
 	}
 	if status, body := bearerWhoami(t, process, "shutdown-test-token"); status != http.StatusOK || !strings.Contains(body, `"kind":"agent"`) {

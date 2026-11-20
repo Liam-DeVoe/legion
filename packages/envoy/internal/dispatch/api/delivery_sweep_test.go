@@ -350,7 +350,7 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			testwait.Receive(t, "the mention sender's send to reach the listener", sending)
 			abort()
 			letProceed()
-			state := testwait.Until(t, "the mention's attempt to settle sent", func() (string, bool) {
+			testwait.Until(t, "the mention's attempt to settle sent", func() (string, bool) {
 				var state string
 				if err := database.Pool.QueryRow(context.Background(),
 					`select coalesce(min(state), '') from comment_deliveries`).Scan(&state); err != nil {
@@ -360,8 +360,8 @@ func TestACommentsMentionFinishesWhenItsClientGivesUp(t *testing.T) {
 			})
 			server.Close()
 			served.detached.wait()
-			if state != "sent" || len(keysOf(sends)) != 1 {
-				t.Fatalf("the mention's attempt is %q after %d sends, want it sent once though the client gave up", state, len(keysOf(sends)))
+			if sent := len(keysOf(sends)); sent != 1 {
+				t.Fatalf("the mention's attempt settled sent after %d sends, want it sent once though the client gave up", sent)
 			}
 		})
 	}
@@ -439,9 +439,11 @@ func TestTheMaintenanceLoopResumesOwedDeliveries(t *testing.T) {
 	done := make(chan struct{})
 	start := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	ticks := clocktest.New(start)
+	// The lease pool is opened here, on the test goroutine, where its failure may stop the test.
+	leases := sweepLeases(t, database)
 	go func() {
 		defer close(done)
-		runMaintenanceSweepOn(ctx, ticks, database.Pool, MaintenanceSweepInterval, sweepLeases(t, database), served.resumeOwedDeliveries)
+		runMaintenanceSweepOn(ctx, ticks, database.Pool, MaintenanceSweepInterval, leases, served.resumeOwedDeliveries)
 	}()
 	// The loop's first pass is one interval after its start, on the clock the test moves.
 	first := start.Add(MaintenanceSweepInterval)

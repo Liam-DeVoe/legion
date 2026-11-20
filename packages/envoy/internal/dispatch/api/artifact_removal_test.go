@@ -712,7 +712,7 @@ func TestAnUntouchedDocumentIsRemovedWholeAndATouchedOneIsRefused(t *testing.T) 
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("let the issue's owner lock go: %v", err)
 		}
-		<-removal.done
+		testwait.Receive(t, "the removal to answer once the issue's owner lock is let go", removal.done)
 		if removal.response.Code != http.StatusNoContent {
 			t.Fatalf("remove the document: %s, want 204 and no body", removal)
 		}

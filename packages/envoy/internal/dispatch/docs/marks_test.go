@@ -99,7 +99,7 @@ func TestVerifyMarkWaitsForTheBrowserUpdate(t *testing.T) {
 		MarkWait: markWait,
 		Clock:    fake,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	type verified struct {
@@ -161,7 +161,7 @@ func TestVerifyMarkReadsTheDocumentAgainWhenItsWaitEnds(t *testing.T) {
 		MarkWait: markWait,
 		Clock:    fake,
 	})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	seedServiceText(t, service, artifactID, "The quick brown fox")
 
 	var replaced atomic.Int32

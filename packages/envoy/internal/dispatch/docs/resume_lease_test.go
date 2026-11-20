@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Two envoy-dispatch processes run the settlement resumption, each through
@@ -59,8 +60,8 @@ func TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod(t *testing.T) {
 	}
 	waitFor(t, "both runners' first tick to run or skip", func() bool { return ran()+skipped() >= 2 })
 	stop()
-	<-done
-	<-done
+	testwait.Receive(t, "the first resumption runner to return once it was stopped", done)
+	testwait.Receive(t, "the second resumption runner to return once it was stopped", done)
 
 	resumed := strings.Count(logs.String(), `msg="dispatch: resumed owed document settlements"`)
 	if ran() != 1 || skipped() != 1 || resumed != 1 {

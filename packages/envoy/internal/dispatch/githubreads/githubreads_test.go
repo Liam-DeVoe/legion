@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -331,18 +332,26 @@ func TestANoteThatCannotBeTheCauseMakesNoText(t *testing.T) {
 	})
 }
 
-// recorded is one call of a test's Recorder.
+// recorded is one call of a test's Recorder; bounded is whether the write's one bound, armed on
+// the row's fake, is recordTimeout past the fake's moment.
 type recorded struct {
 	read      Read
 	succeeded bool
 	cause     string
-	deadline  bool
+	bounded   bool
+}
+
+// boundedAt reports whether the one deadline armed on c is d past its moment: a call's own bound,
+// read on the fake it runs on, which a deadline context of a fake does not report (clocktest).
+func boundedAt(c *clocktest.Fake, d time.Duration) bool {
+	armed := c.Armed()
+	return len(armed) == 1 && armed[0].Equal(c.Now().Add(d))
 }
 
 // Finish records nothing without a recorder, for a caller that ended, or for an attempt that
 // sent nothing and noted nothing; otherwise it records failed with the first cause, or succeeded.
-// The write has a bound of its own, and one that fails is logged at ERROR and changes nothing
-// else.
+// The write has a bound of its own, recordTimeout, read armed on a fake, and one that fails is
+// logged at ERROR and changes nothing else.
 func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 	failure := errors.New("GET https://api.github.com/app/hook/deliveries: status 503: unavailable")
 	cases := []struct {
@@ -355,18 +364,18 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 		name:   "sent and nothing failed",
 		note:   NoteSent,
 		record: true,
-		want:   &recorded{read: CIReconcile, succeeded: true, deadline: true},
+		want:   &recorded{read: CIReconcile, succeeded: true, bounded: true},
 	}, {
 		name:   "sent and a failure noted",
 		note:   func(ctx context.Context) { NoteSent(ctx); NoteFailure(ctx, failure) },
 		record: true,
-		want:   &recorded{read: CIReconcile, cause: failure.Error(), deadline: true},
+		want:   &recorded{read: CIReconcile, cause: failure.Error(), bounded: true},
 	}, {
 		// A request a recorded limit held is noted though nothing was sent.
 		name:   "a failure noted with nothing sent",
 		note:   func(ctx context.Context) { NoteFailure(ctx, failure) },
 		record: true,
-		want:   &recorded{read: CIReconcile, cause: failure.Error(), deadline: true},
+		want:   &recorded{read: CIReconcile, cause: failure.Error(), bounded: true},
 	}, {
 		name:   "nothing sent and nothing noted",
 		note:   func(context.Context) {},
@@ -391,14 +400,14 @@ func TestFinishRecordsTheAttemptsOutcome(t *testing.T) {
 			}
 			var calls []recorded
 			var record Recorder
+			fake := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
 			if tc.record {
 				record = func(ctx context.Context, read Read, succeeded bool, cause string) error {
-					deadline, ok := ctx.Deadline()
-					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, deadline: ok && time.Until(deadline) <= recordTimeout})
+					calls = append(calls, recorded{read: read, succeeded: succeeded, cause: cause, bounded: boundedAt(fake, recordTimeout)})
 					return ctx.Err()
 				}
 			}
-			Finish(caller, CIReconcile, attempt, record, nil)
+			finishOn(fake, caller, CIReconcile, attempt, record, nil)
 			switch {
 			case tc.want == nil && len(calls) != 0:
 				t.Fatalf("recorded %+v, want nothing", calls)
@@ -435,7 +444,8 @@ type loadAnswer struct {
 	err  error
 }
 
-// The copy loads the record at start and again after each wake, each load under its own bound.
+// The copy loads the record at start and again after each wake, each load under its own bound,
+// loadTimeout, read armed on a fake the copy's loads run on.
 // It holds nothing until a load succeeds, and a failed load is logged at WARN and keeps the copy
 // the last good load made.
 func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T) {
@@ -443,13 +453,14 @@ func TestCopyLoadsAtStartAndAfterAWakeAndKeepsItsCopyOnAFailedLoad(t *testing.T)
 	if rows, loaded := copied.Rows(); loaded || rows != nil {
 		t.Fatalf("the zero Copy holds %v, loaded %v; want nothing", rows, loaded)
 	}
+	fake := clocktest.New(time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC))
+	copied.clock = fake
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	calls := make(chan bool)
 	answers := make(chan loadAnswer)
 	load := func(ctx context.Context) ([]Recorded, error) {
-		deadline, ok := ctx.Deadline()
-		calls <- ok && time.Until(deadline) <= loadTimeout
+		calls <- boundedAt(fake, loadTimeout)
 		answer := <-answers
 		return answer.rows, answer.err
 	}

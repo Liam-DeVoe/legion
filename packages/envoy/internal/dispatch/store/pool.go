@@ -337,8 +337,12 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 // clock a test moves: cmd/dispatch's shutdown counts failed probes toward its decision to exit,
 // and its test ends each probe by moving a clocktest.Fake to the bound. The bound is c's alone,
 // with no wall-clock bound beneath it, so a probe on a fake ends when the test moves the fake
-// there and never because the test was slow to; on clock.Real it is Healthy.
+// there and never because the test was slow to; on clock.Real it is Healthy, and so it is on a nil
+// c.
 func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
+	if c == nil {
+		c = clock.Real()
+	}
 	return p.healthyWithin(ctx, c, healthProbeTimeout)
 }
 

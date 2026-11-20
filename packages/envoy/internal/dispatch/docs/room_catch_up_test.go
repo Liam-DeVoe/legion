@@ -773,7 +773,7 @@ func listenForDocumentChanges(t *testing.T, database *store.Store) <-chan docume
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the test's own listener's Run to return once its context ended", done)
 	})
 	testwait.Receive(t, "the test's own listener to listen", listening)
 	return heard

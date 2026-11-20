@@ -19,10 +19,10 @@
 // name recovers the deleted stream's messages. Every account keeps its streams in a directory of
 // its own, so the names one test uses cannot reach another.
 //
-// The daemon's tests have a copy of this rig of their own, packages/daemon/internal/testnats, which
-// starts a server in the test process as start and launch here do, one for each test. The two are
-// copies rather than one package because Go's internal rule keeps the daemon's module from
-// importing this one, so a change to how a server is started or configured belongs in both.
+// The daemon's tests have a rig of their own, packages/daemon/internal/testnats, since Go's
+// internal rule keeps the daemon's module from importing this one. It is not a copy of this one:
+// it serves one server per test binary, a container it starts through testcontainers or the
+// server LEGION_TEST_NATS_URL names, and empties it for each test.
 package testnats
 
 import (
@@ -379,8 +379,10 @@ func (s *Server) FreezeReplies(t testing.TB) func() {
 // StoredOn is how many messages stream holds on subject, read by a client of the server's own in
 // this process (natsgo.InProcessServer) rather than through the relay, so it answers while the
 // relay holds the server's replies (FreezeReplies) or is frozen (Freeze). It reads a server that
-// admits a client with no credential, as Start's does, and fails t when the read fails.
-func (s *Server) StoredOn(t testing.TB, stream, subject string) uint64 {
+// admits a client with no credential, as Start's does, and fails t when the read fails. ctx bounds
+// the read (Context): a wait that asks it again on each attempt makes ctx once, before the wait,
+// and not one context with its timer and cleanup on every attempt.
+func (s *Server) StoredOn(t testing.TB, ctx context.Context, stream, subject string) uint64 {
 	t.Helper()
 	srv := s.natsServer()
 	if srv == nil {
@@ -395,7 +397,7 @@ func (s *Server) StoredOn(t testing.TB, stream, subject string) uint64 {
 	if err != nil {
 		t.Fatalf("open JetStream on the NATS server in this process: %v", err)
 	}
-	info, err := js.StreamInfo(stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject}, natsgo.Context(testwait.Context(t)))
+	info, err := js.StreamInfo(stream, &natsgo.StreamInfoRequest{SubjectsFilter: subject}, natsgo.Context(ctx))
 	if err != nil {
 		t.Fatalf("read what stream %s holds on %s in the NATS server itself: %v", stream, subject, err)
 	}
@@ -628,8 +630,7 @@ const unbounded = time.Duration(math.MaxInt64)
 // launch runs a nats-server on the server's configuration and store, and returns once it accepts
 // connections. That wait is nats-server's own (ReadyForConnections), which takes a span: it is
 // given what is left before the test binary's deadline less testwait's margin (testwait.Context),
-// the bound every wait of these tests has, and no bound under -timeout 0, as the daemon's copy of
-// this rig gives its own.
+// the bound every wait of these tests has, and no bound under -timeout 0.
 func (s *Server) launch(t testing.TB) {
 	t.Helper()
 	opts, err := serverOptions(s.configPath, s.args, s.store)
@@ -975,8 +976,7 @@ func Connect(t testing.TB, uri string) *natsgo.Conn {
 // deadline. So a server that answers late on a loaded machine would fail the test with "context
 // deadline exceeded". With this option such a request is bounded by what is left of the test
 // binary's deadline less testwait's margin, and with no deadline (-timeout 0) by no bound a test
-// can reach, so a late answer costs the test time and not its result. The daemon's testnats holds
-// the same option.
+// can reach, so a late answer costs the test time and not its result.
 func RequestTimeout(t testing.TB) jetstream.JetStreamOpt {
 	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
 		return jetstream.WithDefaultTimeout(max(time.Until(deadline), time.Millisecond))

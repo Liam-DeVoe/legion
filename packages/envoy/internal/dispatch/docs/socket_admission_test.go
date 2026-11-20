@@ -280,7 +280,7 @@ func TestAPreloadOvertakenByTheRoomsLoadIsReleasedWhileItsSocketStaysOpen(t *tes
 
 	admitSocket(t, server.URL, artifactID, "the socket whose load makes the room resident")
 	releaseOvertaken()
-	overtakenSocket := <-cold
+	overtakenSocket := testwait.Receive(t, "the cold socket's dial to answer through the product's admission", cold)
 	if overtakenSocket.err != nil {
 		t.Fatalf("the overtaken socket was refused (%v), want it admitted to the resident room", overtakenSocket.err)
 	}
@@ -595,7 +595,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	// Another socket loads the room afresh, then the first room's unload is let go.
 	admitSocket(t, server.URL, artifactID, "the socket that loads the second room")
 	letUnload()
-	if err := <-closed; err != nil {
+	if err := testwait.Receive(t, "the first room's close to return once its unload was let go", closed); err != nil {
 		t.Fatalf("close the first room: %v", err)
 	}
 	if service.srv.GetDoc(artifactID) == nil {
@@ -603,7 +603,7 @@ func TestAPreloadOfferedAfterAnEarlierRoomsLateUnloadIsNotKeptWhileTheRoomIsLoad
 	}
 
 	letOffer()
-	socket := <-cold
+	socket := testwait.Receive(t, "the cold socket's dial to answer through the product's admission", cold)
 	if socket.err != nil {
 		t.Fatalf("the held cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}
@@ -671,10 +671,10 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 	}
 
 	letLoad()
-	if err := <-loaded; err != nil {
+	if err := testwait.Receive(t, "the room load to return once it was released", loaded); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
-	socket := <-cold
+	socket := testwait.Receive(t, "the cold socket's dial to answer through the product's admission", cold)
 	if socket.err != nil {
 		t.Fatalf("the cold socket was refused (%v), want it admitted to the resident room", socket.err)
 	}

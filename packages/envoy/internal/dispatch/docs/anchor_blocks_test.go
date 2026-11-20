@@ -172,7 +172,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	if err := hold.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the anchor refresh: %v", err)
 	}
-	<-settled
+	testwait.Receive(t, "settleRoom to return once the anchor refresh's hold rolled back", settled)
 
 	result := testwait.Receive(t, "the backfill to finish once the settlement released the comment's owner lock", backfilled)
 	if result.err != nil {

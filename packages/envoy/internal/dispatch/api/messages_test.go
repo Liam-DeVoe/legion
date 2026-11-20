@@ -195,7 +195,9 @@ func TestTargetedMessageDeliveryRetriesAndAcceptsOnlyTargetReplies(t *testing.T)
 			}
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode listener send: %v", err)
+				t.Errorf("decode listener send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
@@ -586,10 +588,14 @@ func TestTargetedMessageResolvesRolesAndEnforcesReplyBoundaries(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var input map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				t.Fatalf("decode listener delivery: %v", err)
+				t.Errorf("decode listener delivery: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			if input["target_session"] != "s1" {
-				t.Fatalf("role delivery target = %v, want s1", input["target_session"])
+				t.Errorf("role delivery target = %v, want s1", input["target_session"])
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		default:
@@ -963,7 +969,9 @@ func sessionListener(t *testing.T, live *bool, sent *[]map[string]any) *httptest
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode listener send: %v", err)
+				t.Errorf("decode listener send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			*sent = append(*sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))

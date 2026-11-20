@@ -93,12 +93,13 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 	// The settlement's log line, read as it lands; the last reading is the whole log so far.
 	refusal := testwait.Until(t, "a settlement to meet the approved version's attribute", func() (string, bool) {
-		for line := range strings.Lines(logged.String()) {
+		log := logged.String()
+		for line := range strings.Lines(log) {
 			if strings.Contains(line, newerAskAttribute) {
 				return line, true
 			}
 		}
-		return logged.String(), false
+		return log, false
 	})
 	if !strings.Contains(refusal, "no version written") || !strings.Contains(refusal, "a build that reads the element writes it") || !strings.Contains(refusal, "version 1") {
 		t.Fatalf("settlement log = %q, want it to say it wrote no version, that a build that reads the element writes it, and which version holds the element", refusal)
@@ -131,7 +132,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-resumed
+		testwait.Receive(t, "the settlement resumption to return once stopped", resumed)
 	})
 	waitForArtifactVersion(t, newer, issue.PrimaryArtifactID, 2)
 	requireCarriedReview(t, newer, issue.PrimaryArtifactID, 2, 1, nil)

@@ -584,6 +584,9 @@ func TestAnOpenedAskPublishesWhatItsQuestionCites(t *testing.T) {
 	askID := decodeBody[writtenRecord](t, opened).ID
 	for {
 		event := testwait.Receive(t, "an ask.opened event to be published", published)
+		if event.Type == "" && event.Payload == nil {
+			t.Fatal("the broker's subscription closed before the ask's ask.opened was published")
+		}
 		if event.Type != "ask.opened" {
 			continue
 		}

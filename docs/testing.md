@@ -308,9 +308,9 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
 
 `go test` panics a package that runs longer than ten minutes (`panic: test timed out after 10m0s`),
 which reads as a failure of the change under test. `packages/envoy/internal/dispatch/api` alone
-takes close to that, about 600 s plain on a workstation and up to 1508.156 s under `-race` in CI's
-`envoy-go-race-api`, so every command that runs that package, on its own or in a pattern that
-includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 60m`:
+takes close to that, about 600 s plain on a workstation and up to 1521.659 s under `-race` in CI's
+`envoy-go-race-api` (run 44244144836), so every command that runs that package, on its own or in a
+pattern that includes it (`./...`, `./internal/dispatch/...`), passes `-timeout 60m`:
 
 ```sh
 cd packages/envoy
@@ -322,7 +322,7 @@ A Legion issue pod does not run that whole package: `skills/legion-worker/refere
 CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
 gives it 70 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
 steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its fifteen source-guard
-tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 80.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -348,10 +348,12 @@ env DISPATCH_TEST_DATABASE_URL=… go test -tags multiprocess -count=1 -timeout 
   2077.561 s in `dispatch-memory` (run 44228254232), 2595.491 s.
 - `-tags multiprocess`, `-timeout 50m`: the same, with 940.253 s in `dispatch-multiprocess` (run
   44172328284), 1458.183 s together.
-- `-tags twobuild`, `-timeout 30m`: the `dispatch-two-builds` job's own step, which passes no
-  `-run`, so it too runs the untagged tests beside the two-build tests; 30 minutes are 3.1 times
-  that step's slowest run over the job's 8 green merge-group runs up to 2026-11-15, 575.933 s
-  (run 43717090111).
+- `-tags twobuild`, `-timeout 30m`: `packages/envoy/cmd/dispatch/AGENTS.md`'s command passes no
+  `-run`, so it runs the untagged tests beside the two-build tests. The `dispatch-two-builds`
+  job's own step passes `-run "$pattern"` (`.github/scripts/go-tagged-tests.sh`), the two-build
+  tests alone, whose slowest run over the job's 8 green merge-group runs up to 2026-11-15 is
+  575.933 s (run 43717090111). With the untagged tests' 517.930 s in `envoy-go`'s unit step (above)
+  the two together take 1093.863 s, which the 30 minutes hold 1.65 times.
 
 `packages/daemon/internal/daemon` is the daemon's slow, Postgres-backed package. CI's
 `daemon-go` job (`.github/workflows/ci-job-daemon-go.yaml`) runs it only under the race

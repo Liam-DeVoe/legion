@@ -219,6 +219,10 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 		saw <- r.Context().Err()
 		answerRun(run, w, r)
 	})
+	// Registered after the rig's cleanups, so it runs before them: a failure below lets the parked
+	// run go.
+	proceedOnce := sync.OnceFunc(func() { close(proceed) })
+	t.Cleanup(proceedOnce)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	request := httptest.NewRequestWithContext(ctx, http.MethodPost, "/test/a/writes", bytes.NewReader([]byte("{}")))
@@ -234,7 +238,7 @@ func TestAKeyedHandlerRunsUnderTheServersOwnBound(t *testing.T) {
 	testwait.Receive(t, "the run to start", running)
 	awaitArmedAt(t, fake, "the run's bound, keyedHandlerLimit from its start", start.Add(keyedHandlerLimit))
 	cancel()
-	close(proceed)
+	proceedOnce()
 	testwait.Receive(t, "the run whose client went away to answer", served)
 	if err := testwait.Receive(t, "the run's context error", saw); err != nil || response.Code != http.StatusCreated {
 		t.Fatalf("a run whose client went away mid-run: context error %v, status %d, want it run to its answer",

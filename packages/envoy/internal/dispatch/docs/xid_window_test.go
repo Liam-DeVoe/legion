@@ -309,8 +309,8 @@ func runRigTransaction(t *testing.T, database *store.Store) {
 	runRigTransactionDoing(t, database, func() {})
 }
 
-// runRigTransactionDoing is runRigTransaction with between run after the write instead of a
-// sleep: what the transaction does in Go while it holds its transaction id.
+// runRigTransactionDoing is runRigTransaction with between run after the write, before the two
+// reads: what the transaction does in Go while it holds its transaction id.
 func runRigTransactionDoing(t *testing.T, database *store.Store, between func()) {
 	t.Helper()
 	ctx := storetest.MarkXid(context.Background())

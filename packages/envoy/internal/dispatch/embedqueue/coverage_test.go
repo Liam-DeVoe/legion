@@ -276,6 +276,21 @@ func coverage(t *testing.T, database *store.Store, identity string) (items, curr
 	return report.Total.Items, report.Total.Current, report.Total.Lacking, report.Total.Failed, report.Total.OldestLackingSeconds
 }
 
+// coverageReading is one read of the coverage report's totals (coverage), which a wait for
+// coverage prints when it gives up.
+type coverageReading struct {
+	items, current, lacking, failed int64
+	oldest                          *int64
+}
+
+func (r coverageReading) String() string {
+	oldest := "none"
+	if r.oldest != nil {
+		oldest = fmt.Sprintf("%ds", *r.oldest)
+	}
+	return fmt.Sprintf("items %d current %d lacking %d failed %d, oldest lacking %s", r.items, r.current, r.lacking, r.failed, oldest)
+}
+
 // The server embeds content no trigger saw with no command: an issue written with its trigger
 // off has no row, and Run's pass at startup and its scan loop give it a vector. The items
 // written beside it hold no window, and the pass adds none: a window is the block index's to
@@ -303,9 +318,10 @@ func TestRunEmbedsItemsNoTriggerSawWithNoCommand(t *testing.T) {
 		// items are made current by the pass Run makes at boot and by nothing that comes later.
 		Run(ctx, Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity), Clock: clocktest.Held()})
 	}()
-	testwait.Eventually(t, "every item current under Run", func() bool {
+	testwait.Until(t, "every item current under Run", func() (coverageReading, bool) {
 		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
-		return items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil
+		read := coverageReading{items: items, current: current, lacking: lacking, failed: failed, oldest: oldest}
+		return read, items == int64(seeded) && current == items && lacking == 0 && failed == 0 && oldest == nil
 	})
 	cancel()
 	testwait.Receive(t, "Run to return once its context ended", done)
@@ -628,15 +644,16 @@ func TestCoverKeepsATriggerWriteThatLandsBetweenItsReadAndItsUpdate(t *testing.T
 		t.Fatalf("claim the live row: %v", err)
 	}
 
+	second := storetest.SecondProcess(t, database)
 	passDone := make(chan error, 1)
 	go func() {
-		passDone <- Cover(ctx, Deps{Store: storetest.SecondProcess(t, database), Embedder: newPlaceEmbedder(configuredIdentity)})
+		passDone <- Cover(ctx, Deps{Store: second, Embedder: newPlaceEmbedder(configuredIdentity)})
 	}()
 	storetest.WaitForLockWaiters(t, writer, 1)
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the live write: %v", err)
 	}
-	if err := <-passDone; err != nil {
+	if err := testwait.Receive(t, "Cover to return once the live write committed", passDone); err != nil {
 		t.Fatalf("Cover: %v", err)
 	}
 
@@ -1493,8 +1510,9 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	})
 	releaseProxy()
 
-	testwait.Eventually(t, "all 3 items current after Run's pass", func() bool {
-		items, current, _, _, _ := coverage(t, database, configuredIdentity)
-		return items == 3 && current == 3
+	testwait.Until(t, "all 3 items current after Run's pass", func() (coverageReading, bool) {
+		items, current, lacking, failed, oldest := coverage(t, database, configuredIdentity)
+		read := coverageReading{items: items, current: current, lacking: lacking, failed: failed, oldest: oldest}
+		return read, items == 3 && current == 3
 	})
 }

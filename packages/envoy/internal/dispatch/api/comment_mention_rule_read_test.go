@@ -48,7 +48,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	// behind them, its timer left to the test, and the second queues behind it on the held lane.
 	issue := createInteractionIssue(t, handler, "TEST", "A failed read of the copy rule", "before")
 	first := postMentionOfS1(t, handler, issue.Key, "the first")
-	unpark := <-timers
+	unpark := testwait.Receive(t, "the first send's park", timers)
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
 	testwait.Eventually(t, "both sends on the issue's held lane", func() bool {
@@ -166,7 +166,7 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			issue := createInteractionIssue(t, handler, "TEST", "Reads of the copy rule that keep failing", "before")
 			failer.failing.Store(row.firstReadFails)
 			first := postMentionOfS1(t, handler, issue.Key, "the first")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the first send's park", timers)
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
 			testwait.Eventually(t, "both sends on the issue's held lane", func() bool {

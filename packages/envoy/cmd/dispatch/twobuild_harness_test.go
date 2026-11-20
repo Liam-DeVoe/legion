@@ -371,7 +371,7 @@ func jsonBody(t *testing.T, value any) string {
 // the wait has no bound of its own (testwait.Until).
 func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string) int {
 	t.Helper()
-	return testwait.Until(t, "the "+name+" to register its server process", func() (int, bool) {
+	return testwait.Until(t, "the "+name+" to register its server process", func() (withOutput[[]int], bool) {
 		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
 		if err != nil {
 			t.Fatalf("read the registered server processes: %v", err)
@@ -382,7 +382,7 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 		}
 		switch {
 		case len(protocols) == 1:
-			return protocols[0], true
+			return readWith(protocols, process.Output), true
 		case len(protocols) > 1:
 			t.Fatalf("the registry holds %d server processes, at owner lock protocols %v, where the %s's should be its only one",
 				len(protocols), protocols, name)
@@ -392,8 +392,8 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 			t.Fatalf("the %s exited before it registered:\n%s", name, process.Output.String())
 		default:
 		}
-		return 0, false
-	})
+		return readWith(protocols, process.Output), false
+	}).read[0]
 }
 
 // probedOwnerLockProtocols is the owner lock protocol each previous build registered when

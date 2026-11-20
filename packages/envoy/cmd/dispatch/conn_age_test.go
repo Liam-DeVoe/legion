@@ -266,12 +266,12 @@ func TestServerClosesConnectionsAfterShutdownBegins(t *testing.T) {
 		got <- result{resp, err}
 	}()
 
-	<-entered
+	testwait.Receive(t, "the product server (newHTTPServer) to enter the handler", entered)
 	ctx := testwait.Context(t)
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- server.Config.Shutdown(ctx) }()
 
-	r := <-got
+	r := testwait.Receive(t, "the GET through the product server to answer", got)
 	if r.err != nil {
 		t.Fatal(r.err)
 	}

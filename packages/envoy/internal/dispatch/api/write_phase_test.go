@@ -124,7 +124,7 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	}()
 	awaitEntered(t, "its thread's projection", gate.entered, replies)
 
-	mark := time.Now()
+	mark := databaseNow(t, database.Pool)
 	marks := make(chan *httptest.ResponseRecorder, 1)
 	go func() { marks <- markThreadRead(t, handler, "alice", root.ID, mark) }()
 	if response, early, _ := storetest.AwaitOwnerLockWaiter(t, database, "the thread read", marks); early {

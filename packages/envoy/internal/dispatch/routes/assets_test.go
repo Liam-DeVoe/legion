@@ -377,9 +377,29 @@ func (c *stalledClient) Write([]byte) (int, error) {
 	return 0, errors.New("client went away")
 }
 
+// receiver waits for one receive from ch and fails t, naming what, when it never comes:
+// testwait.Receive outside a synctest bubble, and bubbleReceive inside one.
+type receiver func(t testing.TB, what string, ch <-chan struct{}) struct{}
+
+// bubbleReceive is the receiver for a synctest bubble, where the shared wait cannot run (it reads
+// the binary's deadline, which a bubble's t refuses): once synctest.Wait returns, every other
+// goroutine of the bubble is blocked, so a value that has not come by then never will.
+func bubbleReceive(t testing.TB, what string, ch <-chan struct{}) struct{} {
+	t.Helper()
+	synctest.Wait()
+	select {
+	case value := <-ch:
+		return value
+	default:
+		t.Fatalf("%s never came: every other goroutine of the bubble is blocked", what)
+		return struct{}{}
+	}
+}
+
 // stallRetainedReaders starts n clients that each get a retained asset and stop reading it,
-// one at a time, and returns once all n are writing. Each goes away when the test ends.
-func stallRetainedReaders(t *testing.T, handler http.Handler, n int) []*stalledClient {
+// one at a time, and returns once all n are writing; receive is how it waits for each (receiver).
+// Each goes away when the test ends.
+func stallRetainedReaders(t *testing.T, handler http.Handler, n int, receive receiver) []*stalledClient {
 	t.Helper()
 	clients := make([]*stalledClient, n)
 	for i := range clients {
@@ -389,7 +409,7 @@ func stallRetainedReaders(t *testing.T, handler http.Handler, n int) []*stalledC
 			defer close(client.served)
 			handler.ServeHTTP(client, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/assets/stalled-%d.js", i), nil))
 		}()
-		<-client.writing
+		receive(t, "the stalled reader's handler to reach its first write", client.writing)
 		if client.status != http.StatusOK {
 			t.Fatalf("stalled reader %d: status %d, want 200", i, client.status)
 		}
@@ -401,7 +421,12 @@ func stallRetainedReaders(t *testing.T, handler http.Handler, n int) []*stalledC
 			default:
 				close(client.gone)
 			}
-			<-client.served
+			// A bubble's row has waited for its readers itself, before the bubble ended.
+			select {
+			case <-client.served:
+			default:
+				receive(t, "the stalled reader's handler to return once its client went away", client.served)
+			}
 		}
 	})
 	return clients
@@ -418,7 +443,7 @@ func TestStaticHandlerCapsRetainedBytesHeldAtOnce(t *testing.T) {
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
 	context.AssetStore = store
-	stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize))
+	stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize), testwait.Receive[struct{}])
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/one-more.js", nil))
@@ -459,7 +484,7 @@ func TestStaticHandlerReleasesRetainedBytesWhenAClientGoesAway(t *testing.T) {
 	context.WebDistDir = t.TempDir()
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
 	context.AssetStore = store
-	clients := stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize))
+	clients := stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize), testwait.Receive[struct{}])
 
 	full := httptest.NewRecorder()
 	handler.ServeHTTP(full, httptest.NewRequest(http.MethodGet, "/assets/while-full.js", nil))
@@ -562,7 +587,7 @@ func TestStaticHandlerHoldsOnlyEachRetainedObjectsSize(t *testing.T) {
 	}
 	context.AssetStore = &countingStore{object: bytes.Repeat([]byte("/"), size)}
 
-	stallRetainedReaders(t, handler, readers)
+	stallRetainedReaders(t, handler, readers, testwait.Receive[struct{}])
 }
 
 // A fetch that runs out of the shared three-second bound before the store answers — most often
@@ -862,7 +887,7 @@ func TestStaticHandlerHoldsTheReservationOfAnAbandonedRequestUntilItsReadEnds(t 
 		releaseStore()
 		// Each stalled reader holds the most one object can, so all of them together need every
 		// byte of the cap back; one still held is a 503 once its fetch bound runs out.
-		clients := stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize))
+		clients := stallRetainedReaders(t, handler, int(maxRetainedBytesHeld/MaxRetainedAssetSize), bubbleReceive)
 		// The bubble ends only once every goroutine in it has, which is before its cleanups run,
 		// so the stalled clients go here.
 		for _, client := range clients {
@@ -882,7 +907,7 @@ func TestStaticHandlerServesACachedAssetWithoutTheStore(t *testing.T) {
 	store := &countingStore{object: bytes.Repeat([]byte("/"), int(MaxRetainedAssetSize))}
 	context.AssetStore = store
 	readers := int(maxRetainedBytesHeld / MaxRetainedAssetSize)
-	stallRetainedReaders(t, handler, readers)
+	stallRetainedReaders(t, handler, readers, testwait.Receive[struct{}])
 
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/assets/stalled-0.js", nil))

@@ -223,8 +223,12 @@ const leaseCallTimeout = 5 * time.Second
 // lock FreeSessionLock gives back, and the rollback a room's batch of browser updates sends on
 // that connection before its unlock (internal/dispatch/docs, appendRoomTx), which must be bounded
 // for the same reason the unlock is (leaseCallTimeout). The bound runs on c: clock.Real for a
-// caller nothing drives, and a test's clocktest.Fake for one whose test fires the bound.
+// caller nothing drives (a nil c is clock.Real too), and a test's clocktest.Fake for one whose
+// test fires the bound.
 func LeaseCall(c clock.Clock) (context.Context, context.CancelFunc) {
+	if c == nil {
+		c = clock.Real()
+	}
 	return c.WithTimeout(context.Background(), leaseCallTimeout)
 }
 

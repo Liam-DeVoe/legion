@@ -1517,7 +1517,7 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the pglisten hub's Run to return once its context ended", done)
 	})
 }
 

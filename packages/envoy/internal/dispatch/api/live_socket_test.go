@@ -77,7 +77,7 @@ func (rig *liveSocketRig) sockets(t *testing.T, n int) []*liveSocket {
 }
 
 // socketClient is one page's GET /ws/live connection. Once it reads, every message it is sent
-// lands in frames, and ended closes when the connection ends, with err saying how and endedAt when.
+// lands in frames, and ended closes when the connection ends, with err saying how.
 // database is the store of the server behind the socket, which a wait on its event feed reads the
 // horizon's own-hold rule off (eventFeedFrame): a rig's socket names the rig's, and one dialled to
 // another process names that process's (servedBy).
@@ -86,7 +86,6 @@ type socketClient struct {
 	frames   chan []byte
 	ended    chan struct{}
 	err      error
-	endedAt  time.Time
 	database *store.Store
 }
 
@@ -140,12 +139,10 @@ func (c *socketClient) read() *socketClient {
 			kind, data, err := c.conn.ReadMessage()
 			if err != nil {
 				c.err = err
-				c.endedAt = time.Now()
 				return
 			}
 			if kind != gws.TextMessage {
 				c.err = fmt.Errorf("a message of kind %d", kind)
-				c.endedAt = time.Now()
 				return
 			}
 			c.frames <- data
@@ -1037,23 +1034,31 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 // on a fake of the row's own (liveSocketClock), which the row moves a heartbeat at a time, each time
 // once a pong the page sent after the last move has moved the deadline two heartbeats past the
 // clock: four heartbeats on, the socket has outlived the deadline its upgrade armed and the one
-// after it, through its pongs alone. The pings themselves come a heartbeat apart on the real clock,
-// and no time judges them. A page that answers no ping is the next test's.
+// after it, through its pongs alone. The pings run on the same fake (liveSocketPingClock), so each
+// move sends one, and four moves send four. A page that answers no ping is the next test's.
 func TestPingsKeepAnIdleSocketOpen(t *testing.T) {
 	const heartbeat = 100 * time.Millisecond
 	deadlines := clocktest.New(time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC))
-	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: deadlines}, nil)
+	rig := newLiveSocketRig(t, testServerOptions{streamHeartbeat: heartbeat, liveSocketClock: deadlines, liveSocketPingClock: deadlines}, nil)
 	answering := rig.open(t, gws.DefaultDialer, asUser("alice"))
 	var pings atomic.Int32
+	// A pong's write ends where the shared wait gives up (none under -timeout 0), read once here
+	// rather than on the socket's reading goroutine for every ping.
+	pongBy, _ := testwait.Context(t).Deadline()
 	answering.conn.SetPingHandler(func(data string) error {
 		pings.Add(1)
-		return answering.conn.WriteControl(gws.PongMessage, []byte(data), time.Now().Add(time.Second))
+		return answering.conn.WriteControl(gws.PongMessage, []byte(data), pongBy)
 	})
 	answering.read()
 
+	// The writer arms its first heartbeat as it starts, each later one as it takes the one before.
+	awaitArmedAt(t, deadlines, "the socket's first heartbeat", deadlines.Now().Add(heartbeat))
 	for range 4 {
 		deadlines.Advance(heartbeat)
 		awaitArmedAt(t, deadlines, "the read deadline a pong after the move armed", deadlines.Now().Add(2*heartbeat))
+	}
+	if got := pings.Load(); got != 4 {
+		t.Fatalf("the socket sent %d pings over four heartbeats of its clock, want one each", got)
 	}
 	if !answering.open() {
 		t.Fatalf("an idle page that answers every ping lost its socket after %d pings: %v", pings.Load(), answering.err)

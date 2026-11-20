@@ -75,6 +75,18 @@ const streamedSessionID = "01a0e090-4848-7473-acc5-fc96e6a646d3"
 // than its whole stop: the edit's settlement is still owed when the signal comes, and Shutdown is
 // always the one that runs it.
 func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T) {
+	sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t, everyRun)
+}
+
+// TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock is the row above in
+// benchtime's timing lane, where the exit is held to promptShutdown (waitPromptExit).
+func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocumentOnTheClock(t *testing.T) {
+	timedRow(t, sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument)
+}
+
+// sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument is the scene of the two rows
+// above; lane says whether its reading of the clock is held to its figure (clockLane).
+func sigtermWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing.T, lane clockLane) {
 	database := storetest.Open(t)
 	// Lengthened only, to keep the settle timer from running before the stop does.
 	process := startDispatchProcessWithSettleDelay(t, database.Pool.Config().ConnString(), 5*time.Minute)
@@ -90,7 +102,7 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 	process.editOwingSettlement(t, database, artifactID)
 
 	signalled := process.Terminate(t)
-	process.waitPromptExit(t, signalled)
+	process.waitPromptExit(t, lane, signalled)
 	for name, socketEnded := range sockets {
 		ended := <-socketEnded
 		t.Logf("%s ended %v after SIGTERM (%v)", name, ended.at.Sub(signalled), ended.err)
@@ -257,7 +269,7 @@ func TestSIGTERMWithAKeyedSendAtTheListenerSettlesItSentBeforeExit(t *testing.T)
 	testwait.Receive(t, "the send to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.Exited, time.Second,
+	testwait.Quiet(t, "Dispatch's exit with the send still at the listener", process.exitedWithOutput(), time.Second,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
 			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
 	releaseOnce()
@@ -381,7 +393,7 @@ func TestSIGTERMWithABroadcastAtTheListenerSettlesEveryRecipientBeforeExit(t *te
 	testwait.Receive(t, "the broadcast to reach the listener", held)
 
 	signalled := process.Terminate(t)
-	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.Exited, time.Second,
+	testwait.Quiet(t, "Dispatch's exit with a recipient still at the listener", process.exitedWithOutput(), time.Second,
 		"a process that has not exited records nothing that says so, it is a child process so synctest does not "+
 			"reach it, and the later action this row takes - releasing the listener's answer - is what lets it exit")
 	releaseOnce()
@@ -467,6 +479,14 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 
 	stop()
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	// Released on every path out of the row, a failure included, and shutdown waited for after
+	// it, so a failure below never leaves shutdown parked in the hook while the row's database
+	// is dropped.
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(func() {
+		releaseOnce()
+		testwait.Receive(t, "shutdown to return once the row let its delivery work end", done)
+	})
 	go func() {
 		defer close(done)
 		shutdown(clock.Real(), server.Config, documentService, database.Pool, func() {
@@ -479,7 +499,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
 		t.Fatalf("the pool closed while shutdown waited for delivery work: %v", err)
 	}
-	close(release)
+	releaseOnce()
 	testwait.Receive(t, "shutdown to return once delivery work ended", done)
 	if _, _, err := conn.ReadMessage(); !gws.IsCloseError(err, gws.CloseServiceRestart) {
 		t.Fatalf("the live socket ended with %v, want 1012", err)
@@ -1524,6 +1544,75 @@ type dispatchProcess struct {
 	databaseURL string
 }
 
+// outputs is the whole output of each of its processes under the label a failure gives it, read
+// when it is printed: a wait that returns it as its reading prints it when it gives up, and no
+// attempt copies it.
+type outputs []labelledProcess
+
+// labelledProcess is one process of outputs and what a failure calls it.
+type labelledProcess struct {
+	label   string
+	process *dispatchProcess
+}
+
+func (o outputs) String() string {
+	var text strings.Builder
+	for i, one := range o {
+		if i > 0 {
+			text.WriteString("\n")
+		}
+		fmt.Fprintf(&text, "%s:\n%s", one.label, one.process.Output.String())
+	}
+	return text.String()
+}
+
+// withOutput is a wait's reading and, after it, the output its failure prints: a process's
+// Output, or a pair's buffers. testwait.Until formats its last reading only when it gives up, so
+// the output is read once, then, and no attempt of the wait copies it.
+type withOutput[T any] struct {
+	read   T
+	output fmt.Stringer
+}
+
+// readWith is read, with output after it, as a wait's reading (withOutput).
+func readWith[T any](read T, output fmt.Stringer) withOutput[T] {
+	return withOutput[T]{read: read, output: output}
+}
+
+func (r withOutput[T]) String() string { return fmt.Sprintf("%+v\n%s", r.read, r.output) }
+
+// exitedWithOutput yields the process's Output once the process has exited, for a quiet span
+// over its exit (testwait.Quiet): an exit within the span fails with what yielded, and the
+// buffer's String prints the process's whole output there, as a reading.
+func (p *dispatchProcess) exitedWithOutput() <-chan *cmdtest.LockedBuffer {
+	exited := make(chan *cmdtest.LockedBuffer, 1)
+	go func() {
+		<-p.Exited
+		exited <- p.Output
+	}()
+	return exited
+}
+
+// clockLane is where a row holds a reading of this machine's clock across its child processes to
+// the figure the product promises. Such a reading is the runner's load as much as the product's
+// work, so only the row's twin in benchtime's timing lane holds it (onTheClock, through
+// timedRow), which CI never runs; the row every run makes runs the same scene, holds what it
+// proves without a clock, and logs the reading (everyRun).
+type clockLane bool
+
+const (
+	everyRun   clockLane = false
+	onTheClock clockLane = true
+)
+
+// timedRow runs row as its twin in benchtime's timing lane: skipped unless benchtime.TimingEnv is
+// set, and then holding the row's readings of the clock to their figures (onTheClock).
+func timedRow(t *testing.T, row func(*testing.T, clockLane)) {
+	t.Helper()
+	benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
+	row(t, onTheClock)
+}
+
 // dispatchOptions is what a test varies about the Dispatch process it starts. Its zero value is
 // the shutdown tests' process: no NATS, no DISPATCH_SIGNING_KEY, the default settle delay.
 type dispatchOptions struct {
@@ -1695,23 +1784,24 @@ func (p *dispatchProcess) healthy(t *testing.T) error {
 		}
 	}
 	ctx := testwait.Context(t)
+	notListening := "no line " + strconv.Quote(listening) + " yet"
 	var failed error
-	testwait.Eventually(t, "Dispatch to serve on its own port", func() bool {
+	testwait.Until(t, "Dispatch to serve on its own port", func() (withOutput[string], bool) {
 		if exited() {
 			failed = fmt.Errorf("Dispatch exited before it became healthy. %s\n%s\n%s", p.exitCause(), dispatchOutputHeading, p.Output.String())
-			return true
+			return withOutput[string]{}, true
 		}
 		if !strings.Contains(p.Output.String(), listening) {
-			return false
+			return readWith(notListening, p.Output), false
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 		if err != nil {
 			failed = err
-			return true
+			return withOutput[string]{}, true
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
-			return false
+			return readWith("GET /healthz: "+err.Error(), p.Output), false
 		}
 		// A body read to its end puts its connection back in the client's pool before the
 		// caller's next request asks for one. Closed unread, Go's transport drains it after
@@ -1721,7 +1811,7 @@ func (p *dispatchProcess) healthy(t *testing.T) error {
 		// than 5 s old, so that one would hold a SIGTERM's HTTP drain for 5 to 6 s.
 		_, _ = io.Copy(io.Discard, response.Body)
 		_ = response.Body.Close()
-		return response.StatusCode == http.StatusOK && !exited()
+		return readWith("/healthz answered "+response.Status, p.Output), response.StatusCode == http.StatusOK && !exited()
 	})
 	return failed
 }
@@ -1746,14 +1836,14 @@ func (p *dispatchProcess) exitCause() string {
 
 // waitPromptExit waits for Dispatch to exit after the SIGTERM sent at signalled. How soon it
 // exits is a service level its stop promises, measured on this machine's clock against timers
-// inside the child process, so the figure is held only in benchtime's timing lane; that it exits
-// at all is held on every run.
-func (p *dispatchProcess) waitPromptExit(t *testing.T, signalled time.Time) {
+// inside the child process, so the figure is held only by a row's twin in benchtime's timing lane
+// (onTheClock); that it exits at all is held on every run.
+func (p *dispatchProcess) waitPromptExit(t *testing.T, lane clockLane, signalled time.Time) {
 	t.Helper()
 	p.WaitExit(t, "SIGTERM")
 	exited := time.Since(signalled)
 	t.Logf("exited %v after SIGTERM", exited)
-	if os.Getenv(benchtime.TimingEnv) != "" && exited >= promptShutdown {
+	if lane == onTheClock && exited >= promptShutdown {
 		t.Errorf("Dispatch exited %v after SIGTERM, want under %v", exited, promptShutdown)
 	}
 }

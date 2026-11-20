@@ -72,8 +72,11 @@ const (
 // about 3.1 s (run 42346322118, attempt 1), which neither setting survives from every offset. A
 // holder whose renewal is late must stop at its deadline, and the row it still holds keeps every
 // standby out until its release deletes the row, or for Margin after the deadline when that
-// release cannot reach the database first. That gap is the product's, and the two-process row
-// holds it to the take-over bound rather than to nothing.
+// release cannot reach the database first. That gap is the product's. Every run holds the
+// standby's take to the row's lapse on a fake clock
+// (TestAStandbyTakesTheHoldOfAHolderThatStoppedRenewingOnceItsRowLapses), and the two-process
+// rows hold the take-over to its bound only in the timing lane (cmd/dispatch, requireTakeOver on
+// the clock), which CI does not run.
 var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
 
 // timerClock is the clock the outbox arms its timers on, a narrowing of clock.Clock: the

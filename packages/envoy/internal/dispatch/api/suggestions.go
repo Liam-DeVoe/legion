@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -1054,7 +1055,7 @@ const relatedCheckInsert = `
 // (retryRecord). Each row's id is chosen here and the insert does nothing where it exists, since
 // the first attempt's statement may still land after its context gave up on it.
 func (s *server) recordRelatedChecks(ctx context.Context, rows ...relatedCheckRecord) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), relatedRecordTimeout)
+	ctx, cancel := cmp.Or[clock.Clock](s.recordClock, clock.Real()).WithTimeout(context.WithoutCancel(ctx), relatedRecordTimeout)
 	defer cancel()
 	var inserts [][]any
 	for _, row := range rows {

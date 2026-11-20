@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -272,19 +273,28 @@ const (
 )
 
 // writeThroughLedger writes markdown at the document's end as actor in one transaction, as POST
-// /edits does, with the version the same transaction writes, if any.
+// /edits does, with the version the same transaction writes, if any, and fails the test on what
+// failed (ledgerWrite).
 func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor model.Actor, markdown string, version ledgerWriteVersion) {
 	t.Helper()
+	if err := ledgerWrite(service, artifactID, actor, markdown, version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// ledgerWrite is writeThroughLedger's write, which returns what failed rather than failing a test,
+// for a write a goroutine of the test's own makes: only the test's goroutine can end the test.
+func ledgerWrite(service *Service, artifactID string, actor model.Actor, markdown string, version ledgerWriteVersion) error {
 	ctx := context.Background()
 	tx, err := service.store.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin %s's write: %v", actor.ID, err)
+		return fmt.Errorf("begin %s's write: %w", actor.ID, err)
 	}
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	if _, err := service.ApplyOps(joined, artifactID, []model.EditOp{{Op: "insert", After: "end", Markdown: markdown}}, actor, nil); err != nil {
-		t.Fatalf("apply %s's write: %v", actor.ID, err)
+		return fmt.Errorf("apply %s's write: %w", actor.ID, err)
 	}
 	switch version {
 	case withSnapshotVersion:
@@ -293,11 +303,12 @@ func writeThroughLedger(t *testing.T, service *Service, artifactID string, actor
 		_, err = service.NamedVersion(joined, artifactID, actor.ID+"'s version", actor)
 	}
 	if err != nil {
-		t.Fatalf("write %s's version: %v", actor.ID, err)
+		return fmt.Errorf("write %s's version: %w", actor.ID, err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit %s's write: %v", actor.ID, err)
+		return fmt.Errorf("commit %s's write: %w", actor.ID, err)
 	}
+	return nil
 }
 
 // An author whose edit wrote its own version is not owed that credit again: the next version after
@@ -751,15 +762,24 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 // rolling deploy's overlap.
 func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
+	return newTestServiceInstanceOn(t, database, nil)
+}
+
+// newTestServiceInstanceOn is newTestServiceInstance on serviceClock (Deps.Clock), the real clock
+// when nil. Its shutdown ends at the shared wait's deadline, since a fake no one moves never
+// reaches the drain's own bound.
+func newTestServiceInstanceOn(t *testing.T, database *store.Store, serviceClock clock.Clock) (*Service, *httptest.Server) {
+	t.Helper()
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
 		Identity:  headerIdentity(database),
 		ServerURL: "https://dispatch.example",
 		Settle:    time.Hour,
+		Clock:     serviceClock,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
@@ -871,17 +891,17 @@ func TestConcurrentBrowserAndVersionedWritesListEveryAuthorOnceAfterEveryRound(t
 		agent := model.Actor{Kind: "session", ID: fmt.Sprintf("round%d-agent", round)}
 		authors = append(authors, model.Actor{Kind: "user", ID: login, Proven: true}, agent)
 
-		var wg sync.WaitGroup
-		wg.Add(2)
+		// The agent's write races the browser's edit on a goroutine of its own, which hands its
+		// error to this one: only the test's goroutine ends the test, and the browser's edit, with
+		// its wait for the room, runs here.
+		agentWrote := make(chan error, 1)
 		go func() {
-			defer wg.Done()
-			editAsBrowser(t, service, artifactID, browser, fmt.Sprintf("# Decision\n\nContext.\n\nRound %d browser.\n", round))
+			agentWrote <- ledgerWrite(service, artifactID, agent, fmt.Sprintf("Round %d agent.\n", round), withSnapshotVersion)
 		}()
-		go func() {
-			defer wg.Done()
-			writeThroughLedger(t, service, artifactID, agent, fmt.Sprintf("Round %d agent.\n", round), withSnapshotVersion)
-		}()
-		wg.Wait()
+		editAsBrowser(t, service, artifactID, browser, fmt.Sprintf("# Decision\n\nContext.\n\nRound %d browser.\n", round))
+		if err := testwait.Receive(t, "the agent's write through the ledger to return", agentWrote); err != nil {
+			t.Fatal(err)
+		}
 		browser.Close()
 		waitFor(t, "the round's browser to disconnect", func() bool {
 			return connectedBrowsers(service, artifactID) == 0
@@ -1186,6 +1206,12 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	var readingsMu sync.Mutex
 	var readings []reading
 	stop, done := make(chan struct{}), make(chan struct{})
+	// A failure below still stops the reader, so it never queries past the test.
+	stopReader := sync.OnceFunc(func() { close(stop) })
+	t.Cleanup(func() {
+		stopReader()
+		testwait.Receive(t, "the test's reader loop to stop", done)
+	})
 	go func() {
 		defer close(done)
 		for {
@@ -1213,11 +1239,16 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 	// readerBlocked moves the commit to at and waits until the reader waits on the room's state
 	// lock, which the commit holds from before its transaction commits until it has consumed the
 	// credits (commitConsuming): the reader's next reading is then the first once the commit lets go.
+	// It runs inside the commit, which holds that lock and lets it go with no defer, so a give-up
+	// fails the test with t.Error and returns, and the commit lets the lock go: a FailNow here
+	// would leave it held for the reader and the test's cleanup to wait on.
 	readerBlocked := func(at int32) {
 		phase.Store(at)
-		waitFor(t, "the reader to wait on the room's state lock the commit holds", func() bool {
+		if err := testwait.InHelper("readerBlocked", "the reader to wait on the room's state lock the commit holds", func() bool {
 			return goroutinesIn("TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands", "sync.(*Mutex).lockSlow") > 0
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}
 	paused := pausedCommitTx{
 		Tx:     tx,
@@ -1233,8 +1264,8 @@ func TestAVersionsCreditIsConsumedExactlyWhenItsCommitLands(t *testing.T) {
 		defer readingsMu.Unlock()
 		return slices.ContainsFunc(readings, func(read reading) bool { return read.phase == 3 })
 	})
-	close(stop)
-	<-done
+	stopReader()
+	testwait.Receive(t, "the test's reader loop, whose in-flight step takes the room's state lock, to stop", done)
 
 	readingsMu.Lock()
 	defer readingsMu.Unlock()

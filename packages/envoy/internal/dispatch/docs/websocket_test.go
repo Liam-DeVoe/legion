@@ -695,7 +695,7 @@ func TestShutdownClosesDocumentPeers(t *testing.T) {
 			break
 		}
 	}
-	if err := <-shutdown; err != nil {
+	if err := testwait.Receive(t, "service.Shutdown to return with a document peer connected", shutdown); err != nil {
 		t.Fatalf("shutdown with document peer: %v", err)
 	}
 	if got, err := service.Text(context.Background(), artifactID); err != nil || got != "before\n" {

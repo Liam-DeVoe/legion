@@ -2110,6 +2110,11 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 			issue.Key+" the work", repo, newHeadCommit, repo)
 	})
 	served.commitPulls = delivery.CommitPullReads{}
+	// The read stamps its claim and its settling with the server's own moment (stampedNow), on a
+	// fake here that stands still, so the span the claim below is judged against starts at a
+	// moment the test reads off it.
+	stamps := clocktest.New(time.Now())
+	served.stampClock = stamps
 
 	for _, read := range []struct {
 		name  string
@@ -2129,9 +2134,9 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 	}
 	// Settled, not merely bounded: the pair is refused a claim far past
 	// delivery.CommitPullReadStaleAfter, which is what keeps the call off the refetches of the
-	// hour that follows. The settling's own moment is the read's, a second or so before this
-	// one, so a claim a minute short of the span is inside it.
-	if served.commitPulls.Claim("acme/widgets", headCommit, time.Now().Add(delivery.CommitPullSettledFor-time.Minute)) {
+	// hour that follows. The settling's moment is the reads' own, the fake's, so a claim a
+	// nanosecond short of the span is inside it.
+	if served.commitPulls.Claim("acme/widgets", headCommit, stamps.Now().Add(delivery.CommitPullSettledFor-time.Nanosecond)) {
 		t.Fatal("a claim of the superseded commit inside the settled span was granted, want it refused")
 	}
 }

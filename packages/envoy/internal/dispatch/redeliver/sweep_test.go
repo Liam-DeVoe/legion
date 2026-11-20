@@ -964,13 +964,13 @@ func TestASweepClearsOnlyTheRateLimitItRead(t *testing.T) {
 		_, err := first.Sweep(context.Background(), redeliver.Options{})
 		done <- err
 	}()
-	<-paused.entered
+	testwait.Receive(t, "the first sweeper's sweep to reach its paused listing", paused.entered)
 	limited := h.sweep(redeliver.Options{})
 	if limited.RateLimitedUntil.IsZero() {
 		t.Fatalf("the second sweeper was not rate-limited: %+v", limited)
 	}
 	close(paused.release)
-	if err := <-done; err != nil {
+	if err := testwait.Receive(t, "the first sweeper's sweep to return once its listing was released", done); err != nil {
 		t.Fatalf("the first sweeper: %v", err)
 	}
 
@@ -1024,13 +1024,13 @@ func TestASweepPausedBeforeItsRequestSendsNothingUnderANewLimit(t *testing.T) {
 		}
 		reports <- report
 	}()
-	<-paused.entered // it has claimed guid-newer and not yet asked GitHub for it
+	testwait.Receive(t, "the paused sweeper to claim guid-newer before it asks GitHub for it", paused.entered)
 	first := h.sweep(redeliver.Options{})
 	if first.RateLimitedUntil.IsZero() || len(h.requests()) != 1 {
 		t.Fatalf("the first sweeper sent %d requests and recorded no limit: %+v", len(h.requests()), first)
 	}
 	close(paused.release)
-	report := <-reports
+	report := testwait.Receive(t, "the paused sweeper's report once its claim was released", reports)
 	if got := len(h.requests()); got != 1 {
 		t.Fatalf("redelivery requests %d, want 1: the paused sweeper asked GitHub inside the new limit", got)
 	}
@@ -1301,7 +1301,7 @@ func TestALiveClaimantsDeliveryIsClaimedElsewhereInsideTheDeadline(t *testing.T)
 		}
 		reports <- report
 	}()
-	<-held.entered
+	testwait.Receive(t, "the claimant's sweep to reach its held redelivery request", held.entered)
 
 	h.clock.advance(claimDeadline - time.Second)
 	if got := outcome(h.sweep(redeliver.Options{}), "guid-in-flight"); got != redeliver.ClaimedElsewhere {
@@ -1312,7 +1312,7 @@ func TestALiveClaimantsDeliveryIsClaimedElsewhereInsideTheDeadline(t *testing.T)
 	}
 
 	close(held.release)
-	if got := outcome(<-reports, "guid-in-flight"); got != redeliver.Redelivered {
+	if got := outcome(testwait.Receive(t, "the claimant's report once its redelivery request was released", reports), "guid-in-flight"); got != redeliver.Redelivered {
 		t.Fatalf("the claimant: outcome %q, want %q", got, redeliver.Redelivered)
 	}
 	h.clock.advance(2 * time.Second)
@@ -2370,8 +2370,8 @@ func TestTheSweepSummaryCountsEveryOutcome(t *testing.T) {
 		defer close(done)
 		h.sweeper().Run(ctx, time.Hour, leases)
 	}()
-	testwait.Until(t, "the running sweep's summary line", func() (string, bool) {
-		return h.logs.String(), h.logs.count("webhook redelivery sweep") > 0
+	testwait.Until(t, "the running sweep's summary line", func() (*lockedBuffer, bool) {
+		return h.logs, h.logs.count("webhook redelivery sweep") > 0
 	})
 	cancel()
 	testwait.Receive(t, "the running sweep to return once its context ended", done)

@@ -678,6 +678,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			go func() {
 				tx, err := s.Pool.Begin(ctx)
 				if err != nil {
+					read <- ""
 					answered <- err
 					return
 				}
@@ -689,7 +690,7 @@ func TestTheReadTheOwnerLockGuardsSeesTheCommitOfAWriterOfAnEarlierBuild(t *test
 			}()
 			if state.legacy {
 				if err, early := awaitRowLockWaiter(t, s, answered); early {
-					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, <-read)
+					t.Fatalf("LockOwnerAndRead answered (%v, %q) while a writer of an earlier build held the row; want it to wait for that row", err, testwait.Receive(t, "the guarded read's title, sent before its answer", read))
 				}
 			} else if err := testwait.Receive(t, "LockOwnerAndRead to answer beside a writer that holds no row", answered); err != nil {
 				t.Fatal(err)

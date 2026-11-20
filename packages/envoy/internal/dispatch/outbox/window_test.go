@@ -475,6 +475,13 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 	return seqs, ids
 }
 
+// streamReading is one read of what the stream holds: its message count, or the error the read
+// met, which a wait on the stream prints when it gives up.
+type streamReading struct {
+	Msgs uint64
+	Err  error
+}
+
 // A connection cut while a batch is in flight - sent, its acknowledgements still on their way back
 // across a remote hub's round trip - keeps the backlog's order. The window sends nothing on the
 // connection that comes back, a send that met the cut stops its chain, and every event that met the
@@ -510,9 +517,12 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 	stop := runOutbox(t, database, client, broker)
 	defer stop()
 	// Cut once the first envelopes reached the stream and before any acknowledgement made it back.
-	testwait.Eventually(t, "the first batch reaching the stream", func() bool {
+	testwait.Until(t, "the first batch reaching the stream", func() (streamReading, bool) {
 		info, err := js.StreamInfo(bus.Stream)
-		return err == nil && info.State.Msgs > 0
+		if err != nil {
+			return streamReading{Err: err}, false
+		}
+		return streamReading{Msgs: info.State.Msgs}, info.State.Msgs > 0
 	})
 	proxy.Cut()
 	if left := unpublishedCount(t, database); left != count {

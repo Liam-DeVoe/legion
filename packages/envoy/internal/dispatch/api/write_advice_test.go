@@ -1006,7 +1006,7 @@ func newFailingAdviceHandler(t *testing.T, query string, suggestionTimeout time.
 		suggestionTimeout: suggestionTimeout,
 		// The creates through this handler run the near-copy gate too, under a bound past any
 		// read of a test project, as every server the rig builds does (newRegisteredTestServer).
-		duplicateBound: gateBoundPastEveryRead,
+		duplicateBound: gateBoundPastEveryRead(t),
 		adviceQueryHook: func(ctx context.Context, tx pgx.Tx, got string) error {
 			if got != query {
 				return nil

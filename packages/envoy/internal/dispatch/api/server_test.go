@@ -142,6 +142,10 @@ type testServerOptions struct {
 	// its wait for the page's close frame run on: nil is clock.Real(), and a test whose sockets
 	// must not end on a late pong passes clocktest.Held(), or a fake it moves to each deadline.
 	liveSocketClock clock.Clock
+	// liveSocketPingClock is the server's Deps.LiveSocketPingClock, which a live socket's pings
+	// and heartbeat frames run on: nil is clock.Real(), and a test that counts the pings passes a
+	// fake it moves a heartbeat at a time.
+	liveSocketPingClock clock.Clock
 	// liveKinds adds view kinds to the ones a live socket serves beside the delivery views, or
 	// replaces them, before any socket opens.
 	liveKinds map[string]liveKind
@@ -337,6 +341,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	}
 	deps.LiveSocketAge = options.liveSocketAge
 	deps.LiveSocketClock = options.liveSocketClock
+	deps.LiveSocketPingClock = options.liveSocketPingClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
 	maps.Copy(served.liveKinds, options.liveKinds)
@@ -347,7 +352,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	// test project, as the take-over window above is shortened, and a row whose outcome is that
 	// no check was made spends its bound instead (spentGateBound). The deployment's own bound is
 	// pinned by TestTheDeploymentsNearCopyGateBoundIsTheDocumentedOne.
-	served.duplicateBound = gateBoundPastEveryRead
+	served.duplicateBound = gateBoundPastEveryRead(t)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
@@ -577,6 +582,18 @@ func decodeBody[T any](t *testing.T, response *httptest.ResponseRecorder) T {
 	var value T
 	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
 		t.Fatalf("decode response body %q: %v", response.Body.String(), err)
+	}
+	return value
+}
+
+// decodeBodyOrError is decodeBody for a goroutine that is not the test's, a handler's or a
+// request's own, where FailNow may not run: an undecodable body is reported with t.Errorf, which
+// any goroutine may call, and the zero value answered, which the checks after it then fail on.
+func decodeBodyOrError[T any](t *testing.T, response *httptest.ResponseRecorder) T {
+	t.Helper()
+	var value T
+	if err := json.Unmarshal(response.Body.Bytes(), &value); err != nil {
+		t.Errorf("decode response body %q: %v", response.Body.String(), err)
 	}
 	return value
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The embeddings trigger migrations (0073-0077) take one table's lock at a time, each in its
@@ -53,7 +54,7 @@ func TestEmbeddingsMigrationsLockOneTableAtATime(t *testing.T) {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 76 (0073-0076 committed one by one)", version)
 	}
 
-	err = <-migrated
+	err = testwait.Receive(t, "store.Migrate to give up on 0077 at its lock timeout", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if err == nil || !errors.As(err, &lockTimeout) || !strings.Contains(lockTimeout.Migration, "0077_messages_embeddings_trigger") {
 		t.Fatalf("the runner should have given up on 0077 at its lock timeout, got: %v", err)

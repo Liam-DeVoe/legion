@@ -154,7 +154,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 	t.Cleanup(func() {
 		letGo()
 		recoverRoom()
-		<-applied
+		testwait.Receive(t, "server.Apply to return once it was released", applied)
 		service.evictWG.Wait()
 		if err := server.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown: %v", err)
@@ -169,9 +169,9 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 			t.Errorf("hold the room open: %v", err)
 		}
 	}()
-	<-entered
+	testwait.Receive(t, "server.Apply to run its body", entered)
 	service.failRoom("room", errors.New("failed room"))
-	<-evicting
+	testwait.Receive(t, "failRoom's eviction to reach its hook", evicting)
 	state := service.lockExistingState("room")
 	done := state.failedDone
 	service.unlockState("room", state)
@@ -198,7 +198,7 @@ func TestACancelledEvictionLeavesTheFailedRoomForItsOwnEviction(t *testing.T) {
 		t.Fatal("cancelled eviction must keep the resident room's failure until its own eviction closes it")
 	}
 	letGo()
-	<-applied
+	testwait.Receive(t, "server.Apply to return once it was released", applied)
 	recoverRoom()
 	testwait.Receive(t, "the failed room's eviction to finish", done)
 	if server.GetDoc("room") != nil || service.roomFailed("room") {

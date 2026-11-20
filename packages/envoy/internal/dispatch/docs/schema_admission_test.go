@@ -531,7 +531,7 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 		t.Fatalf("no accepted connection has the slow page's local address %s, so nothing records what the server writes to it", reader.LocalAddr())
 	}
 	testwait.Eventually(t, "the server to begin writing the slow page a message past 64 KB", func() bool {
-		writes, _ := serverConn.record()
+		writes, _, _ := serverConn.record()
 		for _, write := range writes {
 			if write.size > 64*1024 {
 				return true
@@ -567,26 +567,6 @@ func TestARevokeWaitsForTheMessageTheServerHasInFlight(t *testing.T) {
 		t.Fatalf("the biggest message the page read whole is %d bytes; this test needs the revoke to arrive inside one past 64 KB", biggest)
 	}
 }
-
-// ygoHandshakeTimeout is the deadline ygo's ServeHTTP sets on a new socket's first read, after
-// which it ends a connection whose page has sent nothing of its own; Dispatch leaves it at ygo's
-// default (sjawhar/ygo provider/websocket/server.go, defaultHandshakeTimeout and the
-// SetReadDeadline ServeHTTP sets before the first message it reads). The slow page below sends
-// nothing, so this deadline ends its socket by itself 30 s after it connects, revoke or no
-// revoke.
-const ygoHandshakeTimeout = 30 * time.Second
-
-// ygoPeerWriteTimeout is the deadline ygo sets on each write to a peer, after which it gives up
-// on that write and closes the peer (sjawhar/ygo provider/websocket/server.go, writeTimeout, set
-// by peer.writeToConn). The slow page below reads nothing, so the server's write of the document
-// to it is stalled from the moment it connects and this deadline runs from there.
-const ygoPeerWriteTimeout = 10 * time.Second
-
-// ygoCloseFrameTimeout is how long ygo waits for a revoked socket's close frame to go out before
-// it closes the connection without it (sjawhar/ygo provider/websocket/server.go,
-// closeFrameTimeout, the deadline on ServeHTTP's WriteControl). The slow page below reads
-// nothing, so that wait runs out in full and the close follows it.
-const ygoCloseFrameTimeout = time.Second
 
 // The revoke's close is told from ygo's own ends of the same socket by its cause, not by when it
 // came: ygo writes a close frame only for a request context cancelled with a cause, as the
@@ -692,8 +672,14 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	}
 	// The re-check's own revoke (recheckSchemaAdmissions), taken here so the admissions it closed
 	// are read: this fleet still admits the writer's page, so the slow page's is the only socket
-	// it closes, and the end below is that revoke's and no other's.
-	revokedAt := time.Now()
+	// it closes, and the end below is that revoke's and no other's. The revoke's moment is a place
+	// in the slow page's own record, on no clock: the writes the server had begun to it by then,
+	// which every later write follows (serverSocket.Write).
+	begun, _, closedBefore := serverConn.record()
+	if closedBefore {
+		t.Fatal("the server closed its side of the revoked page's socket before the revoke")
+	}
+	revokedAfter := len(begun)
 	revoked := service.schemaAdmissions.revokeUnless(fleet)
 	if len(revoked) != 1 {
 		t.Fatalf("the re-check revoked %d sockets, want the slow page's alone", len(revoked))
@@ -713,14 +699,11 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 	// The revoke's own work, and all of it: the server has closed that socket and its ServeHTTP
 	// has returned.
 	requireRevokedSocketEnded(t, &service.schemaAdmissions, revoked[0])
-	writes, closedAt := serverConn.record()
-	if closedAt.IsZero() {
+	writes, closedAfter, closed := serverConn.record()
+	if !closed {
 		t.Fatal("the server never closed its side of the revoked page's socket, though its ServeHTTP returned")
 	}
-	if !closedAt.After(revokedAt) {
-		t.Fatalf("the server closed its side of the revoked page's socket at %v, before the revoke at %v", closedAt, revokedAt)
-	}
-	requireNothingWrittenAfterTheRevoke(t, writes, revokedAt, closedAt)
+	requireNothingWrittenAfterTheRevoke(t, writes, revokedAfter, closedAfter)
 
 	// What the page reads, read off the bytes the server wrote to it: TCP delivers exactly these,
 	// in this order, and then the connection's end.
@@ -763,7 +746,7 @@ func TestARevokedSlowPageEndsOnACodeItReconnectsOnAndSyncsWhole(t *testing.T) {
 func waitForTheDocumentOnTheWire(t *testing.T, socket *serverSocket) {
 	t.Helper()
 	testwait.Until(t, "the server to finish writing the slow page the document", func() (string, bool) {
-		writes, _ := socket.record()
+		writes, _, _ := socket.record()
 		read, err := readServerStream(streamOf(writes))
 		if err == nil && read.biggestMessage > 64*1024 && read.framesAfter > 0 {
 			return "", true
@@ -787,29 +770,30 @@ func requireRevokedSocketEnded(t *testing.T, admissions *schemaAdmissions, admis
 }
 
 // requireNothingWrittenAfterTheRevoke fails unless every write to a revoked socket that began
-// after revokedAt carried nothing but, at most, one admission-revoked close frame, and no write at
-// all carried a byte once the server had closed the socket at closedAt. A write that began before
-// the revoke and returned after it is the message the close waits for, and is left alone. A write
-// with no bytes recorded was still running when the record was taken, which cannot happen here:
-// the caller reads the record once ServeHTTP has returned and the connection is closed.
-func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, revokedAt, closedAt time.Time) {
+// after the first revokedAfter of them carried nothing but, at most, one admission-revoked close
+// frame, and no write at all carried a byte once the server had closed the socket, when it had
+// begun closedAfter. A write that began before the revoke and returned after it is the message the
+// close waits for, and is left alone. A write with no bytes recorded was still running when the
+// record was taken, which cannot happen here: the caller reads the record once ServeHTTP has
+// returned and the connection is closed.
+func requireNothingWrittenAfterTheRevoke(t *testing.T, writes []socketWrite, revokedAfter, closedAfter int) {
 	t.Helper()
 	closes := 0
 	for i, write := range writes {
 		if len(write.bytes) == 0 {
 			continue
 		}
-		if write.startedAt.After(closedAt) {
-			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun %v after the server closed that socket",
-				i+1, len(writes), len(write.bytes), write.startedAt.Sub(closedAt))
+		if i >= closedAfter {
+			t.Fatalf("write %d of %d to the revoked page's socket carried %d bytes, having begun after the server closed that socket, once it had begun %d",
+				i+1, len(writes), len(write.bytes), closedAfter)
 		}
-		if !write.startedAt.After(revokedAt) {
+		if i < revokedAfter {
 			continue
 		}
 		code, isClose := closeFrameCode(write.bytes)
 		if !isClose || code != contracts.DocumentAdmissionRevokedCloseCode {
-			t.Fatalf("write %d of %d to the revoked page's socket began %v after the revoke and carried %d bytes that are not the admission-revoked close frame (first bytes %x): the revoke must end that socket before the room's next update reaches it",
-				i+1, len(writes), write.startedAt.Sub(revokedAt), len(write.bytes), write.bytes[:min(len(write.bytes), 16)])
+			t.Fatalf("write %d of %d to the revoked page's socket began after the revoke, which came once %d had begun, and carried %d bytes that are not the admission-revoked close frame (first bytes %x): the revoke must end that socket before the room's next update reaches it",
+				i+1, len(writes), revokedAfter, len(write.bytes), write.bytes[:min(len(write.bytes), 16)])
 		}
 		if closes++; closes > 1 {
 			t.Fatalf("the server wrote %d close frames to the revoked page's socket after the revoke, want at most one", closes)
@@ -1052,31 +1036,32 @@ func (l *recordingListener) find(remote string) *serverSocket {
 	return nil
 }
 
-// socketWrite is one Write to a server socket: when it began, how many bytes it was asked to
-// write, whether it has returned, and the bytes the connection accepted of it - the n it returned
-// - which are the bytes that went on the wire.
+// socketWrite is one Write to a server socket: how many bytes it was asked to write, whether it
+// has returned, and the bytes the connection accepted of it - the n it returned - which are the
+// bytes that went on the wire. When it began is its place in the socket's record.
 type socketWrite struct {
-	startedAt time.Time
-	size      int
-	returned  bool
-	bytes     []byte
+	size     int
+	returned bool
+	bytes    []byte
 }
 
-// serverSocket is the server's end of one accepted connection, recording every write and when
-// the server first closed it. The writes are recorded in the order they began, which is the order
-// their bytes went out in: ygo writes to a peer from one goroutine of its own, and gorilla
-// serialises that writer against the WriteControl a revoke's close frame goes out on.
+// serverSocket is the server's end of one accepted connection, recording every write and how
+// many had begun when the server first closed it. The writes are recorded in the order they
+// began, which is the order their bytes went out in: ygo writes to a peer from one goroutine of
+// its own, and gorilla serialises that writer against the WriteControl a revoke's close frame goes
+// out on.
 type serverSocket struct {
 	net.Conn
-	mu       sync.Mutex
-	writes   []socketWrite
-	closedAt time.Time
+	mu          sync.Mutex
+	writes      []socketWrite
+	closed      bool
+	closedAfter int
 }
 
 func (s *serverSocket) Write(payload []byte) (int, error) {
 	s.mu.Lock()
 	at := len(s.writes)
-	s.writes = append(s.writes, socketWrite{startedAt: time.Now(), size: len(payload)})
+	s.writes = append(s.writes, socketWrite{size: len(payload)})
 	s.mu.Unlock()
 	n, err := s.Conn.Write(payload)
 	s.mu.Lock()
@@ -1087,21 +1072,20 @@ func (s *serverSocket) Write(payload []byte) (int, error) {
 }
 
 func (s *serverSocket) Close() error {
-	now := time.Now()
 	s.mu.Lock()
-	if s.closedAt.IsZero() {
-		s.closedAt = now
+	if !s.closed {
+		s.closed, s.closedAfter = true, len(s.writes)
 	}
 	s.mu.Unlock()
 	return s.Conn.Close()
 }
 
-// record is every write this connection has taken so far and the instant the server first closed
-// it, zero while it is still open.
-func (s *serverSocket) record() ([]socketWrite, time.Time) {
+// record is every write this connection has taken so far, and, once the server has first closed
+// it (closed), how many writes had begun then.
+func (s *serverSocket) record() (writes []socketWrite, closedAfter int, closed bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]socketWrite(nil), s.writes...), s.closedAt
+	return append([]socketWrite(nil), s.writes...), s.closedAfter, s.closed
 }
 
 // streamOf is the byte stream a socket's writes put on the wire: the bytes each write was

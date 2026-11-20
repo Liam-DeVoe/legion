@@ -41,6 +41,18 @@ func openEmptyTestStore(t *testing.T) *Store {
 	return store
 }
 
+// databaseNow is the database's clock now, the clock that stamps what a migration, a default or a
+// trigger writes with now(): a moment a test judges such a stamp against is read here, not off the
+// test's own clock.
+func databaseNow(t *testing.T, store *Store) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := store.Pool.QueryRow(context.Background(), `select now()`).Scan(&now); err != nil {
+		t.Fatalf("read the database's clock: %v", err)
+	}
+	return now
+}
+
 func randomDatabaseSuffix(t *testing.T) string {
 	t.Helper()
 	var bytes [8]byte
@@ -1648,14 +1660,15 @@ func askThreadShape(t *testing.T, store *Store) map[string]commentThreadRow {
 }
 
 // applyMigrationFile runs one migration's statements the way the runner does: one transaction,
-// so an `on commit drop` temporary table lives exactly that long.
+// so an `on commit drop` temporary table lives exactly that long. The transaction runs until the
+// shared wait gives up (testwait.Context), so a statement that never ends fails the test by name.
 func applyMigrationFile(t *testing.T, store *Store, name string) {
 	t.Helper()
 	statements, err := migrationFiles.ReadFile("migrations/" + name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	tx, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin %s: %v", name, err)
@@ -1699,24 +1712,10 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 			`); err != nil {
 				t.Fatalf("seed a cyclic ask thread: %v", err)
 			}
-			// A bound on the statement, so a walk that does spin fails the test in seconds
-			// instead of running until the test binary is killed. Database-level, because the
-			// migration takes its connection from the pool: only a session opened after this
-			// carries it.
-			if _, err := store.Pool.Exec(ctx,
-				"alter database "+store.Pool.Config().ConnConfig.Database+" set statement_timeout = '20s'",
-			); err != nil {
-				t.Fatalf("bound the migration statement: %v", err)
-			}
-			bounded, err := Open(ctx, store.Pool.Config().ConnString())
-			if err != nil {
-				t.Fatalf("reopen the bounded database: %v", err)
-			}
-			t.Cleanup(bounded.Pool.Close)
-
-			applyMigrationFile(t, bounded, backfill.file)
+			// A walk that spins fails at the shared wait's deadline (applyMigrationFile).
+			applyMigrationFile(t, store, backfill.file)
 			var movedAsk, movedReplyTo, movedTurn *string
-			if err := bounded.Pool.QueryRow(ctx, `
+			if err := store.Pool.QueryRow(ctx, `
 				select ask_id::text, reply_to::text, turn from comments where id = $1
 			`, replyID).Scan(&movedAsk, &movedReplyTo, &movedTurn); err != nil {
 				t.Fatalf("read the reply below the cycle: %v", err)

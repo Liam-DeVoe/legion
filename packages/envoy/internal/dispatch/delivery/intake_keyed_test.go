@@ -173,7 +173,7 @@ func runIntake(t *testing.T, intake *Intake) (stop func()) {
 	}()
 	stop = sync.OnceFunc(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
 	})
 	t.Cleanup(stop)
 	return stop

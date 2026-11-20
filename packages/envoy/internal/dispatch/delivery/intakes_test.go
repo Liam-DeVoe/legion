@@ -348,7 +348,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		stopJobs()
-		<-jobsDone
+		testwait.Receive(t, "the job intake's Run to return once its context ended", jobsDone)
 	})
 	waitFor(t, func() bool { return pushBound(bus.DispatchJobDurable) }, func() string {
 		return "the job intake never bound its durable"

@@ -158,14 +158,14 @@ func TestAStillLoadingRoomKeepsItsState(t *testing.T) {
 	go func() {
 		done <- service.srv.Apply(context.Background(), artifactID, func(*crdt.Doc, func(func(*crdt.Transaction))) {})
 	}()
-	<-entered
+	testwait.Receive(t, "Apply's room load to reach the load hook", entered)
 	state := service.lockExistingState(artifactID)
 	if state == nil {
 		t.Fatal("the state of a room still loading was released")
 	}
 	service.unlockState(artifactID, state)
 	close(release)
-	if err := <-done; err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+	if err := testwait.Receive(t, "srv.Apply to return once its load was released", done); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 		t.Fatalf("finish loading the room: %v", err)
 	}
 	if err := service.Evict(context.Background(), artifactID); err != nil {

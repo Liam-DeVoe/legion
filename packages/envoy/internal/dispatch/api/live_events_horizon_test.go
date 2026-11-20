@@ -361,9 +361,9 @@ func TestAColdSubscriptionThatStartsTheRelayIsSentAnEventCommittedWhileItStarts(
 	}); response.Code != http.StatusCreated {
 		t.Fatalf("create the mentioning message: status=%d body=%s", response.Code, response.Body.String())
 	}
-	awaitSinceRead(t, "since 0 ?to= dispatch://"+issue.Key+" for mentions, wanting the message's mention",
-		func() model.GraphReferences {
-			return graphEdges(t, rig.handler, url.Values{"to": {"dispatch://" + issue.Key}, "since": {"0"}, "kind": {"mentions"}})
+	awaitSinceRead(t, "since 0 ?to= dispatch://"+issue.Key+" for mentions, wanting the message's mention", rig.handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return graphEdges(t, bounded, url.Values{"to": {"dispatch://" + issue.Key}, "since": {"0"}, "kind": {"mentions"}})
 		},
 		func(read model.GraphReferences) bool { return len(read.Edges) == 1 })
 
@@ -457,13 +457,6 @@ func eventsTuplesRead(t *testing.T, database *store.Store) int64 {
 	return read
 }
 
-// relayReadsWhy is why a test holds a span before it counts the rows of events read: the server's
-// own reads of the log (its boot, the relay's start and the reads that follow it) run on goroutines
-// of its own, and the count is taken once they have had their turn.
-const relayReadsWhy = "the server reads the event log on goroutines of its own (its boot, the relay's start and the " +
-	"reads after it), and no state the test reads says those reads are done, the database is real I/O (no " +
-	"synctest), and no later action of the test is ordered after a read that reports nothing it can see"
-
 // TestTheRelaysFirstStartDoesNotReadTheWholeEventLog: the relay's first start runs on every process
 // at boot (nothing proves a horizon before the first subscription) and holds that subscription's
 // events_start, and every live event, until it ends. Its cost must not grow with the log: on
@@ -487,10 +480,14 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLog(t *testing.T) {
 	if _, err := rig.database.Pool.Exec(t.Context(), `analyze events`); err != nil {
 		t.Fatalf("analyze events: %v", err)
 	}
-	testwait.Span(t, 1500*time.Millisecond, relayReadsWhy)
+	// The server's one read at boot is its boot mark's, which closes bootMark once it has run; the
+	// relay reads nothing before its first subscription starts it.
+	testwait.Receive(t, "the server's boot mark", rig.served.bootMark)
 	before := eventsTuplesRead(t, rig.database)
+	// subscribeEvents returns with the start's events_start, which the start sends once its reads
+	// of the log have returned, and eventsTuplesRead ends every other connection so that each
+	// flushes the statistics its reads left.
 	subscribeEvents(t, rig.dial(t, withBearer("agent-token")), "events", nil)
-	testwait.Span(t, 1500*time.Millisecond, relayReadsWhy)
 	if read := eventsTuplesRead(t, rig.database) - before; read > logSize/10 {
 		t.Fatalf("the relay's first start read %d rows of events on a log of %d events, want at most %d: its cost grows with the whole log", read, logSize, logSize/10)
 	}
@@ -533,7 +530,6 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 	if _, err := rig.database.Pool.Exec(t.Context(), `analyze events`); err != nil {
 		t.Fatalf("analyze events: %v", err)
 	}
-	testwait.Span(t, 1500*time.Millisecond, relayReadsWhy)
 	before := eventsTuplesRead(t, rig.database)
 	client := rig.dial(t, withBearer("agent-token"))
 	sendEventsSubscribe(t, client, "events", nil)
@@ -545,7 +541,7 @@ func TestTheRelaysFirstStartDoesNotReadTheWholeEventLogWhileAWriterFromBeforeBoo
 		"got, the database is real I/O (no synctest), and no later action is ordered inside the write's life")
 	release()
 	eventsStartID(t, client, "events")
-	testwait.Span(t, 1500*time.Millisecond, relayReadsWhy)
+	// The start's reads of the log have returned once its events_start has come.
 	if read := eventsTuplesRead(t, rig.database) - before; read > logSize/10 {
 		t.Fatalf("the relay's first start read %d rows of events on a log of %d events while a writer from before the boot mark was open, want at most %d: it read the whole log", read, logSize, logSize/10)
 	}
@@ -715,7 +711,6 @@ func TestTheRelaysFirstStartReadsAboveThePersistedHorizonWhileAnEventInsertFromB
 	eventsStartID(t, client, "events")
 	expectEventsInOrder(t, client, "events", open, committed)
 	server.Close()
-	testwait.Span(t, 1500*time.Millisecond, relayReadsWhy)
 	if read = eventsTuplesRead(t, database) - read; read > logSize/10 {
 		t.Fatalf("the relay's first start read %d rows of events on a log of %d events while an event insert from before boot was open, want at most %d: it read the whole log, not above the persisted horizon", read, logSize, logSize/10)
 	}

@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,9 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 	// this row is about, and records no pass of its own -- so what the passes below do is the
 	// lease's doing alone and not the reconcile interval's.
 	taken, release := make(chan struct{}), make(chan struct{})
+	// Registered before any wait or check below, so a failure there still lets the holder go.
+	releaseHolder := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHolder)
 	held := make(chan bool, 1)
 	go func() {
 		held <- duty.Exclusive(ctx, leases, deliveryReconcileLease, time.Time{}, 0, func(context.Context) {
@@ -46,8 +50,8 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 		t.Fatalf("the skipped pass recorded last_reconcile_at=%v last_error=%v; want neither",
 			settings.LastReconcileAt, settings.LastError)
 	}
-	close(release)
-	if !<-held {
+	releaseHolder()
+	if !testwait.Receive(t, "the other caller's pass to return", held) {
 		t.Fatal("the other caller never held the lease, so the pass was free to reconcile")
 	}
 

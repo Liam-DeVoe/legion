@@ -336,7 +336,7 @@ func TestEventStreamRelaySubscribeRacingTheLastCancelReceivesTheNextEvent(t *tes
 			cancelFirst()
 		}()
 		subscription, cancelSecond, head := subscribeRelay(t, relay)
-		<-cancelled
+		testwait.Receive(t, "the first subscription's cancel to return", cancelled)
 		committed := seedEvents(t, database, issue, 1, 0)
 		receiveRelayedThrough(t, subscription, database, head, committed)
 		cancelSecond()
@@ -456,7 +456,9 @@ func TestEventStreamRelayCatchesUpWhenItsListenerReconnects(t *testing.T) {
 	// come; only the span does.
 	committed := seedEvents(t, database, issue, 1, 0)
 	testwait.Quiet(t, "the relay's subscription while it has no listening connection", subscription,
-		100*time.Millisecond, relayHoldWhy)
+		100*time.Millisecond, "the relay publishes from a goroutine of its own that only a notification wakes, and this "+
+			"commit's notification was sent while it had no connection, so no state says a read ran and found nothing; "+
+			"the socket and the database are real I/O (no synctest), and the redial that ends the span is the next action")
 	down.Store(false)
 	receiveRelayedThrough(t, subscription, database, opened, committed)
 

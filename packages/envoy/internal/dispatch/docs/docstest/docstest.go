@@ -308,7 +308,13 @@ func (p *Peer) Authenticate(t testing.TB, token string) (string, error) {
 		case reply = <-p.auth:
 			return true
 		case <-p.Ended:
-			ended = true
+			// The reader hands on every answer it read before it stops and Ended closes, so an
+			// answer the room sent before its close is taken here, not reported as the close.
+			select {
+			case reply = <-p.auth:
+			default:
+				ended = true
+			}
 			return true
 		default:
 			return false

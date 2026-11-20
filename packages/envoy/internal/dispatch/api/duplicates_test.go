@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -116,17 +117,24 @@ const (
 // The two bounds a case gives the near-copy gate. Production's (duplicateGateTimeout, 2 s on the
 // gate's context and as its read's own statement_timeout) is a bound a loaded machine misses, and
 // a case held to it would read an unchecked create as a verdict about the gate (INFRA-3149).
-const (
-	// gateBoundPastEveryRead is what every server a test builds runs the gate under
-	// (newRegisteredTestServer): a minute, past any read of a test project, so what a case reads
-	// is what its project holds. The replay sets a bound of its own, for its own reason
-	// (nearCopyGateBound).
-	gateBoundPastEveryRead = time.Minute
-	// spentGateBound is what a case gives the gate where its outcome is that no near-copy check
-	// was made: a bound already spent, which gateBounds ends before the read starts, so the
-	// create meets no check whatever the machine does.
-	spentGateBound = -time.Nanosecond
-)
+
+// spentGateBound is what a case gives the gate where its outcome is that no near-copy check was
+// made: a bound already spent, which gateBounds ends before the read starts, so the create meets
+// no check whatever the machine does.
+const spentGateBound = -time.Nanosecond
+
+// gateBoundPastEveryRead is what every server a test builds runs the gate under
+// (newRegisteredTestServer): what is left of the shared wait (testwait.Context) as the server is
+// built, so no read of a test project outlasts it before the test itself gives up, and what a
+// case reads is what its project holds. Under -timeout 0 the shared wait has no end, and the gate
+// is given the longest statement_timeout Postgres takes. The replay sets a bound of its own, for
+// its own reason (nearCopyGateBound).
+func gateBoundPastEveryRead(t testing.TB) time.Duration {
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		return time.Until(deadline)
+	}
+	return math.MaxInt32 * time.Millisecond
+}
 
 // The deployment's own near-copy bound is the documented one: duplicateGateTimeout is what a
 // create waits for its check, and the literal, not the constant, is the pin. It reads the server

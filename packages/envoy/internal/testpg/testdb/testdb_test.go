@@ -37,16 +37,15 @@ func connectTimeoutOf(t *testing.T, databaseURL string) int64 {
 
 // WithConnectDeadline gives a URL the seconds left until the binary's deadline, rounded up, in
 // place of the connect_timeout the URL named, and keeps the rest of the URL. Half a second past
-// a whole second is left, so a bound that rounds down lands below the time left.
+// a whole second is left, so a bound that rounds down lands below the time left. The time left is
+// counted from a moment the test names, so the reading is exact.
 func TestWithConnectDeadlineReplacesTheURLsConnectTimeoutWithTheSecondsLeftRoundedUp(t *testing.T) {
-	at := time.Now().Add(90*time.Second + 500*time.Millisecond)
-	before := time.Until(at)
-	got := WithConnectDeadline(deadlineTB{TB: t, at: at, bounded: true}, "postgres://tester@db.test:5432/app?connect_timeout=5&sslmode=disable")
-	after := time.Until(at)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	at := now.Add(90*time.Second + 500*time.Millisecond)
+	got := withConnectDeadlineAt(deadlineTB{TB: t, at: at, bounded: true}, "postgres://tester@db.test:5432/app?connect_timeout=5&sslmode=disable", now)
 
-	seconds := connectTimeoutOf(t, got)
-	if float64(seconds) < after.Seconds() || float64(seconds) >= before.Seconds()+1 {
-		t.Fatalf("connect_timeout = %d, want the %.3f to %.3f seconds left until the deadline, rounded up", seconds, after.Seconds(), before.Seconds())
+	if seconds := connectTimeoutOf(t, got); seconds != 91 {
+		t.Fatalf("connect_timeout = %d, want 91: the 90.5 seconds left until the deadline, rounded up", seconds)
 	}
 	parsed, err := url.Parse(got)
 	if err != nil {
@@ -82,19 +81,18 @@ func TestWithConnectDeadlineWithNoDeadlineIsTheLongestBoundPgxHolds(t *testing.T
 }
 
 // Server sets the bound on the URL its variable names, so every database, clone and pool a
-// fixture makes from that URL carries it; the variable's own connect_timeout does not survive.
+// fixture makes from that URL carries it; the variable's own connect_timeout does not survive. The
+// time left is counted from a moment the test names, so the reading is exact.
 func TestAServersURLCarriesTheBinarysDeadlineAsItsConnectBound(t *testing.T) {
 	const variable = "TESTDB_CONNECT_DEADLINE_SERVER"
 	t.Setenv(variable, "postgres://tester@db.test:5432/lane?connect_timeout=5&sslmode=disable")
-	at := time.Now().Add(10*time.Minute + 500*time.Millisecond)
-	before := time.Until(at)
-	server := Server(variable).url(deadlineTB{TB: t, at: at, bounded: true})
-	after := time.Until(at)
+	now := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
+	at := now.Add(10*time.Minute + 500*time.Millisecond)
+	server := Server(variable).urlAt(deadlineTB{TB: t, at: at, bounded: true}, now)
 
 	clone := databaseURL(server, "testdb_test_clone")
-	seconds := connectTimeoutOf(t, clone)
-	if float64(seconds) < after.Seconds() || float64(seconds) >= before.Seconds()+1 {
-		t.Fatalf("a clone's connect_timeout = %d, want the %.3f to %.3f seconds left until the deadline, rounded up", seconds, after.Seconds(), before.Seconds())
+	if seconds := connectTimeoutOf(t, clone); seconds != 601 {
+		t.Fatalf("a clone's connect_timeout = %d, want 601: the 600.5 seconds left until the deadline, rounded up", seconds)
 	}
 	if server.Query().Get("sslmode") != "disable" {
 		t.Fatalf("the server's URL = %s, want the variable's sslmode kept", server.String())

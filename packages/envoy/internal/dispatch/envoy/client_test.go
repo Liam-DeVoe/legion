@@ -374,7 +374,7 @@ func TestUnsubscribePostsSessionAndTopicsAndReturnsRemoved(t *testing.T) {
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode request body: %v", err)
+			t.Errorf("decode request body: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"removed":["notifications.dispatch.issue.T-1.>"]}`))
@@ -419,7 +419,7 @@ func TestRoleAndSendPreserveTheListenerDeliveryContract(t *testing.T) {
 			_, _ = w.Write([]byte(`{"role":"legion-planner","holder":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","capabilities":["aside","btw"],"last_seen":42}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
-				t.Fatalf("decode delivery: %v", err)
+				t.Errorf("decode delivery: %v", err)
 			}
 			_, _ = w.Write([]byte(`{"event_id":"envelope-1","recipient":"s1"}`))
 		default:

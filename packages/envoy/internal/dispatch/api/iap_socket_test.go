@@ -406,7 +406,7 @@ func TestOnlyAnExpiredCredentialRotatesASocket(t *testing.T) {
 				cause <- context.Cause(r.Context())
 			})
 			handler(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ws/live", nil))
-			if got := <-cause; !errors.Is(got, tc.want) {
+			if got := testwait.Receive(t, "the inner handler to report its request's cause", cause); !errors.Is(got, tc.want) {
 				t.Fatalf("the heartbeat's refusal %v cancelled the socket with %v, want %v", tc.err, got, tc.want)
 			}
 		})

@@ -44,7 +44,7 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 	}
 	close(start)
 	for range processes {
-		if err := <-errs; err != nil {
+		if err := testwait.Receive(t, "a process's migrate to return", errs); err != nil {
 			t.Errorf("a process migrating at the same moment failed: %v", err)
 		}
 	}

@@ -315,8 +315,10 @@ func TestADocumentsCommentListAnswersItsOwnNotModified(t *testing.T) {
 // A comment write held open blocks no other write on the same issue. This is what the triggers
 // are deferred for: an immediate trigger would take the issue's counter row where the write
 // happens and hold it until that transaction ended, so one long-running comment transaction would
-// serialise every comment write of its issue for its whole life. The second writer sets a lock
-// timeout, so an immediate trigger fails this test in seconds instead of hanging the suite.
+// serialise every comment write of its issue for its whole life. Each step of the second writer
+// is watched from the held transaction's connection (storetest.WaitForQueuedBehind), so an
+// immediate trigger fails this test as soon as the step queues behind the held write, on no
+// timeout of the test's, instead of hanging the suite.
 func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "HELDW", "A write held open", "A spec")
@@ -338,17 +340,26 @@ func TestACommentWriteHeldOpenBlocksNoOtherWriteOnTheSameIssue(t *testing.T) {
 		t.Fatalf("open the second writer's transaction: %v", err)
 	}
 	defer func() { _ = other.Rollback(ctx) }()
-	if _, err := other.Exec(ctx, `set local lock_timeout = '5s'`); err != nil {
-		t.Fatalf("set the second writer's lock timeout: %v", err)
+	pid := other.Conn().PgConn().PID()
+	withoutWaiting := func(step string, run func() error) {
+		t.Helper()
+		ran := make(chan error, 1)
+		go func() { ran <- run() }()
+		err, answered := storetest.WaitForQueuedBehind(t, holder, pid, ran)
+		if !answered {
+			t.Fatalf("the second write's %s on %s queued behind the held one", step, issue.Key)
+		}
+		if err != nil {
+			t.Fatalf("the second write's %s on %s: %v", step, issue.Key, err)
+		}
 	}
-	if _, err := other.Exec(ctx, `
-		insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'The write that must not wait.')
-	`, issue.Key); err != nil {
-		t.Fatalf("the second write on %s waited on the held one: %v", issue.Key, err)
-	}
-	if err := other.Commit(ctx); err != nil {
-		t.Fatalf("the second write on %s could not commit while the first was held open: %v", issue.Key, err)
-	}
+	withoutWaiting("insert", func() error {
+		_, err := other.Exec(ctx, `
+			insert into comments (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', 'The write that must not wait.')
+		`, issue.Key)
+		return err
+	})
+	withoutWaiting("commit", func() error { return other.Commit(ctx) })
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the held write: %v", err)
 	}

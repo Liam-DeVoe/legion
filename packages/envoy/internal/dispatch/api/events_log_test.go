@@ -133,6 +133,12 @@ func TestEventLogPagesByAfterWithoutGapOrRepeat(t *testing.T) {
 	for {
 		page, _ := readEventLogPage(t, handler, fmt.Sprintf("?after=%d&limit=2", after))
 		paged = append(paged, page...)
+		// The log holds no event past whole's, so pages that go on past it repeat what they read:
+		// a route that ignored after would answer the same page for ever.
+		if len(paged) > len(whole) {
+			t.Fatalf("paged %d events through after=%d, more than the %d one page holds: the pages repeat events",
+				len(paged), after, len(whole))
+		}
 		if len(page) < 2 {
 			break
 		}

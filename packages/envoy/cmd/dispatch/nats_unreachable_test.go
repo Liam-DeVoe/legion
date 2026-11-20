@@ -64,7 +64,7 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	})
 
 	process.waitHealthy(t)
-	if status, health := process.health(t); status != http.StatusOK || !health.OK || health.NATS == nil || *health.NATS {
+	if status, health := process.health(t, testwait.Context(t)); status != http.StatusOK || !health.OK || health.NATS == nil || *health.NATS {
 		t.Fatalf("/healthz while NATS is down = %d %+v, want 200 with ok true and nats false", status, health)
 	}
 	process.call(t, http.MethodGet, "/api/v1/projects", "", http.StatusOK)
@@ -82,9 +82,9 @@ func TestAProcessStartedWhileNATSIsDownServesAndConnectsLater(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
-	testwait.Eventually(t, "the stream the process owns", func() bool {
+	testwait.Until(t, "the stream the process owns", func() (error, bool) {
 		_, err := js.StreamInfo(bus.Stream)
-		return err == nil
+		return err, err == nil
 	})
 
 	key, _ := process.createIssue(t)
@@ -181,8 +181,9 @@ func reportedSilentNATSCut(t *testing.T) time.Duration {
 	// Cleanups run last-in first-out, so this thaw precedes the server's shutdown.
 	t.Cleanup(thaw)
 	cut := time.Now()
+	reading := testwait.Context(t)
 	reported := testwait.Until(t, "/healthz to report nats false inside a silent cut", func() (time.Duration, bool) {
-		status, health := process.health(t)
+		status, health := process.health(t, reading)
 		if status != http.StatusOK || !health.OK {
 			t.Fatalf("/healthz %s into a silent cut = %d %+v, want 200 with ok true", time.Since(cut), status, health)
 		}
@@ -205,11 +206,11 @@ type healthBody struct {
 	ServiceTokens *bool `json:"service_tokens"`
 }
 
-// health reads /healthz once, under the shared wait's own context so a probe that hangs fails
-// the test rather than hanging it.
-func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
+// health reads /healthz once, under ctx: the shared wait's (testwait.Context), so a probe that
+// hangs fails the test rather than hanging it. A wait that reads it on every attempt makes ctx
+// once, before the wait.
+func (p *dispatchProcess) health(t *testing.T, ctx context.Context) (int, healthBody) {
 	t.Helper()
-	ctx := testwait.Context(t)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)
@@ -226,12 +227,20 @@ func (p *dispatchProcess) health(t *testing.T) (int, healthBody) {
 	return response.StatusCode, health
 }
 
-// waitForHealth waits for /healthz to answer 200 with a body ready accepts.
+// healthRead is one read of /healthz, as waitForHealth's reading: the status and the body.
+type healthRead struct {
+	status int
+	body   healthBody
+}
+
+// waitForHealth waits for /healthz to answer 200 with a body ready accepts. Its failure prints the
+// last status and body read, and the process's output.
 func (p *dispatchProcess) waitForHealth(t *testing.T, what string, ready func(healthBody) bool) {
 	t.Helper()
-	testwait.Until(t, "/healthz to report "+what, func() (string, bool) {
-		status, health := p.health(t)
-		return fmt.Sprintf("%d %+v", status, health), status == http.StatusOK && ready(health)
+	reading := testwait.Context(t)
+	testwait.Until(t, "/healthz to report "+what, func() (withOutput[healthRead], bool) {
+		status, health := p.health(t, reading)
+		return readWith(healthRead{status, health}, p.Output), status == http.StatusOK && ready(health)
 	})
 }
 
@@ -365,20 +374,20 @@ func (p *dispatchProcess) logged(parts ...string) bool {
 // lines.
 func (p *dispatchProcess) waitForLog(t *testing.T, parts ...string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("a line holding %v", parts), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("a line holding %v", parts), func() (fmt.Stringer, bool) {
 		if p.logged(parts...) {
-			return "", true
+			return p.Output, true
 		}
 		select {
 		case <-p.Exited:
 			// Exited closes only once the output is whole, so this read is final.
 			if p.logged(parts...) {
-				return "", true
+				return p.Output, true
 			}
 			t.Fatalf("the process exited without a line holding %v:\n%s", parts, p.Output.String())
 		default:
 		}
-		return p.Output.String(), false
+		return p.Output, false
 	})
 }
 

@@ -187,6 +187,12 @@ type Deps struct {
 	// there. It is not Clock, so a test that moves the server's clock through its heartbeats or to
 	// a socket's age ends no read with it.
 	LiveSocketClock clock.Clock
+	// LiveSocketPingClock is what a GET /ws/live socket's heartbeat runs on: the ping, and the
+	// heartbeat frame beside it, its writer sends every StreamHeartbeat. Nil is clock.Real(), as a
+	// deployment leaves it; only a test that counts a socket's pings sets a fake, which it moves a
+	// heartbeat at a time. It is neither Clock nor LiveSocketClock, so a test that holds a socket's
+	// reads or moves the server's clock still has its sockets pinged on the wall clock.
+	LiveSocketPingClock clock.Clock
 	// ListenerRosterUncached is for end-to-end test processes only: every read of the listener's
 	// session list (route_status on an issue read, GET /api/v1/agents) asks the listener rather
 	// than reading the stored answer every process shares (the route_roster row), so a test that
@@ -432,8 +438,21 @@ type server struct {
 	// directly has none unless the test sets it (directServer sets context.Background()).
 	lifetime context.Context
 	// clock is Deps.Clock, clock.Real() where that is nil (register; directServer).
-	clock      clock.Clock
-	routeIndex []routeIndexEntry
+	clock clock.Clock
+	// stampClock is what the moments this process stamps itself, not the database, are read off
+	// (stampedNow): an ask's resolution, a priority's acts, and a commit's pull-request read and
+	// its settling (readThroughHead). nil, which every server the deployment builds leaves it, is
+	// clock.Real(). It is not clock, so a server whose timers a test holds or moves still stamps
+	// the wall clock; only a test that judges one of those stamps sets a fake here, and reads the
+	// moment it must carry off that fake.
+	stampClock clock.Clock
+	// recordClock is what the bound of a related check's records runs on (relatedRecordTimeout,
+	// recordRelatedChecks). nil, which every server the deployment builds leaves it, is
+	// clock.Real(). It is not clock, so a server on a fake that a test moves through a check's
+	// allowance still gives its records the wall clock's second; only a test that holds a record
+	// past its bound sets a fake here, and moves it to the bound the record armed.
+	recordClock clock.Clock
+	routeIndex  []routeIndexEntry
 	// readOnlyRefusal is the message every route the read list does not name answers a read-only
 	// token with (refuseReadOnlyToken): the read list as register found it, in words. register
 	// builds it once, before it wraps the first row, so the rows share one text rather than each
@@ -1810,6 +1829,12 @@ func (s *server) boundedByClock(ctx context.Context, d time.Duration, cause erro
 		timer.Stop()
 		end(context.Canceled)
 	}
+}
+
+// stampedNow is the moment the server stamps a write of its own with, read off stampClock, which
+// is clock.Real() where it is nil, as it is in every deployment.
+func (s *server) stampedNow() time.Time {
+	return cmp.Or[clock.Clock](s.stampClock, clock.Real()).Now()
 }
 
 // clockTicker is a time.Ticker on a clock.Clock, for a loop of this package whose ticks a test

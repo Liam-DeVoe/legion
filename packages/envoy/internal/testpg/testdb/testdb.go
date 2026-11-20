@@ -152,11 +152,18 @@ func setParameter(u *url.URL, key, value string) {
 // url.Parse wraps, since the URL carries a credential (DatabaseOn).
 func WithConnectDeadline(t testing.TB, databaseURL string) string {
 	t.Helper()
-	return WithParameter(t, databaseURL, "connect_timeout", connectTimeout(t))
+	return withConnectDeadlineAt(t, databaseURL, time.Now())
 }
 
-// connectTimeout is the connect_timeout WithConnectDeadline sets for t, in whole seconds.
-func connectTimeout(t testing.TB) string {
+// withConnectDeadlineAt is WithConnectDeadline with the time left counted from now, so a test of it
+// names the moment rather than reading the clock.
+func withConnectDeadlineAt(t testing.TB, databaseURL string, now time.Time) string {
+	t.Helper()
+	return WithParameter(t, databaseURL, "connect_timeout", connectTimeout(t, now))
+}
+
+// connectTimeout is the connect_timeout WithConnectDeadline sets for t at now, in whole seconds.
+func connectTimeout(t testing.TB, now time.Time) string {
 	unbounded := strconv.FormatInt(math.MaxInt64/int64(time.Second), 10)
 	named, ok := t.(interface{ Deadline() (time.Time, bool) })
 	if !ok {
@@ -166,7 +173,7 @@ func connectTimeout(t testing.TB) string {
 	if !bounded {
 		return unbounded
 	}
-	left := time.Until(deadline)
+	left := deadline.Sub(now)
 	return strconv.FormatInt(max(1, int64((left+time.Second-1)/time.Second)), 10)
 }
 

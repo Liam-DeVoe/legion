@@ -1,7 +1,4 @@
 // Package clock is the time Envoy's code reads and waits on.
-// packages/daemon/internal/clock and packages/envoy/internal/clock hold the same code, because Go's
-// internal rule keeps one module from importing the other's (packages/envoy/infra imports Envoy's
-// through its replace), so a change to one is made to the other.
 //
 // # One clock per module
 //

@@ -154,7 +154,22 @@ func publish(ctx context.Context, deps Deps, event model.Event, slug string, rou
 		default:
 			answer = dest.forward.send(ctx, deps, sender, routed, newKeptHandovers())
 		}
-		if err := <-answer; err != nil && !errors.Is(err, bus.ErrRefused) {
+		// publish has no t, and its callers run it on goroutines of their own too, so the wait for
+		// the answer is the shared wait's form for a helper (InHelper), whose give-up is an error
+		// of this publish.
+		var err error
+		if waitErr := testwait.InHelper("outbox test publish", fmt.Sprintf("the answer of %s %q", dest.label, dest.id), func() bool {
+			select {
+			case err = <-answer:
+				return true
+			default:
+				return false
+			}
+		}); waitErr != nil {
+			failures = append(failures, waitErr)
+			continue
+		}
+		if err != nil && !errors.Is(err, bus.ErrRefused) {
 			failures = append(failures, fmt.Errorf("%s %q: %w", dest.label, dest.id, err))
 		}
 	}

@@ -821,9 +821,15 @@ func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
 		}
 
 		flights.done()
-		// A plain receive: inside the bubble a wait takes no bound from t.Deadline, and a stop that
-		// never returns leaves every goroutine blocked, which synctest reports as a deadlock.
-		<-stopped
+		// The shared wait reads the binary's deadline, which a bubble's t refuses, so the bubble's
+		// own proof stands in for it: once synctest.Wait returns every other goroutine is blocked,
+		// so a stop that has not returned by then never will, and the failure names it.
+		synctest.Wait()
+		select {
+		case <-stopped:
+		default:
+			t.Fatal("stop did not return once the last flight ended")
+		}
 		if flights.begin() {
 			t.Fatal("a flight that began after stop was admitted; want it refused, so a goroutine starting late does nothing")
 		}
@@ -2310,7 +2316,7 @@ func TestAProcessHeldAtAnOlderHeadNeverProjectsItOverTheNewer(t *testing.T) {
 	}
 	branch.releaseHeld()
 
-	requireSettledAtTheNewerHead(t, database, <-held, commitTwo, infraComponents, []string{"architecture.synced " + commitTwo})
+	requireSettledAtTheNewerHead(t, database, testwait.Receive(t, "the held sync to return once its branch read was released", held), commitTwo, infraComponents, []string{"architecture.synced " + commitTwo})
 }
 
 // The unchanged-head shortcut on a process whose head lookup answered the recorded commit before
@@ -2332,7 +2338,7 @@ func TestAStaleUnchangedHeadNeverRecordsTheOlderCommit(t *testing.T) {
 	}
 	branch.releaseHeld()
 
-	requireSettledAtTheNewerHead(t, database, <-held, commitTwo, infraComponents,
+	requireSettledAtTheNewerHead(t, database, testwait.Receive(t, "the held sync to return once its branch read was released", held), commitTwo, infraComponents,
 		[]string{"architecture.synced " + commitOne, "architecture.synced " + commitTwo})
 }
 
@@ -2359,7 +2365,7 @@ func TestAFailureMetBeforeAnotherProcessesImportNeverMarksTheSourceFailed(t *tes
 	}
 	branch.releaseHeld()
 
-	requireSettledAtTheNewerHead(t, database, <-held, commitTwo, infraComponents,
+	requireSettledAtTheNewerHead(t, database, testwait.Receive(t, "the held sync to return once its branch read was released", held), commitTwo, infraComponents,
 		[]string{"architecture.synced " + commitOne, "architecture.synced " + commitTwo})
 }
 

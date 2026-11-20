@@ -226,6 +226,9 @@ type intakeProcess struct {
 	client *bus.Client
 	intake *Intake
 	leases *cuttableLeases
+	// cancel ends the process's intake run and returns at once, for a row that goes on while the
+	// stop drains; stop ends it and waits for the run to return, on the test's goroutine.
+	cancel func()
 	stop   func()
 	// release lets every fetch its GitHub holds answer.
 	release func()
@@ -395,9 +398,10 @@ func startIntakeProcessWith(t *testing.T, pool *store.Pool, natsURL string, bloc
 		defer close(done)
 		intake.Run(runCtx)
 	}()
+	process.cancel = cancel
 	process.stop = sync.OnceFunc(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
 	})
 	t.Cleanup(process.stop)
 	return process
@@ -482,7 +486,7 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	awaitAckPending(t, publisher, 1+queued)
 
 	stopped := time.Now()
-	go holder.stop()
+	holder.cancel()
 	// The stop hands the four queued messages back as it stops the keyed runner, and only then
 	// waits for the handler holding the fifth. Released before that, the handler would return
 	// while the runner still ran, and the runner would hand it the next queued message of the
@@ -693,7 +697,7 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// the server is held at the relay, so its stop drains for as long as the row holds it.
 	holder.leases.cut.Store(true)
 	relay.Hold()
-	go holder.stop()
+	holder.cancel()
 	waitFor(t, holder.heldListReleased, func() string {
 		return "the holder's stop never released its held list: " + consumerState(publisher)
 	})

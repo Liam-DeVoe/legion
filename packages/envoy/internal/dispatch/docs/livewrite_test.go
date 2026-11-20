@@ -46,7 +46,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		default:
 			close(resume)
 		}
-		<-settled
+		testwait.Receive(t, "settleRoom to return once it was resumed", settled)
 	})
 	testwait.Receive(t, "the settlement to reach its warm hook", paused)
 

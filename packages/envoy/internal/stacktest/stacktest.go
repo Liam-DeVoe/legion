@@ -19,6 +19,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // maxStackEnv carries the cap, in bytes, to the child process the parent runs, which caps its
@@ -37,8 +39,11 @@ const childMargin = time.Second
 // The child runs under what is left of the parent's deadline less childMargin (-test.timeout), so
 // a wait in the body gives up by name (testwait) before the parent's own alarm and the parent has
 // time left to print why; with less than that left, the child gets a millisecond and fails at once
-// rather than run with no deadline. Under no deadline the child has none either. In the child,
-// where the cap is set, it runs body under that cap.
+// rather than run with no deadline. Under no deadline the child has none either. -test.timeout
+// watches only the child's tests, so the parent runs the child on the shared wait's context
+// (testwait.Context): a child still running once the parent's deadline less testwait's margin has
+// passed, one held in its TestMain after its tests among them, is killed, and the parent fails
+// with its output. In the child, where the cap is set, it runs body under that cap.
 func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 	t.Helper()
 	if value := os.Getenv(maxStackEnv); value != "" {
@@ -54,7 +59,7 @@ func Under(t *testing.T, maxStackBytes int, body func(t *testing.T)) {
 	if deadline, ok := t.Deadline(); ok {
 		args = append(args, "-test.timeout="+max(time.Until(deadline)-childMargin, time.Millisecond).String())
 	}
-	child := exec.Command(os.Args[0], args...)
+	child := exec.CommandContext(testwait.Context(t), os.Args[0], args...)
 	child.Env = append(os.Environ(), maxStackEnv+"="+strconv.Itoa(maxStackBytes))
 	output, err := child.CombinedOutput()
 	if err == nil && hasVerdict(string(output), "SKIP", t.Name()) {

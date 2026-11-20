@@ -613,12 +613,12 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 	// with the newest release before it, which only moves forward, and dispatch-two-builds-same
 	// pairs it with its own build. So the comparison holds every field of the actor, the flag too.
 	carried := testwait.Until(t, fmt.Sprintf("the answer on the %s to the decision block of a version the %s wrote and %s approved (version %d) to carry the approval to the next version",
-		reader.name, writer.name, dispatchTestLogin, approval.Version), func() ([]servedReview, bool) {
+		reader.name, writer.name, dispatchTestLogin, approval.Version), func() (withOutput[[]servedReview], bool) {
 		var reviews []servedReview
 		getJSON(t, writer.process, "/api/v1/artifacts/"+artifactID+"/reviews", &reviews)
-		return reviews, len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
+		return readWith(reviews, reader.process.Output), len(reviews) > 1 && reviews[0].State == "approved" && reviews[0].Version > approval.Version &&
 			reviews[0].Actor == (model.Actor{Kind: "user", ID: dispatchTestLogin, Proven: true})
-	})
+	}).read
 	t.Logf("the %s carried the approval of version %d to version %d", reader.name, approval.Version, carried[0].Version)
 }
 
@@ -627,21 +627,32 @@ func requireApprovalCarriedAcrossBuilds(t *testing.T, writer, reader documentSid
 func waitForBlockAsk(t *testing.T, p *dispatchProcess, issueKey, blockID string) string {
 	t.Helper()
 	var id string
-	testwait.Until(t, fmt.Sprintf("an ask to be indexed from the block %s of %s", blockID, issueKey), func() (string, bool) {
-		var asks []struct {
-			ID      string  `json:"id"`
-			BlockID *string `json:"block_id"`
-		}
+	testwait.Until(t, fmt.Sprintf("an ask to be indexed from the block %s of %s", blockID, issueKey), func() ([]blockAsk, bool) {
+		var asks []blockAsk
 		getJSON(t, p, "/api/v1/issues/"+issueKey+"/asks?state=all", &asks)
 		for _, ask := range asks {
 			if ask.BlockID != nil && *ask.BlockID == blockID {
 				id = ask.ID
-				return id, true
+				return asks, true
 			}
 		}
-		return fmt.Sprintf("%d asks, none from the block", len(asks)), false
+		return asks, false
 	})
 	return id
+}
+
+// blockAsk is an ask as an issue's asks list it: its id, and the decision block it was indexed
+// from, nil for an ask no block made.
+type blockAsk struct {
+	ID      string  `json:"id"`
+	BlockID *string `json:"block_id"`
+}
+
+func (a blockAsk) String() string {
+	if a.BlockID == nil {
+		return a.ID + " from no block"
+	}
+	return a.ID + " from block " + *a.BlockID
 }
 
 // referencesMarkdown is a body holding every reference form of a build's text/testdata that stands

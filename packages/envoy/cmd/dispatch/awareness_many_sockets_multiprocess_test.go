@@ -23,8 +23,24 @@ import (
 // the ones it was relayed, refuses her client id, so the reader carol sees on A is seen by nobody
 // on B. The room's bound is derived from those two caps instead
 // (MaxAwarenessClientsPerRoomForTest), and the entries the rooms track stay under it. The second
-// is held only in benchtime's timing lane (withinLive).
+// is held only by the row's twin in benchtime's timing lane (withinLive).
 func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T) {
+	aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t, everyRun)
+}
+
+// TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcessOnTheClock is the row
+// above in benchtime's timing lane, where alice's cursor reaching carol on A and bob on B is held
+// to liveWithin of its announce (withinLive). The product's promise is README.md's Cursors and
+// presence (a room "stands above every client real readers can put in a room and refuses none of
+// them, here or on another process", and its readers' changes are relayed once per 50 ms at
+// most), at the spec's "at once", the one second the plan pins (#2414).
+func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
+	timedRow(t, aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess)
+}
+
+// aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess is the scene of the two
+// rows above; lane says whether its readings of the clock are held to their figures (clockLane).
+func aReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "MNY")
 	pair.a.createProject(t, project, "Many sockets")
@@ -80,12 +96,12 @@ func TestAReaderJoiningWhileManySocketsFillTheirBoundsIsSeenOnTheOtherProcess(t 
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice: %v", err)
 	}
-	withinLive(t, announced, "alice's cursor reaching carol on A")
+	withinLive(t, lane, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A while %d sockets there each kept their %d awareness clients alive, was seen by carol on A but not by bob on B (bob holds %d clients): A's room bound is below what the sockets it admits may hold, so it refuses her client id and never relays it",
 			sockets, perSocket, len(bob.AwarenessStates()))
 	}
-	withinLive(t, announced, "alice's cursor reaching bob on B")
+	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
 
 	for _, process := range []*dispatchProcess{pair.a, pair.b} {
 		held := process.roomCounters(t, artifactID).AwarenessClients

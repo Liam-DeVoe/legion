@@ -700,7 +700,7 @@ func (c *comparisonReader) readThroughHead(ctx context.Context, result model.Che
 	if c.headStoredAt(ctx, *repo, result.CommitSHA) {
 		return false
 	}
-	now := time.Now()
+	now := c.server.stampedNow()
 	if !c.server.commitPulls.Claim(*repo, result.CommitSHA, now) {
 		return false
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rebuildUpdateItems is the number of paragraphs each update of oversizedHistory adds; eleven of
@@ -646,7 +647,7 @@ func TestTwoRebuildsOnTwoProcessesAtOnceReplaceTheHistoryOnce(t *testing.T) {
 	var succeeded int
 	var refusals []error
 	for range 2 {
-		if err := <-results; err == nil {
+		if err := testwait.Receive(t, "a rebuild to return once the issue's owner lock was let go", results); err == nil {
 			succeeded++
 		} else {
 			refusals = append(refusals, err)

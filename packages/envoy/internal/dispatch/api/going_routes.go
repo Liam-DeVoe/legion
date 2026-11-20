@@ -314,10 +314,12 @@ func (s *server) streamGoingAnswer(w http.ResponseWriter, r *http.Request) {
 	// now, so a run already past its ends_at has the time this reader needs to end it; the
 	// caller's own going away ends it sooner.
 	until := request.EndsAt.Add(goingStreamGrace)
-	if soonest := time.Now().Add(goingStreamGrace); until.Before(soonest) {
+	// The grace from now and the deadline are read and armed on the server's clock (Deps.Clock,
+	// the real one in a deployment), so a test that moves a fake clock moves the stream's end.
+	if soonest := s.clock.Now().Add(goingStreamGrace); until.Before(soonest) {
 		until = soonest
 	}
-	ctx, done := context.WithDeadline(r.Context(), until)
+	ctx, done := s.clock.WithDeadline(r.Context(), until)
 	defer done()
 	for {
 		frames, state, err := s.readGoingStream(ctx, id, after)

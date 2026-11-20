@@ -295,7 +295,9 @@ func appendThroughAPI(t *testing.T, service *Service, id string) {
 }
 
 // openInEditor opens each document as a browser does, waits for its room to be live, and leaves.
-// Eight sockets open at once; the test's goroutine waits for each room and leaves it.
+// Eight sockets open at once; the test's goroutine waits for each room and leaves it. A wait that
+// gives up ends the test's goroutine, and stop, closed as it ends, lets the workers close the
+// sockets they hold and go, rather than block on live for the rest of the binary.
 func openInEditor(t *testing.T, service *Service, serverURL string, ids []string) {
 	t.Helper()
 	type opened struct {
@@ -305,6 +307,8 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 	work := make(chan string)
 	live := make(chan opened)
 	failures := make(chan error, len(ids))
+	stop := make(chan struct{})
+	defer close(stop)
 	var workers sync.WaitGroup
 	for range 8 {
 		workers.Add(1)
@@ -316,17 +320,28 @@ func openInEditor(t *testing.T, service *Service, serverURL string, ids []string
 					failures <- fmt.Errorf("open document %s: %w", id, err)
 					continue
 				}
-				live <- opened{id: id, connection: connection}
+				select {
+				case live <- opened{id: id, connection: connection}:
+				case <-stop:
+					_ = connection.Close()
+					return
+				}
 			}
 		}()
 	}
 	go func() {
+		defer func() {
+			close(work)
+			workers.Wait()
+			close(live)
+		}()
 		for _, id := range ids {
-			work <- id
+			select {
+			case work <- id:
+			case <-stop:
+				return
+			}
 		}
-		close(work)
-		workers.Wait()
-		close(live)
 	}()
 	for open := range live {
 		waitFor(t, "document "+open.id+"'s room to go live", func() bool { return service.srv.GetDoc(open.id) != nil })

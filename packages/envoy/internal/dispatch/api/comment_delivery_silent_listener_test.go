@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -100,15 +101,15 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	}()
-	testwait.Eventually(t, "the outbox to publish every event of "+issueKey, func() bool {
+	testwait.Until(t, "the outbox to publish every event of "+issueKey, func() (string, bool) {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
 			`select count(*) from events where issue_key = $1 and published_at is null`, issueKey).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events of %s: %v", issueKey, err)
 		}
-		return unpublished == 0
+		return fmt.Sprintf("%d events unpublished", unpublished), unpublished == 0
 	})
 	rows, err := deps.Store.Pool.Query(context.Background(), `
 		select published_destinations from events
@@ -303,7 +304,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	}()
 	testwait.Eventually(t, "the outbox to publish the comment.created of "+claimed.ID, func() bool {
 		var published bool
@@ -333,7 +334,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	}
 
 	copies := 0
-	testwait.Eventually(t, "the outbox to publish every event of "+issue.Key+" and settle every held copy", func() bool {
+	testwait.Until(t, "the outbox to publish every event of "+issue.Key+" and settle every held copy", func() (string, bool) {
 		var unpublished, unsettled int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
@@ -341,7 +342,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		`, issue.Key, claimed.ID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		return unpublished == 0 && unsettled == 0
+		return fmt.Sprintf("%d events unpublished, %d held copies unsettled", unpublished, unsettled), unpublished == 0 && unsettled == 0
 	})
 	if err := database.Pool.QueryRow(context.Background(), `
 		select (select count(*) from events

@@ -3,6 +3,7 @@ package duty_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -94,7 +95,7 @@ func TestExclusiveRefusesASecondCallerWhileTheFirstIsInsideItsPass(t *testing.T)
 			<-finish
 		})
 	}()
-	<-inside
+	testwait.Receive(t, "the first caller to take the compaction lease and run its pass", inside)
 
 	secondRan := false
 	if duty.Exclusive(ctx, leases, "compaction", time.Time{}, 0, func(context.Context) { secondRan = true }) {
@@ -263,6 +264,17 @@ func TestExclusiveLeavesThePeriodUnservedWhenShutdownCutsThePassShort(t *testing
 	}
 }
 
+// gateAnswer is what a gate run on a goroutine of its own answered, and the default logger's
+// output beside it, which a wait's failure prints with it: what the gate logged on its way out.
+type gateAnswer struct {
+	ran  bool
+	logs *bytes.Buffer
+}
+
+func (a gateAnswer) String() string {
+	return fmt.Sprintf("ran %t; the default logger's output:\n%s", a.ran, a.logs)
+}
+
 // A shutdown can arrive while the gate reads the loop's last pass on the lease's own connection.
 // That read must not end the connection, or the unlock after it runs on a closed connection. The
 // read keeps waiting after the cancel, and once it answers the stopped gate starts no pass, gives
@@ -292,9 +304,10 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 	stopping, stop := context.WithCancel(ctx)
 	defer stop()
 	passRan := false
-	answered := make(chan bool, 1)
+	answered := make(chan gateAnswer, 1)
 	go func() {
-		answered <- duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
+		ran := duty.Exclusive(stopping, leases, name, time.Now(), time.Hour, func(context.Context) { passRan = true })
+		answered <- gateAnswer{ran: ran, logs: &logs}
 	}()
 	storetest.WaitForLockWaiters(t, holder, 1)
 	stop()
@@ -309,7 +322,7 @@ func TestExclusiveFreesTheLeaseWhenShutdownInterruptsThePeriodRead(t *testing.T)
 		t.Fatalf("release duty_passes: %v", err)
 	}
 
-	if ran := testwait.Receive(t, "the gate stopped while it read its period to return", answered); ran {
+	if answer := testwait.Receive(t, "the gate stopped while it read its period to return", answered); answer.ran {
 		t.Error("a gate stopped while it read its period reported a pass that ran")
 	}
 	if passRan {
@@ -637,18 +650,19 @@ func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
 	const name = "ci-reconcile"
 	database := storetest.Open(t)
 	elsewhere := storetest.Open(t)
+	elsewhereLeases := leasesOf(t, elsewhere)
 	taken, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		duty.Exclusive(t.Context(), leasesOf(t, elsewhere), name, time.Time{}, 0, func(context.Context) {
+		duty.Exclusive(t.Context(), elsewhereLeases, name, time.Time{}, 0, func(context.Context) {
 			close(taken)
 			<-release
 		})
 	}()
-	<-taken
+	testwait.Receive(t, "the other database's caller to take the lease and run its pass", taken)
 	defer func() {
 		close(release)
-		<-done
+		testwait.Receive(t, "the other database's lease call to return once its pass was let go", done)
 	}()
 
 	if held, err := duty.LeaseHeld(t.Context(), elsewhere.Pool, name); err != nil || !held {

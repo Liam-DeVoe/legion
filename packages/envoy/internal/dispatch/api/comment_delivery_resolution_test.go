@@ -61,7 +61,9 @@ func roleMentionListener(t *testing.T, registry *roleMentionRegistry) *httptest.
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode role mention send: %v", err)
+				t.Errorf("decode role mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			registry.sent = append(registry.sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -331,7 +333,9 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 				Payload string `json:"payload"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode mention mode send: %v", err)
+				t.Errorf("decode mention mode send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var frame struct {
 				Delivery struct {
@@ -339,7 +343,9 @@ func TestPendingMentionRetryKeepsItsOriginalDeliveryMode(t *testing.T) {
 				} `json:"delivery"`
 			}
 			if err := json.Unmarshal([]byte(request.Payload), &frame); err != nil {
-				t.Fatalf("decode mention mode frame: %v", err)
+				t.Errorf("decode mention mode frame: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sentModes = append(sentModes, frame.Delivery.Mode)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -478,7 +484,7 @@ func TestInitialCommentDeliveryRechecksCapabilityAgainstCurrentRegistration(t *t
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: the comment's lookup is answered as the listener answers it,
+	// A clock whose timers never fire: the comment's lookup is answered as the listener answers it,
 	// steer advertised, and is never left unanswered by its bound (mentionLookupTimeout), after
 	// which the send's own read would be the first to see steer and the gap this row reads would
 	// not exist.
@@ -522,7 +528,7 @@ func TestPendingUnresolvedMentionRetryKeepsTheOriginalError(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
 	// answers it, no holder, and is never left unanswered by its bound (mentionLookupTimeout),
 	// which would leave the attempt with no error to keep and its send looking the role up again.
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())

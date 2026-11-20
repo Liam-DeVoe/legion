@@ -35,16 +35,6 @@ import (
 // replicasTestClientID is the GitHub App the tests' webhook sweeper signs as.
 const replicasTestClientID = "Iv1.replicas"
 
-// reconcileWait bounds the wait of the start helpers for a start's first outcome: the stream's
-// background reconcile, or the first failed run of the reconnect hooks.
-const reconcileWait = 30 * time.Second
-
-// repairedReconcileWait bounds the wait for the reconcile after a test has repaired what the
-// first run failed on. reconcileWait alone is not enough: the bus retries the hooks with a
-// backoff that reaches 30 s (maxBackoff, internal/bus/recovery.go:309), so a repair that lands
-// just after a failed attempt waits that backoff out before the next attempt runs.
-const repairedReconcileWait = reconcileWait + 30*time.Second
-
 // dispatchStart is one Dispatch publisher start under test: the settings it resolved, the
 // client, the buffer that holds the client's log lines, and the overrides a failure names.
 type dispatchStart struct {
@@ -81,7 +71,7 @@ func connectDispatchStream(t *testing.T, urls []string, overrides map[string]str
 	return dispatchStart{boot: boot, client: client, logged: logged, overrides: overrides}
 }
 
-// awaitReconciled waits, at the latest for within, until the stream holds what the start's
+// awaitReconciled waits through the shared wait until the stream holds what the start's
 // settings ask of it (reconciledFor), and fails the test when it does not. The wait is for this
 // client's own reconcile, not for a stream that already looks reconciled: it ends only once the
 // client's hooks have covered a connection event (bus.Client.HookedConnectionEvents). An earlier
@@ -111,9 +101,10 @@ func (s dispatchStart) awaitReconciled(t *testing.T) {
 // awaitHookFailure is the first failed run of the start's reconnect hooks that the Dispatch
 // publisher logs (reconcileFailure), for a start whose settings the servers refuse. It leaves the
 // client open and the caller decides what follows: a caller that wants no further reconcile closes
-// the client, a caller that repairs what the start failed on waits the repaired reconcile out
-// (awaitReconciled, repairedReconcileWait). It fails the test when the start's hooks run through
-// instead, and when the publisher logs no such failure within reconcileWait.
+// the client, a caller that repairs what the start failed on waits for the reconcile the bus runs
+// after its backoff (awaitReconciled). It fails the test when the start's hooks run through
+// instead; a publisher that never logs such a failure fails at the shared wait's end, naming the
+// hooked events it last read.
 func (s dispatchStart) awaitHookFailure(t *testing.T) hookFailure {
 	t.Helper()
 	var failure hookFailure
@@ -130,8 +121,8 @@ func (s dispatchStart) awaitHookFailure(t *testing.T) hookFailure {
 }
 
 // startDispatchStream is the Dispatch server's publisher connect for the settings overrides names,
-// built exactly as main builds it, with extra over it (connectDispatchStream), waited out for
-// reconcileWait until this client's own first connection has reconciled the stream to what the
+// built exactly as main builds it, with extra over it (connectDispatchStream), waited for through
+// the shared wait until this client's own first connection has reconciled the stream to what the
 // settings ask of it (dispatchStart.awaitReconciled). It sets the default logger
 // (connectDispatchStream), so a test that calls it must not run in parallel.
 func startDispatchStream(t *testing.T, urls []string, overrides map[string]string, extra ...bus.ConnectOption) *bus.Client {

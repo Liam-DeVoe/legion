@@ -258,9 +258,9 @@ func TestDirectMessageToAStoppedSessionIsQueued(t *testing.T) {
 // settles it behind the answer.
 func TestMentionOfAStoppedSessionIsQueuedOnOneSend(t *testing.T) {
 	listener := stoppedAndLive(t)
-	// A clock that stands still: the comment's lookup of s1 is answered as the listener answers
-	// it and is never left unanswered by its bound (mentionLookupTimeout), so the comment answers
-	// its attempt pinned to s1, which this row reads.
+	// A clock whose timers never fire: the comment's lookup of s1 is answered as the listener
+	// answers it and is never left unanswered by its bound (mentionLookupTimeout), so the comment
+	// answers its attempt pinned to s1, which this row reads.
 	handler, database := newTargetedMessageHandlerOn(t, listener.url, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "QUE", "A mention of a stopped session", "before")
 

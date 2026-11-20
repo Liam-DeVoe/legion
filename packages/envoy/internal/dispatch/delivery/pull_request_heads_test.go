@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // seedHeadIssue records one issue the attribution can name, in the project that owns
@@ -1853,12 +1854,12 @@ func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
 	go func() {
 		refused <- branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, unaskedCommit, asked)
 	}()
-	<-arrived
+	testwait.Receive(t, "the refused read's compare to reach GitHub", arrived)
 	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, landedCommit, asked.Add(time.Second)); answer != BranchCarries {
 		t.Fatalf("a commit the branch carries, read while the refusal is in flight = %v, want %v", answer, BranchCarries)
 	}
 	close(release)
-	if answer := <-refused; answer != BranchUnseen {
+	if answer := testwait.Receive(t, "the refused read's CommitOnBranch to answer once its compare was released", refused); answer != BranchUnseen {
 		t.Fatalf("the read GitHub refused = %v, want %v", answer, BranchUnseen)
 	}
 

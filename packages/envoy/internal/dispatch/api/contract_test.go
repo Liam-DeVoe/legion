@@ -1031,13 +1031,21 @@ func (rig *contractRig) dismissThroughDispatch(t *testing.T, recordID, login str
 func TestContractExpiredSecretRequestStaysInTheInboxUntilDismissed(t *testing.T) {
 	rig := newContractRig(t)
 	late := rig.createPendingAgentSecretRecord(t, "needed before its deadline", "DEEL_API_KEY")
+	// The broker stamps a request's deadline PendingTTL after the moment it records it, on this
+	// process's clock (requests.Machine), so the live deadline is bracketed by that clock's two
+	// readings around its create, widened only by the microsecond the database stores it to.
+	createdFrom := time.Now()
 	live := rig.createPendingAgentSecretRecord(t, "needed now", "DEEL_API_KEY")
+	createdBy := time.Now()
+	ttl := rig.requestMachine.PendingTTL
 	deadline := rig.overdue(t, late.RequestID)
 	both := []string{live.RecordID + "=pending", late.RecordID + "=expired"}
 
 	rows := rig.inboxFor(t, contractApprover, both...)
-	if !rows[0].ExpiresAt.After(time.Now()) || rows[0].ApproveURL != rig.BrokerURL+"/approve/"+live.RecordID {
-		t.Fatalf("the live row = %+v, want a deadline still ahead and its page on the broker", rows[0])
+	if due := rows[0].ExpiresAt; due.Before(createdFrom.Add(ttl).Truncate(time.Microsecond)) || due.After(createdBy.Add(ttl).Add(time.Microsecond)) ||
+		rows[0].ApproveURL != rig.BrokerURL+"/approve/"+live.RecordID {
+		t.Fatalf("the live row = %+v, want the deadline PendingTTL (%s) after its create, between %s and %s, and its page on the broker",
+			rows[0], ttl, createdFrom.Add(ttl), createdBy.Add(ttl))
 	}
 	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != "agent_secret" || !slices.Equal(rows[1].Identifiers, []string{"DEEL_API_KEY"}) {
 		t.Fatalf("the overdue row = %+v, want the DEEL_API_KEY request with its deadline %s", rows[1], deadline)
@@ -1086,12 +1094,19 @@ func TestContractExpiredMachineLoginStaysInTheInboxUntilDismissed(t *testing.T) 
 	if err != nil {
 		t.Fatalf("record.Sign: %v", err)
 	}
+	// The broker stamps a machine login's deadline PendingTTL after the moment it records it, on
+	// this process's clock and truncated to the second (machine.Service), so the live deadline is
+	// bracketed by that clock's two readings around its start.
+	startedFrom := time.Now()
 	_, live := rig.startMachineLogin(t, machineKey, compact, contractApprover)
+	startedBy := time.Now()
+	ttl := rig.machineLogins.PendingTTL
 	both := []string{live + "=pending", expired + "=expired"}
 
 	rows := rig.inboxFor(t, contractApprover, both...)
-	if !rows[0].ExpiresAt.After(time.Now()) {
-		t.Fatalf("the live row = %+v, want a deadline still ahead", rows[0])
+	if due := rows[0].ExpiresAt; due.Before(startedFrom.Add(ttl).Truncate(time.Second)) || due.After(startedBy.Add(ttl)) {
+		t.Fatalf("the live row = %+v, want the deadline PendingTTL (%s) after its start, between %s and %s",
+			rows[0], ttl, startedFrom.Add(ttl).Truncate(time.Second), startedBy.Add(ttl))
 	}
 	if !rows[1].ExpiresAt.Equal(deadline) || rows[1].Kind != record.KindLauncherCredential ||
 		!slices.Equal(rows[1].Identifiers, []string{"contract-expired-host"}) || rows[1].ApproveURL != "" {

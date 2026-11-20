@@ -383,12 +383,13 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	}()
 	defer func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "RunWoken to return once its context ended", done)
 	}()
 
 	// The boot attempt runs at once; refused, the loop arms its retry, so once a retry is armed
-	// the attempt has ended, and a pass it ran would be in ran already.
-	gaps.AwaitArmed(t, "the retry the loop arms after its refused boot attempt", 1)
+	// the attempt has ended, and a pass it ran would be in ran already. How far out the retry is
+	// armed is TestARefusedLeaseIsRetriedUntilAPassOfItsOwnRuns's to judge; this row moves to it.
+	retry := gaps.AwaitArmed(t, "the retry the loop arms after its refused boot attempt", 1)
 	select {
 	case <-ran:
 		t.Fatal("the pass ran while another session held its lease")
@@ -398,6 +399,6 @@ func TestRunWokenRetriesALeaseHeldElsewhereUntilThePassRuns(t *testing.T) {
 	if err := holder.QueryRow(ctx, duty.FreeLease, duty.LeaseNamespace, name).Scan(&freed); err != nil || !freed {
 		t.Fatalf("let the lease go: %v (%t)", err, freed)
 	}
-	gaps.Advance(minGap + minGap/10)
+	gaps.Set(retry[0])
 	testwait.Receive(t, "the pass to run on the retry once the lease was let go", ran)
 }

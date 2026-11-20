@@ -517,7 +517,7 @@ func TestListIssuesIncludesEventUpdatedIssuesSinceWatermark(t *testing.T) {
 
 	updatedByEvent := createIssue("Updated by message")
 	atWatermark := createIssue("At watermark")
-	watermark := time.Now().UTC().Truncate(time.Microsecond).Add(-time.Minute)
+	watermark := databaseNow(t, database.Pool).UTC().Truncate(time.Microsecond).Add(-time.Minute)
 	for key, updatedAt := range map[string]time.Time{
 		updatedByEvent.Key: watermark.Add(-time.Minute),
 		atWatermark.Key:    watermark,

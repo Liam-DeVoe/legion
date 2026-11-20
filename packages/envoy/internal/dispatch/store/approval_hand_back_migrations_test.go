@@ -213,7 +213,7 @@ func TestMigrate0066GivesUpBeforeACommentWriteThatWritesAsksDeadlocks(t *testing
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the comment write: %v", err)
 	}
-	if err := <-migrated; err != nil {
+	if err := testwait.Receive(t, "migrate to apply 0066 once the comment write committed", migrated); err != nil {
 		t.Fatalf("the runner should have applied 0066 on a later attempt once the comment write ended, got: %v", err)
 	}
 	if out := logs.String(); !strings.Contains(out, "the runner tries it again") || !strings.Contains(out, "migration=0066_asks_handed_back_reply_fkey.up.sql") || !strings.Contains(out, "attempt=1") {

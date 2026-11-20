@@ -1301,7 +1301,7 @@ func closeSource(t testing.TB, ctx context.Context, service *Service, original, 
 			return fmt.Errorf("queue the source's answer: %w", err)
 		}
 		source.State, source.Answer = "answered", answer
-	} else if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice); err != nil {
+	} else if source, err = WriteAskResolution(closing, tx, source, "resolved", "Waived.", alice, time.Now()); err != nil {
 		return fmt.Errorf("resolve the source ask: %w", err)
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
@@ -1353,7 +1353,7 @@ func closeSource(t testing.TB, ctx context.Context, service *Service, original, 
 		between()
 	}
 	openErr := openGate()
-	commitErr := <-committed
+	commitErr := testwait.Receive(t, "ledger.Commit to return once the gate opened", committed)
 	switch {
 	case reachErr != nil:
 		return reachErr

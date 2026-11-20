@@ -83,7 +83,7 @@ func runTaskProgress(t *testing.T, service *Service) <-chan struct{} {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "RunTaskProgressReconciliation to return once its context ended", done)
 	})
 	return done
 }

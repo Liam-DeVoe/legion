@@ -738,13 +738,15 @@ func TestCensusRefusesALockHolderWhoseAgeItCannotSee(t *testing.T) {
 	store, base := migratedToOne(t)
 	suffix := randomDatabaseSuffix(t)
 	censusRole, otherRole := "census_"+suffix, "other_"+suffix
+	// Taken before the roles exist, so the database it names outlives their cleanups.
+	adminURL := testdb.DispatchServer.AdminURL(t)
 	for _, role := range []string{censusRole, otherRole} {
 		if _, err := store.Pool.Exec(ctx, "create role "+role+" login password 'census-test'"); err != nil {
 			t.Fatal(err)
 		}
 		// The role spans the cluster: its cleanup drops the test database first, which takes
 		// the role's grants there with it, and then the role (dropRoleAfterTestDatabase).
-		t.Cleanup(func() { dropRoleAfterTestDatabase(t, store, role) })
+		t.Cleanup(func() { dropRoleAfterTestDatabase(t, store, role, adminURL) })
 		// `drop owned by` needs the privileges of the role, which a login that is no superuser
 		// does not have of a role it creates (Postgres 16 and later give such a creator ADMIN
 		// alone): it grants the role to itself with INHERIT, so the cleanup can drop the role's

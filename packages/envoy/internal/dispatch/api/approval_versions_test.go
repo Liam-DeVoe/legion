@@ -949,7 +949,7 @@ func eventDeliveries(t *testing.T, database *store.Store, eventType, id string) 
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	}()
 	const about = `from events where type = $1 and payload->>'id' = $2`
 	type publishing struct{ unpublished, total int }

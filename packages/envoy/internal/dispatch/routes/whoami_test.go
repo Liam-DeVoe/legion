@@ -75,21 +75,54 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 // askWhoami answers GET /auth/whoami as alice@d.example, failing the test unless it answers 200.
 func askWhoami(t *testing.T, handler http.Handler) whoamiAnswer {
 	t.Helper()
+	answer, err := whoami(handler)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return answer
+}
+
+// whoami answers GET /auth/whoami as alice@d.example, and an error unless it answers alice's 200.
+// It makes no failure call of its own, so it may run off the test goroutine (awaitWhoami).
+func whoami(handler http.Handler) (whoamiAnswer, error) {
 	request := httptest.NewRequest(http.MethodGet, "http://dispatch.test/auth/whoami", nil)
 	request.Header.Set("X-Dispatch-User", "alice@d.example")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
-		t.Fatalf("whoami: status=%d body=%s", response.Code, response.Body.String())
+		return whoamiAnswer{}, fmt.Errorf("whoami: status=%d body=%s", response.Code, response.Body.String())
 	}
 	var answer whoamiAnswer
 	if err := json.Unmarshal(response.Body.Bytes(), &answer); err != nil {
-		t.Fatalf("decode whoami %s: %v", response.Body.String(), err)
+		return whoamiAnswer{}, fmt.Errorf("decode whoami %s: %v", response.Body.String(), err)
 	}
 	if answer.Kind != "user" || answer.Login != "alice@d.example" {
-		t.Fatalf("whoami = %+v, want alice@d.example", answer)
+		return whoamiAnswer{}, fmt.Errorf("whoami = %+v, want alice@d.example", answer)
 	}
-	return answer
+	return answer, nil
+}
+
+// whoamiReply is what a whoami asked on a goroutine of its own answered.
+type whoamiReply struct {
+	answer whoamiAnswer
+	err    error
+}
+
+// awaitWhoami asks whoami on a goroutine of its own, for a row whose wait for the answer is what
+// says the call waited on nothing, and waits for that answer through the shared wait (what names
+// it); a failed answer fails the test here, on the test goroutine.
+func awaitWhoami(t *testing.T, handler http.Handler, what string) whoamiAnswer {
+	t.Helper()
+	answered := make(chan whoamiReply, 1)
+	go func() {
+		answer, err := whoami(handler)
+		answered <- whoamiReply{answer: answer, err: err}
+	}()
+	reply := testwait.Receive(t, what, answered)
+	if reply.err != nil {
+		t.Fatal(reply.err)
+	}
+	return reply.answer
 }
 
 // createProject creates the project key through the router's API, as alice@d.example, which
@@ -478,9 +511,7 @@ func TestWhoamiDoesNotWaitOnATransactionInAnotherDatabase(t *testing.T) {
 	// The transaction stands until release, so a whoami that waited on it would never answer:
 	// the wait for its answer is what says it waited on nothing.
 	release := holdClusterTransactionID(t)
-	answered := make(chan whoamiAnswer, 1)
-	go func() { answered <- askWhoami(t, handler) }()
-	answer := testwait.Receive(t, "whoami's answer while another database's transaction is open", answered)
+	answer := awaitWhoami(t, handler, "whoami's answer while another database's transaction is open")
 	if head := eventHeadID(t, answer); head != newest {
 		t.Fatalf("whoami answered event_head %d while another database's transaction was open, want the log's newest id %d", head, newest)
 	}
@@ -502,9 +533,7 @@ func TestWhoamiAnswersAtOnceWhileAWriteOfThisDatabaseIsOpen(t *testing.T) {
 	// The write below stays open to the end of the test, so a whoami that waited on it would
 	// never answer: the wait for its answer is what says it answered from the mark it holds.
 	low, high, _ := appendOutOfOrder(t, database, "ONE", "TWO")
-	answered := make(chan whoamiAnswer, 1)
-	go func() { answered <- askWhoami(t, handler) }()
-	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while a write of this database is open", answered))
+	head := eventHeadID(t, awaitWhoami(t, handler, "whoami's answer while a write of this database is open"))
 	if head >= low || head < earlier {
 		t.Fatalf("whoami answered event_head %d while event %d was open below the committed %d, want an id below it and at or above the earlier answer %d", head, low, high, earlier)
 	}
@@ -593,9 +622,7 @@ func TestWhoamiAnswersThePersistedHorizonWhileAnEventInsertFromBeforeBootIsOpen(
 	handler := storeRouter(t, database)
 	// The insert stays open to the end of the test, so a whoami that waited on it would never
 	// answer: the wait for its answer is what says it answered from the persisted horizon.
-	answered := make(chan whoamiAnswer, 1)
-	go func() { answered <- askWhoami(t, handler) }()
-	head := eventHeadID(t, testwait.Receive(t, "whoami's answer while an event insert from before boot is open", answered))
+	head := eventHeadID(t, awaitWhoami(t, handler, "whoami's answer while an event insert from before boot is open"))
 	if head < newest || head >= open {
 		t.Fatalf("whoami answered event_head %d, want the persisted horizon %d or above, and below the open event %d", head, newest, open)
 	}

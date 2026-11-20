@@ -88,7 +88,7 @@ func TestTheConditionalEditQueueIsCappedAcrossProcesses(t *testing.T) {
 		release()
 	}
 	for range maxQueuedConditionalEdits - 1 - len(held) {
-		result := <-results
+		result := testwait.Receive(t, "a queued AcquireConditionalEdit to return after its context was cancelled", results)
 		if result.err == nil {
 			// A waiter whose turn came as its context ended may take the turn.
 			result.release()

@@ -100,7 +100,7 @@ func TestStoredOrderBackfillDoesNotStoreTheRoomsCommittedEditTwice(t *testing.T)
 	// point. Taking it at the first append instead is what stored the edit twice.
 	waitForLockWait(t, context.Background(), service.store, "%pg_advisory_xact_lock%", backfilled)
 	releaseWorker()
-	if err := <-backfilled; err != nil {
+	if err := testwait.Receive(t, "backfillBlockIDs to return once the worker was released", backfilled); err != nil {
 		t.Fatalf("the backfill failed: %v", err)
 	}
 	if report.Stamped == 0 {

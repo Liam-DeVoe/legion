@@ -16,8 +16,24 @@ import (
 // must see all five within a second, as a reader on A does. A room relaying only the newest of
 // its pending awareness changes loses the others until each reader's next heartbeat (15 s in
 // y-protocols), and these readers send none, so such a room never shows bob all five. The second
-// is held only in benchtime's timing lane (withinLive).
+// is held only by the row's twin in benchtime's timing lane (withinLive).
 func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T) {
+	fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t, everyRun)
+}
+
+// TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcessOnTheClock is the row above in
+// benchtime's timing lane, where the five cursors reaching carol on A and bob on B are held to
+// liveWithin of their placing (withinLive). The product's promise is README.md's Cursors and
+// presence ("each send carries every reader who moved within that window ... so readers moving
+// at the same moment all cross rather than the last of them"), at the spec's "at once", the one
+// second the plan pins (#2414).
+func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcessOnTheClock(t *testing.T) {
+	timedRow(t, fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess)
+}
+
+// fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess is the scene of the two rows above;
+// lane says whether its readings of the clock are held to their figures (clockLane).
+func fiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "SIM")
 	pair.a.createProject(t, project, "Simultaneous cursors")
@@ -46,7 +62,7 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 	if err := carol.WaitForAwareness(t, all); err != nil {
 		t.Fatalf("carol on A did not see all five readers on A: %v", err)
 	}
-	withinLive(t, placed, "the five readers' cursors reaching carol on A")
+	withinLive(t, lane, placed, "the five readers' cursors reaching carol on A")
 	if err := bob.WaitForAwareness(t, all); err != nil {
 		held := []uint64{}
 		for client := range bob.AwarenessStates() {
@@ -54,5 +70,5 @@ func TestFiveReadersPlacingCursorsAtOnceAreAllSeenOnTheOtherProcess(t *testing.T
 		}
 		t.Fatalf("five readers on A placed their cursors at once: carol on A saw all five, bob on B holds only %v", held)
 	}
-	withinLive(t, placed, "the five readers' cursors reaching bob on B")
+	withinLive(t, lane, placed, "the five readers' cursors reaching bob on B")
 }

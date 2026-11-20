@@ -26,14 +26,15 @@ func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
 	if count := broker.SubscriberCount(); count != 0 {
 		t.Fatalf("subscriber count after overflow = %d, want 0", count)
 	}
+	// A closed stream gives the zero event, whose Seq is none of the published ones.
 	for sequence := 1; sequence <= 64; sequence++ {
-		event, ok := <-stream
-		if !ok || event.Seq != sequence {
-			t.Fatalf("event %d = %#v (open=%t), want ordered buffered event", sequence, event, ok)
+		event := testwait.Receive(t, "the overflowed subscriber's buffered events, in order", stream)
+		if event.Seq != sequence {
+			t.Fatalf("event %d = %#v, want ordered buffered event (a zero event is a closed stream)", sequence, event)
 		}
 	}
-	if _, ok := <-stream; ok {
-		t.Fatal("overflowed subscriber remained open")
+	if event := testwait.Receive(t, "the overflowed subscriber's close", stream); event.Seq != 0 {
+		t.Fatalf("overflowed subscriber remained open: it received %#v after its buffered events", event)
 	}
 }
 
@@ -420,7 +421,7 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 		}
 		parentDone <- parentTx.Commit(ctx)
 	}()
-	<-parentStarted
+	testwait.Receive(t, "the parent patch's transaction to begin", parentStarted)
 
 	if _, err := broker.Append(ctx, childTx, childEvent); err != nil {
 		t.Fatalf("append child patch event: %v", err)
@@ -575,7 +576,7 @@ func TestConcurrentAppendsKeepOwnerSequencesDense(t *testing.T) {
 				}()
 			}
 			for range writers {
-				if err := <-appended; err != nil {
+				if err := testwait.Receive(t, "each concurrent append to commit", appended); err != nil {
 					t.Fatalf("concurrent append: %v", err)
 				}
 			}
@@ -759,7 +760,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 			if err := open.Commit(ctx); err != nil {
 				t.Fatalf("commit the first write: %v", err)
 			}
-			if err := <-written; err != nil {
+			if err := testwait.Receive(t, "the second append to commit once the first write committed", written); err != nil {
 				t.Fatalf("second append: %v", err)
 			}
 			if second.ID <= first.ID || second.Seq != first.Seq+1 {

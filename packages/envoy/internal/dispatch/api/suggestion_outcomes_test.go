@@ -172,7 +172,7 @@ func startIdleSweepOnClock(t *testing.T, project string, schedule suggestionSche
 	}()
 	t.Cleanup(func() {
 		stopHub()
-		<-hubDone
+		testwait.Receive(t, "the listener hub to return once stopped", hubDone)
 	})
 
 	srv := directServer(deps)

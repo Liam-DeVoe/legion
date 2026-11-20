@@ -1,7 +1,8 @@
-// Package testwait holds the one wait Envoy's tests share.
-// packages/daemon/internal/testwait and packages/envoy/internal/testwait hold the same code, because
-// Go's internal rule keeps one module from importing the other's (packages/envoy/infra imports
-// Envoy's through its replace), so a change to one is made to the other.
+// Package testwait holds the one wait Envoy's tests share, packages/envoy/infra's among them
+// (that module imports Envoy's packages through its replace). The daemon's tests have a wait of
+// their own, packages/daemon/internal/testwait, since Go's internal rule keeps the daemon's module
+// from importing this one. That package is not a copy of this one: its waits take a bound of
+// their own (WithinPolling, Bounded).
 //
 // A test that drives real processes, a real database or a real socket waits for something it
 // cannot make happen on its own: a delivery, the transaction that answers it, a line in a log. Such

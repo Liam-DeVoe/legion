@@ -246,7 +246,7 @@ func (r *rig) publishAll(t *testing.T) {
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox's Run to return once its context ended", stopped)
 	}()
 	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int

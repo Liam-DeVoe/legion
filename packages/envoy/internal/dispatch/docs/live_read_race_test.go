@@ -228,8 +228,8 @@ func TestReadsOfALiveDocumentRunBesideItsPeers(t *testing.T) {
 		// Settlement reads the room only once every update it has seen is durable, so this peer
 		// waits for the room to store what it typed before it types again, rather than pausing a
 		// fixed time long enough for it.
-		peer.Store(typeIntoDocumentPausing(t, service, serverURL, artifactID, func() {
-			awaitRoomStored(service, artifactID)
+		peer.Store(typeIntoDocumentPausing(t, service, serverURL, artifactID, func(stopped <-chan struct{}) {
+			awaitRoomStored(service, artifactID, stopped)
 		}))
 		overlapping(t, func() bool {
 			state := service.room(artifactID)
@@ -334,7 +334,7 @@ func TestColdReadsRunBesideStoredWrites(t *testing.T) {
 			}()
 		}
 		readers.Wait()
-		if err := <-appended; err != nil {
+		if err := testwait.Receive(t, "AppendUpdate to return", appended); err != nil {
 			t.Fatalf("append write %d: %v", write, err)
 		}
 	}
@@ -435,12 +435,13 @@ const typingGap = 2 * time.Millisecond
 // resident, the peer's client id.
 func typeIntoDocument(t *testing.T, service *Service, serverURL, artifactID string) crdt.ClientID {
 	t.Helper()
-	return typeIntoDocumentPausing(t, service, serverURL, artifactID, func() { time.Sleep(rand.N(typingGap)) })
+	return typeIntoDocumentPausing(t, service, serverURL, artifactID, func(<-chan struct{}) { time.Sleep(rand.N(typingGap)) })
 }
 
 // typeIntoDocumentPausing is typeIntoDocument with pause run between its updates, for a test whose
-// read needs the room in a state the peer's own typing decides.
-func typeIntoDocumentPausing(t *testing.T, service *Service, serverURL, artifactID string, pause func()) crdt.ClientID {
+// read needs the room in a state the peer's own typing decides. pause is handed the channel the
+// test's end closes, which it returns at.
+func typeIntoDocumentPausing(t *testing.T, service *Service, serverURL, artifactID string, pause func(stopped <-chan struct{})) crdt.ClientID {
 	t.Helper()
 	peer := connectPeer(t, serverURL, artifactID, "alice")
 	fragment := peer.Doc.GetXmlFragment(fragmentName)
@@ -489,7 +490,7 @@ func typeIntoDocumentPausing(t *testing.T, service *Service, serverURL, artifact
 				}
 				wrote.Do(func() { close(first) })
 				keepUp(service, artifactID, peer.Doc, stopped)
-				pause()
+				pause(stopped)
 			}
 		}
 	})
@@ -572,8 +573,10 @@ func keepUp(service *Service, artifactID string, peer *crdt.Doc, stopped <-chan 
 const typistHandOff = 100 * time.Microsecond
 
 // awaitRoomStored waits until the room has stored every update it holds, the state a settlement
-// reads the room in. It runs on a typing peer's goroutine, as keepUp does, and ends with the room.
-func awaitRoomStored(service *Service, artifactID string) {
+// reads the room in, or until the peer stops typing. It runs on a typing peer's goroutine, as
+// keepUp does, and ends with the room or at the test's end, whose cleanup waits for the peer and
+// then fails by name on a room that never stored the peer's updates.
+func awaitRoomStored(service *Service, artifactID string, stopped <-chan struct{}) {
 	state := service.room(artifactID)
 	for service.srv.GetDoc(artifactID) != nil {
 		state.mu.Lock()
@@ -581,6 +584,11 @@ func awaitRoomStored(service *Service, artifactID string) {
 		state.mu.Unlock()
 		if pending == 0 && state.durableAppends.Load() == 0 {
 			return
+		}
+		select {
+		case <-stopped:
+			return
+		default:
 		}
 		time.Sleep(typistHandOff)
 	}

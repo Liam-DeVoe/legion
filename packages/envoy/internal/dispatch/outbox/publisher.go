@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -111,6 +112,11 @@ type Deps struct {
 	// unexported, so only this package sets it and no importer can shorten the wait cmd/dispatch
 	// runs.
 	forwardAckWait time.Duration
+	// keepClock is what a role forward's keep reads the moment of its keep from (roleForward.keep),
+	// the KeptAt its handover's forward carries, and nil is the real clock, which is what
+	// cmd/dispatch runs. A test names the moment with a fake; it is unexported, so no importer
+	// can.
+	keepClock clock.Clock
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
 	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
 	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
@@ -145,6 +151,14 @@ func (d Deps) forwardAckTimeout() time.Duration {
 		return d.forwardAckWait
 	}
 	return roleForwardAckTimeout
+}
+
+// keptNow is the moment of a keep, on keepClock.
+func (d Deps) keptNow() time.Time {
+	if d.keepClock == nil {
+		return time.Now()
+	}
+	return d.keepClock.Now()
 }
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under

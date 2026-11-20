@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A write outside Join would reach no transaction to weigh it in and no ledger to record it, so
@@ -771,7 +772,7 @@ func TestColdSnapshotCapturesFirstEditAfterWarm(t *testing.T) {
 			return err
 		}()
 	}()
-	if err := <-editDone; err != nil {
+	if err := testwait.Receive(t, "joinedReplaceText to return", editDone); err != nil {
 		t.Fatalf("first edit: %v", err)
 	}
 	tx, err := service.store.Pool.Begin(context.Background())

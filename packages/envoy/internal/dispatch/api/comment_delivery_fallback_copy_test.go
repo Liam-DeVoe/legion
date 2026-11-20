@@ -262,9 +262,9 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	}()
-	testwait.Eventually(t, "the outbox to publish every event of "+issueKey+" and settle every held copy of "+commentID, func() bool {
+	testwait.Until(t, "the outbox to publish every event of "+issueKey+" and settle every held copy of "+commentID, func() (string, bool) {
 		var unpublished, unsettled int
 		if err := deps.Store.Pool.QueryRow(context.Background(), `
 			select (select count(*) from events where issue_key = $1 and published_at is null),
@@ -272,7 +272,7 @@ func runOutboxUntilSettled(t *testing.T, deps Deps, publisher outbox.Publisher, 
 		`, issueKey, commentID).Scan(&unpublished, &unsettled); err != nil {
 			t.Fatalf("count the outbox's work on %s: %v", issueKey, err)
 		}
-		return unpublished == 0 && unsettled == 0
+		return fmt.Sprintf("%d events unpublished, %d held copies unsettled", unpublished, unsettled), unpublished == 0 && unsettled == 0
 	})
 }
 
@@ -496,8 +496,9 @@ type queuedMention struct {
 	queued   string
 	release  func()
 	listener *mentionListener
-	// clock is the server's, a fake that stands still: a test that needs a send to miss the
-	// window the listener client gives it moves this clock past the window itself.
+	// clock is the server's, a fake whose timers fire only when the test moves it: a test that
+	// needs a send to miss the window the listener client gives it moves this clock past the window
+	// itself.
 	clock *clocktest.Fake
 }
 
@@ -509,9 +510,9 @@ type queuedMention struct {
 // mentionClaimRefresh: it is the live claim the outbox bounds its wait by however long the lane
 // is held.
 //
-// The server runs on a fake clock that stands still, so no send of this lane's misses the window
-// the listener client gives it however long the test holds the lane; a test whose send must miss
-// it moves that clock past the window itself (envoy.CallWindow).
+// The server runs on a fake clock whose timers never fire (clocktest.Held), so no send of this
+// lane's misses the window the listener client gives it however long the test holds the lane; a
+// test whose send must miss it moves that clock past the window itself (envoy.CallWindow).
 func aMentionQueuedBehindAStalledSend(t *testing.T, route string) queuedMention {
 	t.Helper()
 	return aMentionQueuedOnClock(t, route, clocktest.Held())

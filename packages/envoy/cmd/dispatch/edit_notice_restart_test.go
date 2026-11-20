@@ -49,9 +49,9 @@ func TestEditNoticeRestart(t *testing.T) {
 
 	second := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	second.waitHealthy(t)
-	testwait.Until(t, "an artifact.human_edited event after the second process's start", func() (int, bool) {
+	testwait.Until(t, "an artifact.human_edited event after the second process's start", func() (withOutput[int], bool) {
 		count := humanEditedEvents(t, second, key)
-		return count, count > 0
+		return readWith(count, second.Output), count > 0
 	})
 	if count := humanEditedEvents(t, second, key); count != 1 {
 		t.Fatalf("artifact.human_edited events = %d, want 1", count)
@@ -62,7 +62,7 @@ func TestEditNoticeRestart(t *testing.T) {
 // has taken the editor's update, which is what the settlement the editor's close runs settles.
 func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, want string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the room to hold %q", want), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("the room to hold %q", want), func() (withOutput[string], bool) {
 		answer := process.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
 		var document struct {
 			Markdown string `json:"markdown"`
@@ -70,7 +70,7 @@ func waitForDocumentText(t *testing.T, process *dispatchProcess, artifactID, wan
 		if err := json.Unmarshal(answer, &document); err != nil {
 			t.Fatalf("decode the document's text: %v: %s", err, answer)
 		}
-		return document.Markdown, document.Markdown == want
+		return readWith(document.Markdown, process.Output), document.Markdown == want
 	})
 }
 

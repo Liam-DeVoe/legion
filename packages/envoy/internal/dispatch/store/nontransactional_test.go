@@ -409,7 +409,7 @@ func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testin
 	go func() { migrated <- store.migrate(booting, set) }()
 	pid := waitForPollingBackend(t, store)
 	cancel()
-	if err := <-migrated; !errors.Is(err, context.Canceled) {
+	if err := testwait.Receive(t, "migrate to return once its boot was cancelled", migrated); !errors.Is(err, context.Canceled) {
 		t.Fatalf("migrate = %v, want the cancellation of a boot waiting for the key", err)
 	}
 	waitForGoneBackend(t, store, pid, "the connection of a boot whose wait for the key failed stayed in the pool, where its next caller gets a connection that may hold the key")
@@ -706,14 +706,14 @@ func TestTwoBootsAtOnceOverAnInvalidLeftoverNeverDeadlock(t *testing.T) {
 // so the loser could never be waiting at the site this test is about.
 func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testing.T) {
 	ctx := context.Background()
-	// A runner queued for the key must ask for it again at least twice inside the span every
-	// other wait here is bounded by: pgmigrate.LockTimeout is what each runner's own lock waits
-	// and retries are measured against, and a pause between two tries that long means a runner
-	// queued for the key can sit out a whole migration's lock timeout without asking for it
-	// again, and the order this test sets up - both runners waiting when the key comes free -
-	// is no longer what it measures.
+	// A runner queued for the key must ask for it again at least twice inside a migration's lock
+	// timeout (pgmigrate.LockTimeout), the span each runner's own lock waits and retries are
+	// measured against: a pause between two tries that long means a runner queued for the key can
+	// sit out a whole migration's lock timeout without asking for it again, and the order this
+	// test sets up - both runners waiting when the key comes free - is no longer what it measures.
+	// The test's own waits are the shared wait's, which no migration's timeout bounds.
 	if 2*migrationLockMaxPause > pgmigrate.LockTimeout {
-		t.Fatalf("two tries for the key take %s, past the %s every other wait here is bounded by: migrationLockMaxPause (%s) has outgrown this test",
+		t.Fatalf("two tries for the key take %s, past a migration's lock timeout (%s): migrationLockMaxPause (%s) has outgrown this test",
 			2*migrationLockMaxPause, pgmigrate.LockTimeout, migrationLockMaxPause)
 	}
 	first, databaseURL := migratedToOne(t)

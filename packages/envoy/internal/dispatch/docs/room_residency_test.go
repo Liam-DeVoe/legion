@@ -61,6 +61,7 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	wsURL := "ws" + strings.TrimPrefix(httpServer.URL, "http") + "/ws/doc/" + artifactID
 
 	stop := make(chan struct{})
+	stopPeers := sync.OnceFunc(func() { close(stop) })
 	var peers sync.WaitGroup
 	peers.Add(1)
 	go func() {
@@ -151,6 +152,15 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 	// taken once here on the test's goroutine for every reader's every socket.
 	firstFrameBy := readDeadline(t)
 	var readers sync.WaitGroup
+	// A wait below that gives up still stops the readers, then the peer and the writer, before the
+	// server closes, so none of them dials or reads on past the test.
+	haveEnough := sync.OnceFunc(func() { close(enough) })
+	t.Cleanup(func() {
+		haveEnough()
+		readers.Wait()
+		stopPeers()
+		peers.Wait()
+	})
 	for range 4 {
 		readers.Add(1)
 		go func() {
@@ -194,11 +204,11 @@ func TestAHealthyRoomUnderWritesIsNeverRefused(t *testing.T) {
 		}
 		return rounds.Load() >= 40 && writes.Load() >= 20
 	})
-	close(enough)
+	haveEnough()
 	readers.Wait()
-	close(stop)
+	stopPeers()
 	peers.Wait()
-	result := <-written
+	result := testwait.Receive(t, "the writer loop, whose in-flight joinedReplaceText has no bound, to report", written)
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -267,6 +277,10 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	}
 
 	entered, proceed := make(chan struct{}), make(chan struct{})
+	// A failure below still lets the held write go, so it never stays parked inside its Apply past
+	// the test.
+	letWrite := sync.OnceFunc(func() { close(proceed) })
+	t.Cleanup(letWrite)
 	first := make(chan error, 1)
 	go func() {
 		first <- write("first", func() {
@@ -274,7 +288,7 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 			<-proceed
 		})
 	}()
-	<-entered
+	testwait.Receive(t, "the product write to run its body", entered)
 	if err := peer.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -289,8 +303,8 @@ func TestAWriteInsideApplyOutlivesTheRoomsLastPeer(t *testing.T) {
 	if _, err := service.currentToken(context.Background(), artifactID); err != nil {
 		t.Fatalf("read the room while the write waits: %v", err)
 	}
-	close(proceed)
-	if err := <-first; err != nil {
+	letWrite()
+	if err := testwait.Receive(t, "the first write to return once it was let go", first); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	if err := write("second", func() {}); err != nil {

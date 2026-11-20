@@ -127,7 +127,9 @@ func TestInitialMentionDeliveryDoesNotAppendAfterReplyConsumesPending(t *testing
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var request map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode initial mention send: %v", err)
+				t.Errorf("decode initial mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, request)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))

@@ -810,7 +810,7 @@ func TestClaimRedoesTheCycleWhenTheHolderChangesBeforeTheLock(t *testing.T) {
 	// The redo re-reads the holder and re-asks the listener: session-three has ended, so the
 	// contested claim lands as a takeover. With one attempt (no redo) this is a 409 instead,
 	// because the stale snapshot still has session-three live.
-	response := <-contested
+	response := testwait.Receive(t, "the contested claim to answer", contested)
 	if response.Code != http.StatusOK {
 		t.Fatalf("the redone claim must take the ended holder's claim: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -874,7 +874,7 @@ func TestClaimNeverTakesALiveHoldersClaimFoundAfterTheSnapshot(t *testing.T) {
 	}
 	close(release)
 
-	response := <-contested
+	response := testwait.Receive(t, "the contested claim to answer", contested)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("a live holder found after the snapshot must not lose its claim: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -984,7 +984,7 @@ func TestContendedClaimEndsTheCycleAtTheBound(t *testing.T) {
 		gate <- struct{}{}
 	}
 
-	response := <-contested
+	response := testwait.Receive(t, "the contested claim to answer", contested)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("a claim whose holder changed at every attempt: status=%d body=%s", response.Code, response.Body.String())
 	}

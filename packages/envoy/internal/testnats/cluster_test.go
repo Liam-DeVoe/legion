@@ -108,6 +108,13 @@ func dialCluster(t *testing.T, cluster *Cluster, what string, connected func(*na
 // verdict here rests on an attempt not being made within it.
 const reconnectWait = 100 * time.Millisecond
 
+// clientPlace is where a client is, its status and the member it is connected to: the reading a
+// wait for its move prints when the move never comes.
+type clientPlace struct {
+	Status natsgo.Status
+	Server string
+}
+
 // A member in lame duck closes its clients' connections over its lame-duck window, and a client
 // that knows the cluster's other URLs reconnects to one of them: the move a hub's server change
 // forces on every session. The client knows only the URLs it was given, since the members
@@ -132,8 +139,9 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 		defer close(down)
 		cluster.Servers[0].LameDuck()
 	}()
-	testwait.Eventually(t, fmt.Sprintf("the client to move off %s to another member of the cluster", cluster.Name(0)), func() bool {
-		return conn.IsConnected() && cluster.Member(conn.ConnectedServerName()) > 0
+	testwait.Until(t, fmt.Sprintf("the client to move off %s to another member of the cluster", cluster.Name(0)), func() (clientPlace, bool) {
+		place := clientPlace{Status: conn.Status(), Server: conn.ConnectedServerName()}
+		return place, place.Status == natsgo.CONNECTED && cluster.Member(place.Server) > 0
 	})
 	testwait.Receive(t, "the lame duck of the member the client was on to finish", down)
 	cluster.Servers[0].Start(t)

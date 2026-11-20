@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // GET /api/v1/ci-reconcile/passes. What a pass records and how a row with no end time is read
@@ -169,8 +170,8 @@ func holdCIReconcileLease(t *testing.T, database *store.Store) {
 			<-let
 		})
 	}()
-	t.Cleanup(func() { close(let); <-done })
-	<-held
+	t.Cleanup(func() { close(let); testwait.Receive(t, "the leased body to return once let go", done) })
+	testwait.Receive(t, "duty.Exclusive to take the lease and run the body", held)
 }
 
 // A pass still running reads as running through the route: its row has no end time, its process

@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // mentionsOf is a payload's mentions as the scan decodes them from JSON, each resolved to its
@@ -889,7 +890,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 				if err := claim.Commit(context.Background()); err != nil {
 					t.Fatalf("commit the claim: %v", err)
 				}
-				err = <-published
+				err = testwait.Receive(t, "the outbox's publish to return once the claim committed", published)
 			} else {
 				err = publishing()
 			}

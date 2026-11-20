@@ -96,7 +96,7 @@ func TestTheCompactionQueueCompactsALoadedDocumentOnlyWhenItIsDue(t *testing.T) 
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	loads := map[string]func(t *testing.T, artifactID string){
 		"a room load": func(t *testing.T, artifactID string) { liveTree(t, service, artifactID) },
@@ -197,7 +197,7 @@ func TestTheCompactionQueueRetriesACompactionAPruneDropped(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 6, 20*time.Minute)
 	var pruned LoadedDocument
@@ -248,7 +248,7 @@ func TestTheCompactionQueueRetriesABusyDocumentUntilItsLockIsFree(t *testing.T) 
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	before := storedRows(t, database, artifactID)
@@ -304,7 +304,7 @@ func TestTheCompactionQueueComesBackToARetriedDocumentWhenItsYoungRowsComeDue(t 
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	artifactID := storeAgedRows(t, database, 4, 20*time.Minute)
 	unlock := holdDocumentLock(t, database, artifactID)
@@ -351,7 +351,7 @@ func TestTheCompactionQueueKeepsANoteThatComesWhileItsDocumentsStepRuns(t *testi
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	artifactID := createDocument(t, database, "renoted")
 	writer := newProofHistory(t, 101)
@@ -425,7 +425,7 @@ func TestABurstAfterAQuietCheckBringsTheDocumentsCheckForward(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	artifactID := createDocument(t, database, "burst")
 	writer := newProofHistory(t, 101)
@@ -486,7 +486,7 @@ func TestWritesReturnWhileTheCompactionQueueIsInsideTheirDocumentsFold(t *testin
 	foldPoint := rows[len(rows)-1].version
 
 	stepWhenDue(t, fake, service, artifactID)
-	<-held
+	testwait.Receive(t, "the compaction queue's step to reach the held fold", held)
 	wrote := make(chan error, 1)
 	go func() {
 		_, err := joinedReplaceText(service, artifactID, "Replaced.\n", model.Actor{Kind: "session", ID: "agent"})
@@ -520,7 +520,7 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	later := storeAgedRows(t, database, 4, 20*time.Minute)
@@ -531,7 +531,7 @@ func TestShutdownFinishesTheCompactionQueuesCompactionAndStopsItsWorker(t *testi
 		t.Fatalf("load the document: %v", err)
 	}
 	stepWhenDue(t, fake, service, compacting)
-	<-held
+	testwait.Receive(t, "the compaction queue's step to reach the held fold", held)
 	// Shutdown runs on a goroutine of its own and records whether the queue's compaction had been
 	// let go of its fold before it returned: one that returned before then did not wait for it.
 	var released atomic.Bool
@@ -587,7 +587,7 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 	database := storetest.Open(t)
 	persist := NewPgVersioned(database)
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	compacting := storeAgedRows(t, database, 4, 20*time.Minute)
 	young := storeAgedRows(t, database, 4, 0)
@@ -605,7 +605,7 @@ func TestQuiesceWaitsForTheCompactionQueueAndReopensIt(t *testing.T) {
 		t.Fatalf("load the document: %v", err)
 	}
 	stepWhenDue(t, fake, service, compacting)
-	<-held
+	testwait.Receive(t, "the compaction queue's step to reach the held fold", held)
 	// Quiesce runs on a goroutine of its own and records whether the queue's compaction had been
 	// let go of its fold before it returned: one that returned before then did not wait for it.
 	var released atomic.Bool
@@ -746,7 +746,7 @@ func newClockedTestService(t *testing.T, c *clocktest.Fake) (*Service, string) {
 		Clock:     c,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

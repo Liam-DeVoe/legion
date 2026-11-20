@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A pull-request envelope whose head row could not be stored at all is handed back for
@@ -137,7 +138,7 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string) *head
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		testwait.Receive(t, "the intake's Run to return once its context ended", done)
 	})
 	return process
 }
@@ -309,7 +310,7 @@ func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 	if hold == nil {
 		t.Fatal("the hold this row lapses is held by another process, though the row's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), clock: clock.Real(), subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

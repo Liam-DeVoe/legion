@@ -1215,6 +1215,9 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	service, artifactID, sh := newRenderReuseService(t)
 	entered, release := make(chan struct{}), make(chan struct{})
+	// A failure below still lets the held load go, so it never stays parked past the test.
+	letLoad := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letLoad)
 	var once sync.Once
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {
@@ -1248,8 +1251,8 @@ func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	if err := ledger.commit(ctx); err != nil {
 		t.Fatalf("commit the write: %v", err)
 	}
-	close(release)
-	if err := <-loaded; err != nil {
+	letLoad()
+	if err := testwait.Receive(t, "the held room load to return once it was released", loaded); err != nil {
 		t.Fatalf("load the room: %v", err)
 	}
 	instance := service.instanceOf(service.srv.GetDoc(artifactID))

@@ -54,17 +54,23 @@ import (
 // The rig judges no time. D6 of the INFRA-636 plan - every statement-free gap inside a window at
 // most 5 ms, and the gaps together no longer than the statements - is a reading of the wall clock,
 // which a starved CPU stretches inside a window nothing is wrong with as far as a slow Go call
-// would (Job rc-reopen-100 failed one run of correct code on a 76 ms gap; the race detector does
-// the same with no load at all), and it is not a time the product promises, so no run judges it.
+// would (the race detector stretches it the same way with no load at all), and it is not a time
+// the product promises, so no run judges it.
 // What the three checks cannot see is Go work inside a window that runs no statement, calls no
-// collaborator and enters no docwork entry point on the goroutine that wrote:
+// collaborator and enters no docwork entry point on the goroutine that wrote, and the work after a
+// write whose own result does not say it wrote:
 //   - document work the transaction hands to another goroutine while its window is open, and
 //     waits for, so the transaction id is held as long: it runs on a goroutine no window names
 //     (TestXidWindowLeavesDocumentWorkHandedToAnotherGoroutineUnseen, in docs, holds the check to
 //     that);
 //   - Go work of the transaction's own goroutine that is not document work as docwork names it: a
 //     sort, a diff, a JSON encode of a large value, a hash, or a wait on a lock or channel of this
-//     process, between two statements of the window.
+//     process, between two statements of the window;
+//   - a write whose command tag is SELECT - a writing CTE that ends in a select (refs/blocks.go's
+//     writeWindows), a writing function called through select - opens no window for the
+//     collaborator and document-work checks (xidAssigned reads the tag), so a call or document
+//     work after it, before the transaction's next tagged write, is not reported. Every such write
+//     today is the last statement before its COMMIT, so nothing runs in that span.
 //
 // The window's statement time and its gaps are still measured, and every report logs them
 // (XidWindow.Summary, Detail), so a reader can see where the time with the xid went; no verdict

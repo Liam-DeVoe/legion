@@ -547,7 +547,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 	// not leave the upload parked in Put while the server's shutdown waits for it.
 	t.Cleanup(func() {
 		release()
-		<-finished
+		testwait.Receive(t, "the upload handler to return once released", finished)
 	})
 
 	select {
@@ -560,7 +560,7 @@ func TestAnUploadHoldsNoIssueLockWhileTheStoreWrites(t *testing.T) {
 		t.Fatal(holding)
 	}
 	release()
-	if response := <-uploaded; response.Code != http.StatusCreated {
+	if response := testwait.Receive(t, "the upload to answer once released", uploaded); response.Code != http.StatusCreated {
 		t.Fatalf("upload: status=%d body=%s", response.Code, response.Body.String())
 	}
 }

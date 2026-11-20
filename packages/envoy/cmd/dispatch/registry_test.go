@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // bootProbeDialDelay is how late slowPostgres lets each of the process's connections reach
@@ -79,7 +80,7 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 	}()
 	process.waitForLog(t, process.listeningLine())
 
-	status, health := process.health(t)
+	status, health := process.health(t, testwait.Context(t))
 	if status != http.StatusOK || !health.DB {
 		t.Fatalf("the first /healthz answered %d with db %t, want 200 with db true: the boot's probe opened the "+
 			"health pool, so this read paid no dial; a 503 says this read was that pool's first and paid the "+

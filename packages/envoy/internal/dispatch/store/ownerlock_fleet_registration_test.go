@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,8 +23,7 @@ import (
 
 // registrationGateBound bounds an earlier build's registration's wait for the owner lock gate:
 // owner_lock_legacy_registration's lock_timeout, which every run reads off the function itself
-// (registrationLockTimeout), spelled again here for the span the publish is given below and for
-// the timing lane's reading of the refusal.
+// (registrationLockTimeout), spelled again here for the timing lane's reading of the refusal.
 const registrationGateBound = 5 * time.Second
 
 // registrationLockTimeout is the setting owner_lock_legacy_registration runs under (pg_proc's
@@ -99,13 +99,32 @@ func TestAnEarlierBuildsRegistrationWaitsForTheGateNoLongerThanItsBound(t *testi
 		t.Fatal(err)
 	}
 	defer publishConn.Release()
+	// No bound of the publish's own ends its wait at the registration's lock_timeout, read as
+	// state where such a bound would stand: its session runs under no lock_timeout or
+	// statement_timeout, and the gate's trigger function it waits in (owner_lock_legacy_arrival)
+	// sets neither, in its settings or in its body, as owner_lock_legacy_registration's settings
+	// set its own (registrationLockTimeout).
+	var sessionLockTimeout, sessionStatementTimeout string
+	if err := publishConn.QueryRow(ctx, `select current_setting('lock_timeout'), current_setting('statement_timeout')`).Scan(&sessionLockTimeout, &sessionStatementTimeout); err != nil {
+		t.Fatalf("read %s's session timeouts: %v", publish.name, err)
+	}
+	if sessionLockTimeout != "0" || sessionStatementTimeout != "0" {
+		t.Fatalf("%s's session runs under lock_timeout %s and statement_timeout %s, want neither: either ends its wait for the gate", publish.name, sessionLockTimeout, sessionStatementTimeout)
+	}
+	var arrivalConfig []string
+	var arrivalBody string
+	if err := s.Pool.QueryRow(ctx, `
+		select coalesce(proconfig, '{}'), prosrc from pg_proc where proname = 'owner_lock_legacy_arrival'
+	`).Scan(&arrivalConfig, &arrivalBody); err != nil {
+		t.Fatalf("read owner_lock_legacy_arrival's settings: %v", err)
+	}
+	if len(arrivalConfig) != 0 || strings.Contains(arrivalBody, "lock_timeout") || strings.Contains(arrivalBody, "statement_timeout") {
+		t.Fatalf("owner_lock_legacy_arrival, the gate %s waits in, runs under settings %v and a body that sets a timeout (%t), want no bound of its own",
+			publish.name, arrivalConfig, strings.Contains(arrivalBody, "_timeout"))
+	}
 	published := make(chan error, 1)
 	go func() { published <- arriveOn(ctx, publishConn, publish, uuid.NewString()) }()
 	awaitGateWait(t, s, publishConn.Conn().PgConn().PID(), published, publish.name)
-	testwait.Quiet(t, publish.name+" ending while the transaction it waits for is under way", published, registrationGateBound+time.Second,
-		"the publish's verdict is that no bound of its own ends it at the registration's lock_timeout, and Postgres shows no other "+
-			"session's lock_timeout: no state, no synctest bubble (real Postgres) and no later action tells a wait with no bound "+
-			"from one whose bound has not come yet, so the registration's bound and a second more pass first")
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}

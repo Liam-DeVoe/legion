@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.T) {
@@ -29,7 +30,9 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 				Payload string `json:"payload"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode Envoy send request: %v", err)
+				t.Errorf("decode Envoy send request: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var frame struct {
 				Event struct {
@@ -39,7 +42,9 @@ func TestMentionDeliveryPersistsPendingBeforeSendAndRetryCompletesIt(t *testing.
 				} `json:"event"`
 			}
 			if err := json.Unmarshal([]byte(request.Payload), &frame); err != nil {
-				t.Fatalf("decode mention delivery frame: %v", err)
+				t.Errorf("decode mention delivery frame: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			var state string
 			err := database.Pool.QueryRow(context.Background(), `
@@ -118,7 +123,9 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 				TargetSession string `json:"target_session"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatalf("decode retry send: %v", err)
+				t.Errorf("decode retry send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			mu.Lock()
 			block := blockS1 && request.TargetSession == "s1"
@@ -139,7 +146,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
 	// answers it and is never left unanswered by its bound (mentionLookupTimeout), after which its
 	// send would look the role up once more than the two lookups this row counts.
 	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
@@ -181,7 +188,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		)
 		first <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
-	<-started
+	testwait.Receive(t, "the first delivery to reach the held listener send", started)
 	mu.Lock()
 	roleHolder = "s2"
 	mu.Unlock()
@@ -192,8 +199,8 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		second <- deliveryResult{attempt: attempt, held: held, err: err}
 	}()
 	close(release)
-	firstResult := <-first
-	secondResult := <-second
+	firstResult := testwait.Receive(t, "the first delivery to return", first)
+	secondResult := testwait.Receive(t, "the second delivery to return", second)
 	if firstResult.err != nil || secondResult.err != nil || firstResult.held != nil || secondResult.held != nil {
 		t.Fatalf("concurrent retries: first=%#v second=%#v", firstResult, secondResult)
 	}

@@ -352,7 +352,7 @@ func TestTheCompactionSweepHandsABusyDocumentToTheQueue(t *testing.T) {
 	fake := clocktest.New(time.Now())
 	database := storetest.Open(t)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Clock: fake})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	steps := recordCompactionSteps(service)
 	busy := storeAgedRows(t, database, 3, 20*time.Minute)
 	free := storeAgedRows(t, database, 3, 20*time.Minute)

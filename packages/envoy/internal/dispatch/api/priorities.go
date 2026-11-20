@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -220,7 +219,7 @@ func (s *server) createPriority(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	at := time.Now().UTC()
+	at := s.stampedNow().UTC()
 	values := map[string]string{
 		prioritystore.AttributeTitle:       input.Title,
 		prioritystore.AttributeDescription: input.Description,
@@ -337,7 +336,7 @@ func (s *server) patchPriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	at := time.Now().UTC()
+	at := s.stampedNow().UTC()
 	if err := prioritystore.SetAttributes(r.Context(), tx, id, values, actor, at); err != nil {
 		s.refusePriorityWrite(w, id, err)
 		return
@@ -394,7 +393,7 @@ func (s *server) deletePriority(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	if err := prioritystore.SetState(r.Context(), tx, id, prioritystore.StateGone, actor, time.Now().UTC()); err != nil {
+	if err := prioritystore.SetState(r.Context(), tx, id, prioritystore.StateGone, actor, s.stampedNow().UTC()); err != nil {
 		s.refusePriorityWrite(w, id, err)
 		return
 	}

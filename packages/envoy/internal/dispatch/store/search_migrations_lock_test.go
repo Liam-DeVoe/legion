@@ -49,7 +49,7 @@ func TestSearchMigrationsLockOneTableAtATime(t *testing.T) {
 		t.Errorf("while the runner waited for messages, schema_migrations was at %d, want 60 (0056-0060 committed one by one)", version)
 	}
 
-	err = <-migrated
+	err = testwait.Receive(t, "store.Migrate to give up on 0061 at its lock timeout", migrated)
 	var lockTimeout *pgmigrate.LockTimeoutError
 	if err == nil || !errors.As(err, &lockTimeout) || !strings.Contains(lockTimeout.Migration, "0061_messages_search_trigger") {
 		t.Fatalf("the runner should have given up on 0061 at its lock timeout, got: %v", err)

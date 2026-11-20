@@ -90,6 +90,7 @@ func TestPrioritiesRead(t *testing.T) {
 	// fault, whose row says when it was moved and who moved it.
 	parkedParent := seedPriorityIssue(t, handler, "CORE", "Parked work's parent", "todo", "", []string{"park-the-bus"})
 	parkedChild := seedPriorityIssue(t, handler, "CORE", "Parked work", "todo", parkedParent, nil)
+	movedFrom := databaseNow(t, database.Pool)
 	moveTestIssue(t, handler, parkedChild, "backlog", "bob")
 
 	// An issue both arms are true of: it states one priority itself and inherits another from
@@ -226,7 +227,7 @@ func TestPrioritiesRead(t *testing.T) {
 		t.Fatalf("%s was moved at %v by %v, want the moment and the person the events record",
 			parkedChild, parked.MovedAt, parked.MovedBy)
 	}
-	if parked.MovedAt.After(time.Now().UTC().Add(time.Minute)) || parked.MovedAt.Before(eightDaysAgo) {
+	if movedBy := databaseNow(t, database.Pool); parked.MovedAt.Before(movedFrom) || parked.MovedAt.After(movedBy) {
 		t.Fatalf("%s says it was moved at %v, want the moment of the write this test made", parkedChild, parked.MovedAt)
 	}
 	assertNoReason(t, handler)

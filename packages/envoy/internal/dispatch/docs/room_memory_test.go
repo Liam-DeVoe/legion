@@ -132,7 +132,7 @@ func TestALosingPreloadIsReleasedAtOnce(t *testing.T) {
 	releaseSockets()
 	var connections []*gws.Conn
 	for range 2 {
-		socket := <-sockets
+		socket := testwait.Receive(t, "a cold socket's dial to answer once the preloads were released", sockets)
 		if socket.err != nil {
 			t.Fatalf("open a cold socket: %v", socket.err)
 		}

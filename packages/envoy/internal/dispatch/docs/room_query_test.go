@@ -232,9 +232,11 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 		t.Fatal("task B's room queued no class for bob's edit, so no batch of it can linger")
 	}
 	class := state.updateClasses[len(state.updateClasses)-1]
+	// The moment task B's room recorded bob's update, on the product's own clock: the batch lingers
+	// while it is after the room's last ask of its appends (roomBatchThrough).
+	recorded := class.observed
 	lingering := state.appendLinger.wait()
 	pair.taskB.unlockState(pair.artifactID, state)
-	asked := time.Now()
 
 	deliverRoomQuery(t, pair.taskB, pair.taskA.ProcessID(), pair.artifactID, roomQueryFlush)
 
@@ -242,8 +244,8 @@ func TestARoomQueryOfAnotherProcessEndsAPendingBatchesLinger(t *testing.T) {
 	state = pair.taskB.lockExistingState(pair.artifactID)
 	flushed, waiters := state.appendsFlushed, state.appendWaiters
 	pair.taskB.unlockState(pair.artifactID, state)
-	if flushed.Before(asked) {
-		t.Fatalf("task B recorded its appends asked for at %v, before the query at %v: an update recorded in between lingers all the same", flushed, asked)
+	if recorded.After(flushed) {
+		t.Fatalf("task B recorded its appends asked for at %v, before its room recorded bob's update at %v: the query asked for none, and an update recorded before it lingers all the same", flushed, recorded)
 	}
 	if waiters == 0 {
 		t.Fatal("task B counts no waiter on its appends while it answers the flush, so a keystroke its room takes meanwhile lingers while the answer waits")
@@ -518,13 +520,19 @@ func TestAPublishedWritesLossIsJudgedAtTheStoredHeadAfterTheOtherProcessFlushes(
 			// before that wait would be in the fork the write reads, not the loss this row reads.
 			// The release runs on a goroutine of its own, since this hook runs on the write's own
 			// goroutine, which arms that wait only once the hook returns; the test waits the
-			// goroutine out before it ends.
+			// goroutine out before it ends. Off the test goroutine, a give-up of its wait fails
+			// the test with t.Error, and the gate opens all the same, so the write is never left
+			// parked behind it.
 			armed := len(clock.Armed())
 			released := make(chan struct{})
-			t.Cleanup(func() { <-released })
+			t.Cleanup(func() { testwait.Receive(t, "the release of task B's append to return", released) })
 			go func() {
 				defer close(released)
-				clock.AwaitArmed(t, "the publish's wait for task B's flush", armed+1)
+				if err := testwait.InHelper("afterLiveCommit's release", fmt.Sprintf("the publish's wait for task B's flush (at least %d timers armed on the fake clock)", armed+1), func() bool {
+					return len(clock.Armed()) > armed
+				}); err != nil {
+					t.Error(err)
+				}
 				pair.gateB.release()
 			}()
 		})

@@ -169,6 +169,8 @@ const (
 func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pause pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
+	// Taken before the role exists, so the database it names outlives the role's cleanup.
+	adminURL := testdb.DispatchServer.AdminURL(t)
 	role = "fleet_read_pause_" + randomDatabaseSuffix(t)
 	if _, err := s.Pool.Exec(ctx, "create role "+role+" nologin"); err != nil {
 		var pgErr *pgconn.PgError
@@ -177,7 +179,7 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 		}
 		t.Fatalf("create the fleet read's pause role: %v", err)
 	}
-	t.Cleanup(func() { dropRoleAfterTestDatabase(t, s, role) })
+	t.Cleanup(func() { dropRoleAfterTestDatabase(t, s, role, adminURL) })
 	if _, err := s.Pool.Exec(ctx, fmt.Sprintf(`
 		grant %s to current_user with set true, inherit true;
 		create function public.fleet_read_pause(instance uuid) returns boolean language plpgsql as $$
@@ -210,27 +212,27 @@ func pauseFleetReadsAt(t *testing.T, s *Store, instance string) (role string, pa
 // dropRoleAfterTestDatabase is the cleanup of a role a test creates in s, a database of the
 // test's own (openEmptyTestStore), and is registered as soon as the role exists
 // (pauseFleetReadsAt, and the census's roles in census_test.go). It drops that database and then
-// the role, each a statement of its own on a connection of its own to the server's postgres
-// database, and runs the role's drop whatever the database's did. A role spans the cluster, and
-// what a test grants it or lets it own is in the test database, so once that database is gone
-// nothing depends on the role and its drop takes it, whatever the test left there: a table the
-// role owns that a view of the login depends on refuses `drop owned by` of the role (2BP01) and a
-// drop of the role, and not the database's drop. The test database's own drop (testdb.DatabaseOn)
-// was registered before the role existed, so it runs after this cleanup and finds the database
-// gone. A database whose drop fails is still there, and so are the role's grants in it, which
-// refuse the role's drop: the cleanup then drops them first (`drop owned by`, in that database).
-func dropRoleAfterTestDatabase(t *testing.T, s *Store, role string) {
+// the role, each a statement of its own on a connection of its own to adminURL, another database
+// of the test's own on the same server (testdb.Server.AdminURL), taken before the role existed so
+// that it outlives this cleanup, and runs the role's drop whatever the database's did. A role
+// spans the cluster, and what a test grants it or lets it own is in the test database, so once
+// that database is gone nothing depends on the role and its drop takes it, whatever the test left
+// there: a table the role owns that a view of the login depends on refuses `drop owned by` of the
+// role (2BP01) and a drop of the role, and not the database's drop. The test database's own drop
+// (testdb.DatabaseOn) was registered before the role existed, so it runs after this cleanup and
+// finds the database gone. A database whose drop fails is still there, and so are the role's
+// grants in it, which refuse the role's drop: the cleanup then drops them first (`drop owned by`,
+// in that database).
+func dropRoleAfterTestDatabase(t *testing.T, s *Store, role, adminURL string) {
 	t.Helper()
 	ctx := context.Background()
 	database := s.Pool.Config().ConnConfig.Database
 	// The role's drop runs on the connection the database's drop ran on, or through the test
-	// database's own pool when no connection to the postgres database could be made.
+	// database's own pool when no connection to adminURL could be made.
 	exec := s.Pool.Exec
 	dropped := false
-	config := s.Pool.Config().ConnConfig.Copy()
-	config.Database = "postgres"
-	if admin, err := pgx.ConnectConfig(ctx, config); err != nil {
-		t.Errorf("connect to the test server's postgres database to drop the database %s and then the role %s: %v", database, role, err)
+	if admin, err := pgx.Connect(ctx, adminURL); err != nil {
+		t.Errorf("connect to the test's admin database to drop the database %s and then the role %s: %v", database, role, err)
 	} else {
 		defer admin.Close(ctx)
 		exec = admin.Exec
@@ -329,7 +331,7 @@ func TestTheFleetReadAfterTheGateSeesAnArrivalCommittedAfterTheFirstRead(t *test
 			}()
 			defer func() {
 				_ = pause.Rollback(ctx)
-				<-done
+				testwait.Receive(t, "the writer's LockOwner to return once the pause rolled back", done)
 				_ = writer.Rollback(ctx)
 			}()
 			awaitFleetReadPause(t, s, writerPID, done)
@@ -448,7 +450,7 @@ func TestAWriterStartedWhileAnArrivalWaitsForTheGateTakesTheOwnersRowsAtOnce(t *
 				if !got.Answered {
 					t.Errorf("%s waits for the gate (%s) while %s waits for it; want it to try the gate, not queue behind the arrival", writer.name, got.Gate, arrival.name)
 					_ = holder.Rollback(ctx)
-					<-locked
+					testwait.Receive(t, "the writer's lock to return once the holder rolled back", locked)
 					_ = tx.Rollback(ctx)
 					t.FailNow()
 				}

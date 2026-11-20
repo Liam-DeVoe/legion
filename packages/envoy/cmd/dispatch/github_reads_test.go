@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -119,7 +120,7 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
 	})
 	withoutApp.waitHealthy(t)
-	answer := withoutApp.readHealthz(t)
+	answer := withoutApp.readHealthz(t, testwait.Context(t))
 	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
 	if answer.status != http.StatusOK || !answer.OK || string(answer.GitHub) != "null" {
 		t.Fatalf("/healthz of a process with no GitHub App = %d %s, want 200 with ok true and github null", answer.status, answer.body)
@@ -213,11 +214,12 @@ type gitHubReadAnswer struct {
 	Cause *string `json:"cause"`
 }
 
-// readHealthz reads the process's /healthz once, under the shared wait's context, so a probe that
-// hangs fails the test near the binary's deadline.
-func (p *dispatchProcess) readHealthz(t *testing.T) healthzAnswer {
+// readHealthz reads the process's /healthz once, under ctx: the shared wait's (testwait.Context),
+// so a probe that hangs fails the test near the binary's deadline. A wait that reads it on every
+// attempt makes ctx once, before the wait.
+func (p *dispatchProcess) readHealthz(t *testing.T, ctx context.Context) healthzAnswer {
 	t.Helper()
-	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, p.url("/healthz"), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)
 	}
@@ -247,8 +249,9 @@ func (p *dispatchProcess) readHealthz(t *testing.T) healthzAnswer {
 // lacking, the last status and body /healthz answered, and the process's output.
 func (p *dispatchProcess) waitForGitHubReads(t *testing.T, missing func(healthzAnswer) string) healthzAnswer {
 	t.Helper()
+	reading := testwait.Context(t)
 	return testwait.Until(t, "/healthz to report the GitHub reads", func() (gitHubReadsReading, bool) {
-		last := p.readHealthz(t)
+		last := p.readHealthz(t, reading)
 		lack := missing(last)
 		return gitHubReadsReading{lack: lack, last: last, process: p}, lack == ""
 	}).last

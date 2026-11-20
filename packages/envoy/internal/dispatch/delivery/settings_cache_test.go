@@ -40,7 +40,7 @@ func settingsWake(t *testing.T, pool *store.Pool) <-chan struct{} {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings hub's Run to return once its context ended", done)
 	})
 	testwait.Receive(t, "the settings hub to listen", connected)
 	return wake
@@ -58,7 +58,7 @@ func runSettingsCache(t *testing.T, cache *SettingsCache) {
 	}()
 	t.Cleanup(func() {
 		stop()
-		<-done
+		testwait.Receive(t, "the settings cache's Run to return once its context ended", done)
 	})
 }
 

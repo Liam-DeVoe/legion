@@ -4206,11 +4206,11 @@ func TestSettleCapturesOnlyItsOwnIdentityUpdate(t *testing.T) {
 	armed := state.roomGeneration
 	state.mu.Unlock()
 	service.settleRoom(artifactID, armed)
-	<-foreignApplied
+	testwait.Receive(t, "the settlement's update to reach the room's observer, which applies the foreign update", foreignApplied)
 	if foreignErr != nil {
 		t.Fatalf("apply foreign update during identity settlement: %v", foreignErr)
 	}
-	identityUpdate := <-captured
+	identityUpdate := testwait.Receive(t, "the settlement to append the identity update it made", captured)
 	doc := crdt.New()
 	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
 		t.Fatalf("decode legacy document: %v", err)
@@ -4401,7 +4401,7 @@ func TestFailedSettlementDoesNotDiscardSuccessorRoomUpdate(t *testing.T) {
 	})
 
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	<-entered
+	testwait.Receive(t, "the settlement to reach the held store", entered)
 	state := service.room(artifactID)
 	state.mu.Lock()
 	generation := state.roomGeneration
@@ -4519,7 +4519,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 		_, err := service.BackfillBlockIDs(context.Background())
 		backfill <- result{err: err}
 	}()
-	<-entered
+	testwait.Receive(t, "BackfillBlockIDs to reach the inject hook", entered)
 	_, applyErr := joinedApplyOps(service, artifactID, []model.EditOp{{
 		Op:   "replace",
 		Find: "before",
@@ -4529,7 +4529,7 @@ func TestBackfillDoesNotBypassClosedIssueForConcurrentApplyOps(t *testing.T) {
 	if released.CompareAndSwap(false, true) {
 		close(release)
 	}
-	backfillResult := <-backfill
+	backfillResult := testwait.Receive(t, "BackfillBlockIDs to return once it was released", backfill)
 	if backfillResult.err != nil {
 		t.Fatalf("backfill document: %v", backfillResult.err)
 	}
@@ -5308,7 +5308,7 @@ func TestAdversarialSettlementDoesNotMissAppendAfterClassConsume(t *testing.T) {
 	})
 	seedServiceText(t, service, artifactID, "before")
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
-	<-entered
+	testwait.Receive(t, "the settlement to reach the held store", entered)
 	state := service.room(artifactID)
 	state.mu.Lock()
 	if state.settle == nil || !service.stopSettleTimer(state.settle) {
@@ -5382,6 +5382,10 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	// past the shutdown budget, as a settlement that renders 1 MiB under load does.
 	entered := make(chan struct{})
 	release := make(chan struct{})
+	// A give-up below still lets the settlement go, so it never stays parked holding the
+	// document's locks past the test.
+	letSettle := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letSettle)
 	var enteredOnce sync.Once
 	service.afterSettleLock = func(string) {
 		enteredOnce.Do(func() { close(entered) })
@@ -5397,7 +5401,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	testwait.Receive(t, "Shutdown to run the document's settlement", entered)
 	callerClock.Advance(300 * time.Millisecond)
 	err := testwait.Receive(t, "Shutdown to return at its caller's deadline", shutdown)
-	close(release)
+	letSettle()
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("shutdown past its budget = %v, want deadline exceeded", err)
 	}

@@ -176,8 +176,9 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	}
 
 	testwait.Receive(t, "the close to end the browser's room on the other process", peer.connection().Ended)
-	testwait.Eventually(t, "the keystroke typed while the close's write held the document's lock to be stored", func() bool {
-		return strings.Contains(storedDocumentText(t, database, issue.PrimaryArtifactID), "typed during the close")
+	testwait.Until(t, "the keystroke typed while the close's write held the document's lock to be stored", func() (string, bool) {
+		stored := storedDocumentText(t, database, issue.PrimaryArtifactID)
+		return stored, strings.Contains(stored, "typed during the close")
 	})
 	peer.reconnect(t)
 	scope, err := peer.connection().Authenticate(t, strconv.Itoa(pmdoc.SchemaVersion()))

@@ -256,7 +256,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
 	}
-	checks, present := decisionBlockChecksOf(t, <-firstDone)
+	checks, present := decisionBlockChecksOf(t, testwait.Receive(t, "the first edit to answer once the lock is let go", firstDone))
 	if !present || len(checks) != 1 || checks[0].BlockID != "window" {
 		t.Fatalf("first edit's decision_block_checks = %+v, want the block window", checks)
 	}

@@ -396,8 +396,8 @@ func allSent(attempts []model.CommentDelivery) bool {
 // releases them until this test does.
 func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 	listener, state := newMentionListener(t)
-	// A clock that stands still: no window of the listener client's (envoy.CallWindow) ends a held
-	// send, so a create that waited for its sends would never answer.
+	// A clock whose timers never fire: no window of the listener client's (envoy.CallWindow) ends a
+	// held send, so a create that waited for its sends would never answer.
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	release := state.hold("s1", "s2", "s3")
 	defer release()
@@ -437,11 +437,11 @@ func TestMentionSendsRunAfterTheCommentHasAnswered(t *testing.T) {
 // under this process's claim, with its send not started.
 func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testing.T) {
 	listener, state := newMentionListener(t)
-	// A clock that stands still: the first comment's lookup of the role is answered as the
+	// A clock whose timers never fire: the first comment's lookup of the role is answered as the
 	// listener answers it and is never left unanswered by its bound (mentionLookupTimeout), which
-	// would key its send by the role's string and put the two comments on two lanes. Every send
-	// it holds is released by the test, so no window of the listener client's ends one either.
-	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
+	// would key its send by the role's string and put the two comments on two lanes. Every send it
+	// holds is released by the test, so no window of the listener client's ends one either.
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	release := state.hold("s1")
 	defer release()
 	issue := createInteractionIssue(t, handler, "TEST", "Mentions in order", "before")
@@ -458,13 +458,22 @@ func TestMentionSendsReachOneRecipientInTheOrderItsCommentsWereAccepted(t *testi
 	if !claimedPending(t, database, second.ID, "session:s1") {
 		t.Fatal("the second comment's attempt is not held while the first's send to the same session is still held")
 	}
-	// The second comment's send waits behind the first on their one lane. A send that jumped the
-	// lane would reach the listener now, and the stand-in reports each arrival as it is taken, so
-	// its arrivals stay quiet while the first is held; the count after it is the first alone.
-	testwait.Quiet(t, "a second send to s1 while the first is held", state.arrived, 500*time.Millisecond,
-		"the mention sender keeps a lane's queued sends in its own memory, which no route or row reads, so no "+
-			"state says the second send is waiting rather than on its way, and every later action of the test "+
-			"releases the first send, after which the second may go")
+	// The second comment's send waits behind the first on their one lane: the sender holds it
+	// there, not started (mentionSender.lanes), while the first is held. A send that jumped the
+	// lane would have started and left it, so it is read there, and the count after it is the
+	// first alone.
+	testwait.Until(t, "the second comment's send queued behind the first on s1's lane", func() (string, bool) {
+		served.mentions.mu.Lock()
+		defer served.mentions.mu.Unlock()
+		for lane, sends := range served.mentions.lanes {
+			for _, send := range sends {
+				if send.comment.ID == second.ID {
+					return fmt.Sprintf("queued on lane %+v", lane), true
+				}
+			}
+		}
+		return "on no lane: started, or never queued", false
+	})
 	if sent := state.sent(); len(sent) != 1 {
 		t.Fatalf("sends while the first was still held = %#v, want the first alone", sent)
 	}
@@ -547,10 +556,10 @@ func TestMentionLookupsOfOneCommentRunAtOnce(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: a lookup the listener holds waits until the listener answers it
-	// and is never ended by its bound (mentionLookupTimeout), so a comment that looked its
-	// mentions up one after another never answers, where a real bound would end each held lookup
-	// in turn and let it through.
+	// A clock whose timers never fire: a lookup the listener holds waits until the listener answers
+	// it and is never ended by its bound (mentionLookupTimeout), so a comment that looked its
+	// mentions up one after another never answers, where a real bound would end each held lookup in
+	// turn and let it through.
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent lookups", "before")
 
@@ -1139,7 +1148,7 @@ func runOutboxBeside(t *testing.T, deps Deps, publisher outbox.Publisher) {
 	}()
 	t.Cleanup(func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	})
 }
 
@@ -1255,7 +1264,7 @@ func postMentionOfS1(t *testing.T, handler http.Handler, issueKey, body string) 
 func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		// A clock that stands still: every send this test stalls is released by the test, and
+		// A clock whose timers never fire: every send this test stalls is released by the test, and
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
@@ -1268,7 +1277,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 
 	// The first comment's send is at the listener, which has not taken it: s1 holds no copy yet.
 	sending := postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the stalled listener", reached)
 	queued := []string{
 		postMentionOfS1(t, handler, issue.Key, "second"),
 		postMentionOfS1(t, handler, issue.Key, "third"),
@@ -1316,7 +1325,7 @@ func TestAHeldLaneKeepsItsQueuedCommentsInOrderThroughASweep(t *testing.T) {
 func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		// A clock that stands still: every send this test stalls is released by the test, and
+		// A clock whose timers never fire: every send this test stalls is released by the test, and
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
@@ -1328,7 +1337,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 	defer release()
 
 	sending := postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the stalled listener", reached)
 	queued := []string{
 		postMentionOfS1(t, handler, issue.Key, "second"),
 		postMentionOfS1(t, handler, issue.Key, "third"),
@@ -1372,7 +1381,7 @@ func TestASweepTakesTheQueuedMentionsOfALaneWhoseClaimsLapsed(t *testing.T) {
 func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		// A clock that stands still: every send this test stalls is released by the test, and
+		// A clock whose timers never fire: every send this test stalls is released by the test, and
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
@@ -1383,7 +1392,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 	defer release()
 
 	postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the stalled listener", reached)
 	keyed := map[string]any{"body": "second", "mentions": []map[string]any{{"target": "session:s1"}}}
 	comments := "/api/v1/issues/" + issue.Key + "/comments"
 	queued := decodeMentionedComment(t,
@@ -1427,7 +1436,7 @@ func TestAKeyedRepeatOfAQueuedMentionLeavesTheSenderHoldingTheNewClaim(t *testin
 func TestARetryWhileTheFirstAttemptIsQueuedLeavesTheRecipientOneCopy(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
-		// A clock that stands still: every send this test stalls is released by the test, and
+		// A clock whose timers never fire: every send this test stalls is released by the test, and
 		// no window of the listener client's may settle one behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
@@ -1436,7 +1445,7 @@ func TestARetryWhileTheFirstAttemptIsQueuedLeavesTheRecipientOneCopy(t *testing.
 	defer release()
 
 	postMentionOfS1(t, handler, issue.Key, "first")
-	<-reached
+	testwait.Receive(t, "the first mention's send to reach the stalled listener", reached)
 	retried := postMentionOfS1(t, handler, issue.Key, "retried")
 	if !claimedPending(t, database, retried, "session:s1") {
 		t.Fatal("the attempt waiting on the held lane is not held by the sender")
@@ -1515,7 +1524,7 @@ func TestTheMentionDrainGivesBackItsClaimsAfterItsSendContextIsCancelled(t *test
 		comment: model.Comment{ID: "in flight"}, mention: ResolvedMention{Target: "session:s1"},
 		attempt: 1, claimed: time.Now(),
 	})
-	<-started
+	testwait.Receive(t, "the in-flight send to reach the stand-in send", started)
 	sender.enqueue(context.Background(), queued)
 
 	// SIGTERM, then a stop that takes longer than the drain: the sends' context is cancelled

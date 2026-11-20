@@ -268,9 +268,9 @@ func boundLines(p *dispatchProcess, durable string) int {
 // before times.
 func waitForBound(t *testing.T, p *dispatchProcess, name, durable string, before int) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("the %s to bind %s past the %d binds it had logged", name, durable, before), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("the %s to bind %s past the %d binds it had logged", name, durable, before), func() (withOutput[int], bool) {
 		bound := boundLines(p, durable)
-		return bound, bound > before
+		return readWith(bound, p.Output), bound > before
 	})
 }
 
@@ -374,9 +374,9 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	}
 	// The holder stops with the messages part handled: past the first ten, well before the last,
 	// at 300 ms a message.
-	testwait.Until(t, fmt.Sprintf("the %s to handle ten of the %d pull requests", builds.buildName(holder), len(numbers)), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("the %s to handle ten of the %d pull requests", builds.buildName(holder), len(numbers)), func() (withOutput[int], bool) {
 		handled := handledOf()
-		return handled, handled >= 10
+		return readWith(handled, holder.Output), handled >= 10
 	})
 	standbyBound := make(map[string]int, len(deliveryDurables))
 	for _, durable := range deliveryDurables {
@@ -401,9 +401,9 @@ func publishAcrossStop(t *testing.T, builds *twoBuilds, js natsgo.JetStreamConte
 	over.handedBack = handedBackNumbers(holder)
 	t.Logf("the %s took the durable over delivering from sequence %d; the %s had logged handing back %v",
 		over.taking, over.start, over.stopping, slices.Sorted(maps.Keys(over.handedBack)))
-	testwait.Until(t, fmt.Sprintf("every one of the %d pull requests to be handled after the %s's stop", len(numbers), over.stopping), func() (int, bool) {
+	testwait.Until(t, fmt.Sprintf("every one of the %d pull requests to be handled after the %s's stop", len(numbers), over.stopping), func() (withOutput[int], bool) {
 		handled := handledOf()
-		return handled, handled == len(numbers)
+		return readWith(handled, standby.Output), handled == len(numbers)
 	})
 	return over
 }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -100,8 +101,8 @@ func TestAKeyedWriteAProcessDiedRunningIsTakenOverOnceItsLeaseLapses(t *testing.
 		}
 		return rows == 1
 	}
-	testwait.Until(t, "process A to claim the key", func() (string, bool) {
-		return pair.a.Output.String(), held()
+	testwait.Until(t, "process A to claim the key", func() (fmt.Stringer, bool) {
+		return pair.a.Output, held()
 	})
 	if err := pair.a.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill process A: %v", err)

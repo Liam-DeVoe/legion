@@ -892,6 +892,17 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	}
 }
 
+// steppingClock is a fake whose every read of Now moves it on a nanosecond first, so the moments
+// one goroutine reads on it come out in the order it read them, each its own: a row that brackets
+// the moments the code read between two reads of its own judges their order on the fake, and no
+// two of them can land on one moment. It moves by nothing else.
+type steppingClock struct{ *clocktest.Fake }
+
+func (c steppingClock) Now() time.Time {
+	c.Advance(time.Nanosecond)
+	return c.Fake.Now()
+}
+
 // A record that finds the publisher hold another's ends the holder as one that lost the hold,
 // with the hold's loss deadline still ahead. The holder stops that hold's renewal there and then:
 // its Lost is closed, it sends no renewal across the first tick that follows, and the other's row
@@ -915,14 +926,15 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// The row takes the hold with duty.TryHold under options of its own rather than through
 	// outbox.tryHold, which uses publisherHoldOptions. What it tests is what publish does and
 	// logs when a recordBatch finds the hold another's before any renewal has noticed, and
-	// that property is not the publisher hold's production numbers. The hold's renewals and its
-	// loss timer run on a fake the row never moves (Held, which reads the wall clock, so the
-	// deadline is a real moment five minutes ahead that the line's bounds are judged against):
-	// no renewal tick comes however slow the machine, so the record path is the one that finds
-	// the row another's, and what the fake has armed afterwards is the hold's own record of
-	// whether its renewal stopped. The hold is the outbox's own, under its token and instance, so
-	// the batch that records under it finds the row another's exactly as it would in production.
-	renewals := clocktest.Held()
+	// that property is not the publisher hold's production numbers. The hold's renewals, its
+	// loss timer and the outbox's reads of the moment (holdClock) run on one fake, as they do on
+	// one clock in production, which moves only a nanosecond at each read (steppingClock): no
+	// renewal tick comes however slow the machine, so the record path is the one that finds the
+	// row another's, and what the fake has armed afterwards is the hold's own record of whether
+	// its renewal stopped. The hold is the outbox's own, under its token and instance, so the batch
+	// that records under it finds the row another's exactly as it would in production.
+	renewals := steppingClock{clocktest.New(time.Now())}
+	outbox.holdClock = renewals
 	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token, Clock: renewals}
 	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
 	if err != nil {
@@ -939,13 +951,14 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "recorded under another's hold"},
 	})
 
-	began := time.Now()
+	began := renewals.Now()
 	if end := outbox.publish(ctx, hold); end != holdLost {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
-	returned := time.Now()
-	// No renewal tick can come on the hold's clock, which the row never moves, so a renewal sent
-	// before the record path ended the turn would be the hold renewing without one.
+	returned := renewals.Now()
+	// No renewal tick can come on the hold's clock, which moves a nanosecond a read and so never
+	// reaches the first, so a renewal sent before the record path ended the turn would be the hold
+	// renewing without one.
 	if renewed := len(tracer.matching("update duty_holds set expires_at")); renewed != 0 {
 		t.Fatalf("publish returned after %d renewals of the row's own hold were sent, on a clock that brought no renewal tick", renewed)
 	}
@@ -967,15 +980,15 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// for is missing, so there is nothing left for a second !ok to catch.
 	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
 	// The four comparisons below hold the whole order a reader of the log depends on:
-	// began <= stopped <= stopped_by <= returned, with stopped_by still short of the deadline.
-	// began is read just ahead of publish and returned just after it, so the pair is held inside
-	// the turn itself, which is what separates serve's return from a deadline minutes further on;
-	// a stopped that is too early - a zero value, or one dated before this turn began - would
-	// pass every bound from the future and is caught by the first. The middle comparison is the
-	// reason this row reads stopped_by at all: this is the one path here where the two are not
+	// began < stopped < stopped_by < returned, with stopped_by still short of the deadline.
+	// began is read on the fake just ahead of publish and returned just after it, so the pair is
+	// held inside the turn itself, which is what separates serve's return from a deadline minutes
+	// further on; a stopped that is too early - a zero value, or one dated before this turn began -
+	// would pass every bound from the future and is caught by the first. The middle comparison is
+	// the reason this row reads stopped_by at all: this is the one path here where the two are not
 	// the same capped value, so the two clocks read in the wrong order, or the two attributes
-	// swapped, leave an upper bound earlier than the lower one and fail here; two reads that land
-	// on the same nanosecond pass, and leave bounds that are still honest to the clock.
+	// swapped, leave an upper bound earlier than the lower one and fail here. On the stepping fake
+	// no two reads land on one moment, so each comparison is strict.
 	//
 	// What no comparison here can catch is which side of o.hold.Store(nil) each clock was read
 	// on. Moving the second read above the store, and leaving it after the first, keeps the two
@@ -984,16 +997,16 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// placement: publish's doc comment records it, and the one reader that compares /healthz with
 	// stopped_by, the two-process row, sees only turns that end at the hold's deadline, where
 	// stopped_by is the deadline wherever the read sits.
-	if stopped.Before(began) {
-		t.Errorf("the line dates the stop at %s, before publish was called at %s",
+	if !began.Before(stopped) {
+		t.Errorf("the line dates the stop at %s, not after publish was called at %s",
 			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
 	}
-	if stoppedBy.Before(stopped) {
-		t.Errorf("the line bounds the stop above by %s, before the %s it bounds it below by",
+	if !stopped.Before(stoppedBy) {
+		t.Errorf("the line bounds the stop above by %s, not after the %s it bounds it below by",
 			stoppedBy.Format(time.RFC3339Nano), stopped.Format(time.RFC3339Nano))
 	}
-	if returned.Before(stoppedBy) {
-		t.Errorf("the line bounds the stop above by %s, after the turn ended at %s",
+	if !stoppedBy.Before(returned) {
+		t.Errorf("the line bounds the stop above by %s, not before the turn ended at %s",
 			stoppedBy.Format(time.RFC3339Nano), returned.Format(time.RFC3339Nano))
 	}
 	if !stoppedBy.Before(deadline) {

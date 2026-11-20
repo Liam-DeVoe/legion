@@ -236,9 +236,9 @@ func ciReconcilePasses(output string) []map[string]string {
 func waitForCIReconcilePasses(t *testing.T, process *dispatchProcess, what string, enough func([]map[string]string) bool) []map[string]string {
 	t.Helper()
 	var passes []map[string]string
-	testwait.Until(t, what, func() (string, bool) {
+	testwait.Until(t, what, func() (fmt.Stringer, bool) {
 		passes = ciReconcilePasses(process.Output.String())
-		return process.Output.String(), enough(passes)
+		return process.Output, enough(passes)
 	})
 	return passes
 }

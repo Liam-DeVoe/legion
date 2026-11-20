@@ -228,7 +228,7 @@ func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Pub
 	}()
 	defer func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the outbox to return once cancelled", stopped)
 	}()
 	testwait.Until(t, "the outbox to publish every event", func() (int, bool) {
 		var unpublished int
@@ -826,7 +826,8 @@ func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
 func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
 	f := newAnswersFixture(t)
 	first := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "First.", "delivery": "btw"}, "alice")
-	between := time.Now().UTC()
+	// Between the two messages on the clock that stamps them (clock_timestamp()).
+	between := databaseNow(t, f.database.Pool).UTC()
 	second := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "Second.", "delivery": "btw"}, "alice")
 
 	now := time.Now().UTC()

@@ -95,7 +95,7 @@ func sweepAfterAClosedEdit(t *testing.T, requestBeforeClose bool) keptEditorSwee
 			return err
 		}
 		for _, id := range withdrawn {
-			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer); err != nil {
+			if _, err := WriteAskResolution(ctx, tx, model.Ask{ID: id}, model.AskResolutionWithdrawn, "Withdrawn by the close of DOC-1.", closer, time.Now()); err != nil {
 				return err
 			}
 		}

@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1504,6 +1505,10 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	requirePendingSettlementActor(t, service, artifactID, alicesEdit,
 		"alice's keystroke landed on the open issue, before the close reads her off the record")
 	parked, release := parkCloseAfterRoomClosed(service, artifactID)
+	// A failed wait below still lets the parked close go, so it never holds the room's close past
+	// the test.
+	letClose := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(letClose)
 
 	holdSettlements()
 	// Closed far enough back that the gate judges alice's next keystroke by its age alone: inside
@@ -1563,7 +1568,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 			artifactID, moved)
 	}
 
-	close(release)
+	letClose()
 	waitForRefusedAppendClose(t, service)
 	awaitNotifiedClose(t, handled)
 	requirePendingSettlementActor(t, service, artifactID, bobsEdit,

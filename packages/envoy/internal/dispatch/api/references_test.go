@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func createReferenceAPIProject(t *testing.T, handler http.Handler, key string) {
@@ -374,9 +375,9 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 	// The read waits for an observation taken after it to be proven safe, so it answers the
 	// message committed before it: the server's clock never reaches referencesSinceWait, so an open
 	// transaction elsewhere on the shared test cluster only delays the answer (awaitSinceRead).
-	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink",
-		func() model.GraphReferences {
-			return graphEdges(t, handler, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
+	since := awaitSinceRead(t, "since the event before the message, ?to= "+askRef+", wanting the message's backlink", handler,
+		func(bounded http.Handler) model.GraphReferences {
+			return graphEdges(t, bounded, url.Values{"to": {askRef}, "since": {strconv.FormatInt(messageEventID-1, 10)}})
 		},
 		func(read model.GraphReferences) bool { return len(read.Edges) == 1 })
 	if since.Edges[0].SourceSeq == nil || *since.Edges[0].SourceSeq != messageEventID {
@@ -410,15 +411,25 @@ func TestReferencesReadBacklinksAcrossProjectsWithProvenance(t *testing.T) {
 // the test never moves, so the read is never cut at referencesSinceWait: it waits until the
 // horizon passes every event committed before it, and what it lists is every edge it owes, so
 // holds failing on it - a missing edge as much as a duplicate or a wrongly stamped one - is a
-// product failure. The what argument names the read in the failure. It returns the answer.
+// product failure. The read is served under testwait.Context, so a horizon that never passes ends
+// it at the shared wait's deadline rather than at the binary's alarm: its request ends, which
+// fails the test naming the read. The what argument names the read in the failure. It returns the
+// answer.
 func awaitSinceRead(
 	t *testing.T,
 	what string,
-	read func() model.GraphReferences,
+	handler http.Handler,
+	read func(http.Handler) model.GraphReferences,
 	holds func(model.GraphReferences) bool,
 ) model.GraphReferences {
 	t.Helper()
-	answer := read()
+	ctx := testwait.Context(t)
+	answer := read(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(ctx))
+		if ctx.Err() != nil {
+			t.Errorf("%s: the read still waited for the horizon at the shared wait's deadline (%v)", what, ctx.Err())
+		}
+	}))
 	if !holds(answer) {
 		t.Fatalf("%s answered %#v: the read waited for a horizon past every event before it, so that is every edge it owes",
 			what, answer.Edges)
@@ -476,8 +487,8 @@ func TestReferencesSinceAnswersAMentionCommittedBeforeTheReadOnAQuietServer(t *t
 	comment := createReferenceAPIComment(t, handler, citing.Key, "Blocked on "+targetRef)
 
 	query := url.Values{"to": {targetRef}, "since": {"0"}}
-	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID,
-		func() model.GraphReferences { return graphEdges(t, handler, query) },
+	awaitSinceRead(t, "since 0 ?to= "+targetRef+", wanting the mention by comment "+comment.ID, handler,
+		func(bounded http.Handler) model.GraphReferences { return graphEdges(t, bounded, query) },
 		func(read model.GraphReferences) bool {
 			return len(read.Edges) == 1 && read.Edges[0].Kind == "mentions" &&
 				blockOf(read.Edges[0].Node, "comment", comment.ID)

@@ -706,6 +706,7 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	srv.suggestionTimeout = 500 * time.Millisecond
 	clock := clocktest.New(checkStart)
 	srv.clock = clock
+	srv.recordClock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -726,28 +727,25 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
 	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
-	suggestions := testwait.Receive(t, "the check's answer once its allowance ran out", checked)
+	// The record's first attempt is bounded on the same fake from the moment the check gave up
+	// (recordClock): its insert waits on the lock until the move to that bound ends it, and the
+	// check answers after its record.
+	recordEnds := allowanceEnds.Add(relatedRecordTimeout)
+	awaitArmedAt(t, clock, "the record's first attempt's bound", recordEnds)
+	testwait.Eventually(t, "the record's first insert to wait on the lock", func() bool {
+		return relatedInsertWaiting(t, database, databaseNow(t, database.Pool))
+	})
+	heldSince := databaseNow(t, database.Pool)
+	clock.Set(recordEnds)
+	suggestions := testwait.Receive(t, "the check's answer once its allowance and its record's bound ran out", checked)
 	if suggestions.Outcome != "not_made" || suggestions.Missing != "the search behind it did not answer within 500ms" {
 		t.Fatalf("suggestions = %+v, want not made, the search not having answered within the allowance", suggestions)
 	}
 
-	// Hold the lock until the cancel pgx sends after the record's first attempt has landed: that
-	// attempt started its insert relatedRecordTimeout before the check answered, any retry's
-	// only once it had failed, so an insert started more than half that before is the first.
-	var answeredAt time.Time
-	if err := database.Pool.QueryRow(context.Background(), "select clock_timestamp()").Scan(&answeredAt); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
-	}
+	// Hold the lock until the first attempt's insert, which began before heldSince, is gone: its
+	// bound ended it, and a retry's insert began only after that.
 	testwait.Eventually(t, "the first attempt's insert cancelled", func() bool {
-		var waiting bool
-		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select from pg_stat_activity
-			 where datname = current_database() and state = 'active' and pid <> pg_backend_pid()
-			   and query like '%insert into related_checks%' and query_start < $1)
-		`, answeredAt.Add(-relatedRecordTimeout/2)).Scan(&waiting); err != nil {
-			t.Fatalf("read the waiting inserts: %v", err)
-		}
-		return !waiting
+		return !relatedInsertWaiting(t, database, heldSince)
 	})
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the lock: %v", err)
@@ -766,6 +764,21 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	}
 }
 
+// relatedInsertWaiting reports whether an insert into related_checks that began before `before`,
+// on the database's clock, is still running on another connection.
+func relatedInsertWaiting(t *testing.T, database *store.Store, before time.Time) bool {
+	t.Helper()
+	var waiting bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select exists (select from pg_stat_activity
+		 where datname = current_database() and state = 'active' and pid <> pg_backend_pid()
+		   and query like '%insert into related_checks%' and query_start < $1)
+	`, before).Scan(&waiting); err != nil {
+		t.Fatalf("read the waiting inserts: %v", err)
+	}
+	return waiting
+}
+
 // Shutdown waits for background work while requests may still be running, so a check's record can
 // start its retry after the wait has begun - here while a keyed handler, still in flight, holds the
 // wait open. The retry is counted with that work: the wait neither returns while the retry still
@@ -777,6 +790,9 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	createSearchIssue(t, handler, "SHUT", "Quarterly zymurgy ledger drifts", "")
 	source := createSearchIssue(t, handler, "SHUT", "Zymurgy ledger totals drift", "")
 	srv.suggestionTimeout = 500 * time.Millisecond
+	// The record's first attempt is bounded on the same fake (recordClock), which the test moves
+	// to that bound once the check has given up.
+	srv.recordClock = clock
 
 	lockTx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -808,7 +824,10 @@ func TestRelatedCheckRecordRetryStartedWhileShutdownWaitsIsWaitedFor(t *testing.
 	allowanceEnds := checkStart.Add(srv.suggestionTimeout)
 	awaitArmedAt(t, clock, "the check's allowance", allowanceEnds)
 	clock.Set(allowanceEnds)
-	testwait.Receive(t, "the check's answer once its allowance ran out", answered)
+	recordEnds := allowanceEnds.Add(relatedRecordTimeout)
+	awaitArmedAt(t, clock, "the record's first attempt's bound", recordEnds)
+	clock.Set(recordEnds)
+	testwait.Receive(t, "the check's answer once its allowance and its record's bound ran out", answered)
 	if got := srv.relatedRecordRetrying.Load(); got != 1 {
 		t.Fatalf("records being retried after the check answered = %d, want 1 (its first attempt held up by the lock)", got)
 	}

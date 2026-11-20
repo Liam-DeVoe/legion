@@ -2,7 +2,6 @@ package storetest
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -87,19 +86,6 @@ func (c *StatementCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQu
 // Count is how many statements c has counted.
 func (c *StatementCounter) Count() int64 {
 	return c.count.Load()
-}
-
-// AwaitQuiet waits until counter counts no statement over a span of quiet, which is how a loop
-// that writes nothing shows it has gone idle. Each span is a testwait.Span held for why, which
-// says why neither the state the code leaves, synctest.Wait nor a later action's effect shows the
-// idle instead.
-func AwaitQuiet(t testing.TB, counter *StatementCounter, quiet time.Duration, why string) {
-	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("a span of %v in which no statement starts", quiet), func() bool {
-		before := counter.Count()
-		testwait.Span(t, quiet, why)
-		return counter.Count() == before
-	})
 }
 
 // RequireNoStatements fails if counter counts any statement over a span of window, a

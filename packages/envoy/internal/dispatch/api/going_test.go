@@ -318,9 +318,9 @@ func TestTheMaintenancePassEndsAGoingRunNobodyReads(t *testing.T) {
 	first := ticks.Now().Add(MaintenanceSweepInterval)
 	awaitArmedAt(t, ticks, "the maintenance loop's first tick", first)
 	ticks.Set(first)
-	testwait.Eventually(t, "the abandoned run ended by a maintenance pass", func() bool {
+	testwait.Until(t, "the abandoned run ended by a maintenance pass", func() (string, bool) {
 		_, state, err := rig.server.readGoingStream(context.Background(), abandoned.ID, 0)
-		return err == nil && state.Terminal > 0
+		return fmt.Sprintf("stream state %+v, read error %v", state, err), err == nil && state.Terminal > 0
 	})
 	deadline := fmt.Sprintf(`1 %s {"code":%q}`, contracts.GoingEventError, contracts.GoingErrorAnswerDidNotArrive)
 	if frames := rig.frames(t, abandoned.ID); len(frames) != 1 || frames[0] != deadline {

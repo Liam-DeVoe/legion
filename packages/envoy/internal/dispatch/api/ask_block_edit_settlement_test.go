@@ -332,6 +332,9 @@ func TestAnEditedBlockAskPublishesItsDocumentEventsBeforeItsOwn(t *testing.T) {
 	var order []model.Event
 	for {
 		event := testwait.Receive(t, fmt.Sprintf("the edit's ask.edited (after %d other events)", len(order)), published)
+		if event.Type == "" && event.Payload == nil {
+			t.Fatalf("the broker's subscription closed before the edit's ask.edited was published (after %d other events)", len(order))
+		}
 		order = append(order, event)
 		if event.Type != "ask.edited" {
 			continue

@@ -15,6 +15,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -293,17 +295,21 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 	}
 	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#close-decision urgency="med" multiple="false" state="open"`)
 
-	started := time.Now()
-	repair := repairNow(t, f)
-	finished := time.Now()
+	// The repair stamps each withdrawal with its own moment (stampedNow), on a fake here that stands
+	// at a moment of the test's own, a minute after the close the withdrawal must not take.
+	repairedAt := closedAt.Add(time.Minute)
+	s := &server{deps: f.deps, clock: clock.Real(), stampClock: clocktest.New(repairedAt)}
+	repair, _, _, err := s.repairIssueAsks(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
 	if repair.Withdrawn != len(asks) || repair.Restored != 0 {
 		t.Fatalf("repair = %+v, want %d withdrawn and none restored", repair, len(asks))
 	}
 	for _, ask := range asks {
 		requireWithdrawn(t, f.handler, issue.Key, ask, closer)
-		at := readBlockAsk(t, f.handler, ask).Resolution.At
-		if at.Before(started.Add(-time.Second)) || at.After(finished.Add(time.Second)) || !at.After(closedAt) {
-			t.Fatalf("ask %s withdrawn at %s, want when the repair ran (%s - %s), not at the close %s", ask, at, started, finished, closedAt)
+		if at := readBlockAsk(t, f.handler, ask).Resolution.At; !at.Equal(repairedAt) {
+			t.Fatalf("ask %s withdrawn at %s, want %s, when the repair ran, not at the close %s", ask, at, repairedAt, closedAt)
 		}
 		if count := askEventCount(t, f.database, ask, "ask.resolved"); count != 1 {
 			t.Fatalf("ask %s has %d ask.resolved events, want 1", ask, count)
@@ -591,7 +597,7 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 		t.Fatalf("age the stale document's mark: %v", err)
 	}
 	s := &server{deps: f.deps}
-	bound := time.Now().Add(-time.Hour)
+	bound := databaseNow(t, f.database.Pool).Add(-time.Hour)
 	repair, _, _, err := s.repairIssueAsks(context.Background(), &bound, nil)
 	if err != nil {
 		t.Fatalf("bounded repair: %v", err)
@@ -822,18 +828,20 @@ func TestTheBlockIndexAfterTheBootRepairIndexesAClosedIssuesDocument(t *testing.
 	}()
 	defer func() {
 		stopLoop()
-		<-loopDone
+		testwait.Receive(t, "the block index reconciliation to return once stopped", loopDone)
 	}()
-	var indexed *int
-	var owed int
-	testwait.Eventually(t, "the block-index loop to index the closed issue's document and owe nothing", func() bool {
+	testwait.Until(t, "the block-index loop to index the closed issue's document and owe nothing", func() (blockIndexReading, bool) {
+		reading := blockIndexReading{live: func() string {
+			live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
+			return live
+		}}
 		if err := f.database.Pool.QueryRow(ctx, `
 			select (select version from document_block_versions where artifact_id = $1),
 			       (select count(*) from document_block_versions where version is null)
-		`, issue.PrimaryArtifactID).Scan(&indexed, &owed); err != nil {
+		`, issue.PrimaryArtifactID).Scan(&reading.indexed, &reading.owed); err != nil {
 			t.Fatalf("read the block index: %v", err)
 		}
-		return indexed != nil && owed == 0
+		return reading, reading.indexed != nil && reading.owed == 0
 	})
 	awaitSettled(t, f.database, issue.PrimaryArtifactID)
 	settled := latest + 1
@@ -886,9 +894,9 @@ func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 // awaitLiveText waits until document's live text, as this server reads it, holds part.
 func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("document %s's live text to hold %q", document, part), func() bool {
+	testwait.Until(t, fmt.Sprintf("document %s's live text to hold %q", document, part), func() (string, bool) {
 		live, _ := documentTexts(t, handler, document)
-		return strings.Contains(live, part)
+		return live, strings.Contains(live, part)
 	})
 }
 
@@ -908,9 +916,26 @@ func storedUpdateCount(t *testing.T, database *store.Store, document string) int
 // own, after the linger that gathers the room's next keystrokes into the same one.
 func awaitStoredUpdates(t *testing.T, database *store.Store, document string, want int) {
 	t.Helper()
-	testwait.Eventually(t, fmt.Sprintf("document %s to hold %d stored updates", document, want), func() bool {
-		return storedUpdateCount(t, database, document) >= want
+	testwait.Until(t, fmt.Sprintf("document %s to hold %d stored updates", document, want), func() (string, bool) {
+		stored := storedUpdateCount(t, database, document)
+		return fmt.Sprintf("%d stored updates", stored), stored >= want
 	})
+}
+
+// blockIndexReading is what the block-index wait last read: the document's indexed version and how
+// many documents are owed, and its live text, which is read only when the give-up prints it.
+type blockIndexReading struct {
+	indexed *int
+	owed    int
+	live    func() string
+}
+
+func (r blockIndexReading) String() string {
+	version := "no version"
+	if r.indexed != nil {
+		version = fmt.Sprintf("version %d", *r.indexed)
+	}
+	return fmt.Sprintf("indexed at %s with %d documents owed; live text:\n%s", version, r.owed, r.live())
 }
 
 // documentWrites is, for each of documents, how many updates it holds and when its owed

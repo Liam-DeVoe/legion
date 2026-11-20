@@ -284,7 +284,7 @@ func TestDismissTakesWhatTheFiltersMatchThroughTheMark(t *testing.T) {
 
 	// The whole Inbox, both kinds, through a later mark: the other project's thread, the Agent
 	// thread and the thread written in since go too.
-	if dismissed := dismissThrough(t, handler, "alice", time.Now(), nil); dismissed != 3 {
+	if dismissed := dismissThrough(t, handler, "alice", databaseNow(t, database.Pool), nil); dismissed != 3 {
 		t.Fatalf("dismissed = %d, want the three threads left in the Inbox", dismissed)
 	}
 	if inbox := threadsInState(t, handler, "alice", myRepliesStateInbox); len(inbox) != 0 {
@@ -481,7 +481,7 @@ func TestDismissRefusesAnAgentRootWhoseNewestReplyThePageNeverDrew(t *testing.T)
 		t.Fatalf("reply to the agent thread: status=%d body=%s", replied.Code, replied.Body.String())
 	}
 	read := dispatchRequest(t, handler, http.MethodPut, "/api/v1/me/agents/s1/state", map[string]any{
-		"read_through": time.Now().UTC().Format(time.RFC3339Nano),
+		"read_through": databaseNow(t, database.Pool).UTC().Format(time.RFC3339Nano),
 	}, "alice")
 	if read.Code != http.StatusOK {
 		t.Fatalf("alice reads the conversation: status=%d body=%s", read.Code, read.Body.String())
@@ -745,25 +745,26 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 		unreadAgain(t, database, threads)
 		gate, marks := raceGate(t, database, threads)
 		held := holdGateThread(t, database, gate)
-		queued := make(chan int, 1)
-		go func() {
-			queued <- storetest.WaitForLockWaiters(t, held.tx, 2)
-			held.release()
-		}()
 		mark := time.Now()
 		// One body for both presses: they name the same rows, so they carry the same versions,
 		// which the round's own state answers (dismissBody). Nobody writes in these threads
 		// while the round runs, so every version still stands when each press reaches its rows.
 		dismissing := dismissBody(t, database, "alice", dismissRowIDs(marks))
-		first, second := race(t, round,
+		finish := startRace(round,
 			func() *httptest.ResponseRecorder {
 				return postInboxDismiss(t, byThreadID, "alice", dismissing)
 			},
 			func() *httptest.ResponseRecorder {
 				return postInboxDismiss(t, byHeap, "alice", dismissing)
 			})
-		if waiters := <-queued; waiters != 2 {
-			t.Fatalf("round %d: %d dismisses queued on the gate row, want both of them", round, waiters)
+		// Both dismisses queue on the gate row before it is let go. The wait is the test
+		// goroutine's, so a dismiss that never queues fails the round there, by name; the count
+		// it returns is at least two, and a third backend queued there fails below.
+		waiters := storetest.WaitForLockWaiters(t, held.tx, 2)
+		held.release()
+		first, second := finish(t)
+		if waiters != 2 {
+			t.Fatalf("round %d: %d backends queued on the gate row, want the two dismisses and no other", round, waiters)
 		}
 		if first.Code != http.StatusOK || second.Code != http.StatusOK {
 			t.Fatalf("round %d: the dismiss in thread_id order %d %s, the dismiss in heap order %d %s",
@@ -824,7 +825,7 @@ func TestDismissLeavesTheUnreadCountAsItWas(t *testing.T) {
 	seed := seedInboxRead(t)
 	handler, database := seed.handler, seed.database
 	// Alice reads one thread, which leaves it in her Inbox and out of the count.
-	if marked := markThreadRead(t, handler, "alice", seed.second, time.Now()); marked.Code != http.StatusNoContent {
+	if marked := markThreadRead(t, handler, "alice", seed.second, databaseNow(t, database.Pool)); marked.Code != http.StatusNoContent {
 		t.Fatalf("read the thread: status=%d body=%s", marked.Code, marked.Body.String())
 	}
 	before := unreadThreads(t, handler, "alice")
@@ -873,7 +874,7 @@ func TestDismissAppendsOneEventPerProjectAndSession(t *testing.T) {
 	handler, database := seed.handler, seed.database
 	agentStates := countEvents(t, database, "user_agent_state.updated")
 
-	if dismissed := dismissThrough(t, handler, "alice", time.Now(), nil); dismissed != 5 {
+	if dismissed := dismissThrough(t, handler, "alice", databaseNow(t, database.Pool), nil); dismissed != 5 {
 		t.Fatalf("dismissed = %d, want the four Reply threads and the Agent thread", dismissed)
 	}
 	if projects := markAllProjects(t, database); !slices.Equal(projects, []string{"OTHER", "TEST"}) {

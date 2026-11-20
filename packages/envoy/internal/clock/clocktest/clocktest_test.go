@@ -47,7 +47,7 @@ func TestAdvanceFiresTimersInDeadlineOrder(t *testing.T) {
 		t.Errorf("fired %v, want %v", fired, want)
 	}
 	mu.Unlock()
-	if got := <-channel.C(); !got.Equal(epoch.Add(2 * time.Second)) {
+	if got := testwait.Receive(t, "the channel timer's send in the move past its deadline", channel.C()); !got.Equal(epoch.Add(2 * time.Second)) {
 		t.Errorf("the channel timer sent %s, want its deadline %s", got, epoch.Add(2*time.Second))
 	}
 	if now := c.Now(); !now.Equal(epoch.Add(5 * time.Second)) {
@@ -83,10 +83,10 @@ func TestATimerDueAtItsArmFiresAsItIsArmed(t *testing.T) {
 	if channel.Reset(-time.Second) {
 		t.Error("Reset of a fired timer reported it armed")
 	}
-	if got := <-channel.C(); !got.Equal(epoch.Add(-time.Second)) {
+	if got := testwait.Receive(t, "the send of the timer reset to an overdue moment", channel.C()); !got.Equal(epoch.Add(-time.Second)) {
 		t.Errorf("the timer reset to an overdue moment sent %s, want %s", got, epoch.Add(-time.Second))
 	}
-	if err := c.Sleep(context.Background(), 0); err != nil {
+	if err := c.Sleep(testwait.Context(t), 0); err != nil {
 		t.Errorf("a Sleep of no wait returned %v, want nil at once", err)
 	}
 	ctx, cancel := c.WithTimeout(context.Background(), 0)
@@ -279,33 +279,41 @@ func TestADeadlineContextEndsWithItsParentsCancel(t *testing.T) {
 }
 
 // Held reads the wall clock plus what Advance and Set added, and its timers fire on those moves.
+// The wall clock here is one the test moves, so each reading is exact.
 func TestHeldFollowsTheWallClockPlusWhatWasAdded(t *testing.T) {
-	c := clocktest.Held()
-	within := func(what string, got, from, to time.Time) {
-		t.Helper()
-		if got.Before(from) || got.After(to) {
-			t.Errorf("%s: the held fake reads %s, want between %s and %s", what, got, from, to)
-		}
+	wall := epoch
+	c := clocktest.HeldOn(func() time.Time { return wall })
+	if now := c.Now(); !now.Equal(wall) {
+		t.Errorf("unmoved: the held fake reads %s, want the wall clock's %s", now, wall)
 	}
-	before := time.Now()
-	now := c.Now()
-	within("unmoved", now, before, time.Now())
+	wall = wall.Add(time.Minute)
+	if now := c.Now(); !now.Equal(wall) {
+		t.Errorf("unmoved, a minute on the wall clock later: the held fake reads %s, want %s", now, wall)
+	}
 
 	fired := false
 	c.AfterFunc(time.Hour, func() { fired = true })
-	before = time.Now()
 	c.Advance(time.Hour)
-	now = c.Now()
-	within("an hour on", now, before.Add(time.Hour), time.Now().Add(time.Hour))
+	if now := c.Now(); !now.Equal(wall.Add(time.Hour)) {
+		t.Errorf("an hour on: the held fake reads %s, want %s", now, wall.Add(time.Hour))
+	}
 	if !fired {
 		t.Error("Advance by an hour did not fire the timer armed for an hour")
 	}
+	wall = wall.Add(time.Minute)
+	if now := c.Now(); !now.Equal(wall.Add(time.Hour)) {
+		t.Errorf("an hour on, a minute on the wall clock later: the held fake reads %s, want %s", now, wall.Add(time.Hour))
+	}
 
-	at := time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC)
-	before = time.Now()
+	at := epoch.Add(-time.Hour)
 	c.Set(at)
-	now = c.Now()
-	within("set back to noon", now, at, at.Add(time.Since(before)))
+	if now := c.Now(); !now.Equal(at) {
+		t.Errorf("set back an hour before the start: the held fake reads %s, want %s", now, at)
+	}
+	wall = wall.Add(time.Minute)
+	if now := c.Now(); !now.Equal(at.Add(time.Minute)) {
+		t.Errorf("set back, a minute on the wall clock later: the held fake reads %s, want %s", now, at.Add(time.Minute))
+	}
 }
 
 // Stop disarms a timer and says whether it did; Reset arms it again and says whether it was armed,

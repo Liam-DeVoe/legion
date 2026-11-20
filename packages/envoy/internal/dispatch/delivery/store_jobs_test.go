@@ -279,10 +279,10 @@ func TestAJobsWriteAndARunWriteOfOneRunNeverDeadlock(t *testing.T) {
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("release the change log's lock: %v", err)
 	}
-	if err := <-jobsDone; err != nil {
+	if err := testwait.Receive(t, "UpsertRunJobs to return once the gate committed", jobsDone); err != nil {
 		t.Errorf("UpsertRunJobs: %v", err)
 	}
-	if err := <-runDone; err != nil {
+	if err := testwait.Receive(t, "UpsertRun to return once the gate committed", runDone); err != nil {
 		t.Errorf("UpsertRun: %v", err)
 	}
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 803)

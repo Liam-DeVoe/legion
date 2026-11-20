@@ -393,10 +393,10 @@ func TestApplyOpsResolvesAgainstDocumentInsideApply(t *testing.T) {
 		_, err := joinedApplyOps(service, artifactID, []model.EditOp{{Op: "insert", Markdown: "!", After: "end"}}, model.Actor{Kind: "session", ID: "session-0123456789abcdef"}, nil)
 		result <- err
 	}()
-	<-entered
+	testwait.Receive(t, "joinedApplyOps to reach the inject hook", entered)
 	editLiveTree(t, service, artifactID, replaceRun("base", "base browser"))
 	close(release)
-	if err := <-result; err != nil {
+	if err := testwait.Receive(t, "joinedApplyOps to return once it was released", result); err != nil {
 		t.Fatalf("apply operation: %v", err)
 	}
 	waitForDocumentText(t, service, artifactID, "base browser\n\n!\n")

@@ -39,10 +39,6 @@ const (
 	loadStepIssues = 40
 	// loadStepLength is how long a step writes for.
 	loadStepLength = 60 * time.Second
-	// loadDeliveryWithin is how long after its last write a step or a burst waits for every written
-	// event to reach every destination it is addressed to, and how long a step's setup waits for
-	// its own events.
-	loadDeliveryWithin = 60 * time.Second
 	// loadSetupQuiet is how long nothing may arrive before a step starts writing, so the events of
 	// its own setup (the issues, the route) are not still being published under the step's load.
 	loadSetupQuiet = 2 * time.Second
@@ -262,7 +258,6 @@ func (r *sessionRig) step(t *testing.T, writers []*dispatchProcess, rate int) lo
 	}
 	target.recorder.waitForDelivery(t, ids)
 	outcome := target.recorder.outcome(ids, started, finished)
-	outcome.requireDelivered(t, what, len(ids))
 
 	roleReceived := 0
 	for id := range roleIDs {
@@ -308,7 +303,6 @@ func (r *sessionRig) burst(t *testing.T, writers []*dispatchProcess) loadBurstRe
 	ids, failures := written(t, what, writes)
 	target.recorder.waitForDelivery(t, ids)
 	outcome := target.recorder.outcome(ids, started, finished)
-	outcome.requireDelivered(t, what, len(ids))
 	drain := 0.0
 	if !outcome.lastArrival.IsZero() {
 		drain = float64(outcome.lastArrival.Sub(started)) / float64(time.Millisecond)
@@ -438,7 +432,8 @@ func (r *loadRecorder) waitForSetup(t *testing.T, issue string) {
 }
 
 // waitForDelivery waits until every comment of ids has reached every destination it is addressed
-// to.
+// to. Its failure names how many had, how many had arrived anywhere, and how many reached their
+// issue's topic family but not the role holder.
 func (r *loadRecorder) waitForDelivery(t *testing.T, ids []string) {
 	t.Helper()
 	want := make(map[string]bool, len(ids))
@@ -446,26 +441,36 @@ func (r *loadRecorder) waitForDelivery(t *testing.T, ids []string) {
 		want[id] = true
 	}
 	testwait.Until(t, fmt.Sprintf("every one of the %d comments to reach the destinations it is addressed to", len(ids)),
-		func() (int, bool) {
+		func() (deliveryCounts, bool) {
 			r.mu.Lock()
-			delivered := 0
+			var counts deliveryCounts
 			for _, arrival := range r.events {
-				if _, ok := arrival.reached(r.roleIssue); ok && want[arrival.commentID] {
-					delivered++
+				if !want[arrival.commentID] {
+					continue
+				}
+				counts.Arrived++
+				if _, ok := arrival.reached(r.roleIssue); ok {
+					counts.Delivered++
+				} else if !arrival.topic.IsZero() {
+					counts.RoleShort++
 				}
 			}
 			r.mu.Unlock()
-			return delivered, delivered == len(want)
+			return counts, counts.Delivered == len(want)
 		})
+}
+
+// deliveryCounts is waitForDelivery's reading of the written comments: how many reached every
+// destination they are addressed to, how many arrived anywhere, and how many of those reached
+// their issue's topic family but not the role holder.
+type deliveryCounts struct {
+	Delivered, Arrived, RoleShort int
 }
 
 // loadOutcome is what the test session received of a step's or a burst's written comments.
 type loadOutcome struct {
 	// delivered is every written comment whose event reached every destination it is addressed to.
 	delivered map[string]bool
-	// arrived counts the written comments whose event arrived anywhere; roleShort counts those of
-	// them that reached their issue's topic family but not the role holder.
-	arrived, roleShort int
 	// firstInWindow counts the written comments whose event first arrived between the first write
 	// and the last write's answer.
 	firstInWindow int
@@ -487,7 +492,6 @@ func (r *loadRecorder) outcome(ids []string, started, finished time.Time) loadOu
 		if !want[arrival.commentID] {
 			continue
 		}
-		outcome.arrived++
 		outcome.latencies = append(outcome.latencies, arrival.first.Sub(arrival.issuedAt))
 		if !arrival.first.Before(started) && !arrival.first.After(finished) {
 			outcome.firstInWindow++
@@ -497,8 +501,6 @@ func (r *loadRecorder) outcome(ids []string, started, finished time.Time) loadOu
 			if at.After(outcome.lastArrival) {
 				outcome.lastArrival = at
 			}
-		} else if !arrival.topic.IsZero() {
-			outcome.roleShort++
 		}
 		for _, at := range []time.Time{arrival.topic, arrival.role} {
 			if at.After(outcome.lastArrival) {
@@ -508,17 +510,6 @@ func (r *loadRecorder) outcome(ids []string, started, finished time.Time) loadOu
 	}
 	slices.Sort(outcome.latencies)
 	return outcome
-}
-
-// requireDelivered fails the test when any of the written comments' events had not reached every
-// destination it is addressed to within loadDeliveryWithin of the last write, naming how many.
-func (o loadOutcome) requireDelivered(t *testing.T, what string, written int) {
-	t.Helper()
-	if missing := written - len(o.delivered); missing > 0 {
-		t.Errorf("%s: %d of %d written events did not reach every destination within %v of the last write: "+
-			"%d never arrived, %d reached their issue's topic family but not the role holder",
-			what, missing, written, loadDeliveryWithin, written-o.arrived, o.roleShort)
-	}
 }
 
 // percentileMS is the nearest-rank p-th percentile of sorted, in milliseconds, or 0 for none.

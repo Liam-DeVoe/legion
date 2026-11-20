@@ -260,7 +260,7 @@ func TestNearCopyChecksARefusalThatCannotBeRecordedRefusesNothing(t *testing.T) 
 	if err := lockTx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release near_copy_checks: %v", err)
 	}
-	response := <-answered
+	response := testwait.Receive(t, "the create to answer once near_copy_checks is let go", answered)
 
 	created := requireCreatedIssue(t, response)
 	suggestions := decodeBody[struct {
@@ -418,7 +418,7 @@ func TestNearCopyChecksACreateWhoseRowCannotReplaceTheRefusalIsNotAdmitted(t *te
 
 // The route pages by id, refuses a cursor that is no row of the project, and needs a project.
 func TestNearCopyChecksPagesAndRefusesBadQueries(t *testing.T) {
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	createDuplicateTestProject(t, handler, "TEST")
 	createDuplicateTestProject(t, handler, "OTHER")
 	for _, title := range []string{"Astrolabe drifts", "Weighbridge loses power", "Orchard crates pile up"} {
@@ -438,7 +438,10 @@ func TestNearCopyChecksPagesAndRefusesBadQueries(t *testing.T) {
 	if len(second.Checks) != 1 || second.Checks[0].ID != all.Checks[2].ID || second.NextAfter != nil {
 		t.Fatalf("second page = %+v", second)
 	}
-	future := nearCopyChecksOf(t, handler, url.Values{"project": {"TEST"}, "from": {time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}})
+	// A window from a second past the database's clock now, which stamped every row, in the
+	// whole seconds the parameter is read in.
+	after := databaseNow(t, database.Pool).Add(time.Second).UTC().Format(time.RFC3339)
+	future := nearCopyChecksOf(t, handler, url.Values{"project": {"TEST"}, "from": {after}})
 	if len(future.Checks) != 0 || future.From == nil {
 		t.Fatalf("a window after every row = %+v", future)
 	}
@@ -542,7 +545,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 		}
 		return true
 	})
-	created := requireCreatedIssue(t, <-answered)
+	created := requireCreatedIssue(t, testwait.Receive(t, "the create to answer once the lock is let go", answered))
 	if got := served.relatedRecordRetrying.Load(); got != 1 {
 		t.Fatalf("records being retried after the create answered = %d, want 1 (its row's first attempt held up by the lock)", got)
 	}

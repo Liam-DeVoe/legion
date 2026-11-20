@@ -133,12 +133,14 @@ func TestEachTestGetsTheSharedServerEmpty(t *testing.T) {
 
 // A test that publishes a burst without waiting for acks leaves messages the server routes after
 // the test ends. They land in that test's own account, so the next test, creating a stream on the
-// same subjects, finds none of them.
+// same subjects, finds none of them. The burst is a subtest, and this test is the next test: every
+// test has an account of its own (URL), the subtest's apart from this one's, and running this test
+// runs the burst first.
 func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 	const burst = 20000
 	config := &natsgo.StreamConfig{Name: "BURST", Subjects: []string{"burst.>"}}
 	var publisher uint64
-	t.Run("publishes a burst and ends", func(t *testing.T) {
+	if !t.Run("publishes a burst and ends", func(t *testing.T) {
 		conn := Connect(t, URL(t))
 		defer conn.Close()
 		js, err := conn.JetStream(MaxWait(t))
@@ -159,45 +161,45 @@ func TestABurstLeftInFlightDoesNotReachTheNextTest(t *testing.T) {
 				t.Fatalf("publish %d: %v", i, err)
 			}
 		}
+	}) {
+		return
+	}
+	if publisher == 0 {
+		t.Fatal("the burst's subtest did not run, so no burst was left for this test to find none of; a -run pattern that names a subtest must name that one")
+	}
+	conn := Connect(t, URL(t))
+	defer conn.Close()
+	js, err := conn.JetStream(MaxWait(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every byte of the burst has been routed once the server has let its connection go: the
+	// server routes what a client sends from that client's own read loop, and closes the
+	// connection after the last of it.
+	testwait.Eventually(t, fmt.Sprintf("the shared server to let the burst's connection (cid %d) go", publisher), func() bool {
+		return openConnections(t, publisher) == 0
 	})
-	t.Run("recreates the stream and finds none of it", func(t *testing.T) {
-		if publisher == 0 {
-			t.Fatal("this subtest reads what the burst the subtest before it published left behind; the two run together")
-		}
-		conn := Connect(t, URL(t))
-		defer conn.Close()
-		js, err := conn.JetStream(MaxWait(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Every byte of the burst has been routed once the server has let its connection go: the
-		// server routes what a client sends from that client's own read loop, and closes the
-		// connection after the last of it.
-		testwait.Eventually(t, fmt.Sprintf("the shared server to let the burst's connection (cid %d) go", publisher), func() bool {
-			return openConnections(t, publisher) == 0
-		})
-		if _, err := js.AddStream(config); err != nil {
-			t.Fatalf("add stream: %v", err)
-		}
-		// A message of this test's own, published once the burst was routed, is stored after
-		// anything the burst left for this stream: one stream appends what reaches it in order.
-		ack, err := js.Publish("burst.0", []byte("marker"))
-		if err != nil {
-			t.Fatalf("publish this test's own message: %v", err)
-		}
-		if ack.Sequence != 1 {
-			t.Errorf("this test's own message is at sequence %d, so %d of the previous test's %d messages reached the recreated stream before it",
-				ack.Sequence, ack.Sequence-1, burst)
-		}
-		info, err := js.StreamInfo(config.Name)
-		if err != nil {
-			t.Fatalf("stream info: %v", err)
-		}
-		if info.State.Msgs != 1 {
-			t.Errorf("the recreated stream holds %d messages, want only this test's own: %d of the previous test's %d reached it",
-				info.State.Msgs, info.State.Msgs-1, burst)
-		}
-	})
+	if _, err := js.AddStream(config); err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	// A message of this test's own, published once the burst was routed, is stored after
+	// anything the burst left for this stream: one stream appends what reaches it in order.
+	ack, err := js.Publish("burst.0", []byte("marker"))
+	if err != nil {
+		t.Fatalf("publish this test's own message: %v", err)
+	}
+	if ack.Sequence != 1 {
+		t.Errorf("this test's own message is at sequence %d, so %d of the previous test's %d messages reached the recreated stream before it",
+			ack.Sequence, ack.Sequence-1, burst)
+	}
+	info, err := js.StreamInfo(config.Name)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.State.Msgs != 1 {
+		t.Errorf("the recreated stream holds %d messages, want only this test's own: %d of the previous test's %d reached it",
+			info.State.Msgs, info.State.Msgs-1, burst)
+	}
 }
 
 // openConnections is how many connections the shared server still holds open under cid, read from
@@ -295,7 +297,7 @@ func TestAServerOutOfAccountsDoublesThemWithoutDisturbingOneInUse(t *testing.T) 
 		t.Fatalf("watch: %v", err)
 	}
 	defer func() { _ = watcher.Stop() }()
-	if entry := <-watcher.Updates(); entry != nil {
+	if entry := testwait.Receive(t, "the empty bucket's scan to deliver its marker", watcher.Updates()); entry != nil {
 		t.Fatalf("the empty bucket's scan delivered %v before its marker", entry)
 	}
 
@@ -534,7 +536,7 @@ func TestASecondGrantWaitsForItsOwnReload(t *testing.T) {
 		defer close(done)
 		grant.Grant(refused, "not..a.subject")
 	}()
-	<-done
+	testwait.Receive(t, "the second Grant to return or refuse", done)
 	if !strings.Contains(refused.message, "NATS refused the new grant") ||
 		!strings.Contains(refused.message, `subject "not..a.subject" is not a valid subject`) {
 		t.Fatalf("a second Grant the server refused ended with %q, want the server's refusal", refused.message)
@@ -848,8 +850,9 @@ func TestFrozenRepliesKeepAPublishAndHoldItsAcknowledgement(t *testing.T) {
 	// The acknowledgement can reach the client only through the relay, which holds it, so each
 	// read of the store, the one that finds the publish stored among them, finds it unanswered on a
 	// connection that is still CONNECTED.
+	ctx := Context(t)
 	testwait.Until(t, "the server to store the publish whose acknowledgement the relay holds", func() (uint64, bool) {
-		stored := server.StoredOn(t, "held", "held.kept")
+		stored := server.StoredOn(t, ctx, "held", "held.kept")
 		select {
 		case <-ack.Ok():
 			t.Fatal("the publish was acknowledged while the relay held the server's replies")

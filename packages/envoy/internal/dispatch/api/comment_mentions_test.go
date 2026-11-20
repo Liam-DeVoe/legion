@@ -159,7 +159,9 @@ func TestMentionedCommentUsesRequestedOrDefaultDeliveryMode(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var input map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				t.Fatalf("decode mention send: %v", err)
+				t.Errorf("decode mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, input)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -270,7 +272,9 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/messages/send":
 			var input map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				t.Fatalf("decode role mention send: %v", err)
+				t.Errorf("decode role mention send: %v", err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
 			}
 			sent = append(sent, input)
 			_, _ = w.Write([]byte(`{"event_id":"mention-envelope","recipient":"s1"}`))
@@ -279,7 +283,7 @@ func TestMentionedCommentPinsRoleHolderBeforeSending(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
 	// answers it, s1, and is never left unanswered by its bound (mentionLookupTimeout), after which
 	// the send would look the role up a second time and find s2.
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
@@ -606,7 +610,7 @@ func TestMentionedCommentDoesNotReresolveMissingRoleHolder(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	// A clock that stands still: the comment's lookup of the role is answered as the listener
+	// A clock whose timers never fire: the comment's lookup of the role is answered as the listener
 	// answers it, no holder, and is never left unanswered by its bound (mentionLookupTimeout),
 	// after which the send would look the role up a second time.
 	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
@@ -742,9 +746,10 @@ func TestCommentRouteResolutionIsVerifiedAgainstTheLockedIssue(t *testing.T) {
 	}))
 	defer listener.Close()
 	var handler http.Handler
-	// A clock that stands still: each route lookup is answered as the listener answers it, once
-	// it has moved the route, and is never cut short by its bound (mentionLookupTimeout), which
-	// ended the request the listener moves the route in and left the stale resolution standing.
+	// A clock whose timers never fire: each route lookup is answered as the listener answers it,
+	// once it has moved the route, and is never cut short by its bound (mentionLookupTimeout),
+	// which ended the request the listener moves the route in and left the stale resolution
+	// standing.
 	handler, database = newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Route moves mid-resolution", "before")
 	issueKey = issue.Key

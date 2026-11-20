@@ -19,9 +19,24 @@ import (
 // the flooding tab left at once), and B drops every client it has not seen before: the new reader
 // stays invisible on B for that long, while on A it is seen at once. The waits for the reader are
 // the shared wait, which would sit those 75 s out, so the row reads B's room itself before she
-// joins: it must hold an entry free for her. The second is held only in benchtime's timing lane
-// (withinLive).
+// joins: it must hold an entry free for her. The second is held only by the row's twin in
+// benchtime's timing lane (withinLive).
 func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
+	aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
+}
+
+// TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcessOnTheClock is the row above in
+// benchtime's timing lane, where alice's cursor reaching carol on A and bob on B is held to
+// liveWithin of its announce (withinLive). The product's promise is README.md's Cursors and
+// presence ("a reader who joins after such a frame is taken in and relayed at once"), at the
+// spec's "at once", the one second the plan pins (#2414).
+func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
+	timedRow(t, aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess)
+}
+
+// aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess is the scene of the two rows above;
+// lane says whether its readings of the clock are held to their figures (clockLane).
+func aReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLD")
 	pair.a.createProject(t, project, "Awareness flood")
@@ -64,12 +79,12 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice, who joined A after the flood: %v", err)
 	}
-	withinLive(t, announced, "alice's cursor reaching carol on A")
+	withinLive(t, lane, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A once one tab's %d-client awareness frame had left B's view, was seen by carol on A but not by bob on B: B's room still counts the frame's clients, the tombstones of the ones that left included, against its bound, and drops every client it has not seen before",
 			invented)
 	}
-	withinLive(t, announced, "alice's cursor reaching bob on B")
+	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
 }
 
 // The same flood, from a tab that stays: it keeps its 2,048 invented clients alive, re-announcing
@@ -79,8 +94,24 @@ func TestAReaderJoiningAfterAnAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T
 // holds (maxAwarenessClientsPerRoom), A's room is full of the tab's clients, refuses alice's client
 // id, and never relays it: bob sees her only once the flooding tab stops re-announcing and its
 // clients expire. The row reads A's room before she joins - it must hold an entry free for her -
-// and the second is held only in benchtime's timing lane (withinLive).
+// and the second is held only by the row's twin in benchtime's timing lane (withinLive).
 func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T) {
+	aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t, everyRun)
+}
+
+// TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcessOnTheClock is the row above in
+// benchtime's timing lane, where alice's cursor reaching carol on A and bob on B is held to
+// liveWithin of its announce (withinLive). The product's promise is README.md's Cursors and
+// presence (a room "stands above every client real readers can put in a room and refuses none of
+// them, here or on another process", and its readers' changes are relayed once per 50 ms at
+// most), at the spec's "at once", the one second the plan pins (#2414).
+func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcessOnTheClock(t *testing.T) {
+	timedRow(t, aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess)
+}
+
+// aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess is the scene of the two rows
+// above; lane says whether its readings of the clock are held to their figures (clockLane).
+func aReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testing.T, lane clockLane) {
 	pair := startPair(t, nil)
 	project := uniqueProjectKey(t, "FLL")
 	pair.a.createProject(t, project, "Live awareness flood")
@@ -131,12 +162,12 @@ func TestAReaderJoiningDuringALiveAwarenessFloodIsSeenOnTheOtherProcess(t *testi
 	if err := carol.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("carol on A did not see alice: %v", err)
 	}
-	withinLive(t, announced, "alice's cursor reaching carol on A")
+	withinLive(t, lane, announced, "alice's cursor reaching carol on A")
 	if err := bob.WaitForAwareness(t, holdsState(aliceAwarenessClient, cursorState("alice", 0))); err != nil {
 		t.Fatalf("alice, who opened the document on A while one tab there kept %d invented awareness clients alive, was seen by carol on A but not by bob on B: A's room is full of that tab's clients and never relays hers",
 			invented)
 	}
-	withinLive(t, announced, "alice's cursor reaching bob on B")
+	withinLive(t, lane, announced, "alice's cursor reaching bob on B")
 }
 
 // inventedState is the state a flooding tab gives each of the client ids it invents from first:

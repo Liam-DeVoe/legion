@@ -8,6 +8,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -47,12 +48,15 @@ func (s Server) Database(t testing.TB, prefix string) string {
 	return DatabaseOn(t, databaseURL(server, "postgres"), prefix)
 }
 
-// AdminURL is the URL of the postgres database of the server s names, for a test that reads or
-// cleans up what spans the cluster (a role, pg_roles) rather than what one database holds. It
-// carries the same connect bound as Database's, and skips t when the variable is unset.
+// AdminURL is the URL of an empty database of t's own on the server s names (Database), for a
+// test that reads or cleans up what spans the cluster (a role, pg_roles) rather than what one
+// database holds: a role is seen and dropped from any database of the server. A test takes it
+// before it makes its other databases, so it outlives them: its drop is registered first, and so
+// runs last. It carries the same connect bound as Database's, and skips t when the variable is
+// unset.
 func (s Server) AdminURL(t testing.TB) string {
 	t.Helper()
-	return databaseURL(s.url(t), "postgres")
+	return s.Database(t, "admin")
 }
 
 // url is the server the variable names, skipping t when it is unset, with connect_timeout set to
@@ -60,6 +64,13 @@ func (s Server) AdminURL(t testing.TB) string {
 // binary's deadline as its connect bound. The variable's database path is never used: statements
 // that make or drop a database run on the server's postgres database.
 func (s Server) url(t testing.TB) url.URL {
+	t.Helper()
+	return s.urlAt(t, time.Now())
+}
+
+// urlAt is url with the time left before t's deadline counted from now, so a test of it names
+// the moment rather than reading the clock.
+func (s Server) urlAt(t testing.TB, now time.Time) url.URL {
 	t.Helper()
 	raw := os.Getenv(string(s))
 	if raw == "" {
@@ -70,7 +81,7 @@ func (s Server) url(t testing.TB) url.URL {
 		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
 		t.Fatalf("parse %s: %v", s, errors.Unwrap(err))
 	}
-	setParameter(server, "connect_timeout", connectTimeout(t))
+	setParameter(server, "connect_timeout", connectTimeout(t, now))
 	return *server
 }
 

@@ -184,11 +184,11 @@ func listOpenAsks(t *testing.T, handler http.Handler, sessionID string, since st
 }
 
 func TestListOpenAsksForSession(t *testing.T) {
-	handler, _ := newTestHandlerWithStore(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Open-ask owner", "A spec")
 	document := createProjectDocument(t, handler, "TEST", "Runbook", "# Runbook\n")
 	const ownerSession = "session-open-asks"
-	baseline := time.Now().UTC().Format(time.RFC3339Nano)
+	baseline := databaseNow(t, database.Pool).UTC().Format(time.RFC3339Nano)
 
 	createAsk := func(target, question, sessionID string) model.Ask {
 		t.Helper()

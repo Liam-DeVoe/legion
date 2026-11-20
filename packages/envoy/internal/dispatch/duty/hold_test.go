@@ -190,30 +190,29 @@ func (l *lapsingHold) takenBy(t *testing.T, taken *duty.Hold) time.Duration {
 func TestHoldReportsLossBeforeTheDatabaseExpiryWhenRenewalsFail(t *testing.T) {
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
-	// Held: the hold's loss deadline is measured against the row's expiry, which PostgreSQL dates
-	// with clock_timestamp() on the machine's clock, so the hold's clock must run with it.
-	fake := clocktest.Held()
+	// The hold's clock is a fake that stands still until the test moves it, started at the
+	// machine's present: the row's expiry is dated by PostgreSQL's clock_timestamp() on the
+	// machine's clock, and the row is read against that clock alone (below). Standing still, the
+	// fake reads one moment through the take, so the take's loss deadline and the timer it arms are
+	// each one exact moment.
+	fake := clocktest.New(time.Now())
 	opts := duty.HoldOptions{TTL: 3 * time.Second, Renew: 500 * time.Millisecond, Margin: time.Second, Clock: fake}
 	ctx := context.Background()
 	holder := uuid.New()
-	before := fake.Now()
+	sent := fake.Now()
 	hold := mustTakeHold(t, database.Pool, holder, opts)
-	after := fake.Now()
 
-	// The take's loss deadline is TTL - Margin from the moment it was sent, which is between the
-	// two readings around it, and the timer it armed on the fake is that deadline, later by no
-	// more than the take took: the fake runs with the machine's clock (Held) and reads its own now
-	// again as it arms, still inside the take.
+	// The take's loss deadline is TTL - Margin from the moment it was sent, and the timer it armed
+	// on the fake is that deadline.
 	deadline := hold.Deadline()
-	if deadline.Before(before.Add(opts.TTL-opts.Margin)) || deadline.After(after.Add(opts.TTL-opts.Margin)) {
-		t.Fatalf("the loss deadline is %s; want TTL - Margin (%s) after the take, which was sent between %s and %s",
-			deadline, opts.TTL-opts.Margin, before, after)
+	if want := sent.Add(opts.TTL - opts.Margin); !deadline.Equal(want) {
+		t.Fatalf("the loss deadline is %s; want TTL - Margin (%s) after the take, which was sent at %s: %s",
+			deadline, opts.TTL-opts.Margin, sent, want)
 	}
 	armed := fake.AwaitArmed(t, "the hold's first renewal and its loss deadline", 2)
 	loss := armed[len(armed)-1]
-	if loss.Before(deadline) || loss.After(deadline.Add(after.Sub(before))) {
-		t.Fatalf("the latest timer armed on the hold's clock is at %s; want its loss deadline %s, later by at most the %s the take took",
-			loss, deadline, after.Sub(before))
+	if !loss.Equal(deadline) {
+		t.Fatalf("the latest timer armed on the hold's clock is at %s; want its loss deadline %s", loss, deadline)
 	}
 
 	locker, err := second.Pool.Begin(ctx)

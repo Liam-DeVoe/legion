@@ -357,7 +357,7 @@ func anAnswerRecordedOverARemoval(t *testing.T, flushed bool) {
 			"alice leaving task A reaching bob on task B before the answer records the older state it read of her")
 	}
 	close(record)
-	<-recorded
+	testwait.Receive(t, "the relay's answer to return after its record", recorded)
 
 	if relayed, listed := relayedClientClock(pair.taskA, pair.artifactID, aliceClient); listed {
 		t.Errorf("task A's relay lists alice at clock %d among the clients it relays, though she left its room: its next answer to another process's query puts her cursor back",
@@ -508,7 +508,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 	if !removalLast {
 		close(gone)
 	}
-	<-recorded
+	testwait.Receive(t, "the heartbeat's ApplyUpdate to return", recorded)
 	if purged.Load() == 0 {
 		t.Fatal("no purge ran ahead of the relay's observer on task A's room, so the race this test is about never happened")
 	}
@@ -670,7 +670,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 		t.Fatal("no purge ran ahead of the relay's observer on task A's room, so the race this test is about never happened")
 	}
 	close(gone)
-	<-recorded
+	testwait.Receive(t, "the second heartbeat's ApplyUpdate to return", recorded)
 	if roomHoldsClient(pair.taskA, pair.artifactID, aliceClient) {
 		t.Fatal("task A's room still holds alice's client after her removal, so nothing here is tested")
 	}

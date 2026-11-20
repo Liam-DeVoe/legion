@@ -119,7 +119,7 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, ledger *d
 	withdrawn := make([]model.Ask, 0, len(open))
 	appended := make([]*model.Event, 0, len(open))
 	for _, ask := range open {
-		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor)
+		ask, err := docs.WriteAskResolution(ctx, tx, ask, model.AskResolutionWithdrawn, reason, actor, s.stampedNow())
 		if err != nil {
 			return nil, nil, err
 		}

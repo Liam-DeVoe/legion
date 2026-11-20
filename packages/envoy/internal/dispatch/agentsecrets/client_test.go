@@ -36,7 +36,7 @@ func serveCapturing(t *testing.T, status int, response string) (*httptest.Server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("read request body: %v", err)
+			t.Errorf("read request body: %v", err)
 		}
 		captured.Method = r.Method
 		captured.Path = r.URL.RequestURI()

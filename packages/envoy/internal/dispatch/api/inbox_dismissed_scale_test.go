@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/benchtime"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -151,7 +152,10 @@ type dismissedScaleShape struct {
 //
 // It runs when LEGION_SCALE_TEST is 1, which is what a14's own command sets, and skips otherwise:
 // seeding 110,000 rows three times over and taking 120 timed readings costs minutes, which no
-// ordinary run of this package should pay.
+// ordinary run of this package should pay. The two time bounds are a service level, so each
+// operation is held to them only in benchtime's timing lane (benchtime.TimingEnv), on a quiet
+// machine; outside it the readings are still printed, and the counts, the plans and the negative
+// control still hold.
 func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	if os.Getenv(dismissedScaleEnv) != "1" {
 		t.Skipf("set %s=1 to run the dismissed-scale measurement", dismissedScaleEnv)
@@ -224,6 +228,7 @@ func TestDismissedScaleHoldsTheInboxsReads(t *testing.T) {
 	// (verification.md v17).
 	for _, held := range dismissedScaleBounds() {
 		t.Run(held.operation, func(t *testing.T) {
+			benchtime.Timing(t, os.Getenv(benchtime.TimingEnv))
 			reading := readings[held.operation+" @ loaded"]
 			baseline := readings[held.baselineOperation+" @ "+held.baselineShape]
 			if reading.p95 > held.timeBound {

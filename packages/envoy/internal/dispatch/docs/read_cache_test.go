@@ -360,7 +360,7 @@ func newReadCacheServiceOn(t *testing.T, database *store.Store, persistence Vers
 		Clock:       serviceClock,
 	})
 	t.Cleanup(func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown read-cache service: %v", err)
 		}
 	})

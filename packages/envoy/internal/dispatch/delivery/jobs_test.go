@@ -295,7 +295,7 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 
 	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), newFakeJobClock(), nil)
 	jobs.read(ctx, runKey{repo: "acme/widgets", runID: 500}, Production{})
-	if err := <-completed; err != nil {
+	if err := testwait.Receive(t, "the run completion the job read's answer stores", completed); err != nil {
 		t.Fatalf("store the run completion: %v", err)
 	}
 	skip, err := ListRunIDsSkippingJobs(ctx, pool, "acme/widgets", []int64{500})
@@ -347,7 +347,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	read := make(chan struct{})
 	go func() { defer close(read); clock.Advance(jobQuiet) }()
-	<-entered
+	testwait.Receive(t, "the job intake's read, which the move fires, to reach GitHub", entered)
 
 	// The run's end, as Intake writes it: the run concluded and every job finished.
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -366,7 +366,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 		t.Fatalf("store the ended run's jobs: %v", err)
 	}
 	close(release)
-	<-read
+	testwait.Receive(t, "the move that ran the job intake's read to return once the read was released", read)
 
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)
 	if err != nil {
@@ -616,13 +616,16 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 		t.Fatalf("with run %s reading, the clock holds the deadlines %v, want only %v: %s past %v, when it took its slot", waiter, armed, want, intakeMessageTimeout, tookSlot)
 	}
 	releaseWaited()
-	testwait.Eventually(t, fmt.Sprintf("run %s's jobs to be stored", waiter), func() bool {
+	if failure := testwait.Until(t, fmt.Sprintf("run %s's jobs to be stored, or its read to fail", waiter), func() (map[string]any, bool) {
 		var stored bool
 		if err := pool.QueryRow(ctx, `select exists (select from delivery_run_jobs where repo = 'acme/widgets' and run_id = $1)`, waiter).Scan(&stored); err != nil {
 			t.Fatalf("read run %s's stored jobs: %v", waiter, err)
 		}
-		return stored
-	})
+		failure := failedRead(waiter)
+		return failure, stored || failure != nil
+	}); failure != nil {
+		t.Fatalf("run %s's read failed once it was released: %v", waiter, failure)
+	}
 	if failure := failedRead(waiter); failure != nil {
 		t.Fatalf("run %s's read stored its jobs and logged a failure: %v", waiter, failure)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/legionagents"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // putRoleHoldersAs sends PUT /api/v1/issues/{key}/role-holders over the deployment's bearer, the
@@ -120,15 +121,19 @@ func TestTwoSessionsThatChangeRolesInOnePublication(t *testing.T) {
 // The daemon publishes again at each boot and at each start and end of a claim. A pair that did
 // not change keeps the time that Dispatch first recorded it.
 func TestAnUnchangedHolderKeepsItsTime(t *testing.T) {
-	handler, _, _ := newTestServer(t, testServerOptions{})
+	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := roleHolderIssue(t, handler)
 
 	first := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(first.Holders) != 1 || first.Holders[0].RecordedAt.IsZero() {
 		t.Fatalf("the first publish answered %#v, want tester ses-a with its time", first)
 	}
-	// Each write is its own transaction, so a write that sets now() again sets a later time.
-	time.Sleep(5 * time.Millisecond)
+	// Each write is its own transaction, so a write that sets now() again sets a later time once
+	// the database's clock has passed the first one's, which is read off that clock.
+	testwait.Until(t, "the database's clock to pass the first publish's time", func() (time.Time, bool) {
+		now := databaseNow(t, database.Pool)
+		return now, now.After(first.Holders[0].RecordedAt)
+	})
 	again := publishRoleHolders(t, handler, issue, []issueRoleHolder{{Role: "tester", Session: "ses-a"}})
 	if len(again.Holders) != 1 || !again.Holders[0].RecordedAt.Equal(first.Holders[0].RecordedAt) {
 		t.Fatalf("the second publish answered %#v, want the time %s of the first", again, first.Holders[0].RecordedAt)
@@ -298,7 +303,7 @@ func TestTwoPublicationsOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 					response := putRoleHoldersAs(t, handler, issue, map[string]any{"holders": set, "actor": daemonSessionOf("ACME")})
 					codes[index] = response.Code
 					if response.Code == http.StatusOK {
-						answers[index] = sortedPairs(decodeBody[issueRoleHolders](t, response).Holders)
+						answers[index] = sortedPairs(decodeBodyOrError[issueRoleHolders](t, response).Holders)
 					}
 				}()
 			}

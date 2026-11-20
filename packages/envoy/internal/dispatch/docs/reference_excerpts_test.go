@@ -240,7 +240,7 @@ func newExcerptService(t *testing.T, database *store.Store, persistence Versione
 func newExcerptServiceOn(t *testing.T, database *store.Store, persistence VersionedStore, serviceClock clock.Clock) *Service {
 	t.Helper()
 	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour, Clock: serviceClock})
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	t.Cleanup(func() { _ = service.Shutdown(testwait.Context(t)) })
 	return service
 }
 
@@ -503,7 +503,7 @@ func TestAMentionOwedAnExcerptWakesTheReconciliation(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		stopHub()
-		<-hubDone
+		testwait.Receive(t, "the hub's Run to return once its context ended", hubDone)
 	})
 	testwait.Receive(t, "the hub to connect", connected)
 	awaitExcerptPassesEnded(t, database, logs, 2, "the pass the hub's wake earns to end and give its lease back")

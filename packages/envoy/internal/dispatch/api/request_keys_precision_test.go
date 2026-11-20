@@ -132,9 +132,11 @@ func TestTheMaintenanceLoopKeepsAKeyForItsWholeWindow(t *testing.T) {
 	first := fake.Now().Add(time.Minute)
 	ctx, stop := context.WithCancel(context.Background())
 	done := make(chan struct{})
+	// The lease pool is opened here, on the test goroutine, where its failure may stop the test.
+	leases := sweepLeases(t, rig.database)
 	go func() {
 		defer close(done)
-		runMaintenanceSweepOn(ctx, fake, rig.database.Pool, time.Minute, sweepLeases(t, rig.database), nil)
+		runMaintenanceSweepOn(ctx, fake, rig.database.Pool, time.Minute, leases, nil)
 	}()
 	awaitArmedAt(t, fake, "the maintenance loop's first tick", first)
 	fake.Set(first)

@@ -17,6 +17,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -488,8 +489,9 @@ func TestTheReadOnlyListedRouteWritesOnlyItsProofAndCaches(t *testing.T) {
 
 	// The trees are stored beside the request, on a goroutine of the server's background work, so
 	// the statements are read once the rows it stores are back.
-	testwait.Eventually(t, "the read to store every one of the prose's trees", func() bool {
-		return storedTrees() == len(sums)
+	testwait.Until(t, "the read to store every one of the prose's trees", func() (string, bool) {
+		stored := storedTrees()
+		return fmt.Sprintf("%d of %d trees stored", stored, len(sums)), stored == len(sums)
 	})
 
 	statements := marked.take()

@@ -28,8 +28,8 @@ import (
 func TestARefreshThatLosesToAKeyedRepeatKeepsTheRepeatsClaim(t *testing.T) {
 	listener, state := newMentionListener(t)
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
-		// A clock that stands still: the send this test stalls is released by the test, and no
-		// window of the listener client's may settle it behind its back.
+		// A clock whose timers never fire: the send this test stalls is released by the test, and
+		// no window of the listener client's may settle it behind its back.
 		envoyURL: listener.URL, clock: clocktest.Held(),
 	})
 	withMentionClaimRefresh(t, served, clocktest.Held())
@@ -148,7 +148,7 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 			// rule alone.
 			issue := createInteractionIssue(t, handler, "TEST", "A refresh across a parked send's try", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the parked send's park timer", timers)
 			if tc.across {
 				gated.Store(true)
 				refreshed := make(chan struct{})
@@ -156,18 +156,18 @@ func TestARefreshDuringAParkedSendsTryLeavesTheSenderHoldingTheRowsClaim(t *test
 					sender.refreshHeldClaims(context.Background())
 					close(refreshed)
 				}()
-				<-refreshEntered // the refresh holds its snapshot, the parked send in it
+				testwait.Receive(t, "the refresh to take its snapshot", refreshEntered) // the refresh holds its snapshot, the parked send in it
 				go unpark()
-				<-tryEntered // the lane has started the send's try
+				testwait.Receive(t, "the lane to start the parked send's try", tryEntered) // the lane has started the send's try
 				close(refreshGo)
-				<-refreshed // the refresh wrote the row and recorded what it wrote
+				testwait.Receive(t, "the refresh to write the row and record it", refreshed) // the refresh wrote the row and recorded what it wrote
 				gated.Store(false)
 				close(tryGo) // the try reads the rule alone and parks again
 			} else {
 				sender.refreshHeldClaims(context.Background())
 				go unpark()
 			}
-			<-timers
+			testwait.Receive(t, "the send's park timer once its try read the rule", timers)
 
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			sender.mu.Lock()
@@ -352,7 +352,7 @@ func TestAParkedSendKeepsTheRefreshsClaimWhenARefreshLandsBetweenItsTryAndItsPar
 					recorded, unsure, attemptClaimedAt(t, database, a1, "session:s1"))
 				gate.release()
 			}
-			unpark := <-timers
+			unpark := testwait.Receive(t, "A-1's park timer", timers)
 			if (tc.during || tc.between) && !unsureDuring {
 				t.Fatal("the refresh whose answer was lost during the try left A-1's claim known: the case is not the one under test")
 			}
@@ -451,7 +451,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			// parks under the claim its first try took, its timer left to the test.
 			issue := createInteractionIssue(t, handler, "TEST", "A hand-off during a try", "before")
 			comment := postMentionOfS1(t, handler, issue.Key, "the parked one")
-			unpark := <-timers
+			unpark := testwait.Receive(t, "the parked send's park timer", timers)
 			key := mentionKey{comment: comment, target: "session:s1", attempt: 1}
 			// A lease and a second with no refresh: the claim the send parked under lapsed, on
 			// its row and in the sender's record alike, and the attempt is old enough to be owed.
@@ -461,7 +461,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 
 			gated.Store(true)
 			go unpark()
-			<-tryEntered // the lane has started the send's try, carrying the lapsed claim
+			testwait.Receive(t, "the lane to start the parked send's try", tryEntered) // the lane has started the send's try, carrying the lapsed claim
 			want := []time.Time{parked}
 			if tc.handOff {
 				owed, err := served.owedDeliveries(ctx)
@@ -490,7 +490,7 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 			}
 			close(tryGo)
 			if !tc.handOff {
-				unpark = <-timers // the try read the rule alone, waited and parked again
+				unpark = testwait.Receive(t, "the send's park timer once its try read the rule", timers) // the try read the rule alone, waited and parked again
 				recorded, unsure := recordedClaim(sender, key)
 				row := attemptClaimedAt(t, database, comment, "session:s1")
 				t.Logf("parked again: the sender records %v (unsure %t), the row carries %v", recorded, unsure, row)
@@ -545,11 +545,14 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 			var sender *mentionSender
 			first := time.Now().Add(-30 * time.Second)
 			sweeps := time.Now()
+			// The sender stamps and judges a held send's wait on its own clock (sendClock), here a
+			// fake no one moves, which the wait's start is read off too.
+			senderClock := warnClock()
 			item := mentionSend{
 				comment: model.Comment{ID: "a-first", IssueKey: new("A-1")}, mention: ResolvedMention{Target: "session:s1"},
 				attempt: 1, claimed: first,
 				// A send the delivery sweep handed over once before (held.send): it waited.
-				heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 7}, heldSince: time.Now().Add(-2 * time.Minute),
+				heldFor: "s1", heldBy: model.MentionCopyHolder{EventID: 7}, heldSince: senderClock.Now().Add(-2 * time.Minute),
 			}
 			handOff := item
 			handOff.claimed = sweeps
@@ -589,6 +592,7 @@ func TestAHandOffAfterTheRetryCheckIsNotDropped(t *testing.T) {
 			)
 			sender.mu.Lock()
 			sender.heldWarnAfter = time.Nanosecond
+			sender.clock = senderClock
 			sender.mu.Unlock()
 			sender.enqueue(context.Background(), item)
 			testwait.Until(t, fmt.Sprintf("a try under the hand-off's claim %v: a hand-off never tried, with no entry in the sender for it, leaves the attempt pending under a claim nothing refreshes or sends until it lapses", sweeps),

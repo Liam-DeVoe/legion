@@ -216,11 +216,14 @@ func TestASettlementWhoseRoomClosedBeforeItsCatchUpIsArmedAgain(t *testing.T) {
 		}
 		// The close runs on its own, as a close for the issue or the idle sweep does, and the
 		// hook waits for the room to leave the server: what the close does once it has, it may do
-		// under the document's lock this settlement holds.
+		// under the document's lock this settlement holds. The hook runs on the settlement timer's
+		// goroutine, so a give-up of its wait fails the test there with t.Error, not FailNow.
 		go func() { _ = pair.taskA.srv.CloseRoom(artifactID, true) }()
-		waitFor(t, "the close to take task A's room out of ygo's map", func() bool {
+		if err := testwait.InHelper("afterSettleLock", "the close to take task A's room out of ygo's map", func() bool {
 			return pair.taskA.srv.GetDoc(artifactID) != room
-		})
+		}); err != nil {
+			t.Error(err)
+		}
 	}
 	// The hook stays in place, one-shot through the CAS, so nothing races the settlement that
 	// reads it. The delay is written once, before the settlement it arms.
@@ -637,10 +640,10 @@ func TestARoomOnAReplacedHistoryAnotherCallerIsInsideIsClosedOnceItLeaves(t *tes
 			<-leave
 		})
 	}()
-	<-inside
+	testwait.Receive(t, "the product's Apply to run its body", inside)
 	leaveRoom := sync.OnceFunc(func() {
 		close(leave)
-		if err := <-applied; err != nil && !errors.Is(err, websocket.ErrNoChanges) {
+		if err := testwait.Receive(t, "srv.Apply to return once the test left the room", applied); err != nil && !errors.Is(err, websocket.ErrNoChanges) {
 			t.Errorf("the Apply inside the room: %v", err)
 		}
 	})
@@ -1510,7 +1513,7 @@ func TestAWriteDoesNotForkFromTheStoreInsideAnAppendsCursorWindow(t *testing.T) 
 	// the confirmation that decision needs, or, having taken it without one, for its own append.
 	waitForLockWait(t, context.Background(), service.store, "%pg_advisory_xact_lock%", written)
 	releaseWindow()
-	if err := <-written; err != nil {
+	if err := testwait.Receive(t, "the write to return once the window was released", written); err != nil {
 		t.Fatalf("a mark projection made inside the window: %v", err)
 	}
 	if cold {

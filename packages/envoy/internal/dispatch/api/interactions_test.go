@@ -1588,7 +1588,7 @@ func TestSuggestionAcceptChecksClosureBeforeApplyingReplacement(t *testing.T) {
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("commit closed issue: %v", err)
 	}
-	response := <-responses
+	response := testwait.Receive(t, "the accept to answer once the close commits", responses)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
 		t.Fatalf("accept suggestion after close: status=%d body=%s", response.Code, response.Body.String())
 	}

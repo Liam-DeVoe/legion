@@ -289,8 +289,10 @@ func (socket *liveSocket) closeUnserved() {
 // goes out ahead of a hub frame queued before it: a sub the read loop replaces has every frame the
 // hub sends it queued before the replacement starts (Unsubscribe takes the hub's lock, which the
 // hub sends under), so the replacement's frames follow the replaced view's last answer.
-func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat time.Duration, aged <-chan time.Time, readerDone <-chan struct{}) {
-	ticker := time.NewTicker(heartbeat)
+func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, heartbeat time.Duration, pings clock.Clock, aged <-chan time.Time, readerDone <-chan struct{}) {
+	// The heartbeat's ticks are on pings (Deps.LiveSocketPingClock), clock.Real() where that is
+	// nil; each next tick is armed as the one before it is taken.
+	ticker := newClockTicker(cmp.Or[clock.Clock](pings, clock.Real()), heartbeat)
 	defer ticker.Stop()
 	// taken is a stream frame the pick took while a hub frame waited; its from is nil while it
 	// holds none. It goes out once the hub's queue is empty.
@@ -343,7 +345,8 @@ func (socket *liveSocket) write(ctx context.Context, lifetime <-chan struct{}, h
 				socket.close(gws.ClosePolicyViolation, "")
 			}
 			return
-		case <-ticker.C:
+		case tick := <-ticker.C():
+			ticker.next(tick)
 			if err := socket.conn.WriteControl(gws.PingMessage, nil, time.Now().Add(liveSocketWriteWait)); err != nil {
 				socket.endReads(0)
 				return
@@ -429,7 +432,7 @@ func (s *server) serveLiveSocket(w http.ResponseWriter, r *http.Request) {
 	go func() {
 		defer close(writerDone)
 		defer socket.ended()
-		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, aged.C(), readerDone)
+		socket.write(r.Context(), s.lifetime.Done(), s.deps.StreamHeartbeat, s.deps.LiveSocketPingClock, aged.C(), readerDone)
 	}()
 
 	var readErr error

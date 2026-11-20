@@ -15,6 +15,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -483,13 +484,18 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	publisher := claimedUnderTheKeep(rig.client, func() {
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
-	outbox := holding(t, rig.publisherOn(publisher))
+	// The keep reads its moment on a fake the row names, so the kept_at its handover carries is
+	// that moment exactly.
+	keptAt := time.Now().Truncate(time.Millisecond)
+	deps := rig.publisherOn(publisher)
+	deps.keepClock = clocktest.New(keptAt)
+	outbox := holding(t, deps)
 
 	started := time.Now()
 	outbox.scan(context.Background(), unfenced{})
 	keptScan := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, kept.ID) == nil {
@@ -505,9 +511,9 @@ func TestACopyKeptForARoleClaimedUnderTheKeepReachesThatHolderBeforeTheIssuesNex
 	// The handover's copy carries the time of the keep, as the drain's own forward of a copy
 	// carries the stream's store time of it: every holder is reached through the stream, which keeps
 	// whichever of the two reached its agent subject first, which is this one here.
-	if handed.KeptAt == nil || *handed.KeptAt < started.UnixMilli() || *handed.KeptAt > time.Now().UnixMilli() {
-		t.Fatalf("the holder was handed kept_at %v, want the time the outbox kept the copy, between %d and now",
-			handed.KeptAt, started.UnixMilli())
+	if handed.KeptAt == nil || *handed.KeptAt != keptAt.UnixMilli() {
+		t.Fatalf("the holder was handed kept_at %v, want the moment the outbox kept the copy, %d",
+			handed.KeptAt, keptAt.UnixMilli())
 	}
 	if copies := keptCopies(t, rig.client, role); len(copies) != 1 || copies[0].EventID != keptKey || copies[0].KeptAt != nil {
 		t.Fatalf("role %s's kept lane holds %d copies, want the one the outbox kept with no kept_at of its own: the lane stays the authority for a later holder, and the time is stamped on the forward", role, len(copies))
@@ -588,7 +594,7 @@ func TestACopyKeptForARoleClaimedUnderTheKeepWaitsBehindTheCopiesOnItsLane(t *te
 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
 		t.Fatalf("the claim made under the keep: %v", err)
 	}
 	if publishedAt(t, rig.database, later.ID) == nil {
@@ -646,7 +652,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 	scanned := time.Since(started)
 
-	if err := <-claimed; err != nil {
+	if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
 	}
 	firstKey, secondKey := fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)
@@ -722,7 +728,7 @@ func TestASecondCopyKeptForARoleIsNotHandedToAHolderTheFirstDidNotReach(t *testi
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
 
 	for range 2 {
-		if err := <-claimed; err != nil {
+		if err := testwait.Receive(t, "the claim the publisher's keep makes before its handover", claimed); err != nil {
 			t.Fatalf("a claim made under one of the keeps: %v", err)
 		}
 	}

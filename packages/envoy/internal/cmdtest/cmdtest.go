@@ -182,15 +182,16 @@ func (p *Process) Terminate(t testing.TB) time.Time {
 }
 
 // WaitExit waits through the shared wait for the process to exit, and fails the test with its
-// output when it never does; after names what it was waiting on.
+// output when it never does; after names what it was waiting on. Each ask reads only Exited: the
+// reading is the output buffer itself, which only the failure copies.
 func (p *Process) WaitExit(t testing.TB, after string) {
 	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%s to exit after %s", p.name, after), func() (string, bool) {
+	testwait.Until(t, fmt.Sprintf("%s to exit after %s", p.name, after), func() (*LockedBuffer, bool) {
 		select {
 		case <-p.Exited:
-			return "", true
+			return p.Output, true
 		default:
-			return p.Output.String(), false
+			return p.Output, false
 		}
 	})
 }

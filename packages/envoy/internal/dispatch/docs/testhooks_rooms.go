@@ -65,7 +65,8 @@ type RoomCounters struct {
 	// service's close and is not counted.
 	RoomCloses int64 `json:"room_closes"`
 	// SettlementResumptions holds the time of each settlement-resumption pass of this process that
-	// armed the document's owed settlement (resumeOwedSettlements), oldest first.
+	// armed the document's owed settlement (resumeOwedSettlements), on the service's clock, oldest
+	// first.
 	SettlementResumptions []time.Time `json:"settlement_resumptions"`
 	// AwarenessClients is how many client entries this process's room of the document holds now
 	// - the clients present and the tombstones of the ones that left, whoever sent them - which
