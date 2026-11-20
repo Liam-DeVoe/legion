@@ -4,6 +4,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
+import { heldPress } from "../../components/held-press";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
@@ -40,12 +41,16 @@ const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
 const fieldClass = `h-8 min-w-0 flex-1 rounded border px-2 text-sm ${inputClasses(true)} ${textPrimaryOnSurface}`;
 
 /** One group: its name, renamable, its members, each removable, and the window's selected
- *  sessions to add, drawn as an item of the editor's list of groups. While any group write is
- *  pending, every mutating button is disabled so a second click cannot race the one request that
- *  decides the membership. A write of this card's own that lands keeps them disabled until the
- *  live update carrying it draws the card anew - its item is keyed by `updated_at` - or takes it
- *  away (`useHoldUntilDrawn`), so the control the reader pressed goes as their press's doing; a
- *  refusal lets them go at once. */
+ *  sessions to add, drawn as an item of the editor's list of groups, keyed by the group's id.
+ *  While any group write is pending, every mutating button is disabled so a second click cannot
+ *  race the one request that decides the membership. A write of this card's own that lands keeps
+ *  them disabled until the live update carrying it brings the group's new `updated_at`, or takes
+ *  the group away (`useHoldUntilDrawn`); a refusal lets them go at once. That update fills the
+ *  name again from the stored group in place, so the card and its buttons stay the same
+ *  elements, and the page's rescue gives the focus back to the button the reader pressed once it
+ *  is enabled again. Rename with no new name and Add selected with no session to add are held by
+ *  `aria-disabled`, not `disabled` (`heldPress`): each keeps its Tab stop, so it keeps the focus
+ *  its own write gave back to it, and a press on it does nothing. */
 function GroupCard({
   group,
   storedTitle,
@@ -63,10 +68,20 @@ function GroupCard({
   const id = useId();
   const text = useAgentText();
   const [name, setName] = useState(group.name);
-  const [drawing, holdUntilDrawn] = useHoldUntilDrawn();
+  // A new stored group - this card's write, or anyone's that a live update brings - fills the
+  // name again. It is set during render (React's pattern for state derived from props) and not
+  // by a key on the card, so the card and the button the reader pressed stay the same elements.
+  const [filledFrom, setFilledFrom] = useState(group.updated_at);
+  if (group.updated_at !== filledFrom) {
+    setFilledFrom(group.updated_at);
+    setName(group.name);
+  }
+  const [drawing, holdUntilDrawn] = useHoldUntilDrawn(group.updated_at);
   const held = pending || drawing;
+  // The press's render hands its own `holdUntilDrawn`, so the hold is on the version pressed on.
   const send = (change: GroupChange) => write(change, holdUntilDrawn);
   const addable = selected.filter((session) => !(group.sessions ?? []).includes(session));
+  const nothingToRename = name.trim() === "" || name.trim() === group.name;
   return (
     <fieldset aria-label={group.name} className={`grid gap-2 rounded border p-3 ${borderDefault}`}>
       <div className="flex items-center gap-2">
@@ -81,8 +96,8 @@ function GroupCard({
         />
         <button
           className={secondaryButtonCompact}
-          disabled={held || name.trim() === "" || name.trim() === group.name}
-          onClick={() =>
+          disabled={held}
+          {...heldPress(nothingToRename, () =>
             send({
               group,
               method: "PATCH",
@@ -90,7 +105,7 @@ function GroupCard({
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
               what: `the rename of the group ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Rename
@@ -130,15 +145,15 @@ function GroupCard({
       <div className="flex gap-2">
         <button
           className={secondaryButtonCompact}
-          disabled={held || addable.length === 0}
-          onClick={() =>
+          disabled={held}
+          {...heldPress(addable.length === 0, () =>
             send({
               group,
               method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
               what: `the sessions added to ${group.name}`,
             })
-          }
+          )}
           type="button"
         >
           Add selected
@@ -353,7 +368,7 @@ export function SessionGroupsEditor({
           </h3>
           <ul aria-labelledby={`${id}-groups`} className="grid gap-2">
             {groups.map((group) => (
-              <li key={`${group.id}:${group.updated_at}`}>
+              <li key={group.id}>
                 <GroupCard
                   group={group}
                   pending={save.isPending}

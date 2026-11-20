@@ -5,12 +5,14 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { jump, realClock } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Agent, DeliverySessionGroup } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
@@ -28,33 +30,47 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
+/** A drawn editor: `draw` draws it again over `groups`, and `queryClient` is its client. */
+interface DrawnEditor {
+  readonly draw: (groups: readonly DeliverySessionGroup[]) => void;
+  readonly queryClient: QueryClient;
+}
+
 /** The editor over `groups`, as the Delivery page draws it; `draw` draws it again, over the same
- *  client, over the groups a live update brings, as the page does. */
+ *  client, over the groups a live update brings, as the page does. `rescued` draws it in the
+ *  shell's main content with the page's focus rescue mounted on it (`RescuedMain`), as the app
+ *  shell mounts it. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
     agents?: readonly Agent[];
     titles?: Readonly<Record<string, string>>;
     counts?: Readonly<Record<string, number>>;
+    rescued?: boolean;
   } = {}
-): { draw: (next: readonly DeliverySessionGroup[]) => void; queryClient: QueryClient } {
+): DrawnEditor {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: none listed unless a test says so.
   queryClient.setQueryData(["agents"], values.agents ?? []);
-  const editor = (shown: readonly DeliverySessionGroup[]) => (
-    <MemoryRouter>
-      <QueryClientProvider client={queryClient}>
-        <KeymapProvider>
-          <SessionGroupsEditor
-            counts={values.counts ?? counts}
-            groups={shown}
-            onClose={() => {}}
-            titles={values.titles ?? titles}
-          />
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
-  );
+  const editor = (shown: readonly DeliverySessionGroup[]) => {
+    const drawn = (
+      <SessionGroupsEditor
+        counts={values.counts ?? counts}
+        groups={shown}
+        onClose={() => {}}
+        titles={values.titles ?? titles}
+      />
+    );
+    return (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <KeymapProvider>
+            {values.rescued ? <RescuedMain>{drawn}</RescuedMain> : drawn}
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
   const view = render(editor(groups));
   return { draw: (next) => view.rerender(editor(next)), queryClient };
 }
@@ -265,11 +281,11 @@ function groupButtons(group: HTMLElement): HTMLButtonElement[] {
 }
 
 // A write of a group that lands keeps its buttons held until the live update carrying it is
-// drawn: the card is keyed by `updated_at`, so that update draws it anew, and the control the
-// reader pressed goes as their press's doing (`causedByReader`). Drawn anew, the card's buttons
-// are free again. On the held clock, so a second after the landing - when the editor has long
-// heard that the write is no longer out - is a moment the row picks.
-test("a group's buttons stay held after its write lands, until the live update carrying it draws the card anew", async () => {
+// drawn: the card is keyed by the group's id, so that update fills the same card in place, and
+// the group's new `updated_at` ends the hold. Filled, the card's buttons are free again. On the
+// held clock, so a second after the landing - when the editor has long heard that the write is no
+// longer out - is a moment the row picks.
+test("a group's buttons stay held after its write lands, until the live update carrying it is drawn", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const removed = { ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" };
@@ -288,11 +304,10 @@ test("a group's buttons stay held after its write lands, until the live update c
     for (const button of groupButtons(group)) expect(button.disabled).toBe(true);
 
     draw([removed]);
-    expect(group).not.toBeInTheDocument();
-    const redrawn = screen.getByRole("group", { name: "Release crew" });
-    expect(within(redrawn).queryByRole("button", { name: "Remove Planner two" })).toBeNull();
+    expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
+    expect(within(group).queryByRole("button", { name: "Remove Planner two" })).toBeNull();
     expect(
-      (within(redrawn).getByRole("button", { name: "Delete group" }) as HTMLButtonElement).disabled
+      (within(group).getByRole("button", { name: "Delete group" }) as HTMLButtonElement).disabled
     ).toBe(false);
   } finally {
     realClock();
@@ -301,7 +316,7 @@ test("a group's buttons stay held after its write lands, until the live update c
   }
 });
 
-// The live update that would draw the group anew never comes - the stream is down, say - so the
+// The live update that would carry the write never comes - the stream is down, say - so the
 // hold ends at the app's write deadline, and the group's buttons are free again.
 test("a group's buttons held for a live update that never comes are free again at the write deadline", async () => {
   jest.useFakeTimers();
@@ -325,6 +340,116 @@ test("a group's buttons held for a live update that never comes are free again a
     for (const button of groupButtons(group)) expect(button.disabled).toBe(false);
   } finally {
     realClock();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+/** Lets the write that `pressed` made land, with the page's focus rescue mounted and Chromium's
+ *  way with a button that turns disabled (`emulateChromiumFocusFixup`): `pressed` is held, and the
+ *  focus has left it for the page. Then draws `next`, the live update carrying the write, and
+ *  lets the rescue answer. */
+async function landAndDraw(
+  pressed: HTMLButtonElement,
+  next: readonly DeliverySessionGroup[],
+  editor: DrawnEditor
+): Promise<void> {
+  await waitFor(() => expect(editor.queryClient.isMutating()).toBe(0));
+  await afterRescue();
+  expect(pressed.disabled).toBe(true);
+  expect(document.activeElement).toBe(document.body);
+  editor.draw(next);
+  await afterRescue();
+}
+
+// A card's button is held from its press until the live update carrying its write is drawn, and
+// Chromium takes the focus off a button that turns disabled. The card is keyed by the group's
+// id, so that update fills it in place: Rename stays the same element, held by `aria-disabled`
+// now that the name is the stored one, and the page's rescue gives the focus back to it - not to
+// the Name box of a card drawn anew, where the reader's next key would be typed.
+test("Rename keeps the focus once the live update draws the renamed group", async () => {
+  const user = userEvent.setup();
+  const renamed = { ...crew, name: "Ship crew", updated_at: "2026-10-11T00:01:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(renamed);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const name = within(group).getByLabelText("Name") as HTMLInputElement;
+    await user.clear(name);
+    await user.click(name);
+    // Typed with spaces around it; the server stores the name trimmed.
+    await user.paste(" Ship crew ");
+    const rename = within(group).getByRole("button", { name: "Rename" }) as HTMLButtonElement;
+    await user.click(rename);
+    await landAndDraw(rename, [renamed], editor);
+
+    await waitFor(() => expect(rename).toHaveFocus());
+    await afterRescue();
+    expect(document.activeElement).toBe(rename);
+    expect(rename).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("group", { name: "Ship crew" })).toBe(group);
+    expect(name.value).toBe("Ship crew");
+  } finally {
+    restoreFocus();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// The same for Add selected: the editor lets go of the selection as the write lands, so the
+// button is held by `aria-disabled` once the update is drawn, with no session left to add, and
+// keeps the focus the rescue gives back to it.
+test("Add selected keeps the focus once the live update draws the group with the sessions added", async () => {
+  const user = userEvent.setup();
+  const added = { ...crew, sessions: ["s2", "s9", "s3"], updated_at: "2026-10-11T00:01:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(added);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(screen.getByRole("checkbox", { name: "Reviewer" }));
+    const add = within(group).getByRole("button", { name: "Add selected" }) as HTMLButtonElement;
+    await user.click(add);
+    await landAndDraw(add, [added], editor);
+
+    await waitFor(() => expect(add).toHaveFocus());
+    await afterRescue();
+    expect(document.activeElement).toBe(add);
+    expect(add).toHaveAttribute("aria-disabled", "true");
+    expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
+    expect(within(group).getByRole("link", { name: "Reviewer" })).toBeDefined();
+  } finally {
+    restoreFocus();
+    cleanup();
+    update.mockRestore();
+  }
+});
+
+// A member's Remove goes with that member by design. The card stays, keyed by the group's id, so
+// the rescue answers the Remove's going inside it: the focus lands on the Remove of the member that
+// moved up into its place, never on the Name box of a card drawn anew.
+test("a member's Remove, gone with its member, hands the focus to the next member's Remove", async () => {
+  const user = userEvent.setup();
+  const removed = { ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" };
+  const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(removed);
+  const restoreFocus = emulateChromiumFocusFixup();
+  const editor = renderEditor([crew], { rescued: true });
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    const remove = within(group).getByRole("button", {
+      name: "Remove Planner two",
+    }) as HTMLButtonElement;
+    await user.click(remove);
+    await landAndDraw(remove, [removed], editor);
+
+    const next = within(group).getByRole("button", { name: "Remove session:s9…" });
+    await waitFor(() => expect(next).toHaveFocus());
+    await afterRescue();
+    expect(document.activeElement).toBe(next);
+    expect(screen.getByRole("group", { name: "Release crew" })).toBe(group);
+  } finally {
+    restoreFocus();
     cleanup();
     update.mockRestore();
   }

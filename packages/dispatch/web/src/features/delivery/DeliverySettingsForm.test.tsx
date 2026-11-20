@@ -1,15 +1,18 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../../__tests__/fake-clock";
+import { afterRescue, RescuedMain } from "../../__tests__/focus-rescue";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { deliverySettingsQuery } from "../../api/queries";
 import type { DeliverySettings } from "../../api/types";
+import { emulateChromiumFocusFixup } from "../issue-page/chromium-focus-fixup";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { DeliverySettingsForm } from "./DeliverySettingsForm";
 
@@ -31,11 +34,20 @@ const record: DeliverySettings = {
   updated_by: { id: "alice@example.com", kind: "user" },
 };
 
-function renderForm() {
+/** The form as the Settings page draws it, reading its record; `rescued` draws it in the shell's
+ *  main content with the page's focus rescue mounted on it (`RescuedMain`), as the app shell
+ *  mounts it. */
+function renderForm(rescued = false) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
-      <DeliverySettingsForm />
+      {rescued ? (
+        <RescuedMain>
+          <DeliverySettingsForm />
+        </RescuedMain>
+      ) : (
+        <DeliverySettingsForm />
+      )}
     </QueryClientProvider>
   );
   return queryClient;
@@ -329,6 +341,104 @@ test("a save the reader stopped says it may have been made, not that it failed",
     realClock();
     cleanup();
     queryClient.clear();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Save is disabled while its save is out and through the record's read, and Chromium takes the
+// focus off a button that turns disabled (`emulateChromiumFocusFixup`). The form stays the same
+// element through the read and fills its fields again from the stored record, so the page's
+// rescue gives the focus back to the same Save once it is enabled again: never to the form's first
+// field, out of view at the form's top, where the reader's next key would be typed.
+test("Save keeps the focus once the read draws the stored record, and no field takes it", async () => {
+  const user = userEvent.setup();
+  const stored: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    excluded_repos: ["acme/dojo", "acme/gadgets-smoke"],
+    updated_at: "2026-10-08T09:00:00Z",
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(stored);
+  const restoreFocus = emulateChromiumFocusFixup();
+
+  try {
+    const queryClient = renderForm(true);
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/gadgets");
+    // The list as typed, one line; the server stores it as its entries.
+    await replace(user, "Excluded repositories", "acme/dojo, acme/gadgets-smoke");
+    // The read after the save is held, and answers the record as the server stored it.
+    const read = Promise.withResolvers<DeliverySettings>();
+    getDeliverySettings.mockReturnValue(read.promise);
+    await user.tab();
+    const save = screen.getByRole("button", { name: "Save delivery settings" });
+    expect(save).toHaveFocus();
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(getDeliverySettings).toHaveBeenCalledTimes(2));
+    expect(putDeliverySettings).toHaveBeenCalledTimes(1);
+    // Save is held through the read, and the focus has left it for the page.
+    await afterRescue();
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => read.resolve(stored));
+    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
+    await waitFor(() => expect(save).toHaveFocus());
+    await afterRescue();
+    expect(document.activeElement).toBe(save);
+    expect(screen.getByRole("button", { name: "Save delivery settings" })).toBe(save);
+    expect(field("Deploy repository")).not.toHaveFocus();
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+    expect(field("Excluded repositories").value).toBe("acme/dojo\nacme/gadgets-smoke");
+  } finally {
+    restoreFocus();
+    cleanup();
+    getDeliverySettings.mockRestore();
+    putDeliverySettings.mockRestore();
+  }
+});
+
+// Another tab saved, and this tab's read brings the record with its new write time: the fields
+// show the stored record, and a refusal of this tab's draft goes with that draft.
+test("a save of another tab's that the read brings fills the fields from the stored record, and the refusal shown goes", async () => {
+  const user = userEvent.setup();
+  const message =
+    "the GitHub App is not installed on acme/elsewhere: its token cannot read acme/elsewhere";
+  const elsewhere: DeliverySettings = {
+    ...record,
+    deploy_repo: "acme/gadgets",
+    population_authors: ["hubot"],
+    updated_at: "2026-10-08T09:00:00Z",
+    updated_by: { id: "bob@example.com", kind: "user" },
+  };
+  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(record);
+  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: message })
+  );
+
+  try {
+    const queryClient = renderForm();
+    await screen.findByDisplayValue("acme/widgets");
+    await replace(user, "Deploy repository", "acme/elsewhere");
+    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+
+    getDeliverySettings.mockResolvedValue(elsewhere);
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: deliverySettingsQuery().queryKey });
+    });
+
+    expect(field("Deploy repository").value).toBe("acme/gadgets");
+    expect(field("Population authors").value).toBe("hubot");
+    expect(field("Production jobs").value).toBe(
+      "widgets-release / widgets-release\nrelease / release"
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
     getDeliverySettings.mockRestore();
     putDeliverySettings.mockRestore();
   }
