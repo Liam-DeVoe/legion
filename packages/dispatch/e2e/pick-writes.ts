@@ -71,7 +71,7 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     try {
       // The hold is the row's whole point: the save stays out at least this long, and until the
       // row lets it go, so the next pick, reload or read happens while it is out.
-      await Promise.all([sleep(PICK_HOLD_MS), released.promise]);
+      await Promise.all([heldFor(patch.arrivedAt), released.promise]);
       await route.fallback();
       forwarded.push(patch.body);
     } catch {
@@ -82,6 +82,19 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
     }
   });
   return { forwarded, holding: () => holding, release: () => released.resolve(), sent };
+}
+
+/** Sleeps until `Date.now()` reads `PICK_HOLD_MS` past `arrivedAt`. A timer runs on the
+ *  monotonic clock, and `Date.now()`, which a row reads a hold by (`HeldPatch`), on the wall
+ *  clock, each in whole milliseconds, so one `sleep(PICK_HOLD_MS)` can end while `Date.now()`
+ *  still reads 2999 ms (CI run 44781930916, `board.e2e.ts`'s priority-lane row): the hold is
+ *  ended by the clock that reads it. */
+async function heldFor(arrivedAt: number): Promise<void> {
+  for (let left = PICK_HOLD_MS; left > 0; left = PICK_HOLD_MS - (Date.now() - arrivedAt)) {
+    // What is left of the hold by `Date.now()`: the save stays out this long, so the row's
+    // next pick, reload or read happens while it is out.
+    await sleep(left);
+  }
 }
 
 /** Waits until no save of `held` is held and the tab keeps no write for a reload to send: every
