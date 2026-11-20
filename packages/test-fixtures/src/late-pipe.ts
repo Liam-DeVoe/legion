@@ -12,6 +12,9 @@ export interface LatePipeRun {
   readonly pipeBytes: number;
   /** Whether `killWhenFullMs` killed the command mid-write, its pipe full. */
   readonly killedWhenFull: boolean;
+  /** When the reader began to read, in ms after it started the command, both read on the
+   *  reader's one monotonic clock: no earlier than `lateMs` unless `killWhenFullMs` replaced it. */
+  readonly firstReadMs: number;
 }
 
 export interface LatePipeOptions {
@@ -78,12 +81,19 @@ export async function readThroughLatePipe(
       reader.exited,
     ]);
     if (code !== 0) throw new Error(`the late pipe's reader failed (exit ${code}): ${errors}`);
-    const { exitCode, pipeBytes, killedWhenFull } = JSON.parse(report) as {
+    const { exitCode, pipeBytes, killedWhenFull, firstReadMs } = JSON.parse(report) as {
       readonly exitCode: number | null;
       readonly pipeBytes: number;
       readonly killedWhenFull: boolean;
+      readonly firstReadMs: number;
     };
-    return { exitCode, pipeBytes, killedWhenFull, stdout: new Uint8Array(readFileSync(out)) };
+    return {
+      exitCode,
+      pipeBytes,
+      killedWhenFull,
+      firstReadMs,
+      stdout: new Uint8Array(readFileSync(out)),
+    };
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -101,6 +111,7 @@ size = fcntl.fcntl(w, 1032)
 p = subprocess.Popen(c["argv"], cwd=c["cwd"], env=c["env"], stdout=w, start_new_session=True,
                      stdin=subprocess.DEVNULL if c["stdin"] is None else subprocess.PIPE)
 os.close(w)
+started = time.monotonic()
 killed = []
 def stop():
     killed.append(True)
@@ -131,6 +142,7 @@ else:
                 stop()
             break
         time.sleep(0.01)
+first_read = (time.monotonic() - started) * 1000
 chunks = []
 while True:
     chunk = os.read(r, 65536)
@@ -142,5 +154,6 @@ code = p.wait()
 timer.cancel()
 with open(c["out"], "wb") as f:
     f.write(b"".join(chunks))
-print(json.dumps({"exitCode": None if killed else code, "pipeBytes": size, "killedWhenFull": bool(full)}))
+print(json.dumps({"exitCode": None if killed else code, "pipeBytes": size, "killedWhenFull": bool(full),
+                  "firstReadMs": first_read}))
 `;

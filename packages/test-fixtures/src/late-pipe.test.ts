@@ -17,23 +17,16 @@ describe.skipIf(noPython)("readThroughLatePipe", () => {
     expect(run.stdout.length).toBeLessThan(BYTES);
   }, 30_000);
 
-  // The two cases above hold the pipe's size, not its reader's lateness: a process.exit right
-  // after a write past a page is cut even by a reader that reads at once. Here the program pauses
-  // 300 ms between its write and its exit, in which a reader that reads at once drains both pages;
-  // a reader that is late, as every case of the consumers needs, does not. lateMs is far past the
-  // pause so that bun's start-up on a loaded machine (seconds, at worst) cannot reach it.
-  test("reads nothing before lateMs, so a program that pauses after two pages and then exits reaches it cut", async () => {
-    const run = await readThroughLatePipe(
-      [
-        process.execPath,
-        "-e",
-        'process.stdout.write("x".repeat(8_191) + "\\n"); setTimeout(() => process.exit(0), 300);',
-      ],
-      { lateMs: 5_000 }
-    );
-    expect(run.pipeBytes).toBe(4_096);
-    expect(run.exitCode).toBe(0);
-    expect(run.stdout.length).toBeLessThan(8_192);
+  // The case above holds the pipe's size, not its reader's lateness: a process.exit right after a
+  // write past a page is cut even by a reader that reads at once. The consumers' cases rest on the
+  // reader being late, so the reader reports when it began to read, on its own clock from the
+  // command's start, and that must come no earlier than lateMs: no length of a wait decides it,
+  // and a reader that reads at once fails it on any machine.
+  test("begins to read no earlier than lateMs after it started the command", async () => {
+    const run = await readThroughLatePipe([process.execPath, "-e", `${WRITE} process.exit(0);`], {
+      lateMs: 1_000,
+    });
+    expect(run.firstReadMs).toBeGreaterThanOrEqual(1_000);
   }, 30_000);
 
   test("gets every byte of a program that lets its writes drain before it ends", async () => {
