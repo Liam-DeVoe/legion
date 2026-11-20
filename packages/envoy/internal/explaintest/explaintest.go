@@ -12,7 +12,7 @@
 // RequireListReadOnce holds a plan to reading once the list a statement is given,
 // RequireStatementReadsListOnce holds a statement's two plans to it, RequireJoinedOn holds a plan
 // to matching rows by a key, and Outline writes a plan's shape for a test's log.
-// dispatch/api, dispatch/refs and broker/requests each pin an index's reach with these checks,
+// dispatch/api, dispatch/refs and cipher/requests each pin an index's reach with these checks,
 // so they live here once rather than as a second (or third) hand copy of the same recursive
 // walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
 // code across packages (see internal/stacktest's identical reasoning).
