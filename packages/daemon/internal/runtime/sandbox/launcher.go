@@ -774,7 +774,10 @@ const bundleRestoreBound = 2 * time.Minute
 // own notice of what was lost (internal/launcher's restoreWorkspace). A store that does not answer
 // the ask is the one exception, and it stops the start: the attempt may still be open, and a role
 // started now would work in a workspace that a later start of the pod, or the pod after it, could
-// be sent the bundle over. The supervisor's next launch asks again.
+// be sent the bundle over. While the start's own context is alive that is a store fault
+// (runtime.ErrSessionStore), which the supervisor waits out every minute and charges no launch
+// failure, since nothing of the claim is at fault; an ask the start's own deadline cut is the start
+// running out of time, and is returned as that.
 //
 // Nor does the hop take the time the start frame needs: it ends the start's reserve before the
 // start's deadline (beforeTheStart). Where no more than that is left the store is still asked,
@@ -822,7 +825,10 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	defer cancel()
 	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
 	if err != nil {
-		return fmt.Errorf("the saved workspace bundle of %s could not be taken for this pod's one restore attempt, so no role of the pod starts until the store answers: %w", issue, err)
+		if ctx.Err() != nil {
+			return fmt.Errorf("the start's own time ran out before the store answered the ask for the saved workspace bundle of %s, so no role of the pod starts: %w", issue, err)
+		}
+		return bundleStoreFault{issue: issue, err: err}
 	}
 	if take == runtime.WorkspaceBundleRefusedOlder {
 		d.log.Warn("launcher bundle: this pod was not created after the release's save, so the saved workspace bundle is refused and no pod is sent it again; the work stays in the daemon's database and holds the issue's pod",
@@ -882,6 +888,22 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		"issue", issue, "launcher", token, "slices", len(frames))
 	return nil
 }
+
+// bundleStoreFault is a start the daemon's store did not answer the ask for the pod's saved
+// workspace bundle, while the start's own time was not over (restoreWorkspace). It is a
+// runtime.ErrSessionStore to the supervisor, which waits for the store every minute and charges
+// nothing, and its text names the bundle and the store's own error rather than the sentinel's
+// words, which name the session store.
+type bundleStoreFault struct {
+	issue string
+	err   error
+}
+
+func (e bundleStoreFault) Error() string {
+	return fmt.Sprintf("the saved workspace bundle of %s could not be taken for this pod's one restore attempt, so no role of the pod starts until the store answers: %v", e.issue, e.err)
+}
+
+func (e bundleStoreFault) Unwrap() []error { return []error{runtime.ErrSessionStore, e.err} }
 
 // restoreReported drops the saved bundle of the release a launcher's report names, once that
 // launcher reports that its restore put the work back. It is the one confirmation a bundle is

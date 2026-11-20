@@ -162,11 +162,14 @@ type Runtime interface {
 // sessions are found, never what a session found nowhere means.
 var ErrSessionFileMissing = errors.New("the recorded session file is missing")
 
-// ErrSessionStore is a Resume whose session store could not be asked: the table does not exist, or
-// the store did not answer. It says nothing about the claim's session, so it is neither a missing
-// session nor the claim's own failure: the caller keeps the session, charges nothing, and starts
-// again every minute until the store answers (supervise's startWaitsForStore). Nothing was
-// started.
+// ErrSessionStore is a start that a store it must ask before it starts anything could not answer:
+// a Resume whose session store could not be asked (the table does not exist, or the store did not
+// answer), or, in the Sandbox runtime, a start whose ask for the pod's saved workspace bundle the
+// daemon's store did not answer while the start had time, since that ask is the pod's one restore
+// attempt (sandbox's launchers.restoreWorkspace). It says nothing about the claim or its session,
+// so it is neither a missing session nor the claim's own failure: the caller keeps the session,
+// charges nothing, and starts again every minute until the store answers (supervise's
+// startWaitsForStore). Nothing was started.
 var ErrSessionStore = errors.New("the session store could not be asked")
 
 // ErrPodGone is PodDrift asked about a place that is not there, or on its way out for an act
