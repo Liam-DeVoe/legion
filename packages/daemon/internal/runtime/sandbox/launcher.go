@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"maps"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"sync"
@@ -328,6 +329,12 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	}()
 	if err != nil {
 		session.close()
+		// A write that ran into ctx's own deadline is ctx's time running out, and is said as such.
+		// The connection reports it by its own clock, so it can arrive before ctx's timer has ended
+		// ctx, and a caller that asked ctx would read it as some other failure (ranOutOfHop).
+		if until, ok := ctx.Deadline(); ok && deadline.Equal(until) && errors.Is(err, os.ErrDeadlineExceeded) {
+			err = fmt.Errorf("%w: %w", context.DeadlineExceeded, err)
+		}
 		return nil, nil, err
 	}
 	select {
@@ -346,6 +353,19 @@ func (d *launchers) request(ctx context.Context, token claim.Token, podUID strin
 	case <-ctx.Done():
 		return nil, nil, ctx.Err()
 	}
+}
+
+// ranOutOfHop is whether err, from a request under hop, is hop's own bound running out rather than
+// ctx's time, hop being made under ctx with a bound of its own: a deadline ended the request —
+// hop's, as hop reports it, or as request reports a write the connection timed out at hop's
+// deadline before hop's timer had ended hop — and hop's deadline comes before ctx's.
+func ranOutOfHop(ctx, hop context.Context, err error) bool {
+	if !errors.Is(hop.Err(), context.DeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	hopEnd, _ := hop.Deadline()
+	ctxEnd, bounded := ctx.Deadline()
+	return !bounded || hopEnd.Before(ctxEnd)
 }
 
 // startRefusal is a Start the launcher answered OK: false, without starting the generation: the one
@@ -486,7 +506,7 @@ func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUI
 	for _, frame := range served.Frames {
 		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
-			if hop.Err() != nil && ctx.Err() == nil {
+			if ranOutOfHop(ctx, hop, err) {
 				return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
 			}
 			return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
@@ -731,7 +751,7 @@ func (d *launchers) serveLeakCheckIndex(ctx context.Context, session *launcherSe
 	for _, frame := range frames {
 		answer, confirmed, err := d.request(hop, session.token, session.podUID, frame, bundleWaiter(frame.ID, frame.Index))
 		if err != nil {
-			if hop.Err() != nil && ctx.Err() == nil {
+			if ranOutOfHop(ctx, hop, err) {
 				return fmt.Errorf("the pod's launcher did not answer the install of %s within %s", name, d.leakCheckHop)
 			}
 			return fmt.Errorf("the pod's launcher did not answer the install of %s: %w", name, err)

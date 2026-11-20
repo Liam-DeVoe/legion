@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -119,14 +120,17 @@ func (c *countedReads) Read(ctx context.Context) (leakguard.Index, error) {
 // is still running when the daemon's hop ends, does. hold, when set, has it close holding as the
 // first slice of the index arrives and answer that slice only once hold is closed. stall has its
 // first connection read nothing at all until the daemon closes it, as a launcher too slow to take
-// a slice within the daemon's bound does, so the daemon's write of that slice is cut. redials has
-// it connect again whenever the daemon closes its connection while the test runs, as the pod's
+// a slice within the daemon's bound does, so the daemon's write of that slice is cut. early has the
+// daemon's end of that first connection report its write timed out that long before the write's
+// deadline, by its own clock, as a connection may before the hop's timer has ended the hop. redials
+// has it connect again whenever the daemon closes its connection while the test runs, as the pod's
 // launcher does a second later (ServeLauncher's `default: return`).
 type indexLauncher struct {
 	refuse        string
 	silent        bool
 	hold, holding chan struct{}
 	stall         bool
+	early         time.Duration
 	redials       bool
 
 	mu        sync.Mutex
@@ -136,16 +140,44 @@ type indexLauncher struct {
 }
 
 // closeNotice is the daemon's end of a fake launcher connection, which closes closed when the
-// daemon closes the connection, so the fake can tell that close from its own test's end.
+// daemon closes the connection, so the fake can tell that close from its own test's end. early,
+// when set, is a connection that sends nothing and reports a write timed out that long before the
+// write deadline set on it, by its own clock, as net.Pipe reports one: "write pipe: i/o timeout".
 type closeNotice struct {
 	net.Conn
 	once   sync.Once
 	closed chan struct{}
+	early  time.Duration
+
+	mu       sync.Mutex
+	deadline time.Time
 }
 
 func (c *closeNotice) Close() error {
 	c.once.Do(func() { close(c.closed) })
 	return c.Conn.Close()
+}
+
+func (c *closeNotice) SetWriteDeadline(t time.Time) error {
+	c.mu.Lock()
+	c.deadline = t
+	c.mu.Unlock()
+	return c.Conn.SetWriteDeadline(t)
+}
+
+func (c *closeNotice) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	deadline := c.deadline
+	c.mu.Unlock()
+	if c.early <= 0 || deadline.IsZero() {
+		return c.Conn.Write(p)
+	}
+	select {
+	case <-time.After(time.Until(deadline.Add(-c.early))):
+		return 0, &net.OpError{Op: "write", Net: "pipe", Err: os.ErrDeadlineExceeded}
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
 }
 
 func (l *indexLauncher) serve(conn net.Conn, closed <-chan struct{}) {
@@ -249,7 +281,11 @@ func connectIndexLauncher(t *testing.T, d *launchers, token claim.Token, podUID 
 		PodUID: podUID, LauncherID: "launcher-of-" + podUID, LeakCheckIndex: takes,
 	})
 	pipe, peer := net.Pipe()
-	server := &closeNotice{Conn: pipe, closed: make(chan struct{})}
+	l.mu.Lock()
+	early := l.early
+	l.early = 0
+	l.mu.Unlock()
+	server := &closeNotice{Conn: pipe, closed: make(chan struct{}), early: early}
 	var ending atomic.Bool
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
 	// Cleanups run last first, so the test's end is marked before its pipes close.
@@ -487,11 +523,15 @@ func TestAStartWaitsForThePollsPushToTheSameLauncher(t *testing.T) {
 // logged as a warning naming why, and the role's start is sent and answered all the same: the
 // check in that pod reads the index it holds, or UNKNOWN with none, and says why. A launcher whose
 // connection the daemon closed connects again, as the pod's launcher does, and the start goes to
-// that connection. The two slow launchers' hop is cut to 50ms so the test does not wait out the
+// that connection. The slow launchers' hop is cut to 50ms so the test does not wait out the
 // production bound; the refusing one's keeps that bound, since it answers.
 //
+// A write the hop's bound cuts names the bound however the cut reaches the daemon: as the hop's own
+// end, or as the connection's write timeout at the hop's deadline, which the connection reports by
+// its own clock and so can before the hop's timer has ended the hop.
+//
 // slices is what the launcher reads of the index: a slice for the refusing launcher, none for the
-// one that reads nothing until its connection is closed, and either for the silent one, whose
+// ones that read nothing until their connection is closed, and either for the silent one, whose
 // slice the 50ms can cut while it is still being written on a loaded machine — after which it is
 // the case of the launcher that took no slice.
 func TestAFailedIndexPushDoesNotRefuseTheStart(t *testing.T) {
@@ -505,6 +545,9 @@ func TestAFailedIndexPushDoesNotRefuseTheStart(t *testing.T) {
 		"the launcher refuses the index":            {launcher: &indexLauncher{refuse: refusal}, slices: "taken", want: refusal},
 		"the launcher answers nothing within a hop": {launcher: &indexLauncher{silent: true, redials: true}, hop: 50 * time.Millisecond, slices: "either", want: "within 50ms"},
 		"the launcher takes no slice within a hop":  {launcher: &indexLauncher{stall: true, redials: true}, hop: 50 * time.Millisecond, slices: "none", want: "within 50ms"},
+		"the connection times the cut write out by its own clock": {
+			launcher: &indexLauncher{stall: true, early: 10 * time.Millisecond, redials: true}, hop: 50 * time.Millisecond, slices: "none", want: "within 50ms",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := testIndex(rigNow)
