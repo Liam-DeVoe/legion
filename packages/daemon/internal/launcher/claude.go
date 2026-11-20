@@ -103,6 +103,16 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	return d.open(ctx, dsn)
+}
+
+// open opens one connection to the database at dsn, d's url: through the generation proxy's own
+// socket where clientURL names it (ompsessions.ConnectProxy), whose ends the proxy itself records,
+// and otherwise to whatever address the URL file names, a unix socket included.
+func (d sessionDial) open(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	if d.dsnFile == "" {
+		return ompsessions.ConnectProxy(ctx, dsn)
+	}
 	return ompsessions.ConnectURL(ctx, dsn)
 }
 
@@ -124,7 +134,7 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 		if err != nil {
 			return nil, err
 		}
-		conn, err := ompsessions.ConnectURL(ctx, dsn)
+		conn, err := d.open(ctx, dsn)
 		if err == nil {
 			if err = ready(ctx, conn); err == nil {
 				return conn, nil

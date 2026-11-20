@@ -114,17 +114,39 @@ func Connect(ctx context.Context, dsnFile string) (*pgx.Conn, error) {
 // ConnectURL opens the session database at dsn, a URL ReadDSN read. A refusal names the
 // database's address, never the URL's password (store.ConnectError). Each connection it dials
 // remembers the first read or write on it that failed (storeConn). A connect that fails after such
-// a failure on a connection to the database's own address, a reset or an end of file while the
-// connection was being opened, is the store's, however the driver words it: the refusal is then a
-// storeConnError, which StoreFault reads as the store's. A connection to a unix socket is excluded:
-// that is a generation proxy's socket, which ends a connection whose database it could not reach,
-// or whose sign-in the instance refused, and records which itself (sessionproxy.Proxy.Fault). Once
-// open, an operation of this package on the connection that fails after its read or write failed is
-// the store's too (ended).
+// a failure, a reset or an end of file while the connection was being opened, is the store's,
+// however the driver words it, whatever address the URL names, a TCP address or a unix socket (a
+// local server's, a pooler's): the refusal is then a storeConnError, which StoreFault reads as the
+// store's. Once open, an operation of this package on the connection that fails after its read or
+// write failed is the store's too (ended).
 func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	return connectURL(ctx, dsn, false)
+}
+
+// ConnectProxy opens the session database through a generation proxy's own socket, the one dsn
+// names (Endpoint.ClientURL), as ConnectURL opens one with one exception: an end of a connection
+// to that socket while it was being opened is no storeConnError. That is how the proxy ends a
+// connection whose database it could not reach, or whose sign-in the instance refused, and the
+// proxy itself records which (sessionproxy.Proxy.Fault).
+func ConnectProxy(ctx context.Context, dsn string) (*pgx.Conn, error) {
+	return connectURL(ctx, dsn, true)
+}
+
+// connectURL is ConnectURL, and ConnectProxy when proxied: then the connections to the unix
+// sockets dsn names, by their paths, are the proxy's (storeConn.proxy).
+func connectURL(ctx context.Context, dsn string, proxied bool) (*pgx.Conn, error) {
 	config, err := pgx.ParseConfig(dsn)
 	if err != nil {
 		return nil, store.ConnectError(dsn, err)
+	}
+	// The addresses the driver dials for the hosts dsn names, as it names them to DialFunc.
+	proxies := map[string]bool{}
+	if proxied {
+		for _, at := range append([]*pgconn.FallbackConfig{{Host: config.Host, Port: config.Port}}, config.Fallbacks...) {
+			if network, address := pgconn.NetworkAddress(at.Host, at.Port); network == "unix" {
+				proxies[address] = true
+			}
+		}
 	}
 	dial := config.DialFunc
 	var dialed storeConns
@@ -133,7 +155,7 @@ func ConnectURL(ctx context.Context, dsn string) (*pgx.Conn, error) {
 		if err != nil {
 			return nil, err
 		}
-		return dialed.add(&storeConn{Conn: conn, socket: network == "unix"}), nil
+		return dialed.add(&storeConn{Conn: conn, proxy: network == "unix" && proxies[address]}), nil
 	}
 	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
@@ -160,13 +182,13 @@ func (s *storeConns) add(conn *storeConn) *storeConn {
 	return conn
 }
 
-// failure is the first read or write that failed on one of the connections to a database's own
-// address, nil for none.
+// failure is the first read or write that failed on one of the connections that are not a
+// generation proxy's, nil for none.
 func (s *storeConns) failure() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, conn := range s.conns {
-		if failure := conn.failure.Load(); failure != nil && !conn.socket {
+		if failure := conn.failure.Load(); failure != nil && !conn.proxy {
 			return *failure
 		}
 	}
@@ -179,11 +201,11 @@ func (s *storeConns) failure() error {
 // pgconn.ErrConnClosed, the failure itself gone, and a connect the server ended with
 // pgconn.ConnectError. Two failures are not the store's and are not remembered: a deadline, which
 // is how pgx ends a wait whose context ended and which it reads back as that context's own error,
-// and a use of the connection after it was closed on this side. socket is whether the connection is
-// to a unix socket, a generation proxy's, rather than to the database's own address.
+// and a use of the connection after it was closed on this side. proxy is whether the connection is
+// to a generation proxy's own socket (ConnectProxy) rather than to an address of the database's.
 type storeConn struct {
 	net.Conn
-	socket  bool
+	proxy   bool
 	failure atomic.Pointer[error]
 }
 
@@ -524,7 +546,7 @@ func isUndefinedTable(err error) bool {
 // Nor is a start that was stopped (context.Canceled): the store was never asked to the end. A
 // connection to a generation proxy's unix socket that ended while it was still being opened, with
 // no answer of the server's and no refused or unanswered dial, is not read as the store's either
-// (ConnectURL makes no storeConnError of it): that is how the proxy ends a connection whose
+// (ConnectProxy makes no storeConnError of it): that is how the proxy ends a connection whose
 // database it could not reach, or whose sign-in the instance refused, and the proxy itself records
 // which (sessionproxy.Proxy.Fault).
 func StoreFault(err error) bool {

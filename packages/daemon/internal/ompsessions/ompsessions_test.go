@@ -268,10 +268,19 @@ func TestOnlyAStoreThatDidNotAnswerTheStartIsTheStoresFault(t *testing.T) {
 		"a connection the store closed while it was opened (EOF)": {fault: true, err: func() error {
 			return connectTo(context.Background(), "postgres://legion@"+testdb.Ending(t, false)+"/sessions?sslmode=disable&connect_timeout=5")
 		}},
-		// A generation proxy's socket ends a connection whose database it could not reach, or whose
-		// sign-in the instance refused, and records which itself.
-		"control: a connection a unix socket ended while it was opened": {err: func() error {
+		// A unix socket the URL file names is the store's own address, a pooler's or a local
+		// server's, so its end while the connection opens is the store's.
+		"a connection a unix socket the URL names ended while it was opened": {fault: true, err: func() error {
 			return connectTo(context.Background(), "postgres://legion@/sessions?sslmode=disable&connect_timeout=5&host="+endingSocket(t))
+		}},
+		// A generation proxy's own socket ends a connection whose database it could not reach, or
+		// whose sign-in the instance refused, and records which itself.
+		"control: a connection a generation proxy's own socket ended while it was opened": {err: func() error {
+			conn, err := ConnectProxy(context.Background(), "postgres://legion@/sessions?sslmode=disable&connect_timeout=5&host="+endingSocket(t))
+			if err == nil {
+				_ = conn.Close(context.Background())
+			}
+			return err
 		}},
 		"a server starting up (57P03)": {fault: true, err: func() error {
 			return connectTo(context.Background(), answering("57P03", "the database system is starting up"))
@@ -358,7 +367,7 @@ func silentListener(t *testing.T) string {
 
 // endingSocket is a directory holding a unix socket of Postgres's default port that ends every
 // connection once it has read the client's first bytes, as a generation proxy's socket does when
-// the proxy cannot reach its database.
+// the proxy cannot reach its database, and a pooler's when its server is down.
 func endingSocket(t *testing.T) string {
 	t.Helper()
 	dir := testtmp.Dir(t, SocketName)
