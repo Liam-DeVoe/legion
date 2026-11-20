@@ -1762,7 +1762,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. */
+    /** @description The eight-hop closure of documents the issue's content references: {members, truncated}, each member a document in the closure with its depth and the node it was reached via, under an ETag (If-None-Match answers 304). ?versions=latest leaves each member's artifact.versions holding only its latest version, under its own ETag; absent, empty or all is the full answer; another value, or versions given more than once, is 400 INVALID_QUERY. The closure's walk runs under a 2 s statement_timeout, and a walk past it reads nothing and answers 503 REFERENCES_TIMEOUT, to be asked again later. */
     get: operations["getApiV1IssuesByKeyReferences"];
     put?: never;
     post?: never;
@@ -4925,6 +4925,7 @@ export interface components {
     EditPreconditionCurrent: {
       blocks: components["schemas"]["EditBlockPrecondition"][] | null;
       document: string;
+      version?: number;
     };
     EditPreconditionError: {
       code: string;
@@ -5569,6 +5570,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
       name: string;
+      precondition?: components["schemas"]["EditPrecondition"] | null;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
       summary?: string;
@@ -6551,6 +6553,15 @@ export interface components {
       line: string;
       version: number;
     };
+    StandingReview: {
+      /** Format: date-time */
+      at: string;
+      by: string;
+      carried_from_version?: number;
+      reason?: string;
+      state: string;
+      version: number;
+    };
     StateResponse: {
       /** @enum {string} */
       state: "denied" | "cancelled" | "revoked";
@@ -6821,6 +6832,7 @@ export interface components {
       legion_managed_status?: boolean;
       moved_approval_request?: components["schemas"]["MovedApprovalRequest"];
       session_writes_since_human: number;
+      standing_review?: components["schemas"]["StandingReview"];
       suggestions?: components["schemas"]["Suggestions"];
       superseded_approval?: components["schemas"]["SupersededApproval"];
       unparsed_openers?: components["schemas"]["UnparsedOpeners"];
@@ -6969,6 +6981,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -10443,6 +10457,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -13522,6 +13538,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the base this upload replaces as one JSON object, as the JSON body's `precondition` field */
+          precondition?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -15314,6 +15332,7 @@ export type SpecFormRead = components["schemas"]["SpecFormRead"];
 export type SpecFormSummary = components["schemas"]["SpecFormSummary"];
 export type SpecFormTerm = components["schemas"]["SpecFormTerm"];
 export type SpecFormUnread = components["schemas"]["SpecFormUnread"];
+export type StandingReview = components["schemas"]["StandingReview"];
 export type StateResponse = components["schemas"]["StateResponse"];
 export type StepRatingInput = components["schemas"]["StepRatingInput"];
 export type StepRecord = components["schemas"]["StepRecord"];

@@ -47,6 +47,7 @@ import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   approvalRefusalKey,
@@ -294,8 +295,15 @@ function RequestChangesDialog({
           {error === null ? null : (
             <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
-                  the block and the bound; any other failure is worth another try. */}
-              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
+                  the block and the bound; a review the reader stopped may have been made, and
+                  Request changes is a press of its own; any other failure is worth another try. */}
+              {isCapExceeded(error)
+                ? error.message
+                : error instanceof SendStoppedError
+                  ? stoppedWriteNote("your review", "made", {
+                      anew: "Request changes sends a new review.",
+                    })
+                  : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -381,10 +389,20 @@ export interface ApprovalChipProps {
   onReviewed?(): void;
 }
 
+/** A review the chip makes: the document it is of, and what it says of that document. */
+interface DocumentReview {
+  readonly artifact: Artifact;
+  readonly input: CreateArtifactReviewInput;
+  readonly refusal?: FormRefusalPress;
+}
+
 /**
  * The document approval indicator: a small badge summarizing `artifact.approval`, clickable to
  * open a popover of every human review (`ArtifactReview`). On the document header only, it also
  * carries the Approve / Request changes actions that write a new review.
+ *
+ * It holds the review it made and the change-request dialog, with the reason typed into it, so a
+ * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
  */
 export function ApprovalChip({
   actionsDocument,
@@ -408,7 +426,6 @@ export function ApprovalChip({
   const formRefusalKey = approvalRefusalKey(artifact.id);
   const formRefusal = useFormRefusal(formRefusalKey, approval?.latest_version);
   const refusalSurface = useRefusalSurface();
-  const press = useRef<FormRefusalPress | undefined>(undefined);
   const chipRef = useRef<HTMLDivElement>(null);
   const queryClient = useQueryClient();
   const submitGuard = useSubmitGuard();
@@ -416,46 +433,47 @@ export function ApprovalChip({
   const page = usePageWords();
 
   const review = useKeyedWrite({
-    // A form refusal of Approve shows under the actions, and Dispatch refuses the same document
-    // again until its text changes, so the shell's corner offers no Retry for it. Every other
-    // refusal is the corner's, with Retry and Discard.
-    inline: (input, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
-    label: (input: CreateArtifactReviewInput) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+    // The press carries its document and refusal surface, including across a retry.
+    inline: ({ input }, refusal) => input.state === "approved" && isSpecFormRefusal(refusal),
+    label: ({ artifact: reviewed, input }: DocumentReview) =>
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
     onSettled: () => submitGuard.release(),
-    write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
-    onError: (error, input) => {
-      if (input.state === "approved" && isSpecFormRefusal(error) && press.current !== undefined) {
-        setFormRefusal(formRefusalKey, { error, press: press.current });
+    method: "POST",
+    write: ({ artifact: reviewed, input }, bounds) =>
+      api.createArtifactReview(reviewed.id, input, bounds),
+    onError: (error, { artifact: reviewed, input, refusal }) => {
+      if (input.state === "approved" && isSpecFormRefusal(error) && refusal !== undefined) {
+        setFormRefusal(approvalRefusalKey(reviewed.id), { error, press: refusal });
       }
     },
-    onSuccess: () => {
-      setFormRefusal(formRefusalKey, undefined);
+    onSuccess: (_result, { artifact: reviewed }) => {
+      setFormRefusal(approvalRefusalKey(reviewed.id), undefined);
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
       // dialog's submit stay refused, and keep the focus, until the new approval is read, and
       // only then does a dialog the reader has not closed (`onClose`) close and give the focus
-      // back to the button that opened it.
+      // back to the button that opened it. The reads are the reviewed document's, from the
+      // press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] }),
-        queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-        ...(artifact.issue_key === null
+        ...(reviewed.issue_key === null
           ? [
               queryClient.invalidateQueries({
-                queryKey: ["project", artifact.project, "artifacts"],
+                queryKey: ["project", reviewed.project, "artifacts"],
               }),
               queryClient.invalidateQueries({
-                queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+                queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
               }),
             ]
           : [
-              queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] }),
             ]),
       ];
       if (page === null) return;
@@ -566,10 +584,12 @@ export function ApprovalChip({
                 }
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
-                  // Each press is answered on its own: the refusal of the last one goes with it.
-                  press.current = pressOn(refusalSurface, approval.latest_version);
                   setFormRefusal(formRefusalKey, undefined);
-                  review.mutate({ state: "approved" });
+                  review.mutate({
+                    artifact,
+                    input: { state: "approved" },
+                    refusal: pressOn(refusalSurface, approval.latest_version),
+                  });
                 });
               }}
               ref={approveButton}
@@ -621,7 +641,9 @@ export function ApprovalChip({
           // Only a failed request for changes is the dialog's to report: a refused Approve, the
           // other press this write makes, is reported under the actions or by the shell.
           error={
-            review.isError && review.variables?.state === "changes_requested" ? review.error : null
+            review.isError && review.variables?.input.state === "changes_requested"
+              ? review.error
+              : null
           }
           initialReason={formRefusal?.changesReason}
           onClose={() => {
@@ -641,7 +663,7 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => {
               if (page !== null) setSentReview("changes_requested");
-              review.mutate({ reason, state: "changes_requested" });
+              review.mutate({ artifact, input: { reason, state: "changes_requested" } });
             })
           }
           saving={review.isPending}
