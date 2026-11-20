@@ -680,7 +680,7 @@ var statusChangeCases = []statusChangeCase{
 
 // withMembers is body with the members given added.
 func withMembers(body map[string]any, members map[string]any) map[string]any {
-	out := make(map[string]any, len(body)+len(members))
+	out := make(map[string]any)
 	for key, value := range body {
 		out[key] = value
 	}

@@ -5,8 +5,8 @@ import { messageFor } from "../errors";
  * A Dispatch refusal carrying its own code in the message the host shows: the code
  * (ISSUE_CLAIMED, CLAIM_CONTENDED, EXTERNAL_LINK_TAKEN, ...) is the part an agent acts on, and
  * the prose alone hides it. Only the message changes: every other field of the refusal
- * (`candidates`, `current`, `mismatches`) rides along, since a caller reads them off the error
- * it catches. An error that is not a refusal is returned as it is, so a caller's
+ * (`candidates`, `current`, `mismatches`, `issues`, `changed`) rides along, since a caller reads
+ * them off the error it catches. An error that is not a refusal is returned as it is, so a caller's
  * `throw refusalWithCode(error)` rethrows it untouched. This returns rather than throws, so the
  * throw stays at the call site, where a reader of the handler sees that the path ends there.
  *
@@ -40,8 +40,38 @@ export function refusalWithCode(error: unknown, ...clauses: string[]): unknown {
     `${error.code}: ${error.message}${joined}`,
     error.candidates,
     error.current,
-    error.mismatches
+    error.mismatches,
+    error.issues,
+    error.changed
   );
+}
+
+/**
+ * What a `409 PARENT_STATUS_CONFLICT` prints, whichever command it answered (`runDispatchCli`):
+ * the refusal's own message, then each issue that holds the rule as `KEY [status] title`, then the
+ * flags of `dispatch issue-update` that move them. Dispatch writes each issue's status into the
+ * message too, so a reader that takes no `issues` still sees them. Undefined for any other error,
+ * and for a conflict that names no issue, which prints as its message alone.
+ */
+export function parentStatusConflictLines(error: unknown): string[] | undefined {
+  if (!dispatchAnswered(error, 409) || error.code !== "PARENT_STATUS_CONFLICT") return undefined;
+  const issues = error.issues ?? [];
+  if (issues.length === 0) return undefined;
+  const relations = new Set(issues.map((issue) => issue.relation));
+  return [
+    messageFor(error),
+    ...issues.map((issue) => `${issue.key} [${issue.status}] ${issue.title}`),
+    ...(relations.has("child")
+      ? [
+          "dispatch issue-update --status takes --include-children, which moves the open issues under the issue with it, or --unlink-children, which removes its open children from it.",
+        ]
+      : []),
+    ...(relations.has("parent")
+      ? [
+          "dispatch issue-update --status takes --include-parent, which moves each issue above the issue that is not in work to in_progress.",
+        ]
+      : []),
+  ];
 }
 
 /** Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it decided. */

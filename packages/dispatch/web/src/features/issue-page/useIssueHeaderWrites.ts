@@ -5,6 +5,12 @@ import { landIssueWrite, mergeIssue } from "../../api/issue-cache";
 import { userStateQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/types";
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import {
+  isParentStatusConflict,
+  issueHasParentOrOpenChild,
+  type ParentStatusQuestion,
+  useParentStatusMove,
+} from "../issue/parent-status/useParentStatusMove";
 import { stateForIssue } from "../issue/pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "../issue/useIssueDrafts";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -102,9 +108,18 @@ export interface IssueHeaderWrites {
    * keeps the pick, shows it in the shell's indicator and sends it in its turn with no caller
    * drawn, and a reload keeps it, as it keeps every write. And a title Dispatch refused must stay
    * shown and retryable: `titleRefusal`, `parentError` and `drafts.retry()` read `updateIssue`'s
-   * last write, which a status sent through it would replace.
+   * last write, which a status sent through it would replace. A pick goes through the rule's
+   * question (`useParentStatusMove`): for an issue with a parent or an open child, the dry run
+   * first, then this write, or the question (`statusQuestion`) where Dispatch's rule would refuse
+   * it. This write, refused by the rule, asks the same question.
    */
   readonly pickStatus: (next: string) => void;
+  /** The question a pick asks while Dispatch's rule would refuse it, which the control that makes
+   *  the pick draws as `ParentStatusDialog`. */
+  readonly statusQuestion: ParentStatusQuestion | undefined;
+  /** Why the dry run of the newest pick was refused, which put the pick back, until the next
+   *  pick: the control that makes the pick shows it. */
+  readonly statusRefusal: unknown;
   /** A parent Dispatch refused, with the reason it gave, or one the reader stopped, which may have
    *  been saved, drawn where the parent is edited. */
   readonly parentSaveFailed: boolean;
@@ -192,8 +207,19 @@ export function useIssueHeaderWrites(
   // takes `updateIssue`'s line and mutation key, so it waits behind a title, route or parent write
   // still being tried, and `pendingStatus` reads it. It lets go of no guard and drains no draft
   // (`drafts.onIssueSettled`): the guard and the drafts are `updateIssue`'s, and a drain here,
-  // after a title Dispatch refused, would send that title again.
-  const statusWrite = useKeyedWrite({ ...fieldWrite, inline: false });
+  // after a title Dispatch refused, would send that title again. A pick Dispatch refused under the
+  // parent-status rule - the page read the parent or the children before they changed - asks the
+  // rule's question, as a refused dry run does.
+  const parentStatus = useParentStatusMove();
+  const statusWrite = useKeyedWrite({
+    ...fieldWrite,
+    inline: false,
+    onError: (error, { input, issueKey }) => {
+      if (statusPickOnly(input) && input.status !== undefined && isParentStatusConflict(error)) {
+        void parentStatus.ask({ key: issueKey, status: input.status }, error);
+      }
+    },
+  });
   // The labels are a field of the issue too, so they land as every field write does: a landing
   // with no answer reads the issue again rather than leave the old labels showing
   // (`landIssueWrite`).
@@ -264,9 +290,16 @@ export function useIssueHeaderWrites(
     },
   });
   const pickStatus = (next: string) => {
-    statusWrite.mutate({ input: { status: next }, issueKey: issue.key });
+    void parentStatus.move({
+      key: issue.key,
+      patch: () => statusWrite.mutate({ input: { status: next }, issueKey: issue.key }),
+      related: issueHasParentOrOpenChild(issue),
+      status: next,
+    });
   };
-  const pendingStatus = pendingStatuses.filter((status) => status !== undefined).at(-1);
+  // A pick the rule's question is checking or asking about is pending too, so the pill shows it.
+  const pendingStatus =
+    parentStatus.pending?.status ?? pendingStatuses.filter((status) => status !== undefined).at(-1);
   const statusSaving = pendingStatus !== undefined;
   return {
     drafts,
@@ -287,6 +320,8 @@ export function useIssueHeaderWrites(
     pin,
     pinGuard,
     releaseClaim,
+    statusQuestion: parentStatus.question,
+    statusRefusal: parentStatus.refusal,
     statusSaving,
     // A title Dispatch refused (CAP_EXCEEDED past ISSUE_TITLE_MAX, ISSUE_CLOSED) shows its reason
     // with no Retry, since the same title is refused every time; any other failure keeps the

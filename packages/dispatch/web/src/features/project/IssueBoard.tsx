@@ -41,6 +41,7 @@ import { ClaimChip } from "../issue/ClaimChip";
 import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
+import { ParentStatusDialog } from "../issue/parent-status/ParentStatusDialog";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import { closeRefPreview, referenceTriggerProps } from "../refs/RefPreview";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
@@ -332,7 +333,7 @@ export function IssueBoard({
     (issue: IssueSummary) => matches(issue, userState.data?.[issue.key]?.last_read_seq ?? 0),
     [matches, userState.data]
   );
-  const { error, moveCard, moveCardToLane } = useBoardMoves(project, labels, isVisible);
+  const { error, moveCard, moveCardToLane, question } = useBoardMoves(project, labels, isVisible);
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 5 } })
@@ -523,7 +524,8 @@ export function IssueBoard({
       return;
     }
     // Both move functions place the card in the cache synchronously before their request goes
-    // out, so the announcement reads the optimistic position - the one the user sees.
+    // out, so the announcement reads the optimistic position - the one the user sees. A move the
+    // rule's question checks first places nothing yet, and is not announced as made.
     const lane: PriorityLane | undefined = laneId === null ? undefined : laneFromKey(laneId);
     if (lanes && lane !== undefined) {
       void moveCardToLane(key, target.status, lane, target.insertionIndex);
@@ -538,7 +540,9 @@ export function IssueBoard({
         (lane === undefined || issue.priority === lane)
     );
     const position = column.findIndex((issue) => issue.key === key);
-    setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+    if (position !== -1) {
+      setAnnouncement(announceMove(key, target.status, position + 1, column.length));
+    }
     focusAfterMove.current = { key, status: target.status, laneId };
   };
   const focusedCard = () => cardAround(document.activeElement) !== null;
@@ -690,6 +694,7 @@ export function IssueBoard({
       <p aria-label="Board announcements" aria-live="polite" className="sr-only" role="status">
         {announcement}
       </p>
+      {question === undefined ? null : <ParentStatusDialog question={question} />}
       {issues.data.length === 0 ? (
         // The active query is the label-filtered list, so an empty answer under a label filter
         // means "nothing matches", not "empty project" - the same copy the List shows.
