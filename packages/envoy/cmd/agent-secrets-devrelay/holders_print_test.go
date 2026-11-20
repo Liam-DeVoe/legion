@@ -56,6 +56,23 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Same:     doTwin{redacttest.Code, redacttest.Words},
 			Exported: doTwin{redacttest.Code, redacttest.Words},
 		},
+		{
+			// The lookup cmdMachineApprove decodes the broker's answer into.
+			Name: "devrelay.cmdMachineApprove.lookup",
+			Kind: "fields",
+			Boxed: struct {
+				RecordID string            `json:"record_id"`
+				State    redact.RemoteText `json:"state"`
+			}{"rec-1", words},
+			Same: struct {
+				RecordID string `json:"record_id"`
+				State    string `json:"state"`
+			}{"rec-1", redacttest.Words},
+			Exported: struct {
+				RecordID string `json:"record_id"`
+				State    string `json:"state"`
+			}{"rec-1", redacttest.Words},
+		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })
 	}

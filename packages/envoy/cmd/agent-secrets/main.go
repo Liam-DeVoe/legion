@@ -649,7 +649,7 @@ func sessionContext() (base brokeraddr.Address, enrollmentID string, signer Sign
 // contract is "the response body verbatim ... one JSON object on stdout and nothing else", so this
 // must never append a newline the broker's own response didn't already end with. The answer is
 // data the person asked for whole, so it goes through redact.Answer.StreamTo.
-func writeVerbatim(w io.Writer, answer redact.Answer) {
+func writeVerbatim(w io.Writer, answer *redact.Answer) {
 	_, _ = answer.StreamTo(w)
 }
 

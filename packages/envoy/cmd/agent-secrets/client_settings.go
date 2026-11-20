@@ -82,7 +82,7 @@ type Reread struct {
 func (c *client) RereadSecret(ctx context.Context, signer proofSigner, name string) (Reread, error) {
 	path := "/v1/secrets/" + name + "/reread"
 	var status int
-	var answer redact.Answer
+	var answer *redact.Answer
 	var err error
 	if signer != nil {
 		status, answer, err = c.doProofStatus(ctx, signer, http.MethodPost, path, nil)

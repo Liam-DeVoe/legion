@@ -181,12 +181,12 @@ func (e *apiError) LogValue() slog.Value { return slog.StringValue(e.Error()) }
 // its raw body; any other status decodes the broker's error envelope into an *apiError, its code
 // and words held with every credential the request carried redacted (redact.Carried), since
 // whatever answers in the broker's place can echo the bearer back.
-func (c *apiClient) do(ctx context.Context, method, path string, body any) (redact.Answer, error) {
+func (c *apiClient) do(ctx context.Context, method, path string, body any) (*redact.Answer, error) {
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return redact.Answer{}, err
+			return nil, err
 		}
 		reader = bytes.NewReader(b)
 	}
@@ -194,7 +194,7 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) (reda
 	// broker's URL carries prints.
 	req, err := http.NewRequestWithContext(ctx, method, c.base.Raw()+path, reader)
 	if err != nil {
-		return redact.Answer{}, c.base.Error(err)
+		return nil, c.base.Error(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
@@ -202,12 +202,12 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) (reda
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return redact.Answer{}, c.base.Error(err)
+		return nil, c.base.Error(err)
 	}
 	defer resp.Body.Close()
 	answer, err := redact.ReadAnswer(resp, 1<<20)
 	if err != nil {
-		return redact.Answer{}, c.base.Error(err)
+		return nil, c.base.Error(err)
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
@@ -215,14 +215,14 @@ func (c *apiClient) do(ctx context.Context, method, path string, body any) (reda
 			Error redact.RemoteText `json:"error"`
 		}
 		_ = answer.Decode(&envelope)
-		return redact.Answer{}, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code, reason: envelope.Error}
+		return nil, &apiError{Status: resp.StatusCode, base: c.base, code: envelope.Code, reason: envelope.Error}
 	}
-	return answer, nil
+	return &answer, nil
 }
 
 // writeVerbatim prints answer (a broker response body) followed by a newline, for terminal
 // readability: the data the person asked for, through redact.Answer.StreamTo.
-func writeVerbatim(w io.Writer, answer redact.Answer) {
+func writeVerbatim(w io.Writer, answer *redact.Answer) {
 	_, _ = answer.StreamTo(w)
 	fmt.Fprintln(w)
 }

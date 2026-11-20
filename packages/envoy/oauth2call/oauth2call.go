@@ -47,6 +47,10 @@ func RefusalClient(base *http.Client) *http.Client { return redact.RefusalClient
 // request's record, prints only as the rule reads it, and streams to a writer.
 type Answer = redact.Answer
 
+// RemoteText is redact.RemoteText: another party's words, which a module outside this one decodes
+// an answer's member into (Answer.Decode) and prints only as the rule reads them.
+type RemoteText = redact.RemoteText
+
 // ErrAnswerTooLarge is redact.ErrAnswerTooLarge.
 var ErrAnswerTooLarge = redact.ErrAnswerTooLarge
 

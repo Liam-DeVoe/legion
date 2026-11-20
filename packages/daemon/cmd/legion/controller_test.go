@@ -1238,7 +1238,7 @@ func TestControllerStartDaemonURLOverridesTheFile(t *testing.T) {
 // without operator_token_file. Nothing is written and nothing launched.
 func TestControllerStartRefusedByTheDaemonWritesNothing(t *testing.T) {
 	d := newControllerDaemon(t)
-	c := newControllerStart(t, d, controllerOptions{tokenContents: "not-the-operator-token\n"})
+	c := newControllerStart(t, d, controllerOptions{tokenContents: "wrong-9f3c27e1b04d\n"})
 	code, _, errb := c.run()
 	want := d.url + "/legion/v1/controller/secret: the daemon answered 403 Forbidden: Invalid operator token — the operator token does not match the daemon's operator_token_file\n"
 	if code != 1 || !strings.HasSuffix(errb, want) {

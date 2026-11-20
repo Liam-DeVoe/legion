@@ -320,9 +320,9 @@ func retryable(err error) bool {
 	return errors.As(err, &cut)
 }
 
-// do sends the request and, on a 2xx response, returns its answer (redact.Answer); any other
+// do sends the request and, on a 2xx response, returns its answer (*redact.Answer); any other
 // status decodes the broker's error envelope into an *apiError.
-func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) (redact.Answer, error) {
+func (c *client) do(ctx context.Context, method, url string, body []byte, headers map[string]string) (*redact.Answer, error) {
 	_, answer, err := c.doStatus(ctx, method, url, body, headers)
 	return answer, err
 }
@@ -335,7 +335,7 @@ func (c *client) do(ctx context.Context, method, url string, body []byte, header
 // client sends is one it builds itself (GetRequest's wait), and the redactor prints no URL that
 // holds a query, so a read that asked the broker to hold it would otherwise name neither its
 // call nor its cause.
-func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, redact.Answer, error) {
+func (c *client) doStatus(ctx context.Context, method, url string, body []byte, headers map[string]string) (int, *redact.Answer, error) {
 	named, query, _ := strings.Cut(url, "?")
 	var reader io.Reader
 	if body != nil {
@@ -348,9 +348,9 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		// only where that is clean). With any other base, the parser's own text could quote a bad
 		// escape in a password, so the message says only that the address is not valid.
 		if c.baseURL.Clean() {
-			return 0, redact.Answer{}, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
+			return 0, nil, fmt.Errorf("the request could not be built: %w", c.baseURL.Error(err))
 		}
-		return 0, redact.Answer{}, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
+		return 0, nil, &unreachableError{"the broker's address is not a valid URL", c.baseURL, method, named, errNothingSent}
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -360,7 +360,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, redact.Answer{}, unreachable(c.baseURL, method, named, withoutQuery(err, query))
+		return 0, nil, unreachable(c.baseURL, method, named, withoutQuery(err, query))
 	}
 	defer resp.Body.Close()
 	// Whatever answers in the broker's place can echo the request it was sent - its body (a pod
@@ -369,7 +369,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	// redacted, and a decode's error quotes no value of it.
 	answer, err := redact.ReadAnswer(resp, 16<<20)
 	if err != nil {
-		return 0, redact.Answer{}, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
+		return 0, nil, &cutOffError{method + " " + c.baseURL.Call(named), c.baseURL.Error(err)}
 	}
 	if resp.StatusCode/100 == 3 {
 		// A redirect this client refuses to follow (redirects.Refused), handed back as the
@@ -377,7 +377,7 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		// of a redirect it answers a GET with (`<a href="…">Found</a>`), and that target,
 		// with whatever query it carries, is what refusing the redirect keeps out of this
 		// process. The status alone says what happened.
-		return resp.StatusCode, redact.Answer{}, &apiError{Status: resp.StatusCode, said: redirectRefused}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, said: redirectRefused}
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
@@ -398,9 +398,9 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 		}
 		// Beside an address that is not clean, whoever answers can repeat its credential in
 		// any text of its answer: the refusal prints as its status alone (apiError.withheld).
-		return resp.StatusCode, redact.Answer{}, newAPIError(resp.StatusCode, code, said, answerID, !c.baseURL.Clean())
+		return resp.StatusCode, nil, newAPIError(resp.StatusCode, code, said, answerID, !c.baseURL.Clean())
 	}
-	return resp.StatusCode, answer, nil
+	return resp.StatusCode, &answer, nil
 }
 
 // redirectRefused is what a refusal of a redirect this client does not follow says: its own
@@ -445,7 +445,7 @@ func enrollmentNotLive(err error) bool {
 // doProof signs the request with signer.Sign against exactly this method and URL less any query
 // path carries, the shape proof.Verifier.Verify compares htm/htu against (the broker rebuilds the
 // htu from BROKER_PUBLIC_URL and the request's path, never its query).
-func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) (redact.Answer, error) {
+func (c *client) doProof(ctx context.Context, signer proofSigner, method, path string, body []byte) (*redact.Answer, error) {
 	_, answer, err := c.doProofStatus(ctx, signer, method, path, body)
 	return answer, err
 }
@@ -458,7 +458,7 @@ func (c *client) doProof(ctx context.Context, signer proofSigner, method, path s
 // with the dead id still in its record, and only signing in again would cure it — making a
 // second box key and a second sign-in on the person's list. One retry, because a second refusal
 // is the broker saying no to the enrollment this call just made, which no further retry changes.
-func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, redact.Answer, error) {
+func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
 	return c.doProofBuilt(ctx, signer, method, path, func(bool) ([]byte, error) { return body, nil })
 }
 
@@ -466,10 +466,10 @@ func (c *client) doProofStatus(ctx context.Context, signer proofSigner, method, 
 // makes: build(false) for the first call, and build(true) again for the retry after the session
 // registered again, since a machine registers again under a key of its own (machineReregister)
 // and the broker takes only what the enrollment's own key signed.
-func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, redact.Answer, error) {
+func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, path string, build func(reregistered bool) ([]byte, error)) (int, *redact.Answer, error) {
 	body, err := build(false)
 	if err != nil {
-		return 0, redact.Answer{}, err
+		return 0, nil, err
 	}
 	status, answer, err := c.proofCall(ctx, signer, method, path, body)
 	again, ok := signer.(reenroller)
@@ -480,7 +480,7 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 		return status, answer, fmt.Errorf("%w; registering this session again: %v", err, reErr)
 	}
 	if body, err = build(true); err != nil {
-		return 0, redact.Answer{}, err
+		return 0, nil, err
 	}
 	return c.proofCall(ctx, signer, method, path, body)
 }
@@ -488,12 +488,12 @@ func (c *client) doProofBuilt(ctx context.Context, signer proofSigner, method, p
 // proofCall is one signed call, which is all `renew` may make: its whole contract is to report
 // the enrollment the broker no longer holds (terminalRenewal, exit 76) rather than quietly
 // register another.
-func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, redact.Answer, error) {
+func (c *client) proofCall(ctx context.Context, signer proofSigner, method, path string, body []byte) (int, *redact.Answer, error) {
 	url := c.route(path)
 	signedPath, _, _ := strings.Cut(path, "?")
 	token, err := signer.Sign(method, c.route(signedPath))
 	if err != nil {
-		return 0, redact.Answer{}, &signError{err: err}
+		return 0, nil, &signError{err: err}
 	}
 	return c.doStatus(ctx, method, url, body, map[string]string{"Proof": token})
 }
@@ -578,7 +578,7 @@ func brokerTookNoNarrowing(err error) bool {
 // that second call's own result and raw bytes are what this answers. Once only: a second refusal
 // is about something else, which sending it again cannot mend. When the session registers again
 // on the way (doProofBuilt), the object is signed again, by the key the session now holds.
-func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, redact.Answer, error) {
+func (c *client) CreateRequest(ctx context.Context, signer Signer, names []string, reason string, lifetimeSeconds *int, sessionID string, narrowing *GitHubNarrowing) (RequestResult, *redact.Answer, error) {
 	sign := func() (string, error) {
 		requestObject, err := signer.SignRequestObject(c.baseURL, names, reason, lifetimeSeconds)
 		if err != nil {
@@ -588,7 +588,7 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 	}
 	requestObject, err := sign()
 	if err != nil {
-		return RequestResult{}, redact.Answer{}, err
+		return RequestResult{}, nil, err
 	}
 	var sessionIDPtr *string
 	if sessionID != "" {
@@ -615,14 +615,14 @@ func (c *client) CreateRequest(ctx context.Context, signer Signer, names []strin
 
 // postRequest is one POST /v1/requests with the body build makes (doProofBuilt), answering the
 // decoded result and the broker's answer as it came.
-func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, redact.Answer, error) {
+func (c *client) postRequest(ctx context.Context, signer Signer, build func(reregistered bool) ([]byte, error)) (RequestResult, *redact.Answer, error) {
 	_, answer, err := c.doProofBuilt(ctx, signer, http.MethodPost, "/v1/requests", build)
 	if err != nil {
-		return RequestResult{}, redact.Answer{}, err
+		return RequestResult{}, nil, err
 	}
 	var result RequestResult
 	if err := answer.Decode(&result); err != nil {
-		return RequestResult{}, redact.Answer{}, fmt.Errorf("decode create request response: %w", err)
+		return RequestResult{}, nil, fmt.Errorf("decode create request response: %w", err)
 	}
 	return result, answer, nil
 }
@@ -668,9 +668,9 @@ func pathID(kind, id string) error {
 // caller keeps it from 1 to record.MaxRequestWaitSeconds, which the broker refuses past. 0 sends
 // no wait, and the broker answers at once. A broker from before the parameter ignores it and
 // answers at once either way.
-func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, redact.Answer, error) {
+func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitSeconds int) (RequestStatus, *redact.Answer, error) {
 	if err := pathID("a request id", id); err != nil {
-		return RequestStatus{}, redact.Answer{}, err
+		return RequestStatus{}, nil, err
 	}
 	path := "/v1/requests/" + id
 	if waitSeconds > 0 {
@@ -678,11 +678,11 @@ func (c *client) GetRequest(ctx context.Context, signer Signer, id string, waitS
 	}
 	answer, err := c.doProof(ctx, signer, http.MethodGet, path, nil)
 	if err != nil {
-		return RequestStatus{}, redact.Answer{}, err
+		return RequestStatus{}, nil, err
 	}
 	var status RequestStatus
 	if err := answer.Decode(&status); err != nil {
-		return RequestStatus{}, redact.Answer{}, fmt.Errorf("decode request status: %w", err)
+		return RequestStatus{}, nil, fmt.Errorf("decode request status: %w", err)
 	}
 	return status, answer, nil
 }
@@ -791,7 +791,7 @@ func (c *client) GrantValues(ctx context.Context, signer Signer, grantID string,
 
 // release is one POST /v1/grants/{id}/values, its body holding narrowing and what call says
 // where each is given, and no body when none is.
-func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (redact.Answer, error) {
+func (c *client) release(ctx context.Context, signer Signer, grantID string, narrowing *GitHubNarrowing, call releaseCall) (*redact.Answer, error) {
 	var body []byte
 	if narrowing != nil || call.says() {
 		encoded, err := json.Marshal(struct {
@@ -799,7 +799,7 @@ func (c *client) release(ctx context.Context, signer Signer, grantID string, nar
 			releaseCall
 		}{narrowing, call})
 		if err != nil {
-			return redact.Answer{}, fmt.Errorf("encode the release: %w", err)
+			return nil, fmt.Errorf("encode the release: %w", err)
 		}
 		body = encoded
 	}
@@ -843,14 +843,14 @@ type SelfResult struct {
 	Grants         []Grant   `json:"grants"`
 }
 
-func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, redact.Answer, error) {
+func (c *client) Self(ctx context.Context, signer Signer) (SelfResult, *redact.Answer, error) {
 	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/enrollments/self", nil)
 	if err != nil {
-		return SelfResult{}, redact.Answer{}, err
+		return SelfResult{}, nil, err
 	}
 	var self SelfResult
 	if err := answer.Decode(&self); err != nil {
-		return SelfResult{}, redact.Answer{}, fmt.Errorf("decode self: %w", err)
+		return SelfResult{}, nil, fmt.Errorf("decode self: %w", err)
 	}
 	return self, answer, nil
 }
@@ -908,14 +908,14 @@ type OperatorMachines struct {
 // OperatorMachines lists the calling machine login's operator's own logins, their machines' and
 // those of the pods whose account BROKER_POD_OPERATORS maps to them, as Dispatch's machine-login
 // page lists them but without any service's login, with the raw body for --json.
-func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, redact.Answer, error) {
+func (c *client) OperatorMachines(ctx context.Context, signer proofSigner) (OperatorMachines, *redact.Answer, error) {
 	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/machines", nil)
 	if err != nil {
-		return OperatorMachines{}, redact.Answer{}, err
+		return OperatorMachines{}, nil, err
 	}
 	var out OperatorMachines
 	if err := answer.Decode(&out); err != nil {
-		return OperatorMachines{}, redact.Answer{}, fmt.Errorf("decode machine logins: %w", err)
+		return OperatorMachines{}, nil, fmt.Errorf("decode machine logins: %w", err)
 	}
 	return out, answer, nil
 }
@@ -964,14 +964,14 @@ type OperatorGrants struct {
 
 // OperatorGrants lists the live grants of the calling machine login's operator's sessions and those
 // the operator approved, as Dispatch's Live grants page lists them, with the raw body for --json.
-func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (OperatorGrants, redact.Answer, error) {
+func (c *client) OperatorGrants(ctx context.Context, signer proofSigner) (OperatorGrants, *redact.Answer, error) {
 	answer, err := c.doProof(ctx, signer, http.MethodGet, "/v1/operator/grants", nil)
 	if err != nil {
-		return OperatorGrants{}, redact.Answer{}, err
+		return OperatorGrants{}, nil, err
 	}
 	var out OperatorGrants
 	if err := answer.Decode(&out); err != nil {
-		return OperatorGrants{}, redact.Answer{}, fmt.Errorf("decode grants: %w", err)
+		return OperatorGrants{}, nil, fmt.Errorf("decode grants: %w", err)
 	}
 	return out, answer, nil
 }

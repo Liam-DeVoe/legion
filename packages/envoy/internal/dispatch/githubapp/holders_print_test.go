@@ -27,6 +27,18 @@ type statusErrorExported struct {
 
 func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 	body := `{"message":"` + redacttest.Words + `"}`
+	words := redact.NewRemoteText(redacttest.Words)
+	type messageTwin = struct {
+		Message string `json:"message"`
+	}
+	type entryTwin = struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	type limitTwin = struct {
+		Message string      `json:"message"`
+		Errors  []entryTwin `json:"errors"`
+	}
 	for _, h := range []redacttest.Holder{
 		{
 			Name:     "githubapp.StatusError",
@@ -34,6 +46,30 @@ func TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement(t *testing.T) {
 			Boxed:    &StatusError{Status: 422, body: redact.NewRemoteText(body), message: redact.NewRemoteText(redacttest.Words)},
 			Same:     &statusErrorTwin{422, body, redacttest.Words},
 			Exported: &statusErrorExported{422, body, redacttest.Words},
+		},
+		{
+			// The refusal answerMessage decodes GitHub's answer into.
+			Name: "githubapp.answerMessage",
+			Kind: "fields",
+			Boxed: struct {
+				Message redact.RemoteText `json:"message"`
+			}{words},
+			Same:     messageTwin{redacttest.Words},
+			Exported: messageTwin{redacttest.Words},
+		},
+		{
+			Name:     "githubapp.limitWords",
+			Kind:     "fields",
+			Boxed:    limitWords{Message: words, Errors: []limitEntryWords{{Type: words, Message: words}}},
+			Same:     limitTwin{redacttest.Words, []entryTwin{{redacttest.Words, redacttest.Words}}},
+			Exported: limitTwin{redacttest.Words, []entryTwin{{redacttest.Words, redacttest.Words}}},
+		},
+		{
+			Name:     "githubapp.limitEntryWords",
+			Kind:     "fields",
+			Boxed:    limitEntryWords{Type: words, Message: words},
+			Same:     entryTwin{redacttest.Words, redacttest.Words},
+			Exported: entryTwin{redacttest.Words, redacttest.Words},
 		},
 	} {
 		t.Run(h.Name, func(t *testing.T) { redacttest.PrintTest(t, h) })

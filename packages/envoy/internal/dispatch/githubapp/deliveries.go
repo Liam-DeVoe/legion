@@ -334,10 +334,13 @@ type limitEntry struct {
 // (redact.Answer.Decode), which is what graphQLLimitWording prints of the envelope.
 type limitWords struct {
 	Message redact.RemoteText `json:"message"`
-	Errors  []struct {
-		Type    redact.RemoteText `json:"type"`
-		Message redact.RemoteText `json:"message"`
-	} `json:"errors"`
+	Errors  []limitEntryWords `json:"errors"`
+}
+
+// limitEntryWords is limitEntry as GitHub's words, held with the request's record.
+type limitEntryWords struct {
+	Type    redact.RemoteText `json:"type"`
+	Message redact.RemoteText `json:"message"`
 }
 
 // spent is whether the entry says the App's GraphQL budget is spent: its type is RATE_LIMITED.

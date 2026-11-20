@@ -172,12 +172,21 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
 			s.Forget()
 		}
-		// GitHub's words, or a stand-in's, print as the rule reads them, with the token the read
-		// carried redacted (oauth2call.Answer.Words).
+		// GitHub's message, or a stand-in's words, print as the rule reads them, with the token the
+		// read carried redacted (oauth2call.Answer.Decode, Words): the message alone where the
+		// answer is GitHub's JSON refusal, whose documentation URL in compact JSON the rule cannot
+		// read as clean, and the answer's words otherwise.
 		refused, _ := oauth2call.ReadAnswer(response, refusalBodyBytes)
+		var github struct {
+			Message oauth2call.RemoteText `json:"message"`
+		}
+		said := refused.Words()
+		if refused.Decode(&github) == nil && !github.Message.IsEmpty() {
+			said = github.Message
+		}
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
-		if said := refused.Words(); !said.IsEmpty() {
-			what += ": " + firstLine(said.String())
+		if !said.IsEmpty() {
+			what += ": " + said.String()
 		}
 		return Served{}, errors.New(Cause(what, nil))
 	}

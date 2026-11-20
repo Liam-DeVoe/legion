@@ -203,18 +203,24 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	}
 }
 
-// GitHub refusing the read is refused with its status and the first line of its answer, and a
-// refused read is not kept: the next ask reads again.
+// GitHub refusing the read is refused with its status and GitHub's message, as the rule prints it,
+// and not the rest of its answer (its documentation URL, which in compact JSON the rule cannot read
+// as clean); a proxy's page that is no JSON prints as the rule reads it. A refused read is not
+// kept: the next ask reads again.
 func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		status int
 		answer string
+		said   string
 	}{
 		{"a tag the repository does not hold", http.StatusNotFound,
-			`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar","status":"404"}`},
+			`{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar","status":"404"}`,
+			"Not Found"},
 		{"a token the repository does not admit", http.StatusForbidden,
-			`{"message":"Resource not accessible by integration","status":"403"}`},
+			`{"message":"Resource not accessible by integration","status":"403"}`,
+			"Resource not accessible by integration"},
+		{"a proxy's page", http.StatusBadGateway, "upstream connect error", "upstream connect error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var refuse atomic.Bool
@@ -223,7 +229,6 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 				if refuse.Load() {
 					w.WriteHeader(tc.status)
 					_, _ = fmt.Fprintln(w, tc.answer)
-					_, _ = fmt.Fprintln(w, "a second line the cause does not carry")
 					return
 				}
 				_, _ = w.Write(wholeCheck(t, marked(tag)))
@@ -231,7 +236,7 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of %s at %s with HTTP %d: %s", RefusalPrefix, CheckSlug, theTag, tc.status, tc.said)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}

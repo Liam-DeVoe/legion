@@ -55,18 +55,18 @@ func (d *dpopTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if err != nil || resp.StatusCode != http.StatusBadRequest || resp.Header.Get("DPoP-Nonce") == "" {
 		return resp, err
 	}
-	// The answer is read through redact.ReadAnswer, its code compared as it came, and handed back
-	// whole (StreamTo) to whoever reads it next where it is not the nonce challenge; a body past
-	// the limit is cut there, as the limit always cut it.
+	// The answer is read through redact.ReadAnswer, its code compared and printed nowhere, and
+	// handed back whole (StreamTo) to whoever reads it next where it is not the nonce challenge; a
+	// body past the limit is cut there, as the limit always cut it.
 	answer, err := redact.ReadAnswer(resp, 1<<20)
 	resp.Body.Close()
 	if err != nil && !errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, err
 	}
 	var challenge struct {
-		Error redact.RemoteText `json:"error"`
+		Error string `json:"error"`
 	}
-	if answer.Decode(&challenge) != nil || !challenge.Error.Equal("use_dpop_nonce") || (r.Body != nil && r.GetBody == nil) {
+	if answer.Decode(&challenge) != nil || challenge.Error != "use_dpop_nonce" || (r.Body != nil && r.GetBody == nil) {
 		var body bytes.Buffer
 		_, _ = answer.StreamTo(&body)
 		resp.Body = io.NopCloser(&body)

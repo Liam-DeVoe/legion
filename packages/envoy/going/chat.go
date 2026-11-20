@@ -254,9 +254,12 @@ type chatWireFrame struct {
 // chatWireError is a refusal's body, its code held as the service's word with the request's record
 // (redact.Answer.Decode): a service, or a stand-in, can echo the key the call carried there.
 type chatWireError struct {
-	Error struct {
-		Code redact.RemoteText `json:"code"`
-	} `json:"error"`
+	Error chatWireErrorBody `json:"error"`
+}
+
+// chatWireErrorBody is chatWireError's error object.
+type chatWireErrorBody struct {
+	Code redact.RemoteText `json:"code"`
 }
 
 // chatBody renders request as the service's body.

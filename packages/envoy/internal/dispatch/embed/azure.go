@@ -157,9 +157,12 @@ type azureEmbedResponse struct {
 // azureErrorResponse is a refusal's body, its code held as Azure's word with the request's record
 // (redact.Answer.Decode): a stand-in can echo the key the call carried there.
 type azureErrorResponse struct {
-	Error struct {
-		Code redact.RemoteText `json:"code"`
-	} `json:"error"`
+	Error azureErrorBody `json:"error"`
+}
+
+// azureErrorBody is azureErrorResponse's error object.
+type azureErrorBody struct {
+	Code redact.RemoteText `json:"code"`
 }
 
 // azureInputType maps this package's InputType (Bedrock's names) to Azure's.

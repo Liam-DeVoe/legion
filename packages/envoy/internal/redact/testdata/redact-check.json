@@ -171,6 +171,54 @@
       {
         "holder": "packages/contracts/src/remote-text.ts#LibraryError",
         "test": "print-LibraryError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/broker/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}",
+        "test": "print-projectaccess.refusalCode"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}",
+        "test": "print-devrelay.cmdMachineApprove.lookup"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/going.chatWireError",
+        "test": "print-going.chatWireError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/going.chatWireErrorBody",
+        "test": "print-going.chatWireErrorBody"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answerMessage struct{Message redact.RemoteText \"json:\\\"message\\\"\"}",
+        "test": "print-githubapp.answerMessage"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.limitWords",
+        "test": "print-githubapp.limitWords"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/githubapp.limitEntryWords",
+        "test": "print-githubapp.limitEntryWords"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsResponse",
+        "test": "print-delivery.searchPullRequestsResponse"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchError",
+        "test": "print-delivery.searchError"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/embed.azureErrorResponse",
+        "test": "print-embed.azureErrorResponse"
+      },
+      {
+        "holder": "github.com/sjawhar/envoy/internal/dispatch/embed.azureErrorBody",
+        "test": "print-embed.azureErrorBody"
+      },
+      {
+        "holder": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange struct{Error redact.RemoteText \"json:\\\"error\\\"\"}",
+        "test": "print-embed.EntraTokenSource.exchange.refusal"
       }
     ],
     "reflection": [
@@ -1881,6 +1929,15 @@
           "packages/envoy/internal/redact/redacttest/redacttest.go"
         ],
         "capture": "agent-secrets.decode-echo"
+      },
+      {
+        "row": "dispatch-agentsecrets-answer-echo",
+        "base": "2a4911c83e03e3bb1b8f895c960fa30b1fc1126a",
+        "files": [
+          "packages/envoy/internal/dispatch/agentsecrets/answer_echo_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "dispatch-agentsecrets.answer-echo"
       }
     ],
     "boundary_fields": {
@@ -4178,6 +4235,90 @@
       "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.StatusError: every printer at every placement"
     },
     {
+      "id": "print-projectaccess.refusalCode",
+      "requirement": "r2-held",
+      "package": "./internal/broker/projectaccess",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/projectaccess.refusalCode",
+      "production": "github.com/sjawhar/envoy/internal/broker/projectaccess.refusalCode struct{Code redact.RemoteText \"json:\\\"code\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-devrelay.cmdMachineApprove.lookup",
+      "requirement": "r2-held",
+      "package": "./cmd/agent-secrets-devrelay",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/devrelay.cmdMachineApprove.lookup",
+      "production": "github.com/sjawhar/envoy/cmd/agent-secrets-devrelay.cmdMachineApprove struct{RecordID string \"json:\\\"record_id\\\"\"; State redact.RemoteText \"json:\\\"state\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-going.chatWireError",
+      "requirement": "r2-held",
+      "package": "./going",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/going.chatWireError",
+      "production": "github.com/sjawhar/envoy/going.chatWireError: every printer at every placement"
+    },
+    {
+      "id": "print-going.chatWireErrorBody",
+      "requirement": "r2-held",
+      "package": "./going",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/going.chatWireErrorBody",
+      "production": "github.com/sjawhar/envoy/going.chatWireErrorBody: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.answerMessage",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.answerMessage",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.answerMessage struct{Message redact.RemoteText \"json:\\\"message\\\"\"}: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.limitWords",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.limitWords",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.limitWords: every printer at every placement"
+    },
+    {
+      "id": "print-githubapp.limitEntryWords",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/githubapp",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/githubapp.limitEntryWords",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/githubapp.limitEntryWords: every printer at every placement"
+    },
+    {
+      "id": "print-delivery.searchPullRequestsResponse",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchPullRequestsResponse",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchPullRequestsResponse: every printer at every placement"
+    },
+    {
+      "id": "print-delivery.searchError",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/delivery",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/delivery.searchError",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/delivery.searchError: every printer at every placement"
+    },
+    {
+      "id": "print-embed.azureErrorResponse",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/embed",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/embed.azureErrorResponse",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/embed.azureErrorResponse: every printer at every placement"
+    },
+    {
+      "id": "print-embed.azureErrorBody",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/embed",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/embed.azureErrorBody",
+      "production": "github.com/sjawhar/envoy/internal/dispatch/embed.azureErrorBody: every printer at every placement"
+    },
+    {
+      "id": "print-embed.EntraTokenSource.exchange.refusal",
+      "requirement": "r2-held",
+      "package": "./internal/dispatch/embed",
+      "test": "TestEachHolderPrintsNoSecretByAnyPrinterAtAnyPlacement/embed.EntraTokenSource.exchange.refusal",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/embed.EntraTokenSource).exchange struct{Error redact.RemoteText \"json:\\\"error\\\"\"}: every printer at every placement"
+    },
+    {
       "id": "print-envoy.RefillingError",
       "requirement": "r2-held",
       "package": "./internal/dispatch/envoy",
@@ -4260,6 +4401,20 @@
       "package": "./internal/redact",
       "test": "TestTheBoundarysHolderPrintsNoSecretByAnyPrinterAtAnyPlacement",
       "production": "github.com/sjawhar/envoy/internal/redact.OAuthAnswer: every printer at every placement"
+    },
+    {
+      "id": "dispatch-agentsecrets-answer-echo",
+      "requirement": "r3-each-site",
+      "package": "./internal/dispatch/agentsecrets",
+      "test": "TestARelayedRefusalCarriesNoTokenItsAnswerEchoes",
+      "production": "(*github.com/sjawhar/envoy/internal/dispatch/agentsecrets.Client).do",
+      "function": "(*github.com/sjawhar/envoy/internal/dispatch/agentsecrets.Client).do",
+      "capture": "dispatch-agentsecrets.answer-echo",
+      "mutation": {
+        "file": "packages/envoy/internal/dispatch/agentsecrets/client.go",
+        "preimage": "[]byte(redact.Tokens(raw.String(), -1, redact.Carried(response)...))",
+        "replacement": "[]byte(raw.String() + redact.Tokens(\"\", -1, redact.Carried(response)...))"
+      }
     }
   ],
   "bun": [

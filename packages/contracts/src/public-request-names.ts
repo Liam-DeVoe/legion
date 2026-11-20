@@ -126,6 +126,18 @@ export const PUBLIC_REQUEST_NAMES: readonly PublicRequestName[] = [
   },
   {
     place: "field",
+    name: "topic",
+    source:
+      "POST /v1/messages/publish (the Envoy listener, listenerwire.PublishRequest): the topic a message is published to",
+  },
+  {
+    place: "field",
+    name: "role",
+    source:
+      "POST /legion/v1/operator/claims/* (the Legion daemon's operator claim routes): the role a claim is spawned or read for",
+  },
+  {
+    place: "field",
     name: "delegates",
     source:
       "IAM Service Account Credentials API, generateAccessToken: the service accounts of the chain",

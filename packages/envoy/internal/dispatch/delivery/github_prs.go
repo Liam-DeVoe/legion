@@ -280,9 +280,12 @@ type searchPullRequestsResponse struct {
 	} `json:"data"`
 	// Errors are GitHub's words beside the data, held with the request's record
 	// (redact.Answer.Decode): an answer in GitHub's place can echo the token there.
-	Errors []struct {
-		Message redact.RemoteText `json:"message"`
-	} `json:"errors"`
+	Errors []searchError `json:"errors"`
+}
+
+// searchError is one entry of a search answer's errors.
+type searchError struct {
+	Message redact.RemoteText `json:"message"`
 }
 
 type searchPullRequestsPage struct {
