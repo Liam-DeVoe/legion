@@ -2845,8 +2845,9 @@ package api
 // registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
-// below 198 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
-// knows no such key. The `legion` tool's controller gains `relaunch`, which posts
+// below 198 (api.stateFor, withoutUnreachableLocator, withoutUnreachableClaims), whose plugin
+// reads claim views with a schema that knows no such key. The `legion` tool's controller gains
+// `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
 // `api.RelaunchResponse`, `{}`, also for a relaunch whose launch after the stop waits for the

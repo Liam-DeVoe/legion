@@ -379,7 +379,8 @@ func withoutLeakCheckCauses(t *testing.T, body []byte) []byte {
 
 // withoutUnreachableMarks is a state body with no claim view carrying `unreachable`, which is what
 // a caller below unreachableContract is served of a state that carries one (api's
-// withoutUnreachable). It serves the table below as withoutLeakCheckCauses does.
+// withoutUnreachableLocator and withoutUnreachableClaims). It serves the table below as
+// withoutLeakCheckCauses does.
 func withoutUnreachableMarks(t *testing.T, body []byte) []byte {
 	t.Helper()
 	var served map[string]any
