@@ -365,8 +365,8 @@ func TestRenderAndReadBackLeaveTheirInputUntouched(t *testing.T) {
 			{"Render", func() { _, _ = Render(tree) }},
 			{"RenderWithBlockOffsets", func() { _, _, _ = RenderWithBlockOffsets(tree) }},
 			{"ReadBack", func() { _, _ = ReadBack(tree) }},
-			{"newMisread", func() { _, _ = newMisread(staleMisreadsOf(tree, maxSpanCells), variant, maxSpanCells) }},
-			{"newMisread of the variant", func() { _, _ = newMisread(staleMisreadsOf(variant, maxSpanCells), tree, maxSpanCells) }},
+			{"NewMisread", func() { _, _ = NewMisread(tree, variant) }},
+			{"NewMisread of the variant", func() { _, _ = NewMisread(variant, tree) }},
 			{"RefuseMisreadDocument", func() { _ = RefuseMisreadDocument(tree) }},
 		} {
 			step.run()
@@ -375,7 +375,7 @@ func TestRenderAndReadBackLeaveTheirInputUntouched(t *testing.T) {
 			}
 		}
 		if !eachStep {
-			untouched("one of asWritten, Render, RenderWithBlockOffsets, ReadBack, newMisread and RefuseMisreadDocument")
+			untouched("one of asWritten, Render, RenderWithBlockOffsets, ReadBack, NewMisread and RefuseMisreadDocument")
 		}
 	}
 	for name, doc := range writtenCases() {

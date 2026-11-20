@@ -3,7 +3,6 @@ package pmdoc
 import (
 	"cmp"
 	"crypto/sha256"
-	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -72,18 +71,6 @@ import (
 // storedMarkdown reads markdown holding no `~` as inlineMarkdown does, since the rules differ only
 // beside a `~`, and flankingMarkdown reads markdown as storedMarkdown does where no `*` or `_` run
 // could open or close otherwise under flankingRules (flankingDivergenceKey).
-//
-// A run none of whose writings reads back under inlineMarkdown, where the rule for the whole
-// address (wholeEmailLinks) moved or dropped a link in a read of one of them, is judged once more,
-// with every writing read back under the three readers with the base's email links
-// (readsBackUnder's baseEmails), as Dispatch read an address before that rule: the run is written
-// as the build before the rule wrote it, where the rule's reading of it has no spelling, which is
-// what the write path stores when no reading of a text reads back under the rule (R4 of
-// INFRA-4224, baseStoredTier). A run that reads back under the rule is never judged so, so a tree
-// that reads back keeps its bytes. A writing in none of whose reads the rule moved or dropped a
-// link reads the same under the base's links (parseInlineWithDefinitions' moved), so the second
-// judge reads back only the writings the rule changed, and is not made at all where it changed
-// none, since every writing would then read back as it did.
 func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlineContext) {
 	from := r.b.Len()
 	fused := r.writeInlineRun(nodes, prefix, context, runSpelling{})
@@ -92,86 +79,56 @@ func (r *renderer) inlineWithEscapes(nodes []*Node, prefix string, context inlin
 		return
 	}
 	labels, signature := referencedLabels(nodes), inlineSignature(nodes)
-	first := r.readsBackUnder(from, prefix, labels, signature, false)
-	if first.count == readBackReaderCount {
+	// firstReads is how many of the readBackReaderCount readers, from the first, the first writing
+	// reads back under.
+	firstReads := r.readsBackUnder(from, prefix, labels, signature)
+	if firstReads == readBackReaderCount {
 		return
 	}
-	// reads is what each writing read back so far reads back as, by the digest of its bytes.
-	reads := map[[sha256.Size]byte]runReads{sha256.Sum256(r.b.Bytes()[from:]): first}
-	// respell chooses how to write nodes, from their first writing, each writing read back with
-	// the base's email links where baseEmails says so and read no more than once (reads): it
-	// leaves the writing it keeps written, and reports whether that writing reads back under the
-	// first of the readers, where the first writing is left written when no writing does.
-	respell := func(baseEmails bool) bool {
-		// readBack is what the writing written since from reads back as.
-		readBack := func() runReads {
-			digest := sha256.Sum256(r.b.Bytes()[from:])
-			read, held := reads[digest]
-			if !held {
-				read = r.readsBackUnder(from, prefix, labels, signature, baseEmails)
-				reads[digest] = read
+	written := string(r.b.Bytes()[from:])
+	// readsByBytes is how many of those readers, from the first, each writing read back so far
+	// reads back under, by the digest of its bytes.
+	readsByBytes := map[[sha256.Size]byte]int{sha256.Sum256(r.b.Bytes()[from:]): firstReads}
+	// keepsDeeper writes each of spellings once and reports whether one of them reads back deeper
+	// than the first writing, leaving the earliest writing of the greatest depth written.
+	keepsDeeper := func(spellings []runSpelling) bool {
+		// reads is each spelling's depth, or -1 for one that orders marks otherwise and still
+		// fuses a delimiter run, which is never kept.
+		reads := make([]int, len(spellings))
+		for index, spelling := range spellings {
+			r.b.Truncate(from)
+			if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
+				reads[index] = -1
+				continue
 			}
-			return read
-		}
-		// firstReads is how many of the readers, from the first, the first writing reads back
-		// under.
-		firstReads := readBack().count
-		if firstReads == readBackReaderCount {
-			return true
-		}
-		written := string(r.b.Bytes()[from:])
-		// keepsDeeper writes each of spellings once and reports whether one of them reads back
-		// deeper than the first writing, leaving the earliest writing of the greatest depth written.
-		keepsDeeper := func(spellings []runSpelling) bool {
-			// depths is each spelling's depth, or -1 for one that orders marks otherwise and still
-			// fuses a delimiter run, which is never kept.
-			depths := make([]int, len(spellings))
-			for index, spelling := range spellings {
-				r.b.Truncate(from)
-				if r.writeInlineRun(nodes, prefix, context, spelling) && spelling.order != marksAsWritten {
-					depths[index] = -1
-					continue
+			digest := sha256.Sum256(r.b.Bytes()[from:])
+			count, read := readsByBytes[digest]
+			if !read {
+				count = r.readsBackUnder(from, prefix, labels, signature)
+				if count == readBackReaderCount {
+					return true
 				}
-				if depths[index] = readBack().count; depths[index] == readBackReaderCount {
+				readsByBytes[digest] = count
+			}
+			reads[index] = count
+		}
+		for under := readBackReaderCount - 1; under > firstReads; under-- {
+			for index, spelling := range spellings {
+				if reads[index] >= under {
+					r.b.Truncate(from)
+					r.writeInlineRun(nodes, prefix, context, spelling)
 					return true
 				}
 			}
-			for under := readBackReaderCount - 1; under > firstReads; under-- {
-				for index, spelling := range spellings {
-					if depths[index] >= under {
-						r.b.Truncate(from)
-						r.writeInlineRun(nodes, prefix, context, spelling)
-						return true
-					}
-				}
-			}
-			return false
 		}
-		spellings := runSpellings(needs)
-		if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
-			return true
-		}
-		r.b.Truncate(from)
-		r.b.WriteString(written)
-		return firstReads > 0
+		return false
 	}
-	if respell(false) {
+	spellings := runSpellings(needs)
+	if keepsDeeper(spellings) || firstReads == 0 && keepsDeeper(lastResorts(needs, spellings)) {
 		return
 	}
-	held := len(reads)
-	maps.DeleteFunc(reads, func(_ [sha256.Size]byte, read runReads) bool { return read.moved })
-	if len(reads) == held {
-		return
-	}
-	respell(true)
-}
-
-// runReads is what readsBackUnder found of a writing of a run: how many of the
-// readBackReaderCount readers, from the first, it reads back under, and whether the rule for the
-// whole address moved or dropped a link in any read it made.
-type runReads struct {
-	count int
-	moved bool
+	r.b.Truncate(from)
+	r.b.WriteString(written)
 }
 
 // runNeeds is what a run's first writing and its text call for beyond the escape rules, each a
@@ -583,19 +540,17 @@ func writesAddressSyntax(nodes []*Node) (colons, dots, ats bool) {
 
 // readsBackUnder is how many of the three readers, from the first, the inline markdown written
 // since from reads back under as the nodes whose footnote labels are labels and whose
-// inlineSignature is signature (runReads): the run's own lines, with the prefix its later lines
-// are written behind taken off, read after a definition for each label, since a reference reads
-// as one only then. It stops at the first reader the run does not read back under, and makes no
-// read that is the same parse as one it made: storedMarkdown reads a source holding no `~` as
-// inlineMarkdown does, since editorRules and storedRules differ only beside a `~` (a `*` or `_`
-// run's widening by one, tildeParser, tildeDelimiters, and the `~` runs' own group in
-// delimiterList), so that parse's nodes, error and divergence are inlineMarkdown's; and
-// flankingMarkdown reads a source as storedMarkdown does unless the stored parse reported a `*` or
-// `_` run that could open or close otherwise under flankingRules (parseInlineWithDefinitions). A
-// label's `~` is the source's own: the run writes every label it refers to as `[^label]`, and
-// escapeFootnoteLabel escapes no `~`. Each reader reads with the base's email links where
-// baseEmails says so (inlineReader's baseEmails).
-func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string, baseEmails bool) runReads {
+// inlineSignature is signature: the run's own lines, with the prefix its later lines are written
+// behind taken off, read after a definition for each label, since a reference reads as one only
+// then. It stops at the first reader the run does not read back under, and makes no read that is
+// the same parse as one it made: storedMarkdown reads a source holding no `~` as inlineMarkdown
+// does, since editorRules and storedRules differ only beside a `~` (a `*` or `_` run's widening by
+// one, tildeParser, tildeDelimiters, and the `~` runs' own group in delimiterList), so that
+// parse's nodes, error and divergence are inlineMarkdown's; and flankingMarkdown reads a source as
+// storedMarkdown does unless the stored parse reported a `*` or `_` run that could open or close
+// otherwise under flankingRules (parseInlineWithDefinitions). A label's `~` is the source's own:
+// the run writes every label it refers to as `[^label]`, and escapeFootnoteLabel escapes no `~`.
+func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []string) int {
 	written := r.b.Bytes()[from:]
 	var lines strings.Builder
 	lines.Grow(len(written))
@@ -605,34 +560,28 @@ func (r *renderer) readsBackUnder(from int, prefix string, labels, signature []s
 		start = next
 	}
 	source := lines.String()
-	var read runReads
 	readsBack := func(reader inlineReader) (bool, bool) {
-		reader.baseEmails = baseEmails
 		if readBackObserver != nil {
 			readBackObserver(source, reader)
 		}
-		parsed, diverged, moved, err := parseInlineWithDefinitions(source, labels, reader)
-		read.moved = read.moved || moved
+		parsed, diverged, err := parseInlineWithDefinitions(source, labels, reader)
 		return err == nil && slices.Equal(inlineSignature(parsed), signature), diverged
 	}
 	reads, diverged := readsBack(inlineMarkdown)
 	if !reads {
-		return read
+		return 0
 	}
-	read.count = 1
 	if strings.Contains(source, "~") {
 		if reads, diverged = readsBack(storedMarkdown); !reads {
-			return read
+			return 1
 		}
 	}
-	read.count = 2
 	if diverged {
 		if reads, _ = readsBack(flankingMarkdown); !reads {
-			return read
+			return 2
 		}
 	}
-	read.count = readBackReaderCount
-	return read
+	return readBackReaderCount
 }
 
 // readBackObserver, where a test sets it, is given each markdown readsBackUnder parses and the

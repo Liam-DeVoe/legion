@@ -35,7 +35,6 @@ import { remarkSoftBreakAsSpace } from "../src/dispatch-soft-breaks.js";
 import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from "../src/html-blocks.js";
 import { remarkContainerDirectives } from "../src/lib-remark-directive-plugin.js";
 import { remarkHoistNestedLinks } from "../src/nested-links.js";
-import { remarkWholeEmailLinks } from "../src/whole-email-links.js";
 
 /** The golden the Go suite writes: every probe it holds, and what the filter emitted for it. */
 interface FilteredAnswer {
@@ -87,7 +86,6 @@ const APP_PARSE_PLUGINS = [
   "remarkParse",
   "remarkFrontmatter",
   "remarkGfm",
-  "remarkWholeEmailLinks",
   "remarkContainerDirectives",
   "remarkStrictHtmlFlow",
   "remarkProofMarks",
@@ -110,7 +108,6 @@ const answerParser = unified()
   .use(remarkParse)
   .use(remarkFrontmatter, ["yaml"])
   .use(remarkGfm)
-  .use(remarkWholeEmailLinks)
   .use(remarkContainerDirectives)
   .use(remarkStrictHtmlFlow)
   .use(remarkProofMarks)
@@ -131,13 +128,9 @@ const renderer = `remark-gfm ${rendererManifest.version}`;
 const fixturePath = join(import.meta.dir, "../../envoy/going/testdata/filtered-answers.json");
 const fixture = JSON.parse(readFileSync(fixturePath, "utf8")) as FilteredAnswers;
 
-/**
- * Every link, image and raw tag the parse of `markdown` holds, each named with its target. The
- * markdown is the file the transformers are given, as Milkdown's `ParserState` gives it, since
- * `remarkWholeEmailLinks` reads the source at a link's start.
- */
+/** Every link, image and raw tag the parse of `markdown` holds, each named with its target. */
 function linkingNodes(markdown: string): string[] {
-  const tree = answerParser.runSync(answerParser.parse(markdown), markdown) as TreeNode;
+  const tree = answerParser.runSync(answerParser.parse(markdown)) as TreeNode;
   const found: string[] = [];
   const walk = (node: TreeNode): void => {
     if (LINKING[node.type]) found.push(`${node.type}:${node.url ?? node.value ?? ""}`);

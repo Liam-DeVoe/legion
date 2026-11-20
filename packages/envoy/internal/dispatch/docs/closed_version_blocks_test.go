@@ -22,13 +22,12 @@ import (
 func TestClosedVersionBlocksCountsOnlyTheFirstHolderOfAnID(t *testing.T) {
 	for name, pasted := range map[string]string{"paste": "Foo.", "edited paste": "Bar."} {
 		t.Run(name, func(t *testing.T) {
-			rendered, err := renderDocumentTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
+			live, liveBlocks, err := documentBlocks(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
 				paragraphNode("p1", "Foo."), paragraphNode("p1", pasted), paragraphNode("p2", "Foo."),
 			}})
 			if err != nil {
 				t.Fatalf("render the live document: %v", err)
 			}
-			live, liveBlocks := rendered.markdown, rendered.blocks
 			sum := refs.BlockTextSum(live[liveBlocks[0].From:liveBlocks[0].To])
 			indexed := []indexedBlock{{id: "p1", typ: "paragraph", sum: sum}, {id: "p2", typ: "paragraph", sum: sum}}
 			markdown, blocks, err := closedVersionBlocks("Foo.\n\nFoo.\n", live, liveBlocks, indexed)
@@ -286,11 +285,10 @@ func TestClosedVersionBlocksMatchesRepeatedTextWithNoRowOnlyWhenItsCountsAgree(t
 		texts: []string{"Same.", "Same.", "Other.", "Same."},
 	}} {
 		t.Run(test.name, func(t *testing.T) {
-			rendered, err := renderDocumentTree(&pmdoc.Node{Type: "doc", Children: test.live})
+			live, liveBlocks, err := documentBlocks(&pmdoc.Node{Type: "doc", Children: test.live})
 			if err != nil {
 				t.Fatalf("render the live document: %v", err)
 			}
-			live, liveBlocks := rendered.markdown, rendered.blocks
 			if len(liveBlocks) != len(test.live) {
 				t.Fatalf("the live document renders blocks %#v, want %d", liveBlocks, len(test.live))
 			}

@@ -328,11 +328,8 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 				return updateErr
 			})
 		}
-		// A reject runs no read-back check: it removes the text a browser insert added, which gives
-		// back the document the insert started from. The text it joins can still be an address the
-		// renderer cannot write as the joined tree reads it, which takes the base's email links once
-		// the reject is written, as after an edit (applyLiveWritten), so the room holds the tree its
-		// rendering reads back as.
+		// A reject is not checked: it removes the text a browser insert added, which gives back
+		// the document the insert started from.
 		if !accept {
 			next, err := rejectedInsert(tree, id)
 			if err != nil {
@@ -410,11 +407,10 @@ func (s *Service) applySuggestion(ctx context.Context, artifactID, id, replaceWi
 		if err := refuseBrokenAsks(tree, next); err != nil {
 			return err
 		}
-		stored, err := refuseMisreadAccept(tree, next, with)
-		if err != nil {
+		if err := refuseMisreadAccept(tree, next, with); err != nil {
 			return err
 		}
-		return write(stored)
+		return write(next)
 	})
 }
 

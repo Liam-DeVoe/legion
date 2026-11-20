@@ -22,14 +22,10 @@ var anchorAttribute = regexp.MustCompile(`([a-zA-Z0-9_-]+)="([^"]*)"`)
 // parse. Front matter is read apart from it (parseFrontmatterBlock), so an unclosed opener is
 // ordinary markdown. Its list parser opens no empty item that would interrupt a paragraph
 // (emptyItemGuard). display marks the one reader whose parse is for display alone
-// (displayReader), which refuses nothing a reader must still be shown. baseEmails marks the
-// reader of the base's email links (baseEmailReader): each email link a reader makes from a bare
-// address stays as GFM makes it, with Dispatch's rule for the whole address (wholeEmailLinks) not
-// applied, which is how an address was read before that rule.
+// (displayReader), which refuses nothing a reader must still be shown.
 type markdownReader struct {
-	md         goldmark.Markdown
-	display    bool
-	baseEmails bool
+	md      goldmark.Markdown
+	display bool
 }
 
 // blockReader is the configuration every document is read with, its delimiter runs read by
@@ -51,13 +47,6 @@ var blockReader = markdownReader{md: goldmark.New(
 		parser.WithInlineParsers(util.Prioritized(elementInlineCounter{}, -1)),
 	),
 )}
-
-// baseEmailReader is blockReader with the base's email links (markdownReader.baseEmails). Only the
-// write path's fallback reads with it (fallbackTier): a write's markdown (writtenAsBase) and a
-// rendering (parseRenderingAsBase), and the renderer judges a run under the same links where no
-// spelling of it reads back under the rule (inlineReader's baseEmails); every reader of a
-// document keeps the rule's links.
-var baseEmailReader = markdownReader{md: blockReader.md, baseEmails: true}
 
 // blockParsers is goldmark's default block parsers with its list parser held off an empty item
 // that would interrupt a paragraph (emptyItemGuard), its list and quote parsers opening no
@@ -116,21 +105,6 @@ func ParseRendering(markdown string) (*Node, error) {
 	return parseStamped(markdown, readBackBudget())
 }
 
-// parseRenderingAsBase is ParseRendering of markdown with the base's email links
-// (baseEmailReader), before EnsureBlockIDs, since the fallback reads its inline nodes alone
-// (fallbackTier).
-func parseRenderingAsBase(markdown string) (*Node, error) {
-	return parseMarkdown(baseEmailReader, markdown, fromStart, true, readBackBudget(), nil)
-}
-
-// parseWriteAsBase is markdown, a caller's write, read with the base's email links
-// (baseEmailReader) before EnsureBlockIDs: its line endings and front matter read as a write's
-// parse reads them (parseForWrite) and its elements spending a write's budget. The fallback's
-// second tier reads a write so (writtenAsBase).
-func parseWriteAsBase(markdown string) (*Node, error) {
-	return parseMarkdown(baseEmailReader, LineFeeds(markdown), fromStart, true, NewWriteBudget(), nil)
-}
-
 // ParseWithSourceStarts parses markdown as Parse does and also answers, for each of the tree's
 // top-level children, the byte offset in markdown where the goldmark block it was converted from
 // starts (startOf): a paragraph's first line, and every other block's recorded position, so a
@@ -141,7 +115,7 @@ func parseWriteAsBase(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(blockReader, markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
+	doc, err := parseMarkdown(markdown, fromStart, true, NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
 		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
 	})
 	if err != nil {
@@ -186,7 +160,7 @@ type OutlineTypedBlock struct {
 // its line. Markdown the parser refuses answers that refusal and no outline.
 func RenderingOutline(markdown string) (Outline, error) {
 	var outline Outline
-	_, err := parseMarkdown(blockReader, markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
+	_, err := parseMarkdown(markdown, fromStart, true, readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
 		outline = outlineOf(root, source, rest, markdown)
 	})
 	if err != nil {
@@ -218,9 +192,8 @@ func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, err
 // block of live the markdown leaves unchanged keeps its id (carryBlockIDs), which the markdown
 // cannot name, so the write leaves it as it was. A block id of any length is written; one longer
 // than text.MaxBlockIDBytes is simply no graph node (refs.PlanBlocks). A document whose rendering,
-// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument), unless the
-// write path's fallback finds a tree the write stores (fallbackTier), which is the tree the write
-// takes; ParseWritten is this parse with that read-back, for a write that goes on to read the same
+// the markdown it is stored as, reads back otherwise is refused (RefuseMisreadDocument);
+// ParseWritten is this parse with that read-back, for a write that goes on to read the same
 // rendering.
 func ParseForWrite(markdown string, live *Node) (*Node, error) {
 	doc, _, err := ParseWritten(markdown, live)
@@ -230,39 +203,18 @@ func ParseForWrite(markdown string, live *Node) (*Node, error) {
 // ParseWritten is ParseForWrite with the read-back its refusal of a document that reads back
 // otherwise already made: the markdown the document is stored as and that markdown's tree
 // (WrittenReadBack). A write that stores that rendering and reads it again - for its task items,
-// for its blocks - shares this parse rather than making a second one of the same markdown. Where
-// the parse's tree reads back otherwise, the first tier of the fallback (fallbackTier) that gives
-// a tree the write stores answers that tree and its rendering's read-back, and the write stores
-// them: the parse's tree with the base's links, else markdown read by the base reader with the
-// parse's block ids (writtenAsBase), else that reading as the base stores it, whose rendering
-// reads back under the rule as another tree. A refused parse answers the zero read-back.
+// for its blocks - shares this parse rather than making a second one of the same markdown. A
+// refused parse answers the zero read-back.
 func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
-	doc, read, _, err := parseWritten(markdown, live)
-	return doc, read, err
-}
-
-// parseWritten is ParseWritten with the tier of the fallback that gave the tree answered,
-// noFallback where the parse's own tree is.
-func parseWritten(markdown string, live *Node) (*Node, WrittenReadBack, fallbackTier, error) {
 	doc, err := parseForWrite(markdown, live, true, NewWriteBudget())
 	if err != nil {
-		return nil, WrittenReadBack{}, noFallback, err
+		return nil, WrittenReadBack{}, err
 	}
 	read, misread, refused, err := documentMisread(doc)
-	if misread != "" {
-		reading := func(*Node) (*Node, error) { return writtenAsBase(markdown, doc) }
-		fallen, tier, fallenRead, err := fallBack(doc, read, reading, readsBackJudge, readsBackJudge)
-		if err != nil {
-			return nil, WrittenReadBack{}, noFallback, err
-		}
-		if tier != noFallback {
-			return fallen, fallenRead, tier, nil
-		}
-	}
 	if err := refuseMisread(misread, refused, err); err != nil {
-		return nil, WrittenReadBack{}, noFallback, err
+		return nil, WrittenReadBack{}, err
 	}
-	return doc, read, noFallback, nil
+	return doc, read, nil
 }
 
 // ParseFragment parses markdown a caller writes into a document, rather than one that begins it,
@@ -347,11 +299,10 @@ func LineFeedAttrs(attrs map[string]any) map[string]any {
 // as the blocks its lines make. at is where markdown stands in what the caller wrote, which a
 // refusal's line number counts from.
 func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *WriteBudget) (*Node, error) {
-	return parseMarkdown(blockReader, markdown, at, readFrontmatter, budget, nil)
+	return parseMarkdown(markdown, at, readFrontmatter, budget, nil)
 }
 
-// parseMarkdown is parseUnstamped read with reader (blockReader, or baseEmailReader for the
-// fallback's reading of a rendering) that, given read, also hands it what the parse read once the
+// parseMarkdown is parseUnstamped that, given read, also hands it what the parse read once the
 // tree is converted and valid: the tree, the goldmark tree root it was converted from, the source
 // root's offsets count, and rest, how many bytes of front matter the parse read ahead of that
 // source, 0 where it read none (a closed front-matter block is never empty). ParseWithSourceStarts
@@ -369,7 +320,7 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // U+0000 and so keeps its length, and the offsets read hands on are offsets into source until
 // startsInMarkdown maps each of them back to the byte of markdown it stands at.
 func parseMarkdown(
-	reader markdownReader, markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
+	markdown string, at origin, readFrontmatter bool, budget *WriteBudget,
 	read func(doc *Node, root ast.Node, source []byte, rest int),
 ) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
@@ -383,7 +334,7 @@ func parseMarkdown(
 		at.server = max(0, at.server-rest)
 		source = source[rest:]
 	}
-	root, err := reader.parse(source, unclosedFrontmatter, budget, at)
+	root, err := blockReader.parse(source, unclosedFrontmatter, budget, at)
 	if nesting := (nestingError{}); errors.As(err, &nesting) {
 		nesting.line += at.line - 1
 		return nil, nesting
@@ -561,12 +512,9 @@ func inlineParserOptions(rules delimiterRules) []parser.Option {
 
 // inlineReader reads one textblock's inline markdown (inlineParserOptions): run alone, and with
 // footnote definitions after it so that the references in it read as references
-// (parseInlineWithDefinitions). baseEmails reads it with the base's email links (baseEmailsKey),
-// as baseEmailReader reads a document: the renderer judges a run so where no spelling of it reads
-// back under the rule (inlineWithEscapes).
+// (parseInlineWithDefinitions).
 type inlineReader struct {
 	run, withDefinitions parser.Parser
-	baseEmails           bool
 }
 
 func newInlineReader(rules delimiterRules) inlineReader {
@@ -588,17 +536,11 @@ var inlineMarkdown, storedMarkdown, flankingMarkdown = newInlineReader(editorRul
 // definition. diverged is whether the parse, under editorRules or storedRules, read a `*` or `_`
 // run that could open or close otherwise under flankingRules (flankingDivergenceKey); where it did
 // not, flankingMarkdown reads the same source as storedMarkdown does, to the same nodes and error.
-// moved is whether Dispatch's rule for the whole address moved or dropped a link a reader made
-// (emailRuleMovedKey); where it did not, the reader with the base's email links reads the same
-// source to the same nodes, divergence and error.
-func parseInlineWithDefinitions(markdown string, labels []string, reader inlineReader) (nodes []*Node, diverged, moved bool, err error) {
+func parseInlineWithDefinitions(markdown string, labels []string, reader inlineReader) (nodes []*Node, diverged bool, err error) {
 	context := parser.NewContext()
-	if reader.baseEmails {
-		context.Set(baseEmailsKey, true)
-	}
 	if len(labels) == 0 {
 		nodes, err = readInline(markdown, reader.run, context, nil)
-		return nodes, context.Get(flankingDivergenceKey) != nil, context.Get(emailRuleMovedKey) != nil, err
+		return nodes, context.Get(flankingDivergenceKey) != nil, err
 	}
 	var full strings.Builder
 	full.WriteString(markdown)
@@ -607,20 +549,20 @@ func parseInlineWithDefinitions(markdown string, labels []string, reader inlineR
 	}
 	source := []byte(full.String())
 	root, err := parseSource(reader.withDefinitions, source, context)
-	diverged, moved = context.Get(flankingDivergenceKey) != nil, context.Get(emailRuleMovedKey) != nil
+	diverged = context.Get(flankingDivergenceKey) != nil
 	if err != nil {
-		return nil, diverged, moved, err
+		return nil, diverged, err
 	}
 	first, ok := root.FirstChild().(*ast.Paragraph)
 	if !ok {
-		return nil, diverged, moved, fmt.Errorf("%w: inline markdown does not read as a paragraph", ErrSchema)
+		return nil, diverged, fmt.Errorf("%w: inline markdown does not read as a paragraph", ErrSchema)
 	}
 	paragraph, err := convert(first, source, 1, footnoteLabels(root))
 	if err != nil {
-		return nil, diverged, moved, err
+		return nil, diverged, err
 	}
 	sortNodeMarks(paragraph)
-	return paragraph.Children, diverged, moved, nil
+	return paragraph.Children, diverged, nil
 }
 
 // referencedLabels is the footnote labels nodes refer to, each once, in order.

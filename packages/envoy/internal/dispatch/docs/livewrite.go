@@ -138,18 +138,6 @@ type liveWrite struct {
 	// anchorsTree is the tree the transaction's anchors were last refreshed against, so the
 	// version write does not refresh the same tree's anchors a second time.
 	anchorsTree *pmdoc.Node
-	// emailLinksChecked says an operation of this transaction ran applyLiveWritten's repair check
-	// on fork, the fork the transaction holds now, so the fork needs no repair of its email links
-	// before the next operation: the fork's text held no `@`, or the document owed no settlement as
-	// the gate read it (settlementOwed: this process's record, then the store's row), or the fork
-	// holds the base's email links wherever the renderer cannot write its own so that they read
-	// back (liveOperation.repairEmailLinks). The transaction's later operations, and the answers it
-	// takes without one - a version, an edit with no operation - then run no check of their own
-	// (repairJoinedEmailLinks), since what an operation writes after it is checked by that
-	// operation (applyLiveWritten). It is cleared with the fork (releaseFork), so it never stands
-	// for a fork the transaction no longer holds; a margin write (applyMargin) runs no check and
-	// leaves it as it was.
-	emailLinksChecked bool
 	// credits are the authors of the transaction's content changes no version the transaction
 	// wrote lists (Ledger.recordVersion takes out each author a version lists), and creditedBy the
 	// append that recorded each one's latest change, which its pending row names; actor made the
@@ -755,12 +743,10 @@ func (w *liveWrite) rendering(fork *crdt.Doc) (renderedTree, bool) {
 // vouched for afresh. A write can outlive its transaction by a long way: whatever holds the
 // transaction's context holds its ledger and so the write, and a pooled pgx connection keeps the
 // context of the queries it last served. Kept, a heavy document's fork and tree stayed resident
-// after the edit that built them had answered, beside the document's room. The check of its email
-// links (emailLinksChecked) goes with the fork it was made on.
+// after the edit that built them had answered, beside the document's room.
 func (w *liveWrite) releaseFork() {
 	w.fork = nil
 	w.tree, w.markdown, w.offsets, w.anchorsTree, w.forkMarkdown = nil, "", nil, nil, nil
-	w.emailLinksChecked = false
 }
 
 // joinRead joins a read of artifactID to the calling transaction, as joinLiveWrite joins a write.

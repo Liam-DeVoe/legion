@@ -235,14 +235,14 @@ func TestDocumentTokensKeepEveryBlockWhenOnlyTheDocumentCannotBeEncoded(t *testi
 		t.Fatalf("buildDocumentRead error %v (%T) is not an unwrapped *json.UnsupportedValueError", err, err)
 	}
 
-	rendered, err := renderDocumentTree(tree)
+	_, blocks, err := documentBlocks(tree)
 	if err != nil {
-		t.Fatalf("renderDocumentTree: %v", err)
+		t.Fatalf("documentBlocks: %v", err)
 	}
-	if len(rendered.blocks) == 0 {
-		t.Fatal("renderDocumentTree listed no blocks")
+	if len(blocks) == 0 {
+		t.Fatal("documentBlocks listed no blocks")
 	}
-	for _, block := range rendered.blocks {
+	for _, block := range blocks {
 		if token, found := want[block.ID]; !found || block.Token != token {
 			t.Fatalf("block %q token = %s, want %s", block.ID, block.Token, token)
 		}

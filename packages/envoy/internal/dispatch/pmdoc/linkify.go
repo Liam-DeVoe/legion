@@ -27,9 +27,8 @@ func linkifyParsers() []util.PrioritizedValue {
 	return []util.PrioritizedValue{util.Prioritized(linkifyGuard{}, 999), util.Prioritized(underscoreEmail{}, 450)}
 }
 
-// linkifyGuard reads a bare web address or email address wherever the browser editor's engine reads
-// one, and as it reads it. That engine is remark-parse with remark-gfm, which has two readers of
-// them, and after them one rule of Dispatch's own for an email link.
+// linkifyGuard reads a bare web address or email address wherever the browser editor's engine,
+// remark-parse with remark-gfm, reads one, and as it reads it. The engine has two readers of them.
 //
 // micromark-extension-gfm-autolink-literal's tokenizer reads the markdown as it is written, before
 // emphasis, code or links form, so an address it reads claims its bytes, a `*` or `_` among them.
@@ -51,18 +50,6 @@ func linkifyParsers() []util.PrioritizedValue {
 // text left, each refusal searched again one character later (mdast-util-find-and-replace). That
 // is each block's CloseBlock's (linkTextAddresses), over each run of its text nodes between other
 // nodes; autolink_transform.go holds it, and this file the tokenizer.
-//
-// Either reader can start an email link inside the address the writer wrote, so that the link
-// names another address: the tokenizer right after a character reference's `;`, which is no
-// local-part character (`x agent&#45;hosts@example.com` links `hosts@example.com`), and the
-// transform after a `-`, `.`, `+` or `_` once a `/` has refused the address's first character
-// (findEmails: `projects/p/serviceAccounts/agent-hosts@example.com` links `hosts@example.com`).
-// There the reading is Dispatch's own rather than remark-gfm's: once both readers have linked a
-// block (CloseBlock), each email link a reader made from a bare address takes the whole address
-// or goes, so the address reads as written, except where markup, a link a reader made that would
-// read on into the address were it written bare or that the renderer can write only explicit, or
-// a web address the transform links splits the address, where the link stays as the reader made
-// it: the rule wholeEmailLinks states in full.
 //
 // Asking the guard at a character no other parser is asked at ends the text goldmark is building
 // there: a line asked at a `.` and nowhere else becomes two texts. The guard records the last such
@@ -94,13 +81,6 @@ func (linkifyGuard) Trigger() []byte { return linkifyTriggers }
 var (
 	linkifyBlockKey  = parser.NewContextKey()
 	literalDomainKey = parser.NewContextKey()
-	// baseEmailsKey marks a parse with the base's reading of email addresses
-	// (markdownReader.baseEmails), which CloseBlock leaves as both readers linked them.
-	baseEmailsKey = parser.NewContextKey()
-	// emailRuleMovedKey marks a parse in which Dispatch's rule moved or dropped a link a reader
-	// made (wholeEmailLinks): without it, a parse with the base's reading of the same source reads
-	// it to the same tree, which the renderer's judge reuses (inlineWithEscapes).
-	emailRuleMovedKey = parser.NewContextKey()
 )
 
 // linkifyBlock is what the guard knows of the textblock goldmark is reading.
@@ -195,20 +175,14 @@ func settleCut(pc parser.Context, parent ast.Node) {
 	}
 }
 
-// CloseBlock settles the guard's last cut, links the addresses the transform reads in parent's
-// text (linkTextAddresses), and then holds each email link either reader made from a bare address
-// there to Dispatch's rule (wholeEmailLinks), unless the write's markdown has passed its element
-// limit, which leaves the tree unread. A parse with the base's reading (baseEmailsKey) holds no
-// link to the rule: each stays as the reader made it, as GFM links an address. A parse in which
-// the rule moved or dropped a link is marked so (emailRuleMovedKey).
+// CloseBlock settles the guard's last cut and links the addresses the transform reads in parent's
+// text (linkTextAddresses), unless the write's markdown has passed its element limit, which leaves
+// the tree unread.
 func (linkifyGuard) CloseBlock(parent ast.Node, block text.Reader, pc parser.Context) {
 	settleCut(pc, parent)
 	pc.Set(linkifyBlockKey, nil)
 	if count := countedElements(pc); count == nil || !count.passed() {
 		linkTextAddresses(parent, block.Source())
-		if pc.Get(baseEmailsKey) == nil && wholeEmailLinks(parent, block.Source()) {
-			pc.Set(emailRuleMovedKey, true)
-		}
 	}
 }
 
@@ -250,12 +224,9 @@ func readLiteralAddress(parent ast.Node, block text.Reader, pc parser.Context, s
 }
 
 // bareAutolink is the autolink of a bare address of kind at source offsets [start, end), whose
-// href takes an `http://` before a www URL. It is marked as one a reader made from bare text
-// (bareAutolinkAttr), which goldmark's `<…>` autolink is not.
+// href takes an `http://` before a www URL.
 func bareAutolink(kind ast.AutoLinkType, www bool, start, end int) *ast.AutoLink {
-	segment := text.NewSegment(start, end)
-	link := ast.NewAutoLink(kind, ast.NewTextSegment(segment))
-	link.SetAttributeString(bareAutolinkAttr, segment)
+	link := ast.NewAutoLink(kind, ast.NewTextSegment(text.NewSegment(start, end)))
 	if www {
 		link.Protocol = []byte("http")
 	}
@@ -304,7 +275,7 @@ func (underscoreEmail) Parse(parent ast.Node, block text.Reader, pc parser.Conte
 		return nil
 	}
 	block.Advance(length)
-	return bareAutolink(ast.AutoLinkEmail, false, segment.Start, segment.Start+length)
+	return ast.NewAutoLink(ast.AutoLinkEmail, ast.NewTextSegment(segment.WithStop(segment.Start+length)))
 }
 
 // gfmAtext reports whether c is a character of an email's local part to both readers: to the

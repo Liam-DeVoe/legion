@@ -835,21 +835,13 @@ func (b editBatch) readBack(written pmdoc.ValidDocument) (string, error) {
 	if err != nil {
 		return "", documentSchemaError(err)
 	}
-	return readBackOf(b.beforeTree, written.Node(), markdown, offsets), nil
-}
-
-// readBackOf is readBack of a batch that started from start and wrote written, whose rendering
-// markdown and block offsets its caller has already: readBack's own render, or the rendering an
-// edit's write made of the tree it stored where it gave what the batch wrote the base's email links
-// (storedOutcome).
-func readBackOf(start, written *pmdoc.Node, markdown string, offsets []pmdoc.BlockOffset) string {
 	spans := make(map[string]pmdoc.BlockOffset, len(offsets))
 	for _, offset := range offsets {
 		if _, held := spans[offset.ID]; !held {
 			spans[offset.ID] = offset
 		}
 	}
-	before, after := documentBlockNodes(start), documentBlockNodes(written)
+	before, after := documentBlockNodes(b.beforeTree), documentBlockNodes(written.Node())
 	held := make(map[string]*pmdoc.Node, len(before))
 	order := make(map[string]int, len(before))
 	for index, block := range before {
@@ -895,7 +887,7 @@ func readBackOf(start, written *pmdoc.Node, markdown string, offsets []pmdoc.Blo
 		}
 		previous = block.id
 	}
-	return boundedReadBack(entries)
+	return boundedReadBack(entries), nil
 }
 
 // documentBlock is one of a document's own blocks: the node and the id it carries.
@@ -1598,10 +1590,8 @@ func applyOperation(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget)
 			return nil, &ErrInvalidOp{Field: "markdown", Reason: err.Error()}
 		}
 		// What is stored is the document's rendering, so an insert that leaves it reading back
-		// otherwise than it did would store another document than the one it wrote, unless the
-		// write path's fallback finds a tree it stores (pmdoc.FallBackMisreadWrite).
-		out, err = pmdoc.FallBackMisreadWrite(tree.node, out)
-		if err != nil {
+		// otherwise than it did would store another document than the one it wrote.
+		if err := pmdoc.RefuseMisreadWrite(tree.node, out); err != nil {
 			return nil, invalidSchemaOp("markdown", err)
 		}
 		return out, nil
@@ -2388,18 +2378,10 @@ func applyReplace(tree *batchTree, op model.EditOp, budget *pmdoc.WriteBudget) (
 	if err := refuseReshapedReplacement(valid, next, found, op.With, backs); err != nil {
 		return nil, err
 	}
-	// What the inline path wrote is judged by the block checks above alone. An address its text
-	// writes that the renderer cannot write as next reads it takes the base's email links once the
-	// batch is written, over what the write changed (applyLiveWritten), so the tree answered here
-	// can still be the rule's.
 	if !blocks {
 		return next, nil
 	}
-	stored, err := refuseWrittenBlocks(tree.node, next, with)
-	if err != nil {
-		return next, err
-	}
-	return stored, nil
+	return next, refuseWrittenBlocks(tree.node, next, with)
 }
 
 // inlineReplacement parses replace's `with` as one textblock's inline content, which is what a
@@ -2546,26 +2528,20 @@ func holdsTextRun(node *pmdoc.Node) bool {
 }
 
 // refuseWrittenBlocks runs over what the block path wrote the two guards every other path that
-// writes blocks runs (the insert arm, an accepted suggestion), and answers the tree the write
-// stores. `with` reaches the document through the parse an insert's markdown reaches it through,
-// so it can name a typed block's id, and it lands blocks beside blocks they are rendered and read
-// back with.
+// writes blocks runs (the insert arm, an accepted suggestion). `with` reaches the document through
+// the parse an insert's markdown reaches it through, so it can name a typed block's id, and it
+// lands blocks beside blocks they are rendered and read back with.
 //
 // A `with` that rewrites the typed block it lands in under that block's own id names one block of
 // the document still, so it passes both, as the fit and the third refusal of blockReplacement
 // leave it standing.
-func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) (*pmdoc.Node, error) {
+func refuseWrittenBlocks(before, next, fragment *pmdoc.Node) error {
 	if err := pmdoc.RepeatedBlockID(before, next, fragment); err != nil {
-		return nil, &ErrInvalidOp{Field: "with", Reason: err.Error()}
+		return &ErrInvalidOp{Field: "with", Reason: err.Error()}
 	}
 	// What is stored is the document's rendering, so a write that leaves it reading back
-	// otherwise would store another document than the one it wrote, unless the write path's
-	// fallback finds a tree it stores (pmdoc.FallBackMisreadWrite).
-	stored, err := pmdoc.FallBackMisreadWrite(before, next)
-	if err != nil {
-		return nil, invalidSchemaOp("with", err)
-	}
-	return stored, nil
+	// otherwise would store another document than the one it wrote.
+	return invalidSchemaOp("with", pmdoc.RefuseMisreadWrite(before, next))
 }
 
 // settleBlockReplacement settles what the block path wrote over the match and carries the block

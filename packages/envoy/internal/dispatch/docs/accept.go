@@ -88,22 +88,21 @@ func refuseAcceptBy(before pmdoc.ValidDocument, after *pmdoc.Node, found matchBl
 }
 
 // refuseMisreadAccept refuses an accept whose document reads back otherwise where it did not
-// before, its attributes and text as well as its blocks, such as a task item emptied to `- [ ]`,
-// which reads back as a plain item, and answers the tree the accept stores: after, or the tree the
-// write path's fallback stores in its place (pmdoc.FallBackMisread). A block that already read
-// back otherwise the same way before the accept, the one it changed included, is not the accept's.
-// The checks before it read one block at a time; this one reads the blocks beside each other. The
-// refusal names what reads back and advises rejecting. An error reading the document back that is
-// no refusal, a panic (pmdoc.ErrPanic) among them, is pmdoc's bug, and is its error.
-func refuseMisreadAccept(before, after *pmdoc.Node, with string) (*pmdoc.Node, error) {
-	stored, misread, err := pmdoc.FallBackMisread(before, after)
+// before (pmdoc.NewMisread), its attributes and text as well as its blocks, such as a task item
+// emptied to `- [ ]`, which reads back as a plain item. A block that already read back otherwise
+// the same way before the accept, the one it changed included, is not the accept's. The checks
+// before it read one block at a time; this one reads the blocks beside each other. The refusal
+// names what reads back and advises rejecting. An error reading the document back that is no
+// refusal, a panic (pmdoc.ErrPanic) among them, is pmdoc's bug, and is its error.
+func refuseMisreadAccept(before, after *pmdoc.Node, with string) error {
+	misread, err := pmdoc.NewMisread(before, after)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if misread == "" {
-		return stored, nil
+		return nil
 	}
-	return nil, &ErrInvalidOp{Field: "replace_with", Reason: fmt.Sprintf(
+	return &ErrInvalidOp{Field: "replace_with", Reason: fmt.Sprintf(
 		"replace_with %q leaves blocks the document reads back otherwise (%s); reject the suggestion", with, misread,
 	)}
 }

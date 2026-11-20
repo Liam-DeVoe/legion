@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 )
 
 // skip names what a comparison leaves aside: the attributes it names, or all of them, and with
@@ -142,112 +141,66 @@ func readBackWritten(doc *Node, spanCells int) (WrittenReadBack, error) {
 	if err != nil {
 		return WrittenReadBack{}, err
 	}
-	return readBackRendering(doc, r.b.String())
-}
-
-// readBackRendering is what markdown, doc's rendering, reads back as (ParseRendering), with that
-// markdown: a refusal of blocks nested past a bound is told by how many doc nests (renderedNesting).
-func readBackRendering(doc *Node, markdown string) (WrittenReadBack, error) {
+	markdown := r.b.String()
 	back, err := ParseRendering(markdown)
 	return WrittenReadBack{Markdown: markdown, Tree: back}, renderedNesting(doc, err)
 }
 
-// readsBackAsWritten reports whether back, what doc's markdown reads back as, is doc as written
-// (asWritten), as documentMisread compares them.
-func readsBackAsWritten(doc, back *Node) bool {
-	return readDifference(asWritten(doc), back, skip{}) == ""
+// NewMisread names how after, which a write made from before, reads back otherwise where before
+// did not, or is "" when it does not. Each block that reads back otherwise is found as far down as
+// its markdown still pairs with what reads back (misreads), and one that before already read back
+// otherwise the same way, under the same block id, is not the write's: a textblock whose text
+// differs in the same characters, an attribute with the same values, or a block that pairs with
+// nothing. So a write beside a stale misread, or inside the block that holds one, is judged by what
+// it changed, while a new misread in that block is still named. An attribute before read back with
+// another value anywhere (a table cell's alignment) is not compared. A before whose markdown the
+// parser refuses (a browser edit can leave one) gives nothing to judge against, and is "" whether
+// or not after parses: the checks that read each changed block alone still refuse one the write
+// leaves unreadable. A before whose read-back would pad more cells than a read-back's budget is no
+// such document, and is the verdict: its markdown reads, so a write into it is refused rather than
+// stored unjudged. Only a refusal (ErrSchema) reading either back is a verdict; any other error, a
+// panic (ErrPanic) among them, is this package's bug, not a misread, and is the error.
+func NewMisread(before, after *Node) (string, error) {
+	return newMisread(before, after, maxSpanCells)
 }
 
-// newMisread names how after, which a write made from before, reads back otherwise where before
-// did not, or is "" when it does not, reading both back with their tables' spans adding at most
-// spanCells cells each. Each block that reads back otherwise is found as far down as its markdown
-// still pairs with what reads back (misreads), and one that before already read back otherwise
-// the same way, under the same block id, is not the write's: a textblock whose text differs in
-// the same characters, an attribute with the same values, or a block that pairs with nothing. So a
-// write beside a stale misread, or inside the block that holds one, is judged by what it changed,
-// while a new misread in that block is still named. An attribute before read back with another
-// value anywhere (a table cell's alignment) is not compared. A before whose markdown the parser
-// refuses (a browser edit can leave one) gives nothing to judge against, and is "" whether or not
-// after parses: the checks that read each changed block alone still refuse one the write leaves
-// unreadable. A before whose read-back would pad more cells than a read-back's budget is no such
-// document, and is the verdict: its markdown reads, so a write into it is refused rather than
-// stored unjudged. Only a refusal (ErrSchema) reading either back is a verdict; any other error, a
-// panic (ErrPanic) among them, is this package's bug, not a misread, and is the error. An edit
-// judges its write with it through the write path's fallback (FallBackMisread,
-// FallBackMisreadWrite). before is read back once, the first time a judge needs it, however many
-// trees a write judges against it (staleMisreadsOf).
-func newMisread(before func() (staleMisreads, error), after *Node, spanCells int) (string, error) {
+// newMisread is NewMisread reading before and after back with their tables' spans adding at most
+// spanCells cells each.
+func newMisread(before, after *Node, spanCells int) (string, error) {
 	backAfter, err := readBack(after, spanCells)
 	if err != nil && !errors.Is(err, ErrSchema) {
 		return "", err
 	}
-	return misreadSince(after, backAfter, err, before)
-}
-
-// misreadSince is newMisread of after, whose read-back is backAfter, or the refusal refused where
-// the parser refused after's rendering: the write path's fallback judges the tree it stores by a
-// read-back it made already, or where no reading reads back under the rule by one of its own
-// (readBackEither).
-func misreadSince(after, backAfter *Node, refused error, before func() (staleMisreads, error)) (string, error) {
 	written := asWritten(after)
-	if refused == nil && readDifference(written, backAfter, skip{}) == "" {
+	if err == nil && readDifference(written, backAfter, skip{}) == "" {
 		return "", nil
 	}
-	stale, err := before()
-	switch {
-	case err != nil:
-		return "", err
-	case stale.verdict != "":
-		return stale.verdict, nil
-	case stale.unread:
-		return "", nil
-	case refused != nil:
-		return refused.Error(), nil
+	backBefore, beforeErr := readBack(before, spanCells)
+	if beforeErr != nil && !errors.Is(beforeErr, ErrSchema) {
+		return "", beforeErr
 	}
-	for _, found := range misreads(written, backAfter, stale.drift) {
-		if found.id == "" || !stale.known[staleMisread{found.id, found.differs}] {
+	if errors.Is(beforeErr, ErrTablePadding) {
+		return beforeErr.Error(), nil
+	}
+	if beforeErr != nil {
+		return "", nil
+	}
+	if err != nil {
+		return err.Error(), nil
+	}
+	previous := asWritten(before)
+	drift := skip{names: attributeDrift(previous, backBefore)}
+	type sameMisread struct{ id, differs string }
+	known := map[sameMisread]bool{}
+	for _, stale := range misreads(previous, backBefore, drift) {
+		known[sameMisread{stale.id, stale.differs}] = true
+	}
+	for _, found := range misreads(written, backAfter, drift) {
+		if found.id == "" || !known[sameMisread{found.id, found.differs}] {
 			return found.reason, nil
 		}
 	}
 	return "", nil
-}
-
-// staleMisreads is what newMisread judges a write into before against: verdict, the refusal of
-// before's read-back where it would pad more cells than a read-back's budget (ErrTablePadding),
-// which is the verdict on every write into it; unread, where the parser refuses before's rendering,
-// which leaves nothing to judge against; and otherwise drift, the attributes before reads back
-// with other values (attributeDrift), and known, each misread before already holds.
-type staleMisreads struct {
-	verdict string
-	unread  bool
-	drift   skip
-	known   map[staleMisread]bool
-}
-
-// staleMisread is a misread as newMisread finds it again: its block id and what differs.
-type staleMisread struct{ id, differs string }
-
-// staleMisreadsOf is before's staleMisreads, its tables' spans adding at most spanCells cells to
-// its read-back, read the first time it is asked and answered again every time after. An error
-// reading before back that is no refusal (ErrSchema) is this package's bug, and is the error.
-func staleMisreadsOf(before *Node, spanCells int) func() (staleMisreads, error) {
-	return sync.OnceValues(func() (staleMisreads, error) {
-		backBefore, err := readBack(before, spanCells)
-		switch {
-		case err != nil && !errors.Is(err, ErrSchema):
-			return staleMisreads{}, err
-		case errors.Is(err, ErrTablePadding):
-			return staleMisreads{verdict: err.Error()}, nil
-		case err != nil:
-			return staleMisreads{unread: true}, nil
-		}
-		previous := asWritten(before)
-		stale := staleMisreads{drift: skip{names: attributeDrift(previous, backBefore)}, known: map[staleMisread]bool{}}
-		for _, found := range misreads(previous, backBefore, stale.drift) {
-			stale.known[staleMisread{found.id, found.differs}] = true
-		}
-		return stale, nil
-	})
 }
 
 // documentMisread names how doc, a whole document a write makes, reads back otherwise, or is ""
@@ -277,14 +230,30 @@ func documentMisread(doc *Node) (read WrittenReadBack, misread string, refused e
 }
 
 // RefuseMisreadDocument refuses (ErrSchema) a whole document a write makes, a spec, an upload or a
-// version, that reads back otherwise (documentMisread); a write into a document is judged by
-// newMisread through FallBackMisreadWrite. What is stored is the rendering, which the next read
-// would give back as another document or refuse. The rules that read a shape refuse what they know
-// first, so a refusal here names a shape none of them reads, and every one of them is logged. Any
-// other error reading it back, a panic (ErrPanic) among them, is the error.
+// version, that reads back otherwise (documentMisread), and RefuseMisreadWrite a write into a
+// document, an insert, whose result reads back otherwise where before did not (NewMisread). What
+// is stored is the rendering, which the next read would give back as another document or refuse.
+// The rules that read a shape refuse what they know first, so a refusal here names a shape none of
+// them reads, and every one of them is logged. Any other error reading it back, a panic (ErrPanic)
+// among them, is the error.
 func RefuseMisreadDocument(doc *Node) error {
 	_, misread, refused, err := documentMisread(doc)
 	return refuseMisread(misread, refused, err)
+}
+
+// RefuseMisreadWrite refuses a write into a document; see RefuseMisreadDocument. It reads both
+// documents back as renderSpanless writes them. An insert checks its write with it once for each
+// operation of a batch, and a batch holds as many as a request carries, where a budget of span
+// cells for each read-back would let one batch spend two for every operation. An insert writes
+// markdown, which carries no span, between document-level blocks, so it changes no table, and every
+// table reads back the same way before and after it under the same block ids: a table that reads
+// back otherwise does so in both, and NewMisread's filter of misreads before already held, which
+// keys on the block id, sets it aside either way. Spanless, a render writes no more than the cells
+// the tables hold, and its parse pads the rows a span leaves short on the read-back's own budget
+// (ParseRendering).
+func RefuseMisreadWrite(before, after *Node) error {
+	misread, err := newMisread(before, after, 0)
+	return refuseMisread(misread, nil, err)
 }
 
 // ErrRenderingRefused is the refusal of a document whose own rendering no reader of this package
@@ -378,9 +347,7 @@ func pairChildren(parent string, written, back []*Node, ignore skip) ([][2]int, 
 }
 
 // ownDifference is how a block differs from its read-back apart from its child blocks: its kind,
-// its first differing attribute, and a textblock's text, each "" where they agree. textDiffers is
-// what of the text differs, which keys the misread (misread.differs): the span differingSpan
-// gives, or where both hold one text the first run whose marks differ (markDifference).
+// its first differing attribute, and a textblock's text, each "" where they agree.
 type ownDifference struct {
 	kind, attribute, text, textDiffers string
 }
@@ -392,16 +359,8 @@ func selfDifference(want, got *Node, ignore skip) ownDifference {
 	own := ownDifference{attribute: attributeReason(want, got, ignore)}
 	if isTextblock(want.Type) && !ignore.text && !inlineEqual(want.Children, got.Children) {
 		wanted, read := TextContent(want), TextContent(got)
-		marks := ""
-		if wanted == read {
-			marks = markDifference(want.Children, got.Children)
-		}
-		if marks != "" {
-			own.text, own.textDiffers = blockName(want.Type)+" reads back "+marks, marks
-		} else {
-			own.text = fmt.Sprintf("%s reads back holding %q, not %q", blockName(want.Type), read, wanted)
-			own.textDiffers = differingSpan(wanted, read)
-		}
+		own.text = fmt.Sprintf("%s reads back holding %q, not %q", blockName(want.Type), read, wanted)
+		own.textDiffers = differingSpan(wanted, read)
 	}
 	return own
 }
@@ -418,108 +377,6 @@ func differingSpan(wanted, read string) string {
 		suffix++
 	}
 	return fmt.Sprintf("%q as %q", string(w[prefix:len(w)-suffix]), string(r[prefix:len(r)-suffix]))
-}
-
-// markDifference names how want and got, a textblock's inline content as written and as read back
-// where both hold one text, differ at the first character whose marks differ, by the first mark
-// in writing order (renderMarkRank) that one side holds there and the other does not:
-// `with <mark> on "<run>"` where the read-back gains it, `without <mark> on "<run>"` where it loses
-// it, the run being the text that mark covers on the side that holds it (markedRun), and
-// `linking "<run>" to <target>, not <target>` where both hold a link there to other targets, the
-// run the read-back's link covers. It is "" where every character carries the same marks on both
-// sides, which then differ only in how their nodes cut the text or in a node holding none.
-func markDifference(want, got []*Node) string {
-	i, wantEnd := nextTextNode(want, 0, 0)
-	j, gotEnd := nextTextNode(got, 0, 0)
-	for i < len(want) && j < len(got) {
-		gained, gains := firstMarkOutside(got[j].Marks, want[i].Marks)
-		lost, loses := firstMarkOutside(want[i].Marks, got[j].Marks)
-		switch {
-		case gains && loses && gained.Type == "link" && lost.Type == "link":
-			return fmt.Sprintf("linking %q to %s, not %s", markedRun(got, j, gained), linkTarget(gained), linkTarget(lost))
-		case gains && (!loses || renderMarkRank(gained.Type) <= renderMarkRank(lost.Type)):
-			return fmt.Sprintf("with %s on %q", markNoun(gained.Type, true), markedRun(got, j, gained))
-		case loses:
-			return fmt.Sprintf("without %s on %q", markNoun(lost.Type, false), markedRun(want, i, lost))
-		}
-		end := min(wantEnd, gotEnd)
-		if wantEnd == end {
-			i, wantEnd = nextTextNode(want, i+1, wantEnd)
-		}
-		if gotEnd == end {
-			j, gotEnd = nextTextNode(got, j+1, gotEnd)
-		}
-	}
-	return ""
-}
-
-// nextTextNode is the index of the first of nodes from index on whose text (TextContent) is not
-// empty, and the offset that text ends at, from being the offset it starts at; the index is
-// len(nodes) where none is.
-func nextTextNode(nodes []*Node, index, from int) (int, int) {
-	for ; index < len(nodes); index++ {
-		if length := len(TextContent(nodes[index])); length > 0 {
-			return index, from + length
-		}
-	}
-	return index, from
-}
-
-// firstMarkOutside is the first of marks in writing order (renderMarkRank) that others does not
-// hold, and false where others holds every one.
-func firstMarkOutside(marks, others []Mark) (Mark, bool) {
-	first, found := Mark{}, false
-	for _, mark := range marks {
-		if !containsSameMark(others, mark) && (!found || renderMarkRank(mark.Type) < renderMarkRank(first.Type)) {
-			first, found = mark, true
-		}
-	}
-	return first, found
-}
-
-// markedRun is the text of the nodes next to one another around nodes[index] that carry mark.
-func markedRun(nodes []*Node, index int, mark Mark) string {
-	from, to := index, index+1
-	for from > 0 && containsSameMark(nodes[from-1].Marks, mark) {
-		from--
-	}
-	for to < len(nodes) && containsSameMark(nodes[to].Marks, mark) {
-		to++
-	}
-	var run strings.Builder
-	for _, node := range nodes[from:to] {
-		run.WriteString(TextContent(node))
-	}
-	return run.String()
-}
-
-// markNoun is how a refusal names a mark of markType: a link with its article, "a link" where the
-// read-back gains it and "the link" where it loses it, and any other mark by its kind alone.
-func markNoun(markType string, gained bool) string {
-	switch markType {
-	case "link":
-		if gained {
-			return "a link"
-		}
-		return "the link"
-	case "strong":
-		return "bold"
-	case "strike_through":
-		return "strikethrough"
-	case "inlineCode":
-		return "code"
-	}
-	return markType
-}
-
-// linkTarget is where link goes as a refusal names it: its href, and its title where it holds one.
-func linkTarget(link Mark) string {
-	href, _ := link.Attrs["href"].(string)
-	target := fmt.Sprintf("%q", href)
-	if title, ok := link.Attrs["title"].(string); ok {
-		target += fmt.Sprintf(" titled %q", title)
-	}
-	return target
 }
 
 // AgreeWithReadBack is doc with its document-level blocks first to last, which a write changed,
@@ -758,7 +615,7 @@ func resync(written, back []*Node, i, j int, ignore skip) (int, int, bool) {
 // attributeDrift is the attributes doc's blocks read back with other values where they read back
 // holding the same blocks and text - but a task item's checked, which is its own item's: a task
 // item emptied of its text is written as a plain empty item and reads back with checked none, and
-// newMisread tells a stale one from a new one by its block id, so the attribute drifting would hide
+// NewMisread tells a stale one from a new one by its block id, so the attribute drifting would hide
 // every other task item emptied.
 func attributeDrift(doc, back *Node) map[string]bool {
 	drift := map[string]bool{}

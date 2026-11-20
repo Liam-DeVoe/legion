@@ -1,20 +1,13 @@
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
-import {
-  createIssue,
-  createProject,
-  editArtifact,
-  getArtifact,
-  getArtifactVersion,
-  getIssueArtifactText,
-} from "./api";
-import { documentEditor, openSpec, paste, placeCaret } from "./editor";
+import { createIssue, createProject, editArtifact, getArtifact, getIssueArtifactText } from "./api";
+import { documentEditor, openSpec } from "./editor";
 import { expect, test } from "./test";
 import { asUser } from "./users";
 
 // A bare email address in Markdown a document is written from - a spec an issue starts with, or
 // a line an agent inserts - is an autolink, and the server stores it as a link to the address
 // with the mail scheme: `[a@b.test](mailto:a@b.test)`. This family has no past-version reading
-// row of its own: its first browser row reads the stored document in a browser, and what it reads
+// row of its own: its one browser row reads the stored document in a browser, and what it reads
 // is a link's href, which no paragraph reading holds. The editor and a past version's read-only
 // view render that link with the same href, and the editor's link opener (proof-sdk's
 // markdown-link-click.ts) hands it to `window.open`: on a modifier click in the editable editor,
@@ -34,18 +27,13 @@ const agentSession = {
   as: "agent" as const,
 };
 
-/** The number of the artifact's newest version, which the server assigns. */
-async function newestVersion(artifactId: string): Promise<number> {
-  return Math.max(...((await getArtifact(artifactId)).versions ?? []).map(({ number }) => number));
-}
-
 const entry = fixture("email-autolinks-in-a-spec");
 
 /** The entry's blocks: the paragraph the issue starts with, then the two an agent inserts after
  *  it, so the two versions the past-version half of the row needs are the entry's own text. */
 const [firstBlock, ...insertedBlocks] = entry.markdown.trimEnd().split("\n\n");
 
-// @pr: The mailto family's one row on the pull-request lane: an address written into a spec is a link in the editor and in a past version.
+// @pr: The mailto family's only row: an address written into a spec is a link in the editor and in a past version.
 test("an email address written into a spec is a mailto link in the editor and in a past version @pr", async ({
   browser,
 }) => {
@@ -64,8 +52,12 @@ test("an email address written into a spec is a mailto link in the editor and in
     { ops: [{ after: "end", markdown: insertedBlocks.join("\n\n"), op: "insert" }] },
     agentSession
   );
-  await expect.poll(() => newestVersion(issue.primary_artifact_id)).toBeGreaterThan(1);
-  const written = await newestVersion(issue.primary_artifact_id);
+  const newestVersion = async () =>
+    Math.max(
+      ...((await getArtifact(issue.primary_artifact_id)).versions ?? []).map(({ number }) => number)
+    );
+  await expect.poll(newestVersion).toBeGreaterThan(1);
+  const written = await newestVersion();
 
   const stored = (await getIssueArtifactText(issue.key, "spec")).markdown;
   expect(stored).toContain("[first@b.test](mailto:first@b.test)");
@@ -109,124 +101,6 @@ test("an email address written into a spec is a mailto link in the editor and in
     );
     await first.click();
     await expect.poll(opened).toEqual(["mailto:second@b.test", "mailto:first@b.test"]);
-  } finally {
-    await alice.close();
-  }
-});
-
-// R4 of dispatch://INFRA-4224, written inline rather than taken from the fixture table: a resource
-// path that holds a hyphenated service account is text, and the account named alone is one link to
-// the whole address. Before the rule both readers, Go's and the editor's engine, linked the path's
-// `hosts@…` alone, which names another account.
-const account = "agent-hosts@example-project.iam.gserviceaccount.com";
-const resourcePath = `projects/example-project/serviceAccounts/${account}`;
-const grant = `Grant act-as on ${account}.`;
-
-test("a resource path holding a hyphenated address is text, and the address alone is one mailto link", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: `${resourcePath}\n\n${grant}\n`,
-    title: "A service account in a spec",
-  });
-
-  const stored = (await getIssueArtifactText(issue.key, "spec")).markdown;
-  expect(stored).toContain(`${resourcePath}\n`);
-  expect(stored).toContain(`Grant act-as on [${account}](mailto:${account}).`);
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await openSpec(page, issue.key, grant);
-    const editor = documentEditor(page);
-    const path = editor.locator("p", { hasText: resourcePath });
-    await expect(path).toHaveText(resourcePath);
-    await expect(path.getByRole("link")).toHaveCount(0);
-    const links = editor.getByRole("link");
-    await expect(links).toHaveCount(1);
-    await expect(links).toHaveText(account);
-    await expect(links).toHaveAttribute("href", `mailto:${account}`);
-  } finally {
-    await alice.close();
-  }
-});
-
-// R4 of dispatch://INFRA-4224 in a live document. A person pastes, as text/plain, two shapes the
-// tester found: each is an email link and then a second address after `/`. The editor reads a
-// text/plain paste as Markdown with Dispatch's email rule (@milkdown/plugin-clipboard parses it
-// through the editor's parserCtx), and the rule leaves `smith@example.com` unlinked. No Markdown
-// reads back as that tree: the renderer writes the earlier link explicit, and after an explicit
-// link the rule links `smith@example.com`. So the settlement links `smith@example.com` in the
-// document as the base reads it, the editor then shows that link, and the version is stored with
-// no refusal. A later version write, an agent's insert, is stored with both shapes as the
-// settlement left them. The server writes each earlier link explicit, and the second shape's
-// character reference as the `.` it stands for.
-const laterAddress = "smith@example.com";
-const laterLink = `[${laterAddress}](mailto:${laterAddress})`;
-const pastedShapes = [
-  {
-    earlier: "b-_www.@example.com",
-    markdown: "b-_www.@example.com./bob-smith@example.com",
-    stored: `[b-\\_www.@example.com](mailto:b-_www.@example.com)./bob-${laterLink}`,
-    text: "b-_www.@example.com./bob-smith@example.com",
-  },
-  {
-    earlier: ".@x_y.com",
-    markdown: "`c`&period;.@x_y.com/bob-smith@example.com",
-    stored: `\`c\`.[.@x_y.com](mailto:.@x_y.com)/bob-${laterLink}`,
-    text: "c..@x_y.com/bob-smith@example.com",
-  },
-];
-const pasteIntro = "The addresses below were pasted.";
-const agentParagraph = "An agent wrote this paragraph after the paste.";
-
-test("an address pasted after an email link takes the base's link when stored, in the editor too, and a later write keeps it", async ({
-  browser,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  const issue = await createIssue({
-    project: "CORE",
-    spec: `${pasteIntro}\n`,
-    title: "Pasted email addresses",
-  });
-  const artifactId = issue.primary_artifact_id;
-  const newestMarkdown = async () =>
-    (await getArtifactVersion(artifactId, await newestVersion(artifactId))).markdown;
-  const settled = [pasteIntro, ...pastedShapes.map(({ stored }) => stored)];
-
-  const alice = await asUser(browser, "alice");
-  try {
-    const page = await alice.newPage();
-    await openSpec(page, issue.key, pasteIntro);
-    // The paste goes into a paragraph of its own: pasted at the end of the intro, the first
-    // shape would join the intro's text.
-    await placeCaret(page, "after", pasteIntro);
-    await page.keyboard.press("Enter");
-    await paste(page, {
-      html: "",
-      text: pastedShapes.map(({ markdown }) => markdown).join("\n\n"),
-    });
-
-    await expect
-      .poll(async () => (await getIssueArtifactText(issue.key, "spec")).markdown)
-      .toBe(`${settled.join("\n\n")}\n`);
-    await expect.poll(newestMarkdown).toBe(`${settled.join("\n\n")}\n`);
-    const editor = documentEditor(page);
-    for (const { earlier, text } of pastedShapes) {
-      const links = editor.locator("p", { hasText: text }).getByRole("link");
-      await expect(links).toHaveText([earlier, laterAddress]);
-      await expect(links.first()).toHaveAttribute("href", `mailto:${earlier}`);
-      await expect(links.last()).toHaveAttribute("href", `mailto:${laterAddress}`);
-    }
-
-    await editArtifact(
-      artifactId,
-      { ops: [{ after: "end", markdown: agentParagraph, op: "insert" }] },
-      agentSession
-    );
-    await expect.poll(newestMarkdown).toBe(`${[...settled, agentParagraph].join("\n\n")}\n`);
   } finally {
     await alice.close();
   }

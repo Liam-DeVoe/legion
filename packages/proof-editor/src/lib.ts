@@ -68,7 +68,6 @@ import { libraryRemarkFrontmatterPlugin } from './lib-remark-frontmatter-plugin'
 import { libraryRemarkDirectivePlugin } from './lib-remark-directive-plugin';
 import { libraryRemarkHtmlBlockPlugin, libraryRemarkHtmlFlowPlugin } from './html-blocks';
 import { libraryRemarkNestedLinksPlugin } from './nested-links';
-import { libraryRemarkWholeEmailLinksPlugin } from './whole-email-links';
 import { liveTypedBlocksRemarkPlugin } from './read-only-directives';
 import { brokenAskInputGuards, keepUnselectedAskBlocks, relaxAskContentCheck } from './ask-content';
 import { remarkProofMarksPlugin } from 'proof-sdk-upstream/src/editor/schema/remark-proof-marks-plugin';
@@ -436,13 +435,6 @@ export async function createProofEditor(
     // Register proof mark schemas, plus this library's own dispatchAsk mark
     .use(proofMarkPlugins as unknown as MilkdownPlugin[])
     .use(dispatchMarkPlugins as unknown as MilkdownPlugin[])
-    // An email link remark-gfm made from a bare address is linked whole, or not at all
-    // (./whole-email-links.ts), as in the headless parser. First of this library's remark
-    // transformers, so it reads remark-gfm's tree as Go reads its own: a mark span is still its
-    // inline HTML, and no hoisted copy of a label's link, which carries no position, is there yet.
-    // The commonmark preset's remark-inline-links runs before it, so a reference-style link reaches
-    // it with no position, and the label's text, which keeps its own, tells it from the transform's.
-    .use(libraryRemarkWholeEmailLinksPlugin)
     // Register remark plugins for proof marks and dispatchAsk parsing
     .use(remarkProofMarksPlugin)
     .use(remarkDispatchMarksPlugin)

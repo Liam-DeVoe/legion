@@ -42,7 +42,6 @@ import { dispatchMarkPlugins, remarkDispatchMarks, dispatchMarkHandler } from '.
 import remarkInlineLinks from 'remark-inline-links';
 import { remarkSoftBreakAsLine, remarkSoftBreakAsSpace } from './dispatch-soft-breaks.js';
 import { remarkHoistNestedLinks } from './nested-links.js';
-import { remarkWholeEmailLinks } from './whole-email-links.js';
 import { remarkContainerDirectives } from './lib-remark-directive-plugin.js';
 import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.js';
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
@@ -165,12 +164,6 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkParse)
       .use(remarkFrontmatter, ['yaml'])
       .use(remarkGfm)
-      // An email link remark-gfm made from a bare address is linked whole, or not at all
-      // (./whole-email-links.ts). First of the transformers after the parse, so it reads
-      // remark-gfm's tree as Go reads its own: a mark span is still its inline HTML, a
-      // reference-style link is still a reference, and no hoisted copy of a label's link, which
-      // carries no position, is there yet.
-      .use(remarkWholeEmailLinks)
       .use(remarkContainerDirectives)
       .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)
