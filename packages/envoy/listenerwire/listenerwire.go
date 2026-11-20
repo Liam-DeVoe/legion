@@ -202,8 +202,8 @@ type NoLiveSessionRefusal struct {
 // sender tells them apart by status: 200, a live holder took the message; 202, no live session
 // holds the role and the message waits on the role's kept lane until KeptUntil for the next
 // session that holds it live; 404, nothing was kept. A keep the notifications stream refused
-// because it captures no subject of the role's kept lane keeps nothing too, and is answered 503
-// rather than 404 (RoleRefusal says so). Each field is left out when it is empty, so a role send
+// because it captures no subject of the role's kept lane is answered 503 rather than 404
+// (RoleRefusal says which). Each field is left out when it is empty, so a role send
 // carries no recipient count and a publish to a topic the stream captures carries the envelope and
 // its counts alone.
 type PublishResponse struct {
@@ -528,7 +528,9 @@ type RoleHolder struct {
 // the notifications stream refused because, as the listener last read it, the stream captures no
 // subject of the role's kept lane is answered 503 with Retry-After, an APIError whose words open
 // with the listener's stream-lacks-subject prefix, since nothing stored the message and the same
-// keep is stored once a build that stores the subject sets the stream. HolderState says which
+// keep is stored once a build that stores the subject sets the stream; or, when an earlier send of
+// the same keep went out unanswered and so may have stored the copy, the APIError with
+// CodeMaybeStored. HolderState says which
 // of the three states the claim's holder is in, so a caller can tell a holder that is merely
 // unresponsive - stalled, still claiming, still being stored for - from one that is gone.
 // ClaimReleased is on every lapsed answer and is always false: a lookup takes nothing from a

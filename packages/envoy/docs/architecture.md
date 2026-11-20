@@ -183,6 +183,7 @@ attempt:
 | The stream refuses the publish because it holds its byte limit (`bus.ErrStreamFull`) | `503 {"error":"envoy: the message bus refused the message because its stream is full: <reason>"}` with `Retry-After: 1`, recorded `stream_full` |
 | The server denies the publish under this listener's own grant (`bus.ErrPublishDenied`) | `403 {"error":"envoy: the message bus denied the publish under this listener's own permissions: <reason>"}` with no `Retry-After`, recorded `publish_denied` (below) |
 | The server answers that no stream took the publish, or that a stream other than `ENVOY_NOTIFICATIONS` refused it, and the listener's last read of the deployed stream captures no subject of the target's (`bus.ErrStreamLacksSubject`: a newer build's stream that dropped it) | `503 {"error":"envoy: the message bus stored nothing: <reason>"}` with `Retry-After: 1`, recorded `stream_lacks_subject`, with nothing stored; the reason names the subject and the stream's generation |
+| A send of the publish went out and nothing answered it (`bus.ErrUnacknowledged`), whatever answer, if any, then ended the publish, a full stream's or a missing subject's among them | `503 {"code":"maybe_stored","error":"envoy: the message bus did not answer: <reason>"}`, with the full stream's words for a full stream, and `Retry-After: 1`, recorded `bus_unavailable`, or `stream_full` for a full stream: the message may be stored (`listenerwire.CodeMaybeStored`) |
 | Any other publish failure | `503` with the bus-unavailable prefix and `Retry-After: 1`, carrying the bus's own reason; among them a publish whose subject a core subscriber holds, which waits out the budget, and one made while the listener's last read is older than the change of the stream's subjects |
 | Before the store read, the sending agent session's count under the operator's sender limit holds no message (below) | `429` with `Retry-After`, recorded `sender_rate_limited`, with nothing read, reported or stored |
 
@@ -206,8 +207,10 @@ did not answer. Its 413, its 400s and its 403 for a denied publish are unchanged
 kept nothing: the request sent `keep: false`; the role's token is one `roles.Valid` refuses, which
 no claim can ever name; or the keep itself failed, also a keep whose publish went out and was
 never acknowledged, which may have stored the copy, as at main, save a keep the stream did not
-take for want of the role's kept-lane subject (`bus.ErrStreamLacksSubject`), which is the table's
-`stream_lacks_subject` 503 instead. A role send whose message the listener kept answers `202`
+take for want of the role's kept-lane subject (`bus.ErrStreamLacksSubject`), which is a 503 of
+the table instead: the `stream_lacks_subject` one, or the `maybe_stored` one when an earlier send
+of the same keep went out unanswered and so may have stored the copy. A role send whose message
+the listener kept answers `202`
 instead, both for a role nobody claims and for a claim whose holder is not live. A
 role topic's send then runs on
 within its own 4 s and answers its 200, 202, 403 `capability`, 504 or the `stream_lacks_subject`
@@ -425,8 +428,9 @@ forwarded to its holder, nothing releases the claim, and an `unresponsive` holde
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
 that with `keep: false`, or the keep was refused or failed, save a keep the stream did not take
-for want of the role's kept-lane subject, which is the `stream_lacks_subject` 503 of "Send and
-publish answers". A `holder_lapsed` 404 names the same
+for want of the role's kept-lane subject, which is a 503 of "Send and publish answers" instead:
+the `stream_lacks_subject` one, or the `maybe_stored` one when an earlier send of the same keep
+may have stored the copy. A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`

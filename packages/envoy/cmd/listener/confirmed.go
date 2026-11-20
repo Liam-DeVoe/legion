@@ -47,7 +47,7 @@ const (
 	sendSkipped sendOutcome = "skipped"
 	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
 	// keep: false, a role token no claim can name, or a keep that failed for any reason but the
-	// stream lacking the kept lane's subject, which is the stream_lacks_subject 503 - answered 404
+	// stream lacking the kept lane's subject, which is a 503 (writeBusUnavailable) - answered 404
 	// (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
@@ -204,14 +204,17 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // daemon reads as notify.ErrNoHolder, recorded role_unclaimed or role_lapsed, with its refusal
 // exception (publishRefusalException). The one keep that failed and is answered otherwise is one
 // the notifications stream did not take because, as the listener last read it, the stream
-// captures no subject of the role's kept lane (bus.ErrStreamLacksSubject): that is the 503 of the
-// refusal, recorded stream_lacks_subject, as the send route and a role send's forward answer it,
-// so the sender learns that nothing stored the message and why. The role lane counts an unclaimed
-// role skipped and a lapsed holder failed when its own keep fails. A keep whose publish went out
-// and was never acknowledged (bus.ErrUnacknowledged) is answered with the 404 too, as at main,
-// although it may have stored the copy: what each role route answers is unchanged here, and a
-// sender that publishes again after the 404 gives the role's next holder the message once more,
-// which at-least-once delivery allows.
+// captures no subject of the role's kept lane (bus.ErrStreamLacksSubject): that is a 503 of the
+// bus's (writeBusUnavailable), as the send route and a role send's forward answer it. It is the
+// refusal's own 503, recorded stream_lacks_subject, so the sender learns that nothing stored the
+// message and why; or, when an earlier send of the same keep may have stored the copy
+// (storeKeptRoleCopy's ownSend, which wraps the refusal in bus.ErrUnacknowledged), the 503 with
+// listenerwire.CodeMaybeStored, recorded bus_unavailable, since that copy may be on the lane. The
+// role lane counts an unclaimed role skipped and a lapsed holder failed when its own keep fails.
+// Any other keep whose publish went out and was never acknowledged (bus.ErrUnacknowledged) is
+// answered with the 404 too, as at main, although it may have stored the copy: what each role
+// route answers is unchanged here, and a sender that publishes again after the 404 gives the
+// role's next holder the message once more, which at-least-once delivery allows.
 //
 // It is also the one place a message to a Legion role of a released issue pod is seen at all, so
 // it raises the wake report beside the answer, before either answer and waiting for neither

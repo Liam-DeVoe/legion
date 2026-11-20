@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -16,8 +18,11 @@ import (
 // A keep whose first send went unanswered and whose resend the stream refused as in process may
 // have stored its copy (storeKeptRoleCopy's ownSend), so the 503 a kept role-route send answers says
 // maybe_stored however the keep then ends: at the end of its window with the stream still answering
-// "in process", or with the next send refused by a full stream. The control is a keep whose every
-// send is answered as the first was, which ends with the unacknowledged error last.
+// "in process", with the next send refused by a full stream, or with the next send refused because
+// the stream captures no subject of the kept lane (bus.ErrStreamLacksSubject), whose own 503 says
+// that nothing stored the message and so yields to the maybe-stored one (writeBusUnavailable). The
+// control is a keep whose every send is answered as the first was, which ends with the
+// unacknowledged error last.
 func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.T) {
 	unanswered := fmt.Errorf("%w: %w", bus.ErrUnacknowledged, fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess))
 	for _, row := range []struct {
@@ -27,6 +32,8 @@ func TestAKeepWhoseOwnSendWentUnansweredSaysMaybeStoredHoweverItEnds(t *testing.
 		{"control: every later send answered as the first was", unanswered},
 		{"every later send answered in process until the window ends", fmt.Errorf("%w: nats: duplicate message id is in process", bus.ErrDuplicateInProcess)},
 		{"the next send refused by a full stream", fmt.Errorf("%w: maximum bytes exceeded", bus.ErrStreamFull)},
+		{"the next send refused for want of the kept lane's subject", fmt.Errorf("%w: %s at generation 1000000 carries no subject capturing %q: %w",
+			bus.ErrStreamLacksSubject, bus.Stream, bus.KeptRoleSubject("own-send"), natsgo.ErrNoStreamResponse)},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			cfg := listenerDeliveryHandlerConfig{now: time.Now}

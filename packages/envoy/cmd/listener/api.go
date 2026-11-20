@@ -266,7 +266,9 @@ const streamFullPrefix = "envoy: the message bus refused the message because its
 // carries no subject capturing the message's (bus.ErrStreamLacksSubject: a newer build's stream
 // that dropped a subject this build stores), a role send's forward and keep among them, so one
 // string matches in a test and in a deployed log filter; the webhook routes answer the error
-// itself (internal/webhook's failureOutcome). The
+// itself (internal/webhook's failureOutcome). A keep an earlier send of which went out unanswered
+// is not among them: that send may have stored the copy, so it is the maybe-stored 503
+// (writeBusUnavailable). The
 // error after it names the subject and the stream's generation. It is deliberately not
 // busUnansweredPrefix: the bus answered, that no copy is kept for that subject, so "the message bus
 // did not answer" would have a monitor count it as an outage and send an operator looking for one
@@ -322,9 +324,10 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // (bus.ErrStreamLacksSubject) is answered the same way under streamLacksSubjectPrefix.
 //
 // A publish that may have stored its message (mayHaveStored) is the 503 with
-// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, or a refusal of the
-// resend after a send nothing answered - so a sender treats it as a send that may have landed
-// rather than one that stored nothing.
+// listenerwire.CodeMaybeStored, whichever answer ended it - a full stream's, a missing subject's,
+// or a refusal of the resend after a send nothing answered - so a sender treats it as a send that
+// may have landed rather than one that stored nothing. So the missing-subject 503 is only for an
+// error that mayHaveStored does not report and no full stream ended: both those 503s win over it.
 func writeBusUnavailable(w http.ResponseWriter, err error) (int, requestOutcome) {
 	if errors.Is(err, bus.ErrPublishDenied) {
 		writeJSONError(w, http.StatusForbidden, fmt.Sprintf("%s: %s", publishDeniedPrefix, err))
