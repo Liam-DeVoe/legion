@@ -445,6 +445,28 @@ func (s *Service) SettleCopiesOf(ctx context.Context, ask model.Ask) error {
 	return nil
 }
 
+// CopiesOf answers, sorted and once each, every other document of ask's owner showing a copy of it
+// (lockedCopiesOf), read in the transaction ctx joined, and marks nothing: a route that settles the
+// copies later in the same transaction (SettleCopiesOf) reads them first, to check who may write
+// each copy before its first document call. It takes the copy lock as lockedCopiesOf does, before
+// any pending row or event, and SettleCopiesOf takes it again in the same session, where an advisory
+// lock is re-entrant. ask is a block ask, its BlockID and BlockArtifactID set, and the caller holds
+// its owner lock, under which it read the ask.
+func (s *Service) CopiesOf(ctx context.Context, ask model.Ask) ([]string, error) {
+	tx, joined := txFromContext(ctx)
+	if !joined {
+		return nil, errUnjoined
+	}
+	if ask.BlockID == nil || ask.BlockArtifactID == nil {
+		return nil, fmt.Errorf("ask %q is not a block ask", ask.ID)
+	}
+	owner, err := documentOwner(ctx, tx, *ask.BlockArtifactID)
+	if err != nil {
+		return nil, err
+	}
+	return lockedCopiesOf(ctx, tx, documentAsks{artifactID: *ask.BlockArtifactID, owner: owner, asks: []model.Ask{ask}})
+}
+
 // likeLiteral escapes text for a LIKE pattern, under its default escape character.
 func likeLiteral(text string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(text)

@@ -81,17 +81,36 @@ var legionManagedStatusOfRowSQL = legionWalkSQL(`select $1::text as parent_key, 
 // parent_key, its labels and depth 0.
 func legionWalkSQL(start string) string {
 	return `
-	with recursive chain as (
+	with recursive ` + issueChainSQL(start) + `
+	select ` + legionOnChainSQL
+}
+
+// issueChainSQL is the recursive common table expression chain that the legion-label walk
+// (legionWalkSQL) and the check of who writes a Legion-run issue's spec (spec_writer.go) both read,
+// so Dispatch keeps one walk for "Legion runs": the row start selects at depth 0, then each issue
+// above it by parent_key, one link a row, at most parentDepthCap links up. carried names the
+// columns of an issue row the walk carries up beside parent_key, labels and depth (none for
+// legionWalkSQL, key for the check); start selects them first, in that order, then parent_key,
+// labels and 0 as depth.
+func issueChainSQL(start string, carried ...string) string {
+	var columns strings.Builder
+	for _, column := range carried {
+		columns.WriteString("p." + column + ", ")
+	}
+	return `chain as (
 		` + start + `
 		union
-		select p.parent_key, p.labels, c.depth + 1
+		select ` + columns.String() + `p.parent_key, p.labels, c.depth + 1
 		from issues p join chain c on p.key = c.parent_key
 		where c.depth < ` + parentDepthCapSQL + `
-	)
-	select exists (
-		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
 	)`
 }
+
+// legionOnChainSQL answers whether a row of issueChainSQL's chain carries the label legion, in any
+// case it was typed in (legionManagedStatusSQL).
+const legionOnChainSQL = `exists (
+		select 1 from chain c, unnest(c.labels) as label where lower(label) = '` + legionLabel + `'
+	)`
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
