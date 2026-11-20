@@ -846,8 +846,9 @@ type proxyRecord struct {
 // introspection alone; no table prints one.
 //
 // A request's record takes its place when the request arrives, and its status and code only once
-// Dispatch's answer has gone out whole, which can be after the client has read that answer and
-// returned: the client stops reading at the body's last byte, while the handler is still writing.
+// the handler is done with Dispatch's answer, gone out whole or broken off, which can be after the
+// client has read that answer and returned: the client stops reading at the body's last byte, while
+// the handler is still writing.
 // So a reader that marks the records, has a client write and then reads them (since) waits for
 // every request it may have read in flight to land, rather than reading before its record does.
 type recordingProxy struct {
@@ -855,7 +856,7 @@ type recordingProxy struct {
 	landed  *sync.Cond // signalled each time a request's record lands
 	target  *url.URL
 	records []proxyRecord
-	// inFlight is the index in records of each request whose answer has not gone out whole.
+	// inFlight is the index in records of each request whose handler has not finished.
 	inFlight map[int]struct{}
 	tokens   map[string]string
 }
@@ -899,28 +900,35 @@ func (p *recordingProxy) at(address string) http.Handler {
 		p.inFlight[index] = struct{}{}
 		p.mu.Unlock()
 		answer := &answerRecorder{ResponseWriter: w}
+		// The record lands on every way out of this handler. ReverseProxy, under an HTTP server,
+		// aborts the handler with panic(http.ErrAbortHandler) when an answer breaks off part way,
+		// so a landing after ServeHTTP would never run and every since() from its mark would wait
+		// for good. The deferred landing records what the proxy saw, and the panic goes on to the
+		// server as before.
+		defer func() {
+			record.Status = answer.status
+			if record.Status == 0 {
+				record.Status = http.StatusOK
+			}
+			if record.Status/100 != 2 {
+				var refusal struct {
+					Code string `json:"code"`
+				}
+				if json.Unmarshal(answer.body.Bytes(), &refusal) == nil {
+					record.Code = refusal.Code
+				}
+			}
+			p.mu.Lock()
+			p.records[index] = record
+			delete(p.inFlight, index)
+			p.landed.Broadcast()
+			p.mu.Unlock()
+		}()
 		if ready {
 			forward.ServeHTTP(answer, request)
 		} else {
 			http.Error(answer, "the rig's proxy has no Dispatch yet", http.StatusServiceUnavailable)
 		}
-		record.Status = answer.status
-		if record.Status == 0 {
-			record.Status = http.StatusOK
-		}
-		if record.Status/100 != 2 {
-			var refusal struct {
-				Code string `json:"code"`
-			}
-			if json.Unmarshal(answer.body.Bytes(), &refusal) == nil {
-				record.Code = refusal.Code
-			}
-		}
-		p.mu.Lock()
-		p.records[index] = record
-		delete(p.inFlight, index)
-		p.landed.Broadcast()
-		p.mu.Unlock()
 	})
 }
 
