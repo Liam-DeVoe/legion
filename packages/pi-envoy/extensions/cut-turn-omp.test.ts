@@ -12,7 +12,7 @@ import {
 } from "@legion/pi-shared/test/omp-harness";
 
 // A turn killed in a provider retry's backoff, on the real Oh My Pi (R2). At the pin (.omp-pin,
-// 18.18.6-sami.20261119-162325) the host writes the failed attempt into the transcript, emits
+// 18.18.6-sami.20261120-192530) the host writes the failed attempt into the transcript, emits
 // `auto_retry_start` and sleeps (`#applyRetryPolicy`,
 // packages/coding-agent/src/session/turn-recovery.ts:3396-3434); it notifies extensions of the
 // run's end (`agent_end`) only once the run settles, with `willContinue` when a continuation
