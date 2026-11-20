@@ -308,14 +308,15 @@ func (c *Client) requestConfirmed(ctx context.Context, subject string, data []by
 }
 
 // requestConfirmedOn is requestConfirmed's request on conn, once conn can take it. Its error is
-// left for requestConfirmed to name.
+// left for requestConfirmed to name. Its reply subscription ends with the wait (endReplies).
 func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subject string, data []byte) (*nats.Msg, error) {
 	inbox := conn.NewInbox()
 	replies, err := conn.SubscribeSync(inbox)
 	if err != nil {
 		return nil, err
 	}
-	defer replies.Unsubscribe()
+	replied := false
+	defer func() { endReplies(replies, replied) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Data: data}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
@@ -327,6 +328,7 @@ func (c *Client) requestConfirmedOn(ctx context.Context, conn *nats.Conn, subjec
 		}
 		return nil, waitErr
 	}
+	replied = true
 	if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
 		return nil, nats.ErrNoResponders
 	}
@@ -373,13 +375,15 @@ func (c *Client) RequestCore(ctx context.Context, subject string, header nats.He
 	if err != nil {
 		return nil, err
 	}
-	defer subscription.Unsubscribe()
+	replied := false
+	defer func() { endReplies(subscription, replied) }()
 	err = c.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Reply: inbox, Header: header}, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
 		return nil, err
 	}
 	select {
 	case reply := <-replies:
+		replied = true
 		if len(reply.Data) == 0 && reply.Header.Get("Status") == "503" {
 			return nil, nats.ErrNoResponders
 		}

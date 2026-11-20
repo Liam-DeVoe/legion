@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -383,4 +385,220 @@ func TestARequestWhoseContextEndedIsNamedWithinItDuringAHeldHandshake(t *testing
 
 	releaseUntilConnected(t, hold, conn)
 	bare(t, "once the hold was released")
+}
+
+// A request already waiting for its reply when nats.go begins a reconnect's handshake answers at
+// its own bound. Its reply inbox ends with the wait, and an unsubscribe waits for nats.go's
+// connection lock, which nats.go holds through the handshake. A wait that ended without a reply
+// unsubscribed on the caller's goroutine, so the request answered only when the handshake attempt
+// ended, at the client's connect timeout (connectTimeout, 5 s): the listener's connection probe
+// (RequestCore), a session consumer's request (requestConfirmed) and a role forward's wait for the
+// stream (PendingForward.Wait) each answered past its bound. Such a wait now unsubscribes on a
+// goroutine of its own (endReplies).
+//
+// The row sends the three requests to a subject a silent subscriber takes and never answers, so no
+// reply and no no-responders answer comes. Once each has reached the subscriber and the client's
+// own flush is answered, so each waits for its reply, it holds the reconnect's handshake. Then the
+// probe's and the consumer request's ctx is cancelled, and the forward's window, 3 s from its send,
+// runs out during the hold. Each answers within 1 s of its own end, within the attempt held when
+// they ended (no later attempt has reached the hold, and nats.go's lock is still held): the probe
+// with ctx's error, the consumer request with `bus: NATS is reconnecting`, which carries ctx's
+// error, and the forward with ErrForwardNotStored.
+//
+// The controls: no request answers before its end, so each was waiting for its reply when the hold
+// began; and once the hold is released, the connection holds as many subscriptions as before the
+// requests, so every unsubscribe left running has landed. The negative control is the unsubscribe
+// as it was, on the caller's goroutine: no request answers within 1 s of its end.
+func TestARequestWaitingForItsReplyAnswersAtItsBoundWhenAHandshakeIsHeldUnderIt(t *testing.T) {
+	const forwardWindow = 3 * time.Second
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	silent := testnats.Connect(t, testnats.URL(t))
+	subject := fmt.Sprintf("held-handshake.silent.%d", time.Now().UnixNano())
+	arrived := make(chan struct{}, 3)
+	if _, err := silent.Subscribe(subject, func(*nats.Msg) { arrived <- struct{}{} }); err != nil {
+		t.Fatalf("subscribe the silent subscriber: %v", err)
+	}
+	if err := silent.Flush(); err != nil {
+		t.Fatalf("flush the silent subscriber: %v", err)
+	}
+	before := conn.NumSubscriptions()
+
+	type answer struct {
+		what string
+		err  error
+		at   time.Time
+	}
+	answers := make(chan answer, 3)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	go func() {
+		_, err := client.RequestCore(ctx, subject, nats.Header{"Envoy-Probe": []string{"held-handshake"}})
+		answers <- answer{what: "RequestCore", err: err, at: time.Now()}
+	}()
+	go func() {
+		_, err := client.requestConfirmed(ctx, subject, []byte("{}"))
+		answers <- answer{what: "requestConfirmed", err: err, at: time.Now()}
+	}()
+	forwardEnds := time.Now().Add(forwardWindow)
+	forward, err := client.StartRequestStoredTo(subject, contracts.Envelope{EventID: "evt-held-handshake-forward", Topic: subject}, "held-handshake-forward", forwardWindow)
+	if err != nil {
+		t.Fatalf("control: the forward's send answered %v, want it sent", err)
+	}
+	go func() {
+		err := forward.Wait()
+		answers <- answer{what: "PendingForward.Wait", err: err, at: time.Now()}
+	}()
+	for range 3 {
+		select {
+		case <-arrived:
+		case <-time.After(30 * time.Second):
+			t.Fatal("control: a request did not reach the silent subscriber within 30 s")
+		}
+	}
+	// The client's own flush is answered after each request's, so each request now waits for its
+	// reply.
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("control: flush the client's connection: %v", err)
+	}
+	notYet := func(when string) {
+		t.Helper()
+		select {
+		case got := <-answers:
+			t.Fatalf("control: %s answered %v %s, so it was not waiting for its reply when the hold began", got.what, got.err, when)
+		default:
+		}
+	}
+	notYet("before the hold")
+
+	hold.HoldReconnect(t, conn)
+	notYet("before its end, during the hold")
+	attempt := hold.Attempts()
+	cancel()
+	cancelled := time.Now()
+	ends := map[string]time.Time{"RequestCore": cancelled, "requestConfirmed": cancelled, "PendingForward.Wait": forwardEnds}
+	guard := time.NewTimer(time.Until(forwardEnds) + heldBound + heldMargin)
+	defer guard.Stop()
+	got := map[string]answer{}
+	for range 3 {
+		select {
+		case a := <-answers:
+			got[a.what] = a
+		case <-guard.C:
+			t.Fatalf("only %d of 3 requests answered within 1 s of their ends while nats.go's lock was held: the others waited for the lock", len(got))
+		}
+	}
+	if after := hold.Attempts(); after != attempt {
+		t.Fatalf("the requests answered only after %d more handshake attempt(s) had reached the hold: they waited out the attempt held when they ended", after-attempt)
+	}
+	testnats.RequireLockHeld(t, conn)
+	for what, end := range ends {
+		a := got[what]
+		if late := a.at.Sub(end); late > heldBound+heldMargin {
+			t.Errorf("%s answered %s after its end, want within %s", what, late, heldBound+heldMargin)
+		}
+		if a.at.Before(end) {
+			t.Errorf("%s answered %v %s before its end", what, a.err, end.Sub(a.at))
+		}
+	}
+	if err := got["RequestCore"].err; !errors.Is(err, context.Canceled) {
+		t.Errorf("RequestCore answered %v, want ctx's error", err)
+	}
+	if err := got["requestConfirmed"].err; !errors.Is(err, ErrReconnecting) || !errors.Is(err, context.Canceled) {
+		t.Errorf("requestConfirmed answered %v, want ErrReconnecting with ctx's error", err)
+	}
+	if err := got["PendingForward.Wait"].err; !errors.Is(err, ErrForwardNotStored) {
+		t.Errorf("PendingForward.Wait answered %v, want ErrForwardNotStored", err)
+	}
+
+	releaseUntilConnected(t, hold, conn)
+	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "every reply inbox the requests left to unsubscribe to be gone once the hold was released",
+		func() bool { return conn.NumSubscriptions() == before })
+}
+
+// doneWatch is ctx, reporting the first call of its Done: a readWithin under it calls Done first,
+// just before it starts its read.
+type doneWatch struct {
+	context.Context
+	once  sync.Once
+	asked chan struct{}
+}
+
+func (d *doneWatch) Done() <-chan struct{} {
+	d.once.Do(func() { close(d.asked) })
+	return d.Context.Done()
+}
+
+// A core publish whose ctx ends while its read of the connection's state waits for nats.go's lock
+// publishes nothing, even when that read then answers: readWithin gives a read ConnLockWait however
+// soon ctx ends, so its answer can come after ctx ended, and the publish read ctx only before the
+// read. Its subscribers then received a message its caller was told failed, and the caller's retry
+// delivered it twice.
+//
+// The row holds a reconnect's handshake, so the read waits for nats.go's lock. It starts the
+// publish under a ctx that reports the read's start (doneWatch), cancels ctx, then releases the
+// hold, so nats.go completes the handshake and lets the lock go within a few milliseconds and the
+// read answers. The publish answers `bus: window elapsed before the publish to "<subject>" was
+// flushed: context canceled`, and its publish is never called.
+//
+// The controls: a publish with a live ctx before the hold and once the connection is back is
+// confirmed and calls its publish once each; and the answer is not ErrReconnecting, so the read
+// answered after ctx ended rather than leaving the publish unsent at ConnLockWait. The negative
+// control is publishConfirmed as it was, reading ctx only before the read: it publishes.
+func TestAPublishWhoseContextEndsInItsLockWaitPublishesNothing(t *testing.T) {
+	client, hold := heldHandshakeClient(t)
+	conn := client.Connection()
+	subject := fmt.Sprintf("held-handshake.publish.%d", time.Now().UnixNano())
+	var published atomic.Int64
+	publish := func(msg *nats.Msg) error {
+		published.Add(1)
+		return conn.PublishMsg(msg)
+	}
+	confirmed := func(t *testing.T, when string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		was := published.Load()
+		if err := client.publishConfirmed(ctx, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish); err != nil || published.Load() != was+1 {
+			t.Fatalf("control: a publish with a live ctx %s answered %v and published %d time(s), want nil and once", when, err, published.Load()-was)
+		}
+		published.Store(0)
+	}
+	confirmed(t, "before the hold")
+
+	hold.HoldReconnect(t, conn)
+	live, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	watched := &doneWatch{Context: live, asked: make(chan struct{})}
+	answered := make(chan error, 1)
+	go func() {
+		answered <- client.publishConfirmed(watched, conn, &nats.Msg{Subject: subject, Data: []byte("{}")}, publish)
+	}()
+	select {
+	case <-watched.asked:
+	case err := <-answered:
+		t.Fatalf("control: the publish answered %v before it read the connection's state", err)
+	case <-time.After(30 * time.Second):
+		t.Fatal("control: the publish did not reach its read of the connection's state within 30 s")
+	}
+	cancel()
+	hold.Release()
+	want := fmt.Sprintf("bus: window elapsed before the publish to %q was flushed: context canceled", subject)
+	select {
+	case err := <-answered:
+		if errors.Is(err, ErrReconnecting) {
+			t.Fatalf("control: the publish answered %v: its read did not answer within ConnLockWait of the hold's release, so the row did not reach its case", err)
+		}
+		if err == nil || err.Error() != want || !errors.Is(err, context.Canceled) {
+			t.Errorf("the publish whose ctx ended in its lock wait answered %v, want %q", err, want)
+		}
+	case <-time.After(heldBound + heldMargin):
+		t.Fatalf("the publish whose ctx ended in its lock wait gave no answer within %s of the hold's release", heldBound+heldMargin)
+	}
+	if n := published.Load(); n != 0 {
+		t.Fatalf("the publish whose ctx ended in its lock wait was called %d time(s), want none", n)
+	}
+
+	testwait.WithinPolling(t, 30*time.Second, 10*time.Millisecond, "the connection to reconnect once the hold was released", conn.IsConnected)
+	confirmed(t, "once the hold was released")
 }

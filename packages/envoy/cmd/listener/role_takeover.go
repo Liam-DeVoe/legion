@@ -656,6 +656,13 @@ func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 // every such frame does. A claim read or a copy that failed has the frame given back to the server
 // with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
 // copied or sent once they answer.
+//
+// The hand-over is at least once, not exactly once. The copy and the acknowledgement are two
+// steps, so a listener that stops between them, or an acknowledgement that fails, leaves the frame
+// to be delivered to this relay again. A second copy under the same message id (takenFrameMsgID)
+// is a duplicate the stream stores once, but a relay that by then reads a claim naming this session
+// sends the frame itself, beside the copy the walk forwards. The holder can then receive the event
+// twice, under the same event id.
 func (m *sessionRelays) takeOverFrame(ctx context.Context, sessionID string, msg bus.SessionMessage) bool {
 	role, mark, ok := decodeRoleMark(msg.Data)
 	if !ok {

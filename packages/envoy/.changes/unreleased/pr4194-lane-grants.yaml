@@ -13,9 +13,11 @@ body: |-
   refuses a direct publish on its lane. A session on a host user that it shares with the host's
   listener can still have a message stored under either lane, by a stream update that adds a
   subject transform, since that user keeps the stream's update. A session the auth service admits
-  holds no stream update. For the host's sessions the gap stays open until dispatch://INFRA-840. A
-  deployment whose listener user receives GitHub's webhook sets `githubWebhook: true` on that user
-  in the change that moves its envoy-infra pin, or that listener's GitHub publishes are refused.
+  holds no stream update. For a host's sessions the gap stays open until each connects with NATS
+  credentials of its own, as a session the auth service admits does, rather than sharing the host's
+  user. A deployment whose listener user receives GitHub's webhook sets `githubWebhook: true` on
+  that user in the change that moves its envoy-infra pin, or that listener's GitHub publishes are
+  refused.
 time: 2026-11-16T18:39:48Z
 custom:
     Issue: pr4194

@@ -357,13 +357,31 @@ func waitWhileConnecting(ctx context.Context, conn *nats.Conn) error {
 //
 // The wait lasts at least ConnLockWait from the start, whatever ctx does. A read with the lock free
 // answers in that time, so a ctx that has ended already, or that ends a moment after the start,
-// still gets the read's answer. A ctx that can never end (context.Background) bounds nothing:
-// read is then made on the caller's goroutine, as it would be without readWithin.
+// still gets the read's answer. So a caller can answer up to ConnLockWait (100 ms) after its ctx
+// ended, for each such read it makes once ctx has ended. A ctx that can never end
+// (context.Background) bounds nothing: read is then made on the caller's goroutine, as it would be
+// without readWithin.
 //
 // A read that has not answered in time is left running, since nothing stops a wait for nats.go's
 // lock: it goes on until nats.go lets the lock go. Its answer goes to a channel with room for one,
 // which nothing reads then. So the goroutine never blocks on its send, and it writes nothing that
 // its caller reads after readWithin has returned.
+//
+// Some calls that take nats.go's lock stay on the caller's goroutine, with no bound but nats.go's:
+//   - the sends themselves: a core publish and its flush (publishConfirmed, confirmFlushed), a
+//     window's request publish (window.request), a JetStream publish (sendStored), and nats.go's
+//     own steps of a legacy JetStream request; a send left running could still go out after its
+//     caller was told it did not;
+//   - the subscribe of a request's reply inbox (requestConfirmedOn, RequestCore, window.request,
+//     StartRequestStoredTo), the unsubscribe of one a reply answered (endReplies), and the
+//     unsubscribe of a window's inbox whose publish nats.go refused (window.request);
+//   - a read of the state for a call that takes no ctx: the name of a legacy JetStream request made
+//     with no nats.Context (namedWith), and Connected, SubOK, CoreSubOK and a recovery's
+//     subscriptionsHealthy, which hold no lock of the client's across it (connOpen).
+//
+// Each send and subscribe is made right after a read found the connection connected, so it waits
+// for a handshake only when the connection drops and nats.go begins an attempt within those few
+// microseconds; a write to a slow socket holds the lock for as long as that write takes.
 func readWithin[T any](ctx context.Context, read func() T) (value T, answered bool) {
 	if ctx.Done() == nil {
 		return read(), true
@@ -392,6 +410,21 @@ func readWithin[T any](ctx context.Context, read func() T) (value T, answered bo
 	default:
 		return value, false
 	}
+}
+
+// endReplies unsubscribes sub, the reply inbox of a request whose wait has ended. The unsubscribe
+// waits for nats.go's connection lock. A request a reply answered unsubscribes at once on the
+// caller's goroutine: the reply came over a live link a moment ago. A request whose wait ended with
+// no reply - at its caller's bound, at a refusal or at the connection's loss - may end while nats.go
+// holds that lock through a reconnect's handshake, so it unsubscribes on a goroutine of its own and
+// its caller answers at once. That goroutine ends when nats.go lets the lock go; until then the
+// inbox can take a late reply, which nothing reads.
+func endReplies(sub *nats.Subscription, replied bool) {
+	if replied {
+		_ = sub.Unsubscribe()
+		return
+	}
+	go func() { _ = sub.Unsubscribe() }()
 }
 
 // connecting reports whether nats.go is connecting conn for the first time or reconnecting it: the

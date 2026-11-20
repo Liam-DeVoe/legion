@@ -1197,7 +1197,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		for _, lane := range publisherLanes {
 			if strings.HasPrefix(request.Topic, lane.prefix) {
 				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
-					"cannot publish to "+lane.prefix+" topics; "+lane.publisher+" alone publishes that lane, straight to NATS", "topic")
+					"cannot publish to "+lane.prefix+" topics; "+lane.publisher+" alone publishes that lane: publish it straight to NATS with the lane's own user", "topic")
 				return
 			}
 		}

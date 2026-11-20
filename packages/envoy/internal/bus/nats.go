@@ -2337,7 +2337,7 @@ func (c *Client) StartRequestStoredTo(subject string, item contracts.Envelope, m
 	}
 	err = c.publishConfirmed(ctx, conn, forward, conn.PublishMsg)
 	if err != nil && !errors.Is(err, ErrPublishUnconfirmed) {
-		_ = replies.Unsubscribe()
+		endReplies(replies, false)
 		return nil, err
 	}
 	return &PendingForward{replies: replies, deadline: deadline, unconfirmed: err}, nil
@@ -2354,12 +2354,13 @@ type PendingForward struct {
 }
 
 // Wait reads the forward's replies until the stream has acknowledged storing it or its window
-// ends, and releases its reply subscription. No acknowledgement by the deadline, the stream's
-// error answer, and the server's no-responders answer (nothing captured the subject) are each
-// ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
+// ends, and releases its reply subscription (endReplies). No acknowledgement by the deadline, the
+// stream's error answer, and the server's no-responders answer (nothing captured the subject) are
+// each ErrForwardNotStored, wrapping the reason and, when publishConfirmed could not confirm the
 // publish, the reason for that.
 func (f *PendingForward) Wait() error {
-	defer f.replies.Unsubscribe()
+	replied := false
+	defer func() { endReplies(f.replies, replied) }()
 	for {
 		remaining := time.Until(f.deadline)
 		if remaining <= 0 {
@@ -2372,6 +2373,7 @@ func (f *PendingForward) Wait() error {
 		if err != nil {
 			// The server's no-responders answer: nothing, not even a stream, took the forward.
 			if errors.Is(err, nats.ErrNoResponders) {
+				replied = true
 				return fmt.Errorf("%w: %w", ErrForwardNotStored, err)
 			}
 			return err
@@ -2380,6 +2382,7 @@ func (f *PendingForward) Wait() error {
 		if !ok {
 			continue
 		}
+		replied = true
 		// The stream's error answer to the forward, which no later reply changes.
 		if ack.Error != nil {
 			return fmt.Errorf("%w: %w", ErrForwardNotStored, ack.Error)

@@ -466,7 +466,11 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		return nil, w.unsent(err, len(data))
 	}
 	return func() error {
-		defer inboxSub.Unsubscribe()
+		// The inbox ends with the wait, on this goroutine only once a reply answered the request
+		// (endReplies): a wait that ends at the connection's loss, a refusal or the timeout may end
+		// while nats.go holds its connection lock, which the unsubscribe waits for.
+		replied := false
+		defer func() { endReplies(inboxSub, replied) }()
 		// The flush runs beside the wait for the answer rather than ahead of it. nats.go clears
 		// the flushes pending on a connection only as that connection turns from connected to
 		// reconnecting (clearPendingFlushCalls), so a flush begun after that moment - a server
@@ -529,13 +533,14 @@ func (w *window) request(subject string, item contracts.Envelope, opts RequestOp
 		// none: it records no id for a message its stream refused.
 		outcome := func(reply *nats.Msg) (bool, error) {
 			ack, ok := acknowledgement(reply)
-			if !ok {
+			if !ok || (ack.Error == nil && ack.Sequence == 0) {
 				return false, nil
 			}
+			replied = true
 			if ack.Error != nil {
 				return true, fmt.Errorf("bus: request to %q: the stream refused the copy: %w", subject, streamFull(ack.Error))
 			}
-			return ack.Sequence > 0, nil
+			return true, nil
 		}
 		// drained reads the replies already in, so an answer that arrived with the connection's
 		// loss or the deadline still counts.

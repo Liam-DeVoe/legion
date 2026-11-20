@@ -230,11 +230,15 @@ func deliverPolicyName(policy natsgo.DeliverPolicy) string {
 // starts a listener under a machine id with no durable. The listener creates its durable, and
 // within the wait and a margin it reports no wake and forwards no role message for either: its
 // durable takes neither message at all. The role message is stored on its holder's own subject,
-// so the holder receives it exactly once, through its own consumer, by one of two paths. The relay
-// sends the frame when the claim it reads names the holder. When the claim names no session, the
-// relay copies the frame to the role's kept lane in place of sending it, and the kept lane's walk
-// forwards that copy to the holder once (takeOverFrame). The row takes either path, and fails on
-// two deliveries or on none.
+// so the holder receives it through its own consumer, by one of two paths. The relay sends the
+// frame when the claim it reads names the holder. When the claim names no session, the relay
+// copies the frame to the role's kept lane in place of sending it, and the kept lane's walk
+// forwards that copy to the holder (takeOverFrame). The row takes either path, and fails on two
+// deliveries or on none within its window: it counts what the holder received until a second has
+// passed with no frame (deliveriesOf). That is one delivery in the window, not exactly once: the
+// hand-over is at least once. The relay copies the frame and then acknowledges it, two steps, so a
+// listener that stops between them, or an acknowledgement that fails, leaves the frame to be
+// copied again, and the holder then receives a second frame of the same event.
 // Row b stores an agent message for another session with no record and sends a role message to
 // the role's holder after the start: the listener reports the wake after the wait and forwards the
 // role message, as any listener does. Row c stops the listener, stores an agent message while no
@@ -284,7 +288,7 @@ func TestANewListenerDurableDoesNotReplayTheStream(t *testing.T) {
 			t.Errorf("the new listener forwarded the role message stored before its start %d times itself and %d times from the kept lane, where the holder's relay copied it %d times; want never itself, and from the kept lane once for a copy the relay made, else never", direct, kept, handed)
 		}
 		if delivered != 1 {
-			t.Errorf("the holder received the role message stored before the listener's start %d times (the relay copied it to the kept lane %d times, the kept lane forwarded it %d times); want exactly once", delivered, handed, kept)
+			t.Errorf("the holder received the role message stored before the listener's start %d times within the row's window (the relay copied it to the kept lane %d times, the kept lane forwarded it %d times); want once", delivered, handed, kept)
 		}
 		t.Logf("the holder received the role message stored before the listener's start %d time(s): the relay copied it to the kept lane %d time(s) and the kept lane forwarded it %d time(s)", delivered, handed, kept)
 		if info := rig.durableInfo(t); info.Config.DeliverPolicy != natsgo.DeliverNewPolicy {

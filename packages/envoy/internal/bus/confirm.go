@@ -47,27 +47,40 @@ var ErrPublishUnconfirmed = errors.New("publish not known to have been accepted"
 // answering failure behind it tells the caller a message failed that its subscribers receive - and
 // a core subject has no duplicate window, so the caller's retry delivers it twice. The deadline is
 // also read off the clock, since it can pass before ctx's timer marks ctx done; a ctx with no
-// deadline has the zero one, already spent, though every caller bounds its own. The check after
-// publish stays for a window that runs out during publish itself; that publish is not known to
-// have left this process, the same ambiguity a flush that runs out of the window has, and is
-// answered the same way. A cancel that lands after the check goes unseen: the publish is made.
+// deadline has the zero one, already spent, though every caller bounds its own. ctx is read twice
+// (windowSpent): before the read of conn's state, and again once that read has answered, since
+// the read is given ConnLockWait whatever ctx does and ctx can end in it. The check after publish
+// stays for a window that runs out during publish itself; that publish is not known to have left
+// this process, the same ambiguity a flush that runs out of the window has, and is answered the
+// same way. A cancel that lands after the second check goes unseen: the publish is made.
 func (c *Client) publishConfirmed(ctx context.Context, conn *nats.Conn, msg *nats.Msg, publish func(*nats.Msg) error) error {
 	deadline, _ := ctx.Deadline()
-	err := ctx.Err()
-	if err == nil && !time.Now().Before(deadline) {
-		err = context.DeadlineExceeded
-	}
-	if err != nil {
+	if err := windowSpent(ctx, deadline); err != nil {
 		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
 	}
 	before, answered := observeWithin(ctx, conn)
 	if !answered {
 		return reconnectWaitEnded(ctx)
 	}
+	if err := windowSpent(ctx, deadline); err != nil {
+		return fmt.Errorf("%w: %w", errWindowElapsed(msg.Subject), err)
+	}
 	if err := publish(msg); err != nil {
 		return c.refused(err, len(msg.Data))
 	}
 	return confirmFlushed(ctx, conn, msg.Subject, before, deadline)
+}
+
+// windowSpent is ctx's error, or context.DeadlineExceeded once deadline has passed by the clock
+// while ctx's timer has not yet marked ctx done, and nil while the window is open.
+func windowSpent(ctx context.Context, deadline time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // confirmFlushed flushes conn within deadline and confirms that the server accepted the core
