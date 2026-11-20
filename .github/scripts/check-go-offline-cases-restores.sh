@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # check-go-offline.test.sh initializes the shared harness variables.
+
 # Cases of check-go-offline.sh's rule 3: a fetch step of a required job comes after the job's
 # restore of ~/go/pkg/mod. Sourced by check-go-offline.test.sh, whose fixtures, run_check and
 # counters they use; not run on its own.

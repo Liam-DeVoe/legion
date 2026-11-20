@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # check-go-offline.test.sh initializes the shared harness variables.
+
 # Cases of check-go-offline.sh's file reasons: where a go-offline-file reason is refused, and where
 # it covers its file's go commands. Sourced by check-go-offline.test.sh, whose fixtures, run_check
 # and counters they use; not run on its own.

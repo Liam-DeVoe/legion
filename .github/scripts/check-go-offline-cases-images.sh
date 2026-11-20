@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # check-go-offline.test.sh initializes the shared harness variables.
+
 # Cases of check-go-offline.sh's rule 6 (go_offline_images.py): each go command an image build of a
 # required job runs reads the job's module cache alone. A bare go RUN in a Dockerfile a required
 # job builds is refused at its line, naming the Dockerfile, the stage and the job; one that lacks

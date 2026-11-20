@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # check-go-offline.test.sh initializes the shared harness variables.
+
 # Cases of check-go-offline.sh's rules 4 and 5, which it calls from go_offline_jobs.py and
 # package_installs.py: a required Go job whose env lacks GOPROXY=off, and a bare apt-get install in a
 # required job, each fail the go check at their line; an UNKNOWN of either is the check's; a clean

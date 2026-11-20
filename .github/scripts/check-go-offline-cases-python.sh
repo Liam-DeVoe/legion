@@ -1,4 +1,6 @@
 # shellcheck shell=bash
+# shellcheck disable=SC2154 # check-go-offline.test.sh initializes the shared harness variables.
+
 # Cases of check-go-offline.sh's rule 1 in Python test files: a bare site, the offline and the
 # reasoned form, and one planted case for each Python form the check's header names. Sourced by
 # check-go-offline.test.sh, whose fixtures, run_check and counters they use; not run on its own.

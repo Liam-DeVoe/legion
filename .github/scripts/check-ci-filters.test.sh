@@ -292,7 +292,7 @@ check_report_section() {
 }
 
 unescaped_workflow_commands() {
-  local line unsafe= token stopped=false
+  local line unsafe="" token="" stopped=false
   while IFS= read -r line; do
     if [[ $line =~ ^::stop-commands::([0-9a-f]{32})$ ]]; then
       token=${BASH_REMATCH[1]}
@@ -2679,8 +2679,9 @@ check "and refuses the family no job restores" \
 echo "case: a ci-caches.yaml none of whose saves holds the Go module cache is UNKNOWN to rule 21"
 root=$(fixture fetch-fills-no-go)
 cache_workflow "$root"
-replace_every "$root/.github/workflows/ci-caches.yaml" "~/go/pkg/mod" "~/.cache/other"
-replace_every "$root/.github/workflows/ci.yaml" "~/go/pkg/mod" "~/.cache/other"
+tilde='~'
+replace_every "$root/.github/workflows/ci-caches.yaml" "$tilde/go/pkg/mod" "$tilde/.cache/other"
+replace_every "$root/.github/workflows/ci.yaml" "$tilde/go/pkg/mod" "$tilde/.cache/other"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "says it found no Go family" \
