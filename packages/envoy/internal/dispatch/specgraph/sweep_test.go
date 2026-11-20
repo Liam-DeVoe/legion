@@ -1,6 +1,7 @@
 package specgraph
 
 import (
+	"bytes"
 	"encoding/json/v2"
 	"fmt"
 	"io/fs"
@@ -70,18 +71,19 @@ func notRepoPaths(path string) []string {
 // production-and-graph, a program check of production whose runs name the commit of their test
 // (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
 // job that has not ended. So each member that a rule reads is in a record of some scenario, and
-// each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases),
-// and it reads back each value that it writes, each kind through its own path: a string or an added
-// member (treeWithRead), null or a member or element left out (treeChangedRead), and a key renamed
-// (treeRenamedRead), so that a sweep that writes nothing fails by name. One right, which
-// sweepInputs gives the input where it writes it: a repository path
-// of a tree written " " is a real path, since git holds a file of that name (git ls-tree of a tree
-// that holds one lists the path " "), so the tree changed at a path that a tie covers, and a result
-// there, a failure among them, carries no more across it (R8: "A result at one commit also counts
-// at another commit when no code that the check runs changed between the two"); a base whose
-// failure at one commit carries to another shows it. A path of a fault written " " is no path, as
-// one of only white space is none, so its record does not say what its fault changed, and as the
-// newest failing example it reads unknown, no_fault_paths where it was the one path and
+// each place of it is swept. The sweep also reads the shapes that no scenario holds (sweepBases).
+// Each sweep fails an input whose files are its base's (sweepAgainst), so that a writer that writes
+// nothing fails by name, and this one reads back each value that it writes, each kind through its
+// own path: a string or an added member (treeWithRead), null or a member or element left out
+// (treeChangedRead), and a key renamed (treeRenamedRead), so that a writer that writes another
+// value fails by name too. One right, which sweepInputs gives the input where it writes it: a
+// repository path of a tree written " " is a real path, since git holds a file of that name (git
+// ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a tie
+// covers, and a result there, a failure among them, carries no more across it (R8: "A result at one
+// commit also counts at another commit when no code that the check runs changed between the two");
+// a base whose failure at one commit carries to another shows it. A path of a fault written " " is
+// no path, as one of only white space is none, so its record does not say what its fault changed,
+// and as the newest failing example it reads unknown, no_fault_paths where it was the one path and
 // blank_fault_path beside a real one: it has no right, and a base whose failing example of two paths
 // that missed its fault is newer than a caught one shows that it needs none. A content label is no
 // path, and one of " " names no content, so the reader refuses it and it has no right.
@@ -93,11 +95,10 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
 			inputs, roundTrip := sweepInputs(t, base)
-			whole := baseStates(t, base)
-			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, whole) {
+			if got, err := sweepStates(roundTrip); err != nil || !maps.Equal(got, baseStates(t, base)) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
-			n := sweepAgainst(t, whole, inputs)
+			n := sweepAgainst(t, base, inputs)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
 				if strings.HasSuffix(in.what, `/leg as ""`) {
@@ -128,13 +129,20 @@ type sweepCount struct {
 	rights                                []string
 }
 
-// sweepAgainst derives each input and compares its states with whole, the states of its base: an
-// input that moves a state toward true fails the test, unless the input has a right to it. A right
-// with allowed covers only the places where the input reads the state that allowed holds there.
-func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sweepCount {
+// sweepAgainst derives each input and compares its states with those of base: an input that moves a
+// state toward true fails the test, unless the input has a right to it. A right with allowed covers
+// only the places where the input reads the state that allowed holds there. An input whose files
+// are base's (sameFiles) fails the test too: its writer wrote nothing, and it would read as base and
+// pass.
+func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
+	whole := baseStates(t, base)
 	n := sweepCount{inputs: len(inputs)}
 	for _, in := range inputs {
+		if sameFiles(t, base, in.fsys) {
+			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
+			continue
+		}
 		got, err := sweepStates(in.fsys)
 		switch {
 		case err != nil:
@@ -165,6 +173,29 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 	return n
 }
 
+// sameFiles is whether the scenarios a and b hold the same files with the same contents: each JSON
+// file as its decoded tree, since encodeTree writes the members of an object in no fixed order, and
+// each other file by its bytes.
+func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
+	t.Helper()
+	if !slices.Equal(slices.Sorted(maps.Keys(a)), slices.Sorted(maps.Keys(b))) {
+		return false
+	}
+	for name, file := range a {
+		switch {
+		case bytes.Equal(file.Data, b[name].Data):
+			continue
+		case path.Ext(name) != ".json":
+			return false
+		}
+		var x, y any
+		if json.Unmarshal(file.Data, &x) != nil || json.Unmarshal(b[name].Data, &y) != nil || !reflect.DeepEqual(x, y) {
+			return false
+		}
+	}
+	return true
+}
+
 // A refusal of CI at a commit A makes its check read unknown at A, whatever else holds there, and
 // the own results of A count nowhere, at A or where R8 would carry them; the results of each other
 // commit stay (CheckStates, step 2; R48: "At that commit, such a check reads unknown, and no
@@ -174,12 +205,13 @@ func sweepAgainst(t *testing.T, whole map[string]string, inputs []sweepInput) sw
 // decide, and they can read true (refusedCommitsResults). The right covers each place of a subject
 // at another commit than A where the input reads what the base reads with each result of the check
 // whose commit is A (countedCommit: for a failing example of a program check of the code, the
-// commit that its fault was planted on) taken out of results.json, and no place at A, where R48
-// gives none. A query or an agent of production or of the graph has no result of a commit
-// (CountsAtACommit), so a refusal of it at another commit than the subject's takes out nothing,
-// whatever commit a result's test_commit names, and it has no right. The sweep adds one refusal at
-// a time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
-// for each check of its approved spec that the base does not refuse there.
+// commit that its fault was planted on, and none for a record that counts from no commit) taken out
+// of results.json, and no place at A, where R48 gives none. A query or an agent of production or of
+// the graph has no result of a commit (CountsAtACommit), so a refusal of it at another commit than
+// the subject's takes out nothing, whatever commit a result's test_commit names, and it has no
+// right. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
+// commit that a record of the base names, for each check of its approved spec that the base does
+// not refuse there.
 func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -210,13 +242,13 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 						return uncited
 					})
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(c, r) == commit }) {
+					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit }) {
 						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, base, s, c, commit)
 					}
 					inputs = append(inputs, in)
 				}
 			}
-			n := sweepAgainst(t, baseStates(t, base), inputs)
+			n := sweepAgainst(t, base, inputs)
 			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
 				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
 		})
@@ -237,7 +269,7 @@ func withoutResultsOf(t *testing.T, base fstest.MapFS, s Scenario, c Check, comm
 	editTree(t, fsys, "results.json", func(v any) any {
 		kept := []any{}
 		for i, record := range v.([]any) {
-			if r := s.Results[i]; r.Check != c.ID || countedCommit(c, r) != commit {
+			if r := s.Results[i]; r.Check != c.ID || countedCommit(s, c, r) != commit {
 				kept = append(kept, record)
 			}
 		}
@@ -272,14 +304,20 @@ func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
 	return states
 }
 
-// countedCommit is the commit where the result r of the check c counts (CheckStates, steps 2 and
-// 7): for a failing example of a program check of the code, the commit that the step planted its
-// fault on, and else the commit where its job ran (resultCommit).
-func countedCommit(c Check, r Result) string {
-	if r.Kind == ResultFailingExample && c.Subject == SubjectCode && c.Procedure == ProcedureProgram {
-		return r.PlantedOn
+// countedCommit is the commit where the result r of the check c of the scenario s counts
+// (CheckStates, steps 2 and 7), "" for none: for a failing example of a program check of the code,
+// the commit that the step planted its fault on, where its record says where (unplanted) and the
+// history holds that commit, and else none, since such a record counts from no commit, so that a
+// refusal at the commit that it names gives no right to take it out; and for each other result, the
+// commit where its job ran (resultCommit).
+func countedCommit(s Scenario, c Check, r Result) string {
+	if r.Kind != ResultFailingExample || c.Subject != SubjectCode || c.Procedure != ProcedureProgram {
+		return resultCommit(r)
 	}
-	return resultCommit(r)
+	if _, held, err := s.History.Changed(r.PlantedOn, r.PlantedOn); unplanted(r) != "" || err != nil || !held {
+		return ""
+	}
+	return r.PlantedOn
 }
 
 // addableMembers is each member that a record of a JSON file of a scenario can leave out (the
@@ -365,7 +403,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, baseStates(t, base), inputs)
+			n := sweepAgainst(t, base, inputs)
 			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
 		})
 	}

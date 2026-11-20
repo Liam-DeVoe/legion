@@ -18,7 +18,7 @@ import (
 )
 
 // sweepBases is each base that the sweeps read, by its name: each scenario of testdata/scenarios,
-// and nineteen shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
+// and twenty shapes that no scenario holds. silent-leg with the job's matrix dropped after c1, one
 // run of no matrix at m2 that ended with no result: there a run result of the leg "" at c1, where
 // the job had legs, would answer that run, and the check would read true (legFault refuses it).
 // Three of carry where a failure and a later pass count at one subject, so the check reads unknown
@@ -40,15 +40,19 @@ import (
 // older caught one decide would read the check true (CheckStates, step 7). And the same later
 // failing example with no planted_on: the check reads unknown (no_planted_on) at c2 and at m2, and
 // the refusal sweep refuses the check at its own commit, f2, which must not take it out; the member
-// sweep adds each planted_on that a record names and c9, no commit of the history. And carry with its
-// failing example in the form of a query or an agent of the code, its commit c1 and no planted_on
-// and no fault path: as no step planted it, it counts nowhere, and the check reads unknown
-// (no_planted_on) at c2 and at m2, so the member sweep adds planted_on, and fault_paths, to a
-// failing example that neither alone makes count. And two of wait-cycle where a check that is false
-// is the one fault under a statement, so a failing check that reads as a check of no statement
-// would leave that statement met: envoy-delivers-messages, with its own check false and the check
-// of a-message-survives-a-restart true (its two outcomes swapped); and a-message-survives-a-restart,
-// with a second check that passes beside its failing one. And eight of production-and-graph, two
+// sweep adds each planted_on that a record names and c9, no commit of the history. And the same
+// later failing example planted on c9, which no commit of the history holds: it counts from no
+// commit, so the check reads unknown (planted_on_outside_history) at c2 and at m2, and the refusal
+// sweep refuses the check at c9 and at f2, neither of which may take it out (countedCommit gives it
+// no commit, so neither refusal has a right). And carry with its failing example in the form of a
+// query or an agent of the code, its commit c1 and no planted_on and no fault path: as no step
+// planted it, it counts nowhere, and the check reads unknown (no_planted_on) at c2 and at m2, so
+// the member sweep adds planted_on, and fault_paths, to a failing example that neither alone makes
+// count. And two of wait-cycle where a check that is false is the one fault under a statement, so a
+// failing check that reads as a check of no statement would leave that statement met:
+// envoy-delivers-messages, with its own check false and the check of a-message-survives-a-restart
+// true (its two outcomes swapped); and a-message-survives-a-restart, with a second check that passes
+// beside its failing one. And eight of production-and-graph, two
 // for each kind of check that reads no commit: its query of the graph,
 // and that check written as an agent of the graph, as a query of production and as an agent of
 // production. A result of each belongs to no commit, so CI's refusal at the commit that its
@@ -59,8 +63,8 @@ import (
 // read the check's earlier pass true. And two of production-and-graph with its program check of
 // production written as another kind: as a program check of the graph, whose runs read the
 // transaction tx1 and count at the commit of their test, and as an agent of production, whose block
-// names no test. Each of the nineteen reads, at the subjects of its shape, the state that the shape
-// gives its check (readsAt): the nine above the states that their shapes are for, and the ten of
+// production. Each of the twenty reads, at the subjects of its shape, the state that the shape
+// gives its check (readsAt): the ten above the states that their shapes are for, and the ten of
 // production-and-graph their check of the graph, or the check that they write, in the state that
 // the check's kind gives its results; the eight that write a check also read it as its kind
 // (readsAs). A state does not show each fact that a builder adds (a base that holds a test_commit or
@@ -213,6 +217,16 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 						slices.Equal(r.FaultPaths, []string{faultPath, secondPath}) && r.Seq == 5
 				})
 			}},
+		{"carry with a later failing example planted on c9, no commit of the history",
+			"a failing example after carry's caught one, at the commit f2, planted on c9, which the history does not hold, with carry's fault path and a second source file of the tie, on which the test missed its fault",
+			nil, []add{{1, map[string]any{"commit": "f2", "outcome": "pass", "seq": 5, "planted_on": "c9", "fault_paths": []any{faultPath, secondPath}}}}, nil,
+			func(s Scenario) bool {
+				_, held, err := s.History.Changed("c9", "c9")
+				return err == nil && !held && slices.ContainsFunc(s.Results, func(r Result) bool {
+					return r.Check == code && r.Kind == ResultFailingExample && r.Outcome == OutcomePass && r.Commit == "f2" && r.PlantedOn == "c9" &&
+						slices.Equal(r.FaultPaths, []string{faultPath, secondPath}) && r.Seq == 5
+				})
+			}},
 		{"carry with its failing example planted by no step",
 			"a caught failing example at the commit c1 with no planted_on and no fault path",
 			nil, nil, func(fsys fstest.MapFS) {
@@ -253,14 +267,14 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	bases["wait-cycle with a second, passing check of a-message-survives-a-restart"] = withSecondCheck(t, bases["wait-cycle"])
 	from["wait-cycle with the outcomes of its two first runs swapped"] = bases["wait-cycle"]
 	from["wait-cycle with a second, passing check of a-message-survives-a-restart"] = bases["wait-cycle"]
-	// The nine bases above read, at the subjects of their shapes, the states that the shapes are for
+	// The ten bases above read, at the subjects of their shapes, the states that the shapes are for
 	// (readsAt): the check of the code of silent-leg unknown (ci_fault) at m2, at the run of no
 	// matrix, which names no leg; that of carry unknown (disagree) at c2 and at m2, where its failure
 	// and its later pass count, unknown (failing_example_missed) there with a later failing example
-	// that missed its fault, and unknown (no_planted_on) there with a failing example planted by no
-	// step, later or caught; and at m1 of wait-cycle, the own check of envoy-delivers-messages false
-	// and the check of a-message-survives-a-restart true, or that check false and the one added
-	// beside it true.
+	// that missed its fault, unknown (no_planted_on) there with a failing example planted by no
+	// step, later or caught, and unknown (planted_on_outside_history) there with a later one planted
+	// on c9; and at m1 of wait-cycle, the own check of envoy-delivers-messages false and the check of
+	// a-message-survives-a-restart true, or that check false and the one added beside it true.
 	disagree := CheckState{State: checkUnknown, Reason: reasonDisagree, Disagree: true}
 	passedAtB1 := CheckState{State: checkTrue, Reason: reasonPassed, From: "b1"}
 	failedAtB1 := CheckState{State: checkFalse, Reason: reasonFailed, From: "b1"}
@@ -275,6 +289,7 @@ func sweepBases(t *testing.T) map[string]fstest.MapFS {
 		{"carry with c2's failure at 10:30 and a later pass of m2", code, disagree, []string{"c2", "m2"}},
 		{"carry with a later failing example planted on c1 that missed its fault", code, CheckState{State: checkUnknown, Reason: reasonFailingExampleMissed}, []string{"c2", "m2"}},
 		{"carry with a later failing example planted by no step", code, CheckState{State: checkUnknown, Reason: reasonNoPlantedOn}, []string{"c2", "m2"}},
+		{"carry with a later failing example planted on c9, no commit of the history", code, CheckState{State: checkUnknown, Reason: reasonPlantedOnOutside, Detail: "c9"}, []string{"c2", "m2"}},
 		{"carry with its failing example planted by no step", code, CheckState{State: checkUnknown, Reason: reasonNoPlantedOn}, []string{"c2", "m2"}},
 		{"wait-cycle with the outcomes of its two first runs swapped", "a-sent-message-reaches-a-listener", failedAtB1, []string{"m1"}},
 		{"wait-cycle with the outcomes of its two first runs swapped", "a-restart-keeps-the-message", passedAtB1, []string{"m1"}},

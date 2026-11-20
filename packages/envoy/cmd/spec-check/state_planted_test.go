@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -150,10 +151,23 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 			}
 		}
 	}
+	// then applies each of changes in order, and each must apply: it fails the row by name when the
+	// scenario, as the command's reader reads it, is the same after a change as before it, and when
+	// it applied fewer changes than it was given, so that a row whose refusal is dropped, which reads
+	// the same state without it, fails.
 	then := func(changes ...func(t *testing.T, dir string)) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
-			for _, change := range changes {
+			applied := 0
+			for i, change := range changes {
+				before := readScenario(t, dir)
 				change(t, dir)
+				if reflect.DeepEqual(readScenario(t, dir), before) {
+					t.Fatalf("change %d of %d left the scenario as the reader reads it", i+1, len(changes))
+				}
+				applied++
+			}
+			if applied != len(changes) {
+				t.Fatalf("then applied %d of its %d changes", applied, len(changes))
 			}
 		}
 	}
@@ -209,6 +223,10 @@ func TestAFailingExampleCountsFromTheCommitThatItsFaultWasPlantedOn(t *testing.T
 		{"control: CI's refusal at f2 does not take out a later failing example planted on c1", then(later(nil), refusedAt("f2")), atEach("unknown (failing_example_missed)")},
 		{"a later failing example that missed its fault planted on c9, no commit of the history", later(map[string]any{"planted_on": "c9"}), atEach("unknown (planted_on_outside_history c9)")},
 		{"a later failing example that missed its fault planted on f1, no commit of the history", later(map[string]any{"planted_on": "f1"}), atEach("unknown (planted_on_outside_history f1)")},
+		{"a later failing example planted on c9, no commit of the history, where CI refused the check", then(later(map[string]any{"planted_on": "c9"}), refusedAt("c9")), atEach("unknown (planted_on_outside_history c9)")},
+		{"a later failing example planted on f1, no commit of the history, where CI refused the check", then(later(map[string]any{"planted_on": "f1"}), refusedAt("f1")), atEach("unknown (planted_on_outside_history f1)")},
+		{"a later failing example planted on c9, no commit of the history, at f2 where CI refused the check", then(later(map[string]any{"planted_on": "c9"}), refusedAt("f2")), atEach("unknown (planted_on_outside_history c9)")},
+		{"control: CI's refusal at c2 takes out a later failing example planted on c2, which carries to c1 and m2", then(later(map[string]any{"planted_on": "c2", "commit": "f-c2"}), refusedAt("c2")), map[string]string{"c1": fromC1, "m2": fromC1}},
 		{"control: a later failing example that missed its fault planted on c3, which does not carry to c1, c2 or m2", later(map[string]any{"planted_on": "c3", "commit": "f-c3"}), atEach(fromC1)},
 		{"a second fault, planted on c3 and tested at f3, makes the check true at c3", results(func(r []map[string]any) []map[string]any {
 			return append(r, withMembers(r[1], map[string]any{"commit": "f3", "planted_on": "c3", "at": "2026-11-13T10:05:00Z", "seq": 5}))
