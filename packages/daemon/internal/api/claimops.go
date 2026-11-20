@@ -174,8 +174,8 @@ func (s *server) claimSuspend(w http.ResponseWriter, r *http.Request) {
 }
 
 // claimResume is the claim door's `legion claims resume` (resumeEvent): the suspended claim's
-// session is relaunched. The controller's resume lifts every suspension but the operator's own,
-// which only the operator lifts; an architect's lifts an architect's suspension alone
+// session is relaunched. The controller's resume_claim lifts every suspension but the operator's
+// own, which only the operator lifts; an architect's lifts an architect's suspension alone
 // (claimDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
 // paused its event builder refuses it PROJECT_PAUSED, before the event is posted, and nothing of
 // the claim changes (refusedWhilePaused), as the operator's resume is (resumeEvent): a claim the
