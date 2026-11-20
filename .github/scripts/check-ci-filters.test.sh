@@ -45,7 +45,7 @@
 # filters it gates them by, a root package.json with one workspace, and
 # a ci_job_reads.py describing them - and symlinks the real script, its engine
 # (ci_filter_coverage.py), the rules of ci.yaml it runs
-# (ci_workflow_rules.py) and the path model they import (workflow_paths.py) into it, so the code
+# (ci_workflow_rules.py, ci_go_cache_rules.py) and the path model they import (workflow_paths.py) into it, so the code
 # under test is the code CI runs. It needs go and a
 # python3 with PyYAML.
 #
@@ -83,7 +83,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/mod/cmd/app" "$root/mod/lib" \
     "$root/mod/other" "$root/fixtures" "$root/docs" "$root/packages/widget"
-  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ci-filters.sh ci_filter_coverage.py ci_workflow_rules.py ci_go_cache_rules.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   printf 'go 1.21\n\nuse ./mod\n' > "$root/go.work"

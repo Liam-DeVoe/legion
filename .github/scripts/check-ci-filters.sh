@@ -520,7 +520,7 @@ export CI_FILTERS_MODE="${1:-check}"
 # The engine (ci_filter_coverage.py), its data (ci_job_reads.py), the rules that read no filter
 # and no go command (ci_workflow_rules.py: rules 10 to 14 above, the workspace one
 # given that data's WORKSPACES by main() rather than importing the data itself, the merge-group
-# one reading .github/workflows itself) and the path
+# one reading .github/workflows itself; ci_go_cache_rules.py: rules 22 and 23) and the path
 # model (workflow_paths.py) sit beside this script in the repository it checks. The engine is
 # imported, not run as a script, so the data's `from ci_filter_coverage import ...` binds the
 # same classes.
@@ -537,6 +537,7 @@ with warnings.catch_warnings(record=True) as caught:
     import ci_filter_coverage
     import ci_job_reads
     import ci_workflow_rules
+    import ci_go_cache_rules
 print(f"::{token}::", flush=True)
 for import_warning in caught:
     ci_filter_coverage.print_import_warning(import_warning)

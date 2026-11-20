@@ -2,9 +2,10 @@
 beside it, is the data it reads: each ci.yaml gate's go commands and static reads, and the files
 tests read outside their packages. ci_workflow_rules.py, also beside it, holds the rules that
 read none of that - what no `if:` of ci.yaml may say, what every job's `if:` must say, what
-ci-caches.yaml must save for the entries ci.yaml restores, which fetch files each Go module cache
-fill must run and which files each Go module cache key must hash, and that ci.yaml is the only
-workflow of this repository running on a merge group - and main() runs them.
+ci-caches.yaml must save for the entries ci.yaml restores, and that ci.yaml is the only workflow
+of this repository running on a merge group - and ci_go_cache_rules.py those about the Go module
+caches: which fetch files each Go module cache fill must run and which files each Go module cache
+key must hash. main() runs them all.
 
 check-ci-filters.sh runs it from the repository root with this directory on PYTHONPATH, through
 `import ci_filter_coverage` rather than as a script, so ci_job_reads.py's `from ci_filter_coverage
@@ -2749,9 +2750,10 @@ def check() -> int:
     documents = workflow_documents(problems)
     document = documents[WORKFLOW]
     import ci_job_reads as data  # imported here so its at() citations land in this module's CITED
-    # The rules of ci.yaml that read no filter and no go command's closure, in a module of their
-    # own. It is imported here, not at the top, because it imports this module's constants and
+    # The rules of ci.yaml that read no filter and no go command's closure, in modules of their
+    # own. They are imported here, not at the top, because they import this module's constants and
     # helpers: by the time main() runs, this module is loaded whole.
+    import ci_go_cache_rules as go_cache
     import ci_workflow_rules as rules
 
     # The filters, and the text of .github/ci-filters.yaml they were read from, which rule 17 and
@@ -2768,8 +2770,8 @@ def check() -> int:
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, data.DAEMON_RACE_FILL_JOB, problems)
     rules.check_race_fill_scripts(data.RACE_FILL_SCRIPTS, problems)
     # Rules 22 and 23 each return the line that says what they compared, on a pass.
-    report = rules.check_go_fetch_fills(documents, problems)
-    report += rules.check_go_cache_keys(documents, problems)
+    report = go_cache.check_go_fetch_fills(documents, problems)
+    report += go_cache.check_go_cache_keys(documents, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
     expander, selection = Expander(files), Selection(filters, quantifiers, files)

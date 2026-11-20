@@ -2586,6 +2586,7 @@ SCRIPT_TEST_GATES = [
     harness("check_omp_offline_test", "Test the Oh My Pi offline check",
             f"{SCRIPTS}/check-omp-offline.test.sh", [
         (f"{SCRIPTS}/check-omp-offline.sh", "the script under test"),
+        (f"{SCRIPTS}/check-omp-offline-cases-*.sh", "the cases the harness sources, one file per part of the check"),
         (f"{SCRIPTS}/source_scan.py", "the script imports it from its own directory to read every source file"),
         (f"{SCRIPTS}/source_statements.py", "the script imports the shared reader's modules from its own directory"),
         (f"{SCRIPTS}/source_env.py", "the script imports the shared reader's modules from its own directory"),
@@ -2729,6 +2730,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+        (f"{SCRIPTS}/ci_go_cache_rules.py", "the Go module cache rules the fixtures link in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
         (f"{SCRIPTS}/go_build_tags.py", "the build-tag reader rule 20 imports, linked in beside it"),
         (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh's derived function imports this table to derive the plain step's -run lists"),
@@ -3981,6 +3983,8 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
+        (".github/scripts/ci_go_cache_rules.py", "check-ci-filters.sh's rules about the Go module caches' fills "
+                                                  "and keys, which ci_filter_coverage.main() runs"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                               "check-workflow-files.sh imports its repeated-key test"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "
@@ -3995,7 +3999,7 @@ GATES = [
         (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
                           "holds the dispatch_browser filter to that gate"),
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to every workflow's restores"),
-        (f"{FETCH_FILES}/**", "ci_workflow_rules.py's rules 22 and 23 read every fetch file a fill or a reader runs: "
+        (f"{FETCH_FILES}/**", "ci_go_cache_rules.py's rules 22 and 23 read every fetch file a fill or a reader runs: "
                               "each fill's lines are held to its readers' files, and each key to the files they name"),
         (".github/workflows/**", "ci_workflow_rules.py reads every workflow of the directory: "
                                  "check_one_merge_group_workflow, which refuses a new one and so has to run on the change "
