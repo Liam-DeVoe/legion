@@ -5568,13 +5568,14 @@ test("a Conversation turn resolved elsewhere while its Reply holds the focus han
 // 89072a56 and e9ed2743): the reader holds the focus on a pinned card's Unpin on the issue
 // margin's Pinned tab when their other device unpins that card, a loss the reader did not cause.
 // At both commits the focus goes into the next card - its Unpin in Chromium, its author link in
-// Firefox and WebKit - at 1440 and 1280 px: the tab draws each card as an <article> in a <div>
-// (`features/margin/PinnedTab.tsx`), which is no row by `ROW_SELECTOR` and carries no marker
-// (`components/row-marker.ts`), so the rescue takes the next card's control for a control in no
-// row. The architect's rule of 2026-11-19: a loss the reader did not cause moves the focus into
-// no other row of a list. A focused control taken away, for which Firefox and WebKit fire no
-// `focusout`: the clause of the `webkit` and `firefox` projects that names the page-own focus
-// row (e2e/playwright.config.ts).
+// Firefox and WebKit - at 1440 and 1280 px: there the tab's cards, each an <article> in a <div>
+// (`features/margin/PinnedTab.tsx`), were no row by the rescue's rule and carried no marker
+// (`components/row-marker.ts`), so the rescue took the next card's control for a control in no
+// row. The architect's rule of 2026-11-20 (open-items.md, "an uncaused loss does what main
+// does"): a loss the reader did not cause leaves the focus on the body, as main does, but in an
+// open modal dialog, which takes it itself; so it lands in no card. A focused control taken away,
+// for which Firefox and WebKit fire no `focusout`: the clause of the `webkit` and `firefox`
+// projects that names the page-own focus row (e2e/playwright.config.ts).
 test("a pinned card unpinned on another device while its Unpin holds the focus hands the focus into no other card @firefox @webkit", async ({
   page,
 }) => {
