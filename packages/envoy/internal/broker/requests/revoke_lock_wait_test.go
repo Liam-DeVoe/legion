@@ -11,46 +11,37 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 )
 
 // adoptionInFlight is an adoption of enrollment from, held open: a transaction that locks from's
 // row for update, as enroll.adopt locks its predecessors, and runs move under that lock, not yet
-// committed. It answers the transaction and its backend's process id, so a test can wait for
-// another backend to block on it (waitBlockedBy) before it commits.
-func adoptionInFlight(t *testing.T, m *Machine, from string, move func(tx pgx.Tx) error) (pgx.Tx, int32) {
+// committed, so a test can wait for another backend to block on it (waitBlockedBy) before it
+// commits.
+func adoptionInFlight(t *testing.T, m *Machine, from string, move func(tx pgx.Tx) error) pgx.Tx {
 	t.Helper()
 	tx, err := m.Store.Pool.Begin(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-	var pid int32
-	if err := tx.QueryRow(t.Context(), `select pg_backend_pid()`).Scan(&pid); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := tx.Exec(t.Context(), `select 1 from enrollments where id=$1 for update`, from); err != nil {
 		t.Fatal(err)
 	}
 	if err := move(tx); err != nil {
 		t.Fatalf("the adoption's move: %v", err)
 	}
-	return tx, pid
+	return tx
 }
 
-// waitBlockedBy waits until some backend is blocked by backend pid (pg_blocking_pids), failing t
-// when done answers first, since then the call under test never waited on the lock and the row
-// proves nothing.
-func waitBlockedBy(t *testing.T, m *Machine, pid int32, done <-chan error) {
+// waitBlockedBy waits until some backend waits on a lock behind holder's backend
+// (storetest.LockWaitersBehind), failing t when done answers first, since then the call under
+// test never waited on the lock and the row proves nothing.
+func waitBlockedBy(t *testing.T, m *Machine, holder pgx.Tx, done <-chan error) {
 	t.Helper()
+	pid := holder.Conn().PgConn().PID()
 	deadline := time.Now().Add(60 * time.Second)
-	for {
-		var blocked int
-		if err := m.Store.Pool.QueryRow(t.Context(), `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, pid).Scan(&blocked); err != nil {
-			t.Fatal(err)
-		}
-		if blocked > 0 {
-			return
-		}
+	for len(storetest.LockWaitersBehind(t, m.Store.Pool, pid)) == 0 {
 		select {
 		case err := <-done:
 			t.Fatalf("the revoke returned %v before it waited on the adoption's lock", err)
@@ -83,7 +74,7 @@ func TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant(t *test
 	}
 	login := *operator
 	pod, _ := newServiceEnrollment(t, m.Store, fixtureService, fixtureSubject, "pod-"+t.Name())
-	adopt, pid := adoptionInFlight(t, m, session, func(tx pgx.Tx) error {
+	adopt := adoptionInFlight(t, m, session, func(tx pgx.Tx) error {
 		_, err := tx.Exec(t.Context(), `with moved as (update grants set enrollment_id=$2 where id=$1 returning request_id)
 			update requests set enrollment_id=$2 where id=(select request_id from moved)`, grantID, pod)
 		return err
@@ -91,7 +82,7 @@ func TestARevokeWaitingOnAnAdoptionDecidesOnWhereTheAdoptionLeftTheGrant(t *test
 
 	done := make(chan error, 1)
 	go func() { done <- m.RevokeByApprover(t.Context(), grantID, login, record.HumanActor(login)) }()
-	waitBlockedBy(t, m, pid, done)
+	waitBlockedBy(t, m, adopt, done)
 	if err := adopt.Commit(t.Context()); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +109,7 @@ func TestAnOperatorsRevokeDuringTheirSessionsAdoptionWithholdsWhereTheSessionRun
 			m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
 			_, grantID := grantOf(t, m, enr, key, "deploy the worker", "AUTO_TOKEN")
 			second, _ := newEnrollment(t, m.Store, "session", "box-b-"+t.Name(), new(fixtureOperator), nil)
-			adopt, pid := adoptionInFlight(t, m, enr, func(tx pgx.Tx) error {
+			adopt := adoptionInFlight(t, m, enr, func(tx pgx.Tx) error {
 				if _, err := tx.Exec(t.Context(), `update grants set enrollment_id=$2 where enrollment_id=$1`, enr, second); err != nil {
 					return err
 				}
@@ -135,7 +126,7 @@ func TestAnOperatorsRevokeDuringTheirSessionsAdoptionWithholdsWhereTheSessionRun
 				done <- m.RevokeByApprover(t.Context(), grantID, fixtureOperator, record.HumanActor(fixtureOperator))
 			}()
 			if inFlight {
-				waitBlockedBy(t, m, pid, done)
+				waitBlockedBy(t, m, adopt, done)
 				if err := adopt.Commit(t.Context()); err != nil {
 					t.Fatal(err)
 				}
