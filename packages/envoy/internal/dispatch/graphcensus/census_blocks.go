@@ -1,15 +1,10 @@
 package graphcensus
 
 import (
-	"context"
-	"fmt"
 	"strconv"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
@@ -374,9 +369,9 @@ func authorNodeID(actor string) string {
 // documentOwed is true of the document whose id the SQL expression artifactID names while it owes
 // its block index, by either mark the block-index reconciliation lists a document by
 // (refs.OwedBlockIndexDebts, docs' owedDocuments): its version null, or this release's own mark,
-// store_owed_at, which the backfill and its drain set (writeBlockBatch, drainBlockIndexes) and a
-// release before this one neither reads nor clears. The reconciliation has yet to write the ranks
-// and the texts of its blocks.
+// store_owed_at, which the backfill sets (writeBlockBatch, markStaleDocuments) and a release
+// before this one neither reads nor clears. The reconciliation has yet to write the ranks and the
+// texts of its blocks.
 func documentOwed(artifactID string) string {
 	return `exists (select 1 from document_block_versions owed where owed.artifact_id = ` + artifactID +
 		` and (owed.version is null or owed.store_owed_at is not null))`
@@ -409,122 +404,7 @@ var roomNodeOwed = `exists (
 		where tree.kind = 'tree' and tree.ref_key = split_part(node.id, '#', 1) and ` + roomOwed("tree.id") + `)`
 
 // blockBackfills are the backfill's passes over the document blocks (backfillPasses): the blocks,
-// then the links out of them, since a link's node is its block's and the pointer pass stamps a
-// link only where its block's node stands (blockNodeStands), then the one drain of every stored
-// document's block index (drainBlockIndexes).
-var blockBackfills = []backfillPass{oneKind(backfillBlocks), oneKind(backfillBlockRefs), oneKind(drainBlockIndexes)}
-
-// blockDrainKind is the kind the backfill's report names the drain by.
-const blockDrainKind = "block_index_drain"
-
-// drainBlockIndexes marks every stored document owed its block index once, with this release's
-// own mark, document_block_versions.store_owed_at (migration 20261116221539), as the block pass
-// marks each document whose rows it names (writeBlockBatch), so the block-index reconciliation
-// (docs.Service.RunBlockIndexReconciliation) indexes each again, under the fence it already takes,
-// and gives every block an earlier build indexed what that build did not write: its rank, its
-// text, its placement and, for a plan node whose opening line writes one, its size, and, for a
-// top-level block of an issue's spec, Verification or plan document, its part_of to the issue
-// (refs.IndexBlocks). That index writes no document_blocks row for a block whose text is
-// unchanged, so no block's changed_version and no document_block_texts row moves for it.
-//
-// The mark is not the null version refs.RebuildAll sets. A pod of the release before this one,
-// during a roll or after a rollback, reads a null version as its own debt: it indexes the
-// document, writes its rows and states none of these values, and the document would be owed
-// nothing again, while the drain, done, never marks it twice. That release neither reads nor
-// clears store_owed_at, so this release's reconciliation, which lists a document holding it (docs'
-// owedDocuments) and whose fence wins at the version the document already stands at while it
-// holds it (refs' standsAtVersion), still reaches the document, and its pass clears the mark.
-//
-// issue_tree_block_drain records how far the drain has got, and the backfill runs at every boot,
-// so it marks the documents once: a run that finds the drain done marks nothing, and a run stopped
-// part way resumes after the last document its last committed batch marked. It reports the
-// documents it marked as the kind's Owed, and the kind as complete once the drain is done.
-func drainBlockIndexes(ctx context.Context, database *store.Store) (KindBackfill, error) {
-	done := KindBackfill{Kind: blockDrainKind}
-	if _, err := database.Pool.Exec(ctx, `
-		insert into issue_tree_block_drain default values on conflict (singleton) do nothing
-	`); err != nil {
-		return done, fmt.Errorf("record the block index drain: %w", err)
-	}
-	for {
-		marked, finished, err := drainBlockIndexBatch(ctx, database)
-		done.Owed += marked
-		if err != nil {
-			return done, err
-		}
-		if finished {
-			break
-		}
-	}
-	done.Complete = true
-	return done, nil
-}
-
-// drainBlockIndexBatch marks one batch of documents owed, in one transaction, and answers how many
-// it marked and whether the drain is done. It takes the drain's row first, so two runs take turns,
-// then the batch's owner rows and their document_block_versions rows in the store's order
-// (lockBlockDocuments), the rows a version write holds while it writes, so a write in flight
-// finishes before its document is marked and the mark is never lost under it. A document already
-// holding the mark is left as it is; one whose version is null is marked too, since a pod of the
-// release before may drain that version first.
-//
-// The cursor starts at the nil uuid, below every document's id, as the object pass's does
-// (zeroUUID), so the batch's read binds one bound of the keyset and no test of whether there is
-// one: under a generic plan that test would read from the first document every batch.
-func drainBlockIndexBatch(ctx context.Context, database *store.Store) (int64, bool, error) {
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		return 0, false, fmt.Errorf("begin a block index drain batch: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	var after string
-	var finished bool
-	if err := tx.QueryRow(ctx, `
-		select coalesce(after, $1::uuid)::text, done from issue_tree_block_drain for update
-	`, zeroUUID).Scan(&after, &finished); err != nil {
-		return 0, false, fmt.Errorf("read the block index drain: %w", err)
-	}
-	if finished {
-		return 0, true, tx.Commit(ctx)
-	}
-	rows, err := tx.Query(ctx, `
-		select b.artifact_id::text
-		from document_block_versions b
-		join artifacts a on a.id = b.artifact_id
-		where a.kind = 'doc' and b.artifact_id > $1::uuid
-		order by b.artifact_id
-		limit $2
-	`, after, backfillBatch)
-	if err != nil {
-		return 0, false, fmt.Errorf("list the documents a block index drain batch marks: %w", err)
-	}
-	documents, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return 0, false, fmt.Errorf("list the documents a block index drain batch marks: %w", err)
-	}
-	var marked int64
-	if len(documents) > 0 {
-		if err := lockBlockDocuments(ctx, tx, documents); err != nil {
-			return 0, false, err
-		}
-		tag, err := tx.Exec(ctx, `
-			update document_block_versions set store_owed_at = now()
-			where artifact_id = any($1::uuid[]) and store_owed_at is null
-		`, documents)
-		if err != nil {
-			return 0, false, fmt.Errorf("mark a batch of documents owed this release's block index: %w", err)
-		}
-		marked = tag.RowsAffected()
-		after = documents[len(documents)-1]
-	}
-	finished = len(documents) < backfillBatch
-	if _, err := tx.Exec(ctx, `
-		update issue_tree_block_drain set after = $1::uuid, done = $2
-	`, after, finished); err != nil {
-		return 0, false, fmt.Errorf("record how far the block index drain has got: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, false, fmt.Errorf("commit a block index drain batch: %w", err)
-	}
-	return marked, finished, nil
-}
+// and the marking of every document no pass of this build's rule has stated (backfillBlocks), then
+// the links out of them, since a link's node is its block's and the pointer pass stamps a link
+// only where its block's node stands (blockNodeStands).
+var blockBackfills = []backfillPass{oneKind(backfillBlocks), oneKind(backfillBlockRefs)}

@@ -747,9 +747,9 @@ var indexPasses = map[string]string{
 	// other, and a row whose node is already written it leaves alone rather than mending. The
 	// block batch also marks the document each row is in owed this release's block index
 	// (store_owed_at), which is the row's own document and no reading of either side; and
-	// markStaleDocuments marks each document another release indexed after the store last
-	// stated it, read off the two versions the document's own row records (store_version below
-	// version). That pass writes neither a projected table nor the store, so it is no entry here.
+	// markStaleDocuments marks each document no pass of this build's rule has stated at its
+	// version, read off the record the document's own row holds (stated_version and stated_rule).
+	// That pass writes neither a projected table nor the store, so it is no entry here.
 	"graphcensus/backfill.go#writeBlockBatch":    "each pre-store document_blocks row's own content and the document it is in",
 	"graphcensus/backfill.go#writeBlockRefBatch": "each pre-store block_refs row's own content",
 	// The comment write both of the comment batch's writers share - the backfill's comment batch

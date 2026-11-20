@@ -191,6 +191,12 @@ type bootConfig struct {
 	// (docs.DecisionStep), at boot or on its tick, so a test driver's command entry point makes the
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
 	HoldDecisionsStep bool
+	// HoldBlockIndex keeps the server from starting the block-index reconciliation
+	// (docs.Service.RunBlockIndexReconciliation), its tick and its pass, and holds back nothing
+	// else, so a test driver can let a build of an earlier rule of the block index reach a document
+	// this build's backfill marked first; only DISPATCH_TEST_HOLD_BLOCK_INDEX=1, under the test
+	// hooks, sets it.
+	HoldBlockIndex bool
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -965,8 +971,11 @@ func main() {
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
-	// a build indexed without the block grammar.
-	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	// a build indexed without the block grammar. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test
+	// hooks, holds it, its tick and its pass, and nothing else.
+	if !boot.HoldBlockIndex {
+		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
+	}
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
 	// release before wrote stands unmarked, the catch-up of what a process of another build
 	// writes while one lives, and, once the fleet is this one build, the restore of the answered
@@ -1446,6 +1455,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
+		{"DISPATCH_TEST_HOLD_BLOCK_INDEX", &boot.HoldBlockIndex},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {

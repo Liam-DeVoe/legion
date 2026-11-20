@@ -116,8 +116,8 @@ func (b BlockIndexBacklog) Age() time.Duration {
 // block_index_event_cursors and graph_backfill_horizon are created by 20261118115645, so no
 // existing row is rewritten for them; document_blocks, block_refs and comments are altered by
 // 20261109022248, server_build_announcements by 20261115051200 and document_block_versions by
-// 20261116221539, and a table that large is a migration that needs another shape, which is what
-// the limit refuses.
+// 20261116221539 and 20261120130000, and a table that large is a migration that needs another
+// shape, which is what the limit refuses.
 var branchTables = []struct {
 	name    string
 	altered bool
@@ -992,47 +992,45 @@ func versionBackfillOwed(ctx context.Context, tx pgx.Tx) (int64, error) {
 	return owed, nil
 }
 
-// blockDrainOwed counts the blocks the block index drain (drainBlockIndexes) still owes the store
-// its values for, once: values, every document_blocks row inside the address bound of a document
-// the drain has not reached, each of which takes its rank, its text and its placement; and tops,
+// unstatedBlocksOwed counts the blocks the backfill's marking (markStaleDocuments) owes the store
+// the values of, once: values, every document_blocks row inside the address bound of a document
+// the marking would mark - its document_block_versions row holds no mark, and no pass of this
+// build's rule has stated it at its version (refs.UnstatedBlockIndexSQL) - each of which takes its
+// rank, its text and its placement from the reconciliation's pass over the document; and tops,
 // those of them at the top of an issue's spec, Verification or plan document, each of which takes
 // the retraction of its part_of to its document and its part_of to the issue. A database the
-// drain's own table does not exist in yet, which R4 takes its readings on, owes every row, and
-// one that holds no parent_block_id column, from before the store, says nothing of which rows are
-// at the top, so every row of such a document is counted there.
-func blockDrainOwed(ctx context.Context, tx pgx.Tx) (values, tops int64, err error) {
-	var drained, parents bool
-	var after *string
+// migration that adds the stated record (20261120130000) has not reached, which the sizing takes
+// its readings on too, records no pass of this rule on any row, so every row of it is owed, and one
+// that holds no parent_block_id column, from before the store, says nothing of which rows are at
+// the top, so every row of such a document is counted there.
+func unstatedBlocksOwed(ctx context.Context, tx pgx.Tx) (values, tops int64, err error) {
+	var stated, parents bool
 	if err := tx.QueryRow(ctx, `
-		select to_regclass('issue_tree_block_drain') is not null,
+		select (select count(*) from pg_attribute
+		        where attrelid = to_regclass('document_block_versions') and not attisdropped
+		          and attname in ('store_owed_at', 'stated_version', 'stated_rule')) = 3,
 		       exists (select 1 from information_schema.columns
 		               where table_schema = current_schema() and table_name = 'document_blocks'
 		                 and column_name = 'parent_block_id')
-	`).Scan(&drained, &parents); err != nil {
-		return 0, 0, fmt.Errorf("look up the block index drain: %w", err)
-	}
-	if drained {
-		var done bool
-		err := tx.QueryRow(ctx, `select after::text, done from issue_tree_block_drain`).Scan(&after, &done)
-		switch {
-		case errors.Is(err, pgx.ErrNoRows):
-		case err != nil:
-			return 0, 0, fmt.Errorf("read the block index drain: %w", err)
-		case done:
-			return 0, 0, nil
-		}
+	`).Scan(&stated, &parents); err != nil {
+		return 0, 0, fmt.Errorf("look up the block index's record of the pass that stated each document: %w", err)
 	}
 	top := `true`
 	if parents {
 		top = `d.parent_block_id is null`
 	}
+	marked := ``
+	if stated {
+		marked = `
+		  and exists (select 1 from document_block_versions b
+		              where b.artifact_id = d.artifact_id and b.store_owed_at is null and ` + refs.UnstatedBlockIndexSQL + `)`
+	}
 	if err := tx.QueryRow(ctx, `
 		select count(*), count(*) filter (where `+refs.DocumentBandSQL("a")+` <> '`+string(refs.RankBandOther)+`' and `+top+`)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
-		where octet_length(d.node_id) <= `+addressBound+` and ($1::uuid is null or d.artifact_id > $1::uuid)
-	`, after).Scan(&values, &tops); err != nil {
-		return 0, 0, fmt.Errorf("count the blocks the block index drain owes: %w", err)
+		where octet_length(d.node_id) <= `+addressBound+marked).Scan(&values, &tops); err != nil {
+		return 0, 0, fmt.Errorf("count the blocks the backfill's marking owes: %w", err)
 	}
 	return values, tops, nil
 }
@@ -1090,7 +1088,7 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 	if err != nil {
 		return nil, err
 	}
-	values, tops, err := blockDrainOwed(ctx, tx)
+	values, tops, err := unstatedBlocksOwed(ctx, tx)
 	if err != nil {
 		return nil, err
 	}
@@ -1100,11 +1098,11 @@ func readSizing(ctx context.Context, tx pgx.Tx) (*SizingReport, error) {
 			" its document's project or parties, its part_of its document, and its number and created_at values",
 	}, {
 		Name: "block_values", MovedBy: movedWithBlocks, Tuples: 3, Owed: values,
-		Driver: "document_blocks rows the block index drain has not reached (drainBlockIndexes): each block's rank, text and" +
-			" placement values",
+		Driver: "document_blocks rows of each document the backfill's marking marks (markStaleDocuments): each block's rank," +
+			" text and placement values",
 	}, {
 		Name: "block_top", MovedBy: movedWithBlocks, Tuples: 2, Owed: tops,
-		Driver: "document_blocks rows of an issue's spec, Verification or plan document the drain has not reached, each at its" +
+		Driver: "document_blocks rows of an issue's spec, Verification or plan document the marking marks, each at its" +
 			" document's top (parent_block_id null; every row of such a document where the column does not exist): the" +
 			" retraction of its part_of to the document and its part_of to the issue",
 	}}

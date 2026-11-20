@@ -358,6 +358,11 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	if err != nil {
 		return tick, err
 	}
+	if s.afterOwedDocumentsListed != nil {
+		if err := s.afterOwedDocumentsListed(owed); err != nil {
+			return tick, err
+		}
+	}
 	documentsFull := len(owed) == blockIndexDocumentBatch
 	liveAhead.forgetUnlisted(after, owed, documentsFull)
 	// An issue room is reconciled whole, once a tick, whichever of its artifacts the batch lists
@@ -1171,21 +1176,35 @@ func (s *Service) reindexScope(ctx context.Context, doc string) error {
 // so it holds a transaction id only for the index's statements and the commit. Its re-read of the
 // owed row takes no row lock: every writer of document_block_versions - a version's own index, the
 // trigger a version insert fires, this backfill - holds the document owner's lock, taken above.
+//
+// A document that holds no markdown version (listed at version 0: an image, a file, an issue's
+// tree before its first version) has nothing to read or index, and its mark would otherwise stand
+// for ever, since the backfill marks every row no pass of this build's rule has stated. So once the
+// re-read under the document owner's lock answers the document's row with no markdown version - a
+// document that is gone answers no row - one statement clears its marks and states it: version at
+// coalesce(version, 0), the version it leaves, as indexOwedRoom's clear sets it, store_owed_at
+// cleared, and stated_version at that version by refs.BlockIndexMarkingRule, so neither the
+// backfill nor a tick marks it again. The statement tests again that no markdown version stands.
+// A first markdown version that commits between the listing and the lock - the release before's,
+// which states nothing in the store and never sets the mark again - is found by the re-read, and
+// the document keeps its mark for the next tick
+// (TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed). It indexes nothing and answers so.
 func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) (indexed, liveAhead bool, err error) {
-	if document.version == 0 {
-		return false, false, nil
-	}
-	markdown, blocks, err := s.TextWithBlocks(ctx, document.id)
+	var markdown string
+	var blocks []model.ArtifactBlock
 	unreadable := false
-	switch {
-	case ctx.Err() != nil:
-		return false, false, ctx.Err()
-	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
-		slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
-			"artifact", document.id, "error", err)
-		unreadable = true
-	case err != nil:
-		return false, false, err
+	if document.version != 0 {
+		markdown, blocks, err = s.TextWithBlocks(ctx, document.id)
+		switch {
+		case ctx.Err() != nil:
+			return false, false, ctx.Err()
+		case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
+			slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
+				"artifact", document.id, "error", err)
+			unreadable = true
+		case err != nil:
+			return false, false, err
+		}
 	}
 
 	tx, err := s.store.Pool.Begin(ctx)
@@ -1201,9 +1220,11 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	if err != nil {
 		return false, false, err
 	}
-	var version int
-	var stored string
-	var versionAt time.Time
+	// The document's row, with its newest markdown version, null where it holds none: a document
+	// that is gone, or that has no block-index row, answers no row at all.
+	var newest *int
+	var newestMarkdown *string
+	var newestAt *time.Time
 	var owed bool
 	var markedAt *time.Time
 	err = tx.QueryRow(queued, `
@@ -1211,19 +1232,42 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		       b.version is null or b.store_owed_at is not null,
 		       (select p.marked_at from doc_settlements_pending p where p.artifact_id = b.artifact_id)
 		from document_block_versions b
-		join lateral (
+		left join lateral (
 			select number, markdown, created_at from artifact_versions
 			where artifact_id = b.artifact_id and markdown is not null
 			order by number desc limit 1
 		) v on true
 		where b.artifact_id = $1
-	`, document.id).Scan(&version, &stored, &versionAt, &owed, &markedAt)
+	`, document.id).Scan(&newest, &newestMarkdown, &newestAt, &owed, &markedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
 	if err != nil {
 		return false, false, fmt.Errorf("re-read the block index owed by %s: %w", document.id, err)
 	}
+	if newest == nil {
+		if document.version != 0 || !owed {
+			return false, false, nil
+		}
+		if s.beforeNoVersionClear != nil {
+			if err := s.beforeNoVersionClear(document.id); err != nil {
+				return false, false, err
+			}
+		}
+		if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of %s, which holds no markdown version", document.id), `
+			update document_block_versions b set version = coalesce(b.version, 0), store_owed_at = null,
+				stated_version = coalesce(b.version, 0), stated_rule = $2
+			where b.artifact_id = $1::uuid and (b.version is null or b.store_owed_at is not null)
+			  and not exists (select 1 from artifact_versions v where v.artifact_id = $1::uuid and v.markdown is not null)
+		`, document.id, refs.BlockIndexMarkingRule); err != nil {
+			return false, false, err
+		}
+		if err := ledger.runQueue(ctx, nil); err != nil {
+			return false, false, err
+		}
+		return false, false, tx.Commit(ctx)
+	}
+	version, stored, versionAt := *newest, *newestMarkdown, *newestAt
 	if version != document.version || !owed {
 		return false, false, nil
 	}
@@ -1514,13 +1558,16 @@ func (s *Service) indexOwedRoom(ctx context.Context, document owedDocument) (ind
 		}
 	}
 	// A document of the room holding no version is no part of the pass's fence, which cleared the
-	// marks of every document it indexed, and neither is a retired document of the room: each one's
-	// own mark goes here, so no mark of the room is left.
+	// marks of every document it indexed and stated each, and neither is a retired document of the
+	// room: each one's own mark goes here, so no mark of the room is left, and the same statement
+	// states it at the version it leaves by this build's rule (refs.BlockIndexMarkingRule), so
+	// neither the backfill nor a tick marks it again.
 	if err := writeExec(queued, tx, fmt.Sprintf("clear the marks of room %s", room), `
-		update document_block_versions set version = coalesce(version, 0), store_owed_at = null
+		update document_block_versions set version = coalesce(version, 0), store_owed_at = null,
+			stated_version = coalesce(version, 0), stated_rule = $3
 		where (artifact_id = any($1::uuid[]) or artifact_id in (select d.artifact_id from document_rooms d where d.room = $2::uuid))
 		  and (version is null or store_owed_at is not null)
-	`, documents, room); err != nil {
+	`, documents, room, refs.BlockIndexMarkingRule); err != nil {
 		return false, false, false, err
 	}
 	if err := ledger.runQueue(ctx, nil); err != nil {

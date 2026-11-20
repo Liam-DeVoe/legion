@@ -302,6 +302,15 @@ type Service struct {
 	// Nil outside tests; tests return an error from it to kill that transaction and find that
 	// none of the three survived it.
 	afterBlockIndexWrite func(artifactID string) error
+	// afterOwedDocumentsListed runs in the block-index tick once it has listed the documents owed a
+	// block index (owedDocuments), before it indexes any of them, with that list. Nil outside
+	// tests; tests hold the tick there to write a version of a listed document before its pass.
+	afterOwedDocumentsListed func(owed []owedDocument) error
+	// beforeNoVersionClear runs inside the tick's pass over a document listed with no markdown
+	// version, under the document owner's lock, once the re-read has found it holds none, right
+	// before the statement that clears its marks and states it (indexOwedDocument). Nil outside
+	// tests; tests read from it which documents reach that clear.
+	beforeNoVersionClear func(artifactID string) error
 	// beforeSettleCommit runs once a settlement's room has taken in the versions the settlement
 	// appended and before the settlement's transaction commits (commitSettlement). Nil outside
 	// tests; tests use it to find the room ahead of the store's head in that window.

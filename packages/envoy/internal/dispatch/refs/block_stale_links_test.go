@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -29,6 +30,12 @@ import (
 // The mention p1 no longer holds is retracted by that pass, which is the stale path doing what it
 // is for. r1's constrained_by and each block's changed_by_run still stand afterwards, and the pass
 // appended no retraction of either: no block_refs row projects them, so no version decides them.
+//
+// Each pass of this build records, in the statement that writes store_version, the version it
+// stated and the rule it stated it by (queueStand's one-document arm): version 1's pass states
+// version 1 by BlockIndexMarkingRule, the release before's version 2 leaves that record as it
+// stands, so the backfill and the tick still owe version 2 this build's pass, and version 3's pass
+// states version 3.
 func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *testing.T) {
 	database := parentDatabase(t)
 	document := newParentDocument(t, database, "STALE", "spec")
@@ -78,6 +85,7 @@ func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *test
 		requireCurrentOut(t, database.Pool, block, graphstore.TupleChangedByRun,
 			[]string{graphstore.KindInteraction + "/" + run}, "after version 1, indexed for the run")
 	}
+	requireStated(t, database.Pool, document.artifact, 1, "after version 1")
 
 	// The pointer route's write: a constraint node and r1's constrained_by to it.
 	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
@@ -113,6 +121,7 @@ func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *test
 		document.artifact).Scan(&storeVersion, &standing); err != nil || storeVersion != 1 || standing != 2 {
 		t.Fatalf("the document's blocks stand at version %d with the store's statement at %d (%v), want 2 and 1", standing, storeVersion, err)
 	}
+	requireStated(t, database.Pool, document.artifact, 1, "after the previous release indexed version 2")
 
 	won, stated := document.indexVersion(t, 3, later, document.writeVersion(t, 3, later.markdown, writer))
 	if !won {
@@ -131,6 +140,7 @@ func TestAStaleIndexPassKeepsTheTuplesAnotherWriterStatesOutOfAKeptBlock(t *test
 		requireCurrentOut(t, database.Pool, block, graphstore.TupleChangedByRun,
 			[]string{graphstore.KindInteraction + "/" + run}, "after the stale pass over version 3")
 	}
+	requireStated(t, database.Pool, document.artifact, 3, "after the stale pass over version 3")
 }
 
 // requireCurrentOut fails unless the block node address holds exactly the current relations of
@@ -147,5 +157,22 @@ func requireCurrentOut(t *testing.T, q Queryer, address, kind string, want []str
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("%s: %s holds the %s %v, want %v", when, address, kind, got, want)
+	}
+}
+
+// requireStated fails unless the document_block_versions row of artifactID records a pass of this
+// build's rule at version: its stated_version version and its stated_rule BlockIndexMarkingRule.
+func requireStated(t *testing.T, q Queryer, artifactID string, version int, when string) {
+	t.Helper()
+	var statedVersion, statedRule string
+	if err := q.QueryRow(context.Background(), `
+		select coalesce(stated_version::text, 'null'), coalesce(stated_rule::text, 'null')
+		from document_block_versions where artifact_id = $1::uuid
+	`, artifactID).Scan(&statedVersion, &statedRule); err != nil {
+		t.Fatalf("%s: read the pass that last stated %s: %v", when, artifactID, err)
+	}
+	if statedVersion != strconv.Itoa(version) || statedRule != strconv.Itoa(BlockIndexMarkingRule) {
+		t.Errorf("%s: document %s reads stated_version %s and stated_rule %s, want version %d by rule %d",
+			when, artifactID, statedVersion, statedRule, version, BlockIndexMarkingRule)
 	}
 }

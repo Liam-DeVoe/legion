@@ -1246,10 +1246,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	}
 	// The history's seven versions, the window document's three, the image's one and the
 	// archive's three, were written before the store held a version node, so the version backfill
-	// owes each its node and six tuples once. The block index drain has not run over this store,
-	// so it owes every document_blocks row its rank, text and placement (blockDrainOwed). The year
-	// projects every backfill's rows beside the rate: each table's backfill-rows line is the sum
-	// of the backfill lines' nodes or tuples.
+	// owes each its node and six tuples once. No pass of this build's rule has stated a document
+	// of this store, so the backfill's marking owes every block of a document it would mark its
+	// rank, text and placement (unstatedBlocksOwed). The year projects every backfill's rows beside
+	// the rate: each table's backfill-rows line is the sum of the backfill lines' nodes or tuples.
 	if line := "census: sizing backfill kind=version moved_by=" + movedWithBlocks + " owed_rows=7 nodes_a_row=1 tuples_a_row=6 nodes=7 tuples=42 "; !strings.Contains(printed, line) {
 		t.Errorf("the sizing prints no line %q:\n%s", line, printed)
 	}
@@ -1269,13 +1269,21 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 	}
 }
 
-// The sizing counts what the block index drain (drainBlockIndexes) owes the store once, beside
-// the rates: a rank, a text and a placement for every stored block, and for every block at the
-// top of an issue's spec, Verification or plan document the retraction of its part_of to the
-// document and its part_of to the issue. A spec of two top-level blocks and one nested, and an
-// upload of one, are stored as the release before stored them; the sizing owes four blocks their
-// values and two their top, and once the drain has run it owes neither.
-func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
+// The sizing counts what the backfill's marking (markStaleDocuments) owes the store once, beside
+// the rates: a rank, a text and a placement for every block of a document the marking would mark -
+// one whose row holds no mark and no pass of this build's rule has stated at its version - and for
+// every such block at the top of an issue's spec, Verification or plan document the retraction of
+// its part_of to the document and its part_of to the issue.
+//
+// Four documents are stored as the release before stored them: a spec of two top-level blocks and
+// one nested, and an upload of one, which no pass of this rule has stated; a plan of two top-level
+// blocks a pass of this rule stated at its version; and a Verification document of one top-level
+// block that holds the backfill's mark already. The sizing owes the spec's and the upload's four
+// blocks their values and the spec's two their top. Once a pass of this rule has stated the spec
+// it owes the upload's block its values and no top. On a database the migration that adds the two
+// columns of that record has not reached, which the sizing takes its readings on too, no row can
+// say it is stated, and the sizing owes every stored block: seven values and five tops.
+func TestTheSizingCountsWhatTheMarkingOwesEachUnstatedBlock(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -1285,13 +1293,18 @@ func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed issue CORE-1: %v", err)
 	}
+	documents := map[string]string{}
 	for _, document := range []struct {
-		slug    string
-		primary bool
-		blocks  [][2]string
+		slug                      string
+		primary                   bool
+		blocks                    [][2]string
+		statedVersion, statedRule *int
+		marked                    bool
 	}{
-		{"spec", true, [][2]string{{"outer", ""}, {"inner", "outer"}, {"after", ""}}},
-		{"notes-md", false, [][2]string{{"note", ""}}},
+		{slug: "spec", primary: true, blocks: [][2]string{{"outer", ""}, {"inner", "outer"}, {"after", ""}}},
+		{slug: "notes-md", blocks: [][2]string{{"note", ""}}},
+		{slug: "plan-md", blocks: [][2]string{{"step", ""}, {"next", ""}}, statedVersion: new(1), statedRule: new(refs.BlockIndexMarkingRule)},
+		{slug: "verification-md", blocks: [][2]string{{"check", ""}}, marked: true},
 	} {
 		var artifactID, refKey string
 		if err := database.Pool.QueryRow(ctx, `
@@ -1301,6 +1314,7 @@ func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
 		`, document.slug, document.primary).Scan(&artifactID, &refKey); err != nil {
 			t.Fatalf("create document %s: %v", document.slug, err)
 		}
+		documents[document.slug] = artifactID
 		for _, block := range document.blocks {
 			var parent *string
 			if block[1] != "" {
@@ -1313,9 +1327,16 @@ func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
 				t.Fatalf("write block %s of %s: %v", block[0], document.slug, err)
 			}
 		}
+		if _, err := database.Pool.Exec(ctx, `
+			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, store_owed_at)
+			values ($1::uuid, 1, 1, $2, $3, case when $4 then now() end)
+		`, artifactID, document.statedVersion, document.statedRule, document.marked); err != nil {
+			t.Fatalf("write the block index row of %s: %v", document.slug, err)
+		}
 	}
-	owes := func(printed string, values, tops int) {
+	owes := func(when string, values, tops int) {
 		t.Helper()
+		printed := sizingCensus(t, database)
 		for _, line := range []string{
 			fmt.Sprintf("census: sizing backfill kind=block_values moved_by=%s owed_rows=%d nodes_a_row=0 tuples_a_row=3 nodes=0 tuples=%d ",
 				movedWithBlocks, values, 3*values),
@@ -1323,15 +1344,23 @@ func TestTheSizingCountsWhatTheDrainOwesEachStoredBlock(t *testing.T) {
 				movedWithBlocks, tops, 2*tops),
 		} {
 			if !strings.Contains(printed, line) {
-				t.Errorf("the sizing prints no line %q:\n%s", line, printed)
+				t.Errorf("%s the sizing prints no line %q:\n%s", when, line, printed)
 			}
 		}
 	}
-	owes(sizingCensus(t, database), 4, 2)
-	if _, err := drainBlockIndexes(ctx, database); err != nil {
-		t.Fatalf("run the block index drain: %v", err)
+	owes("with the spec and the upload unstated,", 4, 2)
+	if _, err := database.Pool.Exec(ctx, `
+		update document_block_versions set stated_version = version, stated_rule = $2 where artifact_id = $1::uuid
+	`, documents["spec"], refs.BlockIndexMarkingRule); err != nil {
+		t.Fatalf("state the spec by this build's rule: %v", err)
 	}
-	owes(sizingCensus(t, database), 0, 0)
+	owes("with the spec stated,", 1, 0)
+	if _, err := database.Pool.Exec(ctx, `
+		alter table document_block_versions drop column stated_version, drop column stated_rule
+	`); err != nil {
+		t.Fatalf("take the stated record's columns out of the database: %v", err)
+	}
+	owes("before the migration that adds the stated record,", 7, 5)
 }
 
 // The sizing reads nothing of the store: R4 takes its readings before the branch's first

@@ -1916,6 +1916,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_DECISIONS_STEP": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_HOLD_BLOCK_INDEX": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX unset: HoldBlockIndex true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BLOCK_INDEX": "1"}); !boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX=1: HoldBlockIndex false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_HOLD_BLOCK_INDEX": "true"}); boot.HoldBlockIndex {
+				t.Error("DISPATCH_TEST_HOLD_BLOCK_INDEX=true: HoldBlockIndex true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOLD_BLOCK_INDEX": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.ArchitectureImportAtStart {
 				t.Error("DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START unset: ArchitectureImportAtStart true")

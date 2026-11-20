@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,17 +77,20 @@ var readEventPage = `
 
 // markVersionedDocuments marks owed a block index, with this build's own mark, every document of
 // $1, the documents the events after the cursor name (readEventPage), that holds no such mark yet
-// and whose blocks this build's store last stated at a version other than the one the document
-// stands at, and answers how many it marked.
+// and that no pass of this build's rule has stated at the version the document stands at, and
+// answers how many it marked.
 //
-// A document is marked where store_version, the version whose blocks this build's index pass last
-// stated in the store (refs' BlockIndexing.queueStand, its one writer), is not the document's
-// version, a null on either side included. The release before this one moves version and never
-// store_version, so a document it indexed after this build's store stated it is marked, and so is
-// one it created, whose store_version is null, and one whose version a write owes an index still
-// (null): whatever that version drops, moves or rewords, which may leave no row naming no node,
-// this build's pass over it states. A document this build wrote and indexed stands at the
-// store_version that pass wrote, and is not marked again.
+// A document is marked where its stated_version is not its version or its stated_rule is below
+// this build's rule, a null on either side counted as not equal (refs.UnstatedBlockIndexSQL):
+// the record a pass of this rule writes beside store_version (refs' BlockIndexing.queueStand), and
+// which no other build writes. store_version alone no longer says it: a build of an earlier rule
+// of the block index writes store_version for each version it indexes and states none of this
+// rule's facts of its blocks. The release before this one moves version and writes neither, so a
+// document it indexed after this build stated it is marked, and so is one it created, one a build
+// of an earlier rule indexed itself, and one whose version a write owes an index still (null):
+// whatever that version drops, moves or rewords, which may leave no row naming no node, this
+// build's pass over it states. A document this build wrote and indexed stands stated at its
+// version by this rule, and is not marked again.
 //
 // The mark is the one the backfill sets (graphcensus's markStaleBatch) and oweDocumentIndex keeps:
 // store_owed_at, which the release before this one neither reads nor clears. The statement takes
@@ -95,12 +99,12 @@ var readEventPage = `
 // graphcensus's lockBlockDocuments takes several of them in: a writer holding several such rows
 // and this statement can never each hold one the other waits for. It decides on the rows as it
 // locks them, in the write phase, so a row a version's index stated meanwhile is not marked.
-const markVersionedDocuments = `
+var markVersionedDocuments = `
 	with held as (
 		select b.artifact_id from document_block_versions b
 		where b.artifact_id = any($1::uuid[])
 		  and b.store_owed_at is null
-		  and not coalesce(b.store_version = b.version, false)
+		  and ` + refs.UnstatedBlockIndexSQL + `
 		order by b.artifact_id
 		for no key update of b
 	),
@@ -114,7 +118,7 @@ const markVersionedDocuments = `
 
 // readEventsAfterCursor is the first step of every block-index tick: it reads the events after its
 // build's cursor, marks owed a block index, with this build's own mark, every document they name
-// that this build's store has not stated at its version (markVersionedDocuments), gives every
+// that no pass of this build's rule has stated at its version (markVersionedDocuments), gives every
 // comment they name whose row names no node its node and its tuples (graphcensus.CommentWrite),
 // records in the cursor's row whether this build owes the object pass, and counts in tick what it
 // read, marked and wrote, and whether another build serves.

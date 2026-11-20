@@ -39,9 +39,8 @@ type KindBackfill struct {
 	// wrote, and Skipped how many rows it could not do and left as they were.
 	Rows, Nodes, Tuples, Skipped int64
 	// Owed is how many documents it marked owed this release's block index (store_owed_at), for
-	// the block kind and the drain of every stored document's block index (drainBlockIndexes)
-	// alone: for the block kind, those whose rows it named the nodes of and those another release
-	// indexed after the store last stated them (markStaleDocuments).
+	// the block kind alone: those whose rows it named the nodes of, and those no pass of this
+	// build's rule had stated at their version (markStaleDocuments).
 	Owed int64
 	// Complete is whether every row of the kind the store can hold now names its node, which
 	// is when the arm of graph_edges over that kind's table answers nothing: each of the four
@@ -114,14 +113,15 @@ func oneKind(write func(context.Context, *store.Store) (KindBackfill, error)) ba
 //
 // A row the release before this one deleted - the row of a block its version dropped, or of a
 // link a block no longer holds - is nothing the run reads: no row of it is left to read, and a
-// node stated gone because its row is missing would be a repair. That release deleted it while it
-// indexed a version after the store had stated the document, so the version the store last stated
-// the document's blocks at (store_version, which only this release's index pass writes) is below
-// the version the document's rows stand at. The run marks each such document too
-// (markStaleDocuments), by those two versions and by no row of either side, and the
-// reconciliation's index pass over the latest version then states each such block gone and
-// retracts each such link, from the version's render (refs.IndexBlocks). No release deletes a
-// comment's row (writeCommentBatch).
+// node stated gone because its row is missing would be a repair. And a build of an earlier rule of
+// the block index states none of this build's facts of each block of a version it indexes - its
+// rank, its text, its placement, its size, the supertag of its type - though it writes
+// store_version for that version as this build's pass does. So the run marks every document no
+// pass of this build's rule has stated at its version (markStaleDocuments), by the record of that
+// pass the document's row holds (stated_version, stated_rule) and by no row of either side, and
+// the reconciliation's index pass over the latest version then states what each block owes,
+// states each block the version dropped gone and retracts each link it dropped, from the
+// version's render (refs.IndexBlocks). No release deletes a comment's row (writeCommentBatch).
 //
 // Each pass walks only the rows its marker does not mark, which for the three projected tables is
 // the node column pair the view's old arms test (migration 20261109215947), names their nodes on
@@ -233,8 +233,8 @@ const (
 // waits only on the writers of the event log, which hold their transactions for one request.
 //
 // Each run replaces the row. Whatever the release before this one wrote before the newest run
-// began, that run reads as it reads every other row: a row that names no node, and a document
-// indexed past the version the store last stated it at (markStaleDocuments). So a build need start
+// began, that run reads as it reads every other row: a row that names no node, and a document no
+// pass of this build's rule has stated at its version (markStaleDocuments). So a build need start
 // reading the log no earlier than the newest run's horizon.
 func recordBackfillHorizon(ctx context.Context, database *store.Store) (int64, error) {
 	horizon := events.NewHorizon(database.Pool)
@@ -279,12 +279,14 @@ type blockRow struct {
 
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
 // and marks each document it touched owed this release's index pass (writeBlockBatch). It then
-// marks each document another release indexed after the store last stated it
-// (markStaleDocuments), whose rows no longer name every block and link the store holds. A block
-// whose address is past refs.MaxBlockNodeBytes is no node of the store by design, so it is neither
-// written nor counted as skipped: the writers leave it unprojected too. A row a version write
-// deleted after its batch was read is not written either (writeBlockBatch), and is counted
-// nowhere: it is no row of the database any more.
+// marks each document no pass of this build's rule has stated at its version
+// (markStaleDocuments): one another release indexed after this build stated it, whose rows no
+// longer name every block and link the store holds, and one a build of an earlier rule indexed,
+// whose blocks hold none of this rule's facts. A block whose address is past
+// refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor counted
+// as skipped: the writers leave it unprojected too. A row a version write deleted after its batch
+// was read is not written either (writeBlockBatch), and is counted nowhere: it is no row of the
+// database any more.
 func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	// The documents the run marked, each once however many of its batches marked it.
@@ -419,7 +421,8 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 // since that release would drain it, write the rows and state nothing. The mark is an update of a
 // row the document already holds: every pass that writes a document's block rows writes that row
 // first, in either release, and it goes only with the artifact, whose delete takes the block rows
-// with it. The mark commits with the rows that name their nodes: marked after the whole pass
+// with it. A mark already standing keeps its time, so the debt stays dated from the write that
+// first owed it. The mark commits with the rows that name their nodes: marked after the whole pass
 // instead, a run stopped by an error in a later batch, or killed, would leave the documents of its
 // committed batches unmarked, and a second run reads no row a committed batch named, so nothing
 // would mark them again. Their document_block_versions rows are the ones lockBlockDocuments
@@ -486,7 +489,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	owed := slices.Clone(artifacts)
 	slices.Sort(owed)
 	if _, err := tx.Exec(ctx, `
-		update document_block_versions set store_owed_at = now()
+		update document_block_versions set store_owed_at = coalesce(store_owed_at, now())
 		where artifact_id = any($1::uuid[])
 	`, slices.Compact(owed)); err != nil {
 		return nil, 0, fmt.Errorf("mark the documents of a block batch owed this release's block index: %w", err)
@@ -497,39 +500,45 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 	return held, int64(len(tuples)) + statedOf(nodes), nil
 }
 
-// markStaleDocuments marks, a batch at a time, every document another release indexed after this
-// release's store last stated its blocks and that holds no mark yet, and answers the documents it
-// marked. The release before this one, indexing a version of a document the store has stated,
-// deletes the rows of the blocks and the links that version drops and states no node gone and
-// retracts no tuple; it leaves store_version, which only this release's index pass writes, below
-// the version it wrote (migration 20261116221539). That is the whole of what this reads: the two
-// versions the document's row records, and no row of either side of a projection, so no document
-// is chosen by reading its blocks against its tuples. The reconciliation's index pass over the
-// marked document's latest version then states each such block gone and retracts each such link,
-// as its render decides (refs.IndexBlocks).
+// markStaleDocuments marks, a batch at a time, every document that holds no mark and that no pass
+// of this build's rule has stated at its version: its stated_version is not its version, or its
+// stated_rule is below the rule, a null on either side counted as not equal
+// (refs.UnstatedBlockIndexSQL). It answers the documents it marked. Only a pass of this rule writes
+// those two columns, in the statement that writes store_version (refs' queueStand), or where it
+// clears the marks of a document it covers no version of (docs' indexOwedDocument and
+// indexOwedRoom). store_version alone no longer says what the store owes: a build of an earlier
+// rule writes it for each version it indexes, and states none of this rule's facts of its blocks.
+// So the test marks a document such a build indexed, one the release before this one indexed after
+// this build stated it - which deletes the rows of the blocks and the links that version drops,
+// states no node gone and retracts no tuple - one it created, and one stored before this build.
+// That is the whole of what this reads: the record the document's row holds, and no row of either
+// side of a projection, so no document is chosen by reading its blocks against its tuples. The
+// reconciliation's index pass over the marked document's latest version then states what its
+// blocks owe, and each block and link that version dropped gone or retracted, as its render
+// decides (refs.IndexBlocks), and records the version it stated by this rule.
 //
-// A document the store has never stated (store_version null) is no document of this pass: the
-// store holds nothing of it for a deletion to strand, and its rows name no node, which the block
-// pass reaches. A document whose version is null is owed an index already, and the pass that
-// indexes it finds the store stale by the same two versions. A second run finds nothing a first
-// one marked, and nothing once the reconciliation has indexed the documents it marked, since that
-// pass sets store_version to the version it indexed.
+// It marks on every run, not once: a build of an earlier rule can create or index a document
+// after any run, and the next run reads it. It reads document_block_versions on its primary key,
+// in batches of backfillBatch in artifact_id order, each batch after the last id of the batch
+// before, and marks each batch in its own transaction (markStaleBatch), so a run stopped part way
+// leaves the rest to the next run, which tests every row again. A second run finds nothing a first
+// one marked, since a mark stands, and nothing a pass of this rule has stated since.
 func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, error) {
 	var marked []string
 	after := "00000000-0000-0000-0000-000000000000"
 	for {
 		rows, err := database.Pool.Query(ctx, `
-			select artifact_id::text from document_block_versions
-			where store_version < version and store_owed_at is null and artifact_id > $1::uuid
-			order by artifact_id
+			select b.artifact_id::text from document_block_versions b
+			where b.artifact_id > $1::uuid and b.store_owed_at is null and `+refs.UnstatedBlockIndexSQL+`
+			order by b.artifact_id
 			limit $2
 		`, after, backfillBatch)
 		if err != nil {
-			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+			return marked, fmt.Errorf("read the documents no pass of this build's rule has stated: %w", err)
 		}
 		batch, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
-			return marked, fmt.Errorf("read the documents another release indexed after the store: %w", err)
+			return marked, fmt.Errorf("read the documents no pass of this build's rule has stated: %w", err)
 		}
 		if len(batch) == 0 {
 			return marked, nil
@@ -547,33 +556,34 @@ func markStaleDocuments(ctx context.Context, database *store.Store) ([]string, e
 }
 
 // markStaleBatch marks the documents of one batch in one transaction, under the locks a version
-// write holds while it writes a document's blocks (lockBlockDocuments), and only those whose two
-// versions still say so under them: an index pass of this release that reached a document in
-// between has stated its blocks at the version it indexed, and owes it nothing. It answers the
-// documents it marked.
+// write holds while it writes a document's blocks (lockBlockDocuments), and only those that still
+// hold no mark and that no pass of this build's rule has stated at their version under them
+// (refs.UnstatedBlockIndexSQL): an index pass of this release that reached a document in between
+// has stated it at the version it indexed, and owes it nothing. It answers the documents it
+// marked.
 func markStaleBatch(ctx context.Context, database *store.Store, batch []string) ([]string, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin the batch of documents another release indexed: %w", err)
+		return nil, fmt.Errorf("begin the batch of documents no pass of this build's rule has stated: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
 		return nil, err
 	}
 	rows, err := tx.Query(ctx, `
-		update document_block_versions set store_owed_at = now()
-		where artifact_id = any($1::uuid[]) and store_version < version and store_owed_at is null
-		returning artifact_id::text
+		update document_block_versions b set store_owed_at = now()
+		where b.artifact_id = any($1::uuid[]) and b.store_owed_at is null and `+refs.UnstatedBlockIndexSQL+`
+		returning b.artifact_id::text
 	`, batch)
 	if err != nil {
-		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+		return nil, fmt.Errorf("mark the documents no pass of this build's rule has stated: %w", err)
 	}
 	marked, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("mark the documents another release indexed after the store: %w", err)
+		return nil, fmt.Errorf("mark the documents no pass of this build's rule has stated: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit the batch of documents another release indexed: %w", err)
+		return nil, fmt.Errorf("commit the batch of documents no pass of this build's rule has stated: %w", err)
 	}
 	return marked, nil
 }

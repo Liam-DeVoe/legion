@@ -211,7 +211,7 @@ const (
 	// docsStandStatement is the block index's record of the version it indexes on the
 	// document's document_block_versions row (refs' queueStand), the first statement of the tick's
 	// write phase that takes that row.
-	docsStandStatement = "insert into document_block_versions (artifact_id, version, store_version, windows_owed_at)"
+	docsStandStatement = "insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, windows_owed_at)"
 	// docsSettlementFenceStatement is a settlement's take of its document's
 	// document_block_versions row, the first statement of its write phase (lockSettlementFence).
 	docsSettlementFenceStatement = "select 1 from document_block_versions where artifact_id = $1 for no key update"

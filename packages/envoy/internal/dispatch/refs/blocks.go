@@ -1514,6 +1514,28 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 	return nil
 }
 
+// BlockIndexMarkingRule is the rule of this build's block index: the facts its pass states of each
+// block of a version beside the block's node, its part_of and its parent - its rank, its text, its
+// placement, its size and the supertag of its type - which a pass of an earlier rule does not
+// state. A pass records the rule it stated a document by in document_block_versions.stated_rule,
+// and the version in stated_version, in the statement that writes store_version (queueStand); docs'
+// indexOwedDocument and indexOwedRoom record both where they clear the marks of a document no pass
+// covers a version of. The backfill and the block-index tick mark owed each document no pass of
+// this rule or a later one has stated at its version (UnstatedBlockIndexSQL).
+const BlockIndexMarkingRule = 2
+
+// UnstatedBlockIndexSQL is true of the document_block_versions row b where no pass of
+// BlockIndexMarkingRule or a later rule has stated the document at its version: its
+// stated_version is not its version, or its stated_rule is below the rule, a null on either side
+// counted as not equal. store_version cannot say it: a build of an earlier rule writes
+// store_version for each version it indexes, and states none of this rule's facts of it. It is
+// the one test the backfill (graphcensus's markStaleDocuments and markStaleBatch), the
+// block-index tick (docs' markVersionedDocuments) and the census's sizing mark or count by, so a
+// document no pass of this rule has stated is marked once by whichever reads it first, and one a
+// pass of this rule has stated since is marked by none.
+var UnstatedBlockIndexSQL = fmt.Sprintf(
+	`(not coalesce(b.stated_version = b.version, false) or not coalesce(b.stated_rule >= %d, false))`, BlockIndexMarkingRule)
+
 // queueStand queues the revision fence: it settles the mark migration 0122's trigger left on the
 // document when this version's row was inserted, and records the version the document's blocks
 // now stand at. The mark only ever moves forward: two passes can be indexing one document, and
@@ -1538,6 +1560,13 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 // that states its blocks there. That is the re-index the reconciliation owes a marked document
 // (docs' owedDocuments), and the first pass of this release at that version clears the mark, so a
 // second one loses as before.
+//
+// The same statement records the pass beside store_version: stated_version, the version it
+// states, and stated_rule, BlockIndexMarkingRule, the rule it states it by (migration
+// 20261120130000). Only a pass of this rule or a later one writes them, and only here or where it
+// clears a document's marks with no pass (docs' indexOwedDocument and indexOwedRoom): a build of an
+// earlier rule writes store_version and not these, so a version it indexes stays unstated by this
+// rule and the backfill and the tick mark it (UnstatedBlockIndexSQL).
 //
 // indexOwedDocument's own early return is a short cut, not this fence: it spares the work of a
 // pass whose version is already settled, and it reads before the write rather than deciding it.
@@ -1577,13 +1606,15 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 	if own, ok := b.versions[b.artifactID]; ok && len(b.versions) == 1 {
 		batch.Queue(fmt.Sprintf("record the blocks of %s indexed at version %d", b.artifactID, own.Number), `
-			insert into document_block_versions (artifact_id, version, store_version, windows_owed_at) values ($1, $2, $2, now())
+			insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, windows_owed_at)
+			values ($1, $2, $2, $2, $3, now())
 			on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
+				stated_version = excluded.stated_version, stated_rule = excluded.stated_rule,
 				store_owed_at = null,
 				windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 			where document_block_versions.version is null or document_block_versions.version < excluded.version
 			   or document_block_versions.version = excluded.version and document_block_versions.store_owed_at is not null
-		`, b.artifactID, own.Number)
+		`, b.artifactID, own.Number, BlockIndexMarkingRule)
 		return
 	}
 	documents := slices.Sorted(maps.Keys(b.versions))
@@ -1592,13 +1623,14 @@ func (b BlockIndexing) queueStand(batch *store.WriteBatch) {
 		numbers[position] = int32(b.versions[document].Number)
 	}
 	batch.Queue(fmt.Sprintf("record the blocks of %s indexed at the versions of its documents", b.artifactID), `
-		insert into document_block_versions (artifact_id, version, store_version, windows_owed_at)
-		select w.artifact_id, w.version, w.version, now() from unnest($1::uuid[], $2::int[]) as w (artifact_id, version)
+		insert into document_block_versions (artifact_id, version, store_version, stated_version, stated_rule, windows_owed_at)
+		select w.artifact_id, w.version, w.version, w.version, $3, now() from unnest($1::uuid[], $2::int[]) as w (artifact_id, version)
 		on conflict (artifact_id) do update set version = excluded.version, store_version = excluded.store_version,
+			stated_version = excluded.stated_version, stated_rule = excluded.stated_rule,
 			store_owed_at = null,
 			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 		where document_block_versions.version is null or document_block_versions.version <= excluded.version
-	`, documents, numbers)
+	`, documents, numbers, BlockIndexMarkingRule)
 }
 
 // IndexBlocks indexes the versions of versions of artifactID's blocks in tx at once: the
