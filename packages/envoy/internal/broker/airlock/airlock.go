@@ -51,17 +51,6 @@ type SecretRule struct {
 	Guidance string `json:"guidance,omitempty"`
 }
 
-// Bound is the entry the airlock holds this name's value back by — one that binds at least one
-// host — or nil. It is the one reader of "is this value behind the airlock": an entry with no
-// host says who decides a request for the key and nothing about where its value may go, so its
-// value is released to the command as a name with no entry is.
-func (r Rules) Bound(name string) *SecretRule {
-	if s := r.Lookup(name); s != nil && len(s.Hosts) > 0 {
-		return s
-	}
-	return nil
-}
-
 // Guidance is the judge's guidance for this name, "" when the file names no such secret or its
 // entry carries none.
 func (r Rules) Guidance(name string) string {
@@ -167,8 +156,10 @@ func entry(i int, s SecretRule) string {
 	return fmt.Sprintf("secrets[%d] %q", i, s.Name)
 }
 
-// Lookup finds a secret's entry, or nil. The entry points into r, so a caller that keeps it
-// keeps the rules it came from.
+// Lookup finds a secret's entry, or nil. Every entry of a valid file binds at least one host
+// (Validate), so the broker holds back the value of a name that has one, and releases the value
+// of a name that has none. The entry points into r, so a caller that keeps it keeps the rules it
+// came from.
 func (r Rules) Lookup(name string) *SecretRule {
 	for i := range r.Secrets {
 		if r.Secrets[i].Name == name {

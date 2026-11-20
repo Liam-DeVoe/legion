@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -119,6 +120,10 @@ type releasedName struct {
 	// what it mints again before, the second what says how to spend them.
 	expires    time.Time
 	secretType string
+	// gitHubValue is the github.value of the GitHub profile the name is served as
+	// (policy.ValueInstallations or policy.ValueToken), "" for any other name: with the type,
+	// what says how the value takes apart into slots (airlockSplitOf).
+	gitHubValue string
 	// leftOut is, for a github-app profile, each entry the cut of its permissions to what an
 	// installation holds left out, by account (secrets.Minted.LeftOut); nil for any other name
 	// and where the cut left nothing out.
@@ -145,7 +150,9 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 	}()
 	for _, g := range checked.granted {
-		entry := m.Airlock.Bound(g.name)
+		// The name's proxy block, nil for a name no profile puts behind the proxy. Every entry
+		// binds at least one host (airlock.Validate), so an entry is a name the airlock holds back.
+		entry := m.Airlock.Lookup(g.name)
 		if entry == nil && want.airlockOnly {
 			continue
 		}
@@ -156,10 +163,11 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		}
 		// Held for the give-back as soon as it is read, so a split that refuses this value gives
 		// it back as well as every value before it.
-		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type(), leftOut: minted.LeftOut})
+		read = append(read, releasedName{name: g.name, value: minted.Value, expires: minted.Expires, secretType: served.Type(),
+			gitHubValue: gitHubValueOf(served), leftOut: minted.LeftOut})
 		if entry != nil {
 			released := &read[len(read)-1]
-			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, minted.Value); err != nil {
+			if released.split, err = airlockSplitOf(entry.Kind, released.secretType, released.gitHubValue, minted.Value); err != nil {
 				return nil, fmt.Errorf("release %s behind the airlock: %w", g.name, err)
 			}
 		}
@@ -168,6 +176,15 @@ func (m *Machine) readRelease(ctx context.Context, grantID string, checked grant
 		return nil, err
 	}
 	return read, nil
+}
+
+// gitHubValueOf is the github.value of the GitHub profile served is, "" for a name that is no
+// GitHub profile.
+func gitHubValueOf(served policy.Secret) string {
+	if served.Profile == nil || served.Profile.GitHub == nil {
+		return ""
+	}
+	return served.Profile.GitHub.Value
 }
 
 // giveBack hands each value in read that a type's minter made back to that type's upstream

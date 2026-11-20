@@ -951,25 +951,17 @@ func TestDigest(t *testing.T) {
 	}
 }
 
-// TestBound: the one reader of "does the airlock hold this value back". An entry that binds a
-// host does; an entry with no host carries who decides and nothing more, so its value is released
-// to the command as a name with no entry is; and a name the file does not hold is not bound.
-func TestBound(t *testing.T) {
-	judge := uint32(300)
+// TestGuidance: the judge's guidance is the entry's own text, "" for an entry that gives none and
+// for a name the file does not hold.
+func TestGuidance(t *testing.T) {
 	rules := Rules{Secrets: []SecretRule{
-		{Name: "bound", Hosts: []string{"api.example.com"}},
-		{Name: "hostless", Judge: &judge, Guidance: "grant for releases"},
+		{Name: "guided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300)), Guidance: "grant for releases"},
+		{Name: "unguided", Hosts: []string{"api.example.com"}, Judge: new(uint32(300))},
 	}}
-	for name, want := range map[string]bool{"bound": true, "hostless": false, "absent": false} {
-		if got := rules.Bound(name) != nil; got != want {
-			t.Errorf("Bound(%q) found an entry: %v; want %v", name, got, want)
+	for name, want := range map[string]string{"guided": "grant for releases", "unguided": "", "absent": ""} {
+		if got := rules.Guidance(name); got != want {
+			t.Errorf("Guidance(%q) = %q; want %q", name, got, want)
 		}
-	}
-	if seconds, ok := rules.JudgeSeconds("hostless"); !ok || seconds != 300 {
-		t.Errorf("JudgeSeconds(hostless) = %d, %v; want 300, true: a host-less entry still carries its judge", seconds, ok)
-	}
-	if got := rules.Guidance("hostless"); got != "grant for releases" {
-		t.Errorf("Guidance(hostless) = %q; want the entry's own text", got)
 	}
 }
 

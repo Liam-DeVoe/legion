@@ -38,20 +38,15 @@ func newPlaceholderFixture(t *testing.T, rules airlock.Rules, apps ...string) (m
 	return m, enrollmentID, key, file
 }
 
-// rulesProfiles is the profiles file of rules and apps: for each rule that names a host, a
-// profile of the rule's own name whose proxy block is that rule, and for each of apps a github
-// block on policytest.AppProfile's accounts, beside the rule's proxy block where a rule names it.
-// A rule with no host has no profile, since no profiles file holds one (policy.ParseProfiles
-// refuses it); the Machine's own rules may still hold it.
+// rulesProfiles is the profiles file of rules and apps: for each rule, a profile of the rule's own
+// name whose proxy block is that rule, and for each of apps a github block on
+// policytest.AppProfile's accounts, beside the rule's proxy block where a rule names it.
 func rulesProfiles(t *testing.T, rules airlock.Rules, apps ...string) string {
 	t.Helper()
 	const github = `"github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}`
 	var entries []string
 	named := map[string]bool{}
 	for _, rule := range rules.Secrets {
-		if len(rule.Hosts) == 0 {
-			continue
-		}
 		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind, Judge: rule.Judge, Guidance: rule.Guidance})
 		if err != nil {
 			t.Fatal(err)
@@ -201,29 +196,6 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 	holdsNothingOf(t, release, "auto-v1")
 	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "proxy" || got["SECOND_TOKEN"] != "inject" {
 		t.Errorf("delivery = %v; want AUTO_TOKEN proxy and SECOND_TOKEN inject", got)
-	}
-}
-
-// TestAHostlessEntryReleasesItsValue: an entry with no host says who decides a request for its key
-// and binds the value nowhere, so a grant of it releases the value itself, as a name with no entry
-// does, and nothing of it goes to the airlock.
-func TestAHostlessEntryReleasesItsValue(t *testing.T) {
-	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{
-		{Name: "AUTO_TOKEN", Judge: new(uint32(600)), Guidance: "grant for the release job"},
-	}})
-	requestID, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
-	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
-	if err != nil {
-		t.Fatalf("Values: %v", err)
-	}
-	if got := release.Values["AUTO_TOKEN"]; got != "auto-v1" {
-		t.Fatalf("values = %v; want AUTO_TOKEN's own value: a host-less entry holds nothing back", release.Values)
-	}
-	if release.Airlock != nil {
-		t.Errorf("the release carries an airlock %+v; want none for a key the airlock binds nowhere", release.Airlock)
-	}
-	if got := deliveries(t, m, requestID); got["AUTO_TOKEN"] != "inject" {
-		t.Errorf("delivery = %v; want AUTO_TOKEN inject", got)
 	}
 }
 

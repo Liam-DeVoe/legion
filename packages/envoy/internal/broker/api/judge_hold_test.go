@@ -17,11 +17,11 @@ import (
 
 // withJudge wires a judge to the server's machine, with rules that give it 900 seconds of
 // DEEL_API_KEY, testApprover's own human-tier secret, with guidance, and 300 of SHARED_KEY, which
-// nobody owns and whose entry binds no host.
+// nobody owns.
 func withJudge(d *api.Deps) {
 	d.Machine.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{
 		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900)), Guidance: "grant for the payroll export job"},
-		{Name: "SHARED_KEY", Judge: new(uint32(300))},
+		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(300))},
 	}}
 	d.Machine.Judge = func(requests.PendingRequest) {}
 }

@@ -260,20 +260,25 @@ func (s airlockSplit) slots() []string { return slices.Sorted(maps.Keys(s.values
 //
 //   - a stored secret and a google-login access token are one string, so they are the value
 //     slot's placeholder alone;
+//   - a github-app profile whose github.value is token (gitHubValue, policy.ValueToken) is
+//     released as the one account's bare token, which is one string too, so it is the value
+//     slot's placeholder alone;
 //   - a stored AWS key pair, which the entry marks kind "aws", is the stored object re-emitted
 //     with each of its three credential fields replaced;
 //   - a github-app's minted installations and an azure-login's minted identity are re-emitted
 //     with the token fields replaced and every other field as the minter wrote it.
 //
-// The policy type decides first and the entry's kind only for a stored secret, because the type
-// is what says how the broker built the value, where the entry says where that value may go. A
-// value that does not hold what its type releases — no object, a missing or non-string token — is
-// an ErrAirlockValueShape rather than a release, since the one other answer would be to release
-// the real value the rules hold back.
-func airlockSplitOf(entryKind, secretType, value string) (airlockSplit, error) {
+// The policy type and the profile's value form decide first and the entry's kind only for a
+// stored secret, because they are what says how the broker built the value, where the entry
+// says where that value may go. A value that does not hold what its type releases — no object, a
+// missing or non-string token — is an ErrAirlockValueShape rather than a release, since the one
+// other answer would be to release the real value the rules hold back.
+func airlockSplitOf(entryKind, secretType, gitHubValue, value string) (airlockSplit, error) {
 	var split airlockSplit
 	var err error
 	switch {
+	case secretType == policy.TypeGitHubApp && gitHubValue == policy.ValueToken:
+		return valueSplit(value), nil
 	case secretType == policy.TypeGitHubApp:
 		split, err = githubAppSplit(value)
 	case secretType == policy.TypeAzureLogin:
@@ -476,7 +481,7 @@ func (m *Machine) airlockRelease(ctx context.Context, grantID string, expires *t
 		if err != nil {
 			return nil, fmt.Errorf("release %s behind the airlock: %w", name, err)
 		}
-		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Bound(name).Hosts}
+		released.Names[name] = AirlockName{Value: value, Slots: slots, Hosts: m.Airlock.Lookup(name).Hosts}
 	}
 	released.ProxyPassword = proxyPassword(released.Names)
 	// Which names went out as a placeholder rather than as their value, recorded where the
@@ -616,8 +621,11 @@ type AirlockSecret struct {
 // for one slot, not for a name's whole released value, so a github-app name answers one token
 // per installation and an AWS pair one string per field. The split is the one the release makes
 // (readRelease, release.go, the one loop both releases of a grant run), so no slot the session
-// holds a placeholder for is a slot this answers nothing for. The proxy calls it on a grant's
-// first connection on its own pod.
+// holds a placeholder for is a slot this answers nothing for. A GitHub profile is minted here
+// exactly as the session's release mints it (release): its permissions, for the target its
+// request recorded, else for the profile's own accounts and repositories (gitHubScope), so the
+// token the proxy swaps in is the profile's for that target and its slots are the target's. The
+// proxy calls it on a grant's first connection on its own pod.
 //
 // It answers beside the values the policy version those checks ran under. The proxy holds the
 // two together and asks PolicyVersion whether that version still stands, which is what makes a
