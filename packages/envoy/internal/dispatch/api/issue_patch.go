@@ -317,36 +317,24 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	statusChanged := input.Status != nil && before.Status != status
 	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
-	// R26 (legion_status_scope.go), before R24 below, so where both refuse the code is R26's. It
-	// judges the credential that resolved the writer, never the body's actor.
-	afterLabels := before.Labels
+	var labelsAfter *[]string
 	if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
-		afterLabels = labels
+		labelsAfter = &labels
 	}
-	if err := refuseLegionStatusWrite(ctx, tx, s.deps.LegionStatusScope, legionStatusWriter{credential: call.writer.credential, system: call.writer.system}, legionStatusStep{
-		key:           before.Key,
-		writesStatus:  input.Status != nil,
-		parentBefore:  before.Parent,
-		parentAfter:   afterParent,
-		parentChanged: parentChanged,
-		labelsBefore:  before.Labels,
-		labelsAfter:   afterLabels,
-	}); err != nil {
-		return issueWriteResult{}, err
-	}
-	// R24 (parent_status_rule.go) judges a write that changes the status or the parent, here,
-	// after the refusals above and under the owner locks the write holds: the issue's, its
-	// current parent's and its proposed parent's. Every writer of a pair holds the parent's
-	// owner lock, so two writes of one pair are judged one after the other. A write that names
-	// the status the issue already has changes no pair and is not judged.
-	if statusChanged || parentChanged {
+	// The plan's one check (refuseIssueWritePlan) runs here, after the refusals above and under
+	// the owner locks the write holds: the issue's, its current parent's and its proposed
+	// parent's. R26 (legion_status_scope.go) judges the write first, and R24
+	// (parent_status_rule.go) judges it after R26, so where both refuse, the code is R26's.
+	//
+	// R26 judges every status write, label write and parent change, the write of the status the
+	// issue already has included. It reads the credential that resolved the writer, never the
+	// body's actor. R24 judges only the pairs the write changes. Every writer of a pair holds the
+	// parent's owner lock, so two writes of one pair are judged one after the other. For a write
+	// that changes no pair, R24 reads nothing.
+	if input.Status != nil || parentChanged || labelsAfter != nil {
 		var statusAfter *string
 		if input.Status != nil {
 			statusAfter = &status
-		}
-		var labelsAfter *[]string
-		if input.Labels != nil || (input.LabelsAdd != nil && labelsMerged == nil) {
-			labelsAfter = &labels
 		}
 		conflict, err := s.refuseIssueWritePlan(ctx, tx, call.writer, issueWritePlanOfPatch(before, statusAfter, parentProvided, parent, labelsAfter))
 		if err != nil {

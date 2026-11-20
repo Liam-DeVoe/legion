@@ -23,14 +23,21 @@ package api
 // (bearerSessionActor). The shared token whose body names the daemon's session is still the
 // shared token, so R26 refuses it.
 //
+// The refusal is the first statement of refuseIssueWritePlan (parent_status_rule.go). Every write
+// that R26 judges runs that check before its first write.
+// TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent names each writer of an issue's
+// status, labels or parent, and why a writer that runs no such check needs none. So R26 judges
+// every step of every plan, and it judges a call before R24 does.
+//
 // The refusal takes no lock on an ancestor, and needs none. The walk is one statement, so it
-// reads one snapshot of the chain. It runs after the write's own locks: the issue, its current
-// and new parent (lockPatchOwners, lockPatchOwnersAndParent), and, for every parent write, the
-// deployment-wide dependency lock (lockIssueDependencyWrite). So, under READ COMMITTED, it reads
-// every write that those locks waited for. An ancestor that the write does not lock cannot break
-// the rule, for this reason. With the refusal on, a caller with neither scope can make no issue
-// stop being a Legion issue, because (b) and (c) refuse it. So a judgement read from a chain that
-// moves under it can go stale in two ways only:
+// reads one snapshot of the chain. It runs after the write's own locks, which the caller of
+// refuseIssueWritePlan holds: the owner lock of each step's issue and of its current and new
+// parent (the PATCH's lockPatchOwners, lockPatchOwnersAndParent), and, for every parent write,
+// the deployment-wide dependency lock (lockIssueDependencyWrite). So, under READ COMMITTED, it
+// reads every write that those locks waited for. An ancestor that the write does not lock cannot
+// break the rule, for this reason. With the refusal on, a caller with neither scope can make no
+// issue stop being a Legion issue, because (b) and (c) refuse it. So a judgement read from a
+// chain that moves under it can go stale in two ways only:
 //
 //   - A concurrent write made the issue a Legion issue (a label added, a move under a labelled
 //     issue). Then the write that the refusal let through comes first in a serial order, and
@@ -63,73 +70,54 @@ import (
 // client acts on this code, so @legion/contracts holds no copy of it.
 const codeLegionStatusScopeRequired = "LEGION_STATUS_SCOPE_REQUIRED"
 
-// legionStatusStep is one issue that a call changes, as R26 judges it: the issue's parent and
-// labels before the call and after it, and whether the call writes the issue's status. For a
-// call that changes neither the parent nor the labels, the after values are the before values.
-type legionStatusStep struct {
-	key string
-	// writesStatus is true for a call that writes the issue's status, with any value, the value
-	// the issue holds already included.
-	writesStatus bool
-	// parentBefore and parentAfter are the issue's parent before and after the call. Nil is no
-	// parent.
-	parentBefore, parentAfter *string
-	// parentChanged is true for a call that changes the issue's parent. A call that names the
-	// current parent changes nothing.
-	parentChanged bool
-	// labelsBefore and labelsAfter are the issue's labels before and after the call.
-	labelsBefore, labelsAfter []string
-}
-
-// legionStatusWriter is the writer of a call, as R26 reads it.
-type legionStatusWriter struct {
-	// credential is the request's credential, as optionalActor resolved it
-	// (requestWriter). A nil credential holds no scope.
-	credential *model.Credential
-	// system is true for Dispatch's own writer, which acts for no request and which R26 never
-	// refuses. No request sets it. Today nothing sets it: the system writer of
-	// dispatch://INFRA-4731 (parentStatusFixWriter) will set it.
-	system bool
-}
-
-// refuseLegionStatusWrite is R26's refusal (this file's comment). It judges every step of one
-// call, and the caller runs it once, before the call's first write, so a refused call changes
-// nothing. on is Deps.LegionStatusScope: off refuses nothing. A refused step answers 403
-// codeLegionStatusScopeRequired. A walk that fails is an error, which the caller answers 500: the
-// walk gates a write, so a failed walk never lets the write through.
-func refuseLegionStatusWrite(ctx context.Context, tx pgx.Tx, on bool, writer legionStatusWriter, steps ...legionStatusStep) error {
+// refuseLegionStatusWrite is R26's refusal (this file's comment). refuseIssueWritePlan runs it as
+// its first statement, before the plan's first write, so a refused call changes nothing. It
+// judges every step of the plan. on is Deps.LegionStatusScope: off refuses nothing.
+//
+// It lets two writers through. One is Dispatch's system writer (writer.system): only
+// parentStatusFixWriter sets it, for R25's boot fix, and no request can produce it. The other is
+// a writer whose credential holds the person scope or the legion-status scope. That credential is
+// the one that optionalActor resolved for the request (requestWriter), and a nil credential holds
+// no scope.
+//
+// A refused step answers 403 codeLegionStatusScopeRequired. A walk that fails is an error, which
+// the caller answers 500: the walk gates a write, so a failed walk never lets the write through.
+func refuseLegionStatusWrite(ctx context.Context, q pgx.Tx, on bool, writer issueWriter, plan issueWritePlan) error {
 	if !on || writer.system || writer.credential.Holds(model.ScopePerson) || writer.credential.Holds(model.ScopeLegionStatus) {
 		return nil
 	}
-	for _, step := range steps {
-		if err := refuseLegionStatusStep(ctx, tx, step); err != nil {
+	for _, step := range plan.steps {
+		if err := refuseLegionStatusStep(ctx, q, step); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// refuseLegionStatusStep judges one step by R26's three rules. The label rule reads the labels
-// alone, so it runs first and needs no query. The other two rules read whether the issue is a
-// Legion issue: before the call at most once, and after the call only when a rule needs it.
-func refuseLegionStatusStep(ctx context.Context, tx pgx.Tx, step legionStatusStep) error {
+// refuseLegionStatusStep judges one step by R26's three rules. A step writes the status when it
+// names a status (statusAfter), with any value, the value the issue holds already included. The
+// label rule reads the labels alone, so it runs first and needs no query. The other two rules
+// read whether the issue is a Legion issue: before the call at most once, and after the call
+// only when a rule needs it.
+func refuseLegionStatusStep(ctx context.Context, q pgx.Tx, step issueWriteStep) error {
 	// (b) The removal of the legion label.
-	if holdsLegionLabel(step.labelsBefore) && !holdsLegionLabel(step.labelsAfter) {
+	if holdsLegionLabel(step.labelsBefore) && !holdsLegionLabel(step.labelsLeft()) {
 		return legionStatusScopeRefusal(step.key, "the removal of the legion label")
 	}
-	if !step.writesStatus && !step.parentChanged {
+	writesStatus := step.statusAfter != nil
+	if !writesStatus && !step.changesParent() {
 		return nil
 	}
-	before, err := legionManagedStatusOfRow(ctx, tx, step.key, step.parentBefore, step.labelsBefore)
+	before, err := legionManagedStatusOfRow(ctx, q, step.key, step.parentBefore, step.labelsBefore)
 	if err != nil {
 		return err
 	}
-	if step.writesStatus {
+	if writesStatus {
 		// (a) A status write of an issue that is a Legion issue before the call or after it.
 		if before {
 			return legionStatusScopeRefusal(step.key, "a status write")
 		}
-		after, err := step.legionIssueAfter(ctx, tx, before)
+		after, err := step.legionIssueAfter(ctx, q, before)
 		if err != nil {
 			return err
 		}
@@ -142,7 +130,7 @@ func refuseLegionStatusStep(ctx context.Context, tx pgx.Tx, step legionStatusSte
 	if !before {
 		return nil
 	}
-	after, err := step.legionIssueAfter(ctx, tx, before)
+	after, err := step.legionIssueAfter(ctx, q, before)
 	if err != nil {
 		return err
 	}
@@ -152,14 +140,33 @@ func refuseLegionStatusStep(ctx context.Context, tx pgx.Tx, step legionStatusSte
 	return nil
 }
 
+// labelsLeft is the labels that the step leaves on its issue: the labels it writes, or the labels
+// the issue has when the step keeps them.
+func (step issueWriteStep) labelsLeft() []string {
+	if step.labelsAfter != nil {
+		return *step.labelsAfter
+	}
+	return step.labelsBefore
+}
+
+// parentLeft is the parent that the step leaves on its issue: the parent it writes, or the
+// parent the issue has when the step writes none. Nil is no parent.
+func (step issueWriteStep) parentLeft() *string {
+	if step.reparent {
+		return step.parentAfter
+	}
+	return step.parentBefore
+}
+
 // legionIssueAfter says whether the step's issue is a Legion issue after the call. before is the
-// answer before the call. A call that changes neither the parent nor the labels leaves that
+// answer before the call. A step that changes neither the parent nor the labels leaves that
 // answer, so it is answered without a second walk.
-func (step legionStatusStep) legionIssueAfter(ctx context.Context, tx pgx.Tx, before bool) (bool, error) {
-	if !step.parentChanged && slices.Equal(step.labelsBefore, step.labelsAfter) {
+func (step issueWriteStep) legionIssueAfter(ctx context.Context, q pgx.Tx, before bool) (bool, error) {
+	labels := step.labelsLeft()
+	if !step.changesParent() && slices.Equal(step.labelsBefore, labels) {
 		return before, nil
 	}
-	return legionManagedStatusOfRow(ctx, tx, step.key, step.parentAfter, step.labelsAfter)
+	return legionManagedStatusOfRow(ctx, q, step.key, step.parentLeft(), labels)
 }
 
 // holdsLegionLabel says whether labels hold the legion label in any letter case. Labels keep the

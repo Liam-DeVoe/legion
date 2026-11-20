@@ -239,9 +239,16 @@ func (fakeFile) Type() fs.FileMode          { return 0 }
 func (fakeFile) Info() (fs.FileInfo, error) { return nil, nil }
 
 // judgedIssueWriter is the source file whose writes of an issue's status, labels and parent R26
-// of dispatch://INFRA-3320 judges: the PATCH of an issue. It calls legionStatusGuard before its
-// first write.
+// of dispatch://INFRA-3320 judges: the PATCH's write core (writeIssue). It calls
+// issueWritePlanCheck before its first write.
 const judgedIssueWriter = "internal/dispatch/api/issue_patch.go"
+
+// issueWritePlanCheck is the one check of a write's plan, which a judged writer calls before its
+// first write. Its first statement is legionStatusGuard, and R24's checks come after it.
+const issueWritePlanCheck = "refuseIssueWritePlan"
+
+// issueWritePlanCheckSource is the source file that declares issueWritePlanCheck.
+const issueWritePlanCheckSource = "internal/dispatch/api/parent_status_rule.go"
 
 // legionStatusGuard is the function that judges a write of an issue's status, labels or parent
 // for R26 (legion_status_scope.go).
@@ -251,7 +258,7 @@ const legionStatusGuard = "refuseLegionStatusWrite"
 // labels or parent, each with the reason it may. A path that ends in a slash is a directory, and
 // every Go file under it is that writer.
 var statusLabelsOrParentWriters = []struct{ path, reason string }{
-	{judgedIssueWriter, "the PATCH of an issue, whose every write R26 judges: it calls " + legionStatusGuard + " before its first write"},
+	{judgedIssueWriter, "the PATCH's write core, whose every write R26 judges: it calls " + issueWritePlanCheck + ", which opens with " + legionStatusGuard + ", before its first write"},
 	{"internal/dispatch/api/issue_create.go", "the creation of an issue, which R26 never refuses: it writes the new issue's parent and labels, and no status"},
 	{"cmd/dispatch-seed/", "the seeding tool, which fills an empty database before a server runs on it, and which no request reaches"},
 }
@@ -379,23 +386,86 @@ func namesTheIssuesTable(expression ast.Expr) bool {
 	return ok && len(names) > 0 && names[len(names)-1] == "issues"
 }
 
-// callsLegionStatusGuard says whether file calls legionStatusGuard, as a function or as a method.
-func callsLegionStatusGuard(file *ast.File) bool {
+// calledName is the name of the function or the method that call calls, or the empty string for
+// a call of an expression of another shape.
+func calledName(call *ast.CallExpr) string {
+	switch callee := call.Fun.(type) {
+	case *ast.Ident:
+		return callee.Name
+	case *ast.SelectorExpr:
+		return callee.Sel.Name
+	}
+	return ""
+}
+
+// callsFunction says whether file calls the function name, as a function or as a method.
+func callsFunction(file *ast.File, name string) bool {
 	called := false
 	ast.Inspect(file, func(node ast.Node) bool {
-		call, ok := node.(*ast.CallExpr)
-		if !ok || called {
-			return !called
-		}
-		switch callee := call.Fun.(type) {
-		case *ast.Ident:
-			called = callee.Name == legionStatusGuard
-		case *ast.SelectorExpr:
-			called = callee.Sel.Name == legionStatusGuard
+		if call, ok := node.(*ast.CallExpr); ok && calledName(call) == name {
+			called = true
 		}
 		return !called
 	})
 	return called
+}
+
+// legionStatusGuardMissing says what is missing when the function check, which file declares,
+// does not open with R26's guard in the shape that refuseIssueWritePlan writes:
+//
+//	if err := refuseLegionStatusWrite(...); err != nil {
+//		return ..., err
+//	}
+//
+// It answers the empty string when the function opens with the guard. A guard after another
+// statement can come after a check that answers first. A guard that does not return its error
+// refuses nothing.
+func legionStatusGuardMissing(file *ast.File, check string) string {
+	for _, declared := range file.Decls {
+		function, ok := declared.(*ast.FuncDecl)
+		if !ok || function.Name.Name != check || function.Body == nil {
+			continue
+		}
+		if len(function.Body.List) == 0 || !isLegionStatusGuard(function.Body.List[0]) {
+			return "the first statement of " + check + " is not R26's guard, if err := " + legionStatusGuard + "(...); err != nil { return ..., err }"
+		}
+		return ""
+	}
+	return "it declares no function " + check
+}
+
+// isLegionStatusGuard says whether statement is an if whose init assigns the result of a call of
+// legionStatusGuard to one variable, whose condition is that variable != nil, and whose body
+// returns that variable as its last result.
+func isLegionStatusGuard(statement ast.Stmt) bool {
+	named := func(expression ast.Expr, name string) bool {
+		identifier, ok := expression.(*ast.Ident)
+		return ok && identifier.Name == name
+	}
+	guard, ok := statement.(*ast.IfStmt)
+	if !ok {
+		return false
+	}
+	init, ok := guard.Init.(*ast.AssignStmt)
+	if !ok || len(init.Lhs) != 1 || len(init.Rhs) != 1 {
+		return false
+	}
+	refusal, ok := init.Lhs[0].(*ast.Ident)
+	if !ok {
+		return false
+	}
+	if call, ok := init.Rhs[0].(*ast.CallExpr); !ok || calledName(call) != legionStatusGuard {
+		return false
+	}
+	condition, ok := guard.Cond.(*ast.BinaryExpr)
+	if !ok || condition.Op != token.NEQ || !named(condition.X, refusal.Name) || !named(condition.Y, "nil") {
+		return false
+	}
+	if len(guard.Body.List) != 1 {
+		return false
+	}
+	answer, ok := guard.Body.List[0].(*ast.ReturnStmt)
+	return ok && len(answer.Results) > 0 && named(answer.Results[len(answer.Results)-1], refusal.Name)
 }
 
 // TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent holds R26 to every write it judges.
@@ -412,12 +482,14 @@ func callsLegionStatusGuard(file *ast.File) bool {
 //   - for a write outside the writers statusLabelsOrParentWriters names, each with its reason;
 //   - for a named writer in which the scan finds no write, because a scan that finds nothing
 //     proves nothing;
-//   - when the judged writer, issue_patch.go, does not call refuseLegionStatusWrite.
+//   - when the judged writer, issue_patch.go, does not call refuseIssueWritePlan;
+//   - when the first statement of refuseIssueWritePlan (parent_status_rule.go) is not R26's
+//     guard, refuseLegionStatusWrite, with its refusal returned.
 //
 // The scan reads the module's Go source alone, so it leaves out the migrations, which are SQL. A
 // migration runs once, at the boot of the release that brings it, and no caller's request runs
 // it, so it makes no call for R26 to judge. A new writer belongs behind the guard: make it call
-// refuseLegionStatusWrite before its first write, then name it here.
+// refuseIssueWritePlan before its first write, then name it here.
 func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
@@ -426,11 +498,15 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 	}
 	found := make([][]string, len(statusLabelsOrParentWriters))
 	var offences []string
-	judgedRead, guarded := false, false
+	judgedRead, checked := false, false
+	checkRead, guardMissing := false, ""
 	for _, source := range sources {
 		path := strings.TrimPrefix(filepath.ToSlash(source.path), moduleRoot+"/")
-		if path == judgedIssueWriter {
-			judgedRead, guarded = true, callsLegionStatusGuard(source.file)
+		switch path {
+		case judgedIssueWriter:
+			judgedRead, checked = true, callsFunction(source.file, issueWritePlanCheck)
+		case issueWritePlanCheckSource:
+			checkRead, guardMissing = true, legionStatusGuardMissing(source.file, issueWritePlanCheck)
 		}
 		writes := statusLabelsOrParentWrites(source, constants)
 		if len(writes) == 0 {
@@ -448,7 +524,7 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 	if len(offences) > 0 {
 		t.Errorf("only the writers this guard names may write an issue's status, labels or parent, and these write one too:\n\t%s\n"+
 			"Make each writer call %s before its first write, so that R26 judges it, and name it in statusLabelsOrParentWriters.",
-			strings.Join(offences, "\n\t"), legionStatusGuard)
+			strings.Join(offences, "\n\t"), issueWritePlanCheck)
 	}
 	for index, writer := range statusLabelsOrParentWriters {
 		if len(found[index]) == 0 {
@@ -461,9 +537,16 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 	switch {
 	case !judgedRead:
 		t.Errorf("the scan did not read %s, the judged writer", judgedIssueWriter)
-	case !guarded:
-		t.Errorf("%s writes an issue's status, labels and parent and does not call %s, so R26 judges none of its writes",
-			judgedIssueWriter, legionStatusGuard)
+	case !checked:
+		t.Errorf("%s writes an issue's status, labels and parent and does not call %s, so neither R26 nor R24 judges its writes",
+			judgedIssueWriter, issueWritePlanCheck)
+	}
+	switch {
+	case !checkRead:
+		t.Errorf("the scan did not read %s, which declares %s", issueWritePlanCheckSource, issueWritePlanCheck)
+	case guardMissing != "":
+		t.Errorf("%s: %s, so R26 does not judge first each write that %s judges",
+			issueWritePlanCheckSource, guardMissing, issueWritePlanCheck)
 	}
 }
 
@@ -471,17 +554,21 @@ func TestOnlyTheJudgedWritersWriteAnIssuesStatusLabelsOrParent(t *testing.T) {
 // checks that the guard finds each. It checks that the guard finds nothing in code that writes
 // none of the three columns: an update of another column, a read of the three, a write of
 // another table, and a CopyFrom into issues of other columns. It checks that the guard tells a
-// call of refuseLegionStatusWrite from a mention of it, and that only the named writers' paths
-// are allowed.
+// call of refuseIssueWritePlan from a mention of it, and a refuseIssueWritePlan that opens with
+// R26's guard from one that does not. It checks that only the named writers' paths are allowed.
 func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
-	plant := func(t *testing.T, body string) moduleSource {
+	parse := func(t *testing.T, declarations string) moduleSource {
 		t.Helper()
 		positions := token.NewFileSet()
-		file, err := parser.ParseFile(positions, "planted.go", "package planted\n\nfunc write() {\n"+body+"\n}\n", 0)
+		file, err := parser.ParseFile(positions, "planted.go", "package planted\n\n"+declarations+"\n", 0)
 		if err != nil {
-			t.Fatalf("parse the planted writer: %v", err)
+			t.Fatalf("parse the planted source: %v", err)
 		}
 		return moduleSource{path: "planted.go", file: file, positions: positions}
+	}
+	plant := func(t *testing.T, body string) moduleSource {
+		t.Helper()
+		return parse(t, "func write() {\n"+body+"\n}")
 	}
 	for _, shape := range []struct{ name, body string }{
 		{"an update that sets the status", `tx.Exec(ctx, "UPDATE issues SET status = $2 WHERE key = $1", key, status)`},
@@ -514,16 +601,38 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 		t.Errorf("the guard counts %q as writes of an issue's status, labels or parent", found)
 	}
 	for body, want := range map[string]bool{
-		`s.refuseLegionStatusWrite(ctx, tx, step)`:             true,
-		`refuseLegionStatusWrite(ctx, tx, step)`:               true,
-		`log("refuseLegionStatusWrite")`:                       false,
-		`judge := refuseLegionStatusWrite; _ = judge`:          false,
-		`s.refuseLegionStatusWriteLater(ctx, tx, step)`:        false,
-		`if err := s.refuseLegionStatusWrite(); err != nil {}`: true,
+		`s.refuseIssueWritePlan(ctx, tx, call.writer, plan)`:      true,
+		`refuseIssueWritePlan(ctx, tx, writer, plan)`:             true,
+		`log("refuseIssueWritePlan")`:                             false,
+		`judge := s.refuseIssueWritePlan; _ = judge`:              false,
+		`s.refuseIssueWritePlanLater(ctx, tx, call.writer, plan)`: false,
+		`if _, err := s.refuseIssueWritePlan(); err != nil {}`:    true,
 	} {
-		if got := callsLegionStatusGuard(plant(t, body).file); got != want {
-			t.Errorf("the guard reads %q as a call of %s: %t, want %t", body, legionStatusGuard, got, want)
+		if got := callsFunction(plant(t, body).file, issueWritePlanCheck); got != want {
+			t.Errorf("the guard reads %q as a call of %s: %t, want %t", body, issueWritePlanCheck, got, want)
 		}
+	}
+	const guard = "if err := refuseLegionStatusWrite(ctx, q, on, writer, plan); err != nil { return nil, err }"
+	for _, check := range []struct {
+		name, declarations string
+		opens              bool
+	}{
+		{"the guard first", "func (s *server) refuseIssueWritePlan() {\n" + guard + "\nreturn judge(plan)\n}", true},
+		{"the guard after another check", "func (s *server) refuseIssueWritePlan() {\nif refused { return nil, refusal }\n" + guard + "\n}", false},
+		{"the guard as a statement with no if", "func (s *server) refuseIssueWritePlan() {\n_ = refuseLegionStatusWrite(ctx, q, on, writer, plan)\n}", false},
+		{"the guard's refusal dropped", "func (s *server) refuseIssueWritePlan() {\nif err := refuseLegionStatusWrite(ctx, q, on, writer, plan); err != nil { log(err) }\n}", false},
+		{"another error returned", "func (s *server) refuseIssueWritePlan() {\nif err := refuseLegionStatusWrite(ctx, q, on, writer, plan); err != nil { return nil, other }\n}", false},
+		{"another function called first", "func (s *server) refuseIssueWritePlan() {\nif err := refuseLegionStatusWriteLater(ctx, q, on, writer, plan); err != nil { return nil, err }\n}", false},
+		{"an empty body", "func (s *server) refuseIssueWritePlan() {}", false},
+		{"the guard first in another function", "func (s *server) refuseIssueWritePlanLater() {\n" + guard + "\n}", false},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			missing := legionStatusGuardMissing(parse(t, check.declarations).file, issueWritePlanCheck)
+			if opens := missing == ""; opens != check.opens {
+				t.Errorf("the guard reads the planted %s as opening with %s: %t (%q), want %t",
+					issueWritePlanCheck, legionStatusGuard, opens, missing, check.opens)
+			}
+		})
 	}
 	for path, want := range map[string]bool{
 		judgedIssueWriter:                           true,

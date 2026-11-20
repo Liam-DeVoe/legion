@@ -158,7 +158,10 @@ func issueWritePlanOfPatch(before model.Issue, status *string, parentProvided bo
 // R24 (parentStatusConflictOf), or nil when the plan keeps the rule. The caller refuses that
 // conflict only while the rule is on.
 func (s *server) refuseIssueWritePlan(ctx context.Context, q pgx.Tx, writer issueWriter, plan issueWritePlan) (*parentStatusConflict, error) {
-	// The guard of who may write the status of a Legion issue comes first here.
+	// R26 (legion_status_scope.go) comes first, so a call that R24 refuses too answers R26's code.
+	if err := refuseLegionStatusWrite(ctx, q, s.deps.LegionStatusScope, writer, plan); err != nil {
+		return nil, err
+	}
 	if plan.includeChildren && !writer.human && plan.writesStatus("done") {
 		return nil, errorf(http.StatusForbidden, "BROWSER_SIGN_IN_REQUIRED",
 			"only a person signed in at a browser can close the open issues under an issue with it (include_children with done); this request presents a token")
