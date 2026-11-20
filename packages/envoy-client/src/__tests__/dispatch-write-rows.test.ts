@@ -574,8 +574,12 @@ describe("every keyed write reads Dispatch's declared answer as its row, by the 
           : [["the JSON {}", "application/json", "{}"]]),
       ] as const) {
         const expected =
-          echo === "this" && (body === "null" || body === "{}") ? {} : noAnswer(row, echo);
-        const reads = "landed" in expected ? "ANSWER_NOT_KEPT" : "unknown";
+          echo === "this" && (body === "null" || body === "{}")
+            ? row.method === "recordSpecCheckResult"
+              ? { landed: "ANSWER_LOST" as const }
+              : {}
+            : noAnswer(row, echo);
+        const reads = "landed" in expected ? expected.landed : "unknown";
         test(`${label}: a ${status} with ${name}, ${named}, is ${reads}`, async () => {
           const got = await outcome(row, status, type, body, echo);
           expect({ landed: got.landed, unknown: got.unknown }).toEqual({
