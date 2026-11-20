@@ -1767,10 +1767,12 @@ pg_disk_kill_frozen() {
 # No signal of the stop depends on a file descriptor: a builtin's `2>/dev/null` needs one to open
 # /dev/null on, and under a descriptor limit (`ulimit -n 4`) bash runs no builtin whose redirection
 # it cannot make, which left the watcher running, signalled by nothing. The watcher is this shell's
-# own child, which this shell reaps at its next nap, so its /proc entry is the test of whether it
-# runs, a test that needs no descriptor. The wait that collects its status keeps its redirection: a
-# wait that is not run leaves nothing behind, since bash reaps its own children whether or not it
-# waits on them. The reads of the freeze do need a descriptor, and a read it cannot make is named.
+# own child, which this shell reaps once it has ended, at its next nap, so its /proc entry is the
+# test of whether it runs, a test that needs no descriptor. So is the wait for its end after the
+# SIGKILL, up to PG_DISK_STOP_SECONDS more: the `wait` that collects its status keeps its
+# redirection, and is no wait for the end under such a limit, where bash does not run it; a
+# watcher still there at that bound is named. The reads of the freeze do need a descriptor, and a
+# read it cannot make is named.
 pg_disk_watch_stop() {
   local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline frozen below=() rc
   if [ -n "$PG_DISK_STOPPING" ]; then
@@ -1800,8 +1802,11 @@ pg_disk_watch_stop() {
     fi
     sleep 1
   done
-  wait "$pid" 2>/dev/null || true
   deadline=$((EPOCHSECONDS + PG_DISK_STOP_SECONDS))
+  while [ -e "/proc/$pid" ] && ((EPOCHSECONDS <= deadline)); do sleep 0.1; done
+  [ ! -e "/proc/$pid" ] ||
+    note "step $name: the disk watcher (pid $pid) is still there $PG_DISK_STOP_SECONDS s after its SIGKILL, so nothing shows it ended"
+  wait "$pid" 2>/dev/null || true
   for frozen in $PG_DISK_FROZEN; do
     [ "${frozen%:*}" != "$pid" ] || continue
     rc=0
