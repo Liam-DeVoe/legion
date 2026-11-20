@@ -6924,6 +6924,7 @@ These rules pass over it:
   The round's bound moves later by the time the pod was held, and a hold that ended at the resume or at a role's ready counts on until the wake pacing lets out the last launch that the pause held for a role of the pod, a held delivery's wake after the resume included (`roundBound` and `heldUntil`, `internal/daemon/podupdate.go`).
   So a round replaces no pod while a role of it whose launch the pause held still waits its turn in the pacing, and the roles get what was left of the round's grace from that let-out.
   The round's own ask (`update_ask`) is queued only for a role that is ready (`askRound`, `internal/daemon/podupdate.go`), so it brings back no role that the pause stopped before the ask was queued.
+  The end that ask states is the round's bound as it stands when the ask is written: the daemon reads the clock and then the pod's holds again for it, so a hold that ended while the sweep's walk waited counts to its end, and the ask states no end later than the one at which the daemon replaces the pod.
   An ask that was queued before the pause and that the pause held is published after the resume, and where the pause stopped its role, the Envoy listener's report of that publish wakes the role as that pause's wake, through the wake pacing (`wakeReleased`, `internal/workflow/wake.go`).
   A role of the pod that nothing wakes takes no turn before the round's bound.
 

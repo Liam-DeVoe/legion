@@ -65,6 +65,14 @@ func (r *fleetRig) sweepHeldInAWrite(slow string, hold time.Duration) {
 // fails the test by name rather than counting as the hold.
 func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 	r.t.Helper()
+	return r.sweepWaitingInAWrite(slow, func() { r.clock.advance(hold) })
+}
+
+// sweepWaitingInAWrite is sweepHoldingAWrite whose first write for slow waits in wait, which
+// moves the clock and may change the store meanwhile, as a pause's hold that ends during the write
+// does.
+func (r *fleetRig) sweepWaitingInAWrite(slow string, wait func()) bool {
+	r.t.Helper()
 	enqueue := r.s.enqueue
 	defer func() { r.s.enqueue = enqueue }()
 	tried, held := false, false
@@ -74,7 +82,7 @@ func (r *fleetRig) sweepHoldingAWrite(slow string, hold time.Duration) bool {
 			return enqueue(ctx, issue, payloads...)
 		}
 		tried = true
-		r.clock.advance(hold)
+		wait()
 		written, err := enqueue(ctx, issue, payloads...)
 		switch {
 		case err != nil:
