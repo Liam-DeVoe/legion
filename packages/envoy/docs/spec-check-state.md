@@ -1,0 +1,17 @@
+# `spec-check state`
+
+`spec-check state --scenario <dir> [--json]` derives the state of each check and approved statement in a scenario. The command reads the same scenario format as `specgraph.ReadScenario`; it does not change the scenario or its expected output.
+
+A scenario contains `approved.json`, `files`, `history.json`, `jobs.json`, `results.json`, `subjects.json`, `ties.json`, and `uncited.json`. It can contain `units.json`; without it, no statement wait is derived. `want.txt` is test data only and is not read by the command.
+
+The command prints one result for every subject. A statement is `met`, `met, partly checked`, `not built`, `not met`, or `unknown`. It then prints every check that reads that subject as `true`, `false`, or `unknown`, including a reason and, for a true or false result, the commit from which it counts. If `units.json` is present, it also prints whether each wait ends or holds. `--json` emits the same derived data as JSON.
+
+Scenario input is strict. Unknown fields, duplicate fields, invalid JSON types, and `null` values are refused rather than silently read as zero values. A missing member follows its declared input mark: some missing values are valid zero values, while members whose absence would hide a fact are refused. Empty objects can be valid values; for example, an empty `uncited.json` says CI refused no check.
+
+A result counts only for the procedure and subject it read. For checks that count at commits, a result carries to another commit only when the check has known ties at both commits and no tied path changed. A result whose current check text, current statement approval, or tied code does not match is not reused.
+
+A program check of code needs a valid failing example before it can be true. The failing example counts from `planted_on`, never from its own `commit`, which is the commit where CI ran the fault. It needs one or more fault paths; every path must be a source file, not a test file, and a known tie at `planted_on` must cover every path. A record with no planting commit, no fault path, an all-white-space path, a blank path beside a real path, or `planted_on` equal to its own commit counts nowhere and makes the check unknown with its specific reason when it is the newest candidate.
+
+A CI refusal at a commit makes its check unknown at that commit. It removes that commit's own results, including a planted failing example whose counted commit is the refused commit, but it does not remove evidence from other commits. The scenario sweeps exercise omitted members, nulls, empty names, altered paths, and CI refusals. They read back every value they write so a sweep mutation that writes nothing fails by name.
+
+The command tests run the built binary against the fixture scenarios and compare its output with each fixture's `want.txt`. The derivation package is the source of truth for the state rules; this document describes the scenario interface and the invariants at its boundary.
