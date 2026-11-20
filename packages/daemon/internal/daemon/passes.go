@@ -65,14 +65,16 @@ type passTimer struct {
 	wake  <-chan struct{}
 }
 
-// newPassTimer arms loop's timer for every. passes is nil in production.
-func newPassTimer(clk clock.Clock, passes *passTriggers, loop passLoop, every time.Duration) *passTimer {
-	return &passTimer{timer: clk.NewTimer(every), every: every, wake: passes.at(loop)}
+// newPassTimer arms loop's timer for first, the wait before the loop's first pass; next arms it
+// for every after each pass. The timer is armed once here, at its first deadline, and nothing
+// moves it before it first fires. A loop whose first pass comes sooner than the rest
+// (tickController) passes that wait as first: arming every and then moving the timer to the
+// shorter wait left a moment in which the timer stood at every, and a reading of the clock's
+// pending deadlines in that moment found the interval's deadline rather than the first pass's.
+// passes is nil in production.
+func newPassTimer(clk clock.Clock, passes *passTriggers, loop passLoop, first, every time.Duration) *passTimer {
+	return &passTimer{timer: clk.NewTimer(first), every: every, wake: passes.at(loop)}
 }
-
-// firstAfter arms the first wait for d in place of the interval, for a loop whose first pass comes
-// sooner than the rest (tickController).
-func (p *passTimer) firstAfter(d time.Duration) { p.timer.Reset(d) }
 
 // next waits for the loop's next pass — its interval passing, or a test's trigger — and reports
 // false once ctx ends, which is the loop's own end. The timer is armed again for the whole
