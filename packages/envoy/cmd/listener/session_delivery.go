@@ -60,11 +60,12 @@ const (
 // sessionConsumerCallTimeout bounds the consumer calls a registration makes before it answers,
 // those of one relay restart, timed from when it holds its turn and the session's lock
 // (sessionRelays.restart), and the delete a reaped session's record, a deregistration or the
-// sweep asks for, with the bucket read before it (deleteConsumer). Each fenced write of a
-// consumer's filter that follows one of those acts - the confirm of a registration, the repair
-// after a delete, the corrections after a restart, an unsubscribe's refollow and the settle of a
-// registration this listener did not answer - has one of its own, timed from when the fence
-// starts under the session's lock, whatever the act before it left (fenceBudget).
+// sweep asks for, with the bucket read before it (deleteConsumer). Each attempt of a fenced write
+// of a consumer's filter - the confirm of a registration, the repair after a delete, the
+// corrections after a restart, an unsubscribe's refollow, the settle of a registration this
+// listener did not answer, and each attempt of the settle loop - has one of its own, timed from
+// when the attempt starts under the session's lock, whatever the act before it left
+// (fenceBudget).
 const sessionConsumerCallTimeout = 5 * time.Second
 
 // noGrantBackoff is how long, after a consumer call the server refused for want of a grant, every
@@ -200,6 +201,13 @@ type sessionDelivery struct {
 	// corrects it (fenceFilterWrite). It runs for every such read, so a test that moves the row
 	// once moves it under the first write alone.
 	afterStoredRowRead func()
+	// afterOwnCalls runs in a relay restart once its read and its restart call have returned,
+	// and in a consumer delete once its read and its delete have answered, each under the
+	// session's lock and before the fence that follows the act (sessionRelays.restart,
+	// deleteConsumer); nil unless a test sets it. A test that spends the act's own budget in it
+	// proves the fence after the act runs whatever that budget left, from the act itself rather
+	// than from a fence it calls directly.
+	afterOwnCalls func()
 	// locks keeps the consumer calls made for one session one at a time: a registration's create or
 	// filter update, an unsubscribe's filter update, the relay's restart at the ack floor, which
 	// deletes the consumer and creates it again when a message awaits an ack, and the one delete
@@ -237,17 +245,31 @@ type sessionDelivery struct {
 	// for the session, or run its own restart's calls between this one's, and across two tasks the
 	// delete's own read of the bucket narrows that window rather than closing it.
 	locks sessionLocks
-	// afterAnswerMu guards the two fields below. afterAnswer counts the work a handler leaves
-	// running behind its answer, off its goroutine (runAfterAnswer): a deregistration's consumer
-	// delete (deleteAfterAnswer) and the filter settle of a registration this listener did not
-	// answer (settleAfterAnswer). afterAnswerOff is set once the shutdown has stopped starting
-	// that work (awaitAfterAnswer): it runs on the connection the shutdown drains, so work started
-	// after that drain would reach a closed connection. The three are read and written in
-	// session_after_answer.go alone, where that lifecycle is; a field of this type is declared
-	// with the type.
-	afterAnswerMu  sync.Mutex
-	afterAnswer    sync.WaitGroup
-	afterAnswerOff bool
+	// afterAnswerMu guards afterAnswerOff, afterAnswerCtx and afterAnswerStop. afterAnswer counts
+	// the work a handler leaves running behind its answer, off its goroutine (runAfterAnswer): a
+	// deregistration's consumer delete (deleteAfterAnswer), the filter settle of a registration
+	// this listener did not answer (settleAfterAnswer), the settle loop (settleAgain) and the
+	// wait for a consumer write's late answer (unansweredWrite). afterAnswerOff is set once the
+	// shutdown has stopped starting that work, and afterAnswerCtx, made at first use, is
+	// cancelled with it by afterAnswerStop (stopAfterAnswer): that work runs on the connection
+	// the shutdown drains, so work started after that drain would reach a closed connection. They
+	// are read and written in session_after_answer.go alone, where that lifecycle is; a field of
+	// this type is declared with the type.
+	afterAnswerMu   sync.Mutex
+	afterAnswer     sync.WaitGroup
+	afterAnswerOff  bool
+	afterAnswerCtx  context.Context
+	afterAnswerStop context.CancelFunc
+	// settleMu guards settling, the settle loop running for each session and what it has been
+	// asked since its last attempt began (settleAgain, session_filter_settle.go).
+	settleMu sync.Mutex
+	settling map[string]*settleRequest
+	// sessions and registry are the session bucket and the interest bucket the settle loop's
+	// repair reads (settleLoop, repairPass): the listener's own (listenerDeps.sessions,
+	// listenerDeps.registry), which main and every rig hand connectSessionDelivery. Every other
+	// caller passes the stores it reads as it always has.
+	sessions *session.SessionRegistry
+	registry *store.Registry
 	// grantMu guards the refusal episode below.
 	grantMu sync.Mutex
 	// noGrantUntil is when the registrations' calls may probe the grant again after a refusal for
@@ -267,11 +289,16 @@ type sessionDelivery struct {
 // start they lowered to a resume record or clamped from past the stream's end to its first
 // sequence are this listener's JSON, with its machine_id. stream is the listener's own client,
 // whose read of the deployed stream's subjects both a registration's stored topics and every
-// consumer filter are judged on (sessionDelivery.stream).
+// consumer filter are judged on (sessionDelivery.stream). registry and sessions are the
+// listener's interest and session buckets, which the settle loop's repair reads
+// (sessionDelivery.registry, sessionDelivery.sessions).
+//
+// The connection hands this listener every consumer write whose answer did not come back
+// (bus.SessionConsumers.OnUnansweredWrite, unansweredWrite), from the first call made on it.
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
-func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger) (*sessionDelivery, error) {
+func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stream *bus.Client, registry *store.Registry, sessions *session.SessionRegistry, logger *logging.Logger) (*sessionDelivery, error) {
 	consumers, err := bus.ConnectSessionConsumers(urls, inactiveThreshold, logger.Slog())
 	if err != nil {
 		return nil, err
@@ -281,12 +308,16 @@ func connectSessionDelivery(urls []string, inactiveThreshold time.Duration, stre
 	// it and one whose connection failed logs no threshold at all.
 	logger.Info("session consumer inactive threshold resolved; the server removes a session consumer this long after its last pull, which stands above the sweep's own bound",
 		slog.String("inactive_threshold", inactiveThreshold.String()))
-	return &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now}, nil
+	delivery := &sessionDelivery{consumers: consumers, stream: stream, logger: logger, now: time.Now, registry: registry, sessions: sessions}
+	consumers.OnUnansweredWrite(delivery.unansweredWrite)
+	return delivery, nil
 }
 
-// close closes the session-consumer connection, if one is open.
+// close stops the work behind the handlers' answers (stopAfterAnswer), so none of it runs on to
+// a connection that is gone, and closes the session-consumer connection, if one is open.
 func (m *sessionDelivery) close() {
 	if m != nil && m.consumers != nil {
+		m.stopAfterAnswer()
 		m.consumers.Close()
 	}
 }
@@ -357,20 +388,27 @@ const (
 // delete takes the consumer (deleteConsumer), and a session with no record
 // has no next heartbeat to register
 // again, so nothing is left to repair and nothing is left to repair it. The fence's line that
-// leaves the filter to that heartbeat is wrong there, naming one that never comes, so the pass
-// answers filterWriteSessionGone and the fence reports the one case that leaves something
+// leaves the filter to be written again is wrong there, naming an attempt that never comes, so the
+// pass answers filterWriteSessionGone and the fence reports the one case that leaves something
 // behind - a pass of this repair that wrote a filter before that delete - in a line of its own.
 //
-// A failure is logged, not returned: the caller's answer does not change, the record is deleted
-// or not whatever this call did, and the session's next registration repairs the consumer again.
-// The line names the session, which is what an operator reading a pause in its delivery has to go
-// on.
+// A failure is logged, not returned: the caller's answer does not change, and the record is
+// deleted or not whatever this call did. What this attempt could not settle the settle loop
+// repairs again (fence, settleAgain), at ackFloor still. The line names the session, which is what
+// an operator reading a pause in its delivery has to go on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func(ctx context.Context) (uint64, filterWriteOutcome) {
+	m.fence(ctx, d.registry, sessionID, after, ackFloor, m.repairPass(d.sessions, d.registry, sessionID, ackFloor, after))
+}
+
+// repairPass is one pass of the repair of sessionID's consumer (repairRegistered), reading the
+// session's record from sessions and its interest row from registry: the write the fence drives
+// for that repair and for every attempt of the settle loop (settleLoop).
+func (m *sessionDelivery) repairPass(sessions *session.SessionRegistry, registry *store.Registry, sessionID string, ackFloor uint64, after string) func(ctx context.Context) (uint64, filterWriteOutcome) {
+	return func(ctx context.Context) (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
-		want, found := m.registeredTarget(ctx, d, sessionID, ackFloor)
+		want, found := m.registeredTarget(ctx, sessions, registry, sessionID, ackFloor)
 		// Only registeredTargetBuilt goes on to the write below; each of the three findings
 		// that build no target leaves the fence something different (registeredFinding).
 		switch found {
@@ -420,7 +458,7 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			return 0, filterWriteSettled
 		}
 		return want.revision, filterWriteLanded
-	})
+	}
 }
 
 // registeredConsumer is what the bucket's newest record and interest row of a session ask of its
@@ -516,8 +554,8 @@ const (
 // is what an operator reading a pause in its delivery has to go on. A record the bucket does not
 // hold and one that records no consumer delivery are the bucket's answers and no failure, so
 // neither is logged here.
-func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding) {
-	entry, err := d.sessions.Refresh(ctx, sessionID)
+func (m *sessionDelivery) registeredTarget(ctx context.Context, sessions *session.SessionRegistry, registry *store.Registry, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding) {
+	entry, err := sessions.Refresh(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return registeredConsumer{}, registeredRecordGone
@@ -528,7 +566,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	case entry.Delivery != session.DeliveryConsumer:
 		return registeredConsumer{}, registeredNoConsumerDelivery
 	}
-	topics, revision, err := storedTopics(ctx, d.registry, sessionID)
+	topics, revision, err := storedTopics(ctx, registry, sessionID)
 	if err != nil {
 		m.logger.Warn("listener could not read the topics of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
@@ -538,7 +576,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: m.storedRowFilter(d.registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.storedRowFilter(registry, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -891,9 +929,10 @@ func (m *sessionDelivery) granted() {
 // registration here that stored more topics and wrote its filter first is not overwritten with
 // the set read before it, and the bucket read is what carries a registration on another
 // listener, whose row this listener's watch need not have delivered yet. The write is fenced on
-// the row it was built from; that fence, the session's lock, the call budget and the listener
-// that holds no session consumers at all are storedFilterWrite's, since each of its callers
-// needs the same four.
+// the row it was built from; that fence, the session's lock and the listener that holds no
+// session consumers at all are storedFilterWrite's, since each of its callers needs the same
+// three, and the budget each attempt of the fence runs on is the fence's own
+// (fenceFilterWrite, fenceBudget).
 //
 // The session's known-session record is not this function's: it names the topics the session
 // follows, which an unsubscribe changes whatever the session's entry records, while this filter

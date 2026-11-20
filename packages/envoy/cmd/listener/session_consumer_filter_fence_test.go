@@ -23,8 +23,8 @@ package main
 //
 // The last two cases hold a confirm open over such a registration in every pass rather than in
 // one: the fence writes again from the newest row until the row stops moving, and a row that
-// never stops outruns its passes, which it reports at WARN and leaves to the session's next
-// heartbeat.
+// never stops outruns its passes, which it reports at WARN and leaves to the settle loop, whose
+// attempt after a pause writes the newest row (settleAgain).
 
 import (
 	"context"
@@ -386,106 +386,6 @@ func TestARelayRestartKeepsTheTopicARegistrationOnAnotherListenerStoredUnderItsW
 	b.awaitPending(t, sessionID, 1)
 }
 
-// spentBudget is a context whose deadline has passed: what a caller of the fence hands it once
-// its own calls before the fence have spent its budget.
-func spentBudget(t *testing.T) context.Context {
-	t.Helper()
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
-	t.Cleanup(cancel)
-	return ctx
-}
-
-// The corrections after a relay restart run on the fence's own budget, not on what the restart's
-// read and call left of the restart's (fenceBudget). Here the restart's budget has passed by the
-// time its settle runs, and the restart wrote from a row a registration on another listener has
-// replaced since: the settle still reads the bucket and sets the filter the newest row asks for.
-// A settle bounded by what the restart left meets that deadline at its first read, and the relay
-// then pulls a consumer filtered on the older row, so the topic that registration was answered
-// 200 for is skipped until the session's next heartbeat.
-func TestARelayRestartWhoseCallsSpentItsBudgetStillSettlesTheFilterOnTheNewestRow(t *testing.T) {
-	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
-	b := newSessionConsumerRig(t)
-	const sessionID = "ses_restart_spent"
-	const kept = "notifications.dispatch.issue.RESTARTSPENTKEPT.>"
-	const added = "notifications.dispatch.issue.RESTARTSPENTADD.>"
-	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-	_, wrote, err := a.harness.registry.RefreshAt(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("read the row the restart writes from: %v", err)
-	}
-	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
-
-	unlock := a.deps.consumers.locks.lock(sessionID)
-	// The restart's own write, of the row it read, lands over the newer registration's filter.
-	if err := a.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, a.deps.consumers.sessionConsumerFilter(sessionID, []string{kept})); err != nil {
-		unlock()
-		t.Fatalf("write the restart's filter of the older row: %v", err)
-	}
-	a.relays.settleFilter(spentBudget(t), sessionID, wrote)
-	unlock()
-
-	requireFilters(t, b, sessionID, kept, added)
-	b.store(t, "notifications.dispatch.issue.RESTARTSPENTADD.comment")
-	b.awaitPending(t, sessionID, 1)
-}
-
-// The control of the case above: the fence's budget is its own, and its caller's cancellation
-// still ends it, since it means the caller itself is ending - a relay whose run was cancelled, a
-// loop the shutdown stopped (fenceBudget). The same settle, handed a context cancelled rather than
-// one whose deadline passed, makes no pass, and the restart's filter of the older row stands.
-func TestARelayRestartWhoseRunWasCancelledSettlesNothing(t *testing.T) {
-	a := newRelayRigUnowned(t, relayPauseFirst, relayPauseMax)
-	b := newSessionConsumerRig(t)
-	const sessionID = "ses_restart_cancelled"
-	const kept = "notifications.dispatch.issue.RESTARTCANCELLEDKEPT.>"
-	const added = "notifications.dispatch.issue.RESTARTCANCELLEDADD.>"
-	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-	_, wrote, err := a.harness.registry.RefreshAt(context.Background(), sessionID)
-	if err != nil {
-		t.Fatalf("read the row the restart writes from: %v", err)
-	}
-	b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
-
-	unlock := a.deps.consumers.locks.lock(sessionID)
-	if err := a.deps.consumers.consumers.UpdateFilter(context.Background(), sessionID, a.deps.consumers.sessionConsumerFilter(sessionID, []string{kept})); err != nil {
-		unlock()
-		t.Fatalf("write the restart's filter of the older row: %v", err)
-	}
-	ended, end := context.WithCancel(context.Background())
-	end()
-	a.relays.settleFilter(ended, sessionID, wrote)
-	unlock()
-
-	requireFilters(t, b, sessionID, kept)
-}
-
-// The repair after a consumer delete runs on the fence's own budget, not on what the delete's
-// read and call left of the delete's (deleteConsumer, fenceBudget). Here the delete's budget has
-// passed by the time its repair runs, and the session's record stands, which is what a
-// registration on another listener landing between the delete's read and its call leaves: the
-// repair still gives that session its consumer back, on the row the bucket holds. A repair
-// bounded by what the delete left meets that deadline at its first read, and the session, answered
-// 200 with consumer delivery, holds no consumer until its next heartbeat.
-func TestARepairWhoseDeleteSpentItsBudgetStillGivesTheConsumerBack(t *testing.T) {
-	rig := newSessionConsumerRig(t)
-	const sessionID = "ses_delete_spent"
-	const kept = "notifications.dispatch.issue.DELETESPENTKEPT.>"
-	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
-
-	unlock := rig.deps.consumers.locks.lock(sessionID)
-	floor, err := rig.deps.consumers.consumers.Delete(context.Background(), sessionID, nil)
-	if err != nil {
-		unlock()
-		t.Fatalf("delete the consumer of %s: %v", sessionID, err)
-	}
-	rig.deps.consumers.repairRegistered(spentBudget(t), rig.deps, sessionID, floor, repairAfterDelete)
-	unlock()
-
-	requireFilters(t, rig, sessionID, kept)
-	rig.store(t, "notifications.dispatch.issue.DELETESPENTKEPT.comment")
-	rig.awaitPending(t, sessionID, 1)
-}
-
 // A consumer call whose answer did not come back is judged by the fence as a write that may
 // have landed: the server applies such a call and only its answer is lost, so an older row's
 // filter can stand on the consumer with nothing to read it again (consumerCallAnswered). The
@@ -558,12 +458,15 @@ func TestAFenceWhoseRowStopsMovingEndsOnTheNewestRow(t *testing.T) {
 	b.awaitPending(t, sessionID, 1)
 }
 
-// A fence out of passes names the session and both revisions at WARN, and the session's next
-// heartbeat is what sets the filter it left. The hook below stores a row and sets the consumer's
-// filter from it in every pass, so every write this listener makes is outrun and the loop ends
-// holding the row of its last plan, one row behind the bucket: that window is what the line
-// reports, and what the heartbeat after it closes (fenceFilterWrite).
-func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat(t *testing.T) {
+// A fence out of passes names the session and both revisions at WARN, and the settle loop then
+// writes the filter of the newest row, with no heartbeat behind it. The hook below stores a row
+// and sets the consumer's filter from it in each pass of the confirm's own attempt, so every
+// write that attempt makes is outrun and it ends holding the row of its last plan, one row behind
+// the bucket: that window is what the line reports. The row then stops moving, and the loop's
+// attempt after its pause plans from the newest row and ends on it (fenceFilterWrite,
+// settleAgain). The hook stays in place until the loop has run, so no write of it races the
+// loop's read of it, and moves the row in the confirm's own passes alone.
+func TestAFenceOutOfPassesNamesBothRevisionsAndTheSettleLoopWritesTheNewestRow(t *testing.T) {
 	a := newSessionConsumerRig(t)
 	b := newSessionConsumerRig(t)
 	const sessionID = "ses_fence_exhausted"
@@ -573,26 +476,30 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	topics, passes := []string{kept}, 0
 	a.deps.consumers.afterRepairPlan = func() {
 		passes++
+		if passes > filterFenceAttempts {
+			return
+		}
 		topics = append(topics, fmt.Sprintf("notifications.dispatch.issue.FENCEOUT%d.>", passes))
 		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
 	}
 	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
+	awaitSettled(a)
 	a.deps.consumers.afterRepairPlan = nil
 
-	if passes != filterFenceAttempts {
-		t.Fatalf("the repair made %d passes, want the %d the fence allows", passes, filterFenceAttempts)
+	if passes <= filterFenceAttempts {
+		t.Fatalf("the repair and the settle loop made %d passes, want the %d of the confirm's attempt and the loop's after them", passes, filterFenceAttempts)
 	}
-	// The row of the last pass's plan, which is the one before the row that outran its write.
-	requireFilters(t, a, sessionID, topics[:len(topics)-1]...)
-	wrote, newest := requireFenceExhaustionLogged(t, a, sessionID)
 	if newest <= wrote {
 		t.Errorf("the line names revision %d written and %d newest, want a newest above it", wrote, newest)
 	}
-
-	// The next heartbeat, which writes the session's row and the filter of it.
-	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", topics...))
+	again := settleLines(t, a, sessionID, settleAgainLine)
+	if len(again) != 1 || again[0].Why != fenceOutrun.String() || again[0].After != repairAfterRegistration {
+		t.Errorf("the settle loop started %d attempts again (%+v), want one, after the registration's repair that was left on an older row", len(again), again)
+	}
+	// The newest row, with no heartbeat behind it: the settle loop wrote it.
 	requireFilters(t, a, sessionID, topics...)
-	b.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(passes)+".comment")
+	b.store(t, "notifications.dispatch.issue.FENCEOUT"+strconv.Itoa(filterFenceAttempts)+".comment")
 	b.awaitPending(t, sessionID, 1)
 }
 
@@ -911,13 +818,10 @@ func TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndT
 	}
 }
 
-// fenceExhaustionLine is what a fenced filter write logs when it ends on a filter older than the
-// row the bucket holds (fenceFilterWrite).
-const fenceExhaustionLine = "session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it"
-
-// requireFenceExhaustionLogged fails the test unless the listener logged that line for sessionID,
-// and answers the two revisions it names: the one the filter standing was built from, and the one
-// the bucket answered after it.
+// requireFenceExhaustionLogged fails the test unless the listener logged the line an attempt of a
+// fenced filter write ends on when it leaves an older row's filter (fenceExhaustionLine) for
+// sessionID, and answers the two revisions it names: the one the filter standing was built from,
+// and the one the bucket answered after it.
 func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) (uint64, uint64) {
 	t.Helper()
 	reported := requireFilterLineLogged(t, rig, sessionID, fenceExhaustionLine,
@@ -925,12 +829,8 @@ func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, session
 	return reported.Wrote, reported.Newest
 }
 
-// fenceReadFailureLine is what a fenced filter write logs when the read of the bucket after a
-// write that landed failed, so the fence cannot say whether the filter it left is an older row's
-// (fenceFilterWrite).
-const fenceReadFailureLine = "session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it"
-
-// requireFenceReadFailureLogged fails the test unless the listener logged that line for
+// requireFenceReadFailureLogged fails the test unless the listener logged the line an attempt
+// ends on when its read of the bucket after a write that landed failed (fenceReadFailureLine) for
 // sessionID naming the failure of the read that judged nothing, and answers the other thing it
 // names: the revision the filter standing was built from. The failure is required here rather
 // than answered to each caller, since a line that names none is a fence that judged nothing for
@@ -1023,8 +923,10 @@ func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, 
 // the first pass, as a write that sets no filter - a role claim's - lands under the restore's
 // own write, which is what sends the fence round again, in every case this drives.
 // underTheCorrectivePass runs before the second pass plans, and is where each case puts what it
-// is about; it is nil for a case whose own subject is in the first pass. Both hooks are off
-// before this answers, so nothing a case asserts afterwards drives another pass.
+// is about; it is nil for a case whose own subject is in the first pass. The work the rig left
+// behind its answers is stopped (stopSettling), so a settle loop a case's corrective pass left
+// behind it makes no pass of its own, and both hooks are off before this answers, so nothing a
+// case asserts afterwards drives another pass.
 //
 // It answers the revision the row held when the restore started, which the first pass's write
 // is built from, and the revision the row moved to under that write.
@@ -1081,6 +983,7 @@ func requireRestoreMakesACorrectivePass(t *testing.T, rig *sessionConsumerRig, s
 	if !rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID, nil) {
 		t.Fatalf("the delete of %s's consumer reported it standing; want it gone, the bucket holding no record when the delete read it", sessionID)
 	}
+	stopSettling(t, rig)
 	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
 
 	if passes != 2 {

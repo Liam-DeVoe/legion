@@ -2560,15 +2560,18 @@ func (d *listenerDeps) registerSession(
 	// over the filter the registration that won the row set: that session is answered 200 for a
 	// topic its consumer does not filter on, at the cost fenceFilterWrite's doc states.
 	//
-	// It writes the filter alone and creates no consumer, where the repair of an answered
-	// registration creates one: this registration was answered nothing, so it promises no
-	// consumer, and a session whose consumer a delete took away has one again at its next
+	// Its first attempt writes the filter alone and creates no consumer, where the repair of an
+	// answered registration creates one: this registration was answered nothing, so it promises
+	// no consumer, and a session whose consumer a delete took away has one again at its next
 	// registration. A session the bucket holds no row for is left filtering on its own agent
-	// subject alone, which is every topic such a row would name.
+	// subject alone, which is every topic such a row would name. What that attempt could not
+	// settle is the settle loop's, whose repair creates a consumer only for a session whose
+	// record asks for one, answered 200 by some registration (settleAgain).
 	//
-	// The session's lock, the budget and the listener that holds no session consumers at all are
-	// sessionDelivery.storedFilterWrite's, as they are every caller of it; nothing here holds that
-	// lock, since the pass that set the filter released it by then (registerPass).
+	// The session's lock and the listener that holds no session consumers at all are
+	// sessionDelivery.storedFilterWrite's, and the budget is the fence's own
+	// (fenceFilterWrite, fenceBudget), as they are every caller's; nothing here holds that lock,
+	// since the pass that set the filter released it by then (registerPass).
 	//
 	// It is deferred rather than written at each exit that answers no registration because an
 	// exit added later would otherwise leave the filter of a plan nothing stored on the
@@ -2577,10 +2580,11 @@ func (d *listenerDeps) registerSession(
 		if answered || !filtered {
 			return
 		}
-		// The settle runs after the answer and on a budget of its own
-		// (sessionDelivery.settleAfterAnswer says why): the plans before it can have spent this
-		// registration's store budget, which is when they were outrun, and a settle given what
-		// they left would give up before its first call.
+		// The settle starts here, as this function returns and before the handler writes the
+		// 503, and runs beside that answer on a budget of its own, which the answer does not
+		// wait for (sessionDelivery.settleAfterAnswer says why): the plans before it can have
+		// spent this registration's store budget, which is when they were outrun, and a settle
+		// given what they left would give up before its first call.
 		d.consumers.settleAfterAnswer(ctx, d.registry, body.SessionID)
 	}()
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {

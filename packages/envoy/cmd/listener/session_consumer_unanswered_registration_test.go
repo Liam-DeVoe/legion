@@ -6,12 +6,14 @@ package main
 // reaches no entry runs neither: it leaves the filter of a plan nothing stored on the consumer,
 // over the filter the registration that won the row set. Both exits are here - every plan
 // outrun, and the session entry's write failing - and each ends with the consumer filtered on
-// the row the bucket holds (registerSession's deferred settle). That settle runs after the 503,
-// off the handler's goroutine and on a budget of its own (sessionDelivery.settleAfterAnswer), so
-// every case here waits for it (awaitSettled) before it reads the consumer or takes its hooks
-// away. It is a fenced write like the other four, so the last case holds one open over a row
-// stored under its own write, which only a pass planned from the bucket's newest row takes back
-// (fenceFilterWrite).
+// the row the bucket holds (registerSession's deferred settle). That settle starts as
+// registerSession returns, before the handler writes the 503, and runs beside it, off the
+// handler's goroutine and on a budget of its own (sessionDelivery.settleAfterAnswer): the answer
+// does not wait for it. So every case here waits for it (awaitSettled) before it reads the
+// consumer or takes its hooks away, save the one whose settle can never settle, which stops it
+// (stopSettling). It is a fenced write like the other four, so the last case but one holds one
+// open over a row stored under its own write, which only a pass planned from the bucket's newest
+// row takes back (fenceFilterWrite).
 
 import (
 	"context"
@@ -249,7 +251,10 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 	recorder := httptest.NewRecorder()
 	rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe",
 		strings.NewReader(consumerRegistration(sessionID, "epoch-1", followed))))
-	awaitSettled(rig)
+	// The settle loop behind that attempt reads through the same closed connection and can
+	// never settle, so the case stops the work behind the answer rather than waiting for it:
+	// the stop waits for the settle's own attempt, and ends the loop's pause.
+	stopSettling(t, rig)
 	rig.deps.consumers.afterStoredRowRead = nil
 	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), "session registry unavailable") {
 		t.Fatalf("status = %d, body = %s; want the 503 of a session entry that could not be written", recorder.Code, recorder.Body.String())
@@ -279,7 +284,8 @@ func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
 
 // awaitSettled waits for the settle a registration this listener did not answer leaves running
 // behind its 503 (sessionDelivery.settleAfterAnswer), with every other piece of work a handler of
-// the rig left behind its answer.
+// the rig left behind its answer: the settle loop's attempts (settleAgain) and the wait for a
+// consumer write's late answer (unansweredWrite) among them.
 func awaitSettled(rig *sessionConsumerRig) { rig.deps.consumers.afterAnswer.Wait() }
 
 // requireFilteredOnStoredRow fails the test unless sessionID's consumer filters on exactly what
