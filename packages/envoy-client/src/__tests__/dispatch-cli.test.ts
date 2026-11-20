@@ -2,7 +2,12 @@ import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
-import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
+import {
+  DISPATCH_BLOCK_UNITS,
+  IDEMPOTENCY_KEY_HEADER,
+  IDEMPOTENCY_KEY_IN_FLIGHT,
+  PROJECT_KEY_RULE,
+} from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
@@ -1052,6 +1057,51 @@ describe("the dispatch CLI", () => {
     expect(stalled.keys).toHaveLength(2);
     expect(stalled.keys[1]).toBe(stalled.keys[0] ?? "");
     expect(stalled.probes).toEqual([]);
+  });
+
+  // A write Dispatch says it is still running is waited on past the command's usual minute, for
+  // as long as Dispatch can still finish it. The command says so once on stderr, naming the key
+  // and the longest wait, so the agent that ran it does not stop it as hung: Dispatch's run limit
+  // and a lease after the first attempt, and a silence bound for the last ask's answer.
+  test("a write Dispatch says it is still running is waited on, and stderr says so once", async () => {
+    const keys: string[] = [];
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const { pathname } = new URL(request.url);
+      const key = request.headers.get(IDEMPOTENCY_KEY_HEADER);
+      const message = request.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages";
+      if (message) keys.push(key ?? "");
+      const answer =
+        message && keys.length === 1
+          ? Response.json(
+              {
+                code: IDEMPOTENCY_KEY_IN_FLIGHT,
+                error: "an earlier request with this key is still running",
+              },
+              { status: 409, headers: { "Retry-After": "1" } }
+            )
+          : await fetch(request);
+      if (key === null) return answer;
+      const headers = new Headers(answer.headers);
+      headers.set(IDEMPOTENCY_KEY_HEADER, key);
+      return new Response(answer.body, { status: answer.status, headers });
+    }) as typeof fetch;
+
+    const { code, stderr } = await run(
+      ["message", "--issue", "DSP-1", "--body", "Deliverable landed."],
+      omp,
+      "",
+      fetchImpl
+    );
+
+    expect(code, stderr).toBe(0);
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0] ?? "");
+    expect(stderr).toBe(
+      `dispatch: Dispatch is still running this write under key ${keys[0]}, so this command ` +
+        "waits up to 11 min 20 s for its outcome. Do not stop it: Dispatch finishes the write " +
+        "either way, and a stopped command cannot tell whether it landed.\n"
+    );
   });
 
   // A sighting holds for KEYED_LAYER_MEMORY_MS from the answer that showed it, across processes as

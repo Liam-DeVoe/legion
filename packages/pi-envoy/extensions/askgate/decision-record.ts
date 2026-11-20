@@ -46,15 +46,15 @@
 // login that sent it (`requestKeyLogin`), and every Legion pod writes under the shared agent
 // token, which is one login for all of them, so two pods serving one session share these keys;
 // Dispatch keeps a key 24 h (`IdempotencyKeyTTL`), which outlives the 10 minutes a create's run
-// can hold it (`keyedHandlerLimit`). Each append carries a key of its own, the sha256 of the
+// can hold it (`IDEMPOTENCY_RUN_LIMIT_MS`). Each append carries a key of its own, the sha256 of the
 // session and the record's id, so a late append is replayed rather than written twice, and the
 // same record sent again with another body gets `422 KEY_REUSED` and is not written.
 //
 // How long a write runs: until Dispatch has answered it or the session's shutdown cuts it. The
-// client asks again under the call's key (`DISPATCH_WRITE_RETRY`, 30 s, or 55 s once Dispatch may
-// be running the write,
-// `packages/envoy-client/src/dispatch-http.ts`), so a slow Dispatch is waited out rather than given
-// up at a stop of the recorder's own.
+// client asks again under the call's key (`DISPATCH_WRITE_RETRY`: 30 s, or, once Dispatch may be
+// running the write, until Dispatch's run limit and a lease after the attempt that could have
+// started the run, `packages/envoy-client/src/dispatch-http.ts`), so a slow Dispatch is waited out
+// rather than given up at a stop of the recorder's own.
 //
 // What is lost, and is left visible in a count rather than hidden: a session killed between a
 // decision and its write loses that one record; a session that never reached a gated call writes

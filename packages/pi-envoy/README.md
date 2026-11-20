@@ -917,10 +917,10 @@ CLI outside the form the gate reads and carried an ask for a person (`outcome: "
   which is one login for all of them (`requestKeyLogin`,
   `packages/envoy/internal/dispatch/api/request_keys.go`); Dispatch keeps a key 24 h
   (`IdempotencyKeyTTL`), well past the 10 minutes a create's run can hold it
-  (`keyedHandlerLimit`). The records of one session are written one at a time, each sent once the
-  one before it has settled, and each carries the time the gate made it, which is what the reader
-  counts and sorts by: a write given up on this side may still be running on Dispatch's while the
-  next is sent, so the order they land in is not the order they were made.
+  (`IDEMPOTENCY_RUN_LIMIT_MS`). The records of one session are written one at a time, each sent
+  once the one before it has settled, and each carries the time the gate made it, which is what
+  the reader counts and sorts by: a write given up on this side may still be running on
+  Dispatch's while the next is sent, so the order they land in is not the order they were made.
 - **What is lost, and what is counted.** A session killed between a decision and its write loses
   that one record, and a session that never reached a gated call writes no document. A record
   that fails, or that the shutdown cuts, is unconfirmed too — and one given up that way may have

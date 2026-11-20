@@ -541,7 +541,7 @@ type server struct {
 	detached backgroundWork
 	// requestKeyLease, requestKeyRenewal and requestKeyRunLimit replace a keyed request's lease
 	// (IdempotencyLease, a minute), how often a running handler renews it (keyedLeaseRenewal) and
-	// how long a handler runs (keyedHandlerLimit); zero, which every server the deployment builds
+	// how long a handler runs (IdempotencyRunLimit); zero, which every server the deployment builds
 	// leaves them, keeps those. Only a test sets them, so a handler that outlives its lease or its
 	// limit is the test's choice rather than minutes of wall clock.
 	requestKeyLease, requestKeyRenewal, requestKeyRunLimit time.Duration
@@ -694,9 +694,9 @@ type Background struct {
 // its client, then for every live socket and the subscriptions it ran, serving none that opens from
 // then on (liveSocketSet.wait), then for the hub's goroutines, the relay's and the test hooks'
 // listener. The detached work comes first because it is the only work lifetime does not stop: a
-// keyed handler is bounded by keyedHandlerLimit, a delivery by the listener client's receipt
-// timeout per recipient, and each reads and writes through the database pool this wait is holding
-// open for it.
+// keyed handler is bounded by contracts.IdempotencyRunLimit, a delivery by the listener client's
+// receipt timeout per recipient, and each reads and writes through the database pool this wait is
+// holding open for it.
 func (s *server) waitBackground() {
 	s.detached.wait()
 	s.liveSockets.wait()

@@ -547,6 +547,22 @@ export async function runDispatchCli(
       env,
       ...(io.fetchImpl === undefined ? {} : { fetchImpl: io.fetchImpl }),
       subscriptions,
+      // A write Dispatch is still running is waited on past the command's usual minute, for as
+      // long as Dispatch can still finish it. The line says so once, so the caller does not take
+      // the wait for a hang and stop the command, which would leave it not knowing the outcome.
+      onRunWait: ({ key, withinMs }) => {
+        const seconds = Math.ceil(withinMs / 1_000);
+        const minutes = Math.floor(seconds / 60);
+        const most =
+          minutes === 0
+            ? `${seconds} s`
+            : seconds % 60 === 0
+              ? `${minutes} min`
+              : `${minutes} min ${seconds % 60} s`;
+        io.stderr(
+          `dispatch: Dispatch is still running this write under key ${key}, so this command waits up to ${most} for its outcome. Do not stop it: Dispatch finishes the write either way, and a stopped command cannot tell whether it landed.\n`
+        );
+      },
     });
     text = result.text;
     for (const warning of result.warnings ?? []) {
