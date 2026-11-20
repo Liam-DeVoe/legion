@@ -2590,12 +2590,25 @@ describe("heads_fixture", () => {
           ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
           { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
         );
-        return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+        return {
+          code: result.exitCode,
+          stdout: result.stdout.toString(),
+          stderr: result.stderr.toString(),
+        };
       };
       const done = job.status === "completed";
       expect(
-        gh("api", `repos/example/widgets/actions/jobs/${job.checkRun}`, "--jq", "[.id,.run_id,.name,.status]|@tsv")
-      ).toEqual({ code: 0, stdout: `${job.checkRun}\t${job.run}\t${job.name}\t${job.status}\n`, stderr: "" });
+        gh(
+          "api",
+          `repos/example/widgets/actions/jobs/${job.checkRun}`,
+          "--jq",
+          "[.id,.run_id,.name,.status]|@tsv"
+        )
+      ).toEqual({
+        code: 0,
+        stdout: `${job.checkRun}\t${job.run}\t${job.name}\t${job.status}\n`,
+        stderr: "",
+      });
       expect(
         gh(
           "api",
@@ -2606,9 +2619,10 @@ describe("heads_fixture", () => {
       ).toBe(
         `${job.checkRun}\t${job.run}\t${job.suite}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}\n`
       );
-      expect(gh("api", `repos/example/widgets/actions/runs/${job.run}`, "--jq", "[.name,.status]|@tsv").stdout).toBe(
-        `${job.name}\t${job.status}\n`
-      );
+      expect(
+        gh("api", `repos/example/widgets/actions/runs/${job.run}`, "--jq", "[.name,.status]|@tsv")
+          .stdout
+      ).toBe(`${job.name}\t${job.status}\n`);
       expect(gh("pr", "checks", "702").code).toBe(done ? 0 : 8);
       expect(gh("api", "repos/example/widgets/actions/jobs/1234567", "--jq", ".id")).toMatchObject({
         code: 1,
@@ -2646,9 +2660,13 @@ describe("heads_fixture", () => {
     expect({ code: made.code, stderr: made.stderr }).toEqual({ code: 0, stderr: "" });
     const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
     const gitShow = (spec: string) =>
-      spawnWithin({ ...VCS_COMMAND, part: "git show" }, ["git", "-C", path.join(run, "remote.git"), "show", spec], {
-        env: childEnv,
-      }).stdout.toString();
+      spawnWithin(
+        { ...VCS_COMMAND, part: "git show" },
+        ["git", "-C", path.join(run, "remote.git"), "show", spec],
+        {
+          env: childEnv,
+        }
+      ).stdout.toString();
     const usage = gitShow(`${head}:docs/usage.md`);
     expect(usage.length).toBeGreaterThan(0);
     const gh = (...args: string[]) => {
@@ -2657,23 +2675,46 @@ describe("heads_fixture", () => {
         ["bun", path.join(import.meta.dir, "gh-standin.ts"), "gh", ...args],
         { env: { ...childEnv, SKILL_SCENARIO_RUN: run } }
       );
-      return { code: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString() };
+      return {
+        code: result.exitCode,
+        stdout: result.stdout.toString(),
+        stderr: result.stderr.toString(),
+      };
     };
-    const content = gh("api", `repos/example/widgets/contents/docs/usage.md?ref=${head}`, "--jq", ".content");
+    const content = gh(
+      "api",
+      `repos/example/widgets/contents/docs/usage.md?ref=${head}`,
+      "--jq",
+      ".content"
+    );
     expect(content.code).toBe(0);
     expect(Buffer.from(content.stdout.replace(/\n/g, ""), "base64").toString()).toBe(usage);
     expect(
-      gh("api", "-H", "Accept: application/vnd.github.raw", `repos/example/widgets/contents/docs/usage.md?ref=${head}`)
-        .stdout
+      gh(
+        "api",
+        "-H",
+        "Accept: application/vnd.github.raw",
+        `repos/example/widgets/contents/docs/usage.md?ref=${head}`
+      ).stdout
     ).toBe(usage);
     expect(
-      gh("api", "repos/example/widgets/contents/docs?ref=legion/LWEVAL-9-702", "--jq", ".[].name").stdout
+      gh("api", "repos/example/widgets/contents/docs?ref=legion/LWEVAL-9-702", "--jq", ".[].name")
+        .stdout
     ).toBe("usage.md\n");
     expect(
-      gh("api", `repos/example/widgets/git/trees/${head}?recursive=1`, "--jq", ".tree[].path").stdout.split("\n")
+      gh(
+        "api",
+        `repos/example/widgets/git/trees/${head}?recursive=1`,
+        "--jq",
+        ".tree[].path"
+      ).stdout.split("\n")
     ).toContain("docs/usage.md");
-    expect(gh("api", `repos/example/widgets/commits/${head}`, "--jq", ".sha").stdout).toBe(`${head}\n`);
-    expect(gh("api", `repos/example/widgets/contents/no/such/file.md?ref=${head}`, "--jq", ".content")).toMatchObject({
+    expect(gh("api", `repos/example/widgets/commits/${head}`, "--jq", ".sha").stdout).toBe(
+      `${head}\n`
+    );
+    expect(
+      gh("api", `repos/example/widgets/contents/no/such/file.md?ref=${head}`, "--jq", ".content")
+    ).toMatchObject({
       code: 1,
       stderr: "gh: Not Found (HTTP 404)\n",
     });

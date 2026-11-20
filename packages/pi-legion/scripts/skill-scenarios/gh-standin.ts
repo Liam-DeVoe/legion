@@ -359,7 +359,8 @@ if (route.lookup === "review") {
 // A route with an HTTP status of 400 or more is GitHub refusing the call. A route with an exit
 // status alone is a porcelain command's own answer (`gh pr checks` exits 8 while a check runs, and
 // prints its table all the same), so its output goes through `--json`, `--jq` and `-i` below.
-if ((route.status ?? 0) >= 400) refuse(route.status ?? 404, route.stdout, route.stderr ?? "", route.exit ?? 1);
+if ((route.status ?? 0) >= 400)
+  refuse(route.status ?? 404, route.stdout, route.stderr ?? "", route.exit ?? 1);
 
 // gh's `--json` picks the named fields of the answer, or of each object of a list: gh's own answer
 // is the whole object, which the routes hold.
