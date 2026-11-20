@@ -611,6 +611,72 @@ for (const holder of [
   );
 }
 
+/** What the next row waits for (`Waits`): one holder, a child, with its arguments; and one sweep,
+ *  a child, whose holder read reads the one mount that never answers in a group of its own. The
+ *  read waits one bound there, whatever else that mount holds: it stops at the path that answered
+ *  no stat and reads none of the mount's paths after it, so the group starts one reader and no
+ *  more (`identities` of `e2e/harness-postgres-processes.ts`). */
+const hungMountAfter: Waits = { children: 2, reads: 1, bounds: [claimEventMs] };
+
+// One mount that never answers, holding two paths of its own, neither under the other, which one
+// holder names. A read of that mount that went on to the path after the hung one would start a
+// second reader of that group, a second bound this row's limit does not count, and the row's own
+// check of what it waits for would stop it. That is what the `dispatch-ui` job and the harness
+// lane's rounds 1 and 2 met at `c07d6906ed5` in run 44647294777, under load, where a path of a
+// group answered no stat and the group read on: "the row's limit counts 1 holder reads, and its
+// sweeps made 2". The read now stops at the hung path on every mount, as it already did on the
+// machine's own filesystems, and names the paths it leaves unread.
+test.skipIf(!onLinux)(
+  "v-no-leftover-postgres: a start whose holder read meets a mount that never answers reads none of that mount's paths after the hung one, so the read costs one bound and no more",
+  async () => {
+    const row = rowOf(hungMountAfter);
+    const { tmp, run } = scratch();
+    const data = join(run, "worker-0", "pgdata");
+    leaveData(data);
+    const mark = writeMark(run, owners().gone, data, mkdtempSync(join(tmp, "no-bin-")));
+    const hung = `/never-answers-${process.pid}`;
+    const first = join(hung, "a");
+    const after = join(hung, "b");
+    const clock = join(tmp, "never-answers-clock");
+    row.child("the holder of the hung mount's two paths");
+    const holds = standIn(tmp, [process.execPath, "--eval", untilParentEnds, first, after]);
+    let sweeping: Subprocess | undefined;
+    try {
+      await until(
+        row,
+        () => readFileSync(`/proc/${holds.pid}/cmdline`, "utf8").includes(after),
+        "the holder's arguments",
+        claimEventMs
+      );
+      // The mount never answers at its first path alone: its path after that one answers at once,
+      // so a read that asked it would answer, and only a read that stops leaves it unread.
+      const reader = neverAnswering([first], clock, join(tmp, "mountinfo"), readerMs, [
+        { point: hung, type: "nfs4" },
+      ]);
+      const started = startSweep(row, tmp, { reader });
+      sweeping = started.child;
+      const limit = waitsMs({ children: 1, reads: hungMountAfter.reads, bounds: [] });
+      const lines = await Promise.race([started.lines, Bun.sleep(limit).then(() => undefined)]);
+      if (lines === undefined) throw new Error(`the sweep did not end within ${limit / 1000} s`);
+
+      expect([existsSync(data), existsSync(mark)]).toEqual([true, true]);
+      expect(holding(lines, `: the read of what holds ${data} waits no longer on `)).toEqual([
+        expect.stringContaining(
+          `waits no longer on ${first}, which answered no stat within ${readerMs / 1000} s, nor asks a path under it, and reads none of the 1 paths of ${hung} after it: ${after}`
+        ),
+      ]);
+      // One reader of that group, and one bound: its own clock, which no load stretches.
+      const waited = clockOf(clock);
+      expect(waited).toHaveLength(1);
+    } finally {
+      if (sweeping !== undefined) await endChild(sweeping);
+      holds.stop();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  },
+  rowMs(hungMountAfter)
+);
+
 /** What each of the next rows waits for (`Waits`): two holders, each a child, with their
  *  arguments, each at most `claimEventMs`; and one sweep, a child, whose holder read before its
  *  claim of the data directory reads its groups of paths at the same time, so each of the two

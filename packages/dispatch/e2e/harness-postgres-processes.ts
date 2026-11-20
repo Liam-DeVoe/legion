@@ -400,15 +400,23 @@ async function identities(
         if (!started || hung === undefined) break;
         unanswered.set(hung, reader.statMs);
         const after = rest.slice(answers.length + 1).filter((path) => !underUnanswered(path));
-        const stops = top === local && after.length > 0;
-        if (stops) for (const path of after) notReached.set(path, hung);
-        const left = stops
-          ? `, and reads none of the ${after.length} paths of the machine's own filesystems after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`
-          : "";
+        // The read of this group stops here, whichever mount it is of, and leaves the paths after
+        // the hung one unread (`notReached`), which the line names: a group that read on would
+        // start a second reader, and wait a second bound, which a row that counts one holder read
+        // of this group has not counted. The `dispatch-ui` job and the harness lane's rounds 1 and
+        // 2 of run 44647294777 met that at `c07d6906ed5`, where a path answered no stat under load
+        // and its group read on: "the row's limit counts 1 holder reads, and its sweeps made 2". A
+        // path left unread leaves its process unjudged (`whyUnread`), so the start leaves the
+        // directory for a later one, which is what an unanswered path already did.
+        for (const path of after) notReached.set(path, hung);
+        const left =
+          after.length === 0
+            ? ""
+            : `, and reads none of the ${after.length} paths of ${top === local ? "the machine's own filesystems" : top} after it: ${after.slice(0, namedLeft).join(", ")}${after.length > namedLeft ? ` and ${after.length - namedLeft} more` : ""}`;
         console.error(
           `${named}: the read of what holds ${directory} waits no longer on ${hung}, which answered no stat within ${reader.statMs / 1000} s, nor asks a path under it${left}: a process that names one may hold ${directory}`
         );
-        rest = stops ? [] : after;
+        break;
       }
     })
   );
