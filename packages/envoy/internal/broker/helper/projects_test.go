@@ -61,7 +61,11 @@ func TestHelperKeepsASessionsProjectsAcrossARestart(t *testing.T) {
 	}
 
 	// The helper restarts while the session's process lives: the record re-pins it, and the
-	// restarted helper's enrollment states the same projects.
+	// restarted helper's enrollment states the same projects. The first helper stops first, as a
+	// restarted one has: its registry writes nothing more to the records file (Close), so its own
+	// saves cannot race the records this test writes for the next helper on the file's one
+	// temporary name, which failed one run in five with "chmod: no such file or directory".
+	r.srv.Registry.Close()
 	key := recordNamed(t, state, os.Getpid(), mustTicks(t), testSessionID, resp.EnrollmentID)
 	recs, _ = LoadRecords(state)
 	for n := range recs {
