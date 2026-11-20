@@ -692,17 +692,16 @@ func walkStandingOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string
 	return at
 }
 
-// A version of the plan document that nobody gave Legion changes nothing. Legion reads a plan
-// document only at the version an owner gives
-// with register_plan (api's planAt, the one caller of dispatch.HTTPClient.PlanDocument), so
-// version 2, which Dispatch holds and nobody registered, never reaches the workflow. The issue
-// walks the line of version 1, implementing, reviewing, retro, merging and done, and its run's plan
-// holds version 1 alone at each move. With the daemon booted in the middle of the walk, the engine
-// built again on the same store, the walk is the same. The control: version 2 given while the
-// task waits, before its first step, is taken, and the walk starts planning. The twin: an issue
-// that started its work before Legion took plans walks today's line, and its walk writes no plan
-// rows.
-func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
+// The walk of the version an owner gave holds to its end, and holds the same across a boot. The
+// issue walks the line of version 1, implementing, reviewing, retro, merging and done, and its
+// run's plan holds version 1 alone at each move. With the daemon booted in the middle of the walk,
+// the engine built again on the same store, the walk is the same. The control: version 2 given
+// while the task waits, before its first step, is taken, and the walk starts planning. The twin:
+// an issue that started its work before Legion took plans walks today's line, and its walk writes
+// no plan rows. That a version Dispatch holds and nobody gave reaches no walk is the route's to
+// prove, since the route alone reads Dispatch's versions: api's TestAVersionNobodyGaveChangesNothing,
+// beside TestRegisterPlanTakesAPlanAndRefusesWithReasons.
+func TestTheWalkOfAGivenVersionHoldsAcrossABoot(t *testing.T) {
 	const merged = "merge-42"
 	versionOne := []string{"implementer/implementation", "reviewer/review"}
 	want := []walkStanding{
@@ -712,9 +711,8 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		{phase.Merging, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskRunning, []string{"1 owner"}, versionOne},
 		{phase.Done, record.TaskPlace{Kind: record.PlaceMerge}, record.TaskDone, []string{"1 owner"}, versionOne},
 	}
-	// walk gives version 1, holds version 2 as Dispatch does without giving it, and walks the issue
-	// to done, building the engine again after the move bootAfter (none for -1). It answers where
-	// the run stood after each move.
+	// walk gives version 1 and walks the issue to done, building the engine again after the move
+	// bootAfter (none for -1). It answers where the run stood after each move.
 	walk := func(t *testing.T, bootAfter int) []walkStanding {
 		pool := migratedPool(t)
 		engine := returnEngine()
@@ -722,8 +720,6 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 		key, gen := root.Key, root.Generation
 		mustTake(t, "version 1", applyFacts(t, pool, engine)(planID(key, gen, 1),
 			ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))))
-		// Dispatch's version 2 of the same document, which no owner gives Legion.
-		unregistered := planID(key, gen, 2)
 		moves := []func(){
 			func() { move(t, pool, engine, key, TriggerGateOpened, "", record.PhaseRow{}) },
 			func() { move(t, pool, engine, key, TriggerImplementationReady, "", record.PhaseRow{}) },
@@ -743,10 +739,7 @@ func TestAVersionNobodyGaveChangesNothing(t *testing.T) {
 				engine = returnEngine()
 			}
 		}
-		if processed(t, pool, unregistered) {
-			t.Fatalf("version 2, which nobody gave, is marked processed")
-		}
-		// The run's plan node is version 1's, written once at the start: version 2 wrote none.
+		// The run's plan node is version 1's, written once at the start.
 		assertPlanNodes(t, pool, key, "after the walk", ownersNode(1))
 		return walked
 	}
