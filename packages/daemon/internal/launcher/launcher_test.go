@@ -80,15 +80,17 @@ type rig struct {
 
 // roleConn is the daemon end of one role's launcher connection: the frames it reads, the hello
 // that opened it, the last state the role reported on it and the last report it made of the
-// pod's workspace restore.
+// pod's workspace restore. passedOver is the peer address of each connection acceptRole passed
+// over before it took this one.
 type roleConn struct {
-	t        *testing.T
-	conn     net.Conn
-	reader   *bufio.Reader
-	writer   *shimwire.Writer
-	hello    shimwire.LauncherHello
-	latest   shimwire.LauncherState
-	restored *shimwire.LauncherRestored
+	t          *testing.T
+	conn       net.Conn
+	reader     *bufio.Reader
+	writer     *shimwire.Writer
+	hello      shimwire.LauncherHello
+	latest     shimwire.LauncherState
+	restored   *shimwire.LauncherRestored
+	passedOver []string
 }
 
 // lockedBuffer is a bytes.Buffer the launcher and its children can write while a test reads it.
@@ -162,6 +164,11 @@ func (g *rig) accept() shimwire.LauncherState {
 // hello names, which has not been acknowledged yet. The accept waits as a frame read does
 // (frameDeadline): before a launcher whose working directory is a workspace connects, it runs
 // the sweep's first pass, for up to gitLockFirstPassBound.
+//
+// The listener is a port of the machine's loopback, which any process of the machine can reach,
+// and a launcher sends its hello first (manager.serve). So a connection that closes without
+// sending a byte is no launcher's, and acceptRole passes over it, logging its peer, and takes the
+// next. A launcher that never sends its hello still fails the accept by name at frameDeadline.
 func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 	t.Helper()
 	if tcp, ok := listener.(*net.TCPListener); ok {
@@ -169,21 +176,36 @@ func acceptRole(t *testing.T, listener net.Listener) *roleConn {
 			t.Fatal(err)
 		}
 	}
-	conn, err := listener.Accept()
-	if os.IsTimeout(err) {
-		t.Fatalf("no launcher connected while the test waited for one, which an accept waits for until the test binary's deadline less %s: %v", frameMargin, err)
+	var passedOver []string
+	for {
+		conn, err := listener.Accept()
+		if os.IsTimeout(err) {
+			t.Fatalf("no launcher connected while the test waited for one, which an accept waits for until the test binary's deadline less %s (connections passed over, which sent nothing: %q): %v",
+				frameMargin, passedOver, err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = conn.Close() })
+		c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+		if err := conn.SetReadDeadline(frameDeadline(t)); err != nil {
+			t.Fatal(err)
+		}
+		accepted := time.Now()
+		if _, err := c.reader.Peek(1); errors.Is(err, io.EOF) {
+			t.Logf("acceptRole: passed over the connection from %s, which closed %s after it was accepted without sending a byte: no launcher's",
+				conn.RemoteAddr(), time.Since(accepted).Round(time.Millisecond))
+			passedOver = append(passedOver, conn.RemoteAddr().String())
+			_ = conn.Close()
+			continue
+		}
+		hello, ok := c.nextFor("the launcher's hello").(shimwire.LauncherHello)
+		if !ok || hello.Role == "" || hello.LauncherID == "" {
+			t.Fatalf("hello = %#v", hello)
+		}
+		c.hello, c.passedOver = hello, passedOver
+		return c
 	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = conn.Close() })
-	c := &roleConn{t: t, conn: conn, reader: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
-	hello, ok := c.nextFor("the launcher's hello").(shimwire.LauncherHello)
-	if !ok || hello.Role == "" || hello.LauncherID == "" {
-		t.Fatalf("hello = %#v", hello)
-	}
-	c.hello = hello
-	return c
 }
 
 // acknowledge admits the connection's hello with the empty acknowledgement and reads the
@@ -505,6 +527,30 @@ func TestTheLauncherLogsOneLineForEachAcknowledgedHello(t *testing.T) {
 	}
 	if !strings.Contains(g.stderr.String(), "launcher: daemon connection: hello acknowledgement:") {
 		t.Fatalf("the launcher logged %q, want the unacknowledged hello's reconnect", g.stderr.String())
+	}
+}
+
+// A connection that closes without sending a byte is passed over, and the launcher's reconnect
+// behind it is taken (acceptRole). On a shared development machine a case failed once where it
+// took the reconnect of a dropped connection, with "the launcher connection ended while the test
+// waited for the launcher's hello: EOF" (TestATrimmerGivenNothingItCanRunStartsWhenSettingsArrive):
+// the connection the rig took ended before it sent a whole line, which a launcher's hello is.
+// Here the test makes such a connection itself, before the drop, so it waits ahead of the
+// launcher's reconnect, which comes reconnectDelay after the drop.
+func TestTheRigPassesOverAConnectionThatClosesWithoutAByte(t *testing.T) {
+	g := newRig(t)
+	stray, err := net.Dial("tcp", g.listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		time.Sleep(reconnectDelay / 4)
+		_ = stray.Close()
+	}()
+	_ = g.conn.Close()
+	g.accept()
+	if want := []string{stray.LocalAddr().String()}; !slices.Equal(g.passedOver, want) {
+		t.Fatalf("the rig passed over %q before it took the launcher's reconnect, want %q, the connection that sent nothing", g.passedOver, want)
 	}
 }
 
