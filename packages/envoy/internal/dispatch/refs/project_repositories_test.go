@@ -14,16 +14,16 @@ import (
 // byte-wise and each once.
 var projectRepositoriesWant = map[string][]string{
 	"PRIV":  {"acme/done", "acme/newname", "acme/privdefault", "acme/pub", "acme/two"},
-	"INFRA": {"acme/priv", "acme/two"},
+	"OTHER": {"acme/priv", "acme/two"},
 }
 
-// seedProjectRepositories writes PRIV, private, and INFRA, public, with an issue of PRIV for each
+// seedProjectRepositories writes PRIV, private, and OTHER, public, with an issue of PRIV for each
 // way an issue resolves to a repository: PRIV-1 names acme/pub, its own; PRIV-2 names none and is a
 // child of PRIV-1, so it resolves to its parent's acme/pub; PRIV-3 names none and is a child of
-// INFRA-2, which names acme/two, so only the parent chain gives PRIV acme/two, since no issue of
+// OTHER-2, which names acme/two, so only the parent chain gives PRIV acme/two, since no issue of
 // PRIV names it; PRIV-4 names none and is a root, so it resolves to PRIV's default,
 // acme/privdefault; PRIV-5 names acme/done and is done; and PRIV-6 names acme/oldname, which a
-// recorded rename gives the name acme/newname. INFRA-1 names acme/priv. PRIV maps acme/privmapped,
+// recorded rename gives the name acme/newname. OTHER-1 names acme/priv. PRIV maps acme/privmapped,
 // which no issue names. The default, the rename and that mapping are stored as this build stores
 // them, in repo_projects. A parent in another project is a row only a direct write makes (the API
 // refuses one), as refs' other seeds hold one too (seedRepositoryIssues): it is the one way the
@@ -33,13 +33,13 @@ func seedProjectRepositories(t *testing.T) *store.Store {
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into projects (key, name, default_assignee, visibility) values
-			('PRIV', 'Private', 'alice', 'private'), ('INFRA', 'Infrastructure', 'alice', 'public');
+			('PRIV', 'Private', 'alice', 'private'), ('OTHER', 'Other', 'alice', 'public');
 		insert into issues (key, project_key, number, title, created_by, rank, parent_key, repo, status) values
-			('INFRA-1', 'INFRA', 1, 'Names acme/priv', '{"kind":"user","id":"alice"}', 'a', null, 'acme/priv', 'triage'),
-			('INFRA-2', 'INFRA', 2, 'Names acme/two', '{"kind":"user","id":"alice"}', 'b', null, 'acme/two', 'triage'),
+			('OTHER-1', 'OTHER', 1, 'Names acme/priv', '{"kind":"user","id":"alice"}', 'a', null, 'acme/priv', 'triage'),
+			('OTHER-2', 'OTHER', 2, 'Names acme/two', '{"kind":"user","id":"alice"}', 'b', null, 'acme/two', 'triage'),
 			('PRIV-1', 'PRIV', 1, 'Names acme/pub', '{"kind":"user","id":"alice"}', 'a', null, 'acme/pub', 'triage'),
 			('PRIV-2', 'PRIV', 2, 'Under PRIV-1', '{"kind":"user","id":"alice"}', 'b', 'PRIV-1', null, 'triage'),
-			('PRIV-3', 'PRIV', 3, 'Under INFRA-2', '{"kind":"user","id":"alice"}', 'c', 'INFRA-2', null, 'triage'),
+			('PRIV-3', 'PRIV', 3, 'Under OTHER-2', '{"kind":"user","id":"alice"}', 'c', 'OTHER-2', null, 'triage'),
 			('PRIV-4', 'PRIV', 4, 'Names none', '{"kind":"user","id":"alice"}', 'd', null, null, 'triage'),
 			('PRIV-5', 'PRIV', 5, 'Names acme/done', '{"kind":"user","id":"alice"}', 'e', null, 'acme/done', 'done'),
 			('PRIV-6', 'PRIV', 6, 'Names acme/oldname', '{"kind":"user","id":"alice"}', 'f', null, 'acme/oldname', 'triage');
@@ -57,14 +57,14 @@ func seedProjectRepositories(t *testing.T) *store.Store {
 // each of its issues resolves to, open or done: its own, its parent's, or its project's default,
 // under the name a recorded rename gives it, sorted and each once. PRIV's answer holds acme/pub
 // (PRIV-1's own, and PRIV-2's through its parent), acme/two (PRIV-3's, only through its parent
-// INFRA-2), acme/privdefault (PRIV-4's default), acme/done (the done PRIV-5's) and acme/newname
-// (PRIV-6's acme/oldname under its new name). INFRA-1's acme/priv adds nothing to PRIV's answer,
+// OTHER-2), acme/privdefault (PRIV-4's default), acme/done (the done PRIV-5's) and acme/newname
+// (PRIV-6's acme/oldname under its new name). OTHER-1's acme/priv adds nothing to PRIV's answer,
 // and acme/privmapped, which PRIV maps and no issue names, is in no answer. Control: the statement
 // without its parent-chain step resolves PRIV-3 to PRIV's default, misses acme/two, and the test
 // fails naming it.
 func TestAProjectsRepositoriesAreWhereItsIssuesResolve(t *testing.T) {
 	database := seedProjectRepositories(t)
-	for _, project := range []string{"PRIV", "INFRA"} {
+	for _, project := range []string{"PRIV", "OTHER"} {
 		got, err := ProjectRepositories(context.Background(), database.Pool, project)
 		if err != nil {
 			t.Fatalf("ProjectRepositories(%s): %v", project, err)
@@ -176,7 +176,7 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 
 	t.Run("the GitHub proxy", func(t *testing.T) {
 		member := model.Actor{Viewer: &model.Viewer{Person: "bob", Restricted: true, Sees: []string{"PRIV"}, AnyPrivate: true}}
-		open := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"INFRA"}, AnyPrivate: true}}
+		open := model.Actor{Viewer: &model.Viewer{Person: "alice", Open: true, Sees: []string{"OTHER"}, AnyPrivate: true}}
 		for _, issue := range issues {
 			inPRIV := slices.Contains(answers["PRIV"], issue.canonical)
 			if shown := repositoryPasses(t, database, member, issue.resolved); shown != inPRIV {

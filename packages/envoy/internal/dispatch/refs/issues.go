@@ -258,10 +258,9 @@ var projectRepositoriesQuery = `
 // no issue of it resolves to is not in the answer. ProjectRepositoriesSQL, the rule by which the
 // GitHub proxy hides a repository, walks the same terms and differs from this answer in two ways:
 // it counts such a mapped repository as the project's too, and it reads an issue whose chain the
-// walk could not finish as resolving to its project's default. For every repository an issue
-// resolves to, the two agree. Dispatch answers this list at GET
-// /api/v1/access/projects/{key}/repositories, which the secrets broker relays to the edge
-// listener for the GitHub events it relays.
+// walk could not finish as resolving to its project's default. For every issue whose chain the walk
+// finishes, the two give the project the same repository. Dispatch answers this list at GET
+// /api/v1/access/projects/{key}/repositories, which the secrets broker relays to the edge listener.
 func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]string, error) {
 	var exists bool
 	var unresolved *string

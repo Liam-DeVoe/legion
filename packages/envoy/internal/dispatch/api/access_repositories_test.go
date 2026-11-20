@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -20,13 +19,12 @@ func projectRepositoriesPath(key string) string {
 	return "/api/v1/access/projects/" + key + "/repositories"
 }
 
-// seedAnswerProject writes project key with the visibility given and one root issue for each
-// repository named, numbered from 1 in that order: an empty name is an issue that names none.
-func seedAnswerProject(t *testing.T, database *store.Store, key, visibility string, repositories ...string) {
+// seedAnswerProject writes project key, public, and one root issue for each repository named,
+// numbered from 1 in that order: an empty name is an issue that names none.
+func seedAnswerProject(t *testing.T, database *store.Store, key string, repositories ...string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, visibility) values ($1, $1, 'alice', $2)`,
-		key, visibility); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ($1, $1, 'alice')`, key); err != nil {
 		t.Fatalf("create %s: %v", key, err)
 	}
 	for i, repository := range repositories {
@@ -55,7 +53,7 @@ func TestTheRepositoryAnswerAdmitsOnlyTheAccessAccounts(t *testing.T) {
 		store: database, oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount},
 		identity: identity.CookieIdentity{SigningKey: testSigningKey, Sessions: sessions},
 	})
-	seedAnswerProject(t, database, "PRIV", "public", "acme/pub")
+	seedAnswerProject(t, database, "PRIV", "acme/pub")
 	makePrivate(t, database, "PRIV")
 	path := projectRepositoriesPath("PRIV")
 	serviceToken := func(subject string) string {
@@ -176,8 +174,8 @@ func TestADeepChainIsUnresolvedNotShort(t *testing.T) {
 func TestTheRepositoryAnswerIsSortedOnceAndNeverNull(t *testing.T) {
 	issuer := newServiceTokenIssuer(t)
 	handler, database, _ := newTestServer(t, testServerOptions{oidc: issuer.verifier(t), accessAccounts: []string{listedServiceAccount}})
-	seedAnswerProject(t, database, "SHAPE", "public", "acme/aa", "acme/a_b", "acme/aa", "acme/a-b", "acme/a.b", "")
-	seedAnswerProject(t, database, "EMPTY", "public", "")
+	seedAnswerProject(t, database, "SHAPE", "acme/aa", "acme/a_b", "acme/aa", "acme/a-b", "acme/a.b", "")
+	seedAnswerProject(t, database, "EMPTY", "")
 	bearer := issuer.Mint(t, issuer.signing, issuer.Claims(listedServiceAccount, serviceTokenAudience))
 
 	for _, row := range []struct{ project, want string }{
@@ -190,5 +188,5 @@ func TestTheRepositoryAnswerIsSortedOnceAndNeverNull(t *testing.T) {
 		}
 	}
 	wantRefusal(t, agentRequest(t, handler, http.MethodGet, projectRepositoriesPath("NOPE"), nil, bearer),
-		http.StatusNotFound, "PROJECT_NOT_FOUND", listedServiceAccount, fmt.Sprintf("GET %s", projectRepositoriesPath("NOPE")))
+		http.StatusNotFound, "PROJECT_NOT_FOUND", listedServiceAccount, "GET "+projectRepositoriesPath("NOPE"))
 }
