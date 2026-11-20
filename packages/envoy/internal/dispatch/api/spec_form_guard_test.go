@@ -148,11 +148,11 @@ func moduleRelative(source string) string {
 	return strings.TrimPrefix(filepath.ToSlash(source), "../../../")
 }
 
-// askOpeningWriterCensus is every writer that opens an ask, as the census in spec_form.go names
-// them, by module-relative file.
+// askOpeningWriterCensus is every production declaration that writes an open ask, by
+// module-relative file. restoreIssueAsksTx reaches WriteRestoredAsks after it judges the form.
 var askOpeningWriterCensus = map[string]string{
 	"openApprovalAsk":     "internal/dispatch/api/reviews.go",
-	"restoreIssueAsksTx":  "internal/dispatch/api/issue_ask_lifecycle.go",
+	"WriteRestoredAsks":   "internal/dispatch/docs/ask_row.go",
 	"createAskFor":        "internal/dispatch/api/asks.go",
 	"createAskBlock":      "internal/dispatch/docs/ask_blocks.go",
 	"restoreRetractedAsk": "internal/dispatch/docs/ask_blocks.go",
@@ -167,11 +167,11 @@ var askOpeningWriterCensus = map[string]string{
 var approvalCallers = map[string][]string{
 	"openApprovalAsk":                         {"requestArtifactApproval"},
 	"renewApprovalAsk":                        {"requestArtifactApproval"},
-	"docs.WriteReview(docs.ReviewKindPerson)": {"writeApprovalReviews"},
+	"docs.QueueReview(docs.ReviewKindPerson)": {"writeApprovalReviews"},
 	"approvalDocuments":                       {"carryBreaksForm", "writeApprovalReviews"},
 	"refuseSpecForm":                          {"approvalDocuments", "requestArtifactApproval"},
 	"specFormOf":                              {"getArtifactSpecForm", "refuseSpecForm", "restoreIssueAsksTx"},
-	"docs: WriteReview(ReviewKindPerson)":     {"writeCarriedReview"},
+	"docs: QueueReview(ReviewKindPerson)":     {"writeCarriedReview"},
 	"docs: gate":                              {"writeCarriedReview"},
 }
 
@@ -214,9 +214,9 @@ func approvalCallerProblems(sources []moduleSource) []string {
 	return problems
 }
 
-// docsApprovalCallee is the entry of approvalCallers that call, in the docs package, makes, or "":
-// a write of a review whose kind can be a person's (ReviewKindPerson among its arguments, at any
-// depth), and a call of the form gate a carry holds (gate).
+// docsApprovalCallee is the entry of approvalCallers that production code in the docs package
+// makes. QueueReview is called only by writeCarriedReview there; its kind is derived from a
+// carried person's review, so the caller census verifies the gate rather than a literal argument.
 func docsApprovalCallee(call *ast.CallExpr) string {
 	function, ok := call.Fun.(*ast.Ident)
 	if !ok {
@@ -225,19 +225,8 @@ func docsApprovalCallee(call *ast.CallExpr) string {
 	switch function.Name {
 	case "gate":
 		return "docs: gate"
-	case "WriteReview":
-		person := false
-		for _, argument := range call.Args {
-			ast.Inspect(argument, func(node ast.Node) bool {
-				if ident, ok := node.(*ast.Ident); ok && ident.Name == "ReviewKindPerson" {
-					person = true
-				}
-				return !person
-			})
-		}
-		if person {
-			return "docs: WriteReview(ReviewKindPerson)"
-		}
+	case "QueueReview":
+		return "docs: QueueReview(ReviewKindPerson)"
 	}
 	return ""
 }
@@ -251,13 +240,13 @@ func approvalCallee(call *ast.CallExpr) string {
 	switch selector.Sel.Name {
 	case "openApprovalAsk", "renewApprovalAsk", "refuseSpecForm", "specFormOf", "approvalDocuments":
 		return selector.Sel.Name
-	case "WriteReview":
+	case "QueueReview":
 		if qualifier, ok := selector.X.(*ast.Ident); !ok || qualifier.Name != "docs" {
 			return ""
 		}
 		for _, argument := range call.Args {
 			if kind, ok := argument.(*ast.SelectorExpr); ok && kind.Sel.Name == "ReviewKindPerson" {
-				return "docs.WriteReview(docs.ReviewKindPerson)"
+				return "docs.QueueReview(docs.ReviewKindPerson)"
 			}
 		}
 	}
@@ -342,18 +331,18 @@ func TestOnlyTheFormGateOpensOrAnswersAPersonsApproval(t *testing.T) {
 	}
 	t.Run("control: a second caller of a person's review", func(t *testing.T) {
 		planted := plantedSource(t, "func plantedApprove(ctx context.Context, tx pgx.Tx, artifact model.Artifact, actor model.Actor) error {\n"+
-			"\t_, _, err := docs.WriteReview(ctx, tx, nil, artifact, 1, \"approved\", docs.ReviewKindPerson, actor, nil, nil)\n\treturn err\n}\n")
+			"\treturn docs.QueueReview(nil, nil, artifact, 1, \"approved\", docs.ReviewKindPerson, actor, nil, nil, nil)\n}\n")
 		problems := approvalCallerProblems(append(slices.Clone(sources), planted))
 		if len(problems) != 1 || !strings.Contains(problems[0], "plantedApprove") {
 			t.Fatalf("the caller part with a second person's review planted = %q, want one problem naming plantedApprove", problems)
 		}
 	})
-	t.Run("control: a carry in the docs package that writes a person's approval with no gate", func(t *testing.T) {
+	t.Run("control: a carry in the docs package that queues a person's approval with no gate", func(t *testing.T) {
 		positions := token.NewFileSet()
 		const planted = "../../../internal/dispatch/docs/planted.go"
 		file, err := parser.ParseFile(positions, planted, "package docs\n\n"+
 			"func plantedCarry(ctx context.Context, tx pgx.Tx, artifact model.Artifact, review model.ArtifactReview) error {\n"+
-			"\t_, _, err := WriteReview(ctx, tx, nil, artifact, 2, \"approved\", cmp.Or(review.Kind, ReviewKindPerson), review.Actor, nil, nil)\n\treturn err\n}\n", 0)
+			"\treturn QueueReview(nil, nil, artifact, 2, \"approved\", cmp.Or(review.Kind, ReviewKindPerson), review.Actor, nil, nil, nil)\n}\n", 0)
 		if err != nil {
 			t.Fatalf("parse the planted source: %v", err)
 		}

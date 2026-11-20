@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -421,7 +421,8 @@ func TestATokenNamingAServiceAndNoPersonIsASessionsCredential(t *testing.T) {
 // named token carrying a scope that is not read, which both accept unmarked, so each refusal
 // above is the word read's or the shape's and never the scope member's being set at all. Each row
 // goes through Verify and through Live, so an open connection's heartbeat is held to the same
-// rule as the request that opened it.
+// rule as the request that opened it. SessionCaller, the NATS auth service's reading of an answer,
+// serves no read-only token: it answers each row as the verifier without the switch does.
 func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 	caller := newSigner(t)
 	readOnly := readOnlyToken(caller.jkt, time.Hour)
@@ -492,6 +493,18 @@ func TestAReadOnlyTokenIsAcceptedOnlyByAVerifierThatServesOne(t *testing.T) {
 				}
 			})
 		}
+	}
+	for _, row := range rows {
+		t.Run("SessionCaller/"+row.name, func(t *testing.T) {
+			var wantErr error
+			if reflect.DeepEqual(row.without, brokertoken.Caller{}) {
+				wantErr = brokertoken.ErrNotASession
+			}
+			got, err := brokertoken.SessionCaller(row.answer)
+			if !errors.Is(err, wantErr) || !reflect.DeepEqual(got, row.without) {
+				t.Fatalf("SessionCaller = %+v, %v; want %+v, %v", got, err, row.without, wantErr)
+			}
+		})
 	}
 }
 
@@ -759,9 +772,8 @@ func TestARefusedAddressIsNeverTheBrokersVerdict(t *testing.T) {
 // TestABrokerThatCannotBeReachedIsTheUnreachableOutcome: a caller whose broker is away must be
 // asked to come back, not told its token is refused, or it would discard a token that is live.
 func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
-	away := httptest.NewServer(http.NotFoundHandler())
-	url := away.URL
-	away.Close()
+	// A broker at a port the test holds and nothing listens on.
+	url := "http://" + testport.Refused(t)
 	rig := newRig(t, func(o *brokertoken.Options) { o.BrokerURL = url })
 	caller := newSigner(t)
 

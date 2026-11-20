@@ -55,7 +55,10 @@
 # EXCHANGE_ACCOUNT's pod's token for the broker's own audience, which names it in its
 # registration; and registrar-token, for REGISTRAR_ACCOUNT, the service login
 # (BROKER_SERVICE_LOGINS) that stands in for the deployment's daemon and registers the pod under
-# the session name it writes as. The broker trusts that issuer for all six.
+# the session name it writes as. The broker trusts that issuer for all six. A login alone
+# registers nothing: BROKER_POD_REGISTRARS pairs REGISTRAR_ACCOUNT with EXCHANGE_ACCOUNT, the one
+# registrar and pod account pair this stack's registration needs, and a broker whose list holds
+# no such entry (or is unset) refuses that registration 403 POD_REGISTRAR_NOT_LISTED.
 #
 # READ_ACCOUNT is a read entry (BROKER_EXCHANGE_READ_ACCOUNTS) beside the one example entry
 # (BROKER_EXCHANGE_ACCOUNTS). The token its pod exchanges for holds the scope read alone, the
@@ -105,6 +108,14 @@
 # and an export that named only the socket would leave this helper writing the records of the
 # helper installed under this HOME, whose named sessions' signing keys are in them.
 #
+# DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME, set together, make the broker's store
+# Google Cloud Secret Manager (BROKER_SECRETS_STORE=gcp-secret-manager) under that secrets prefix
+# (projects/<project number>/secrets/<id prefix>) and that agent-secrets key, with an empty fake
+# secrets file: GET /v1/settings then describes that store, so `agent-secrets secret` forms run
+# against the real Secret Manager under whatever Google credential their own caller chose, while
+# the broker itself serves none of the demo secrets below, which are under the AWS prefix. Unset,
+# the stack is the AWS-shaped one above. One set without the other is a usage error (exit 2).
+#
 # Needs bash, go, curl and jq, and a Postgres server. With DEV_BROKER_POSTGRES_URL it reaches
 # that server through psql, and without it, it starts the dispatch-pg container through
 # dev-postgres.sh, which needs Docker. It builds the fake secrets file with jq -n and reads the
@@ -136,15 +147,33 @@ if [ -n "${DEV_BROKER_POSTGRES_URL:-}" ] && ! [[ "$DEV_BROKER_POSTGRES_URL" =~ ^
 fi
 POSTGRES_SERVER="${BASH_REMATCH[1]:-}"
 POSTGRES_QUERY="${BASH_REMATCH[3]:-}"
+# The two GCP store settings are checked before anything is created as well: neither means
+# anything without the other.
+if { [ -n "${DEV_BROKER_GCP_PREFIX:-}" ] && [ -z "${DEV_BROKER_GCP_KMS_KEY_NAME:-}" ]; } ||
+  { [ -z "${DEV_BROKER_GCP_PREFIX:-}" ] && [ -n "${DEV_BROKER_GCP_KMS_KEY_NAME:-}" ]; }; then
+  echo "dev-broker: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME are set together or not at all" >&2
+  exit 2
+fi
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agent-secrets-dev.XXXXXX")"
 BIN_DIR="$WORK_DIR/bin"
 BROKER_BIN="$BIN_DIR/broker"
 FAKE_SECRETS_FILE="$WORK_DIR/fake-secrets.json"
 # The namespace and the agent-secrets key the fake secrets sit under; the key is an example ARN in
-# AWS's documentation account, and nothing here calls AWS.
+# AWS's documentation account, and nothing here calls AWS. DEV_BROKER_GCP_* replaces both with a
+# Secret Manager prefix and a Cloud KMS key name, and the store with Secret Manager (the header).
+SECRETS_STORE=""
 SECRETS_PREFIX="example/agent-secrets/"
 SECRETS_KMS_KEY_ARN="arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+SECRETS_KMS_KEY_NAME=""
+STORE_LINE="the fake secrets file below, in Secrets Manager's shape (BROKER_SECRETS_STORE unset: aws-secrets-manager)"
+if [ -n "${DEV_BROKER_GCP_PREFIX:-}" ]; then
+  SECRETS_STORE="gcp-secret-manager"
+  SECRETS_PREFIX="$DEV_BROKER_GCP_PREFIX"
+  SECRETS_KMS_KEY_ARN=""
+  SECRETS_KMS_KEY_NAME="$DEV_BROKER_GCP_KMS_KEY_NAME"
+  STORE_LINE="gcp-secret-manager under $SECRETS_PREFIX, key $SECRETS_KMS_KEY_NAME; the fake secrets file is empty, so the broker serves none of the demo secrets below"
+fi
 BROKER_LOG="$WORK_DIR/broker.log"
 OPERATOR_FILE="$WORK_DIR/operator"
 # The stand-in GitHub, its files and the accounts it answers as installations of the App. The
@@ -351,29 +380,34 @@ GITHUB_APP_KEY_FILE="$(stand .github_app_key_file)"
 # for the same reason. The service-owned ones
 # are what BROKER_SERVICES makes servable: a secret owned by a service the deployment never
 # registered is refused owner-tag-malformed by the policy and reaches nobody. Written with jq, so
-# the App's PEM is escaped once and correctly. ---
-jq -n \
-  --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
-  --arg approver "$APPROVER_LOGIN" --arg service "$SERVICE" \
-  --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
-  --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" \
-  '{secrets: [
-     {name: ($prefix + "demo-read-token"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "agent"}, value: "demo-read-token-value"},
-     {name: ($prefix + "demo-api-key"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human"}, value: "demo-api-key-value"},
-     {name: ($prefix + "demo-service-token"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
-     {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $owner},
-      value: ({app_id: $appid, private_key: $appkey} | tojson)},
-     {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
-      tags: {owner: $service, tier: "agent", kind: "github-app", "github-owners": $casepair},
-      value: ({app_id: $appid, private_key: $appkey} | tojson)},
-     {name: ($prefix + "demo-github-app-human"), kms_key_id: $kms,
-      tags: {owner: $approver, tier: "human", kind: "github-app", "github-owners": $owner},
-      value: ({app_id: $appid, private_key: $appkey} | tojson)}
-   ]}' >"$FAKE_SECRETS_FILE"
+# the App's PEM is escaped once and correctly. Under DEV_BROKER_GCP_* the file is empty: the demo
+# secrets sit under the AWS prefix, which the GCP store's policy would refuse. ---
+if [ -n "$SECRETS_STORE" ]; then
+  printf '{"secrets": []}\n' >"$FAKE_SECRETS_FILE"
+else
+  jq -n \
+    --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
+    --arg approver "$APPROVER_LOGIN" --arg service "$SERVICE" \
+    --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
+    --arg owner "$GITHUB_OWNER" --arg casepair "$GITHUB_CASE_OWNER" \
+    '{secrets: [
+       {name: ($prefix + "demo-read-token"), kms_key_id: $kms,
+        tags: {owner: $approver, tier: "agent"}, value: "demo-read-token-value"},
+       {name: ($prefix + "demo-api-key"), kms_key_id: $kms,
+        tags: {owner: $approver, tier: "human"}, value: "demo-api-key-value"},
+       {name: ($prefix + "demo-service-token"), kms_key_id: $kms,
+        tags: {owner: $service, tier: "agent"}, value: "demo-service-token-value"},
+       {name: ($prefix + "demo-github-app"), kms_key_id: $kms,
+        tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $owner},
+        value: ({app_id: $appid, private_key: $appkey} | tojson)},
+       {name: ($prefix + "demo-github-app-case-pair"), kms_key_id: $kms,
+        tags: {owner: $service, tier: "agent", type: "github-app", "github-owners": $casepair},
+        value: ({app_id: $appid, private_key: $appkey} | tojson)},
+       {name: ($prefix + "demo-github-app-human"), kms_key_id: $kms,
+        tags: {owner: $approver, tier: "human", type: "github-app", "github-owners": $owner},
+        value: ({app_id: $appid, private_key: $appkey} | tojson)}
+     ]}' >"$FAKE_SECRETS_FILE"
+fi
 chmod 600 "$FAKE_SECRETS_FILE"
 echo "$APPROVER_LOGIN" >"$OPERATOR_FILE"
 
@@ -446,8 +480,10 @@ echo "dev-broker: starting broker..." >&2
 BROKER_DATABASE_URL="$POSTGRES_URL" \
 BROKER_PUBLIC_URL="$PUBLIC_URL" \
 BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
+BROKER_SECRETS_STORE="$SECRETS_STORE" \
 BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
 BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
+BROKER_SECRETS_KMS_KEY_NAME="$SECRETS_KMS_KEY_NAME" \
 BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
 BROKER_DRAIN_SECONDS=0 \
 BROKER_LISTEN_ADDR="$LISTEN_ADDR" \
@@ -463,6 +499,7 @@ BROKER_EXCHANGE_K8S_AUDIENCE="$EXCHANGE_AUDIENCE" \
 BROKER_EXCHANGE_ACCOUNTS="$EXCHANGE_ACCOUNT=$EXCHANGE_PROJECT=$APPROVER_LOGIN" \
 BROKER_EXCHANGE_READ_ACCOUNTS="$READ_ACCOUNT=$READ_SERVICE=$READ_SESSION" \
 BROKER_SERVICE_LOGINS="$SERVICE=$REGISTRAR_ACCOUNT" \
+BROKER_POD_REGISTRARS="$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT" \
 BROKER_SERVICES="$SERVICE=$EXCHANGE_ACCOUNT" \
 BROKER_AIRLOCK_TEST_GITHUB_API_BASE="$GITHUB_URL" \
 "$BROKER_BIN" > >(trap '' TERM INT; exec tee -a "$BROKER_LOG" >&2) 2>&1 &
@@ -531,13 +568,18 @@ fi
 # --- Register this stack's pod for the session name it exchanges under. The broker binds a
 # session name to the listed account and never to a pod, so two pods of one account are one
 # identity there; what keeps them apart is this row, which the deployment's daemon writes as it
-# starts a pod. Here the registrar account stands in for that daemon (BROKER_SERVICE_LOGINS), and
-# the body carries the pod's own broker-audience token, the one a daemon enrolls that pod with.
-# Without it the exchange below is refused invalid_grant, naming the session. ---
+# starts a pod. Here the registrar account stands in for that daemon: it logs in as the service
+# (BROKER_SERVICE_LOGINS), BROKER_POD_REGISTRARS lists it for the pod's account, and the body
+# carries the pod's own broker-audience token, the one a daemon enrolls that pod with. Without
+# it the exchange below is refused invalid_grant, naming the session. Both tokens stay out of
+# every command line: the body reaches curl on standard input from a here-string, which the
+# shell writes before curl starts, so no pipeline's status can hide curl's, and the header from a
+# file curl reads. ---
+registration=$(printf '{"pod_token": "%s", "session": "%s"}' "$(cat "$POD_TOKEN_FILE")" "$EXCHANGE_SESSION")
 if ! curl -sf -X POST "${PUBLIC_URL}/v1/oauth/exchange/pod-sessions" \
-  -H "Authorization: Bearer $(cat "$REGISTRAR_TOKEN_FILE")" \
+  -H @<(printf 'Authorization: Bearer %s' "$(cat "$REGISTRAR_TOKEN_FILE")") \
   -H 'Content-Type: application/json' \
-  -d "{\"pod_token\": \"$(cat "$POD_TOKEN_FILE")\", \"session\": \"$EXCHANGE_SESSION\"}" >/dev/null; then
+  --data @- <<<"$registration" >/dev/null; then
   echo "dev-broker: registering the exchange pod for $EXCHANGE_SESSION failed" >&2
   exit 1
 fi
@@ -569,6 +611,7 @@ dev-broker: ready.
   export PATH=$BIN_DIR:\$PATH
 
   binaries:            $BIN_DIR  (broker, dev-oidc-issuer, dev-airlock-stands, agent-secrets, agent-secrets-helper, agent-secrets-devrelay)
+  secret store:        $STORE_LINE
   fake secrets file:   $FAKE_SECRETS_FILE  (each secret's tags and value, for confirming a released grant)
   approver login:      $APPROVER_LOGIN (whom the issuer signs in to approve a secret, and whom devrelay names deciding a machine login)
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)
@@ -580,7 +623,7 @@ dev-broker: ready.
   exchange token:      $EXCHANGE_TOKEN_FILE  ($EXCHANGE_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE)
   pod token:           $POD_TOKEN_FILE  (the same pod, audience $BROKER_AUDIENCE: what its registration named it by)
   read token:          $READ_TOKEN_FILE  ($READ_ACCOUNT's pod, audience $EXCHANGE_AUDIENCE: exchanges under $READ_SESSION for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)
-  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE")
+  registrar token:     $REGISTRAR_TOKEN_FILE  ($REGISTRAR_ACCOUNT, the service login "$SERVICE", listed to register $EXCHANGE_ACCOUNT's pods: BROKER_POD_REGISTRARS=$REGISTRAR_ACCOUNT=$EXCHANGE_ACCOUNT)
   registered service:  $SERVICE  (BROKER_SERVICE_LOGINS=$REGISTRAR_ACCOUNT, BROKER_SERVICES=$EXCHANGE_ACCOUNT)
   github stand:        $GITHUB_URL  (BROKER_AIRLOCK_TEST_GITHUB_API_BASE; plain http, since the broker's minter trusts this host's own roots and nothing else)
   github records:      $GITHUB_RECORDS_URL  (GET: every call that stand was sent, as JSON)
@@ -615,7 +658,7 @@ dev-broker: ready.
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets DEMO_SERVICE_TOKEN -- printenv DEMO_SERVICE_TOKEN
     AGENT_SECRETS_KEY_DIR=\$KEYS agent-secrets $GITHUB_SECRET --github-owner $GITHUB_OWNER \\
       --github-repo proofs --github-token -- \\
-      sh -c 'curl -fsS -H "Authorization: Bearer \$$GITHUB_SECRET" $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
+      sh -c 'printf "Authorization: Bearer %s" "\$$GITHUB_SECRET" | curl -fsS -H @- $GITHUB_URL/repos/$GITHUB_OWNER/proofs'
 
   To approve a pending request for DEMO_API_KEY, open the approve_url agent-secrets prints for
   it (${PUBLIC_URL}/approve/<record>) in a browser: the broker sends you to sign in at
@@ -633,8 +676,11 @@ dev-broker: ready.
   caller's own key, and mints an access token that writes $EXCHANGE_PROJECT for $APPROVER_LOGIN.
   That pod exchanges under $EXCHANGE_SESSION and under no other name: this script registered it
   for that one (POST /v1/oauth/exchange/pod-sessions, the registrar token on the Authorization
-  header and the pod token in the body), and any other name is refused invalid_grant naming it.
-  Registering the same pod for a second name there is all it takes to add one. The read token
+  header and the pod token in the body, admitted because BROKER_POD_REGISTRARS pairs the
+  registrar's account with the pod's), and any other name is refused invalid_grant naming it.
+  Registering the same pod for a second name there is all it takes to add one; a registrar no
+  entry of that list pairs with the pod's account is refused 403 POD_REGISTRAR_NOT_LISTED,
+  naming both accounts. The read token
   exchanges the same way for a token that only reads: service $READ_SERVICE, session
   $READ_SESSION, no person and no project (BROKER_EXCHANGE_READ_ACCOUNTS). Its entry fixes that
   session, so its pod needs no registration and a registration of it is refused 409
