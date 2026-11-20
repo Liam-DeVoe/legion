@@ -26,7 +26,8 @@ export interface TargetCellProps {
  * A row's reading against the target it is held to, with the difference between them: the
  * reading in the colour of its verdict, the target beside it, and how far above or below it the
  * reading is. The verdict is the caller's rule, not a sign: a reading under a ceiling has met
- * its target as surely as one over a floor.
+ * its target as surely as one over a floor. It is a cell a table's own columns draw, not a
+ * control, so it carries no `data-control` name.
  */
 export function TargetCell({
   direction = "atLeast",

@@ -310,6 +310,13 @@ export function IssueTableToolbar({
   );
 }
 
+/**
+ * The bar over the List's marked rows. While a table action is out (`busy`, which holds until
+ * the list read again after its writes has drawn what they changed) every action is held rather
+ * than disabled - each `StepButton` through its `ariaDisabled` - so the press that makes a
+ * control inert keeps the focus on it, and Start next's confirm hands the focus back to an
+ * opener that can take it.
+ */
 export function IssueTableSelection({
   returnFocus,
   table,

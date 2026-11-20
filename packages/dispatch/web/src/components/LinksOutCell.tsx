@@ -34,7 +34,8 @@ function hostOf(href: string): string {
  * A row's links out: the places another system holds what this row stands for — a run, a report,
  * a rule — each opening in a window of its own, since following one leaves the application. Each
  * is drawn with its label, its relation and its host, so a reader sees where it goes before
- * pressing it, and nothing here reads the far side: a link whose target is gone still draws.
+ * pressing it, and nothing here reads the far side: a link whose target is gone still draws. It
+ * is a cell a table's own columns draw, not a control, so it carries no `data-control` name.
  */
 export function LinksOutCell({ empty = "—", links }: LinksOutCellProps): ReactNode {
   if (links.length === 0) return <span className={textMutedOnCanvas}>{empty}</span>;

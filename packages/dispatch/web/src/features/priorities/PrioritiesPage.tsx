@@ -46,7 +46,9 @@ function CountedHeading({ count, title }: { count: number; title: string }): Rea
  * `/priorities`: the priorities themselves, in their one order, and under them the two faults.
  * A priority belongs to no project, so this page names none: every count, every row and both
  * fault lists are the whole deployment's. Each fault list is the one Issues table, over the
- * issue listing the server narrows for it, under its own prefix in the address.
+ * issue listing the server narrows for it, under its own prefix in the address. The List's
+ * `needs-you` and `unread` flags stay bare, so they narrow every issue table of the page at once,
+ * while each table's Unclaimed is its own Claimed by pick (`<prefix>.unclaimed`).
  *
  * Every table of the page registers its keys in the `project` scope, which the page pushes. The
  * priorities table is the page's main one, whose `j` and `k` walk it from anywhere the focus is
