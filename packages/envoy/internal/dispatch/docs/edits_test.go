@@ -518,9 +518,10 @@ func TestApplyOperationInsertsParagraphAfterTableContainingCellAnchor(t *testing
 	}
 }
 
-// An insert reads the document back before and after it (pmdoc.RefuseMisreadWrite) once for each
-// insert of a batch, so it reads the tables' spans unwritten: with a budget of span cells for each
-// read-back, four inserts beside a table whose spans take the whole budget allocated some 1,580 MiB.
+// An insert reads the document back before and after it (pmdoc.FallBackMisreadWrite) once for
+// each insert of a batch, so it reads the tables' spans unwritten: with a budget of span cells for
+// each read-back, four inserts beside a table whose spans take the whole budget allocated some
+// 1,580 MiB.
 func TestApplyOperationsInsertsBesideASpannedTableSpendNoSpanBudgetEach(t *testing.T) {
 	tree := &pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
 		{Type: "paragraph", Children: []*pmdoc.Node{{Type: "text", Text: "Before."}}},
@@ -2501,7 +2502,7 @@ func TestApplyOperationReplaceRefusesABlockIDThatWouldNameTwoBlocks(t *testing.T
 }
 
 // What a replace stores is the document's rendering, so one whose rendering reads back otherwise
-// is refused with the document unchanged (pmdoc.RefuseMisreadWrite), as an insert's markdown is.
+// is refused with the document unchanged (pmdoc.FallBackMisreadWrite), as an insert's markdown is.
 // A write beside a stored table whose spans would pad more cells than one read-back may is such a
 // write: the read-backs of each block the replace changed read that table nowhere, and the document
 // read back as a whole cannot be read at all. Measured on 2026-11-11, the same replace beside a

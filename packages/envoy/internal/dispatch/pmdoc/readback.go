@@ -157,26 +157,23 @@ func readsBackAsWritten(doc, back *Node) bool {
 	return readDifference(asWritten(doc), back, skip{}) == ""
 }
 
-// NewMisread names how after, which a write made from before, reads back otherwise where before
-// did not, or is "" when it does not. Each block that reads back otherwise is found as far down as
-// its markdown still pairs with what reads back (misreads), and one that before already read back
-// otherwise the same way, under the same block id, is not the write's: a textblock whose text
-// differs in the same characters, an attribute with the same values, or a block that pairs with
-// nothing. So a write beside a stale misread, or inside the block that holds one, is judged by what
-// it changed, while a new misread in that block is still named. An attribute before read back with
-// another value anywhere (a table cell's alignment) is not compared. A before whose markdown the
-// parser refuses (a browser edit can leave one) gives nothing to judge against, and is "" whether
-// or not after parses: the checks that read each changed block alone still refuse one the write
-// leaves unreadable. A before whose read-back would pad more cells than a read-back's budget is no
-// such document, and is the verdict: its markdown reads, so a write into it is refused rather than
+// newMisread names how after, which a write made from before, reads back otherwise where before
+// did not, or is "" when it does not, reading both back with their tables' spans adding at most
+// spanCells cells each. Each block that reads back otherwise is found as far down as its markdown
+// still pairs with what reads back (misreads), and one that before already read back otherwise
+// the same way, under the same block id, is not the write's: a textblock whose text differs in
+// the same characters, an attribute with the same values, or a block that pairs with nothing. So a
+// write beside a stale misread, or inside the block that holds one, is judged by what it changed,
+// while a new misread in that block is still named. An attribute before read back with another
+// value anywhere (a table cell's alignment) is not compared. A before whose markdown the parser
+// refuses (a browser edit can leave one) gives nothing to judge against, and is "" whether or not
+// after parses: the checks that read each changed block alone still refuse one the write leaves
+// unreadable. A before whose read-back would pad more cells than a read-back's budget is no such
+// document, and is the verdict: its markdown reads, so a write into it is refused rather than
 // stored unjudged. Only a refusal (ErrSchema) reading either back is a verdict; any other error, a
-// panic (ErrPanic) among them, is this package's bug, not a misread, and is the error.
-func NewMisread(before, after *Node) (string, error) {
-	return newMisread(before, after, maxSpanCells)
-}
-
-// newMisread is NewMisread reading before and after back with their tables' spans adding at most
-// spanCells cells each.
+// panic (ErrPanic) among them, is this package's bug, not a misread, and is the error. An edit
+// judges its write with it through the write path's fallback (FallBackMisread,
+// FallBackMisreadWrite).
 func newMisread(before, after *Node, spanCells int) (string, error) {
 	backAfter, err := readBack(after, spanCells)
 	if err != nil && !errors.Is(err, ErrSchema) {
@@ -248,30 +245,14 @@ func documentMisread(doc *Node) (read WrittenReadBack, misread string, refused e
 }
 
 // RefuseMisreadDocument refuses (ErrSchema) a whole document a write makes, a spec, an upload or a
-// version, that reads back otherwise (documentMisread), and RefuseMisreadWrite a write into a
-// document, an insert, whose result reads back otherwise where before did not (NewMisread). What
-// is stored is the rendering, which the next read would give back as another document or refuse.
-// The rules that read a shape refuse what they know first, so a refusal here names a shape none of
-// them reads, and every one of them is logged. Any other error reading it back, a panic (ErrPanic)
-// among them, is the error.
+// version, that reads back otherwise (documentMisread); a write into a document is judged by
+// newMisread through FallBackMisreadWrite. What is stored is the rendering, which the next read
+// would give back as another document or refuse. The rules that read a shape refuse what they know
+// first, so a refusal here names a shape none of them reads, and every one of them is logged. Any
+// other error reading it back, a panic (ErrPanic) among them, is the error.
 func RefuseMisreadDocument(doc *Node) error {
 	_, misread, refused, err := documentMisread(doc)
 	return refuseMisread(misread, refused, err)
-}
-
-// RefuseMisreadWrite refuses a write into a document; see RefuseMisreadDocument. It reads both
-// documents back as renderSpanless writes them. An insert checks its write with it once for each
-// operation of a batch, and a batch holds as many as a request carries, where a budget of span
-// cells for each read-back would let one batch spend two for every operation. An insert writes
-// markdown, which carries no span, between document-level blocks, so it changes no table, and every
-// table reads back the same way before and after it under the same block ids: a table that reads
-// back otherwise does so in both, and NewMisread's filter of misreads before already held, which
-// keys on the block id, sets it aside either way. Spanless, a render writes no more than the cells
-// the tables hold, and its parse pads the rows a span leaves short on the read-back's own budget
-// (ParseRendering).
-func RefuseMisreadWrite(before, after *Node) error {
-	misread, err := newMisread(before, after, 0)
-	return refuseMisread(misread, nil, err)
 }
 
 // ErrRenderingRefused is the refusal of a document whose own rendering no reader of this package
@@ -745,7 +726,7 @@ func resync(written, back []*Node, i, j int, ignore skip) (int, int, bool) {
 // attributeDrift is the attributes doc's blocks read back with other values where they read back
 // holding the same blocks and text - but a task item's checked, which is its own item's: a task
 // item emptied of its text is written as a plain empty item and reads back with checked none, and
-// NewMisread tells a stale one from a new one by its block id, so the attribute drifting would hide
+// newMisread tells a stale one from a new one by its block id, so the attribute drifting would hide
 // every other task item emptied.
 func attributeDrift(doc, back *Node) map[string]bool {
 	drift := map[string]bool{}

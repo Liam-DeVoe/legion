@@ -198,7 +198,7 @@ func notRefusal(err error) error {
 }
 
 // FallBackMisread is after, the tree an edit over before leaves, as the edit stores it, and the
-// misread NewMisread names in it, "" where none is left. Where after reads back otherwise in a way
+// misread newMisread names in it, "" where none is left. Where after reads back otherwise in a way
 // before did not, it is the tree of the first of the fallback's tiers (fallbackTier) that leaves
 // no such misread, so a block that read back otherwise before the edit is still not the edit's;
 // the third tier's tree is one whose blocks the rule reads otherwise each read back, under the
@@ -209,8 +209,18 @@ func FallBackMisread(before, after *Node) (tree *Node, misread string, err error
 	return fallBackMisread(before, after, maxSpanCells)
 }
 
-// FallBackMisreadWrite is FallBackMisread for a write RefuseMisreadWrite judges: the tree the write
-// stores, or that refusal.
+// FallBackMisreadWrite is FallBackMisread for a write into a document: the tree the write stores,
+// or the write's refusal. Its judge (newMisread) reads both documents back as renderSpanless
+// writes them. An insert checks its write with it once for each operation of a batch, and a batch
+// holds as many as a request carries, where a budget of span cells for each read-back would let
+// one batch spend two for every operation. An insert writes markdown, which carries no span,
+// between document-level blocks, so it changes no table, and every table reads back the same way
+// before and after it under the same block ids: a table that reads back otherwise does so in
+// both, and newMisread's filter of misreads before already held, which keys on the block id, sets
+// it aside either way. Spanless, a render writes no more than the cells the tables hold, and its
+// parse pads the rows a span leaves short on the read-back's own budget (ParseRendering). The
+// fallback's tiers, which run only where after newly reads back otherwise and its text holds an
+// `@`, read each tree they try as Render writes it, the rendering a write stores.
 func FallBackMisreadWrite(before, after *Node) (*Node, error) {
 	tree, misread, err := fallBackMisread(before, after, 0)
 	if err := refuseMisread(misread, nil, err); err != nil {
