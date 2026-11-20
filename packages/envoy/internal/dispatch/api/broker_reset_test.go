@@ -981,6 +981,89 @@ func TestTheResetClosesOnlyAnHourAfterItsStartOnACleanRead(t *testing.T) {
 	}
 }
 
+// TestTheResetCloseRecordsNoEndWhenStepOneRunsAgainDuringIt: the close reads the open reset's wait,
+// then the broker, then records the end, and step 1 run again between the first read and the
+// insert starts a newer reset, whose wait has not passed. The insert's own condition then writes
+// nothing, and the close says NOT CLOSED rather than closing the newer reset. A stand-in psql runs
+// step 1's start mark just before the close's last call, the insert.
+//
+// Control in the runbook: the close without its empty-insert arm (it prints `the reset ended at`
+// with no moment and exits 0).
+func TestTheResetCloseRecordsNoEndWhenStepOneRunsAgainDuringIt(t *testing.T) {
+	realPsql, err := exec.LookPath("psql")
+	if err != nil {
+		t.Skipf("psql is not installed, so the close cannot be run here: %v", err)
+	}
+	r := newRecoveryRig(t)
+	r.resetSessions(t)
+	r.ageReset(t, resetWait+time.Minute)
+	dir := t.TempDir()
+	// The close calls psql five times: Dispatch's read of the wait, the broker's three lists, and
+	// Dispatch's insert of the end. Before the fifth, step 1 runs again.
+	stub := `#!/bin/sh
+n=$(cat "$PSQL_CALLS" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$PSQL_CALLS"
+if [ "$n" = 5 ]; then
+  "$REAL_PSQL" "$DATABASE_URL" -v ON_ERROR_STOP=1 -qAt -c "insert into deployment_resets (mark) values ('start')" >/dev/null || exit 1
+fi
+exec "$REAL_PSQL" "$@"
+`
+	if err := os.WriteFile(filepath.Join(dir, "psql"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := r.closeReset(t,
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REAL_PSQL="+realPsql, "PSQL_CALLS="+filepath.Join(dir, "calls"))
+	if err == nil || !strings.Contains(output, "NOT CLOSED: step 1 ran again since this close read the wait") {
+		t.Errorf("the close with step 1 run again before its insert answered %v:\n%s\nwant NOT CLOSED for the newer reset", err, output)
+	}
+	if starts, ends := r.resetMarks(t, "start"), r.resetMarks(t, "end"); len(starts) != 2 || len(ends) != 0 {
+		t.Errorf("deployment_resets holds the starts %v and the ends %v; want two starts and no end", starts, ends)
+	}
+}
+
+// TestTheResetCloseRefusesAWaitAnswerItCannotRead: the close's first read answers `none`, `early`
+// or the wait's end as a UTC moment, and any other answer (psql printing a notice, a server that
+// answers in another form) must stop the close before it reads the broker. A stand-in psql answers
+// the first call with `not-a-moment`.
+//
+// Control in the runbook: the close's catch-all arm taking the answer as a moment (it fails on the
+// broker's read instead, naming the broker).
+func TestTheResetCloseRefusesAWaitAnswerItCannotRead(t *testing.T) {
+	realPsql, err := exec.LookPath("psql")
+	if err != nil {
+		t.Skipf("psql is not installed, so the close cannot be run here: %v", err)
+	}
+	r := newRecoveryRig(t)
+	r.resetSessions(t)
+	r.ageReset(t, resetWait+time.Minute)
+	dir := t.TempDir()
+	stub := `#!/bin/sh
+n=$(cat "$PSQL_CALLS" 2>/dev/null || echo 0)
+n=$((n + 1))
+echo "$n" >"$PSQL_CALLS"
+if [ "$n" = 1 ]; then
+  cat >/dev/null
+  echo not-a-moment
+  exit 0
+fi
+exec "$REAL_PSQL" "$@"
+`
+	if err := os.WriteFile(filepath.Join(dir, "psql"), []byte(stub), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	output, err := r.closeReset(t,
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"REAL_PSQL="+realPsql, "PSQL_CALLS="+filepath.Join(dir, "calls"))
+	if want := "UNKNOWN: Dispatch's database answered 'not-a-moment' for the reset's wait, so the reset is not closed"; err == nil || !strings.Contains(output, want) {
+		t.Errorf("the close answered %v:\n%s\nwant failure and %q", err, output, want)
+	}
+	if ends := r.resetMarks(t, "end"); len(ends) != 0 {
+		t.Errorf("deployment_resets holds the ends %v; want none", ends)
+	}
+}
+
 // TestTheResetCloseChecksItsWaitBeforeItReadsTheBroker: the close decides the wait before it reads
 // the broker, so a read inside the wait can never stand for a close recorded after it. Right after
 // step 1, with the broker's database unreadable, it answers NOT CLOSED for the wait, and reads
