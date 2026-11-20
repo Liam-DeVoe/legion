@@ -35,7 +35,9 @@ body: |-
   or a zombie, before it reads that process's children, so a child forked while the stop was
   pending is not missed; the walk has one deadline, so a tree of many processes it cannot see
   stopped holds it no longer than one. A process it cannot see stopped, and a children file it
-  cannot read, is named, and every process found still gets the SIGKILL. The stop then waits
+  cannot read, is named, and every process found still gets the SIGKILL; each process it froze gets a
+  line saying whether it was sent the SIGKILL, had gone, was held by another process, or could
+  not be read. The stop then waits
   until each process of the act has ended, every thread of it, naming one that has not. A
   process whose `/proc` entry is there and cannot be read is never taken for one that has ended,
   and the stop's signals need no file descriptor, so a descriptor limit (`ulimit -n 4`) neither

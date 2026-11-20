@@ -3025,7 +3025,8 @@ could not read. Every process is walked: one that is not seen stopped by the wal
 10 s from its start, is named, still gets the `SIGKILL`, and its children are still read; the
 deadline is the walk's and not each process's, so a tree of many processes the walk cannot see
 stopped holds the stop no longer than one. A children file or a start the stop cannot read is
-named. Its signals need no file descriptor, so under a descriptor limit (`ulimit -n 4`) it still
+named, and each process it froze gets a line of its own at the `SIGKILL`: sent it, gone before it,
+held by another process now (its start differs), or not signalled since its start could not be read. Its signals need no file descriptor, so under a descriptor limit (`ulimit -n 4`) it still
 ends the watcher. One record (`PG_DISK_FROZEN`, each pid with its start) holds every process the
 stop sent `SIGSTOP`, from before that signal until the wait after the `SIGKILL` is over, so a stop
 cut short anywhere in between kills them rather than leave them stopped, and no pid that the
