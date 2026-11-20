@@ -39,6 +39,13 @@ type reasoningRig struct {
 func newReasoningRig(t *testing.T) reasoningRig {
 	t.Helper()
 	handler, database := newTestHandlerWithStore(t)
+	return reasoningRigOn(t, handler, database)
+}
+
+// reasoningRigOn is newReasoningRig on the server handler and database stand for, which the caller
+// stood up and may have readied before the rig writes its issue.
+func reasoningRigOn(t *testing.T, handler http.Handler, database *store.Store) reasoningRig {
+	t.Helper()
 	issue := createInteractionIssue(t, handler, "RSN", "Reasoned work",
 		"An opening paragraph.\n\n:::requirement{#r1}\nEvery write is idempotent.\n:::\n")
 	rig := reasoningRig{t: t, handler: handler, database: database, issue: issue.Key}

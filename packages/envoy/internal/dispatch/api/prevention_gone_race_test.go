@@ -26,7 +26,11 @@ import (
 // no lock would read it live before the pass committed, and the pass would read the risk's tuples
 // before the append committed, so both would commit and the tuple would stand at a gone check.
 func TestAPreventedByAppendedWhileItsCheckIsMarkedGoneIsNotLeftStanding(t *testing.T) {
-	rig := newPremortemRig(t)
+	// Held unconverted: the seam marks the check gone by indexing the Verification document alone, the unconverted
+	// issue's pass; the guard is the writer's, so a converted issue's room pass is covered by the same code.
+	handler, database := newTestHandlerWithStore(t)
+	holdIssuesUnconverted(t, database)
+	rig := premortemRigOn(t, reasoningRigOn(t, handler, database))
 	ctx := context.Background()
 	premortem := rig.invoke(rig.spec, graphstore.LensKindPreMortem, "alice", nil)
 	written := rig.post("/risks", map[string]any{

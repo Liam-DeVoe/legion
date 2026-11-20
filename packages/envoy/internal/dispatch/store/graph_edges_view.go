@@ -438,14 +438,17 @@ const graphEdgesTuples = `    from graph_tuples tuple
 // appended before, cannot. The two parts of the log are read apart rather than through one
 // expression over both, so a read of one source or one far end is pushed into each part and binds
 // an index there: graph_tuples' own for every other tuple, and artifacts_id_text, then
-// graph_tuples_current, for a document's mentions read by the document.
+// graph_tuples_current, for a document's mentions read by the document. The second part names its
+// from_kind as the constant it is, 'artifact', so a read that names the kinds of the nodes it reads
+// out of (graphcensus' graphEdgesOut) cuts that part from its plan where artifact is none of them,
+// as it cuts every other arm whose source kind is a constant.
 const artifactRefTuples = `    from (
       select tuple.from_kind, tuple.from_id, tuple.from_id as node_id, tuple.kind, tuple.to_kind, tuple.to_id,
              tuple.at, tuple.legacy_source_seq, tuple.asserted, tuple.seq
       from graph_tuples tuple
       where tuple.from_kind <> 'artifact' or tuple.kind <> 'mentions'
       union all
-      select tuple.from_kind, mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
+      select 'artifact', mentioning.id::text, tuple.from_id, tuple.kind, tuple.to_kind, tuple.to_id,
              projected.created_at, projected.source_seq, tuple.asserted, tuple.seq
       from graph_tuples tuple
       join artifacts mentioning on mentioning.ref_key = tuple.from_id and mentioning.node_kind is not null

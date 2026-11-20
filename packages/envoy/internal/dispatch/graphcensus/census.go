@@ -730,7 +730,7 @@ func commentPeople(authors string) string {
 // graphstore.AskFacts, through graphstore.AuthorFacts). A decision's author is the far end of its
 // decided_by, which its block_refs row projects, and that row is what is read for it. A reading's
 // author is the far end of its authored_by, which no table projects (the tuple table), so the row
-// read for it is the tuple itself, the authored_by each reading's node states now, as
+// read for it is the tuple itself, the authored_by each reading's node not gone states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
 // authored_by every ask node states now: an ask one of whose documents is past the store's bound
 // keeps a row that names no node (graphstore.AskPlaces.Fit), which the ask author arms of

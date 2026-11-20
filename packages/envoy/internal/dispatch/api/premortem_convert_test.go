@@ -155,7 +155,13 @@ func (r premortemRig) nodeOf(address string) string {
 
 func newPremortemRig(t *testing.T) premortemRig {
 	t.Helper()
-	rig := premortemRig{reasoningRig: newReasoningRig(t), capture: readPremortemCapture(t)}
+	return premortemRigOn(t, newReasoningRig(t))
+}
+
+// premortemRigOn is newPremortemRig over the reasoning rig reasoning, which the caller built.
+func premortemRigOn(t *testing.T, reasoning reasoningRig) premortemRig {
+	t.Helper()
+	rig := premortemRig{reasoningRig: reasoning, capture: readPremortemCapture(t)}
 	project := strings.Split(rig.issue, "-")[0]
 	other := dispatchRequest(t, rig.handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": project, "title": "The issue whose check a risk names",
