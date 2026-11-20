@@ -427,7 +427,7 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 		database.Pool.Close()
 	}()
 	// Close refuses the other separate pools from the moment it begins.
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		if _, err := database.Pool.Rooms(); errors.Is(err, ErrPoolClosed) {
 			break
 		}
@@ -449,9 +449,11 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 
 	held.Release()
 	released = true
+	answered, cancel := testdeadline.Answered(t, ctx)
+	defer cancel()
 	select {
 	case <-closed:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("Close did not return once the connection in use came back")
 	}
 	if _, err := database.Pool.Healthy(ctx); !errors.Is(err, ErrPoolClosed) {

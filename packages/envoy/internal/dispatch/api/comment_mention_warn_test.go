@@ -44,9 +44,10 @@ func TestEverySendHeldPastTheThresholdIsReportedOnce(t *testing.T) {
 		})
 	}
 	const marker = `msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, 5*time.Second, "a WARN line for each held send", func() bool {
+	waitUntil(t, "a WARN line for each held send", func() bool {
 		return strings.Count(logs.String(), marker) >= 3
 	})
+
 	// A second past the threshold the lane has parked again several times.
 	time.Sleep(time.Second)
 	logged := logs.String()
@@ -108,11 +109,12 @@ func TestASendWhoseWaitPassesTheThresholdInFlightIsReportedAsItGoes(t *testing.T
 		t.Fatalf("%d WARN lines before either send's wait ended, want none: no park saw the threshold pass", got)
 	}
 	close(release)
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	// A send leaves held (claimedDuring) before its goroutine logs its late WARN (reportLate):
 	// join that goroutine before reading the log.
 	stop()
@@ -198,11 +200,12 @@ func TestAReparkedHeldLaneHasOneGoroutine(t *testing.T) {
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("sent %v; at most %d sends in flight at once", sent, most.Load())
@@ -272,11 +275,12 @@ func TestAParkedLanesTimerStartsOnceNoGoroutineServesIt(t *testing.T) {
 			attempt: 1, claimed: time.Now(),
 		})
 	}
-	waitUntil(t, 5*time.Second, "A-1's two sends gone", func() bool {
+	waitUntil(t, "A-1's two sends gone", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.held) == 0
 	})
+
 	mu.Lock()
 	defer mu.Unlock()
 	t.Logf("goroutines serving lanes as each park's timer started: %v", servingAtStart)

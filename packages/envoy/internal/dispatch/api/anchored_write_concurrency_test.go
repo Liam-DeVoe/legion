@@ -11,17 +11,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
-const requestDeadline = 20 * time.Second
-
-// withDeadline bounds every request the handler serves. A wedged pool would otherwise hold its
-// connections until the package timeout kills the process, which reports no failing test and
-// leaves the pool cleanup unrun; with a deadline the request aborts, the connections go back,
-// and the test says which scenario wedged.
-func withDeadline(handler http.Handler) http.Handler {
+// withDeadline bounds every request the handler serves by what t's deadline leaves less
+// testdeadline.Cleanup (testdeadline.Answered). A wedged pool would otherwise hold its connections
+// until the package timeout kills the process, which reports no failing test and leaves the pool
+// cleanup unrun; at that deadline the request aborts, the connections go back, and the test says
+// which scenario wedged, while a request that is only slow on a loaded machine still answers.
+func withDeadline(t testing.TB, handler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), requestDeadline)
+		ctx, cancel := testdeadline.Answered(t, r.Context())
 		defer cancel()
 		handler.ServeHTTP(w, r.WithContext(ctx))
 	})
@@ -37,7 +37,7 @@ func TestConcurrentAnchoredWritesDoNotWedgeTheirPool(t *testing.T) {
 	for _, writers := range []int{maxConns, maxConns * 2} {
 		t.Run(fmt.Sprintf("writers=%d", writers), func(t *testing.T) {
 			handler, _ := pooledDocumentHandler(t, maxConns, time.Hour)
-			handler = withDeadline(handler)
+			handler = withDeadline(t, handler)
 			issue := createInteractionIssue(t, handler, "TEST", "Anchored concurrency",
 				"alpha bravo charlie delta echo foxtrot golf hotel")
 			quotes := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel"}
@@ -113,7 +113,7 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 			gate.API = service
 			return gate
 		})
-	handler = withDeadline(handler)
+	handler = withDeadline(t, handler)
 	var released sync.Once
 	release := func() { released.Do(func() { close(gate.release) }) }
 	// However this test ends, the held write is released: a test that fails while it holds the
@@ -181,10 +181,12 @@ func TestSettlementsBehindAnAnchoredWriteDoNotWedgeThePool(t *testing.T) {
 }
 
 // waitForAcquiredConns waits until the pool has handed out want connections, so the test knows
-// the holders it arranged are in place before it releases the write they are queued behind.
+// the holders it arranged are in place before it releases the write they are queued behind. It
+// waits as long as the test's deadline leaves: each holder takes its connection only once its
+// request's earlier statements have answered.
 func waitForAcquiredConns(t *testing.T, database *store.Store, want int32) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		if database.Pool.Stat().AcquiredConns() >= want {
 			return

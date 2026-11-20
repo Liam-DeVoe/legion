@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestApplyOpsEditsLiveDocumentAndSettlesVersion(t *testing.T) {
@@ -227,12 +228,14 @@ func TestCheckTableAnchorRowsRejectsCommentReopenedAfterPrevalidation(t *testing
 	if err := tx.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the document owner's lock: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-updateDone:
 		if err != nil {
 			t.Fatalf("comment body update: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("comment body update remained blocked after the edit transaction released the owner's lock")
 	}
 }

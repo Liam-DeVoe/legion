@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // sendWholeBodyThenRead posts body to target over a connection of its own, sending all of it
@@ -42,7 +43,8 @@ type heldBackBody struct {
 }
 
 // sendPartOfBody posts a body of size bytes to target, sending its head and first, and none of
-// the rest. The connection gives up on the server after 30 s.
+// the rest. The connection gives up on the server at the test's deadline: the answer waits on the
+// handler's statements in Postgres, which a loaded machine slows but does not stop.
 func sendPartOfBody(t *testing.T, address, target string, header http.Header, size int, first []byte) *heldBackBody {
 	t.Helper()
 	connection, err := net.Dial("tcp", address)
@@ -50,7 +52,7 @@ func sendPartOfBody(t *testing.T, address, target string, header http.Header, si
 		t.Fatalf("dial %s: %v", address, err)
 	}
 	t.Cleanup(func() { connection.Close() })
-	if err := connection.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(testdeadline.StartupBound(t))); err != nil {
 		t.Fatal(err)
 	}
 	var head bytes.Buffer
@@ -147,16 +149,20 @@ func TestAnEarlyAnswerToAnUploadReachesAClientThatSendsItsWholeBodyFirst(t *test
 	file := bytes.Repeat([]byte("a"), 24<<20)
 	first := make(chan sentUpload, 1)
 	go func() { first <- sendUpload(t, handler, running.Key, "running-upload", file) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held.reached:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the first upload never reached the file store")
 	}
 	t.Cleanup(func() {
 		releaseOnce()
+		released, cancelReleased := testdeadline.Answered(t, context.Background())
+		defer cancelReleased()
 		select {
 		case <-first:
-		case <-time.After(10 * time.Second):
+		case <-released.Done():
 			t.Error("the first upload never answered once released")
 		}
 	})
@@ -442,12 +448,14 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			t.Cleanup(release)
 			firstAnswer := make(chan keyedAnswered, 1)
 			go func() {
-				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, 30*time.Second)
+				status, body, _, err := keyedPost(server, path, `{"n":1}`, judged.key, testdeadline.StartupBound(t))
 				firstAnswer <- keyedAnswered{status: status, body: body, err: err}
 			}()
+			waited, cancelWait := testdeadline.Answered(t, context.Background())
+			defer cancelWait()
 			select {
 			case <-first.running:
-			case <-time.After(10 * time.Second):
+			case <-waited.Done():
 				t.Fatal("the first request never ran")
 			}
 			header := http.Header{}
@@ -457,7 +465,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 			repeat := sendPartOfBody(t, server.Listener.Addr().String(), path, header, len(judged.repeat), []byte(judged.repeat[:5]))
 			select {
 			case <-found:
-			case <-time.After(10 * time.Second):
+			case <-waited.Done():
 				t.Fatal("the repeat never found its key in flight")
 			}
 			finishFirst := func() keyedAnswered {
@@ -469,7 +477,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 						t.Fatalf("the first request: %v", answered.err)
 					}
 					return answered
-				case <-time.After(10 * time.Second):
+				case <-waited.Done():
 					t.Fatal("the first request never answered once released")
 				}
 				return keyedAnswered{}
@@ -501,7 +509,7 @@ func TestARepeatFoundInFlightIsJudgedOnceItsBodyHasArrived(t *testing.T) {
 				if firstGot.status != http.StatusServiceUnavailable {
 					t.Fatalf("the first request answered %d %s, want its 503", firstGot.status, firstGot.body)
 				}
-				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, 10*time.Second)
+				status, again, header, err := keyedPost(server, path, judged.repeat, judged.key, testdeadline.StartupBound(t))
 				if err != nil || status != http.StatusCreated || header.Get(contracts.IdempotencyReplayedHeader) != "" {
 					t.Fatalf("the ask after the 409: %d %s replayed=%q (%v), want the request run",
 						status, again, header.Get(contracts.IdempotencyReplayedHeader), err)

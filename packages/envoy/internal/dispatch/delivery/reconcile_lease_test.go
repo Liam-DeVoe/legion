@@ -7,6 +7,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // Every reconcile pass searches and lists GitHub against one installation's rate limit, so one
@@ -31,9 +32,11 @@ func TestAReconcilePassWhoseLeaseIsHeldElsewhereAsksGitHubNothing(t *testing.T) 
 			<-release
 		})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the other caller never took the delivery-reconcile lease")
 	}
 

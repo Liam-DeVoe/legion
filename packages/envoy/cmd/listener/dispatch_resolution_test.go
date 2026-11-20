@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // This file is the one proof that spans both services. Every other test of INFRA-249 exercises
@@ -474,7 +475,7 @@ type rigBroadcast struct {
 // work cancelled by its own t.Context() rather than finished.
 func (rig *dispatchRig) awaitBroadcastDeliveries(t *testing.T, broadcastID string) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/broadcasts/"+broadcastID, nil)
 		if read.Code != http.StatusOK {
@@ -518,7 +519,7 @@ func (rig *dispatchRig) mention(t *testing.T, issueKey, sessionID, body string) 
 			sessionID, created.Code, created.Body.String())
 	}
 	comment := decodeRigBody[rigComment](t, created)
-	deadline := time.Now().Add(15 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		read := rig.asHuman(t, http.MethodGet, "/api/v1/comments/"+comment.ID, nil)
 		if read.Code != http.StatusOK {

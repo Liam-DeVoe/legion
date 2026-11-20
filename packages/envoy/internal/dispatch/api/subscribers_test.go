@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMatchingTopics(t *testing.T) {
@@ -706,12 +707,14 @@ func TestASubscriptionRemovalCompletionQueuedBehindAnotherAppendsNoSecondRemoval
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the other completion: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case got := <-completed:
 		if got.err != nil {
 			t.Fatalf("the completion: %v", got.err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the completion never answered once the other one committed")
 	}
 	var removals int

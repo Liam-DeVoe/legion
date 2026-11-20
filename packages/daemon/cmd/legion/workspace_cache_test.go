@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/repocache"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -185,12 +186,14 @@ func TestWorkspaceInitCacheExitsOneWhenGitHubRefusesItsFirstClone(t *testing.T) 
 		exited <- run(ctx, append([]string{"legion", "workspace-init"}, v.cacheArgs()...), &stdout, &stderr)
 	}()
 
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case code := <-exited:
 		if says := "The requested URL returned error: 403"; code != 1 || !strings.Contains(stderr.String(), says) {
 			t.Fatalf("cache exited %d, stderr %q; want 1 naming %q", code, stderr.String(), says)
 		}
-	case <-time.After(winitWait):
+	case <-answered.Done():
 		t.Fatalf("cache did not end after GitHub refused its first clone: stdout %q, stderr %q", stdout.String(), stderr.String())
 	}
 	if got := cloneAttempts(t, attempts); got != 1 {
@@ -264,12 +267,14 @@ func TestWorkspaceInitCacheServesTheRepositoryUntilStopped(t *testing.T) {
 	holdsNoToken(t, v.root, "while the cache serves")
 
 	cancel()
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case code := <-exited:
 		if code != 0 {
 			t.Fatalf("cache exited %d once stopped, stderr %q", code, stderr.String())
 		}
-	case <-time.After(winitWait):
+	case <-answered.Done():
 		t.Fatal("cache did not stop with its context")
 	}
 	if entries, err := os.ReadDir(v.tmp); err != nil || len(entries) != 0 {

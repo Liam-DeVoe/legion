@@ -23,6 +23,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -902,11 +903,12 @@ func TestTheNatsSeedReachesTheSandboxRuntimeAsTheProvidersSecrets(t *testing.T) 
 	}
 }
 
-// awaitHealthz returns once the daemon answers /healthz, and fails if it exits first.
+// awaitHealthz returns once the daemon answers /healthz, waiting as long as the test's deadline
+// allows (its boot opens and migrates Postgres first), and fails if it exits first.
 func awaitHealthz(t *testing.T, cfg config.Config, done chan error) {
 	t.Helper()
 	var err error
-	if !testwait.Holds(15*time.Second, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 20*time.Millisecond, func() bool {
 		var response *http.Response
 		response, err = pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
 		if err == nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // liveRegistry is the roster the Envoy listener answers from, which a test moves to start or
@@ -87,15 +88,18 @@ func claimHandler(t *testing.T, live *liveRegistry) (http.Handler, *store.Store,
 	return handler, database, deps
 }
 
-// awaitLookup waits for the listener lookup a gated test is expecting.
+// awaitLookup waits for the listener lookup a gated test is expecting, as long as the test's
+// deadline leaves: the request reaches the listener once its Postgres reads have answered.
 func awaitLookup(t *testing.T, lookups <-chan int, want int) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case got := <-lookups:
 		if got != want {
 			t.Fatalf("listener lookup %d, want lookup %d", got, want)
 		}
-	case <-time.After(2 * time.Second):
+	case <-answered.Done():
 		t.Fatalf("the request never took listener lookup %d", want)
 	}
 }
@@ -1078,7 +1082,7 @@ func whileTheRowIsHeld(
 	callHandler, callPID := oneConnectionHandler(t, deps)
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- request(callHandler) }()
-	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered, 10*time.Second); early {
+	if response, early := storetest.WaitForQueuedBehind(t, tx, callPID, answered, testdeadline.StartupBound(t)); early {
 		t.Fatalf("the request answered %d before it queued behind the issue's owner lock: %s", response.Code, response.Body.String())
 	}
 	holderActor := model.Actor{
@@ -1092,10 +1096,12 @@ func whileTheRowIsHeld(
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the holder change: %v", err)
 	}
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case response := <-answered:
 		return response
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the request never answered once the owner lock was free")
 		return nil
 	}
@@ -1141,7 +1147,7 @@ func TestAClaimWriteThatWaitedNeverMovesUpdatedAtBackward(t *testing.T) {
 			go func() {
 				answered <- dispatchRequest(t, callHandler, write.method, "/api/v1/issues/"+key+"/claim", write.body, "alice")
 			}()
-			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered, 10*time.Second); early {
+			if response, early := storetest.WaitForQueuedBehind(t, holder, callPID, answered, testdeadline.StartupBound(t)); early {
 				t.Fatalf("%s answered %d before it queued behind the issue row: %s", write.name, response.Code, response.Body.String())
 			}
 			var stamped time.Time

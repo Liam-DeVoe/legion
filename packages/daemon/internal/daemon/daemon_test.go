@@ -30,6 +30,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/listenfd"
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
@@ -382,6 +383,8 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		refused <- run(context.Background(), cfg, quietLogger(), fakeRuntime(fake.NewRuntime(), &built{}))
 	}()
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-refused:
 		if err == nil {
@@ -393,8 +396,8 @@ func TestRunRefusesAnUnreachablePostgresByHostAndNotByPassword(t *testing.T) {
 		if strings.Contains(err.Error(), "hunter2") {
 			t.Errorf("the refusal leaks the DSN password: %v", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not refuse an unreachable Postgres within one second")
+	case <-answered.Done():
+		t.Fatal("run did not refuse an unreachable Postgres before the test's deadline")
 	}
 }
 
@@ -844,10 +847,11 @@ func startDaemon(t *testing.T, cfg config.Config, o overrides) *daemon {
 	return startDaemonLogging(t, cfg, o, quietLogger())
 }
 
-// startDaemonLogging is startDaemon writing the daemon's log to log.
+// startDaemonLogging is startDaemon writing the daemon's log to log. It waits for /healthz as long
+// as the test's deadline allows: the boot opens and migrates Postgres before the API answers.
 func startDaemonLogging(t *testing.T, cfg config.Config, o overrides, log *slog.Logger) *daemon {
 	t.Helper()
-	return startDaemonWithin(t, cfg, o, log, 10*time.Second)
+	return startDaemonWithin(t, cfg, o, log, testdeadline.StartupBound(t))
 }
 
 // startDaemonWithin is startDaemonLogging failing the test unless the daemon answers /healthz
@@ -1174,17 +1178,19 @@ func TestWorkflowBootServingNoRepositoryReportsWhatItLeftOut(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})
 	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
 			err = json.NewDecoder(response.Body).Decode(&state)
@@ -1232,17 +1238,19 @@ func TestWorkflowBootWhoseEveryInstallationReadFailsAnswersItsState(t *testing.T
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})
 	var state api.State
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/legion/v1/state"); err == nil {
 			err = json.NewDecoder(response.Body).Decode(&state)
@@ -1302,17 +1310,19 @@ func TestWorkflowBootLogsItsDependencyOrder(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		response, err := pollClient.Get("http://127.0.0.1:" + strconv.Itoa(cfg.Port) + "/healthz")
 		if err == nil {
@@ -1420,12 +1430,14 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})
@@ -1434,7 +1446,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 	// The move reaches admission through the consumer once supervision serves; on a loaded machine
 	// that takes seconds, not milliseconds.
 	var active []string
-	deadline := time.Now().Add(60 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var state struct {
 			Admission struct {
@@ -1456,7 +1468,7 @@ func TestAnIssueMovedWhileBootListsIsStillAdmitted(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	for deadline := time.Now().Add(60 * time.Second); ; {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; {
 		if creates := github.created(); len(creates) > 0 {
 			if want := "refs/heads/legion/" + key; creates[0].ref != want {
 				t.Fatalf("the GitHub stand-in's first create is of %s, want %s", creates[0].ref, want)
@@ -1488,12 +1500,14 @@ func TestRunRefusesToBootWithoutTheNotificationStream(t *testing.T) {
 			githubAPI: repositoriesGitHub(t),
 		})
 	}()
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), "ENVOY_NOTIFICATIONS") {
 			t.Fatalf("run = %v, want a boot refusal naming ENVOY_NOTIFICATIONS", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the daemon booted with no notification stream")
 	}
 }
@@ -1529,12 +1543,14 @@ func TestRunStopsWithTheErrorWhenItsIntakeEnds(t *testing.T) {
 	if err := stream.DeleteConsumer(context.Background(), consumer); err != nil {
 		t.Fatalf("delete %s: %v", consumer, err)
 	}
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case err := <-done:
 		if err == nil || !strings.Contains(err.Error(), consumer) {
 			t.Fatalf("run = %v, want the daemon stopped by its intake naming %s", err, consumer)
 		}
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the daemon kept running after its intake ended")
 	}
 }

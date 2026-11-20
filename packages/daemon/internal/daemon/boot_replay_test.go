@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -308,9 +309,10 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		said.Wait()
 		close(hello)
 	}()
+	bound := testdeadline.StartupBound(t)
 	go func() {
 		var address string
-		for deadline := time.Now().Add(60 * time.Second); address == ""; time.Sleep(5 * time.Millisecond) {
+		for deadline := time.Now().Add(bound); address == ""; time.Sleep(5 * time.Millisecond) {
 			if time.Now().After(deadline) {
 				// The daemon never built its runtime; startDaemonWithin fails the test.
 				return
@@ -327,7 +329,7 @@ func TestABootReplaysEveryTerminalFactBeforeItAdmitsAnyHello(t *testing.T) {
 		}
 	}()
 
-	startDaemonWithin(t, cfg, o, quietLogger(), 60*time.Second)
+	startDaemonWithin(t, cfg, o, quietLogger(), bound)
 
 	var conns []net.Conn
 	t.Cleanup(func() {

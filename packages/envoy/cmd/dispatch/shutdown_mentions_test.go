@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // deliverySweepInterval is how often the maintenance loop runs the delivery sweep
@@ -375,7 +376,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 		id, err := old.postMention(key, "Accepted during the HTTP drain.", "session:s2")
 		answered <- posted{id, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatalf("the comment never queued behind the issue lock:\n%s", old.Output.String())
 	}
 

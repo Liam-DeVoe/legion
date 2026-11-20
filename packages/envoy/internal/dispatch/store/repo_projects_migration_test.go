@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // repoProjectsDefaultVersion is the migration that adds a project's default repository and an
@@ -150,7 +151,7 @@ func isSQLState(err error, code string) bool {
 // poll waits on a lock: the migration, queued behind a writer's open transaction.
 func awaitMigrationLockWait(t *testing.T, store *Store) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting int
 		if err := store.Pool.QueryRow(context.Background(), `
@@ -199,13 +200,15 @@ func TestMigrationCountsAnOverDeepIssueCommittedWhileItWaits(t *testing.T) {
 	if err := writer.Commit(ctx); err != nil {
 		t.Fatalf("commit the writer: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-applied:
 		var pgErr *pgconn.PgError
 		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || !strings.Contains(err.Error(), "EDGE-34") {
 			t.Fatalf("migrate after a writer committed EDGE-34 33 links down: %v, want 0113 refusing it (23514)", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the migration never finished after the writer committed")
 	}
 	if got := schemaVersion(t, store); got != repoProjectsDefaultVersion-1 {

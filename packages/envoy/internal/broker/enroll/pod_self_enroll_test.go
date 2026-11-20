@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 const (
@@ -702,7 +703,7 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 			dropped <- err
 		}()
 		pid := int32(tx.Conn().PgConn().PID())
-		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		for deadline := time.Now().Add(testdeadline.StartupBound(t)); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 			select {
 			case err := <-dropped:
 				dropped <- err // the drop did not wait; the login below meets the schema it left
@@ -721,7 +722,7 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 				return
 			}
 		}
-		t.Error("the drop neither waited for the login nor finished within 30s")
+		t.Error("the drop neither waited for the login nor finished before the test's deadline")
 	}
 
 	if _, err := r.svc.IssueTokenLoginTx(ctx, tx, r.tokenLoginOf(selfAccount, "pod-uid-in-flight", newLoginKey(t))); err != nil {
@@ -734,13 +735,15 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 		t.Fatalf("commit the login: %v", err)
 	}
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-dropped:
 		if err != nil {
 			t.Fatalf("the drop once the login committed: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the drop did not finish within 30s of the login committing; it must wait for a login in flight, never for the next one")
+	case <-answered.Done():
+		t.Fatal("the drop did not finish before the test's deadline once the login committed; it must wait for a login in flight, never for the next one")
 	}
 }
 
@@ -771,12 +774,14 @@ func TestTwoLoginsInFlightDoNotWaitForEachOther(t *testing.T) {
 		_, err = r.svc.IssueTokenLoginTx(context.Background(), second, r.tokenLoginOf(launcherAccount, "pod-uid-second", newLoginKey(t)))
 		done <- err
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("the second login while the first is open: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the second login did not finish while the first was open: the lock serializes logins, which it must not")
 	}
 }

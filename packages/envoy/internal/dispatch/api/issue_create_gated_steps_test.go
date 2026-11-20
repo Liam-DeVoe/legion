@@ -14,24 +14,30 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // heldStatement is a tracer that holds the first statement containing match, once armed, after it
 // ran and before its caller reads on: the transaction that sent it keeps every lock the statement
 // took while the test starts the request it is to meet. reached closes when the statement is held;
-// release lets it go, and the test's end releases it whatever happened.
+// release lets it go, and the test's end releases it whatever happened. The hold lasts until
+// release or the test's deadline (ends), never a fixed span: a hold that ended while a loaded
+// machine was still starting the meeting request would leave that request nothing to wait on.
 type heldStatement struct {
 	match   string
 	armed   atomic.Bool
 	reached chan struct{}
 	release chan struct{}
+	ends    context.Context
 	once    sync.Once
 }
 
 type heldStatementKey struct{}
 
 func newHeldStatement(t *testing.T, match string) *heldStatement {
-	held := &heldStatement{match: match, reached: make(chan struct{}), release: make(chan struct{})}
+	ends, cancel := testdeadline.Answered(t, context.Background())
+	held := &heldStatement{match: match, reached: make(chan struct{}), release: make(chan struct{}), ends: ends}
+	t.Cleanup(cancel)
 	t.Cleanup(held.let)
 	return held
 }
@@ -52,7 +58,7 @@ func (h *heldStatement) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.Tr
 	close(h.reached)
 	select {
 	case <-h.release:
-	case <-time.After(10 * time.Second):
+	case <-h.ends.Done():
 	}
 }
 
@@ -91,11 +97,13 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			map[string]any{"steps": []string{"spec"}, "actor": map[string]string{"kind": "session", "id": "legion-daemon:" + project}},
 			"agent-token")
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held.reached:
 	case response := <-published:
 		t.Fatalf("the publish answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the publish never ran its update of the project's gated steps")
 	}
 
@@ -109,7 +117,7 @@ func TestASessionsIssueCreateBesideTheDaemonsBootPublishOfGatedStepsIsCreated(t 
 			"actor":   sessionActor(),
 		})
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
 		if err != nil {

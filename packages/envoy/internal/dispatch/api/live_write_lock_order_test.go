@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A project document upload and another write to the same document, started together, both
@@ -152,7 +153,7 @@ func (f *uploadRaceFixture) request(ctx context.Context, method, target string, 
 // waits on a database lock.
 func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		select {
 		case <-f.docs.engaged:
@@ -176,20 +177,23 @@ func (f *uploadRaceFixture) waitForWriteToEngage(t *testing.T) {
 	}
 }
 
-// awaitWithin waits for a request that must not hang. On a timeout it cancels every request
-// the test started, so a deadlocked pair unwinds before the test fails.
+// awaitWithin waits for a request that must not hang, as long as the test's deadline leaves: a
+// pair that only waits its turn on a loaded database still finishes. At that deadline it cancels
+// every request the test started, so a deadlocked pair unwinds before the test fails.
 func awaitWithin(t *testing.T, responses <-chan *httptest.ResponseRecorder, cancel context.CancelFunc, name string) *httptest.ResponseRecorder {
 	t.Helper()
+	answered, stop := testdeadline.Answered(t, context.Background())
+	defer stop()
 	select {
 	case response := <-responses:
 		return response
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		cancel()
 		select {
 		case <-responses:
 		case <-time.After(10 * time.Second):
 		}
-		t.Fatalf("%s did not finish within 10 s", name)
+		t.Fatalf("%s did not finish before the test's deadline", name)
 		return nil
 	}
 }
@@ -216,9 +220,11 @@ func (s *heldAppendStore) waitHeld(t *testing.T) {
 	s.mu.Lock()
 	held := s.held
 	s.mu.Unlock()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the upload never reached its transactional append")
 	}
 }

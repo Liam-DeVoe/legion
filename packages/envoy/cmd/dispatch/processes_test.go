@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // ───── the pair ─────────────────────────────────────────────────────────────
@@ -182,12 +183,13 @@ func (p *dispatchProcess) documentText(t *testing.T, artifactID string) string {
 
 // ───── the notification stream ──────────────────────────────────────────────
 
-// waitForEveryEventPublished waits for every event row the outbox publishes to carry published_at.
-// A row whose payload says `pending` is a subscription command the outbox never publishes, so it
-// is not waited for; the predicate is spelled as the outbox's own (outbox.readBatchSQL).
-func waitForEveryEventPublished(t *testing.T, database *store.Store, within time.Duration) {
+// waitForEveryEventPublished waits until the test's deadline less its cleanup for every event row
+// the outbox publishes to carry published_at. A row whose payload says `pending` is a subscription
+// command the outbox never publishes, so it is not waited for; the predicate is spelled as the
+// outbox's own (outbox.readBatchSQL).
+func waitForEveryEventPublished(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -200,7 +202,7 @@ func waitForEveryEventPublished(t *testing.T, database *store.Store, within time
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d events were still unpublished after %v", unpublished, within)
+			t.Fatalf("%d events were still unpublished at the test's deadline", unpublished)
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

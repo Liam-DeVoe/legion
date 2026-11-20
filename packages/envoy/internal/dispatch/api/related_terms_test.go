@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // relatedTermsServer is a server whose term statistics and picker a test drives directly, with
@@ -30,12 +31,15 @@ func refreshTermStats(t *testing.T, database *store.Store, project string) int {
 }
 
 // awaitTermStatsRefresh waits for the refresh of project's statistics srv has running, if any,
-// to end, and starts none of its own.
+// to end, and starts none of its own. The refresh is Postgres work, so it waits as long as the
+// test's deadline leaves.
 func awaitTermStatsRefresh(t *testing.T, srv *server, project string) {
 	t.Helper()
+	ended, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-srv.termStats.DoChan(project, func() (any, error) { return nil, nil }):
-	case <-time.After(30 * time.Second):
+	case <-ended.Done():
 		t.Fatalf("the refresh of %s's statistics did not end", project)
 	}
 }
@@ -335,7 +339,7 @@ func TestRelatedTermsRefreshCountsADocumentOnceAtItsLatestVersion(t *testing.T) 
 	if edit.Code != http.StatusOK {
 		t.Fatalf("edit document: status=%d body=%s", edit.Code, edit.Body.String())
 	}
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(10 * time.Millisecond) {
 		var versions int
 		if err := database.Pool.QueryRow(context.Background(), "select count(*) from artifact_versions where artifact_id = $1", issue.PrimaryArtifactID).Scan(&versions); err != nil {
 			t.Fatalf("count artifact versions: %v", err)

@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // otherBroker is a second broker process on ts's database, as the broker's second replica is: a
@@ -271,11 +272,11 @@ func (ts *testServer) readCut(t *testing.T, key *ecdsa.PrivateKey, enrollmentID,
 }
 
 // countedSoon is ts's broker_answers_total sample naming labels once it is above 0, or what it is
-// after 5 seconds: an answer whose caller has gone is counted when its handler returns, after the
-// caller stopped waiting for it.
+// at the test's deadline less its cleanup: an answer whose caller has gone is counted when its
+// handler returns, after the caller stopped waiting for it.
 func (ts *testServer) countedSoon(t *testing.T, labels string) int {
 	t.Helper()
-	testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool { return ts.answersCounted(t, labels) > 0 })
+	testwait.Holds(testdeadline.StartupBound(t), 20*time.Millisecond, func() bool { return ts.answersCounted(t, labels) > 0 })
 	return ts.answersCounted(t, labels)
 }
 

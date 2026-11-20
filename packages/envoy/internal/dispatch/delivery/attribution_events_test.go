@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // attributionEvent is one stored issue.pull_request_attribution_changed event, as the API and the
@@ -309,12 +310,14 @@ func TestAnAttributionMoveTakesBothIssuesLocksInLockKeyOrder(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("commit the other writer: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-moved:
 		if err != nil {
 			t.Fatalf("the move once the other writer committed: %v", err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the move never finished once the other writer committed")
 	}
 }

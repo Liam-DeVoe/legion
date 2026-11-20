@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // liveSocketRig is the API test server behind a real listener and run on a lifetime, so Register
@@ -266,9 +267,11 @@ func (c *socketClient) arrival() <-chan socketArrival {
 	return arrived
 }
 
-func (c *socketClient) snapshot(t *testing.T, within time.Duration, sub string) DeliveryLiveSnapshot {
+// snapshot is the next frame but a heartbeat, which must be sub's snapshot. The hub sends it once
+// its read of the database has answered, so it is waited for as long as the test's deadline leaves.
+func (c *socketClient) snapshot(t *testing.T, sub string) DeliveryLiveSnapshot {
 	t.Helper()
-	frame := c.next(t, within, "the snapshot of "+sub)
+	frame := c.next(t, testdeadline.StartupBound(t), "the snapshot of "+sub)
 	snapshot, ok := frame.(DeliveryLiveSnapshot)
 	if !ok || snapshot.Sub != sub {
 		t.Fatalf("frame = %+v, want the snapshot of %s", frame, sub)
@@ -276,9 +279,10 @@ func (c *socketClient) snapshot(t *testing.T, within time.Duration, sub string) 
 	return snapshot
 }
 
-func (c *socketClient) delta(t *testing.T, within time.Duration, sub string) DeliveryLiveDelta {
+// delta is the next frame but a heartbeat, which must be a delta of sub, waited for as snapshot is.
+func (c *socketClient) delta(t *testing.T, sub string) DeliveryLiveDelta {
 	t.Helper()
-	frame := c.next(t, within, "a delta of "+sub)
+	frame := c.next(t, testdeadline.StartupBound(t), "a delta of "+sub)
 	delta, ok := frame.(DeliveryLiveDelta)
 	if !ok || delta.Sub != sub {
 		t.Fatalf("frame = %+v, want a delta of %s", frame, sub)
@@ -319,10 +323,11 @@ func (c *socketClient) refusals(t *testing.T, within time.Duration, code string,
 	}
 }
 
-// event is the next frame but a heartbeat, which must be one of sub's events.
-func (c *socketClient) event(t *testing.T, within time.Duration, sub string) LiveEventFrame {
+// event is the next frame but a heartbeat, which must be one of sub's events. An events view sends
+// what its feed read from the database, so it is waited for as long as the test's deadline leaves.
+func (c *socketClient) event(t *testing.T, sub string) LiveEventFrame {
 	t.Helper()
-	frame := c.next(t, within, "an event of "+sub)
+	frame := c.next(t, testdeadline.StartupBound(t), "an event of "+sub)
 	event, ok := frame.(LiveEventFrame)
 	if !ok || event.Sub != sub {
 		t.Fatalf("frame = %+v, want an event of %s", frame, sub)
@@ -665,7 +670,7 @@ func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
 
 	client := rig.dial(t, asUser("alice"))
 	client.send(t, deliverySubscribe("t", timelineRange(now.Add(-48*time.Hour), now, "")))
-	snapshot := client.snapshot(t, 10*time.Second, "t")
+	snapshot := client.snapshot(t, "t")
 	requireSameBody(t, "the socket's snapshot", snapshot.Body, getBody(t, rig.handler, windowTarget(t, deliveryLiveTimeline, snapshot.Body, "")))
 	if _, ok := snapshot.Revs.Items["prs"]["acme/widgets#1"]; !ok {
 		t.Fatalf("the snapshot's revisions %v hold no revision of acme/widgets#1", snapshot.Revs.Items)
@@ -673,7 +678,7 @@ func TestTheDeliverySocketAnswersASubscribeWithASnapshot(t *testing.T) {
 
 	// A merge after the snapshot reaches the page as a delta that lands on the GET route's body.
 	upsertPR(t, rig.database, hubPR(2, now.Add(-2*time.Hour)))
-	delta := client.delta(t, 10*time.Second, "t")
+	delta := client.delta(t, "t")
 	if got := liveUpsertIDs(t, delta, "prs"); !slices.Equal(got, []string{"acme/widgets#2"}) {
 		t.Fatalf("the merge's delta upserts %v, want acme/widgets#2", got)
 	}
@@ -719,7 +724,7 @@ func TestABearerMayReadTheSocket(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			client := rig.dial(t, withBearer(token))
 			client.send(t, deliverySubscribe("p", presetView(deliveryLiveTimeline, 7, "")))
-			client.snapshot(t, 10*time.Second, "p")
+			client.snapshot(t, "p")
 		})
 	}
 }
@@ -757,7 +762,7 @@ func TestASubscribeWithAMemberNoFrameDeclaresIsAnswered(t *testing.T) {
 	client := rig.dial(t, asUser("alice"))
 
 	client.sendText(t, []byte(`{"type":"subscribe","sub":"p","since":1,"view":{"kind":"timeline","window":{"preset":7,"anchor":"end"},"query":"","density":"compact"}}`))
-	client.snapshot(t, 10*time.Second, "p")
+	client.snapshot(t, "p")
 
 	client.sendText(t, []byte(`{"type":"resubscribe","sub":"q"}`))
 	client.refusal(t, 3*time.Second, "q", "INVALID_FRAME")
@@ -802,7 +807,7 @@ func TestAMalformedFrameIsAnErrorFrameNotAClose(t *testing.T) {
 
 	// The socket is still open, and the hub answers its next subscribe.
 	client.send(t, deliverySubscribe("h", presetView(deliveryLiveTimeline, 7, "")))
-	client.refusal(t, 10*time.Second, "h", "DELIVERY_NOT_CONFIGURED")
+	client.refusal(t, testdeadline.StartupBound(t), "h", "DELIVERY_NOT_CONFIGURED")
 }
 
 func TestAFrameOverTheReadLimitClosesTheSocket(t *testing.T) {
@@ -875,7 +880,7 @@ func TestAWindowWiderThanTheMaximumIsAnErrorFrame(t *testing.T) {
 
 	// The widest window the GET route answers is answered too, on the same socket.
 	client.send(t, deliverySubscribe("widest", timelineRange(to.Add(-maxDeliveryWindow), to, "")))
-	client.snapshot(t, 10*time.Second, "widest")
+	client.snapshot(t, "widest")
 }
 
 func TestASlowReaderIsClosedNotBuffered(t *testing.T) {
@@ -917,7 +922,7 @@ func TestShutdownClosesEverySocketWithServiceRestart(t *testing.T) {
 	person := rig.dial(t, asUser("alice"))
 	agent := rig.dial(t, withBearer("agent-token"))
 	person.send(t, deliverySubscribe("t", presetView(deliveryLiveTimeline, 7, "")))
-	person.snapshot(t, 10*time.Second, "t")
+	person.snapshot(t, "t")
 	agent.send(t, liveSubscribe("e", eventsView(), ""))
 	running := events.next(t, 5*time.Second, "the agent's events subscription")
 
@@ -1078,7 +1083,7 @@ func TestHubFramesAreWrittenAheadOfAFullStreamQueue(t *testing.T) {
 		t.Fatalf("the first hub frame refuses %q, not one of the delivery views %v", first.Sub, subs)
 	}
 	client.refusals(t, 3*time.Second, "DELIVERY_NOT_CONFIGURED", rest...)
-	client.event(t, 5*time.Second, "busy")
+	client.event(t, "busy")
 	if !client.open() {
 		t.Fatalf("the socket ended: %v", client.err)
 	}

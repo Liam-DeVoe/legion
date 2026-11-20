@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -768,7 +767,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				}
 				written <- tx.Commit(ctx)
 			}()
-			if waiting := storetest.WaitForLockWaiters(t, open, 1, 10*time.Second); waiting < 1 {
+			if waiting := storetest.WaitForLockWaiters(t, open, 1, testdeadline.StartupBound(t)); waiting < 1 {
 				t.Fatalf("the second write on the %s did not wait for the first's open transaction", owner.name)
 			}
 			if err := open.Commit(ctx); err != nil {

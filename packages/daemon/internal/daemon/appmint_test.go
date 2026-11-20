@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -157,12 +158,14 @@ func bootsOrExitsOn(t *testing.T, cfg config.Config, tokens appauth.Source, gith
 		if stopped {
 			return
 		}
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run after the test: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})

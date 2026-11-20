@@ -116,7 +116,7 @@ func TestARoomALateSettlementLoadedStaysForAWriterThatTookItUp(t *testing.T) {
 	}
 	letSettle()
 	r.awaitSocketEnd("the second room's browser")
-	waitFor(t, roomWait(t), "the write and every settlement of the document to end", func() bool {
+	waitFor(t, "the write and every settlement of the document to end", func() bool {
 		owed, err := settlementPending(context.Background(), r.service.store.Pool, r.room)
 		if err != nil || owed || settlementUnderway(r.service, r.room) {
 			return false
@@ -646,7 +646,7 @@ const (
 	lateUnloadRoomIdleTimeout = time.Hour
 	// lateUnloadShutdownWait bounds the fixture's Shutdown: the drain budget Shutdown spends inside
 	// its caller's deadline (ShutdownDrainBudget), and ten seconds for what follows it, and less
-	// than roomWaitMargin, which roomWait leaves of the binary's deadline for a failed test's
+	// than testdeadline.Cleanup, which roomWait leaves of the binary's deadline for a failed test's
 	// cleanups.
 	lateUnloadShutdownWait = ShutdownDrainBudget + 10*time.Second
 )
@@ -909,9 +909,8 @@ func (r *reloadedRoom) awaitSocketEnd(who string) {
 }
 
 // awaitFirstClose waits for the first room's close to return, as long as roomWait allows: what the
-// test binary's deadline leaves after roomWaitMargin (t.Deadline), at most roomWaitCap. A close
-// that never returns fails the test here by name, and leaves the rest of the deadline to the
-// fixture's bounded Shutdown and to the package's later tests.
+// test binary's deadline leaves less testdeadline.Cleanup. A close that never returns fails the
+// test here by name, and leaves the rest of the deadline to the fixture's bounded Shutdown.
 func (r *reloadedRoom) awaitFirstClose() {
 	r.t.Helper()
 	select {

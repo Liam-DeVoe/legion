@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -302,12 +303,14 @@ func TestAStartOfAnIssueInItsOwnTreeWaitsOnNoSiblingsLaunch(t *testing.T) {
 	go func() {
 		checked <- runner.stopElsewhere(context.Background(), record.Issue{Key: "LEGION-1", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Tree: "LEGION-1"})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-checked:
 		if err != nil {
 			t.Fatalf("the check before a start of LEGION-1 in its own tree = %v, want nothing to wait for", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the check before a start waited on its architect's launch in the runtime")
 	}
 }

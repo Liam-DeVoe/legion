@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -295,7 +296,7 @@ func TestARoundsBoundCountsTheHeldPodOnToTheLetOutOfItsLastHeldLaunch(t *testing
 			r.boot()
 
 			pause := r.pauseProject()
-			testwait.WithinPolling(t, 3*time.Minute, 100*time.Millisecond, "the pause to stop every worker", func() bool {
+			testwait.WithinPolling(t, testdeadline.StartupBound(t), 100*time.Millisecond, "the pause to stop every worker", func() bool {
 				return r.count(`select count(*) from claims where project = $1 and role = 'implementer' and state = 'suspended' and suspended_by = 'released'`,
 					r.project) == others+1
 			})

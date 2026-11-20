@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // senderTestSessions are the live sessions the mention sender's stand-in listener knows, each
@@ -273,13 +274,17 @@ func (l *mentionListener) holdLookups(path string) func() {
 	return sync.OnceFunc(func() { close(gate) })
 }
 
-// awaitSend waits for the next send to arrive and returns the session it is for.
+// awaitSend waits for the next send to arrive and returns the session it is for. It waits as long
+// as the test's deadline leaves: a send reaches the listener only after the sender's claim of its
+// attempt in Postgres has answered.
 func (l *mentionListener) awaitSend(t *testing.T) string {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case session := <-l.arrived:
 		return session
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("no mention send reached the listener")
 		return ""
 	}
@@ -1077,10 +1082,11 @@ func ageQueuedClaims(t *testing.T, database *store.Store, sender *mentionSender,
 }
 
 // awaitRefreshedClaims waits until every comment's attempt for target is under a claim written in
-// the last 5 s, for at most 10 s: the sender's refresh loop has written the claims it holds again.
+// the last 5 s, as long as the test's deadline leaves: the sender's refresh loop has written the
+// claims it holds again.
 func awaitRefreshedClaims(t *testing.T, database *store.Store, commentIDs []string, target string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var refreshed int
 		if err := database.Pool.QueryRow(context.Background(), `

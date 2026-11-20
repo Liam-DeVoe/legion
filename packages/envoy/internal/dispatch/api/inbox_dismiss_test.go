@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // postInboxDismiss is one Dismiss: the body as written, from login.
@@ -747,7 +748,7 @@ func TestDismissRacingAnotherDismissAndAMarkAll(t *testing.T) {
 		held := holdGateThread(t, database, gate)
 		queued := make(chan int, 1)
 		go func() {
-			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, 10*time.Second)
+			queued <- storetest.WaitForLockWaiters(t, held.tx, 2, testdeadline.StartupBound(t))
 			held.release()
 		}()
 		mark := time.Now()

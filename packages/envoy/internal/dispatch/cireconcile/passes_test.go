@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The record each pass leaves in ci_reconcile_passes, and the reading of it the API answers
@@ -139,11 +140,11 @@ func holdLease(t *testing.T, pool *store.Pool, body func(ctx context.Context)) (
 }
 
 // waitForPass polls the recent passes until one answers want for id, and fails when it does not
-// within the bound. The pass it is waiting on runs in a goroutine of its own, so there is nothing
-// to wait on but the row.
+// by the test's deadline less its cleanup. The pass it is waiting on runs in a goroutine of its
+// own, so there is nothing to wait on but the row.
 func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassRecord {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	var last []PassRecord
 	for time.Now().Before(deadline) {
 		last = recent(t, pool)
@@ -162,7 +163,7 @@ func waitForPass(t *testing.T, pool *store.Pool, id int64, want PassState) PassR
 // row a pass writes when it starts, and answers its id.
 func waitForRow(t *testing.T, pool *store.Pool, instance string) int64 {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var id int64
 		err := pool.QueryRow(t.Context(), `

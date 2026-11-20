@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -189,7 +190,7 @@ func offerSettingsTicksUntil(t *testing.T, f *trimFixture, what string, done fun
 
 func offerTickOf(t *testing.T, f *trimFixture, period time.Duration, what string) {
 	t.Helper()
-	deadline := time.Now().Add(testwait.Bounded(t, 30*time.Second, time.Second))
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		at, live := f.ticks.live(period)
 		if !live {
@@ -624,9 +625,11 @@ func TestNoTrimmerRunsWithoutSettingsOrInTheControllersPod(t *testing.T) {
 		}()
 		t.Cleanup(func() {
 			cancel()
+			answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+			defer cancelAnswered()
 			select {
 			case <-result:
-			case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+			case <-answered.Done():
 				t.Errorf("the launcher did not leave after its context ended; its log: %s", stderr.String())
 			}
 		})

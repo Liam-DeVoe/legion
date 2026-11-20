@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // newEditNoticeSweeper is a second document service on database that only sweeps, as another
@@ -138,7 +139,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 		t.Fatal("alice's settled edit opened no edit notice")
 	}
 	due := time.Now().Add(row.dueAt.Sub(row.now))
-	waitFor(t, 5*time.Second, "the notice's wake to run a sweep", func() bool { return counter.Count() > woken })
+	waitFor(t, "the notice's wake to run a sweep", func() bool { return counter.Count() > woken })
 	storetest.AwaitQuiet(t, counter, 300*time.Millisecond, 5*time.Second)
 	if edits := humanEdits(t, service.store, artifactID); len(edits) != 0 {
 		t.Fatalf("the woken sweep sent %d notices inside the quiet window; want none before it ends", len(edits))
@@ -151,7 +152,7 @@ func TestEditNoticeSweepSendsAWokenNoticeAtItsDueTime(t *testing.T) {
 		t.Fatalf("the sweep sent %d notices before the quiet window ended; want none", len(edits))
 	}
 
-	waitFor(t, quiet+5*time.Second, "the notice to go once its quiet window ended", func() bool {
+	waitFor(t, "the notice to go once its quiet window ended", func() bool {
 		return len(humanEdits(t, service.store, artifactID)) == 1
 	})
 	var sentAt time.Time
@@ -179,6 +180,10 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	leases := excerptLeases(t, database)
 	taken, release := make(chan struct{}), make(chan struct{})
 	held := make(chan bool, 1)
+	// Each wait below is for the leases' and the sweep's Postgres answers, so it ends at the
+	// test's deadline (testdeadline), not at a fixed span a loaded machine can spend.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	go func() {
 		held <- duty.Exclusive(context.Background(), leases, editNoticeLease, time.Time{}, 0, func(context.Context) {
 			close(taken)
@@ -187,7 +192,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	}()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the other caller never took the edit-notices lease")
 	}
 
@@ -195,7 +200,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	runEditNoticeLoop(t, func(ctx context.Context) {
 		sweeper.runEditNotices(ctx, leases, nil, editNoticeSchedule{minGap: 100 * time.Millisecond})
 	})
-	waitFor(t, 20*time.Second, "the sweep to find the lease held twice", func() bool {
+	waitFor(t, "the sweep to find the lease held twice", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", editNoticeLease) >= 2
 	})
 	if edits := humanEdits(t, database, document); len(edits) != 0 {
@@ -205,7 +210,7 @@ func TestEditNoticeSweepRetriesAHeldLease(t *testing.T) {
 	if !<-held {
 		t.Fatal("the other caller never held the lease, so the sweep was free to run")
 	}
-	waitFor(t, 10*time.Second, "the sweep to send the due notice once the lease was free", func() bool {
+	waitFor(t, "the sweep to send the due notice once the lease was free", func() bool {
 		return len(humanEdits(t, database, document)) == 1
 	})
 }

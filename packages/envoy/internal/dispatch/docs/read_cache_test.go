@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // proofHistory writes a document's stored history as a room stores one: each write is the update
@@ -484,9 +485,13 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		_, err := service.Text(leaderCtx, artifactID)
 		leader <- err
 	}()
+	// The cold read reaches LoadDocument through Postgres's answers, and the cancelled leader's
+	// return is what this test is about, not its speed: both waits end at the test's deadline.
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-persistence.entered:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("the cold fold never reached LoadDocument")
 	}
 
@@ -511,7 +516,7 @@ func TestCancelledColdReaderLeavesTheFoldForOtherReaders(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("cancelled leader = %v, want context.Canceled", err)
 		}
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("the cancelled leader stayed blocked on the shared fold")
 	}
 	close(persistence.release)

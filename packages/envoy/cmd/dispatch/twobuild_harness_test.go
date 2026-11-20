@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // ───── the previous build ───────────────────────────────────────────────────
@@ -362,16 +363,16 @@ func jsonBody(t *testing.T, value any) string {
 
 // ───── the previous build's owner lock protocol ─────────────────────────────
 
-// registeredOwnerLockProtocol waits up to within for the one server process database's registry
-// holds (server_processes) and answers the owner lock protocol it registered with
-// (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's default, for a build
-// before the owner lock, which writes no such column). process is that process, and name what a
-// failure calls it. The read polls, since a build may serve a moment before its registration
-// commits. It fails the test when the registry holds more than one process, when process exits
-// before its row reads, or when within passes first.
-func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string, within time.Duration) int {
+// registeredOwnerLockProtocol waits until the test's deadline less its cleanup for the one server
+// process database's registry holds (server_processes) and answers the owner lock protocol it
+// registered with (owner_lock_protocol: store.OwnerLockProtocol for this tree, 0, the column's
+// default, for a build before the owner lock, which writes no such column). process is that
+// process, and name what a failure calls it. The read polls, since a build may serve a moment
+// before its registration commits. It fails the test when the registry holds more than one
+// process, when process exits before its row reads, or when that deadline passes first.
+func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *dispatchProcess, name string) int {
 	t.Helper()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		rows, err := database.Pool.Query(context.Background(), `select owner_lock_protocol from server_processes`)
 		if err != nil {
@@ -389,7 +390,7 @@ func registeredOwnerLockProtocol(t *testing.T, database *store.Store, process *d
 				len(protocols), protocols, name)
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the %s registered no server process within %s:\n%s", name, within, process.Output.String())
+			t.Fatalf("the %s registered no server process before the test's deadline:\n%s", name, process.Output.String())
 		}
 		select {
 		case <-process.Exited:
@@ -430,7 +431,7 @@ func previousBuildOwnerLockProtocol(t *testing.T, build previousBuild) int {
 	_, nats := multiprocessNATS(t)
 	probe := startDispatchProcessWith(t, databaseURLOf(t, database),
 		dispatchOptions{NATSURL: nats, SigningKey: multiprocessSigningKey, Binary: build.path("envoy-dispatch")})
-	protocol := registeredOwnerLockProtocol(t, database, probe, name, 60*time.Second)
+	protocol := registeredOwnerLockProtocol(t, database, probe, name)
 	if err := probe.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill the %s: %v", name, err)
 	}

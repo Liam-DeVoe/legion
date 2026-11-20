@@ -23,6 +23,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -230,7 +231,7 @@ func (r *stepRecordsRig) boot() {
 			<-held.release
 		}
 	}
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), stepRecordsWait)
+	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), testdeadline.StartupBound(r.t))
 }
 
 // restart stops the daemon and boots it again (reboot).
@@ -420,7 +421,7 @@ func (r *stepRecordsRig) waitPhase(want phase.Phase) {
 func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
 	r.t.Helper()
 	var last string
-	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(r.t), 100*time.Millisecond, func() bool {
 		got, ok := r.d.state().Issues[issue]
 		last = string(got.Phase)
 		return ok && last == string(want)
@@ -448,7 +449,7 @@ func (r *stepRecordsRig) tokenOf(issue string, role claim.Role) claim.Token {
 // awaitLaunch waits for the running daemon to launch token's claim.
 func (r *stepRecordsRig) awaitLaunch(token claim.Token) {
 	r.t.Helper()
-	testwait.WithinPolling(r.t, stepRecordsWait, 50*time.Millisecond, "the daemon's launch of "+string(token), func() bool {
+	testwait.WithinPolling(r.t, testdeadline.StartupBound(r.t), 50*time.Millisecond, "the daemon's launch of "+string(token), func() bool {
 		for _, call := range r.rt.Calls() {
 			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
 				return true
@@ -579,7 +580,7 @@ func (r *stepRecordsRig) waitStepsOf(issue, what string, hold func(stepRecordsRe
 func waitRead[T any](r *stepRecordsRig, what, where string, interval time.Duration, read func() (T, error), hold func(T) error) {
 	r.t.Helper()
 	var last error
-	if !testwait.Holds(stepRecordsWait, interval, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(r.t), interval, func() bool {
 		got, err := read()
 		if err != nil {
 			last = err
@@ -886,11 +887,13 @@ func (c *stepClaimant) take() {
 // and holds until a turn works it.
 func (c *stepClaimant) receive() shimwire.Prompt {
 	c.r.t.Helper()
+	bound, cancel := testdeadline.Answered(c.r.t, context.Background())
+	defer cancel()
 	select {
 	case prompt := <-c.prompts:
 		return prompt
-	case <-time.After(stepRecordsWait):
-		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
+	case <-bound.Done():
+		c.r.t.Fatalf("%s was prompted with no task before the test's deadline", c.token)
 		return shimwire.Prompt{}
 	}
 }
@@ -919,7 +922,7 @@ func (c *stepClaimant) ownTurn() {
 func (c *stepClaimant) waitState(state supervise.ClaimState) {
 	c.r.t.Helper()
 	var last string
-	if !testwait.Holds(stepRecordsWait, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(c.r.t), 20*time.Millisecond, func() bool {
 		last = c.r.d.claim(c.token).State
 		return last == string(state)
 	}) {

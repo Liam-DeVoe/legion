@@ -1371,13 +1371,15 @@ func TestTheBlockIndexArmsWaitForTheDocumentsOwnerLockHoldingNoTransactionID(t *
 			if err := holder.Commit(ctx); err != nil {
 				t.Fatalf("release the owner lock: %v", err)
 			}
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case got := <-ticked:
 				if got.err != nil {
 					t.Fatalf("the tick: %v", got.err)
 				}
 				arm.wrote(t, got.tick)
-			case <-time.After(30 * time.Second):
+			case <-answered.Done():
 				t.Fatal("the tick never finished once the owner lock was released")
 			}
 		})

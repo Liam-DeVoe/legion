@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // testSigningKey is the one-key set the package's people stores seal refresh tokens under.
@@ -525,7 +526,7 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		tree.Children[0].Children[1].Children[0].Children[0].Children = nil
 		return tree
 	})
-	waitFor(t, time.Second, "malformed update persisted", func() bool {
+	waitFor(t, "malformed update persisted", func() bool {
 		var updates int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_updates where artifact_id = $1
@@ -596,7 +597,7 @@ func TestSettlementRecordsMalformedAskAndRepairsIt(t *testing.T) {
 		}}
 		return tree
 	})
-	waitFor(t, time.Second, "repaired update persisted", func() bool {
+	waitFor(t, "repaired update persisted", func() bool {
 		var updates int
 		if err := service.store.Pool.QueryRow(context.Background(), `
 			select count(*) from doc_updates where artifact_id = $1
@@ -5249,7 +5250,7 @@ func TestImmediateSettlementTimerUnregistersAfterFiring(t *testing.T) {
 	if timer == nil {
 		t.Fatal("immediate settlement did not schedule a timer")
 	}
-	waitFor(t, time.Second, "expired immediate settlement timer to unregister", func() bool {
+	waitFor(t, "expired immediate settlement timer to unregister", func() bool {
 		return !service.isSettleTimerArmed(timer)
 	})
 }
@@ -5399,7 +5400,7 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
 	locked := false
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -5479,7 +5480,7 @@ func TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad(t *testing.T) {
 	if err := restarted.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load the document on the restarted server: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for indexedAsks(t, restarted, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the restarted server never ran the settlement the shutdown left: its ask block is unindexed")
@@ -5510,7 +5511,7 @@ func TestResumptionSettlesAnOwedDocumentNobodyOpens(t *testing.T) {
 	if err := service.resumeOwedSettlements(context.Background(), 0); err != nil {
 		t.Fatalf("resume every owed settlement: %v", err)
 	}
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for indexedAsks(t, service, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the resumption never settled the owed document: its ask block is unindexed")
@@ -5595,9 +5596,11 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 	if err := blocker.Commit(context.Background()); err != nil {
 		t.Fatalf("release document lock: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-settled:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("settlement did not complete")
 	}
 	version := waitForDocumentVersion(t, service.store, artifactID, 2)
@@ -5608,7 +5611,7 @@ func TestSettleCapturesAuthorsAtSnapshotTime(t *testing.T) {
 
 func waitForDatabaseLock(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -6069,7 +6072,7 @@ func persistedProofTree(t *testing.T, database *store.Store, artifactID string) 
 
 func waitForPersistedProofText(t *testing.T, database *store.Store, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		markdown, err := renderTree(persistedProofTree(t, database, artifactID))
 		if err == nil && markdown == want {
@@ -6210,7 +6213,7 @@ func waitForNoLiveDocument(t *testing.T, service *Service, artifactID string) {
 }
 func waitForDocumentText(t *testing.T, service *Service, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		got, err := service.Text(context.Background(), artifactID)
 		if err == nil && got == want {
@@ -6224,9 +6227,10 @@ func waitForDocumentText(t *testing.T, service *Service, artifactID, want string
 
 func waitForDocumentVersion(t *testing.T, database *store.Store, artifactID string, number int) model.Version {
 	t.Helper()
-	// A ceiling, not a duration: a settlement that needs a room reload first (a test that evicted
-	// the room) takes longer than one that only writes, and a loaded CI runner stretches both.
-	deadline := time.Now().Add(3 * time.Second)
+	// The test's deadline, not a fixed ceiling: a settlement that needs a room reload first (a test
+	// that evicted the room) takes longer than one that only writes, and a loaded CI runner stretches
+	// both while Postgres still answers.
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		version, ok, err := loadDocumentVersion(context.Background(), database, artifactID, number)
 		if err != nil {
@@ -6344,7 +6348,7 @@ func TestASettlementWhoseRoomACloseRetiredBeforeItsReadIsArmedAgain(t *testing.T
 	// reads it. The delay is written once, before the settlement it arms.
 	service.settle = 20 * time.Millisecond
 	service.scheduleSettle(artifactID)
-	waitFor(t, roomWait(t), "the document whose room closed under its settlement to settle", func() bool {
+	waitFor(t, "the document whose room closed under its settlement to settle", func() bool {
 		owed, err := settlementPending(context.Background(), service.store.Pool, artifactID)
 		return err == nil && !owed
 	})
@@ -6525,7 +6529,7 @@ func TestQuoteMarkSettlesLegacyTableWithoutCanonicalizing(t *testing.T) {
 		t.Fatalf("mark quote: %v", err)
 	}
 	settleCurrentGeneration(t, service, artifactID)
-	waitFor(t, time.Second, "quote mark removed", func() bool {
+	waitFor(t, "quote mark removed", func() bool {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "mark-1")
 		return !found
 	})

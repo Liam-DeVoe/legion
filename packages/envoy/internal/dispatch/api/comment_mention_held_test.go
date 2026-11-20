@@ -57,9 +57,10 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	outboxDeps := deps
 	outboxDeps.Store = database
 	runOutboxBeside(t, outboxDeps, view)
-	waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
+	waitUntil(t, "the issue's first events published", func() bool {
 		return unpublishedEvents(t, database, issue.Key) == 0
 	})
+
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q before any mention, want no held send", heldLines(body))
 	}
@@ -69,15 +70,16 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 		"body": "event 1, by a session", "actor": map[string]any{"kind": "session", "id": "s2"},
 	}))
 	first := commentEventID(t, database, firstComment.ID)
-	waitUntil(t, 10*time.Second, "event 1's topic send backed off", func() bool {
+	waitUntil(t, "event 1's topic send backed off", func() bool {
 		attempts, _ := eventAttempts(t, database, first)
 		return attempts > 0
 	})
+
 	mention := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 		"body": "the comment that mentions s1", "mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	const warning = `level=WARN msg="dispatch: a comment mention's send waits behind an earlier event of its owner"`
-	waitUntil(t, 10*time.Second, "the held send counted and reported", func() bool {
+	waitUntil(t, "the held send counted and reported", func() bool {
 		return strings.Contains(scrape(t, registry), "envoy_dispatch_mention_sends_held 1\n") &&
 			strings.Contains(logs.String(), warning)
 	})
@@ -128,10 +130,11 @@ func TestAHeldMentionSendIsCountedAndReportedOnce(t *testing.T) {
 	}
 
 	view.refuseTopics(false)
-	waitUntil(t, 30*time.Second, "the held send landed", func() bool {
+	waitUntil(t, "the held send landed", func() bool {
 		attempts := waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true })
 		return len(attempts) == 1 && attempts[0].State == "sent"
 	})
+
 	if body := scrape(t, registry); !strings.Contains(body, "envoy_dispatch_mention_sends_held 0\n") {
 		t.Fatalf("the gauges read %q once the send landed, want no held send", heldLines(body))
 	}

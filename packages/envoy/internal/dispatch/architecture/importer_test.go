@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // archRepo is the repository newImporterFixture's source of CORE reads.
@@ -1467,7 +1468,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	// the record, so wait for the record first and let Close wait the flight
 	// out before reading what it wrote.
 	var lastError *string
-	for until := time.Now().Add(10 * time.Second); lastError == nil && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+	for until := time.Now().Add(testdeadline.StartupBound(t)); lastError == nil && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
 		if err := database2.Pool.QueryRow(context.Background(),
 			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
 			t.Fatalf("read row: %v", err)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -1687,11 +1688,13 @@ func TestForgetSessionRechecksItsSessionInsideTheMachine(t *testing.T) {
 		response <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/forget-session",
 			map[string]string{"session": "ses_architect"})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-snapshotted:
 	case recorder := <-response:
 		t.Fatalf("forget-session completed before its snapshot hook: %d %s", recorder.Code, recorder.Body)
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("forget-session did not reach its snapshot hook")
 	}
 
@@ -1753,11 +1756,13 @@ func TestForgetSessionRefusesDaemonStopAfterPreflight(t *testing.T) {
 		response <- h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/forget-session",
 			map[string]string{"session": "ses_architect"})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-snapshotted:
 	case recorder := <-response:
 		t.Fatalf("forget-session completed before its snapshot hook: %d %s", recorder.Code, recorder.Body)
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("forget-session did not reach its snapshot hook")
 	}
 	beginStop()

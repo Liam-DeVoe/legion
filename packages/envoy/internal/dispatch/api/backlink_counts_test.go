@@ -8,9 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 type askBacklinkCount struct {
@@ -582,7 +582,8 @@ func TestAnOpenedAskPublishesWhatItsQuestionCites(t *testing.T) {
 		t.Fatalf("open a citing ask: status=%d body=%s", opened.Code, opened.Body.String())
 	}
 	askID := decodeBody[writtenRecord](t, opened).ID
-	deadline := time.After(5 * time.Second)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for {
 		select {
 		case event := <-published:
@@ -609,7 +610,7 @@ func TestAnOpenedAskPublishesWhatItsQuestionCites(t *testing.T) {
 				t.Fatalf("published ask.opened opened_event_id = %v, want the event's own id %d", payload.OpenedEventID, event.ID)
 			}
 			return
-		case <-deadline:
+		case <-answered.Done():
 			t.Fatal("no ask.opened event was published")
 		}
 	}

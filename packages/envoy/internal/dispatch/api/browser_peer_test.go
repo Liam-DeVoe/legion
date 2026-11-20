@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 	ygsync "github.com/reearth/ygo/sync"
@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // servedSockets lets a test wait until the document server is done with one of its
@@ -104,14 +105,16 @@ func (p *syncedPeer) connection() *docstest.Peer {
 // to the peer before barrier sees it, so the peer then holds everything the room sent before that
 // answer. The document check covers a sync step 2 that was already on its way when barrier
 // drained: another peer's that the room relays can arrive after the request and predate an update
-// this peer sent just before it.
+// this peer sent just before it. It waits as long as the test's deadline leaves, since the room
+// answers only once its load from Postgres has.
 func (p *syncedPeer) barrier(t *testing.T) {
 	t.Helper()
 	conn := p.connection()
 	for len(conn.Answers) > 0 {
 		<-conn.Answers
 	}
-	deadline := time.After(5 * time.Second)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for {
 		if err := conn.AskForDocument(); err != nil {
 			t.Fatalf("send browser peer sync step 1: %v", err)
@@ -123,7 +126,7 @@ func (p *syncedPeer) barrier(t *testing.T) {
 			}
 		case <-conn.Ended:
 			t.Fatal("browser peer connection closed before the room answered its sync")
-		case <-deadline:
+		case <-answered.Done():
 			t.Fatal("the room never answered with a state holding everything the browser peer sent")
 		}
 	}
@@ -154,16 +157,19 @@ func (p *syncedPeer) reconnect(t *testing.T) {
 }
 
 // closeAndWait closes the peer's connection and returns once the document server has let it go,
-// which is after the room's eviction and last-peer settlement when the peer was the room's last.
+// which is after the room's eviction and last-peer settlement when the peer was the room's last:
+// the settlement writes to Postgres, so the wait takes the test's deadline.
 func (p *syncedPeer) closeAndWait(t *testing.T) {
 	t.Helper()
 	p.mu.Lock()
 	socketID := p.socketID
 	p.mu.Unlock()
 	p.close()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-p.sockets.done(socketID):
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the document server did not let go of the browser peer's closed connection")
 	}
 }

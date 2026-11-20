@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The places the proxy port refuses a call, each one no other row drives: the seven of the
@@ -104,10 +105,11 @@ func answersCounted(t *testing.T, registry *metrics.Registry, labels string) int
 
 // answersCountedReach waits for registry's sample naming labels to reach want: an answer is
 // counted once its handler returns, which for a streamed answer is after the client has read
-// it. It fails the row rather than hanging when the count never comes.
+// it. It fails the row rather than hanging when the count never comes by the test's deadline less
+// its cleanup.
 func answersCountedReach(t *testing.T, registry *metrics.Registry, labels string, want int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		got := answersCounted(t, registry, labels)
 		if got >= want {

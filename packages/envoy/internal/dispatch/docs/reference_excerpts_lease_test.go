@@ -4,12 +4,12 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // excerptLeases is the pool a reconciliation pass takes its lease on, the one cmd/dispatch gives
@@ -60,13 +60,15 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 		t.Fatalf("hold refs: %v", err)
 	}
 
+	// Each wait below is for the runners' lease and refs statements, which Postgres answers, so it
+	// ends at the test's deadline (testdeadline.StartupBound), not at a fixed span.
 	runExcerpts(t, func(ctx context.Context) { first.RunReferenceExcerptReconciliation(ctx, firstLeases, nil) })
-	if waiting := storetest.WaitForLockWaiters(t, gate, 1, 30*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, gate, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatal("the first runner's pass never reached the refs lock: it never took the lease")
 	}
 	runExcerpts(t, func(ctx context.Context) { other.RunReferenceExcerptReconciliation(ctx, secondLeases, nil) })
 	// The second runner's boot attempt and at least one retry find the lease held.
-	waitFor(t, 30*time.Second, "the second runner to find the lease held twice", func() bool {
+	waitFor(t, "the second runner to find the lease held twice", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", referenceExcerptLease) >= 2
 	})
 	if ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease); ran != 0 {
@@ -76,7 +78,7 @@ func TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass(t *testing.T)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release refs: %v", err)
 	}
-	waitFor(t, 30*time.Second, "both runners to run a pass of their own", func() bool {
+	waitFor(t, "both runners to run a pass of their own", func() bool {
 		return countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", referenceExcerptLease) == 2
 	})
 	if isOwed(t, database, document) {

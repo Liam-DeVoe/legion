@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // agentSessions is the registry the keyed-send tests' fake listener answers: two sessions that
@@ -208,9 +209,11 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() { answered <- send() }()
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case <-held:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the send never reached the listener")
 	}
 	// The deploy's signal, while the listener holds the send. A send cut off by it ends its
@@ -225,7 +228,7 @@ func TestASendInFlightAtShutdownStillSettles(t *testing.T) {
 	var created *httptest.ResponseRecorder
 	select {
 	case created = <-answered:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the send in flight at shutdown never answered")
 	}
 
@@ -294,6 +297,8 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 
 	fresh := 0
 	ids := map[string]struct{}{}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for range senders {
 		select {
 		case response := <-responses:
@@ -310,7 +315,7 @@ func TestConcurrentSendsUnderOneKeyMakeOneMessage(t *testing.T) {
 			default:
 				t.Errorf("status=%d body=%s", response.Code, response.Body.String())
 			}
-		case <-time.After(20 * time.Second):
+		case <-answered.Done():
 			t.Fatal("a concurrent send did not answer")
 		}
 	}
@@ -362,16 +367,18 @@ func TestAClientAbortMidSendStillDeliversOnce(t *testing.T) {
 		defer close(answered)
 		handler.ServeHTTP(httptest.NewRecorder(), request)
 	}()
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case <-sending:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the send never reached the listener")
 	}
 	cancel()
 	close(release)
 	select {
 	case <-answered:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the cut-off send never finished")
 	}
 

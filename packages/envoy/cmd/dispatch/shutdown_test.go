@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -105,9 +106,12 @@ func TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument(t *testing
 // queued behind another writer's lock on the issue. The document service starts once that share
 // ends, so the settlement owed by the edit before the signal still runs and commits. Settlement waits
 // on the same lock: the edit's own timer starts one two seconds in, during the drain, and Shutdown
-// starts another. The lock is released once Shutdown's is queued behind it too, or two seconds after
-// the document service started, which is ample for it to read what is owed; a release before that
-// read could let the timer's settlement commit first.
+// starts another. The lock is released once Shutdown's is queued behind it too, waited for until
+// the test's deadline: a release before Shutdown's settlement read what is owed could let the
+// timer's settlement commit first. Shutdown's settlement takes the issue's owner lock in the first
+// statement of its transaction (docs' settleRoomWithin), after only the room's durable appends and
+// the read of what is owed, neither of which waits on that lock, and the room is resident because
+// the timer's settlement warmed it before it queued, so it queues while the lock is held.
 func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *testing.T) {
 	database := storetest.Open(t)
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -122,14 +126,14 @@ func TestSIGTERMWhileARequestHoldsHTTPShutdownStillSettlesTheOwedDocument(t *tes
 	}()
 	// The edit's settlement queues behind the same lock two seconds in, so a count of waiters
 	// could pass with the title change still on its way: watch the title change's own backend.
-	if pid := waitForRenameBehind(t, database, holder, 10*time.Second); pid == 0 {
+	if pid := waitForRenameBehind(t, database, holder); pid == 0 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
 	signalled := process.Terminate(t)
 	process.WaitForOutput(t, `msg="dispatch: settle documents with requests still in flight"`)
 	t.Logf("the document service started with the request in flight %v after SIGTERM", time.Since(signalled))
-	waiting := storetest.WaitForLockWaiters(t, holder, 3, 2*time.Second)
+	waiting := storetest.WaitForLockWaiters(t, holder, 3, testdeadline.StartupBound(t))
 	if err := holder.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the issue lock: %v", err)
 	}
@@ -163,7 +167,7 @@ func TestSIGTERMWhileAWriteWaitsOnALockCommitsItAndAnswersBeforeExit(t *testing.
 		status, err := process.renameIssue(key, "Committed after the lock")
 		answered <- answer{status, err}
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatalf("the title change never queued behind the issue lock:\n%s", process.Output.String())
 	}
 
@@ -467,7 +471,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	if err := conn.WriteJSON(map[string]any{"type": "subscribe", "sub": "pipeline", "view": map[string]string{"kind": "pipeline"}}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(testdeadline.StartupBound(t)))
 	var refusal struct {
 		Type, Sub, Code string
 	}
@@ -490,9 +494,11 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 			background.Wait()
 		}, func() {}, func() {}, nil)
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-entered:
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("shutdown never waited for delivery work")
 	}
 	if _, err := database.Pool.Exec(context.Background(), "select 1"); err != nil {
@@ -501,7 +507,7 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	close(release)
 	select {
 	case <-done:
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("shutdown did not return after delivery work ended")
 	}
 	if _, _, err := conn.ReadMessage(); !gws.IsCloseError(err, gws.CloseServiceRestart) {
@@ -578,10 +584,10 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 		defer close(outboxStopped)
 		box.Run(lifetime)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !box.Publishing() {
 		if time.Now().After(deadline) {
-			t.Fatal("the outbox did not take the publisher hold within 10s")
+			t.Fatal("the outbox did not take the publisher hold before the test's deadline")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -609,10 +615,12 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the event: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-publisher.entered:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the outbox did not send the event within 10s")
+	case <-answered.Done():
+		t.Fatal("the outbox did not send the event before the test's deadline")
 	}
 
 	stop()
@@ -632,7 +640,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	released()
 	select {
 	case <-done:
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatal("shutdown did not return after the outbox stopped")
 	}
 	var holds int
@@ -746,7 +754,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		}
 		return info
 	}
-	waitUntil(t, 30*time.Second, "the intake's durable to be bound", func() bool {
+	waitUntil(t, testdeadline.StartupBound(t), "the intake's durable to be bound", func() bool {
 		info := consumer()
 		return info != nil && info.PushBound
 	})
@@ -762,9 +770,11 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("publish the merged pull request: %v", err)
 	}
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-entered:
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the intake never fetched the merged pull request")
 	}
 
@@ -786,8 +796,8 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		if err != nil {
 			t.Fatalf("serveUntilStopped: %v", err)
 		}
-	case <-time.After(stopGrace):
-		t.Fatal("the shutdown did not end within stopGrace")
+	case <-answered.Done():
+		t.Fatal("the shutdown did not end before the test's deadline")
 	}
 
 	reader, err := pgx.Connect(context.Background(), database.Pool.Config().ConnString())
@@ -892,19 +902,20 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 	return holder
 }
 
-// waitForRenameBehind waits up to within for the title change's backend to queue behind holder's
-// lock on the issue, and returns its process id, or 0 if it did not. The title change runs in the
-// Dispatch process, so its backend is found by its statement, the owner-lock statement a PATCH
-// sends first (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the
-// same statement for the same lock, but only once it holds its document's lock, an advisory lock
-// of its own; the title change holds none of those while it waits. Both hold the owner lock's
-// gate, which every write of this build takes shared in that same statement before it waits on
-// the owner (store.OwnerLockGateNamespace, migration 20261115200014), so the gate is the one
-// advisory lock that tells the two apart by nothing and is left out of the exclusion.
-func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, within time.Duration) uint32 {
+// waitForRenameBehind waits until the test's deadline less its cleanup for the title change's
+// backend to queue behind holder's lock on the issue, and returns its process id, or 0 if it did
+// not. The title change runs in the Dispatch process, so its backend is found by its statement,
+// the owner-lock statement a PATCH sends first (lockIssueOwners in
+// internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock,
+// but only once it holds its document's lock, an advisory lock of its own; the title change holds
+// none of those while it waits. Both hold the owner lock's gate, which every write of this build
+// takes shared in that same statement before it waits on the owner (store.OwnerLockGateNamespace,
+// migration 20261115200014), so the gate is the one advisory lock that tells the two apart by
+// nothing and is left out of the exclusion.
+func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) uint32 {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(within)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity
@@ -1018,7 +1029,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	go func() {
 		_, _ = process.trySend(http.MethodPost, "/api/v1/issues", `{"project":"STOP","title":"Never answered"}`, asUser(dispatchTestLogin))
 	}()
-	if waiting := storetest.WaitForLockWaiters(t, holder, 1, 10*time.Second); waiting < 1 {
+	if waiting := storetest.WaitForLockWaiters(t, holder, 1, testdeadline.StartupBound(t)); waiting < 1 {
 		t.Fatalf("the issue create never queued behind the project lock:\n%s", process.Output.String())
 	}
 
@@ -1897,23 +1908,23 @@ func settlementMarkedAt(t *testing.T, database *store.Store, artifactID string) 
 
 func waitForSettlementMarkedAfter(t *testing.T, database *store.Store, artifactID string, before time.Time) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !settlementMarkedAt(t, database, artifactID).After(before) {
 		if time.Now().After(deadline) {
-			t.Fatalf("the editor's durable update did not advance the pending settlement marker within 10s")
+			t.Fatalf("the editor's durable update did not advance the pending settlement marker before the test's deadline")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// waitForSettlementOwed waits up to 10 s for the document's pending-settlement row to be there, or
-// gone.
+// waitForSettlementOwed waits until the test's deadline less its cleanup for the document's
+// pending-settlement row to be there, or gone.
 func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID string, owed bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for settlementOwed(t, database, artifactID) != owed {
 		if time.Now().After(deadline) {
-			t.Fatalf("the document's pending-settlement row was not %s within 10s", map[bool]string{true: "there", false: "gone"}[owed])
+			t.Fatalf("the document's pending-settlement row was not %s before the test's deadline", map[bool]string{true: "there", false: "gone"}[owed])
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

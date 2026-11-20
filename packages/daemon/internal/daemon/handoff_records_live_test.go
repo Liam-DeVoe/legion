@@ -54,6 +54,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -166,7 +167,7 @@ func (r *handoffRecordsLive) boot() {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github
-	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonWithin(r.t, r.cfg, o, r.log(), testdeadline.StartupBound(r.t))
 	r.note("Dispatch %s (database of its own, NATS off), project %s mapped to %s; daemon at dispatch_url %s",
 		r.dispatch.base, r.cfg.Project, liveRepo, r.cfg.DispatchURL)
 }

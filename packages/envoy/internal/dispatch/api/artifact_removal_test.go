@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // removeDocument sends DELETE /api/v1/artifacts/{id} as alice, the person who made the document.
@@ -819,7 +820,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 		if text, err := process.service.Text(ctx, document.ID); err != nil || text != "" {
 			t.Fatalf("%s reads the live document as %q, %v; want the empty document it was made as", process.what, text, err)
 		}
-		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 			return slices.Contains(process.service.ResidentRooms(), document.ID)
 		}) {
 			t.Fatalf("%s holds the rooms %v, and not %s, whose room the removal must close",
@@ -831,7 +832,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 
 	// The second process hears the removal over the database and closes its room. The wait is
 	// for the notification's trip, not for a retry: nothing announces this twice.
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		return !slices.Contains(holding.ResidentRooms(), document.ID)
 	}) {
 		t.Fatalf("the second process still holds the room of the removed document %s: %v; its next append meets a foreign key that no longer resolves",
@@ -900,7 +901,7 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	if text, err := third.Text(ctx, untouched.ID); err != nil || text != "" {
 		t.Fatalf("the third process reads the live document as %q, %v; want the empty document it was made as", text, err)
 	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		return slices.Contains(third.ResidentRooms(), untouched.ID)
 	}) {
 		t.Fatalf("the third process holds the rooms %v, and not %s, whose room the removal must close",
@@ -913,12 +914,14 @@ func TestARemovedDocumentsRoomClosesOnEveryProcess(t *testing.T) {
 	// nobody there and is never sent again. Its hub is let through, and its LISTEN is waited
 	// for: what closes the room now is a pass that LISTEN runs.
 	close(through)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-listening:
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the third process's listener hub never listened after the test let its dial through")
 	}
-	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		return !slices.Contains(third.ResidentRooms(), untouched.ID)
 	}) {
 		t.Fatalf("the third process, whose hub was between connections when %s was removed, still holds the room of it after its LISTEN stood again: %v; it holds a resident room over a deleted row, and its next append meets the doc_updates foreign key",

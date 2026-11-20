@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A close withdraws the spec's approval request and a reopen restores it with the turn it had, so
@@ -177,7 +178,7 @@ func TestAReopenedApprovalRequestNamesTheVersionAClosedSettlementWrote(t *testin
 
 	reopenAndSettle(t, f, issue.Key)
 	var restored carriedAsk
-	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(20 * time.Millisecond) {
 		if restored = readCarriedAsk(t, handler, request.ID); restored.Approval.Version == closed {
 			break
 		}

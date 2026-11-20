@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The cadence a relay generation reads a gap on (eventGapReread), step by step: a gap only the
@@ -122,7 +123,7 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 	)
 	lowID, high, commitLow := appendOutOfOrder(t, database, events.NewBroker(), issue.Key, other.Key)
 	low.Store(lowID)
-	horizon.awaitTaken(t, 2, coalesce+10*time.Second)
+	horizon.awaitTaken(t, 2)
 	select {
 	case event := <-subscription:
 		t.Fatalf("the relay published event %d while the write holding %d is open", event.Event.ID, lowID)
@@ -137,14 +138,14 @@ func TestEventStreamRelayClosesAHeldGapOnTheHoldersCommitNotification(t *testing
 }
 
 // waitForQuietEventLog waits until the event log's head has stood still for quiet, so no write
-// the test's setup made is still to notify.
+// the test's setup made is still to notify. It waits as long as the test's deadline leaves.
 func waitForQuietEventLog(t *testing.T, database *store.Store, quiet time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	head, since := eventHead(t, database), time.Now()
 	for time.Since(since) < quiet {
 		if time.Now().After(deadline) {
-			t.Fatal("the event log was still growing after 10 s")
+			t.Fatal("the event log was still growing at the test's deadline")
 		}
 		time.Sleep(20 * time.Millisecond)
 		if now := eventHead(t, database); now != head {
@@ -208,13 +209,14 @@ func (db *cadenceHorizonDB) left() int {
 }
 
 // settle waits until the relay has taken no observation for 300 ms: its start and the catch-up
-// its listener's connection runs are over.
+// its listener's connection runs are over. Each observation is a read of Postgres, so it waits as
+// long as the test's deadline leaves.
 func (db *cadenceHorizonDB) settle(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for db.observedDuring(300*time.Millisecond) != 0 {
 		if time.Now().After(deadline) {
-			t.Fatal("the relay kept observing for 10 s after it started")
+			t.Fatal("the relay kept observing until the test's deadline after it started")
 		}
 	}
 }
@@ -226,18 +228,20 @@ func (db *cadenceHorizonDB) observedDuring(d time.Duration) int64 {
 	return db.observations.Load() - before
 }
 
-// awaitTaken waits up to within for the scripted observation at position to be taken.
-func (db *cadenceHorizonDB) awaitTaken(t *testing.T, position int, within time.Duration) {
+// awaitTaken waits, as long as the test's deadline leaves, for the scripted observation at
+// position to be taken: each is a read of Postgres the relay takes when its cadence says.
+func (db *cadenceHorizonDB) awaitTaken(t *testing.T, position int) {
 	t.Helper()
-	timeout := time.After(within)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	for {
 		select {
 		case taken := <-db.taken:
 			if taken >= position {
 				return
 			}
-		case <-timeout:
-			t.Fatalf("scripted observation %d not taken within %s", position, within)
+		case <-answered.Done():
+			t.Fatalf("scripted observation %d not taken before the test's deadline", position)
 		}
 	}
 }

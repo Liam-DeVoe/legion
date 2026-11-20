@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
@@ -183,12 +184,14 @@ func (rig *checkWakeRig) boot(t *testing.T) {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case err := <-done:
 			if err != nil {
 				t.Errorf("run: %v", err)
 			}
-		case <-time.After(15 * time.Second):
+		case <-answered.Done():
 			t.Error("daemon did not stop")
 		}
 	})

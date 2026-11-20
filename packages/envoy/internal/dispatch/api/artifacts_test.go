@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/fixtureenv"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func createArtifactIssue(t *testing.T, handler http.Handler) model.Issue {
@@ -1171,9 +1171,11 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	before := issueArtifactCount(t, database, issue.Key)
 	answered := make(chan sentUpload, 1)
 	go func() { answered <- sendBigUpload(t, handler, issue.Key, "running-upload") }()
+	waited, cancelWait := testdeadline.Answered(t, context.Background())
+	defer cancelWait()
 	select {
 	case <-held.reached:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the first upload never reached the file store")
 	}
 	closeArtifactIssue(t, handler, issue.Key)
@@ -1193,7 +1195,7 @@ func TestARepeatOfAnUploadStillRunningWaitsForItsAnswerAfterTheIssueCloses(t *te
 	var first sentUpload
 	select {
 	case first = <-answered:
-	case <-time.After(10 * time.Second):
+	case <-waited.Done():
 		t.Fatal("the first upload never answered once released")
 	}
 	if code, _ := refusalOf(t, first.ResponseRecorder); first.Code != http.StatusConflict || code != "ISSUE_CLOSED" {

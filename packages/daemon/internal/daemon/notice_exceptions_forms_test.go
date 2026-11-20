@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -41,7 +42,7 @@ func TestARoleLaneExceptionInTheNewFormQueuesTheNoticeAgain(t *testing.T) {
 	if err := conn.Publish("notifications.envoy.exceptions."+topic, report.envelope(t)); err != nil {
 		t.Fatalf("publish the report: %v", err)
 	}
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for len(queuedNotices(t, pool)) == 0 && time.Now().Before(deadline) {
 		select {
 		case err := <-failed:

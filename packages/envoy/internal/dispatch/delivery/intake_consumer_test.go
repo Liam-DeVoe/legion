@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // TestIntakeStampsItsFlowControlOnADurableAnEarlierReleaseLeft holds what bind does to the
@@ -700,9 +701,11 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 	}()
 	releaseLease := sync.OnceFunc(func() { close(release) })
 	t.Cleanup(releaseLease)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-taken:
-	case <-time.After(20 * time.Second):
+	case <-answered.Done():
 		t.Fatalf("the other caller never took the %s lease", consumerLease(bus.DispatchDeliveryDurable))
 	}
 
@@ -715,7 +718,7 @@ func TestABindWhoseLeaseIsHeldElsewhereChangesNothing(t *testing.T) {
 		}
 		return false
 	}
-	waitFor(t, 20*time.Second, skipped, func() string {
+	waitFor(t, testdeadline.StartupBound(t), skipped, func() string {
 		return fmt.Sprintf("the intake never reported skipping the %s lease: %v", consumerLease(bus.DispatchDeliveryDurable), logs())
 	})
 	time.Sleep(2 * durableBindInterval)

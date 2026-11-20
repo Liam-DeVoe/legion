@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // These tests hold an API transaction open between its live document write and a forced
@@ -361,9 +362,11 @@ func (f *heldWriteFixture) startFailingEdit(t *testing.T) <-chan *httptest.Respo
 	t.Cleanup(func() {
 		closeTestGate(f.failure.releaseBeforeApply)
 		closeTestGate(f.failure.release)
+		exited, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-exited.Done():
 			t.Error("transactional edit did not exit after releasing test gates")
 		}
 	})
@@ -409,7 +412,7 @@ func (f *heldWriteFixture) waitForLiveText(t *testing.T, want string) {
 // waitForLiveText waits until the live document's text holds want.
 func waitForLiveText(t *testing.T, documentService *docs.Service, artifactID, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		text, err := documentService.Text(context.Background(), artifactID)
 		if err != nil {
@@ -460,7 +463,7 @@ func (f *heldWriteFixture) versions(t *testing.T) []string {
 
 func (f *heldWriteFixture) waitForVersionHolding(t *testing.T, text string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		for _, version := range f.versions(t) {
 			if strings.Contains(version, text) {
@@ -498,7 +501,7 @@ func (f *heldWriteFixture) assertNoVersionHolds(t *testing.T, text string) {
 // assertDurableText renders the document the store would load, update by update.
 func (f *heldWriteFixture) assertDurableText(t *testing.T, want string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		got := f.durableText(t)
 		if got == want {
@@ -540,7 +543,7 @@ func (f *heldWriteFixture) durableText(t *testing.T) string {
 // behind the held transaction.
 func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
@@ -645,9 +648,11 @@ func drainDocumentUpdates(store *recordingVersionedStore) {
 
 func waitForDocumentUpdate(t *testing.T, store *recordingVersionedStore) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-store.updates:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("document mutation did not reach persistence")
 	}
 }
@@ -735,18 +740,22 @@ func closeTestGate(gate chan struct{}) {
 
 func waitForBeforeApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-docs.beforeApply:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("document mutation did not reach pre-apply gate")
 	}
 }
 
 func waitForPostApply(t *testing.T, docs *postApplyFailureDocs) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-docs.applied:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("document mutation did not complete")
 	}
 }

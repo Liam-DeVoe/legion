@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed meets the title correction of a
@@ -37,11 +38,13 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 	held.armed.Store(true)
 	renamed := make(chan *httptest.ResponseRecorder, 1)
 	go func() { renamed <- correctTitle(t, fixture.handler, document.ID, corrected) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held.reached:
 	case response := <-renamed:
 		t.Fatalf("the correction answered before its update was held: status=%d body=%s", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the correction never ran its update of the document's title")
 	}
 
@@ -52,7 +55,7 @@ func TestARenameOfAProjectDocumentBesideACommentOnItBothSucceed(t *testing.T) {
 			"anchor": map[string]any{"artifact": document.Slug, "quote": quote}, "actor": sessionActor(),
 		})
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		waiting, err := storetest.CountLockWaits(context.Background(), fixture.database, "%")
 		if err != nil {

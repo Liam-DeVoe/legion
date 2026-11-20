@@ -218,12 +218,12 @@ func TestClosingAnIssueOnOneProcessClosesEveryProcessesRoomsAndReopeningMakesThe
 	requireEnds(t, bob, "reopening the issue through task A left bob's read-only browser on task B connected")
 	alice = connectWithScope(t, serverA.URL, artifactID, "alice", "read-write", "before\n")
 	typeOver(t, alice, "before", "reopened by alice")
-	waitFor(t, roomWait(t), "alice's edit on the reopened issue to be stored", func() bool {
+	waitFor(t, "alice's edit on the reopened issue to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "reopened by alice")
 	})
 	bob = connectWithScope(t, serverB.URL, artifactID, "bob", "read-write", "reopened by alice\n")
 	typeOver(t, bob, "reopened by alice", "reopened by bob")
-	waitFor(t, roomWait(t), "bob's edit on the reopened issue to be stored", func() bool {
+	waitFor(t, "bob's edit on the reopened issue to be stored", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "reopened by bob")
 	})
 }
@@ -262,7 +262,7 @@ func TestAKeystrokeTakenBeforeTheIssueClosedIsStoredWhenItsAppendReachesTheGateA
 	// append that never comes.
 	t.Cleanup(appends.release)
 	typeOver(t, alice, "before", "typed before the close")
-	waitFor(t, roomWait(t), "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
+	waitFor(t, "task A's room to take alice's keystroke and its append to reach the held gate", func() bool {
 		return appends.waiting.Load() > 0 &&
 			strings.Contains(residentRoomMarkdown(t, taskA, artifactID), "typed before the close")
 	})
@@ -477,7 +477,7 @@ func TestABatchStraddlingTheIssuesCloseStoresWhatTheRoomTookInTime(t *testing.T)
 	}
 
 	requireEnds(t, alice, "the gate refused the keystroke alice made after the close and left her browser connected")
-	waitFor(t, roomWait(t), "the batch's admitted prefix to be stored", func() bool {
+	waitFor(t, "the batch's admitted prefix to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	if moved := storedHead(t, database, artifactID); moved != head+1 {
@@ -514,7 +514,7 @@ func queueAKeystrokeEachSideOfTheClose(t *testing.T, database *store.Store, serv
 	// clock against the close on the database's, so the two need only run at about the same rate.
 	time.Sleep(closeMargin / 2)
 	typeOver(t, alice, "typed in time", "typed after the close")
-	waitFor(t, roomWait(t), "both keystrokes to be queued on the room", func() bool {
+	waitFor(t, "both keystrokes to be queued on the room", func() bool {
 		state := service.lockExistingState(artifactID)
 		if state == nil {
 			return false
@@ -722,7 +722,7 @@ func waitForRoomGone(t *testing.T, service *Service, artifactID, issueKey string
 	if room == nil {
 		t.Fatalf("no room of %s was resident to wait on", artifactID)
 	}
-	waitFor(t, roomWait(t), "the room of "+artifactID+", whose issue "+issueKey+" closed, to stop being resident", func() bool {
+	waitFor(t, "the room of "+artifactID+", whose issue "+issueKey+" closed, to stop being resident", func() bool {
 		return service.srv.GetDoc(artifactID) != room
 	})
 }
@@ -1083,7 +1083,7 @@ func TestABurstOfRefusedKeystrokesClosesItsRoomOnce(t *testing.T) {
 	// The room applies each keystroke as it arrives and queues its append behind the gate, in
 	// order, so the last of them in the room's own copy says all four are in the room with none
 	// of them stored.
-	waitFor(t, roomWait(t), "the room to take all four of alice's keystrokes, the last of them "+strconv.Quote(typed), func() bool {
+	waitFor(t, "the room to take all four of alice's keystrokes, the last of them "+strconv.Quote(typed), func() bool {
 		return strings.Contains(residentRoomMarkdown(t, service, artifactID), typed)
 	})
 	appends.release()
@@ -1316,7 +1316,7 @@ func TestACloseForARefusedAppendLeavesTheRecordOfTheRoomThatLoadedInBetweenAlone
 	waitForLandedAppends(t, service, artifactID)
 	head := storedHead(t, database, artifactID)
 	typeOver(t, bob, "before", "typed into the room the close left alone")
-	waitFor(t, roomWait(t), "bob's keystroke into the room the close left alone to be stored", func() bool {
+	waitFor(t, "bob's keystroke into the room the close left alone to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 }
@@ -1416,7 +1416,7 @@ func TestTheAppendGatesCloseMovesTheRecordsLatestEditSourceToThePendingSettlemen
 	// keystroke's credit are then the same actor, and which of the two the record holds at the
 	// close does not decide the row below.
 	bob.Close()
-	waitFor(t, roomWait(t), "the record of the room to hold alice's browser alone", func() bool {
+	waitFor(t, "the record of the room to hold alice's browser alone", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 
@@ -1512,7 +1512,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
+	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	waitForLandedAppends(t, service, artifactID)
@@ -1555,12 +1555,12 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	// leaves the record behind her closed room: both are waited for, so the row his keystroke
 	// writes is the last word on it and the keystroke's credit names him alone.
 	waitForLandedAppends(t, service, artifactID)
-	waitFor(t, roomWait(t), "the record of the room that loaded while the close waited to hold bob's browser alone", func() bool {
+	waitFor(t, "the record of the room that loaded while the close waited to hold bob's browser alone", func() bool {
 		return connectedBrowsers(service, artifactID) == 1
 	})
 	bobsEdit := model.Actor{Kind: "user", ID: "bob", Proven: true}
 	typeOver(t, bob, "alice typed", "bob typed while the close waited")
-	waitFor(t, roomWait(t), "bob's keystroke to write him to the pending-settlement row of "+artifactID, func() bool {
+	waitFor(t, "bob's keystroke to write him to the pending-settlement row of "+artifactID, func() bool {
 		named := pendingSettlementActor(t, service, artifactID)
 		return named != nil && *named == bobsEdit
 	})
@@ -1568,7 +1568,7 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	requireRecordOpen(t, service, artifactID)
 
 	handled := closeIssueBehindAParkedClose(t, service, "DOC-1", artifactID)
-	waitFor(t, roomWait(t), "the second close to take bob off the record, which is its write of him to the row", func() bool {
+	waitFor(t, "the second close to take bob off the record, which is its write of him to the row", func() bool {
 		return recordLastActor(service, artifactID) == nil
 	})
 	requirePendingSettlementActor(t, service, artifactID, bobsEdit,
@@ -1638,7 +1638,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowASettlementTookWhile
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
+	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	waitForLandedAppends(t, taskA, artifactID)
@@ -1850,7 +1850,7 @@ func TestACloseForARefusedAppendWritesNoPendingSettlementRowWhereTheRecordsSourc
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
+	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	waitForLandedAppends(t, service, artifactID)
@@ -2110,7 +2110,7 @@ func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideIts
 	head := storedHead(t, database, artifactID)
 	alicesEdit := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	typeOver(t, alice, "before", "alice typed")
-	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
+	waitFor(t, "alice's keystroke on the open issue to be stored", func() bool {
 		return storedHead(t, database, artifactID) > head
 	})
 	waitForLandedAppends(t, taskA, artifactID)
@@ -2361,7 +2361,7 @@ func closeIssueBehindAParkedClose(t *testing.T, service *Service, issueKey, arti
 		defer close(handled)
 		service.issueOpenChanged(store.WithTransactionTracking(context.Background()), issueKey)
 	}()
-	waitFor(t, roomWait(t), "the notified close of "+issueKey+" to mark the record of "+artifactID+" closed", func() bool {
+	waitFor(t, "the notified close of "+issueKey+" to mark the record of "+artifactID+" closed", func() bool {
 		return recordReadsClosed(service, artifactID)
 	})
 	return handled
@@ -2395,7 +2395,7 @@ func settleTheDocumentNow(t *testing.T, service *Service, artifactID string) {
 		t.Fatalf("load %s for its settlement: %v", artifactID, err)
 	}
 	service.SettleNow(artifactID)
-	waitFor(t, roomWait(t), "the settlement of "+artifactID+" to take its pending-settlement row", func() bool {
+	waitFor(t, "the settlement of "+artifactID+" to take its pending-settlement row", func() bool {
 		owed, _, err := readOwedSettlement(context.Background(), service.store.Pool, artifactID)
 		if err != nil {
 			t.Fatalf("read the pending settlement of %s: %v", artifactID, err)

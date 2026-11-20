@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -77,20 +78,16 @@ const cutoverOldContract = 68
 // after the repair.
 const cutoverStoredSeq = 5
 
-// cutoverWait bounds each wait of this test on the daemon's own work: a boot, a launch, a
-// registration, an outbox row's tries, an idle pass. The longest of those is a merger's start
-// that a closed design gate held: once the gate opens the test makes the row due at once, and the
-// outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
-// row that read the gate closed just before the test opened it can still record its retry after
-// the test made the row due, which puts the row back on its backoff, up to the outbox's 64
-// seconds (record.RetryBackoff), so the bound stays above that. It is the bound a fault is
-// reported at, so a slow machine is no failure, and a start that never comes fails here rather
-// than at the package's deadline. cutoverPoll is how often a wait asks: most questions are a read
-// of the daemon's claims over its API or of its database.
-const (
-	cutoverWait = 90 * time.Second
-	cutoverPoll = 100 * time.Millisecond
-)
+// Each wait of this test on the daemon's own work (a boot, a launch, a registration, an outbox
+// row's tries, an idle pass) takes the test's deadline (testdeadline.StartupBound). The longest of
+// those is a merger's start that a closed design gate held: once the gate opens the test makes the
+// row due at once, and the outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to
+// run it. A try of that row that read the gate closed just before the test opened it can still
+// record its retry after the test made the row due, which puts the row back on its backoff, up to
+// the outbox's 64 seconds (record.RetryBackoff). A slow machine is no failure, and a start that
+// never comes fails naming the wait before the binary's own deadline. cutoverPoll is how often a
+// wait asks: most questions are a read of the daemon's claims over its API or of its database.
+const cutoverPoll = 100 * time.Millisecond
 
 // cutoverIdleTick is how often this test's daemon decides every pod (overrides.idleTick, the
 // production minute): the idle release of the second half is read from the claim rows the test
@@ -783,14 +780,13 @@ func (r *cutoverRig) boot(t *testing.T) {
 			t.Logf("the end of a boot's log:\n%s", log[max(0, len(log)-idleRigLogTailBytes):])
 		}
 	})
-	r.daemon = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)), cutoverWait)
+	r.daemon = startDaemonWithin(t, r.cfg, r.o, slog.New(slog.NewJSONHandler(logs, nil)), testdeadline.StartupBound(t))
 }
 
-// await waits for condition within cutoverWait, or what is left of the test binary's own deadline
-// less a second, asking it every cutoverPoll.
+// await waits for condition as long as the test's deadline allows, asking it every cutoverPoll.
 func (r *cutoverRig) await(t *testing.T, what string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, testwait.Bounded(t, cutoverWait, time.Second), cutoverPoll, what, condition)
+	testwait.WithinPolling(t, testdeadline.StartupBound(t), cutoverPoll, what, condition)
 }
 
 // token is role's claim token on issue.

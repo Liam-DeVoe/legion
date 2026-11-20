@@ -187,7 +187,7 @@ func TestAReaderOpeningSecondOnTheOtherProcessSeesTheFirstReadersAwareness(t *te
 	runAwareness(t, pair.taskB)
 	alice := pair.openReader(t, pair.serverA, "alice")
 	setAwareness(t, alice, aliceClient, cursorOf("alice", 1))
-	waitFor(t, roomWait(t), "task A's room to hold alice's cursor", func() bool {
+	waitFor(t, "task A's room to hold alice's cursor", func() bool {
 		return roomHoldsClient(pair.taskA, pair.artifactID, aliceClient)
 	})
 
@@ -325,7 +325,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 
 	oversized := map[string]any{"user": map[string]any{"name": strings.Repeat("a", roomSyncPayloadLimit)}}
 	setAwareness(t, alice, aliceClient, oversized)
-	waitFor(t, roomWait(t), "task A's relay to count the oversized state", func() bool {
+	waitFor(t, "task A's relay to count the oversized state", func() bool {
 		return pair.taskA.awarenessRelay.oversized.Load() >= 1
 	})
 	const otherClient = aliceClient + 1
@@ -340,7 +340,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	// The drop is counted after this window has run, so a flush already in flight leaves the two
 	// counts apart until it reaches the size check: this waits for that flush rather than for a
 	// time, and a state sent instead of dropped never closes the gap.
-	waitFor(t, roomWait(t), "task A's relay to count a drop for every batch that carried the oversized state", func() bool {
+	waitFor(t, "task A's relay to count a drop for every batch that carried the oversized state", func() bool {
 		return pair.taskA.awarenessRelay.oversized.Load() == offered.Load()
 	})
 }
@@ -392,7 +392,7 @@ func TestAnAwarenessFrameOverTheClientBoundRelaysNoMoreThanTheBound(t *testing.T
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, floodState), "a peer of task A"); err != nil {
 		t.Fatalf("apply a frame of %d awareness clients: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending the bound's clients of the frame", func() bool {
+	waitFor(t, "task A's relay to be sending the bound's clients of the frame", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == maxAwarenessClientsPerRoom
 	})
 	tracked, err := pair.taskA.heldAwarenessClients(pair.artifactID)
@@ -452,13 +452,13 @@ func TestAwarenessClientsThatLeaveFreeTheRoomsBoundAtOnce(t *testing.T) {
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, floodState), "a peer of task A"); err != nil {
 		t.Fatalf("apply a frame of %d awareness clients: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending the bound's clients of the frame", func() bool {
+	waitFor(t, "task A's relay to be sending the bound's clients of the frame", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == maxAwarenessClientsPerRoom
 	})
 	if err := aw.ApplyUpdate(awarenessStates(1, flood, 1, "null"), "a peer of task A"); err != nil {
 		t.Fatalf("take the frame's %d awareness clients away: %v", flood, err)
 	}
-	waitFor(t, roomWait(t), "task A's relay to be sending none of the frame's clients once they have left", func() bool {
+	waitFor(t, "task A's relay to be sending none of the frame's clients once they have left", func() bool {
 		return relayedClients(pair.taskA, pair.artifactID) == 0
 	})
 

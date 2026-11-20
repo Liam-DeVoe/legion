@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -136,7 +137,7 @@ func prepareAsDelivered(t *testing.T, w *workflowRuntime, fact intake.DispatchIs
 	t.Helper()
 	var prepared intake.DispatchIssue
 	var err error
-	testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		prepared, err = w.prepareRepository(context.Background(), fact)
 		var later *intake.RetryLater
 		return !errors.As(err, &later)
@@ -249,9 +250,11 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 		_, err := intake.ApplyFact(ctx, w.pool, "test", "child", child, engine)
 		admitted <- err
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-store.reached:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the admission never reached its record write")
 	}
 	client.set(dispatch.RepoProject{Repo: "acme/widgets", Project: "LEGION", Default: true})
@@ -315,9 +318,11 @@ func (h *heldSubscription) set(ctx context.Context, repositories []ghrepo.Reposi
 // refresh it holds unwinds rather than leaving the test's goroutines where they are.
 func (h *heldSubscription) await(t *testing.T) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-h.reached:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		close(h.release)
 		t.Fatal("the mapping read never reached its subscription update")
 	}
@@ -329,9 +334,9 @@ func (h *heldSubscription) await(t *testing.T) {
 // while holding one; worse, the transaction holds the fact serializer, so a NATS that answered
 // slowly stopped every fact of the project for as long as the call took, and the production pool
 // sat idle in transaction to its last connection (INFRA-3169). A stand-in holds the call, and
-// while it is held a fact's transaction, which takes the same serializer, still commits — within
-// a deadline of its own, so a refresh that holds a transaction again fails this instead of
-// hanging.
+// while it is held a fact's transaction, which takes the same serializer, still commits — before
+// the test's deadline, so a refresh that holds a transaction again fails this, naming the wait,
+// instead of hanging.
 func TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls(t *testing.T) {
 	ctx := context.Background()
 	held := newHeldSubscription()
@@ -344,13 +349,15 @@ func TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls(t *testing.T) {
 	go func() {
 		serialized <- pgx.BeginFunc(ctx, w.pool, func(tx pgx.Tx) error { return intake.SerializeFacts(ctx, tx) })
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-serialized:
 		if err != nil {
 			close(held.release)
 			t.Fatal(err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		close(held.release)
 		t.Fatal("a fact's transaction could not take the serializer while the mapping read waited on its stream call: the read holds a transaction across it")
 	}
@@ -392,7 +399,7 @@ func TestAnAdmissionAgainstTheOldMappingStaysHeard(t *testing.T) {
 	go func() { refreshed <- w.refreshMapping(ctx) }()
 	held.await(t)
 	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
-	admitting, cancel := context.WithTimeout(ctx, 5*time.Second)
+	admitting, cancel := testdeadline.Answered(t, ctx)
 	_, err := intake.ApplyFact(admitting, w.pool, "test", "child", child, engine)
 	cancel()
 	if err != nil {
@@ -449,9 +456,11 @@ func TestARecordingOnAHeardRepositoryWaitsOnNoReadOfTheMapping(t *testing.T) {
 	t.Cleanup(release)
 	gate.armed.Store(true)
 	w.requestMappingRead()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-gate.entered:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the read of the mapping never reached its installation check")
 	}
 
@@ -473,8 +482,8 @@ func TestARecordingOnAHeardRepositoryWaitsOnNoReadOfTheMapping(t *testing.T) {
 		if err != nil {
 			t.Fatalf("the admission on acme/widgets: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the admission on acme/widgets, which intake hears, did not finish within 5s while a read of the mapping was held: its recording waits on the read's lock")
+	case <-answered.Done():
+		t.Fatal("the admission on acme/widgets, which intake hears, did not finish before the test's deadline while a read of the mapping was held: its recording waits on the read's lock")
 	}
 	if got := recordedIssue(t, w, root.Key); got == nil || got.Repo != "acme/widgets" {
 		t.Fatalf("%s = %+v, want it admitted on acme/widgets", root.Key, got)
@@ -517,9 +526,11 @@ func TestARecordCommittedBeforeAReadsNarrowingStaysHeard(t *testing.T) {
 	refreshed, read := make(chan error, 1), make(chan struct{})
 	go func() { defer close(read); refreshed <- w.refreshMapping(ctx) }()
 	t.Cleanup(func() { release(); <-read })
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held.reached:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the read of the mapping never reached its narrowing")
 	}
 

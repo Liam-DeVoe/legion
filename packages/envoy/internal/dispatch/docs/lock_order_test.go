@@ -37,10 +37,12 @@ func lockOrderService(t *testing.T) (*store.Store, *Service, string) {
 }
 
 // waitForLockWait returns once a statement matching like waits on a lock, and fails at once with
-// the waiting operation's result if it returns first.
+// the waiting operation's result if it returns first. It polls Postgres until the test's deadline
+// (testdeadline.StartupBound): the statement reaches its lock through Postgres's answers, which a
+// loaded machine slows.
 func waitForLockWait(t *testing.T, ctx context.Context, database *store.Store, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 2*time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)
@@ -120,7 +122,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		}
 	case err := <-secondDone:
 		t.Fatalf("second edit returned before first transaction released its lock: %v", err)
-	case <-time.After(15 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("lock-order inversion: a conditional edit holds the document mutex while waiting for the advisory lock another writer holds")
 	}
 
@@ -136,7 +138,7 @@ func TestConditionalEditDoesNotInvertTheRoomLockOrder(t *testing.T) {
 		if err != nil {
 			t.Fatalf("second edit once the first transaction ended: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-ctx.Done():
 		t.Fatal("second edit did not finish once the first transaction ended")
 	}
 }
@@ -169,10 +171,14 @@ func lockOrderDocument(t *testing.T) (*store.Store, *Service, string) {
 	return database, lockOrderServiceFor(t, database), id
 }
 
-// awaitUnblocked runs op and fails if it has not returned within the window a blocked writer
-// would exceed. subject names the writer in the lock-order-inversion message.
+// awaitUnblocked runs op and fails if it has not returned by the test's deadline
+// (testdeadline.Answered): a writer blocked by the owner's lock, which the test holds until it
+// ends, never returns, and one that is not blocked returns once Postgres has answered it, however
+// slowly. subject names the writer in the lock-order-inversion message.
 func awaitUnblocked(t *testing.T, subject string, op func() error) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- op() }()
 	select {
@@ -180,7 +186,7 @@ func awaitUnblocked(t *testing.T, subject string, op func() error) {
 		if err != nil {
 			t.Fatalf("run %s while the owner's lock and row are held: %v", subject, err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-answered.Done():
 		t.Fatalf("lock-order inversion: %s is blocked by the document's owner lock", subject)
 	}
 }

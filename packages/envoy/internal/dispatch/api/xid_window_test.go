@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The xid window tests (INFRA-636, plan test T1) drive each write route through the real handler
@@ -189,7 +190,7 @@ func awaitSettledDocuments(t *testing.T, database *store.Store) {
 func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 	t.Helper()
 	const quiet = 300 * time.Millisecond
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	var calm time.Time
 	for time.Now().Before(deadline) {
 		var busy bool

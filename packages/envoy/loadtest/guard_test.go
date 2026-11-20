@@ -12,7 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // isolatePG keeps a test's -pg values from the environment: pgconn.ParseConfig, which the guard
@@ -393,6 +394,7 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 	} {
 		done := make(chan error, 1)
 		go func() { done <- runSeedFinish(args) }()
+		answered, cancel := testdeadline.Answered(t, context.Background())
 		select {
 		case err := <-done:
 			var removed *removedFlagError
@@ -400,9 +402,10 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 			if !errors.As(err, &removed) && !errors.As(err, &password) {
 				t.Errorf("loadgen seed-finish %q: error %v, want the secret refused", args, err)
 			}
-		case <-time.After(10 * time.Second):
-			t.Errorf("loadgen seed-finish %q: still running after 10 s, waiting on %s with the secret in its argv", args, fifo)
+		case <-answered.Done():
+			t.Errorf("loadgen seed-finish %q: still running at the test's deadline, waiting on %s with the secret in its argv", args, fifo)
 		}
+		cancel()
 	}
 }
 

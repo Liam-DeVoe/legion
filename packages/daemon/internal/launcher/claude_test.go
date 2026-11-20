@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/shim"
@@ -114,12 +115,14 @@ func (c *claudeRig) row(path string) (string, bool) {
 	return string(content), ok
 }
 
-// awaitRow waits, past a few saves, for the table to hold want at path.
+// awaitRow waits for the table to hold want at path, past as many saves as the test's deadline
+// allows: a save runs every saveInterval, and its write to the session database answers later on a
+// loaded machine.
 func (c *claudeRig) awaitRow(path, want string) {
 	c.t.Helper()
 	var got string
 	var ok bool
-	if !testwait.Holds(4*saveInterval, 20*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(c.t), 20*time.Millisecond, func() bool {
 		got, ok = c.row(path)
 		return ok && got == want
 	}) {

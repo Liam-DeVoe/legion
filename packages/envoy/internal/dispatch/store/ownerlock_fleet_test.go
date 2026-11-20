@@ -313,12 +313,12 @@ func arrive(ctx context.Context, t *testing.T, s *Store, arrival earlierBuildArr
 	return arriveOn(ctx, t, conn, arrival, key)
 }
 
-// awaitGateWait waits up to ten seconds for backend pid to wait for the owner lock gate
-// exclusively, as an earlier build's arrival waits for it, and fails the test when what it runs,
-// named what, ends first (ended).
+// awaitGateWait waits, as long as the test's deadline leaves (testdeadline.StartupBound), for
+// backend pid to wait for the owner lock gate exclusively, as an earlier build's arrival waits for
+// it, and fails the test when what it runs, named what, ends first (ended).
 func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if gate, granted := gateLock(t, s, pid); gate == "ExclusiveLock" && !granted {
 			return
@@ -329,7 +329,7 @@ func awaitGateWait(t *testing.T, s *Store, pid uint32, ended <-chan error, what 
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s did not wait for the gate within 10s", what)
+			t.Fatalf("%s did not wait for the gate before the test's deadline", what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -645,11 +645,12 @@ func holdRowAsAnEarlierBuild(t *testing.T, s *Store, owner Owner) pgx.Tx {
 	return holder
 }
 
-// awaitRowLockWaiter waits up to ten seconds for a backend to wait on a row lock in a statement
-// of lockOwnerRows (an owner row's lock taken beside the advisory lock), or for answered.
+// awaitRowLockWaiter waits, as long as the test's deadline leaves (testdeadline.StartupBound), for
+// a backend to wait on a row lock in a statement of lockOwnerRows (an owner row's lock taken beside
+// the advisory lock), or for answered.
 func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		select {
 		case err := <-answered:
@@ -667,7 +668,7 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 			return nil, false
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("no owner lock waited on the owner's row within 10s")
+			t.Fatal("no owner lock waited on the owner's row before the test's deadline")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

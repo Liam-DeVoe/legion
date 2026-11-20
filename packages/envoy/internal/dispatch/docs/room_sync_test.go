@@ -124,7 +124,7 @@ func TestEveryProcessesRoomSyncListenerIsAMemberUntilItStops(t *testing.T) {
 	}
 
 	stopB()
-	waitFor(t, roomWait(t), "task B to leave the members once its listener stopped", func() bool {
+	waitFor(t, "task B to leave the members once its listener stopped", func() bool {
 		members, err := roomSyncMembers(ctx, database.Pool)
 		if err != nil {
 			t.Fatalf("read the members: %v", err)
@@ -187,7 +187,7 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 	if terminated != 1 {
 		t.Fatalf("terminated %d connections named %q, want the sender's one", terminated, senderName)
 	}
-	waitFor(t, roomWait(t), "the sender's terminated connection to leave pg_stat_activity", func() bool {
+	waitFor(t, "the sender's terminated connection to leave pg_stat_activity", func() bool {
 		var alive bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select exists (select 1 from pg_stat_activity where datname = current_database() and application_name = $1)

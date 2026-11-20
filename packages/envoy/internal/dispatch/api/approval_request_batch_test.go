@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // An approval request reads the document's approval twice inside its own transaction, once
@@ -48,7 +49,8 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 			map[string]any{"actor": sessionActor()}).Code
 	}
 	// atOnce sends each of targets' requests at the same moment and answers their statuses, or
-	// fails when one has not answered within a bound no healthy transaction reaches.
+	// fails when one has not answered by the test's deadline: a request that only waits its turn
+	// on a loaded database still answers, and one whose transactions wedge never does.
 	atOnce := func(targets []string) []int {
 		t.Helper()
 		statuses := make([]int, len(targets))
@@ -64,11 +66,13 @@ func TestApprovalRequestsSentAtOnceReadTheirApprovalInTheirTransaction(t *testin
 		}
 		done := make(chan struct{})
 		go func() { finished.Wait(); close(done) }()
+		answered, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
 		started.Done()
 		select {
 		case <-done:
-		case <-time.After(90 * time.Second):
-			t.Fatalf("approval requests sent at once did not all answer within 90 s")
+		case <-answered.Done():
+			t.Fatalf("approval requests sent at once did not all answer before the test's deadline")
 		}
 		return statuses
 	}

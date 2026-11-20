@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
@@ -541,12 +542,14 @@ func TestTheLaterOfTwoOverlappingStopsHoldsThePodTheEarlierLeftIt(t *testing.T) 
 	if err := first.Commit(r.ctx); err != nil {
 		t.Fatalf("commit the implementer's stop: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-done:
 		if err != nil {
 			t.Fatalf("the tester's stop: %v", err)
 		}
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-answered.Done():
 		t.Fatal("the tester's stop never finished after the implementer's committed")
 	}
 
@@ -605,9 +608,11 @@ func TestAResumeWaitsForAStopTransactionUnderWay(t *testing.T) {
 		t.Fatalf("commit the implementer's stop: %v", err)
 	}
 	var got resumed
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case got = <-done:
-	case <-time.After(testwait.Bounded(t, time.Minute, time.Second)):
+	case <-answered.Done():
 		t.Fatal("the resume never finished after the stop committed")
 	}
 	if got.err != nil {

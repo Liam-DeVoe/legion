@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // newerAskAttribute is an attribute of the decision block that this build's manifest does not
@@ -91,7 +92,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 
 	answerDecisionBlock(t, handler, asks["region"], "alice", []string{"East"}, "", nil)
 	refusal := ""
-	for deadline := time.Now().Add(10 * time.Second); refusal == ""; {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); refusal == ""; {
 		for line := range strings.Lines(logged.String()) {
 			if strings.Contains(line, newerAskAttribute) {
 				refusal = line

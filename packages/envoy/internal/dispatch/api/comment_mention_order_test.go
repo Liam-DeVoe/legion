@@ -221,7 +221,7 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			state.landed = view.mentionLanded
 			state.mu.Unlock()
 			runOutboxBeside(t, deps, view)
-			waitUntil(t, 10*time.Second, "the issue's first events published", func() bool {
+			waitUntil(t, "the issue's first events published", func() bool {
 				return unpublishedEvents(t, database, issue.Key) == 0
 			})
 
@@ -231,15 +231,17 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			}))
 			first := commentEventID(t, database, firstComment.ID)
 			if tc.backsOff {
-				waitUntil(t, 10*time.Second, "event 1's topic send backed off", func() bool {
+				waitUntil(t, "event 1's topic send backed off", func() bool {
 					attempts, _ := eventAttempts(t, database, first)
 					return attempts > 0
 				})
+
 			} else {
-				waitUntil(t, 10*time.Second, "event 1 published", func() bool {
+				waitUntil(t, "event 1 published", func() bool {
 					_, published := eventAttempts(t, database, first)
 					return published
 				})
+
 			}
 
 			release := func() {}
@@ -257,9 +259,10 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			if tc.fallback {
 				// The send is held, at the listener or before it, under the sender's live claim;
 				// a claim lease passes, and the outbox holds s1's copy as a fallback row.
-				waitUntil(t, 10*time.Second, "the mention's send held under a live claim", func() bool {
+				waitUntil(t, "the mention's send held under a live claim", func() bool {
 					return claimedPending(t, database, mention.ID, "session:s1")
 				})
+
 				ageAttempts(t, database, mention.ID)
 				awaitHeldCopy(t, database, mention.ID, contracts.LegacyAgentSubject("s1"))
 				// The send fails while event 1 still backs off: here its attempt is written failed,
@@ -282,7 +285,7 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 			}
 			view.refuseTopics(false)
 
-			waitUntil(t, 30*time.Second, "every event of the issue published and the mention settled", func() bool {
+			waitUntil(t, "every event of the issue published and the mention settled", func() bool {
 				settled := true
 				for _, attempt := range waitForCommentDeliveries(t, database, mention.ID, "the mention's attempts", func([]model.CommentDelivery) bool { return true }) {
 					settled = settled && attempt.State != "pending"
@@ -312,9 +315,10 @@ func TestAMentionCopyKeepsTheIssueOrder(t *testing.T) {
 // destination as a comment_fallback_copies row.
 func awaitHeldCopy(t *testing.T, database *store.Store, commentID, destination string) {
 	t.Helper()
-	waitUntil(t, 30*time.Second, "the copy at "+destination+" held as a fallback row", func() bool {
+	waitUntil(t, "the copy at "+destination+" held as a fallback row", func() bool {
 		return slices.ContainsFunc(fallbackCopiesOf(t, database, commentID), func(row heldCopy) bool {
 			return row.destination == destination
 		})
 	})
+
 }

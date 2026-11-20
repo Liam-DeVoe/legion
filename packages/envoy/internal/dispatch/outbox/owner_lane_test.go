@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // laterEvent appends another human message on an issue routedEvent already seeded, so that an
@@ -378,7 +379,7 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	outbox := holding(t, deps)
 	ended := make(chan scanEnd, 1)
 	go func() { ended <- outbox.scan(ctx, unfenced{}) }()
-	waitFor(t, 10*time.Second, "the settle waiting on the comment owner's lock", func() bool {
+	waitFor(t, testdeadline.StartupBound(t), "the settle waiting on the comment owner's lock", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from pg_stat_activity
@@ -398,7 +399,7 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 		},
 	})
 	outbox.signal()
-	waitFor(t, 10*time.Second, "a second batch beside the settle", func() bool { return outbox.claims.Load() >= 2 })
+	waitFor(t, testdeadline.StartupBound(t), "a second batch beside the settle", func() bool { return outbox.claims.Load() >= 2 })
 	// Long enough for that batch to reach its read, which the gate holds back and the pool's rule
 	// would refuse.
 	time.Sleep(500 * time.Millisecond)
@@ -406,10 +407,12 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 		t.Fatalf("release the owner's lock: %v", err)
 	}
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	var end scanEnd
 	select {
 	case end = <-ended:
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the scan did not return")
 	}
 	if end.failed || end.fenced || end.natsLost {

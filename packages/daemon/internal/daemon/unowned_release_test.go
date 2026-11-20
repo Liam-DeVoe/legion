@@ -17,6 +17,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -413,9 +414,11 @@ func TestTheQuietPeriodBeforeAnIssueWithNoLiveClaimIsReleased(t *testing.T) {
 		quiet(t, "release is off", func() {
 			done := make(chan struct{})
 			go func() { defer close(done); rig.w.tickIdle(ctx) }()
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-answered.Done():
 				t.Fatal("tickIdle kept running with release off")
 			}
 		})

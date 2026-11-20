@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -206,13 +207,15 @@ func TestAProvisionOfAnotherRepositoryIsNotBlockedByProvisionsWaitingOnOneStoreL
 	}
 	other := make(chan error, 1)
 	go func() { other <- r.provisionIn(context.Background(), "GADGETS-1", gadgets, "main", false) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-other:
 		if err != nil {
 			t.Errorf("provision of acme/gadgets: %v", err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Errorf("a provision of acme/gadgets waited 10s behind %d provisions of acme/widgets (%d of them waiting on its store lock), want it to check out at once", provisionConcurrency+1, waiting.Load()-1)
+	case <-answered.Done():
+		t.Errorf("a provision of acme/gadgets was still waiting at the test's deadline behind %d provisions of acme/widgets (%d of them waiting on its store lock), want it to check out at once", provisionConcurrency+1, waiting.Load()-1)
 	}
 	close(hold)
 	wg.Wait()

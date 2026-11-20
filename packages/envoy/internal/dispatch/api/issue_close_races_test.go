@@ -16,14 +16,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // An issue's close races the writers of its asks and documents. Each race below ends in one of
-// the orders the issue's row allows, never in a mixture of them, and never in a deadlock.
-
-// raceDeadline bounds every request a race starts: a deadlock fails the test here instead of
-// hanging it.
-const raceDeadline = 10 * time.Second
+// the orders the issue's row allows, never in a mixture of them, and never in a deadlock. Every
+// request a race starts is waited for as long as the test's deadline leaves
+// (testdeadline.Answered): a deadlock fails the test there instead of hanging it, and a request
+// that is only slow on a loaded database still answers.
 
 // A resolution of an open ask and the close of its issue, released together, serialise on the
 // issue's row. Either the resolution commits first, so the ask keeps the resolver's record and the
@@ -412,9 +412,11 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	if edited.Code != http.StatusOK {
 		t.Fatalf("write the decision block: status=%d body=%s", edited.Code, edited.Body.String())
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-held:
-	case <-time.After(raceDeadline):
+	case <-answered.Done():
 		t.Fatal("the decision block's settlement never started")
 	}
 	if id := findBlockAsk(t, handler, issue.Key, spec, "late-decision"); id != "" {
@@ -438,8 +440,8 @@ func TestClosingAnIssueWaitsForTheSettlementOfItsDocumentInFlight(t *testing.T) 
 	releaseSettlement()
 	select {
 	case <-closing:
-	case <-time.After(raceDeadline):
-		t.Fatalf("the close did not answer within %v of the settlement's release", raceDeadline)
+	case <-answered.Done():
+		t.Fatal("the close did not answer before the test's deadline after the settlement's release")
 	}
 	if closed.Code != http.StatusOK {
 		t.Fatalf("close: status=%d body=%s", closed.Code, closed.Body.String())
@@ -543,8 +545,8 @@ func TestAClientHangingUpOnItsCloseStillLetsTheDocumentsSettle(t *testing.T) {
 	awaitSettled(t, database, spec)
 }
 
-// awaitRequests releases start, then waits up to raceDeadline for requests, failing the test
-// when they do not all answer: a deadlock between them.
+// awaitRequests releases start, then waits as long as the test's deadline leaves for requests,
+// failing the test when they do not all answer: a deadlock between them.
 func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, what string) {
 	t.Helper()
 	answered := make(chan struct{})
@@ -552,10 +554,12 @@ func awaitRequests(t *testing.T, requests *sync.WaitGroup, start chan struct{}, 
 		requests.Wait()
 		close(answered)
 	}()
+	waited, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	close(start)
 	select {
 	case <-answered:
-	case <-time.After(raceDeadline):
-		t.Fatalf("%s did not both answer within %v", what, raceDeadline)
+	case <-waited.Done():
+		t.Fatalf("%s did not both answer before the test's deadline", what)
 	}
 }

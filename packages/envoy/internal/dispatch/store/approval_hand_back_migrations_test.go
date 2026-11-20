@@ -8,14 +8,17 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // waitForQueuedLock waits until some session is queued, not yet granted, for mode on relation: a
-// migration the test started, which the test then holds up or races. It fails t after 20 s.
+// migration the test started, which the test then holds up or races. It fails t when the test's
+// deadline comes first (testdeadline.StartupBound).
 func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `

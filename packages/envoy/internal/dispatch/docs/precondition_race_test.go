@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
@@ -214,9 +215,12 @@ func documentTokenForTest(t *testing.T, service *Service, artifactID, markdown s
 	return token
 }
 
+// waitForAsksQueryLock waits, polling pg_stat_activity until the test's deadline
+// (testdeadline.StartupBound), for the conditional edit's table-anchor read of the asks to wait on
+// a lock: the edit reaches that read through Postgres's answers.
 func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -234,12 +238,16 @@ func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 	t.Fatal("conditional edit did not reach the table-anchor query lock")
 }
 
+// awaitRaceResult is a racing writer's answer, waited for as long as the test's deadline allows
+// (testdeadline.Answered): the conditional edit's comes through Postgres once the asks gate commits.
 func awaitRaceResult(t *testing.T, result <-chan error) error {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-result:
 		return err
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("conditional edit did not complete")
 		return nil
 	}

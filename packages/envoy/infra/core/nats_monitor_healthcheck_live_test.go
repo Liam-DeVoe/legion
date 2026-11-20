@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/infra/aws/rendering"
 	"github.com/sjawhar/envoy/infra/core"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // healthCheckArgs are the server arguments the README gives aws:NatsService, the store left out: the
@@ -81,7 +82,7 @@ func runTaskHealthCheck(t *testing.T, a core.Authorization, config, command stri
 	require.Eventually(t, func() bool {
 		code, _ := run("wget -qO- http://127.0.0.1:8222/healthz")
 		return code == 0
-	}, 30*time.Second, 200*time.Millisecond, "monitoring never answered on 127.0.0.1:8222")
+	}, testdeadline.StartupBound(t), 200*time.Millisecond, "monitoring never answered on 127.0.0.1:8222")
 	return run(command)
 }
 

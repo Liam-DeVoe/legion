@@ -215,7 +215,7 @@ func (r *pendingRequest) String() string {
 
 // awaitLockWaits polls until reached holds, given how many sessions of the test's database wait on
 // a lock whose statement matches a LIKE pattern (storetest.CountLockWaits), and fails the test with
-// never when it does not within 10 s.
+// never when it does not by the test's deadline.
 func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, never string, reached func(waiting func(like string) int) bool) {
 	t.Helper()
 	waiting := func(like string) int {
@@ -225,7 +225,7 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 		}
 		return count
 	}
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !reached(waiting) {
 		if time.Now().After(deadline) {
 			t.Fatal(never)
@@ -238,7 +238,7 @@ func awaitLockWaits(t *testing.T, ctx context.Context, database *store.Store, ne
 // settlement.
 func awaitCopyShows(t *testing.T, ctx context.Context, database *store.Store, copy, want string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var markdown string
 		var pending int

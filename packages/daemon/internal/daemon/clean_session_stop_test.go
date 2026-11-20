@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -526,9 +528,11 @@ func TestSessionStopsInFlightWaitsForEveryStopStartedBeforeTheFinalWait(t *testi
 	case <-time.After(100 * time.Millisecond):
 	}
 	stops.end()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the final wait did not return once every stop it counted had ended")
 	}
 }
@@ -551,9 +555,11 @@ func TestSessionStopsInFlightDoesNotWaitForAStopStartedAfterTheFinalWaitBegan(t 
 		t.Fatal("a stop started once the final wait had begun was counted, so the wait would wait for it")
 	}
 	stops.end()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the final wait did not return once the stop it counted ended: it waited for the stop started after it began")
 	}
 }
@@ -584,9 +590,11 @@ func TestSessionStopsInFlightTakesAStopStartedFromZeroBesideTheFinalWait(t *test
 		}
 		stops.end()
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-returned:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the final wait did not return once the stop started beside it had ended")
 	}
 }

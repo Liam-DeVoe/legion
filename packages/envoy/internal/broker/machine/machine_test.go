@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 const (
@@ -719,10 +720,11 @@ func TestASweepWhileADecisionHoldsItsRowLockCommits(t *testing.T) {
 }
 
 // waitForLockWait returns once a statement matching like waits on a lock, and fails at once with
-// the waiting operation's result if it returns first (Dispatch's docs tests use the same probe).
+// the waiting operation's result if it returns first (Dispatch's docs tests use the same probe), or
+// at the test's deadline less its cleanup.
 func waitForLockWait(t *testing.T, ctx context.Context, st *store.Store, like string, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 2*time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)

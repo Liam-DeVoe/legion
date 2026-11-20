@@ -38,6 +38,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -127,7 +128,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = admissionIssuesGitHub(t)
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonWithin(t, r.cfg, o, r.log(), testdeadline.StartupBound(t))
 	r.architect = r.registerArchitect()
 	return r
 }

@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -357,9 +358,11 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 		Locator: *rig.claimOf(claim.RoleImplementer).Locator, Kind: runtime.Gone, Detail: "the process ended",
 	}}
 	go func() { _ = m.Handle(rig.ctx, gone) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-inside:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the relaunch never reached its Resume")
 	}
 
@@ -371,7 +374,7 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 			t.Fatalf("the ask over a held claim = %v, want a wait that keeps the row", err)
 		}
 		t.Logf("the row waits: %v", err)
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		release()
 		<-ran
 		t.Fatal("the ask did not return while its claim's machine was inside a Resume; it waited on the lock")

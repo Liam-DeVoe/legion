@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // replayedMappings is the set of repositories the project's settings.repo_project.updated events
@@ -121,7 +122,7 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 	awaitLockWaiters(t, database, 1)
 	seeded := make(chan error, 1)
 	go func() { seeded <- SeedRepoProjects(ctx, database, events.NewBroker(), "acme/new=CORE") }()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for lockWaiters(t, database) < 2 {
 		select {
 		case err := <-seeded:
@@ -133,7 +134,7 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the seed neither returned nor waited on a lock after 10s")
+			t.Fatalf("the seed neither returned nor waited on a lock before the test's deadline")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -141,12 +142,14 @@ func TestSeedRepoProjectsRacingAPutOfTheSameRepositoryWaitsForIt(t *testing.T) {
 	if response := awaitAnswer(t, put, "map acme/new to OTHER"); response.Code != http.StatusOK {
 		t.Fatalf("map acme/new to OTHER: status=%d body=%s", response.Code, response.Body.String())
 	}
+	seededBy, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-seeded:
 		if err != nil {
 			t.Fatalf("seed acme/new=CORE after the PUT: %v", err)
 		}
-	case <-time.After(15 * time.Second):
+	case <-seededBy.Done():
 		t.Fatalf("the seed never returned after the PUT committed")
 	}
 	if other := tableMappings(t, database, "OTHER"); !other["acme/new"] {

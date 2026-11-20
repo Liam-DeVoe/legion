@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -290,12 +291,14 @@ func TestANoticeIsRoutedWhileItsArchitectLaunches(t *testing.T) {
 
 	executed := make(chan error, 1)
 	go func() { executed <- runner.execute(context.Background(), row) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-executed:
 		if err != nil {
 			t.Fatalf("execute the notice: %v", err)
 		}
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the notice waited on its architect's launch in the runtime")
 	}
 	if _, delivered := publisher.snapshot(); len(delivered) != 1 || delivered[0].topic != architectTopic(t, "LEGION-1") {

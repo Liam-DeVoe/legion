@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestMarkQuoteWritesMarkAndReturnsCoveredText(t *testing.T) {
@@ -468,7 +469,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	innerID := insertAnchoredCommentWithID(t, service, artifactID, "00000000-0000-4000-8000-000000000004", "brown")
 
 	editLiveTree(t, service, artifactID, replaceRun("brown", "browner"))
-	waitFor(t, time.Second, "anchor refresh to browner", func() bool {
+	waitFor(t, "anchor refresh to browner", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Quote == "browner" && !anchor.Orphaned && loadCommentAnchor(t, service, innerID).Quote == "browner"
 	})
@@ -483,7 +484,7 @@ func TestVersionWriteRefreshesAnchorsByMark(t *testing.T) {
 	}
 
 	editLiveTree(t, service, artifactID, deleteRun("browner"))
-	waitFor(t, time.Second, "anchor orphaning after browner deletion", func() bool {
+	waitFor(t, "anchor orphaning after browner deletion", func() bool {
 		anchor := loadAskAnchor(t, service, askID)
 		return anchor.Orphaned && anchor.Version == 1
 	})
@@ -756,7 +757,7 @@ func TestMarkOnlyUpdateSweepsUnrecordedMarksWithoutCanonicalizingLegacyTable(t *
 	}
 	alignLatestVersionWithUpdates(t, service, artifactID)
 	browserMark(t, service, artifactID, "proofComment", "dangling", "one|two")
-	waitFor(t, time.Second, "unrecorded mark removed", func() bool {
+	waitFor(t, "unrecorded mark removed", func() bool {
 		_, _, found := pmdoc.FindMark(liveTree(t, service, artifactID), "proofComment", "dangling")
 		return !found
 	})
@@ -879,7 +880,7 @@ func TestProjectMarkRearmsPendingSettlement(t *testing.T) {
 		t.Fatalf("commit projection transaction: %v", err)
 	}
 	ledger.publish()
-	waitFor(t, time.Second, "settled projection version for after", func() bool {
+	waitFor(t, "settled projection version for after", func() bool {
 		var markdown string
 		var named bool
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -941,7 +942,7 @@ func TestReplaceTextReanchorsOpenRows(t *testing.T) {
 	}
 	// The anchored ask and comment above schedule their own settlements, so version 2 can be the
 	// pre-replace snapshot; wait for the replacement's settled state, not a version number.
-	waitFor(t, time.Second, "the deleted quote's comment to orphan", func() bool {
+	waitFor(t, "the deleted quote's comment to orphan", func() bool {
 		return loadCommentAnchor(t, service, commentID).Orphaned
 	})
 	if anchor := loadAskAnchor(t, service, askID); anchor.Orphaned || anchor.Quote != "brown" {
@@ -1191,9 +1192,16 @@ func waitForPersistedUpdates(t *testing.T, service *Service, artifactID string, 
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, description string, condition func() bool) {
+// waitFor waits for condition, asked every 5 ms, failing the test with description if it has not
+// held by the test binary's deadline less testdeadline.Cleanup (testdeadline.StartupBound; with no
+// deadline, no bound). Every wait of this package's tests that goes through it is for work the
+// document service does - a settlement, a room's load or eviction, an append landing, a pass of a
+// background loop - most of it Postgres's answers, and none of them times that work: a fixed span
+// fires on a loaded machine while Postgres still answers. A wait whose span is the test's own
+// subject calls testwait.WithinPolling with that span instead.
+func waitFor(t *testing.T, description string, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, 5*time.Millisecond, description, condition)
+	testwait.WithinPolling(t, testdeadline.StartupBound(t), 5*time.Millisecond, description, condition)
 }
 
 // askTree parses markdown and gives its ask blocks the ids named, in document order, repeats

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -883,9 +884,11 @@ func TestTheIdleTickDoesNothingWhenReleaseIsOff(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			done := make(chan struct{})
 			go func() { defer close(done); tc.w.tickIdle(context.Background()) }()
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case <-done:
-			case <-time.After(5 * time.Second):
+			case <-answered.Done():
 				t.Fatal("tickIdle kept running with release off")
 			}
 		})

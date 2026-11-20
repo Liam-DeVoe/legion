@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 var censusBase = fstest.MapFS{
@@ -1333,8 +1334,9 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		report, err := census(ctx, url, set, pgmigrate.CensusOptions{})
 		done <- result{report, err}
 	}()
-	// Wait until the census is queued on blocker, which it reaches only after reading others' holders.
-	deadline := time.Now().Add(pgmigrate.LockTimeout - time.Second)
+	// Wait until the census is queued on blocker, which it reaches only after reading others'
+	// holders, for as long as the test's deadline leaves; a census that answers first never queued.
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted)").Scan(&waiting); err != nil {
@@ -1342,6 +1344,11 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 		}
 		if waiting {
 			break
+		}
+		select {
+		case got := <-done:
+			t.Fatalf("the census answered (error %v) before it queued on blocker", got.err)
+		default:
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("the census never queued on blocker")

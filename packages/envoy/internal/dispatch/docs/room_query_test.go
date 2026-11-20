@@ -482,7 +482,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 	if err := browserStyleWrite(taskB, artifactID, replaceRun("Bravo paragraph.", "Bravo paragraph, by bob."), make(chan struct{})); err != nil {
 		t.Fatalf("bob's edit on task B: %v", err)
 	}
-	waitFor(t, roomWait(t), "bob's append to queue on the document's advisory lock", func() bool {
+	waitFor(t, "bob's append to queue on the document's advisory lock", func() bool {
 		return waitingAdvisoryLocks(t, database) > 0
 	})
 	if stored := storedMarkdown(t, database, artifactID); strings.Contains(stored, "by bob") {
@@ -500,7 +500,7 @@ func TestAColdWritesVersionIsNotRacedByTheOtherProcessesAppend(t *testing.T) {
 		t.Fatalf("the cold write's version reads %q; want the agent's edit alone, bob's append being queued behind its lock", markdown)
 	}
 	waitForLandedAppends(t, taskB, artifactID)
-	waitFor(t, roomWait(t), "bob's edit to be stored once the write let go of the lock", func() bool {
+	waitFor(t, "bob's edit to be stored once the write let go of the lock", func() bool {
 		return strings.Contains(storedMarkdown(t, database, artifactID), "by bob")
 	})
 	if stored := storedMarkdown(t, database, artifactID); !strings.Contains(stored, "by the agent") {

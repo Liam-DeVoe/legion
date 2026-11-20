@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -127,9 +128,11 @@ func newSessionRig(t *testing.T, cfg Config) *rig {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case <-g.result:
-		case <-time.After(5 * time.Second):
+		case <-answered.Done():
 			t.Error("the launcher did not leave after its context ended")
 		}
 	})
@@ -703,9 +706,11 @@ func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	}()
 	t.Cleanup(func() {
 		cancel()
+		answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+		defer cancelAnswered()
 		select {
 		case <-f.result:
-		case <-time.After(30 * time.Second):
+		case <-answered.Done():
 			t.Errorf("the launcher did not leave after its context ended; its log: %s", f.stderr.String())
 		}
 	})

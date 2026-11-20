@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -22,9 +23,9 @@ import (
 // when it drops a hand-over's fence, an input of the end of a merge's run that its transaction
 // settles as a fact's does (settling). Every other refused row writes nothing a fact reads, so it
 // finishes while a fact holds the lock: here an ordinary status row Dispatch refused for good
-// finishes within seconds, its notice queued and its row gone. The control is the hand-over's
-// refusal, on the same pool and under the same held lock: it waits on the lock, has not finished
-// while the lock is held, and finishes and drops its fence once the lock is free.
+// finishes while the lock is still held, its notice queued and its row gone. The control is the
+// hand-over's refusal, on the same pool and under the same held lock: it waits on the lock, has
+// not finished while the lock is held, and finishes and drops its fence once the lock is free.
 func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -40,19 +41,21 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 	fact := holdFactLock(t, pool)
 	dropped := make(chan error, 1)
 	go func() { dropped <- runner.finishRefused(ctx, handOver, refusal) }()
-	if !factLockWaited(pool) {
+	if !factLockWaited(t, pool) {
 		t.Fatal("the hand-over's refusal never waited on the fact lock, so the finish below would prove nothing")
 	}
 
 	finished := make(chan error, 1)
 	go func() { finished <- runner.finishRefused(ctx, ordinary, refusal) }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-finished:
 		if err != nil {
 			t.Fatalf("finish the refused status row: %v", err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the refused status row of LEGION-210 did not finish within 5s while a fact held the fact lock: its finish drops no fence, so it has no fact to wait for")
+	case <-answered.Done():
+		t.Fatal("the refused status row of LEGION-210 did not finish before the test's deadline while a fact held the fact lock: its finish drops no fence, so it has no fact to wait for")
 	}
 	if notices := noticesOf(t, pool, "LEGION-210"); notices != 1 {
 		t.Fatalf("LEGION-210 has %d notices queued after its refused row finished, want the one that tells its architect", notices)
@@ -71,8 +74,8 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("finish the refused hand-over: %v", err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the hand-over's refusal did not finish within 10s once the fact lock was free")
+	case <-answered.Done():
+		t.Fatal("the hand-over's refusal did not finish before the test's deadline once the fact lock was free")
 	}
 	if fence := fenceOf(t, pool, records, "LEGION-209"); fence != nil {
 		t.Fatalf("LEGION-209's fence after its hand-over's refusal finished = %+v, want it dropped", fence)
@@ -84,11 +87,11 @@ func TestOnlyARefusedRowThatDropsAFenceWaitsOnTheFactLock(t *testing.T) {
 
 // The check of a hand-over (handOverHolds) reads the member, its fence and its root, and a read
 // writes nothing a fact reads, so it takes no fact lock: while a fact holds the lock, the check of
-// a fence that holds answers within seconds, and answers that it holds. The control is the check
-// of a fence a re-admission cancelled, on the same pool and under the same held lock: it drops the
-// fence, an input of the end of a merge's run, in a transaction that settles as a fact's does
-// (settling), so it waits on the lock, has not answered while the lock is held, and answers that
-// the hand-over no longer holds, its fence dropped, once the lock is free.
+// a fence that holds answers while the lock is still held, and answers that it holds. The control
+// is the check of a fence a re-admission cancelled, on the same pool and under the same held lock:
+// it drops the fence, an input of the end of a merge's run, in a transaction that settles as a
+// fact's does (settling), so it waits on the lock, has not answered while the lock is held, and
+// answers that the hand-over no longer holds, its fence dropped, once the lock is free.
 func TestTheCheckOfAHandOverWaitsOnTheFactLockOnlyToDropACancelledFence(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -111,7 +114,7 @@ func TestTheCheckOfAHandOverWaitsOnTheFactLockOnlyToDropACancelledFence(t *testi
 		holds, err := runner.handOverHolds(ctx, cancelledRow, cancelled)
 		dropped <- answer{holds, err}
 	}()
-	if !factLockWaited(pool) {
+	if !factLockWaited(t, pool) {
 		t.Fatal("the check of the cancelled fence never waited on the fact lock, so the check below would prove nothing")
 	}
 
@@ -120,13 +123,15 @@ func TestTheCheckOfAHandOverWaitsOnTheFactLockOnlyToDropACancelledFence(t *testi
 		holds, err := runner.handOverHolds(ctx, liveRow, live)
 		checked <- answer{holds, err}
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case got := <-checked:
 		if got.err != nil || !got.holds {
 			t.Fatalf("the check of LEGION-209's hand-over holds %t, %v; want true: its fence is LEGION-208's linger 1 and the root lingers at 1", got.holds, got.err)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("the check of LEGION-209's hand-over did not answer within 5s while a fact held the fact lock: it only reads, so it has no fact to wait for")
+	case <-answered.Done():
+		t.Fatal("the check of LEGION-209's hand-over did not answer before the test's deadline while a fact held the fact lock: it only reads, so it has no fact to wait for")
 	}
 	select {
 	case got := <-dropped:
@@ -142,8 +147,8 @@ func TestTheCheckOfAHandOverWaitsOnTheFactLockOnlyToDropACancelledFence(t *testi
 		if got.err != nil || got.holds {
 			t.Fatalf("the check of the cancelled fence holds %t, %v; want false", got.holds, got.err)
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the check of the cancelled fence did not answer within 10s once the fact lock was free")
+	case <-answered.Done():
+		t.Fatal("the check of the cancelled fence did not answer before the test's deadline once the fact lock was free")
 	}
 	if fence := fenceOf(t, pool, records, "LEGION-301"); fence != nil {
 		t.Fatalf("LEGION-301's cancelled fence after its check = %+v, want it dropped", fence)
@@ -200,11 +205,12 @@ func holdFactLock(t *testing.T, pool *store.Pool) pgx.Tx {
 	return fact
 }
 
-// factLockWaited is whether, within ten seconds, a backend of pool's database waits on an
+// factLockWaited is whether, before the test's deadline, a backend of pool's database waits on an
 // advisory lock: the fact lock is the only one the outbox takes, so a waiter is an outbox
 // transaction queued behind the fact that holds it.
-func factLockWaited(pool *store.Pool) bool {
-	return testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+func factLockWaited(t *testing.T, pool *store.Pool) bool {
+	t.Helper()
+	return testwait.Holds(testdeadline.StartupBound(t), 10*time.Millisecond, func() bool {
 		var waiting int
 		err := pool.QueryRow(context.Background(), `select count(*) from pg_locks
 			where locktype = 'advisory' and not granted

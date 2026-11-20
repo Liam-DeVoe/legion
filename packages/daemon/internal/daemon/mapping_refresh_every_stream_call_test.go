@@ -3,10 +3,10 @@ package daemon
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -39,7 +39,8 @@ func (h *eachHeldSubscription) set(ctx context.Context, repositories []ghrepo.Re
 // transaction, where it would sit across JetStream with the serializer held, which is INFRA-3169's
 // R2. TestTheMappingRefreshHoldsNoTransactionAcrossItsStreamCalls holds the first call alone, so it
 // passes whatever the later ones do; this holds every call, and at each one a fact's transaction,
-// which takes the same serializer, must still commit within a deadline of its own.
+// which takes the same serializer, must still commit while the call is held, before the test's
+// deadline.
 func TestNoStreamCallOfAMappingReadHoldsTheFactSerializer(t *testing.T) {
 	ctx := context.Background()
 	held := &eachHeldSubscription{calls: make(chan chan struct{})}
@@ -48,6 +49,8 @@ func TestNoStreamCallOfAMappingReadHoldsTheFactSerializer(t *testing.T) {
 	refreshed := make(chan error, 1)
 	go func() { refreshed <- w.refreshMapping(ctx) }()
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	calls := 0
 	for {
 		var release chan struct{}
@@ -61,8 +64,8 @@ func TestNoStreamCallOfAMappingReadHoldsTheFactSerializer(t *testing.T) {
 				t.Fatal("the mapping read made no stream call, so this proves nothing")
 			}
 			return
-		case <-time.After(10 * time.Second):
-			t.Fatalf("the mapping read neither made a stream call nor finished within 10s, after %d calls", calls)
+		case <-answered.Done():
+			t.Fatalf("the mapping read neither made a stream call nor finished before the test's deadline, after %d calls", calls)
 		}
 		calls++
 		serialized := make(chan error, 1)
@@ -75,7 +78,7 @@ func TestNoStreamCallOfAMappingReadHoldsTheFactSerializer(t *testing.T) {
 				close(release)
 				t.Fatal(err)
 			}
-		case <-time.After(5 * time.Second):
+		case <-answered.Done():
 			close(release)
 			t.Fatalf("stream call %d of the mapping read: a fact's transaction could not take the serializer while the call was held, so the read holds the serializer across it", calls)
 		}

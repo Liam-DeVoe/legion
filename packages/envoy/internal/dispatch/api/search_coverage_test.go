@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // searchCoverageResponse reads GET /api/v1/search/coverage as alice and holds its body to
@@ -254,7 +255,7 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		answered <- answer{response, time.Since(started)}
 	}()
-	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
+	showed := testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		select {
 		case early := <-answered:
 			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement blocked",
@@ -284,7 +285,7 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	}
 	var conns int32
 	var statements int
-	testwait.Holds(2*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Holds(testdeadline.StartupBound(t), 50*time.Millisecond, func() bool {
 		conns, statements = database.Pool.Stat().AcquiredConns(), blocked()
 		return conns == acquired && statements == 0
 	})

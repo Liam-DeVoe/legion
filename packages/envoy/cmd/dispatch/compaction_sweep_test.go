@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // Dispatch run with DISPATCH_NATS_DISABLED=1 compacts the documents it never opened: a log whose
@@ -67,7 +68,7 @@ func TestTheCompactionSweepFoldsABackdatedLogWithNATSDisabled(t *testing.T) {
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
 	var rows, version int64
-	for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+	for deadline := time.Now().Add(testdeadline.StartupBound(t)); ; time.Sleep(200 * time.Millisecond) {
 		if err := database.Pool.QueryRow(ctx,
 			`select count(*), coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
 		).Scan(&rows, &version); err != nil {
@@ -78,7 +79,7 @@ func TestTheCompactionSweepFoldsABackdatedLogWithNATSDisabled(t *testing.T) {
 		}
 	}
 	if rows != 1 || version != head {
-		t.Fatalf("the document holds %d rows up to version %d after 45 s, want its log folded into the head %d alone:\n%s",
+		t.Fatalf("the document holds %d rows up to version %d at the test's deadline, want its log folded into the head %d alone:\n%s",
 			rows, version, head, process.Output.String())
 	}
 	answer := process.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)

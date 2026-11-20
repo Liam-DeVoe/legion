@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func TestBackfillAnchorBlocksPinsResolvableLegacyRowsOnce(t *testing.T) {
@@ -124,12 +125,14 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 	// A content change is what makes the settlement write a version, and a version write is what
 	// refreshes the anchors.
 	editLiveTree(t, service, artifactID, replaceRun("Introduction.", "Intro."))
-	settleCtx, cancelSettle := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelSettle()
-	if err := service.waitForPendingUpdates(settleCtx, artifactID); err != nil {
+	// Every wait below is for Postgres's answers, which a loaded machine slows, so each is bounded
+	// by the test's deadline rather than a fixed span (testdeadline.Answered).
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	if err := service.waitForPendingUpdates(answered, artifactID); err != nil {
 		t.Fatalf("wait for live updates to reach persistence: %v", err)
 	}
-	if err := service.waitForDurableAppends(settleCtx, artifactID); err != nil {
+	if err := service.waitForDurableAppends(answered, artifactID); err != nil {
 		t.Fatalf("wait for live updates to become durable: %v", err)
 	}
 	state := service.room(artifactID)
@@ -180,7 +183,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 			t.Fatalf("backfill anchor blocks after the settlement: %v", result.err)
 		}
 		backfill = result.report
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the backfill never finished after the settlement released the comment's owner lock")
 	}
 	if backfill.Asks != 0 || backfill.Comments != 1 {
@@ -208,7 +211,7 @@ func TestAnchorRefreshAndBackfillSerialiseOnTheRowsOwner(t *testing.T) {
 // position; nothing here assumes how long a step takes.
 func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
@@ -229,11 +232,11 @@ func waitForHeldAnchorRefresh(t *testing.T, service *Service, key int64) {
 // waitForHeldOwnerLock returns once a transaction is waiting on owner's lock, which is where a
 // writer that takes it parks while another transaction holds it (store.LockOwner). The lock's own
 // wait queue is that writer's observable position, read as waitForHeldAnchorRefresh reads the
-// test's own key, so nothing here waits a fixed length for a step to happen; the deadline bounds
-// the wait and the failure names the lock it waited for.
+// test's own key, so nothing here waits a fixed length for a step to happen; the test's deadline
+// (testdeadline.StartupBound) bounds the wait and the failure names the lock it waited for.
 func waitForHeldOwnerLock(t *testing.T, service *Service, owner store.Owner) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `

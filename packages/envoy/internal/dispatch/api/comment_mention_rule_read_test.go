@@ -49,7 +49,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	unpark := <-timers
 	second := postMentionOfS1(t, handler, issue.Key, "the second")
 	held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-	waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
+	waitUntil(t, "both sends on the issue's held lane", func() bool {
 		sender.mu.Lock()
 		defer sender.mu.Unlock()
 		return len(sender.lanes[held]) == 2
@@ -59,7 +59,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 	failer.stage.Store(ruleReadArmed)
 	unpark()
 	var parked func()
-	waitUntil(t, 10*time.Second, "the first send parked again, or a send reaching s1", func() bool {
+	waitUntil(t, "the first send parked again, or a send reaching s1", func() bool {
 		select {
 		case parked = <-timers:
 			return true
@@ -67,6 +67,7 @@ func TestASendWhoseRuleReadFailsKeepsItsPlaceAndItsClaim(t *testing.T) {
 			return len(state.bodiesTo("s1")) > 0
 		}
 	})
+
 	key := mentionKey{comment: first, target: "session:s1", attempt: 1}
 	recorded, unsure := recordedClaim(sender, key)
 	row := attemptClaimedAt(t, database, first, "session:s1")
@@ -167,11 +168,12 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			unpark := <-timers
 			second := postMentionOfS1(t, handler, issue.Key, "the second")
 			held := heldLane(laneKey{recipient: "session:s1"}, issue.Key)
-			waitUntil(t, 10*time.Second, "both sends on the issue's held lane", func() bool {
+			waitUntil(t, "both sends on the issue's held lane", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return len(sender.lanes[held]) == 2
 			})
+
 			gauged("once the first send parked,")
 			publishIssueEvents(t, database, issue.Key)
 			failer.failing.Store(true)
@@ -209,11 +211,12 @@ func TestASendWhoseRuleReadsKeepFailingReadsTheRuleAloneUntilOneAnswers(t *testi
 			settledCommentDeliveries(t, database, second)
 			// A send's WARN as it goes (reportLate) comes after its attempt settles: the lanes are
 			// done with once no goroutine serves one.
-			waitUntil(t, 10*time.Second, "no goroutine serving a lane", func() bool {
+			waitUntil(t, "no goroutine serving a lane", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				return sender.serving == 0
 			})
+
 			states := attemptStates(t, database, "comment_deliveries", "comment_id", first)
 			bodies := state.bodiesTo("s1")
 			warned := strings.Count(logs.String(), warning)

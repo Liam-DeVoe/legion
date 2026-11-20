@@ -532,7 +532,7 @@ func TestTwoBuildsPassMessagesBothWays(t *testing.T) {
 			key, _ := createDocument(t, writer, project, "Created on the "+builds.buildName(writer), "spec")
 			writer.call(t, http.MethodPost, "/api/v1/issues/"+key+"/comments", `{"body":"A comment."}`, http.StatusCreated)
 		}
-		waitForEveryEventPublished(t, builds.database, 60*time.Second)
+		waitForEveryEventPublished(t, builds.database)
 		events := publishedEventIDs(t, builds)
 		streamed := map[string]bool{}
 		for _, item := range readStreamFrom(t, js, head) {

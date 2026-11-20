@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"golang.org/x/sys/unix"
 )
@@ -352,8 +353,8 @@ func listedNames(t *testing.T, dir string) []string {
 }
 
 // removeWhileFilling removes held's entry while a writer creates names in filling, a directory
-// under it, as fast as it can, and answers the removal. A removal that has not answered within
-// the bound fails the case.
+// under it, as fast as it can, and answers the removal. A removal that has not answered before the
+// test's deadline fails the case.
 func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 	t.Helper()
 	// The writer creates names until it is told to stop, as fast as it can: a removal that read
@@ -380,17 +381,18 @@ func removeWhileFilling(t *testing.T, held *os.File, filling string) error {
 
 	answered := make(chan error, 1)
 	go func() { answered <- removeEntryAt(held, "entry", make([]byte, volumeRemovalNamesBytes)) }()
-	bound := testwait.Bounded(t, 30*time.Second, 5*time.Second)
+	deadline, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case removal := <-answered:
 		close(stop)
 		<-stopped
 		return removal
-	case <-time.After(bound):
+	case <-deadline.Done():
 		close(stop)
 		<-stopped
 		<-answered // the writer has stopped, so the removal now runs out of names
-		t.Fatalf("the removal had not answered %v after it began, with a writer still creating names in the directory it was emptying", bound)
+		t.Fatal("the removal had not answered before the test's deadline, with a writer still creating names in the directory it was emptying")
 		return nil
 	}
 }

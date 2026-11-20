@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A listener that answers none of a session's lookups, its comment-time lookup or its send's
@@ -82,7 +83,7 @@ func publishedToSession(t *testing.T, deps Deps, issueKey, commentID, sessionID 
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished int
 		if err := deps.Store.Pool.QueryRow(context.Background(),
@@ -289,8 +290,10 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
+	// The outbox has published the comment once comment.created reads published; it is waited for
+	// as long as the test's deadline leaves, and a comment never published fails here, naming it.
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
+	for {
 		var published bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select published_at is not null from events where type = 'comment.created' and payload->>'id' = $1
@@ -299,6 +302,9 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 		}
 		if published {
 			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the outbox never published the comment.created of %s", claimed.ID)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -316,7 +322,7 @@ func TestAMentionClaimedByAKilledProcessStillReachesItsSessionWhenTheResendFails
 	})
 
 	copies := 0
-	deadline = time.Now().Add(10 * time.Second)
+	deadline = time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var unpublished, unsettled int
 		if err := database.Pool.QueryRow(context.Background(), `

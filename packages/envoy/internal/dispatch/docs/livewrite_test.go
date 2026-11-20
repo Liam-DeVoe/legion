@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A settlement already past its entry check when a transaction opens its write can reach the
@@ -47,9 +48,13 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 		}
 		<-settled
 	})
+	// The settlement reaches its warm hook, and finishes, through Postgres's answers: both waits
+	// end at the test's deadline, not at a fixed span a loaded machine can spend.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-paused:
-	case <-time.After(5 * time.Second):
+	case <-answered.Done():
 		t.Fatal("settlement never reached its warm hook")
 	}
 
@@ -79,7 +84,7 @@ func TestSettlementBetweenCommitAndPublishWaitsForTheWrite(t *testing.T) {
 	close(resume)
 	select {
 	case <-settled:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("paused settlement did not finish")
 	}
 	ledger.publish()

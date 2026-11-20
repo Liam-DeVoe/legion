@@ -103,7 +103,7 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 		gate.API = service
 		return gate
 	})
-	handler = withDeadline(handler)
+	handler = withDeadline(t, handler)
 	var released sync.Once
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
@@ -121,11 +121,13 @@ func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 			"body": "Yes.", "reply_to": root.ID, "actor": sessionActor(),
 		})
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-gate.entered:
 	case response := <-replies:
 		t.Fatalf("the reply answered %d %s before projecting its thread", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the reply never reached its thread's projection")
 	}
 
@@ -184,7 +186,7 @@ func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
 // the refusal tests wait it out, so what it counts afterwards is the writers it drives.
 func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var refreshed bool
 		if err := database.Pool.QueryRow(context.Background(), `
@@ -196,7 +198,7 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the TEST project's search term statistics were not refreshed within 30s")
+			t.Fatal("the TEST project's search term statistics were not refreshed before the test's deadline")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -206,7 +208,7 @@ func awaitNoTransactionIDHolder(t *testing.T, database *store.Store) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d backends still hold a transaction id after 30s: %s", holders, running)
+			t.Fatalf("%d backends still hold a transaction id at the test's deadline: %s", holders, running)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -222,7 +224,7 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 		gate.API = service
 		return gate
 	})
-	handler = withDeadline(handler)
+	handler = withDeadline(t, handler)
 	var released sync.Once
 	release := func() { released.Do(func() { close(gate.release) }) }
 	defer release()
@@ -236,11 +238,13 @@ func TestTwoWritersOfOneOwnerSerializeWithoutATransactionID(t *testing.T) {
 	}
 	firsts := make(chan *httptest.ResponseRecorder, 1)
 	go func() { firsts <- comment("alpha", "first") }()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-gate.entered:
 	case response := <-firsts:
 		t.Fatalf("the first comment answered %d %s before marking its quote", response.Code, response.Body.String())
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the first comment never reached its quote's mark")
 	}
 	holders, running := transactionIDHolders(t, database)
@@ -331,7 +335,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 	answers := make(chan *httptest.ResponseRecorder, 2)
 	go addLabel("alpha", answers)
 	go addLabel("bravo", answers)
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		select {
 		case response := <-answers:
@@ -346,7 +350,7 @@ func TestTwoPatchesOfOneIssueSerializeOnItsOwnerLockAndLoseNoUpdate(t *testing.T
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("only %d PATCHes waited on the issue's owner lock within 10s, want 2", waiting)
+			t.Fatalf("only %d PATCHes waited on the issue's owner lock before the test's deadline, want 2", waiting)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -434,7 +438,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			}
 			return gate
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		var released sync.Once
 		release := func() { released.Do(func() { close(gate.releaseFirst) }) }
 		defer release()
@@ -444,15 +448,15 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 		go func() {
 			responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 		}()
+		ctx, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
 		select {
 		case <-gate.firstEntered:
 		case response := <-responses:
 			t.Fatalf("the accept answered %d %s before replacing the quote", response.Code, response.Body.String())
-		case <-time.After(10 * time.Second):
+		case <-ctx.Done():
 			t.Fatal("the accept never reached the replacement")
 		}
-		ctx, cancel := testdeadline.Answered(t, context.Background())
-		defer cancel()
 		if _, err := database.Pool.Exec(ctx, `
 			update comments set suggestion = jsonb_set(suggestion, '{accepted}', 'false'::jsonb) where id = $1
 		`, commentID); err != nil {
@@ -481,7 +485,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issueKey, artifactID, commentID := suggest(t, handler)
 		if _, err := database.Pool.Exec(context.Background(), `
 			insert into events (issue_key, seq, type, actor, payload, notify)
@@ -523,7 +527,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed comment write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
 		before := databaseFingerprint(t, database)
@@ -547,7 +551,7 @@ func TestAFailedWritePhaseLeavesNothing(t *testing.T) {
 			t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 			return service
 		})
-		handler = withDeadline(handler)
+		handler = withDeadline(t, handler)
 		issue := createInteractionIssue(t, handler, "TEST", "Failed message write phase", "foo")
 		takeNextSeq(t, database, issue.Key)
 		before := databaseFingerprint(t, database)

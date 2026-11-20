@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
@@ -1544,10 +1545,11 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 				s.proc, s.recheck = proc, time.Millisecond
 				s.pass(context.Background(), false)
 			}()
-			bound := testwait.Bounded(t, 10*time.Second, time.Second)
+			answered, cancel := testdeadline.Answered(t, context.Background())
+			defer cancel()
 			select {
 			case <-done:
-			case <-time.After(bound):
+			case <-answered.Done():
 				// A read the fifo holds is let go as often as it is held — the derivation's,
 				// then the pass's — so the goroutine returns with the row.
 			unstuck:
@@ -1560,7 +1562,7 @@ func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
 					}
 				}
 				close(stop)
-				t.Fatalf("the derivation and a clock pass did not return within %s; the sweep's log:\n%s", bound, log.String())
+				t.Fatalf("the derivation and a clock pass did not return before the test's deadline; the sweep's log:\n%s", log.String())
 			}
 			close(stop)
 			if ended := <-ranAway; ended > 0 {

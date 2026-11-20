@@ -502,12 +502,13 @@ func TestAHandOffDuringASendsTryIsTriedAgainUnderItsClaim(t *testing.T) {
 				want = append(want, parked)
 				go unpark()
 			}
-			waitUntil(t, 30*time.Second, "the sender done with the parked send", func() bool {
+			waitUntil(t, "the sender done with the parked send", func() bool {
 				sender.mu.Lock()
 				defer sender.mu.Unlock()
 				_, holds := sender.held[key]
 				return !holds
 			})
+
 			states := attemptStates(t, database, "comment_deliveries", "comment_id", comment)
 			bodies := state.bodiesTo("s1")
 			mu.Lock()

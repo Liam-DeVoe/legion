@@ -20,13 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
-
-// A failed room's eviction flushes the document and compacts its rows older than the tail under
-// its advisory lock. An operation inside a database transaction that waited for that eviction
-// could be waiting on its own transaction, which Postgres cannot see, so these tests bound every
-// such wait.
-const recoveryBound = 10 * time.Second
 
 // seedFoldableText seeds the document as markdown in rows older than the tail, so a failed room's
 // eviction has rows to compact and waits for the document's advisory lock to write them: every
@@ -40,9 +35,16 @@ func seedFoldableText(t *testing.T, service *Service, artifactID, markdown strin
 	ageUpdatesThrough(t, service.store, artifactID, everyVersion, time.Hour)
 }
 
-// failsFast runs op and requires ErrServiceUnavailable within the bound.
+// failsFast runs op and requires ErrServiceUnavailable. A failed room's eviction flushes the
+// document and compacts its rows older than the tail under its advisory lock, so an operation
+// inside a database transaction that waited for that eviction could be waiting on its own
+// transaction, a cycle Postgres cannot see and never breaks: the wait for op is bounded by the
+// test's deadline (testdeadline.Answered), where such a cycle fails naming the wait, and an op a
+// loaded machine makes slow while Postgres still answers is waited for.
 func failsFast(t *testing.T, what string, op func() error) {
 	t.Helper()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	returned := make(chan error, 1)
 	go func() { returned <- op() }()
 	select {
@@ -50,15 +52,17 @@ func failsFast(t *testing.T, what string, op func() error) {
 		if !errors.Is(err, ErrServiceUnavailable) {
 			t.Fatalf("%s on a failed room = %v, want ErrServiceUnavailable", what, err)
 		}
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatalf("%s waited for the failed room's recovery, which waits on a lock its transaction holds", what)
 	}
 }
 
-// awaitRecovered waits, outside any transaction, for the failed room's eviction to finish.
+// awaitRecovered waits, outside any transaction, for the failed room's eviction to finish, as long
+// as the test's deadline allows (testdeadline.Answered): the eviction's flush and compaction are
+// Postgres's work.
 func awaitRecovered(t *testing.T, service *Service, artifactID string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), recoveryBound)
+	ctx, cancel := testdeadline.Answered(t, context.Background())
 	defer cancel()
 	if err := service.awaitRoomRecovery(ctx, artifactID); err != nil {
 		t.Fatalf("the failed room did not recover: %v", err)
@@ -134,7 +138,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
+		stop, cancel := testdeadline.Answered(t, context.Background())
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -145,6 +149,8 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 	// The load runs on context.Background(), as the settlement warm-up and a committed write's
 	// publish do, so nothing but the recovery this test pins ends it.
 	loaded := make(chan error, 1)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	go func() { loaded <- service.warmLiveDocument(context.Background(), artifactID) }()
 	<-persist.failed
 	select {
@@ -152,7 +158,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 		if !errors.Is(err, ErrServiceUnavailable) {
 			t.Fatalf("a load that meets its own room's failure = %v, want ErrServiceUnavailable", err)
 		}
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatal("the load never returned: it waited for the recovery that waits for it")
 	}
 	awaitRecovered(t, service, artifactID)
@@ -191,7 +197,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	}
 	service := New(Deps{Store: database, Persistence: persist, Events: events.NewBroker(), Settle: time.Hour})
 	t.Cleanup(func() {
-		stop, cancel := context.WithTimeout(context.Background(), recoveryBound)
+		stop, cancel := testdeadline.Answered(t, context.Background())
 		defer cancel()
 		_ = service.Shutdown(stop)
 	})
@@ -248,16 +254,18 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 		defer close(published)
 		ledger.publish()
 	}()
-	waitFor(t, recoveryBound, "the publish to reach the loading room", publishWaitsForALoadingRoom)
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	waitFor(t, "the publish to reach the loading room", publishWaitsForALoadingRoom)
 	release()
 	// Nothing waits on persist.failed any more: the refusal is the event this row turns on, and
 	// the load that closes failed is the one that causes it, so the wait below orders everything
-	// failed could. The guard is twice the recovery bound - a publish and a recovery take
-	// milliseconds - so a recovery that hangs is reported by awaitRecovered above, which says
-	// more, and reaching this one means the publish was never refused at all.
+	// failed could. The wait ends at the test's deadline, as the hook's awaitRecovered does: a
+	// recovery that hangs is reported by that, which says more, and this wait failing alone means
+	// the publish was never refused at all.
 	select {
 	case <-refused:
-	case <-time.After(2 * recoveryBound):
+	case <-answered.Done():
 		t.Fatal("the publish was not refused by the room whose load failed, so nothing here is tested")
 	}
 	// The publish has let go of its write's room, as it had by this point when it ran on this
@@ -328,7 +336,7 @@ func TestAFailedRoomsReplacementSettlesWithoutAnotherEdit(t *testing.T) {
 		t.Fatalf("load the replacement room: %v", err)
 	}
 
-	deadline := time.Now().Add(recoveryBound)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for indexedAsks(t, service, artifactID) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the failed room's replacement never settled: its ask block is unindexed")
@@ -490,6 +498,8 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 		_, err := service.BlockPath(ctx, artifactID, blocks[0].ID)
 		waited <- err
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-waited:
 		t.Fatalf("a block path read without the mark returned %v before the room recovered", err)
@@ -503,7 +513,7 @@ func TestABlockPathReadThatCannotWaitFailsFastOnAFailedRoom(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a block path read on the recovered room: %v", err)
 		}
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatal("a block path read without the mark never returned after the room recovered")
 	}
 }
@@ -623,6 +633,8 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	awaitOwnerLockTaken(t, ctx, database, returned)
 	service.failRoom(artifactID, errors.New("injected room failure"))
 
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	published := make(chan struct{})
 	go func() {
 		firstLedger.publish()
@@ -630,13 +642,13 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	}()
 	select {
 	case <-published:
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatal("the first write's publish did not finish once its room could recover")
 	}
 	var secondErr error
 	select {
 	case secondErr = <-returned:
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatal("the second write waited for good behind a slot whose room failed")
 	}
 	switch {
@@ -662,10 +674,12 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 
 // awaitOwnerLockTaken returns once another transaction holds DOC-1's owner lock, and fails at once
 // with the waiting operation's result if it returns first. The probe tries the lock without
-// waiting, in a statement of its own, and so holds it only for that statement.
+// waiting, in a statement of its own, and so holds it only for that statement; it probes until the
+// test's deadline (testdeadline.StartupBound), since the other transaction takes the lock through
+// Postgres's answers.
 func awaitOwnerLockTaken(t *testing.T, ctx context.Context, database *store.Store, returned <-chan error) {
 	t.Helper()
-	if !testwait.Holds(recoveryBound, time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before it took the owner lock", err)
@@ -692,6 +706,8 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 	service.afterSettleLock = func(room string) {
 		service.failRoom(room, errors.New("injected room failure"))
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	settled := make(chan struct{})
 	go func() {
 		service.settleRoom(artifactID, 0)
@@ -699,7 +715,7 @@ func TestASettlementHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 	}()
 	select {
 	case <-settled:
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		t.Fatal("a settlement holding the document's lock waited for its failed room's recovery")
 	}
 	awaitRecovered(t, service, artifactID)

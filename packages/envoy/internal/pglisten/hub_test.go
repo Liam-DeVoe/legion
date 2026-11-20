@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // hubProbe records what the callbacks of a Hub under test saw.
@@ -95,10 +96,12 @@ func runHub(t *testing.T, hub *Hub) (stop func()) {
 	stop = func() {
 		once.Do(func() {
 			cancel()
+			returned, cancelReturned := testdeadline.Answered(t, context.Background())
+			defer cancelReturned()
 			select {
 			case <-done:
-			case <-time.After(10 * time.Second):
-				t.Error("Run did not return within 10s of its context ending")
+			case <-returned.Done():
+				t.Error("Run did not return before the test's deadline after its context ended")
 			}
 		})
 	}

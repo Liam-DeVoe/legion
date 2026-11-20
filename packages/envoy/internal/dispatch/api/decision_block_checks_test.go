@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // testDecisionBlockCheck is one entry of an edit's advice.decision_block_checks.
@@ -226,7 +227,7 @@ func TestDecisionBlockCheckDoesNotHoldTheConditionalEditGate(t *testing.T) {
 	// once something waits on the lock. (Another waiter, the term statistics refresh the issue's
 	// own check started, may be the one seen: the commit is what the second edit needs.) The second
 	// edit is guarded by the paragraph it rewrites, which the first block's settlement leaves alone.
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	var second map[string]any
 	for {
 		var waiting int

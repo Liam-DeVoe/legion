@@ -403,15 +403,14 @@ session_db_started=1
 docker run -d --name "$session_db" --cpus 2 --memory 4g --mount type=tmpfs,destination=/var/lib/postgresql \
   --env-file "$work/session-db.env" -p "$bind_host:$session_db_port:5432" "$session_db_image" >/dev/null ||
   fail "docker could not start the scratch session database $session_db on $bind_host:$session_db_port"
-ready=
-for _ in $(seq 60); do
-  if docker exec "$session_db" pg_isready -q -h 127.0.0.1 -U legion -d sessions; then
-    ready=1
-    break
-  fi
+# Waited for as long as its container runs: the caller's own deadline bounds the wait, and a fixed
+# count of tries would fail a Docker that starts it slowly. A container that stops will never
+# answer, so that ends the wait, naming its state.
+until docker exec "$session_db" pg_isready -q -h 127.0.0.1 -U legion -d sessions; do
+  state=$(docker inspect -f '{{.State.Status}}' "$session_db" 2>&1) || state="unknown: $state"
+  [ "$state" = running ] || fail "the scratch session database $session_db stopped before it accepted connections (state: $state): $(docker logs --tail 20 "$session_db" 2>&1)"
   sleep 1
 done
-[ -n "$ready" ] || fail "the scratch session database $session_db did not accept connections within 60s: $(docker logs --tail 20 "$session_db" 2>&1)"
 note "container $session_db: database sessions on $bind_host:$session_db_port, accepting connections (the URL is in an owner-only file, not printed)"
 pass
 

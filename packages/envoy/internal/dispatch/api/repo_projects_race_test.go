@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
@@ -68,17 +69,18 @@ func lockWaiters(t *testing.T, database *store.Store) int {
 	return waiting
 }
 
-// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock.
+// awaitLockWaiters waits until at least count backends of this test's own database wait on a lock,
+// as long as the test's deadline leaves: each reaches the lock once its earlier statements answer.
 func awaitLockWaiters(t *testing.T, database *store.Store, count int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		waiting := lockWaiters(t, database)
 		if waiting >= count {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%d request(s) wait on a lock after 10s, want %d", waiting, count)
+			t.Fatalf("%d request(s) wait on a lock at the test's deadline, want %d", waiting, count)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -93,12 +95,16 @@ func putMappingAsync(t *testing.T, handler http.Handler, repo string, body map[s
 	return answered
 }
 
+// awaitAnswer takes the next answer of a request a goroutine sends, waiting as long as the test's
+// deadline leaves: the handler answers once its statements in Postgres have.
 func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
 	t.Helper()
+	ended, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case response := <-answered:
 		return response
-	case <-time.After(15 * time.Second):
+	case <-ended.Done():
 		t.Fatalf("%s never answered", what)
 		return nil
 	}

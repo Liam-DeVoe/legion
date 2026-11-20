@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // failingTokenTransport fails every request to the broker's token endpoint as an unreachable
@@ -284,7 +285,7 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := cr.broker.DecideMachineLogin(t, code, true)
-	deadline := time.Now().Add(20 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for !strings.Contains(cr.logBuf.String(), "retired the machine login a new one replaced") {
 		if time.Now().After(deadline) {
 			t.Fatalf("the replaced credential %s was never retired; log:\n%s", first, cr.logBuf.String())
@@ -300,7 +301,7 @@ func TestContractAReLoginRetiresTheCredentialItReplaces(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The session renews its enrollment with its own proof after its login retired.
-	deadline = time.Now().Add(20 * time.Second)
+	deadline = time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var live bool
 		var now time.Time

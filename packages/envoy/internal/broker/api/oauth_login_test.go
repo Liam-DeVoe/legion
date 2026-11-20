@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // deviceMachine is one machine logging in: its key, the OAuth client it logs in with, and the
@@ -605,10 +606,11 @@ func lockCredential(t *testing.T, rig *brokertest.Rig, credentialID string) (pgx
 	return tx, pid
 }
 
-// awaitWaiters waits until n backends wait, directly or behind another waiter, on holder's lock.
+// awaitWaiters waits until n backends wait, directly or behind another waiter, on holder's lock,
+// until the test's deadline less its cleanup.
 func awaitWaiters(t *testing.T, rig *brokertest.Rig, holder, n int) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		var waiting int
 		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity a

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // notServingAfter is the threshold every clock in this file records unless a test says otherwise:
@@ -531,28 +532,15 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	}
 }
 
-// beatsPastCap and beatsPastMargin bound the wait below: the clock under test needs more than its
-// threshold of real time to get past want, and a run whose binary deadline leaves less than the
-// margin fails by name rather than letting go test's own timeout fire with no test named.
-const beatsPastCap = 30 * time.Second
-const beatsPastMargin = 10 * time.Second
-
-// beatsPast waits for clock's broker_serving row to pass want.
+// beatsPast waits for clock's broker_serving row to pass want, until the test's deadline less its
+// cleanup: the clock under test needs more than its threshold of real time to get past want.
 func (r servingRig) beatsPast(t *testing.T, clock *ServingClock, want time.Time) {
 	t.Helper()
-	wait := beatsPastCap
-	if deadline, bounded := t.Deadline(); bounded {
-		left := time.Until(deadline)
-		if left <= beatsPastMargin {
-			t.Fatalf("the test binary's deadline leaves %s, not more than %s: this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), beatsPastMargin)
-		}
-		wait = min(wait, left-beatsPastMargin)
-	}
-	if !testwait.Holds(wait, 10*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 10*time.Millisecond, func() bool {
 		last, _ := r.servingOf(t, clock)
 		return last.After(want)
 	}) {
-		t.Fatalf("the serving broker's last_serving_at did not pass %s within %s", want, wait)
+		t.Fatalf("the serving broker's last_serving_at did not pass %s before the test's deadline", want)
 	}
 }
 
@@ -565,7 +553,7 @@ func TestRunBeatsAtOnceAndReturnsWhenItsContextEnds(t *testing.T) {
 		r.clock.Run(ctx)
 		close(done)
 	}()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		if processes := r.processes(t); slices.Contains(processes, r.clock.processID()) {
 			break
@@ -577,9 +565,11 @@ func TestRunBeatsAtOnceAndReturnsWhenItsContextEnds(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	cancel()
+	answered, cancelAnswered := testdeadline.Answered(t, context.Background())
+	defer cancelAnswered()
 	select {
 	case <-done:
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("Run did not return after its context ended")
 	}
 }

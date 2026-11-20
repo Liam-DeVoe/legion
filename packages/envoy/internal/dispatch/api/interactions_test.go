@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
@@ -167,7 +168,7 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
-	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), 5*time.Millisecond, func() bool {
 		select {
 		case <-secondReplacement:
 			return true
@@ -1316,7 +1317,7 @@ func TestReopenOrphanedSuggestionSucceeds(t *testing.T) {
 
 func waitForArtifactVersion(t *testing.T, handler http.Handler, artifactID string, number int) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for time.Now().Before(deadline) {
 		version := dispatchRequest(t, handler, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifactID, number), nil, "alice")
 		if version.Code == http.StatusOK {
@@ -1553,9 +1554,11 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 	go func() {
 		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/accept", map[string]any{}, "alice")
 	}()
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-gate.firstEntered:
-	case <-time.After(time.Second):
+	case <-answered.Done():
 		t.Fatal("first acceptance did not reach the document replacement")
 	}
 	go func() {
@@ -1576,7 +1579,7 @@ func TestConcurrentSuggestionAcceptAppliesReplacementExactlyOnce(t *testing.T) {
 					conflict++
 				}
 			}
-		case <-time.After(time.Second):
+		case <-answered.Done():
 			t.Fatal("concurrent acceptance did not complete")
 		}
 	}
@@ -2418,10 +2421,11 @@ func TestGetCommentReturnsNotFound(t *testing.T) {
 }
 
 // loadMarkProjection waits for the mark to reach the persisted document: the API answers once
-// the live document carries the mark, and persistence follows on its own schedule.
+// the live document carries the mark, and persistence follows on its own schedule, which a loaded
+// database slows, so it waits as long as the test's deadline leaves.
 func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) map[string]any {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		projection, found := findMarkProjection(t, database, artifactID, markID)
 		if found {
@@ -2442,7 +2446,7 @@ func loadMarkProjection(t *testing.T, database *store.Store, artifactID, markID 
 // write - the record either appears here or the caller's assertion fails on the empty result.
 func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		projection, found := findMarkProjection(t, database, artifactID, markID)
 		if found || time.Now().After(deadline) {

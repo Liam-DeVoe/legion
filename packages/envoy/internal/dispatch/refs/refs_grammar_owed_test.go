@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 const refsGrammarServer = "https://dispatch.example"
@@ -284,13 +285,15 @@ func TestTheScopeDrainReadsACitingSourceAgainUnderItsOwnerLock(t *testing.T) {
 	if err := edit.Commit(ctx); err != nil {
 		t.Fatalf("commit the edit: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case answer := <-drained:
 		if answer.err != nil || answer.indexed {
 			t.Fatalf("the scope drain after the edit = indexed %v (%v), want nothing indexed: the edited text writes no `#id`, "+
 				"so a drain that indexed it read the text before its owner lock", answer.indexed, answer.err)
 		}
-	case <-time.After(30 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the scope drain never finished after the edit released the owner lock")
 	}
 }

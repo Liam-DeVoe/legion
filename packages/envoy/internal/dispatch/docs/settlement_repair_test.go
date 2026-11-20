@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // Settlement repairs an ask block's server-owned attributes into the document as it stands when
@@ -459,13 +460,18 @@ func TestARoomThatFailsWhileASettlementCommitsIntoItRecovers(t *testing.T) {
 	// The eviction goes as far as the held commit lets it: it retires the room's persistence worker,
 	// whose exit compaction then waits for the document's lock, or it waits for the commit to reach
 	// the room's persistence first.
-	waitFor(t, 10*time.Second, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
+	waitFor(t, "the failed room's eviction to retire its worker or wait for the repair's commit", func() bool {
 		return closeWaitsForRepair() || lockWaits(t, context.Background(), service.store, "select pg_advisory_lock(%") > 0
 	})
 	pause.let()
+	// A cycle through the document's lock never ends, so the wait ends at the test's deadline
+	// (testdeadline.Answered), where the lock's holders are ended so the test fails rather than
+	// hangs; a settlement a loaded machine makes slow while Postgres still answers is waited for.
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case <-settled:
-	case <-time.After(recoveryBound):
+	case <-answered.Done():
 		endRoomLockHolders(t, service)
 		t.Fatal("deadlock: the settlement never returned once its room failed under its commit")
 	}
@@ -540,7 +546,7 @@ func TestASecondWriterIntoARoomClosingUnderASettlementsRepairReturns(t *testing.
 			}()
 			// The room's persistence worker takes the second commit and waits there for the
 			// repair's slot, which the repair's commit, still held, has yet to reach.
-			waitFor(t, 10*time.Second, "the second writer's commit to reach the room's persistence", func() bool {
+			waitFor(t, "the second writer's commit to reach the room's persistence", func() bool {
 				return goroutinesIn("consumeSuppressedPersistence") > 0
 			})
 			pause.let()
@@ -607,12 +613,15 @@ func requireNextSettlementStamps(t *testing.T, service *Service, artifactID, wan
 }
 
 // settleUnderPause runs the room's settlement at generation and returns, with the channel the
-// settlement closes when it returns, once pause holds its stamp's commit.
+// settlement closes when it returns, once pause holds its stamp's commit. The settlement reaches
+// the commit through Postgres's answers, so the wait for it ends at the test's deadline.
 func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, artifactID string, generation uint64) <-chan struct{} {
 	t.Helper()
 	t.Cleanup(pause.let)
 	pause.armed.Store(true)
 	settled := make(chan struct{})
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	go func() {
 		defer close(settled)
 		service.settleRoom(artifactID, generation)
@@ -621,7 +630,7 @@ func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, 
 	case <-pause.held:
 	case <-settled:
 		t.Fatal("the settlement returned without committing into the room")
-	case <-time.After(10 * time.Second):
+	case <-answered.Done():
 		t.Fatal("the settlement never committed into the room")
 	}
 	return settled
@@ -792,11 +801,12 @@ func appendUnidentifiedBlocks(t *testing.T, markdown string) func(*pmdoc.Node) *
 }
 
 // requireNoSuppressedSlots waits for the room's persistence worker to consume every suppression
-// slot queued for room. A slot still queued at the deadline is released before the test fails,
-// so the worker it holds lets the test's shutdown finish.
+// slot queued for room, which it does as it reaches each update behind the appends it stores, so
+// the wait ends at the test's deadline (testdeadline.StartupBound). A slot still queued then is
+// released before the test fails, so the worker it holds lets the test's shutdown finish.
 func requireNoSuppressedSlots(t *testing.T, service *Service, room, when string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(testdeadline.StartupBound(t))
 	for {
 		service.suppressMu.Lock()
 		queued := len(service.suppressed[room])

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/steprecord"
+	"github.com/sjawhar/envoy/testdeadline"
 
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -552,7 +553,7 @@ func TestAStepRecordHoldsNoStatusWrite(t *testing.T) {
 		return slices.Equal(client.statusWrites(), []string{"icebox"})
 	})
 	var left int
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), testwait.Poll, func() bool {
+	if !testwait.Holds(testdeadline.StartupBound(t), testwait.Poll, func() bool {
 		left = outboxRowsOf(t, pool, claimIssue)
 		return left == 1
 	}) {

@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 type turnAskRow struct {
@@ -379,7 +380,7 @@ func TestAReplyThatWaitedForTheOwnerRowIsTheNewest(t *testing.T) {
 			callHandler, callPID := oneConnectionHandler(t, deps)
 			replied := make(chan *httptest.ResponseRecorder, 1)
 			go func() { replied <- agentReply(callHandler) }()
-			if response, early := storetest.WaitForQueuedBehind(t, hold, callPID, replied, 10*time.Second); early {
+			if response, early := storetest.WaitForQueuedBehind(t, hold, callPID, replied, testdeadline.StartupBound(t)); early {
 				t.Fatalf("the agent's reply answered %d before it queued behind the owner row: %s", response.Code, response.Body.String())
 			}
 			var humanReplyID string

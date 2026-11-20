@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // The two daemons of these tests, each its project's own account, whose pods both run as
@@ -329,13 +330,15 @@ func TestTheCarryMigrationTakesItsRowsInAdoptsOrder(t *testing.T) {
 	if err := adoption.Commit(ctx); err != nil {
 		t.Fatalf("the adoption's commit: %v", err)
 	}
+	answered, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
 	select {
 	case err := <-migrated:
 		if err != nil {
 			t.Fatalf("the rewrite beside the adoption: %v", err)
 		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the rewrite did not complete within 30s once the adoption committed")
+	case <-answered.Done():
+		t.Fatal("the rewrite did not complete before the test's deadline once the adoption committed")
 	}
 	want := exchange.PodLaunchPrincipal(carryPodAccount, exchange.AccountPrincipal(carryDaemonAccount))
 	for _, id := range ids {

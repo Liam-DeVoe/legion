@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/testdeadline"
 )
 
 // A tail-rule compaction folds the rows older than the tail into the newest of them and leaves
@@ -138,12 +139,12 @@ func TestAFailedRoomsEvictionCompactionWaitsForTheLockAndFoldsOnlyOldRows(t *tes
 	ctx := context.Background()
 	unlock := holdDocumentLock(t, service.store, artifactID)
 	service.failRoom(artifactID, errors.New("test: fail the room"))
-	waitFor(t, 10*time.Second, "the failed room's compaction to wait for the document's lock", func() bool {
+	waitFor(t, "the failed room's compaction to wait for the document's lock", func() bool {
 		return lockWaits(t, ctx, service.store, "select pg_advisory_lock(%") > 0
 	})
 	requireRowsAsStored(t, service.store, artifactID, before)
 	unlock()
-	recoveryCtx, cancel := context.WithTimeout(ctx, recoveryBound)
+	recoveryCtx, cancel := testdeadline.Answered(t, ctx)
 	defer cancel()
 	if err := service.awaitRoomRecovery(recoveryCtx, artifactID); err != nil {
 		t.Fatalf("wait for the failed room's recovery: %v", err)
@@ -466,6 +467,8 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 	var written []updateRow
 	var cursor int64
 	duringCompactionFold(persist, artifactID, func() {
+		answered, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
 		done := make(chan error, 1)
 		go func() {
 			_, err := joinedReplaceText(service, artifactID, "Replaced.\n", model.Actor{Kind: "session", ID: "agent"})
@@ -476,7 +479,7 @@ func TestAJoinedWriteCommitsWhileACompactionIsInsideItsFold(t *testing.T) {
 			if err != nil {
 				t.Fatalf("the joined write: %v", err)
 			}
-		case <-time.After(30 * time.Second):
+		case <-answered.Done():
 			t.Fatal("the joined write did not commit while the compaction was inside its fold")
 		}
 		written, cursor = storedRows(t, service.store, artifactID), settlementCursor(t, service.store, artifactID)
