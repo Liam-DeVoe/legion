@@ -30,6 +30,8 @@
 #
 # The rows, each printed with its outcome:
 #
+#   clients   the clients' command channel the other rows drive every client through: an answer
+#             that is not ok ends the send that waited for it, naming the client's refusal.
 #   R8 row 1  a claim under the id that holds the role takes it once nobody has answered for
 #             that claim inside the live window — an Oh My Pi plugin reload, which claims after
 #             the window has passed, and a Claude Code channel server restart inside it, which
@@ -492,6 +494,29 @@ role_for() {
 
 session_for() {
   printf 'ses_smoke_%s_%s' "$1" "$run_id"
+}
+
+# The clients' command channel itself (`send` in role-takeover/clients.sh), which every other row
+# drives its clients through: an answer that is not `ok` ends the send that waited for it, naming
+# the client's refusal, so no row reads its outcome off a command the client refused. No other row
+# is answered that way, so this one asks an Oh My Pi client for an op it does not have
+# (omp-client.ts answers it `{"ok":false,"error":"unknown op …"}`). send refuses by exiting, so
+# it runs in a subshell here and the row reads its exit status and what it printed; the command
+# id that subshell's post took is counted in this shell too, so no later command reuses it.
+row0_command_channel() {
+  local status=0 refusal="${work}/logs/send-refusal.err"
+  begin_row "the role takeover clients' command channel — an answer that is not ok ends the send that waited for it, naming the refusal"
+  start_omp omp-channel
+  (send omp-channel '{"op":"no-such-op"}') 2>"$refusal" || status=$?
+  next_command_id=$((next_command_id + 1))
+  expect "send ended as a refusal" "$status" "2"
+  expect "it named the client's refusal of that command" \
+    "$(grep -c -F 'smoke-role-takeover: the omp-channel client refused {"op":"no-such-op"}: ' "$refusal")" "1"
+  expect "the refusal carries the client's own answer" \
+    "$(grep -c -F '"ok":false,"error":"unknown op no-such-op"' "$refusal")" "1"
+  evidence "send refused the omp-channel client's answer to an op it does not have: $(head -c 300 "$refusal" | tr -d '\n')"
+  end_row
+  end_scenario
 }
 
 # R8 row 1, Oh My Pi: the extension instance goes away without deregistering (a plugin reload
@@ -1252,6 +1277,7 @@ row10_live_restart() {
 
 # ---- the run ---------------------------------------------------------------------------------
 started_at=$SECONDS
+row0_command_channel
 row1_omp
 row1_claude
 row2_fork
