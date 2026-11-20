@@ -169,6 +169,9 @@ const (
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
 	nodeDetail = "it reads a detail of one node its caller has already read through a read that binds that node's predicate " +
 		"(Node, RemovedItemBlockNode, or the caller's own registry predicate), and answers nothing of any other node"
+	treeWalk = "the walk of an issue's tree (docs.WalkIssueTree) is what the record a person approves is built from, and what " +
+		"every gate compares a review's digest with, so it reads the store as the server holds it, one answer for every reader; " +
+		"a render of the tree for a reader binds that reader's predicate elsewhere"
 )
 
 // readsWithoutAViewer names each exported read of the store that takes no acting person, with
@@ -190,6 +193,7 @@ var readsWithoutAViewer = map[string]string{
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
 	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
+	"HeadCut":              treeWalk + " - the cut of the store every read of the walk is made at",
 	"HeldTargets":          serverWork + " - a write's read phase reads the edges of the source its reconciliation replaces",
 	"IsConversationNode": noNode + " - R2's test of the one node its caller names, which decides what kind of node it is and " +
 		"not what a reader sees: the nodes of a conversation reach a reader through nodeRegistry's loaders, which bind the " +
@@ -230,8 +234,13 @@ var readsWithoutAViewer = map[string]string{
 	"ResolveFarEnds": "it answers node ids and nothing of any node: the block index resolves the far ends of the pointers it " +
 		"places a node by, and the pre-mortem conversion the checks its map names, whose nodes it then reads through Nodes, " +
 		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
-	"ScopeSources": serverWork,
-	"SourceText":   serverWork,
+	"ScopeSources":    serverWork,
+	"SourceText":      serverWork,
+	"TreeChildren":    treeWalk + " - the children of each node the walk reaches",
+	"TreeFactsOf":     treeWalk + " - what each node the walk reaches states at its cut",
+	"TreeMovedTo":     treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
+	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
+	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
