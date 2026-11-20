@@ -601,14 +601,23 @@ const IN_A_KEPT_LINE = { found: "in a line saying it is kept for its words" } as
  * Where the reader finds, on CORE-1's spec, the draft written for `MARK_ANCHOR`'s words once no
  * compose the reader opened holds it: the compose holding its text, with that compose's words
  * and note; else a line saying it is kept for those words that shows its text (`IN_A_KEPT_LINE`);
- * else nowhere. Waits a second for the compose the margin shows on arrival; none on screen reads
- * as absent.
+ * else nowhere. Read once the margin has arrived on the document, which it says by no longer
+ * being `aria-busy`: by then the arrival (`useMarginSheet`), the only code that brings a compose
+ * back with nothing the reader pressed, has shown the compose it brings back, so a kept line
+ * drawn before that compose cannot be read in its place. Then waits, until the row's deadline
+ * (setup.ts's budget), for either place to hold the text: past the arrival each is where the
+ * draft stays, since a kept line is drawn only while no compose is, and the draft of a compose
+ * that ends with no arrival after it (its issue's closing) reaches its line a commit after the
+ * compose goes. Neither by then reads as nowhere.
  */
 async function foundBack(): Promise<Record<string, string>> {
-  await screen.findByRole("textbox", { name: "Comment" }, { timeout: 1_000 }).catch(() => null);
-  const back = composesOnScreen().find((compose) => compose.text === BODY);
-  if (back !== undefined) return { found: "in a compose", ...back };
-  return keptLineHoldingTheDraft() ? IN_A_KEPT_LINE : { found: "nowhere on screen" };
+  await waitFor(() => expect(screen.getByTestId("margin-sheet")).not.toHaveAttribute("aria-busy"));
+  return await waitFor((): Record<string, string> => {
+    const back = composesOnScreen().find((compose) => compose.text === BODY);
+    if (back !== undefined) return { found: "in a compose", ...back };
+    if (keptLineHoldingTheDraft()) return IN_A_KEPT_LINE;
+    throw new Error("no compose and no kept line on screen holds the draft");
+  }).catch(() => ({ found: "nowhere on screen" }));
 }
 
 /** Where `foundBack` should find the draft when the send that holds it, if any, shows `note`: a
