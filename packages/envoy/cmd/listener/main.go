@@ -1932,9 +1932,16 @@ const (
 )
 
 // shutdownListener is the ordered shutdown every end of a start that serves /v1 comes to, a
-// signal, a fatal error or a bind that did not complete, and exits non-zero so the runtime's
-// restart policy restores the listener.
+// signal, a fatal error or a bind that did not complete: it stops the listener (stopListener) and
+// exits non-zero so the runtime's restart policy restores the listener.
 func shutdownListener(logger *logging.Logger, parts listenerParts, loops listenerLoops) {
+	stopListener(logger, parts, loops)
+	os.Exit(1)
+}
+
+// stopListener is the ordered stop itself, every step of shutdownListener but the exit, so a test
+// can drive it.
+func stopListener(logger *logging.Logger, parts listenerParts, loops listenerLoops) {
 	// Stop background loops before draining NATS, the wake reports retrying off their callers'
 	// paths among them: each holds its goroutine for minutes otherwise, and a report published
 	// into a draining connection reaches nothing.
@@ -2014,5 +2021,4 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	logger.Info("envoy-listener shutdown complete")
-	os.Exit(1)
 }

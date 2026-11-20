@@ -548,6 +548,9 @@ type roleKeepGuards struct {
 	idle    chan struct{}
 	// abandoned is set once the stop's wait (await) ended before every handover had returned.
 	abandoned atomic.Bool
+	// awaiting, nil outside tests, runs when await begins to wait for a handover still running,
+	// so a row can tell by order a stop that waits for the handovers from one that does not.
+	awaiting func()
 }
 
 func newRoleKeepGuards() *roleKeepGuards {
@@ -594,6 +597,9 @@ func (g *roleKeepGuards) await(ctx context.Context) bool {
 	}
 	idle := g.idle
 	g.mu.Unlock()
+	if g.awaiting != nil {
+		g.awaiting()
+	}
 	select {
 	case <-idle:
 		return true
