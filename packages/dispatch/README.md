@@ -827,6 +827,57 @@ a named pipe or a process substitution under an inherited `TMOUT`. Each row carr
 timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
 zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
 
+`e2e/acceptance/outside-edge.ts` is the outside driver: what works for a person from outside
+through an outside edge, driven where they would be, from a machine on the public internet. Run
+it from this package with Bun, after `bun install` and `bunx playwright install chromium`:
+
+```bash
+OUTSIDE_INVITE_URL='https://dispatch.edge.example/enroll#<token>' OUTSIDE_PROJECT=OWN \
+  OUTSIDE_PEER_SESSION=<session> OUTSIDE_BROKER_URL=https://secrets.edge.example \
+  OUTSIDE_LISTENER_URL=https://envoy.edge.example OUTSIDE_EDGE_LIMITS=limits.txt \
+  OUTSIDE_EDGE_STATE="$(mktemp -d)" bun e2e/acceptance/outside-edge.ts
+```
+
+It makes four steps, each a TSV row (`row`, `want`, `got`, `PASS|FAIL|UNKNOWN`), and a step whose
+step before it failed is `UNKNOWN`, never run on nothing:
+
+1. The owner's link enrolls a passkey on Chromium's virtual authenticator
+   (`e2e/virtual-passkey.ts`), which signs the person in at the link's origin, and
+   `GET /api/v1/projects` must list exactly `OUTSIDE_PROJECT`; a project beside it is named.
+2. The broker client (`@legion/broker-client/device-login`) asks the broker for a device login of
+   this machine, and the browser approves its code on the outside origin's machine-login page,
+   with `OUTSIDE_TAILNET_USER_CODE` beside it when set (`APPROVED <code>`).
+3. The device login's broker credential opens the session's relay socket at the listener
+   (`@legion/envoy-client/listener-relay`), the session registers, sends
+   `outside-e2e ping <nonce> at <ms>` to the peer, and the peer's `outside-e2e pong <nonce> …` must
+   come back on the socket within `OUTSIDE_EDGE_REPLY_SECONDS` (30), else the row names the peer.
+4. Every request of the run, the browser's and the process's, is judged against the rate rules
+   of `OUTSIDE_EDGE_LIMITS`, `priority host match path count seconds` lines
+   (`e2e/acceptance/outside-edge-limits.ts` says how a request finds its rule): a row per
+   threshold, which fails when the run's peak in any window of its length is above half its
+   count, naming the host.
+
+`bun e2e/acceptance/outside-edge.ts approve <code>` approves one more code in the browser state
+the run kept in `OUTSIDE_EDGE_STATE` (another check that starts a device login of its own calls
+it), and `revoke` ends each recorded device login on the person's own machine-logins list, a row
+each, but the one `OUTSIDE_EDGE_REVOKE_KEEP` names. `t5` is the browser's half of a delisting
+window: until `OUTSIDE_T5_DEADLINE` it asks `/auth/whoami` with the kept cookie, and once that is
+answered 401 it tries the kept passkey in a fresh browser, writing the rows `T5-cookie` and
+`T5-passkey` to `OUTSIDE_T5_TSV`. The driver prints no token, cookie or link, and no name of the
+machine it runs on.
+
+`bun run test:harness e2e/__tests__/outside-edge.test.ts e2e/__tests__/outside-edge-limits.test.ts`
+drives it. The input rows run anywhere. The stack rows start one stack of the harness under
+`DISPATCH_E2E_SIGNIN=google` (`e2e/__tests__/outside-edge-stack.ts`), with an edge stand-in that
+serves the broker's device grant and the listener on envoy-client's relay socket stand-in
+(`e2e/__tests__/outside-edge-stand-in.ts`), and run the driver once per case: a person on one
+project passes, `approve`, `revoke` and `t5` before and after the owner takes them off; a person
+on a second project fails step 1 naming it; a peer that never answers fails step 3 naming the
+peer; a threshold of 1 fails step 4 naming the host. They need
+`DISPATCH_E2E_PG_BIN` or `DISPATCH_E2E_PG_IMAGE`, Chromium and the built dashboard
+(`bun run build:web`), and skip with the reason printed without a Postgres provider. CI runs them
+in `.github/workflows/dispatch-browser.yaml`'s two-process job.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
