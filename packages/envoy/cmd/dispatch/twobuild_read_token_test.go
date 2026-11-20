@@ -30,6 +30,16 @@ func TestAReadOnlyPersonalTokenWritesThroughNeitherBuild(t *testing.T) {
 	builds := newTwoBuilds(t)
 	previous := builds.startPrevious(t, nil)
 	current := builds.startCurrent(t, nil)
+	// The migration versions the database both builds share holds, logged before the first
+	// request: once main moves past this tree's base, the previous build can carry a migration
+	// this tree lacks, and a failure of the row is then read first against that, not as a
+	// failure of the branch it took. The harness logs none of its own.
+	var versions []string
+	if err := builds.database.Pool.QueryRow(context.Background(),
+		"select coalesce(array_agg(version::text order by version), '{}') from schema_migrations").Scan(&versions); err != nil {
+		t.Fatalf("read the migration versions the shared database holds: %v", err)
+	}
+	t.Logf("the database both builds share holds %d migration versions (schema_migrations): %v", len(versions), versions)
 	project := uniqueProjectKey(t, "READ")
 	current.createProject(t, project, "Read-only tokens")
 	issue, _ := current.createIssueIn(t, project, "An issue a read-only token reads", "A spec to read.")
