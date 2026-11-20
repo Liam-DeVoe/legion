@@ -174,7 +174,7 @@ func (s *server) revokeOwedBrokerCredentials(ctx context.Context) time.Time {
 				current = generation
 			}
 			s.deps.BrokerRevocationsSuperseded.Inc()
-			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until the runbook's reset after a lone restore (running-dispatch.md, \"Signing people in\")",
+			slog.Error("dispatch: the secrets broker answered a revocation superseded: Dispatch's session generation for the address is below the one the broker recorded, so the replaced account's broker credentials were not ended; the revocation stays owed until an operator settles it, and a lone Dispatch restore requires the runbook's reset before that (running-dispatch.md, \"Signing people in\")",
 				"email", revocation.Email, "issuer", revocation.Issuer, "subject", revocation.Subject,
 				"session_generation", sent, "superseded_by", *revoked.SupersededBy, "address_session_generation", current,
 				"still_owed_unread", err != nil, "retry_in", brokerRevocationRetry)

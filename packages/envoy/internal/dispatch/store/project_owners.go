@@ -11,9 +11,9 @@ import (
 // EnsureProjectOwners holds the boot to "every project has an owner" (INFRA-3862 R1). The
 // migration that added projects.owner (20261116015736_project_access) gave each project its
 // default assignee where that names a person who has signed in, and every project created since
-// stores an owner as it is inserted: the person the create acts for, else its default assignee
-// (projects_owner_from_default). So a project with no owner is one whose default named nobody who
-// had signed in when that migration ran.
+// stores an owner as it is inserted: the person the create acts for when they are a full member
+// who has signed in, else its default assignee (projects_owner_from_default). So a project with no
+// owner is one whose default named nobody who had signed in when that migration ran.
 //
 // fallback is DISPATCH_PROJECT_OWNER_FALLBACK. Where it names a full member's `people` row, every
 // project with no owner is given to that person; where it is empty, or names nobody who signed

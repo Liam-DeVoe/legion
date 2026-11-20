@@ -67,10 +67,13 @@ var writeProbes = map[string]writeProbe{
 		`{` + probeActor + `,"body":"{\"next\":\"walked\"}"}`},
 	"PUT /api/v1/issues/{key}/design-gates": {byIssue, `{` + probeActor + `,"gates":[]}`},
 	"PUT /api/v1/issues/{key}/role-holders": {byIssue, `{` + probeActor + `,"holders":[]}`},
-	// The issue is read before the writer is judged, so a key the caller cannot see is a key no
-	// issue holds whatever session the body names.
-	"PUT /api/v1/issues/{key}/steps/{id}": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
-	"POST /api/v1/results/{id}/retract":   {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
+	// Each record write reads its issue as the caller sees it before it judges the writer
+	// (lockRecordedIssue), so a key the caller cannot see is a key no issue holds whatever session
+	// the body names.
+	"PUT /api/v1/issues/{key}/steps/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/steps/{id}/rating": {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"PUT /api/v1/issues/{key}/plans/{id}":        {readProbe{"key": probeIssue, "id": probeStep}, `{` + probeActor + `}`},
+	"POST /api/v1/results/{id}/retract":          {readProbe{"id": probeResult}, `{` + probeActor + `,"reason":"A walked retraction."}`},
 
 	// A project, and what it holds.
 	"POST /api/v1/projects/{key}/artifacts":                                {byProject, `{` + probeActor + `,"name":"walked.md","content":"# Walked\n"}`},

@@ -176,6 +176,51 @@ func TestTheResetEndsEveryCookieAndToken(t *testing.T) {
 	}
 }
 
+// TestTheSecondResetRaisesItsKeptDeploymentFloor covers the reset's floor statement when its `*`
+// row survived a restore. late@ first signs in after the first reset at that floor, then the
+// restored database keeps the floor but has no late@ row. The next reset must raise that existing
+// row, so the lost cookie at the first floor stays refused when late@ signs in again.
+//
+// Control in the runbook: the floor statement's conflict arm `do nothing` keeps the first floor,
+// and the lost cookie signs in after the second reset.
+func TestTheSecondResetRaisesItsKeptDeploymentFloor(t *testing.T) {
+	ctx := context.Background()
+	database := migratedEmptyStore(t)
+	people := brokerPeople(database)
+	first := runReset(t, database, 7)
+	const late = "late@example.com"
+	signInAll(t, people, late, "account-z1")
+	lostAt := sessionGenerationOf(t, database.Pool, late)
+	if !cookieMatches(t, database, late, lostAt) {
+		t.Fatalf("control: %s's cookie at %d does not match before the restore", late, lostAt)
+	}
+	for _, statement := range []string{
+		`alter table user_sessions disable trigger user_sessions_binding_columns`,
+		`alter table people disable trigger people_recorded_account_kept`,
+		`delete from user_sessions where login = '` + late + `'`,
+		`delete from people where email = '` + late + `'`,
+		`alter table people enable trigger people_recorded_account_kept`,
+		`alter table user_sessions enable trigger user_sessions_binding_columns`,
+	} {
+		if _, err := database.Pool.Exec(ctx, statement); err != nil {
+			t.Fatalf("the restore that keeps the floor, %q: %v", statement, err)
+		}
+	}
+	time.Sleep(2 * time.Millisecond)
+	second := runReset(t, database, 7)
+	var floor int64
+	if err := database.Pool.QueryRow(ctx, `select generation from session_generation_floors where login = '*'`).Scan(&floor); err != nil {
+		t.Fatal(err)
+	}
+	signInAll(t, people, late, "account-z2")
+	if got := sessionGenerationOf(t, database.Pool, late); got != floor || got < second || floor <= first {
+		t.Errorf("after the second reset, the floor is %d and %s starts at %d; want its raised floor at least %d and above the first %d", floor, late, got, second, first)
+	}
+	if cookieMatches(t, database, late, lostAt) {
+		t.Errorf("after the second reset, %s's cookie of the lost history at %d signs in; want it refused", late, lostAt)
+	}
+}
+
 // itoa is n in decimal, for a statement the test writes out.
 func itoa(n int64) string {
 	return strconv.FormatInt(n, 10)
