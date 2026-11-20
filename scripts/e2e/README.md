@@ -6395,7 +6395,7 @@ Under a 512 KiB stack (ARG_MAX 128 KiB) and an environment measured to fill it (
 The force's entries are made in a hook ahead of those two rows, held to `forceEntriesBound`, and each row holds only its walk to `walkDeadline` (`lib/arg-max-force.ts`).
 Where the kernel does not hold an exec to ARG_MAX, as gVisor does not, those two rows are skipped by that name (`argMaxForceHolds`, [`lib/arg-max-force.sh`](#libarg-max-forcesh)).
 A `find` or a `grep` that a signal ends after part of its output makes `listening_holders` and `run_processes` exit 2, a run that has not marked itself has no processes to read, and an empty run directory names none (`marked_processes`, `procs_naming` and `names_dir` exit 2).
-An environment that never answers its reader (a FIFO) ends `run_processes`'s walk at its bound, and a process whose fd directory lists a hundred thousand descriptors ends `held_only_by`'s, each naming the bound and exiting 2 (`proc_walk_bound`).
+An environment that never answers its reader (a FIFO) ends `run_processes`'s walk at its bound, and a `find` held past it ends `held_only_by`'s, each naming the bound and exiting 2 (`proc_walk_bound`).
 A marked process whose name holds a newline and a `) ` is still named and ended.
 `stop_marked_processes` ends the marked processes, an escaped one too, and leaves a shell and a `tail -f` under the run's directory running, not stopped;
 with a grace it gives each SIGTERM and the grace, then SIGKILLs only a survivor;

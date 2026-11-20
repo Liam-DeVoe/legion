@@ -1,8 +1,8 @@
 import { afterEach, beforeAll, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
-import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   argMaxForceHolds,
   forcedLine,
@@ -25,9 +25,6 @@ const rig = join(import.meta.dir, "rig.sh");
 const force = join(import.meta.dir, "arg-max-force.sh");
 const root = join(import.meta.dir, "..", "..", "..");
 const dir = temporaryDirectory("run-processes-test");
-// A directory on a tmpfs where there is one (memoryRoot), for the row that makes a hundred thousand
-// entries in one directory: on a disk other programs share, that many would take minutes.
-const memory = temporaryDirectory("run-processes-memory", { root: memoryRoot() });
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
 const skip = skipWithout("perl");
 // python3: the newline-name row renames its process through prctl (ctypes).
@@ -361,33 +358,31 @@ test.skipIf(skip || !argMaxForceHolds())(
 );
 
 test.skipIf(skip)(
-  "held_only_by ends at its walk's bound, saying so, where a process's descriptors take longer to read than the bound allows",
+  "held_only_by ends at its walk's bound, saying so, where the walk of every process's descriptors is held past it",
   () => {
     // held_only_by (lib/rig.sh), stage1-skeleton.sh's check of the daemon's port, walks every
     // process's descriptors (listening_holders), and no bound held that walk: its time was the
     // host's process count and their descriptors'. Its find opens no file, so no FIFO holds it;
-    // a process whose fd directory lists a hundred thousand descriptors (a process may hold as many
-    // as its RLIMIT_NOFILE) is a walk past the bound of a root of two entries (proc_walk_bound,
-    // lib/process-tree.sh), as a stuck read past any bound is. The walk ends there, says so, and
+    // a find first on PATH that runs for 70 s stands in for a walk held past the bound of a root of
+    // one entry (proc_walk_bound, lib/process-tree.sh). The walk ends there, says so, and
     // held_only_by fails with 2, which no check reads as the port's holders.
     const work = join(dir, "slow-holders");
     mkdirSync(work);
-    const root = procRootOf(memory, [process.pid]);
-    const fd = join(root, "999999999", "fd");
-    mkdirSync(fd, { recursive: true });
-    for (let i = 0; i < 100_000; i++) symlinkSync("socket:[0]", join(fd, String(i)));
+    const bin = join(dir, "slow-find");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "find"), "#!/bin/sh\nexec sleep 70\n", { mode: 0o755 });
     const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
     try {
       const r = harness(
         work,
         `st=0; held_only_by ${listener.port} ${process.pid} 2>"$work/held.err" || st=$?; echo "held_only_by $st"`,
-        "",
-        root
+        bin,
+        procRootOf(dir, [process.pid])
       );
       expect(r.err).toBe("");
       expect(r.out).toBe("held_only_by 2\n");
       expect(readFileSync(join(work, "held.err"), "utf8")).toMatch(
-        /^listening_holders: find exited 124 reading \S+: the walk of 2 entries had not ended after [0-9.]+s \(proc_walk_bound\)$/m
+        /^listening_holders: find exited 124 reading \S+: the walk of 1 entries had not ended after [0-9.]+s \(proc_walk_bound\)$/m
       );
     } finally {
       listener.stop(true);

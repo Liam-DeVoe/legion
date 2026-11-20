@@ -470,18 +470,25 @@ proc_walk_complaint() {
 }
 
 # proc_walk_bound ENTRIES prints, in seconds, how long a walk of ENTRIES entries of a proc root may
-# take: procs_naming's grep of every <pid>/environ, and listening_holders' find of every <pid>/fd
-# (lib/rig.sh). Its two parts are what such a walk waits on, each twice the slowest measured beside
-# the load of a devbox (2026-11-20, one-minute loads of 370 to 460: 20 walks of each kind over the
-# host's /proc of about 22,300 processes, the slowest 3.2 s, 20 over a root of one entry, the
-# slowest 32 ms, and 20 over a forced row's root, lib/arg-max-force.sh): proc_walk_base_ms for the
-# programs a walk of one entry starts, and proc_walk_entry_us for each entry, the slowest share of
-# one entry in any of those walks, 0.91 ms, a forced row's walk of 24 fd directories, whose program
-# starts weigh on each entry. A walk still running then is ended with what it started and read as no
-# answer: with no bound, a /proc entry that never answers its reader, such as the environment of a
-# process whose memory map stays locked (a FIFO stands in for one in the rows), held the run's
-# sweep, a check of a port, or the exit that runs them, for ever. The bound starts no program.
-proc_walk_base_ms=65
+# take: procs_naming's grep of every <pid>/environ, listening_holders' find of every <pid>/fd
+# (lib/rig.sh), and refuse_leftovers' (lib/leftovers.sh) and stop_agent_daemons'
+# (parked-decision-devbox.sh) reads of every command line, environment and stat. Its two parts are
+# what such a walk waits on, each twice the slowest measured:
+#   - proc_walk_base_ms, the start of the walk's reader (timeout, then xargs and grep, or find),
+#     which is all a walk of a root of a few entries takes: 197 ms at the slowest of 40 starts of
+#     each reader over a root of one entry, in a scope held to 30% of one CPU (CPUQuota=30%), a
+#     share of the CPU below what a load of 960 leaves each runnable process on the devbox's 288
+#     CPUs, past the 860 that box has reached (2026-11-20, beside a one-minute load of 235 to 292);
+#   - proc_walk_entry_us, each entry: the slowest share of one entry in any walk measured beside
+#     the devbox's load (one-minute loads of 370 to 460: 20 walks of each kind over the host's
+#     /proc of about 22,300 processes, the slowest 3.2 s, and 20 over a forced row's root,
+#     lib/arg-max-force.sh), 0.91 ms, a forced row's walk of 24 fd directories, whose program starts
+#     weigh on each entry.
+# A walk still running then is ended with what it started and read as no answer: with no bound, a
+# /proc entry that never answers its reader, such as the environment of a process whose memory map
+# stays locked (a FIFO stands in for one in the rows), held the run's sweep, a check of a port, or
+# the exit that runs them, for ever. The bound starts no program.
+proc_walk_base_ms=394
 proc_walk_entry_us=1825
 proc_walk_bound() {
   local ms=$((proc_walk_base_ms + $1 * proc_walk_entry_us / 1000))
