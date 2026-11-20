@@ -539,8 +539,8 @@ func requireSessionProven(t *testing.T, what string, actor model.Actor, want boo
 }
 
 // TestANamedBrokerTokenNamingTwoProjectsWritesNothing: no exchange mints a named token naming two
-// projects, and Dispatch writes its project limit only for one; such an answer is refused before
-// any write rather than read as a caller no project limits.
+// projects, and Dispatch reads a named token's project only where it names one. Such an answer is
+// refused before any write rather than read as a caller that names no project.
 func TestANamedBrokerTokenNamingTwoProjectsWritesNothing(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)

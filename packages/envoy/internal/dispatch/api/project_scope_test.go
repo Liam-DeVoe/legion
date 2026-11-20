@@ -370,14 +370,13 @@ func TestAProjectScopedTokenWritesAnotherProjectsObjects(t *testing.T) {
 }
 
 // TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken: the check fails closed, so
-// a target it cannot resolve to the caller's own project is refused whether another project
-// holds it, no project does, or nothing does — an id nobody has, and an id that is no uuid in
-// any spelling. A refusal names the project the credential covers and no other, so it invents
-// no project this caller may not reach. It does not close the existence oracle: this refusal
-// and the one for another project's object still read differently, so a scoped caller can tell
-// an object of another project from an id nobody holds. Nothing is read out that way, since no
-// GET route is project-scoped; what it learns is which of its own refused writes addressed
-// something that exists.
+// a target it cannot resolve to a project is refused to a project-scoped token. No project holds
+// such a target, or nothing does — an id nobody has, and an id that is no uuid in any spelling.
+// A refusal names the project the credential names and no other, so it invents no project. It
+// does not close the existence oracle. A write to an object that exists reaches its handler,
+// and this refusal reads differently, so a scoped caller can tell an object that exists from an
+// id nobody holds. Nothing is read out that way, since no GET route is project-scoped. What it
+// learns is which of its own writes addressed something that exists.
 //
 // This replaces the assertion that such a target kept its handler's answer for every caller.
 // It still does for a caller that names no project, which is every credential but a
@@ -437,7 +436,7 @@ func TestATargetThatResolvesToNoProjectIsRefusedToAProjectScopedToken(t *testing
 	}
 }
 
-// TestADeploymentWriteIsRefusedToAProjectScopedToken: a credential that may write one project
+// TestADeploymentWriteIsRefusedToAProjectScopedToken: a credential that names one project
 // may not create another, and the refusal names the route rather than leaving the caller to
 // guess. The same write by a person and by a personal token, neither of which names a project,
 // is untouched.

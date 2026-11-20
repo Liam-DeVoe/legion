@@ -8455,7 +8455,10 @@ For the settings themselves, read the broker's generated configuration reference
 Of what Legion runs, the operator-launched controller can present such a token, and under `dispatch_token_broker: true` so can the daemon and each role it starts in a pod that carries the exchange identity ([The daemon's own Dispatch credential](#the-daemons-own-dispatch-credential-dispatch_token_broker)).
 Without that setting, a pod, the daemon and the daemon-launched controller present the daemon's shared bearer that [Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod) describes, and a tmux pane always does, since a tmux daemon is refused the setting.
 An operator-launched controller presents the token its own file names, or, under `dispatch_token_broker: true`, a token it trades for at this exchange.
-Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names, and holds a `named` token's writes to the one project it names, where its entry names one (`packages/envoy/internal/dispatch/api/broker_token.go`, `packages/envoy/cmd/dispatch/README.md`).
+Dispatch decides a broker token wherever `DISPATCH_AGENT_SECRETS_URL` names the broker (`brokerTokenVerifier`, `packages/envoy/cmd/dispatch/main.go`): it acts as the session and the person or the service the token names (`packages/envoy/internal/dispatch/api/broker_token.go`).
+A `named` token whose entry names one project writes every project's objects that a token naming no project may write.
+The one exception is a private project that the token does not name.
+Dispatch still refuses such a token a write to a target that resolves to no project or to nothing (`packages/envoy/internal/dispatch/api/project_scope.go`, `packages/envoy/cmd/dispatch/README.md`).
 A `person` token's list of projects limits no Dispatch write at this release.
 It serves a read entry's token on the routes its read list names (`readScopeRoutes` in `packages/envoy/internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone, and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
 The Envoy listener answers that token `401`, because a verifier accepts it only where its service asks for it (`brokertoken.Options.ServesReadOnly`), and the listener does not ask.
@@ -8480,7 +8483,8 @@ A deployment that sets it also gives the daemon these:
 
 - **The secrets broker** lists the daemon's ServiceAccount in `BROKER_EXCHANGE_ACCOUNTS` with an entry that names the daemon's project, a person and the fixed session `legion-daemon:<PROJECT>`:
   `<the daemon's ServiceAccount>=<PROJECT>=<person>=legion-daemon:<PROJECT>`.
-  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), every write to an issue of another project (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  Dispatch refuses every write of a token that names no person (`SIGN_IN_REQUIRED`), a write to a target that resolves to no project or to nothing (`403 PROJECT_SCOPE`), and every write the daemon makes as `legion-daemon:<PROJECT>` with a token of another session (`403 ACTOR_SESSION_MISMATCH`).
+  The project that the entry names does not limit the token's writes to that project.
   An entry that fixes its session needs no pod-session registration.
 
 - **Dispatch** decides broker tokens (`DISPATCH_AGENT_SECRETS_URL`, [The Dispatch identity the broker can issue](#the-dispatch-identity-the-broker-can-issue)), and its `DISPATCH_PROOF_ORIGINS` names the in-cluster address that every daemon and pod calls it at, where that address is not the origin of `DISPATCH_SERVER_URL`.

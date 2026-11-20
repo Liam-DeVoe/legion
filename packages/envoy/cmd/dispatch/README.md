@@ -229,28 +229,38 @@ The other mounts outside the table read no broker token: `/ws/doc/{room}` answer
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
 A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
-A credential that names one project may write that project and nothing else.
+A credential that names one project writes every project's objects that a credential naming no project may write.
+The one exception is a private project that the credential does not name.
+One function holds that test: `access.CredentialCovers` (`internal/dispatch/access/credential.go`).
+Dispatch holds no private project yet.
+So each caller passes `private` as false, and the function refuses nothing today.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
 a `GET` row declares nothing), in four classes:
 *a project's* — the issue-key rows, the project-key rows, the artifact-id rows, the ask-id rows, the comment-id rows, and the message rows that carry an issue;
-*a project the body names* — the issue create alone, whose project its address does not name, so `createIssue` makes the same check itself once that project is settled;
+*a project the body names* — the issue create and the question of an answer run (`POST /api/v1/going/requests`), whose project the address does not name, so `createIssue` and `createGoingRequest` each make the same check once that project is settled;
 *the calling session's* — an agent conversation's own artifact and messages, the two routes a session answers its own delivery on (or, for a delivery sent for a `role:` route, one sent for a role the listener's role lookup names it the live holder of, which a session that took the role from the one the delivery went to answers it by), and the caller-private `me` rows;
 and *the deployment's* — the project create, the repository-to-project map, the delivery settings and session groups, the broadcast, and the credential and machine-login decisions.
 `Register` wraps every mutating route in three checks (`internal/dispatch/api/project_scope.go`), which run after the caller is resolved and before the handler, so no route is left to check any of them for itself.
 
 The project check resolves the project the addressed object belongs to
 — an issue key, a project key, an artifact id, an ask id, a comment id or a message id, each by one read
-— and lets through only a target that resolves to the caller's own project.
-It fails closed, so a target that resolves to another project, to no project at all (an object belonging to none), or to nothing at all (no such row, or an id Postgres will not read as a uuid) is `403 PROJECT_SCOPE`, naming the project the credential covers and the project the write belongs to where one resolved, and nothing of the credential.
-The two refusals still read differently — a target of another project names that project, one that resolved to nothing says the write resolves to no project of that credential's
-— so failing closed does not close an existence oracle and does not claim to.
-Nothing is read out that way: no GET route is project-scoped, so every answer this check can colour is a refusal of the caller's own write.
+— and lets through a target of every project that `access.CredentialCovers` covers.
+It fails closed, so a target that resolves to no project at all (an object belonging to none) or to nothing at all (no such row, or an id Postgres will not read as a uuid) is still `403 PROJECT_SCOPE`.
+That refusal names the project the credential names, and nothing of the credential.
+A write to a private project that the credential does not name is `403 PROJECT_SCOPE` too, and that refusal names both projects.
+So a scoped caller can tell an object that exists from an id nobody holds: a write to the one reaches its handler, and a write to the other is refused.
+Failing closed does not close that existence oracle and does not claim to.
+Nothing is read out that way: no GET route is project-scoped, so the caller reads every project's objects already.
 Each resolver sends the raw path value to Postgres, as the handler behind it does, so the check reads a path exactly as the handler then addresses its row by it
 — Postgres's uuid parser takes a hyphen after any group of four digits, and a check that parsed ids in Go admitted those spellings unjudged.
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT`, naming the credential's project and the route:
-a credential that may write one project may not create another or change a setting that is not any project's.
+a credential that names one project may not create another or change a setting that is not any project's.
 `POST /api/v1/issues` takes its project from the body, or from the repository an external ref names, rather than from its address, so its handler makes the same check, with the same refusal, the moment that project is settled
 — before the ref is resolved to an issue already imported, and before anything is written.
+`POST /api/v1/going/requests` takes its project from the body too, and its handler makes the same check before it records the question.
+A credential that names one project may ask of any project, and of every project at once.
+A `blocked_by` target may be an issue of any project.
+The issue create and `PATCH /api/v1/issues/{key}` make the same check for each target of another project, before any lock is taken and again under the locks.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
