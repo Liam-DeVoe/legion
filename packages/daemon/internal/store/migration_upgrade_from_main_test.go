@@ -97,12 +97,16 @@ import (
 // (20261118134019) touch no outbox_kind_check either: the first creates a table of its own and
 // the second adds a column to claims.
 // dispatch://INFRA-4374's kind list with the conflict's second read and the merge forward
-// (20261119003157) stands above every other version of this list but dispatch://INFRA-4729's
-// 20261120055717, and it is the last of them to rewrite outbox_kind_check: it is now that
-// constraint's last word, and it names every kind the plan-record list names and its own two,
-// phase_ended among them. The same migration deletes the queued phase_ended rows, the seeded one
-// below among them, and adds pull_requests.conflict_read and pull_requests.merge_forward, both
-// null on every row it finds.
+// (20261119003157) stands above every other version of this list but dispatch://INFRA-4108's
+// 20261120042902 and dispatch://INFRA-4729's 20261120055717, and it is still the last of them to
+// rewrite outbox_kind_check: it is now that constraint's last word, and it names every kind the
+// plan-record list names and its own two, phase_ended among them. The same migration deletes the
+// queued phase_ended rows, the seeded one below among them, and adds pull_requests.conflict_read
+// and pull_requests.merge_forward, both null on every row it finds.
+// dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
+// (20261120042902) stands above every other version of this list but dispatch://INFRA-4729's
+// 20261120055717; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
+// and touches no outbox_kind_check, so it needs no row of its own here.
 // dispatch://INFRA-4729's sequence of each value of the copy of Dispatch's issues (20261120055717)
 // is applied after all of these and touches no outbox_kind_check: it adds columns to
 // dispatch_issues at their defaults, an index on its parent, and a refill mark for each project the
@@ -117,7 +121,7 @@ var thisBranchsMigrations = []int{
 	20261114061900, 20261115194357, 20261116012459, 20261116082000, 20261116092312, 20261116144907,
 	20261116164153, 20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932,
 	20261117064152, 20261117112334, 20261117200337, 20261118133133, 20261118134019, 20261119003157,
-	20261120055717,
+	20261120042902, 20261120055717,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -134,9 +138,9 @@ var thisBranchsMigrations = []int{
 // step record (20261117000528), the count of starts of each step (20261117004117) and its roll
 // forward (20261117064152), the kind list with the plan record (20261117023932),
 // dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337,
-// dispatch://INFRA-4374's 20261119003157 and dispatch://INFRA-4729's 20261120055717. That is why
-// the loop below holds the list rather than counting it, so that a version added above any of them
-// is named here rather than read as main's.
+// dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-4108's 20261120042902 and
+// dispatch://INFRA-4729's 20261120055717. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -399,10 +403,11 @@ const thisBranchsClaimSessions = 20261116144907
 // mainsNewestBefore4220 is the newest version a deployment of main before #4220 recorded, the update
 // ask's mark cutover, and mainsAfter4220 are the versions main took after it, which such a
 // deployment has not recorded either: the project pause's tables, the plan record's kind list, the
-// conflict's and the sequence of each value of the copy of Dispatch's issues.
+// conflict's, a claim's agent resume generation and the sequence of each value of the copy of
+// Dispatch's issues.
 const mainsNewestBefore4220 = 20261117200337
 
-var mainsAfter4220 = []int{20261115194357, 20261117023932, 20261119003157, 20261120055717}
+var mainsAfter4220 = []int{20261115194357, 20261117023932, 20261119003157, 20261120042902, 20261120055717}
 
 // A database a deployment of main before #4220 migrated has recorded every migration up to main's
 // newest then, 20261117200337, but claim_sessions, which is numbered below it, and this branch's

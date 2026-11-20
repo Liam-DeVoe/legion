@@ -2464,14 +2464,56 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 192: a claim Envoy cannot reach, and its relaunch on its same session.
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 198: a claim Envoy cannot reach, and its relaunch on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
 // last registration with Envoy is more than 20 minutes old, counted from the latest of that
 // registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
-// below 192 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
+// below 198 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
 // knows no such key. The `legion` tool's controller gains `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
@@ -2538,8 +2580,13 @@ package api
 // (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and 184 at four, so 185 was the
 // lowest number above the base's 178 that no other open head declared. It took 192 at the forward
 // merge of 2026-11-20 that brought main in at 1c7c825367, which landed contract 188
-// (cybermonklabs/legion#4543), the entry right above: a reading at refs/pull/<n>/head for each of
-// the 264 open pull requests, made at 2026-11-20T10:33Z, gave 186 at one other head, 187 at two,
-// 188 at three, 189 at three, 190 at two and 191 at one, so 192 was the lowest number above the
-// base's 188 that no other open head declared.)
-const DaemonAPIVersion = 192
+// (cybermonklabs/legion#4543): a reading at refs/pull/<n>/head for each of the 264 open pull
+// requests, made at 2026-11-20T10:33Z, gave 186 at one other head, 187 at two, 188 at three, 189
+// at three, 190 at two and 191 at one, so 192 was the lowest number above the base's 188 that no
+// other open head declared. It took 198 at the forward merge of 2026-11-20 that brought main in at
+// f21107b285, which landed contract 189 (cybermonklabs/legion#4581), the entry right above: a
+// reading at refs/pull/<n>/head for each of the 289 open pull requests, made at 2026-11-20T18:38Z,
+// gave 189 at 22 heads, 190 at two, 191 at two, 192 at three others, 193 at three, 194 at two, 195
+// at one, 196 at nine and 197 at three, so 198 was the lowest number above the base's 189 that no
+// other open head declared.)
+const DaemonAPIVersion = 198
