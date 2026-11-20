@@ -1349,6 +1349,45 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(daemonRequests(pane.requests)).toEqual([]);
     });
 
+    // A worker whose session holds no relay subject claims its role again after each wait. Once
+    // the session shuts down it claims no more: the Envoy instance it claimed through removed
+    // itself at that shutdown, so a claim after it would be refused for want of one and stop the
+    // pane for a session that already ended.
+    test("a worker's role claim made again while its session holds no relay subject makes no more once the session shuts down", async () => {
+      natsConnectGates.set("omp-ses_pane_norelay", async () => {
+        throw new Error("nats: connection refused");
+      });
+      const pane = await claimPane({ role: "implementer", sessionId: "ses_pane_norelay" });
+      const lines: string[] = [];
+      try {
+        await pane.start();
+        const errorLog = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+          lines.push(args.map(String).join(" "));
+        });
+        try {
+          await pane.handlers.get("agent_start")?.({}, pane.context);
+          for (let turn = 0; turn < 2_000; turn++) {
+            if (lines.some((line) => line.includes("holds no relay subject yet"))) break;
+            await new Promise((resolve) => setTimeout(resolve, 5));
+          }
+          expect(lines.filter((line) => line.includes("holds no relay subject yet"))).toHaveLength(
+            1
+          );
+          await pane.handlers.get("session_shutdown")?.({}, pane.context);
+          // The first wait is 1 s; a claim after it would have run and stopped the pane well
+          // inside this window, and the waits only lengthen under load.
+          await new Promise((resolve) => setTimeout(resolve, 2_500));
+        } finally {
+          errorLog.mockRestore();
+        }
+        expect(pane.exits).toEqual([]);
+        expect(lines.filter((line) => line.includes("claim boot failed"))).toEqual([]);
+        expect(lines.filter((line) => line.includes("holds no relay subject yet"))).toHaveLength(1);
+      } finally {
+        natsConnectGates.delete("omp-ses_pane_norelay");
+      }
+    });
+
     test("a worker beside the pre-split @sjawhar/pi-legion-envoy logs one line naming both entries and the uninstall, and exits", async () => {
       const pane = await claimPane({ role: "implementer" });
       store[LEGACY_LEGION_LOADED_KEY] = "file:///plugins/pi-legion-envoy/dist/legion.js";
@@ -5560,6 +5599,54 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
   });
 
+  // The same holds for pi-envoy's own refusal of the claim because the session holds no relay
+  // subject yet: its NATS dial was refused. The claim is made again after its wait, as after a 503,
+  // and lands once NATS answers; the controller never exits for a relaunch that would meet the
+  // same outage. NATS answers again the moment the wait is logged, so the claim after it lands.
+  test("a daemon-launched controller whose role claim is refused for want of a relay subject claims again once NATS answers, and reports ready without exiting", async () => {
+    let natsRefuses = true;
+    natsConnectGates.set("omp-ses_controller_norelay", async () => {
+      if (natsRefuses) throw new Error("nats: connection refused");
+    });
+    const stopSink = logger.registerLogSink((entry) => {
+      if (entry.level === "warn" && entry.message.includes("holds no relay subject yet")) {
+        natsRefuses = false;
+      }
+    });
+    const controller = await launchedController({
+      sessionId: "ses_controller_norelay",
+      stateFixture: "state-controller-claim.json",
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let warnings: LoggedWarning[];
+    try {
+      ({ warnings } = await loggedWarnings(async () => {
+        await controller.handlers.get("session_start")?.(
+          {},
+          controller.context("ses_controller_norelay")
+        );
+      }));
+    } finally {
+      stopSink();
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    const waits = warnings.filter((warning) =>
+      warning.message.includes("holds no relay subject yet")
+    );
+    expect(waits).toHaveLength(1);
+    expect(waits[0]?.message).toContain(
+      `claim of Envoy role ${controller.token} was refused before the listener was asked, because this session holds no relay subject yet, at attempt 1, so nothing was claimed`
+    );
+    expect(controller.exits).toEqual([]);
+    expect(controller.holder()).toBe("ses_controller_norelay");
+    expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
+  });
+
   // A session change in the daemon-launched controller never reaches its Envoy role claim: the
   // daemon refuses to register a session other than the one it recorded with its same-agent
   // refusal (409, the sentence of claim.SameAgentRefusal; supervise's
@@ -5688,6 +5775,76 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
     expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 4") === true)).toBe(true);
     expect(shown.at(-1)?.lines).toBeUndefined();
+  }, 45_000);
+
+  // The same bound holds for pi-envoy's refusal of the claim for want of a relay subject: the
+  // typed command claims again after each wait, fails as the command's error after its counted
+  // tries, and the process stays, holding what its first claim took.
+  test("/legion-claim-controller typed in a daemon-launched controller whose session holds no relay subject fails on screen after its counted tries, and the process stays", async () => {
+    const sessionId = "ses_controller_typed_norelay";
+    const controller = await launchedController({
+      sessionId,
+      stateFixture: "state-controller-claim.json",
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const notices: CommandNotice[] = [];
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.({}, controller.context(sessionId));
+      // The connection drops, and NATS refuses every dial from here on: the relay subject is
+      // missing once the relay heard its subscription end and dialed again.
+      let refusedDials = 0;
+      natsConnectGates.set(`omp-${sessionId}`, async () => {
+        refusedDials += 1;
+        throw new Error("nats: connection refused");
+      });
+      for (const connection of natsConnections.filter(
+        (candidate) => candidate.name === `omp-${sessionId}`
+      )) {
+        connection.drop();
+      }
+      for (let turn = 0; turn < 2_000 && refusedDials === 0; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(refusedDials).toBeGreaterThan(0);
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context(sessionId),
+        ui: {
+          notify: (message, level) => notices.push({ message, level }),
+          setWidget: recordWidget,
+        },
+      };
+      await loggedWarnings(async () => {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      });
+    } finally {
+      natsConnectGates.delete(`omp-${sessionId}`);
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain("holds no relay subject");
+    const waits = notices.filter((notice) => notice.message.includes("holds no relay subject yet"));
+    expect(waits.map((notice) => notice.message.match(/at attempt (\d+)/)?.[1])).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+    expect(controller.exits).toEqual([]);
   }, 45_000);
 
   // A session change's re-claim in a controller the daemon did not launch holds its notices until

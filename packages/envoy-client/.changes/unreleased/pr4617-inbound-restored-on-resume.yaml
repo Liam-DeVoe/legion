@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `inboundUnavailable`'s report takes `recordRead(told)`, for the record of the session the host
+  binds: a told record is taken up, so this process tells the end of an outage an earlier process of
+  the session told, and a record that is not told drops a take-up an earlier session's record made.
+  `NoRelaySubjectError` is named `NoRelaySubjectError`, and `isNoRelaySubjectRefusal` (`./errors`)
+  tells it by that name, following its `cause` chain, across the copies of this package each plugin
+  bundles.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617

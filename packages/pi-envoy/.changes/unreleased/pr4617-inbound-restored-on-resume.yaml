@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A session an earlier process told that it receives nothing, and that process ended before it could
+  tell the outage's end (it crashed, was stopped or was relaunched), is told "Envoy inbound restored"
+  by the process that resumes it, at its first accepted registration: the transcript records what
+  the session was last told (`envoy-inbound-outage`). A session whose record says nothing of an
+  outage is never told the end of another session's.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617

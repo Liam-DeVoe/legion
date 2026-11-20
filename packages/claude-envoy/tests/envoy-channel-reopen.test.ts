@@ -7,6 +7,8 @@
 // `/clear` is the handoff file the server polls, which names this test's process, the server's
 // parent.
 import { expect, test } from "bun:test"
+import { rm } from "node:fs/promises"
+import { join } from "node:path"
 import { agentStreamControlSubject, legacyAgentSubject } from "@legion/contracts"
 import { deliverSubject } from "@legion/envoy-client/consumer-delivery"
 import { nkeys } from "nats"
@@ -440,15 +442,19 @@ test(
 )
 
 /** Starts a server for `SESSION` over a state file that holds no frames and `told` (omitted when
- *  undefined), with its dials refused until its mod is up, then lets it register. */
-async function restartedOver(told: boolean | undefined) {
+ *  undefined), or over `file`'s content when given, with its dials refused until its mod is up,
+ *  then lets it register. */
+async function restartedOver(told: boolean | undefined, file?: string) {
   const run = await startServer({
     gateOpen: false,
-    prepare: (stateDirectory) =>
-      writeReplayState(replayStateFile(stateDirectory, SESSION), {
+    prepare: async (stateDirectory) => {
+      const target = replayStateFile(stateDirectory, SESSION)
+      if (file !== undefined) return writeReplayState(target, await readReplayState(file))
+      return writeReplayState(target, {
         ledger: [],
         ...(told === undefined ? {} : { inboundOutageTold: told }),
-      }),
+      })
+    },
   })
   const session = await sessionMod(run)
   run.gate.open()
@@ -501,13 +507,111 @@ test.each([
   async (_what, told) => {
     const { run, mod, notices } = await restartedOver(told)
     try {
-      // The registration is accepted once the relay is answered; a heartbeat (200 ms) registers
-      // again, so a restored notice the start owed would be written by then.
-      await Bun.sleep(1_000)
+      // Registrations are sent one at a time, so once a later heartbeat's registration (200 ms)
+      // reached the listener, the first's answer was handled: a restored notice the start owed
+      // is on stderr by then, written before it is shown.
+      const first = run.deliveries.length
+      await waitFor(
+        async () => run.deliveries.length >= first + 2,
+        "two registrations after the first",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
       expect(notices("Envoy inbound restored")).toHaveLength(0)
       expect(run.stderr()).not.toContain("envoy-channel: this session receives again")
     } finally {
       await mod.stop()
+      await run.stop()
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+test(
+  "an outage a server told is recorded in the session's state file, and a server started again over that file tells the session it receives again",
+  async () => {
+    const run = await startServer()
+    const { mod, notices } = await sessionMod(run)
+    const file = replayStateFile(run.stateDirectory, SESSION)
+    const recorded = join(run.stateDirectory, "..", `recorded-${process.pid}.json`)
+    try {
+      await waitFor(
+        async () => run.relaySubscriptions() === 1,
+        "the relay subscription",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      await run.closeForGood()
+      await waitFor(
+        async () =>
+          notices("Envoy inbound unavailable").length > 0 &&
+          (await readReplayState(file)).inboundOutageTold === true,
+        "the outage notice, and the state file recording it",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      await writeReplayState(recorded, await readReplayState(file))
+    } finally {
+      await mod.stop()
+      await run.stop()
+    }
+
+    const restarted = await restartedOver(undefined, recorded)
+    try {
+      await waitFor(
+        async () =>
+          restarted.notices("Envoy inbound restored").length > 0 &&
+          restarted.run.stderr().includes("envoy-channel: this session receives again"),
+        "the restored notice from the server started over the recorded file",
+        restarted.run.state,
+        PROCESS_WAIT_MS,
+      )
+      expect(restarted.notices("Envoy inbound unavailable")).toHaveLength(0)
+    } finally {
+      await restarted.mod.stop()
+      await restarted.run.stop()
+      await rm(recorded, { force: true })
+    }
+  },
+  ROW_TIMEOUT_MS,
+)
+
+test(
+  "an end of an outage that could not be shown is not recorded as told, so a later server still tells it",
+  async () => {
+    // The dials are let through and no mod ever connects to the session's socket: the first
+    // accepted registration's restored notice waits out the mod request's 30 s bound
+    // (`MOD_REQUEST_TIMEOUT_MS`) and fails.
+    const run = await startServer({
+      gateOpen: false,
+      prepare: (stateDirectory) =>
+        writeReplayState(replayStateFile(stateDirectory, SESSION), {
+          ledger: [],
+          inboundOutageTold: true,
+        }),
+    })
+    try {
+      run.gate.open()
+      await waitFor(
+        async () =>
+          run
+            .stderr()
+            .includes("envoy-channel: the session could not be told that it receives again"),
+        "the restored notice to fail for want of a link to Claude Code",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      const first = run.deliveries.length
+      await waitFor(
+        async () => run.deliveries.length >= first + 1,
+        "a registration after the failed notice",
+        run.state,
+        PROCESS_WAIT_MS,
+      )
+      expect(
+        (await readReplayState(replayStateFile(run.stateDirectory, SESSION))).inboundOutageTold,
+      ).toBe(true)
+    } finally {
       await run.stop()
     }
   },

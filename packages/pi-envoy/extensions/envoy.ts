@@ -1079,8 +1079,10 @@ export default function envoyExtension(hostApi: PiApi): void {
     unwritten.requeueNotices(heldReplayNotices(entries));
     // An outage an earlier process told the session, and ended before it could tell its end, is
     // this process's: its first accepted registration tells the session it receives again, after
-    // the outage notice the restart held again above, if that one was not handed yet.
-    if (inboundOutageTold(entries)) inboundOutage.resume();
+    // the outage notice the restart held again above, if that one was not handed yet. A session
+    // whose record is not told drops a take-up an earlier session's record made, so it is never
+    // told the end of an outage it never heard of (`recordRead`).
+    inboundOutage.recordRead(inboundOutageTold(entries));
     // The pictures the transcript the session is now on already shows (a fork's, a handoff's, a
     // resume's, a restart's) are in the history every request sends, so they count as shown. The
     // id the session left is no longer served: what it was shown is forgotten, and so are the

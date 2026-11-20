@@ -20597,8 +20597,8 @@ console.log(JSON.stringify(args));
     }
   });
 
-  // The outage is told by one process, which ends before any registration of its is accepted: a
-  // Legion claim boot ends it (`stopAfterRegistration`). The daemon resumes the session in a new
+  // The outage is told by one process, which ends before any registration of its is accepted: it
+  // crashed, was stopped, or was relaunched by the daemon. The daemon resumes the session in a new
   // process, whose first registration is accepted. On 2026-11-20 an implementer session read the
   // notice an earlier process of its session had written as its state for hours, and reported
   // that the listener gives it no relay subject, while every registration the listener took from
@@ -20697,6 +20697,70 @@ console.log(JSON.stringify(args));
       }
     });
   }
+
+  // A take-up is the session's whose record was read: a process that resumes session B, whose
+  // record says it was told it receives nothing, and moves to a new session C before any
+  // registration of its is accepted, never tells C the end of an outage C never heard of.
+  test("a take-up read from one session's record is not told to the next session the process binds", async () => {
+    const registeredFor: string[] = [];
+    globalThis.fetch = async (input, init) => {
+      if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+        const body = JSON.parse(String(init?.body ?? "{}")) as { session_id?: string };
+        registeredFor.push(body.session_id ?? "");
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    natsState.failConnects = 1;
+    try {
+      const earlier = createPi();
+      const resuming = createPi();
+      let sessionID = "ses_taken_up";
+      let entries = (): readonly unknown[] => [...earlier.entries, ...resuming.entries];
+      const notifications: string[] = [];
+      const processContext = (): SessionContext => ({
+        cwd: "/tmp/envoy-omp-test",
+        sessionManager: {
+          ...topLevelSession,
+          getSessionId: () => sessionID,
+          getBranch: () => entries(),
+          getEntries: () => entries(),
+        },
+        setInterval: () => undefined,
+        ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
+      });
+      const { default: earlierExtension } = await import("./envoy.ts?taken-up-earlier");
+      earlierExtension(earlier.pi);
+      await earlier.handlers.get("session_start")?.({}, processContext());
+      expect(notifications.filter((m) => m.includes("inbound messages are unavailable"))).toHaveLength(1);
+
+      // The resuming process's own start dial fails too, so no registration of its is accepted
+      // while it serves B; then the session moves to C, whose transcript is its own.
+      notifications.splice(0);
+      natsState.failConnects = 1;
+      const { default: resumingExtension } = await import("./envoy.ts?taken-up-resuming");
+      resumingExtension(resuming.pi);
+      await resuming.handlers.get("session_start")?.({}, processContext());
+      const startedAt = resuming.entries.length;
+      await resuming.handlers.get("session_before_switch")?.({ reason: "new" }, processContext());
+      sessionID = "ses_taken_up_next";
+      entries = () => resuming.entries.slice(startedAt);
+      await resuming.handlers.get("session_switch")?.({ reason: "new" }, processContext());
+      await until(
+        () => registeredFor.includes("ses_taken_up_next"),
+        "the new session's registration"
+      );
+      // The answer's handling, accepted() and its notice included, runs in the microtasks after
+      // the stand-in answered; a macrotask turn lets every one of them run.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(notifications.filter((m) => m.includes("inbound messages reach this session again"))).toEqual([]);
+      expect(
+        resuming.entries.slice(startedAt).filter((entry) => JSON.stringify(entry).includes("Envoy inbound restored"))
+      ).toEqual([]);
+    } finally {
+      natsState.failConnects = 0;
+    }
+  });
 
   test("a relay lost after the start names its failure in the refused registration, and the next heartbeat opens it again and says so once", async () => {
     // The relay subject opened at the start. Later its connection closes for good, as nats.js

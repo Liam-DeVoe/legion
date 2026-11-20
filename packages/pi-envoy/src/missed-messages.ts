@@ -59,7 +59,7 @@ export const CONSUMER_STATE_ENTRY = "envoy-consumer-state";
  * newest one is the session's state. A process that resumes the session reads it
  * (`inboundOutageTold`), so the end of an outage an earlier process told is told by the next
  * process whose registration is accepted, and not only by the process that told it, which can end
- * first: a Legion claim boot refused for want of a relay subject ends it.
+ * first: it can crash, be stopped, or be relaunched by the daemon before NATS answers again.
  */
 export const INBOUND_OUTAGE_ENTRY = "envoy-inbound-outage";
 

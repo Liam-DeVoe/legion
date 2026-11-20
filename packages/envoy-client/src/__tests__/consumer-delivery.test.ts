@@ -1311,11 +1311,64 @@ describe("one registration", () => {
 
     // The session's record says it was told it receives nothing: a refusal tells it nothing new,
     // and the first accepted registration tells it the outage ended.
-    outage.resume();
+    outage.recordRead(true);
     await register();
     refuse = false;
     await register();
     await register();
     expect(told).toEqual(["restored"]);
+  });
+
+  test("a take-up is the bound session's: a session whose record is not told is never told the end of another's outage", async () => {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    let refuse = true;
+    const register = () =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+
+    // Session B's record is told and is taken up; a refusal under it tells nothing. The host then
+    // binds session C, whose record is not told, before any registration is accepted.
+    outage.recordRead(true);
+    await register();
+    outage.recordRead(false);
+    refuse = false;
+    await register();
+    expect(told).toEqual([]);
+  });
+
+  test("control: an outage this process told is ended in the session bound after it, whatever that session's record says", async () => {
+    const told: string[] = [];
+    const outage = inboundUnavailable(
+      (why) => told.push(why),
+      () => told.push("restored")
+    );
+    let refuse = true;
+    const register = () =>
+      registerWithRelay({
+        relay: fakeRelay(),
+        ownAgentSubject: AGENT,
+        followed: [TEAM],
+        outage,
+        send: () =>
+          refuse ? Promise.reject(new Error("no_grant")) : Promise.resolve("registered"),
+        answered: () => undefined,
+      }).catch(() => undefined);
+
+    await register();
+    outage.recordRead(false);
+    refuse = false;
+    await register();
+    expect(told).toEqual(["no_grant", "restored"]);
   });
 });

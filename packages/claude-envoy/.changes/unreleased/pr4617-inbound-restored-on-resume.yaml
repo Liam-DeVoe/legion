@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A Claude Code or Codex channel server that starts again mid-session, over a session whose state
+  file records that it was told it receives nothing (`inboundOutageTold`), tells the session it
+  receives again at its first accepted registration. What the session was told is recorded once the
+  notice that told it is shown, in the state file of the id it was told under, so an end that could
+  not be shown is still told by a later server.
+time: 2026-11-20T14:07:49Z
+custom:
+    Issue: pr4617
