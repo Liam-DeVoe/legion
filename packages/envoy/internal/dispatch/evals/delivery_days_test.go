@@ -146,12 +146,13 @@ func (r rig) stored(t *testing.T, project string) []DayRow {
 	return days
 }
 
-// members reads every eval_day_members row of project as `<family> <row key> <repo> <day>`.
+// members reads every eval_day_members row of project as `<family> <row key> <repo> <day>`, and
+// ` as <deploy repo>` after it for an item counted under a deploy repository (deploy_repos.go).
 func (r rig) members(t *testing.T, project string) []string {
 	t.Helper()
 	rows, err := r.database.Pool.Query(t.Context(), `
-		select family || ' ' || row_key || ' ' || repo || ' ' || day::text from eval_day_members
-		where project_key = $1 order by family, row_key
+		select family || ' ' || row_key || ' ' || repo || ' ' || day::text || case when deploy_repo <> '' then ' as ' || deploy_repo else '' end
+		from eval_day_members where project_key = $1 order by family, row_key, deploy_repo
 	`, project)
 	if err != nil {
 		t.Fatalf("read the members of %s: %v", project, err)
@@ -205,18 +206,20 @@ func allFacts(rows []DayRow) []string {
 }
 
 // dayProjects is every project a row of read counts for, by key.
-func dayProjects(read DeliveryDay) []string {
+func dayProjects(read deliveryRead) []string {
 	projects := map[string]bool{}
-	for _, pr := range read.prs {
-		projects[pr.project] = true
-	}
-	for _, deploy := range read.deploys {
-		for _, c := range deploy.projects {
-			projects[c.project] = true
+	for _, read := range read.days {
+		for _, pr := range read.prs {
+			projects[pr.project] = true
 		}
-	}
-	for _, run := range slices.Concat(read.checks, read.pushes) {
-		projects[run.project] = true
+		for _, deploy := range read.deploys {
+			for _, c := range deploy.projects {
+				projects[c.project] = true
+			}
+		}
+		for _, run := range slices.Concat(read.checks, read.pushes) {
+			projects[run.project] = true
+		}
 	}
 	delete(projects, "")
 	return slices.Sorted(maps.Keys(projects))
@@ -267,7 +270,7 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	settings := seedAttribution(t, r)
 	ctx := t.Context()
 
-	read, err := r.registry.readDeliveryDay(ctx, settings, attributionDay, nil, nil)
+	read, err := r.registry.readDeliveryDay(ctx, settings, []deployRepo{{name: alphaRepo, deploys: true}}, attributionDay, nil, nil)
 	if err != nil {
 		t.Fatalf("read the day: %v", err)
 	}
@@ -284,9 +287,8 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			"merge-to-production minutes all: n=1 via=1 samples=[39]",
 			"merge-to-production minutes acme/alpha: n=1 via=1 samples=[39]",
 			"merge-to-production minutes acme/beta: n=0 via=0 samples=[]",
-			"first-commit-to-production minutes all: n=0 via=0 samples=[]",
-			"first-commit-to-production minutes acme/alpha: n=0 via=0 samples=[]",
-			"first-commit-to-production minutes acme/beta: n=0 via=0 samples=[]",
+			// No pull request records a first commit, so first-commit-to-production times none and,
+			// before its first day, holds no row (dropUnshipped).
 			"open-to-production minutes all: n=1 via=1 samples=[99]",
 			"open-to-production minutes acme/alpha: n=1 via=1 samples=[99]",
 			"open-to-production minutes acme/beta: n=0 via=0 samples=[]",
@@ -314,8 +316,6 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			// acme/alpha#1, through BETA-1, in its own repository's cut.
 			"merge-to-production minutes all: n=1 via=0 samples=[49]",
 			"merge-to-production minutes acme/alpha: n=1 via=0 samples=[49]",
-			"first-commit-to-production minutes all: n=0 via=0 samples=[]",
-			"first-commit-to-production minutes acme/alpha: n=0 via=0 samples=[]",
 			"open-to-production minutes all: n=1 via=0 samples=[109]",
 			"open-to-production minutes acme/alpha: n=1 via=0 samples=[109]",
 			"pr-open-to-merge minutes all: n=1 via=0 samples=[60]",
@@ -339,15 +339,22 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 			t.Errorf("the day rows of %s:\n%s\nwant:\n%s", project, strings.Join(got, "\n"), strings.Join(want[project], "\n"))
 		}
 	}
+	// acme/alpha's runs make it the one repository whose rows of the evals that read the deploy
+	// repository are kept: those evals' items are counted under it, and the pull requests once more
+	// under none, as pr-open-to-merge and rework-share count them.
 	wantMembers := map[string][]string{
 		"ALPHA": {
-			"ci run:acme/alpha/101 acme/alpha 2026-11-03", "ci run:acme/alpha/102 acme/alpha 2026-11-03",
-			"ci run:acme/alpha/103 acme/alpha 2026-11-03", "ci run:acme/alpha/201 acme/alpha 2026-11-03",
-			"delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03", "delivery pull_request:acme/beta#1 acme/beta 2026-11-03",
-			"delivery run:acme/alpha/101 acme/alpha 2026-11-03", "delivery run:acme/alpha/102 acme/alpha 2026-11-03",
-			"delivery run:acme/alpha/103 acme/alpha 2026-11-03",
+			"ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
+			"ci run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha", "ci run:acme/alpha/201 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery pull_request:acme/beta#1 acme/beta 2026-11-03", "delivery pull_request:acme/beta#1 acme/beta 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha", "delivery run:acme/alpha/102 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/103 acme/alpha 2026-11-03 as acme/alpha",
 		},
-		"BETA":  {"delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03", "delivery run:acme/alpha/101 acme/alpha 2026-11-03"},
+		"BETA": {
+			"delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03", "delivery pull_request:acme/alpha#1 acme/alpha 2026-11-03 as acme/alpha",
+			"delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha",
+		},
 		"GAMMA": nil,
 	}
 	for _, project := range slices.Sorted(maps.Keys(wantMembers)) {
@@ -396,22 +403,35 @@ func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 		}
 	}
 	if got := r.members(t, "ALPHA"); slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03") ||
-		slices.Contains(got, "delivery run:acme/alpha/101 acme/alpha 2026-11-03") || !slices.Contains(got, "ci run:acme/alpha/101 acme/alpha 2026-11-03") {
+		slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha") ||
+		slices.Contains(got, "delivery run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha") ||
+		!slices.Contains(got, "ci run:acme/alpha/101 acme/alpha 2026-11-03 as acme/alpha") {
 		t.Errorf("ALPHA's items after the move: %v, want acme/alpha#2 and run 101 gone from delivery and run 101 kept in ci", got)
 	}
-	if got := r.members(t, "BETA"); !slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03") {
-		t.Errorf("BETA's items after the move: %v, want acme/alpha#2 among them", got)
+	if got := r.members(t, "BETA"); !slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03") ||
+		!slices.Contains(got, "delivery pull_request:acme/alpha#2 acme/alpha 2026-11-03 as acme/alpha") {
+		t.Errorf("BETA's items after the move: %v, want acme/alpha#2 among them, under no deploy repository and under acme/alpha", got)
 	}
 	t.Logf("compared %d day rows of three projects; after acme/alpha#2 moved to BETA, ALPHA holds %d", compared, len(alpha))
 }
 
 // TestTheZeroDayIsTheBuildersDayWithNoRow: ZeroDeliveryDay holds the all-repositories row of every
 // delivery and CI series (the staging cards only where the settings name their jobs), each n 0
-// and its value zero, and WithZeros adds a zero row only where the day holds none of that series.
+// and its value zero, those of the evals that read the deploy repository keyed by the repository
+// kept, and WithZeros adds a zero row only where the day holds none of that series.
 func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 	day := attributionDay
 	settings := delivery.DeliverySettings{DeployRepo: alphaRepo, ProductionJobNames: []string{"production / apply"}, StagingE2EJobName: new("staging-e2e / run")}
-	zero := ZeroDeliveryDay(settings, "ALPHA", day)
+	zero := ZeroDeliveryDay(settings, "ALPHA", day, []string{alphaRepo})
+	for _, row := range zero.Rows {
+		want := ""
+		if readsDeployRepo(strings.TrimPrefix(row.EvalID, "ALPHA/")) {
+			want = alphaRepo
+		}
+		if row.DeployRepo != want {
+			t.Errorf("the zero row of %s is of deploy repository %q, want %q", row.EvalID, row.DeployRepo, want)
+		}
+	}
 	want := []string{
 		"deploy-frequency deploys all: n=0 via=0 sum=0 with_prs=0",
 		"deploy-run-success runs all: n=0 via=0 share=0/0",
@@ -428,7 +448,7 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 		t.Errorf("the zero day:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 	built := ProjectDay{Project: "ALPHA", Day: day, Rows: []DayRow{{
-		ProjectKey: "ALPHA", EvalID: EvalID("ALPHA", SlugDeployFrequency), Listed: true,
+		ProjectKey: "ALPHA", EvalID: EvalID("ALPHA", SlugDeployFrequency), DeployRepo: alphaRepo, Listed: true,
 		DayPart: measures.DayPart{Series: measures.SeriesDeploys, Day: day, N: 4, Sum: new(4.0)},
 	}}}
 	merged := built.WithZeros(zero.Rows)

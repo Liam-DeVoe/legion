@@ -41,14 +41,14 @@ func (f figureRow) same(other figureRow) bool {
 	return f.foldKey == other.foldKey && slices.Equal(f.figures, other.figures) && f.oldest.Equal(other.oldest) && f.stamp == other.stamp
 }
 
-// rangeLine names a stored range row: `range <project> <repo> <days> <end> <eval>`.
-func rangeLine(project, repo string, days int, end time.Time, evalID string) string {
-	return fmt.Sprintf("range %s %q %d %s %s", project, repo, days, end.Format(time.DateOnly), evalID)
+// rangeLine names a stored range row: `range <project> <repo> <deploy repo> <days> <end> <eval>`.
+func rangeLine(project, repo, deployRepo string, days int, end time.Time, evalID string) string {
+	return fmt.Sprintf("range %s %q %q %d %s %s", project, repo, deployRepo, days, end.Format(time.DateOnly), evalID)
 }
 
-// dayFigureLine names a stored day row: `day <project> <repo> <day> <eval>`.
-func dayFigureLine(project, repo string, day time.Time, evalID string) string {
-	return fmt.Sprintf("day %s %q %s %s", project, repo, day.Format(time.DateOnly), evalID)
+// dayFigureLine names a stored day row: `day <project> <repo> <deploy repo> <day> <eval>`.
+func dayFigureLine(project, repo, deployRepo string, day time.Time, evalID string) string {
+	return fmt.Sprintf("day %s %q %q %s %s", project, repo, deployRepo, day.Format(time.DateOnly), evalID)
 }
 
 // storedFigures is every stored figures row, by rangeLine and dayFigureLine.
@@ -56,30 +56,31 @@ func (r *refresherRig) storedFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	stored := map[string]figureRow{}
 	rows, err := r.database.Pool.Query(t.Context(), `
-		select xmin::text, built_by, project_key, repo, days, end_day, eval_id, fold_key, figures, oldest_updated_at from eval_range_figures`)
+		select xmin::text, built_by, project_key, repo, deploy_repo, days, end_day, eval_id, fold_key, figures, oldest_updated_at
+		from eval_range_figures`)
 	if err != nil {
 		t.Fatalf("read the stored range figures: %v", err)
 	}
 	var row figureRow
-	var project, repo, evalID string
+	var project, repo, deployRepo, evalID string
 	var days int
 	var at time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&row.xmin, &row.builtBy, &project, &repo, &days, &at, &evalID, &row.foldKey, &row.figures, &row.oldest}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&row.xmin, &row.builtBy, &project, &repo, &deployRepo, &days, &at, &evalID, &row.foldKey, &row.figures, &row.oldest}, func() error {
 		kept := row
 		kept.oldest = kept.oldest.UTC()
-		stored[rangeLine(project, repo, days, at.UTC(), evalID)] = kept
+		stored[rangeLine(project, repo, deployRepo, days, at.UTC(), evalID)] = kept
 		return nil
 	}); err != nil {
 		t.Fatalf("read the stored range figures: %v", err)
 	}
 	rows, err = r.database.Pool.Query(t.Context(), `
-		select xmin::text, built_by, project_key, repo, day, eval_id, fold_key, figures, rows_stamp from eval_day_figures`)
+		select xmin::text, built_by, project_key, repo, deploy_repo, day, eval_id, fold_key, figures, rows_stamp from eval_day_figures`)
 	if err != nil {
 		t.Fatalf("read the stored day figures: %v", err)
 	}
 	row = figureRow{}
-	if _, err := pgx.ForEachRow(rows, []any{&row.xmin, &row.builtBy, &project, &repo, &at, &evalID, &row.foldKey, &row.figures, &row.stamp}, func() error {
-		stored[dayFigureLine(project, repo, at.UTC(), evalID)] = row
+	if _, err := pgx.ForEachRow(rows, []any{&row.xmin, &row.builtBy, &project, &repo, &deployRepo, &at, &evalID, &row.foldKey, &row.figures, &row.stamp}, func() error {
+		stored[dayFigureLine(project, repo, deployRepo, at.UTC(), evalID)] = row
 		return nil
 	}); err != nil {
 		t.Fatalf("read the stored day figures: %v", err)
@@ -125,10 +126,11 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 
 // truthFigures is every figure the walks have folded, folded from the day rows that stand as a
 // read of the rows folds them: for each project folded through an end day, each repository's
-// listed rows of each eval read through DayWindow, in day order, and every range of FigureLengths
-// ending on or before that day that holds one of them folded by FoldStatistics, and every day
-// before it that holds one folded alone over its headline series. No list is sorted before the
-// fold, so every quantile merges and sorts its samples.
+// listed rows of each eval of each deploy repository read through DayWindow (the evals keyed by
+// the deploy repository read with that repository, every other eval with none), in day order, and
+// every range of FigureLengths ending on or before that day that holds one of them folded by
+// FoldStatistics, and every day before it that holds one folded alone over its headline series. No
+// list is sorted before the fold, so every quantile merges and sorts its samples.
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	ctx := t.Context()
@@ -138,28 +140,38 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 		if err != nil {
 			t.Fatalf("read the evals of %s: %v", project, err)
 		}
-		rows, err := r.database.Pool.Query(ctx, `select distinct repo from eval_days where project_key = $1 and listed`, project)
+		rows, err := r.database.Pool.Query(ctx, `select distinct repo, deploy_repo from eval_days where project_key = $1 and listed`, project)
 		if err != nil {
 			t.Fatalf("read the repositories of %s: %v", project, err)
 		}
-		repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		cuts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (figureCut, error) {
+			var cut figureCut
+			return cut, row.Scan(&cut.repo, &cut.deployRepo)
+		})
 		if err != nil {
 			t.Fatalf("read the repositories of %s: %v", project, err)
 		}
-		for _, repo := range repos {
+		for _, cut := range cuts {
+			repo := cut.repo
 			var named []string
 			if repo != "" {
 				named = []string{repo}
 			}
-			read, err := r.registry.DayWindow(ctx, []string{project}, page.Items, named, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
+			var entries []Entry
+			for _, entry := range page.Items {
+				if KeyedByDeployRepo(entry.Definition) == (cut.deployRepo != "") {
+					entries = append(entries, entry)
+				}
+			}
+			read, err := r.registry.DayWindow(ctx, []string{project}, entries, cut.deployRepo, named, Range{From: time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC), To: through}, nil)
 			if err != nil {
-				t.Fatalf("read the day rows of %s %q: %v", project, repo, err)
+				t.Fatalf("read the day rows of %s %q of %q: %v", project, repo, cut.deployRepo, err)
 			}
 			byEval := map[string][]WindowRow{}
 			for _, row := range read {
 				byEval[row.EvalID] = append(byEval[row.EvalID], row)
 			}
-			for _, entry := range page.Items {
+			for _, entry := range entries {
 				held := byEval[entry.Definition.EvalID]
 				listed, headline := listedAndHeadline(entry)
 				if len(held) == 0 {
@@ -191,7 +203,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 								oldest = row.UpdatedAt
 							}
 						}
-						truth[rangeLine(project, repo, n, end, entry.Definition.EvalID)] = figureRow{
+						truth[rangeLine(project, repo, cut.deployRepo, n, end, entry.Definition.EvalID)] = figureRow{
 							foldKey: key, figures: encodeFigures(FoldStatistics(entry.Definition, listed, parts, span), via), oldest: oldest,
 						}
 					}
@@ -212,7 +224,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 					for _, row := range rows {
 						stamped = append(stamped, stampedRow{series: row.Part.Series, updatedAt: row.UpdatedAt})
 					}
-					truth[dayFigureLine(project, repo, day, entry.Definition.EvalID)] = figureRow{
+					truth[dayFigureLine(project, repo, cut.deployRepo, day, entry.Definition.EvalID)] = figureRow{
 						foldKey: key, figures: encodeFigures(kept, nil), stamp: rowsStamp(stamped),
 					}
 				}
@@ -277,10 +289,10 @@ func figureReach(before, after map[string]DayRow, through map[string]time.Time) 
 		}
 		for _, n := range FigureLengths {
 			for end := row.Day.AddDate(0, 0, 1); !end.After(row.Day.AddDate(0, 0, n)) && !end.After(limit); end = end.AddDate(0, 0, 1) {
-				reach[rangeLine(row.ProjectKey, row.Repo, n, end, row.EvalID)] = true
+				reach[rangeLine(row.ProjectKey, row.Repo, row.DeployRepo, n, end, row.EvalID)] = true
 			}
 		}
-		line := dayFigureLine(row.ProjectKey, row.Repo, row.Day, row.EvalID)
+		line := dayFigureLine(row.ProjectKey, row.Repo, row.DeployRepo, row.Day, row.EvalID)
 		if !reach[line] {
 			reach[line] = true
 			days = append(days, line)
@@ -355,15 +367,15 @@ func (r *refresherRig) expectRewrites(t *testing.T, what string, before figureSt
 // folds the figures of the days it moves (figures.go), and not a later one. It answers after.
 func (r *refresherRig) expectFoldedInTx(t *testing.T, what string, before, after figureState) figureState {
 	t.Helper()
-	rows, err := r.database.Pool.Query(t.Context(), `select xmin::text, project_key, repo, day, eval_id from eval_days where listed`)
+	rows, err := r.database.Pool.Query(t.Context(), `select xmin::text, project_key, repo, deploy_repo, day, eval_id from eval_days where listed`)
 	if err != nil {
 		t.Fatalf("read the day rows' transactions: %v", err)
 	}
 	wrote := map[string][]string{}
-	var xmin, project, repo, evalID string
+	var xmin, project, repo, deployRepo, evalID string
 	var day time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&xmin, &project, &repo, &day, &evalID}, func() error {
-		line := dayFigureLine(project, repo, day.UTC(), evalID)
+	if _, err := pgx.ForEachRow(rows, []any{&xmin, &project, &repo, &deployRepo, &day, &evalID}, func() error {
+		line := dayFigureLine(project, repo, deployRepo, day.UTC(), evalID)
 		wrote[line] = append(wrote[line], xmin)
 		return nil
 	}); err != nil {

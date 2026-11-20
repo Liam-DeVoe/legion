@@ -22,15 +22,17 @@ import (
 // (WriteUnownedP0Day) writes its row through too.
 
 // Member is one item a project's day counted, as eval_day_members records it beside the day: its
-// family (KindDelivery, KindCI or KindLegion), its row key (PullRequestMember, RunMember, an
-// issue's key), its repository and, for a pull request a deploy shipped, the deploy run's row key
-// (ShippedBy), which is how the refresher finds the day of the run that shipped it once
+// family (KindDelivery, KindCI or KindLegion), the deploy repository it was counted under (” for
+// an item no deploy repository moves; deploy_repos.go), its row key (PullRequestMember, RunMember,
+// an issue's key), its repository and, for a pull request a deploy shipped, the deploy run's row
+// key (ShippedBy), which is how the refresher finds the day of the run that shipped it once
 // containment moves it to another run.
 type Member struct {
-	Family    string
-	RowKey    string
-	Repo      string
-	ShippedBy string
+	Family     string
+	DeployRepo string
+	RowKey     string
+	Repo       string
+	ShippedBy  string
 }
 
 // ProjectDay is one project's computed rows of one UTC day, as WriteProjectDay and
@@ -49,16 +51,16 @@ type ProjectDay struct {
 }
 
 // WithZeros is p with each of zeros (the explicit zero rows of ZeroDeliveryDay) that p holds no row
-// of the same eval, series and repository of: the refresher's zero row of a series on a day the
-// series has no input, which never stands in for a row the day built.
+// of the same eval, deploy repository, series and repository of: the refresher's zero row of a
+// series on a day the series has no input, which never stands in for a row the day built.
 func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
-	held := map[[3]string]bool{}
+	held := map[[4]string]bool{}
 	for _, row := range p.Rows {
-		held[[3]string{row.EvalID, row.Series, row.Repo}] = true
+		held[[4]string{row.EvalID, row.DeployRepo, row.Series, row.Repo}] = true
 	}
 	p.Rows = slices.Clone(p.Rows)
 	for _, zero := range zeros {
-		if !held[[3]string{zero.EvalID, zero.Series, zero.Repo}] {
+		if !held[[4]string{zero.EvalID, zero.DeployRepo, zero.Series, zero.Repo}] {
 			p.Rows = append(p.Rows, zero)
 		}
 	}
@@ -66,9 +68,11 @@ func (p ProjectDay) WithZeros(zeros []DayRow) ProjectDay {
 }
 
 // writeProjectDay is the write of one project's computed rows of one day: day's rows of the evals
-// slugs name, and its members of families, written as WriteProjectDay says. The stale rows it
-// zeroes are those of slugs alone and the stale members it deletes those of families alone, so
-// the delivery and the Legion writes of one day leave each other's rows and members as they are.
+// slugs name, of every deploy repository the day holds rows of, and its members of families,
+// written as WriteProjectDay says. The stale rows it zeroes are those of slugs alone and the stale
+// members it deletes those of families alone, so the delivery and the Legion writes of one day
+// leave each other's rows and members as they are. A row of an eval keyed by the deploy repository
+// names the repository it is computed as if it were it, and every other row none (deploy_repos.go).
 // what names the rows in a refusal. Its upsert's change rows wait in the change log's outbox
 // (migration 20261117100014), so the transaction takes no change log lock, and they are moved into
 // the log once it has committed (drainChanges). Where figures is set, the same transaction folds
@@ -79,6 +83,12 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 	evalIDs := make([]string, len(slugs))
 	for i, slug := range slugs {
 		evalIDs[i] = EvalID(day.Project, slug)
+	}
+	for _, row := range slices.Concat(day.Rows, day.Gaps) {
+		if keyed := readsDeployRepo(strings.TrimPrefix(row.EvalID, day.Project+"/")); keyed != (row.DeployRepo != "") {
+			return fmt.Errorf("evals: a %s day row of %s on %s is of %s and deploy repository %q, and that eval is keyed by the deploy repository %t",
+				what, day.Project, date.Format(time.DateOnly), row.EvalID, row.DeployRepo, keyed)
+		}
 	}
 	for _, row := range day.Rows {
 		if row.ProjectKey != day.Project || !row.Day.Equal(date) || !slices.Contains(evalIDs, row.EvalID) {
@@ -113,57 +123,65 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 		return err
 	}
 	count := len(day.Members)
-	memberFamilies, keys, memberRepos, shippedBy := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+	memberFamilies, deployRepos, keys := make([]string, count), make([]string, count), make([]string, count)
+	memberRepos, shippedBy := make([]string, count), make([]string, count)
 	for i, member := range day.Members {
-		memberFamilies[i], keys[i], memberRepos[i], shippedBy[i] = member.Family, member.RowKey, member.Repo, member.ShippedBy
+		memberFamilies[i], deployRepos[i], keys[i] = member.Family, member.DeployRepo, member.RowKey
+		memberRepos[i], shippedBy[i] = member.Repo, member.ShippedBy
 	}
 	// An item this write takes from another day leaves that day's rows counting it until the day
 	// is written again: one it moves here from the day it was counted on, and, for a pull request
-	// it moves to another deploy run or stops counting, the day of the run that shipped it. Each
-	// such day is recorded owed (eval_days_owed, migration 20261117100006) in this transaction,
-	// before the members that name it move, so a pass that fails before it rewrites that day still
-	// finds it (owedDays) where no stored member names it any more.
+	// it moves to another deploy run or stops counting, the day of the run that shipped it, which
+	// that run's repository's rows count it on. Each such day is recorded owed (eval_days_owed,
+	// migration 20261117100006) in this transaction, before the members that name it move, so a
+	// pass that fails before it rewrites that day still finds it (owedDays) where no stored member
+	// names it any more.
 	if _, err := tx.Exec(ctx, `
 		with given as (
-			select * from unnest($3::text[], $4::text[], $5::text[]) as given(family, row_key, shipped_by)
+			select * from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as given(family, deploy_repo, row_key, shipped_by)
 		), held as (
-			select stored.family, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
+			select stored.family, stored.deploy_repo, stored.row_key, stored.day, stored.shipped_by, given.shipped_by as shipped_now
 			from given join eval_day_members stored
-				on stored.project_key = $1 and stored.family = given.family and stored.row_key = given.row_key
+				on stored.project_key = $1 and stored.family = given.family and stored.deploy_repo = given.deploy_repo
+					and stored.row_key = given.row_key
 			union all
-			select family, row_key, day, shipped_by, null from eval_day_members stored
-			where project_key = $1 and family = any($6) and day = $2
-			  and (family, row_key) not in (select family, row_key from given)
+			select family, deploy_repo, row_key, day, shipped_by, null from eval_day_members stored
+			where project_key = $1 and family = any($7) and day = $2
+			  and (family, deploy_repo, row_key) not in (select family, deploy_repo, row_key from given)
 		), left_days as (
 			select family, day from held where day <> $2
 			union
 			select run.family, run.day from held
-			join eval_day_members run on run.project_key = $1 and run.family = $7 and run.row_key = held.shipped_by
+			join eval_day_members run on run.project_key = $1 and run.family = $8 and run.deploy_repo = held.deploy_repo
+				and run.row_key = held.shipped_by
 			where held.shipped_by <> '' and held.shipped_by is distinct from held.shipped_now
 		)
 		insert into eval_days_owed (project_key, family, day)
 		select $1, family, day from left_days where day <> $2
 		on conflict do nothing
-	`, day.Project, date, memberFamilies, keys, shippedBy, families, KindDelivery); err != nil {
+	`, day.Project, date, memberFamilies, deployRepos, keys, shippedBy, families, KindDelivery); err != nil {
 		return fmt.Errorf("record the days %s's items left for %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
+	// A member that moved records this build and this moment (built_by, updated_at), and one that
+	// stands keeps those of the write that last moved it, as a day row keeps its updated_at.
 	if _, err := tx.Exec(ctx, `
-		insert into eval_day_members (project_key, family, row_key, day, repo, shipped_by)
-		select $1, member.family, member.row_key, $2, member.repo, member.shipped_by
-		from unnest($3::text[], $4::text[], $5::text[], $6::text[]) as member(family, row_key, repo, shipped_by)
-		order by member.family, member.row_key
-		on conflict (project_key, family, row_key) do update
-		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by
+		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by, built_by)
+		select $1, member.family, member.deploy_repo, member.row_key, $2, member.repo, member.shipped_by, $8
+		from unnest($3::text[], $4::text[], $5::text[], $6::text[], $7::text[]) as member(family, deploy_repo, row_key, repo, shipped_by)
+		order by member.family, member.deploy_repo, member.row_key
+		on conflict (project_key, family, deploy_repo, row_key) do update
+		set day = excluded.day, repo = excluded.repo, shipped_by = excluded.shipped_by, built_by = excluded.built_by,
+			updated_at = now()
 		where (eval_day_members.day, eval_day_members.repo, eval_day_members.shipped_by)
 			is distinct from (excluded.day, excluded.repo, excluded.shipped_by)
-	`, day.Project, date, memberFamilies, keys, memberRepos, shippedBy); err != nil {
+	`, day.Project, date, memberFamilies, deployRepos, keys, memberRepos, shippedBy, builtBy); err != nil {
 		return fmt.Errorf("record the items %s counted on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	if _, err := tx.Exec(ctx, `
 		delete from eval_day_members
 		where project_key = $1 and family = any($2) and day = $3
-		  and (family, row_key) not in (select * from unnest($4::text[], $5::text[]))
-	`, day.Project, families, date, memberFamilies, keys); err != nil {
+		  and (family, deploy_repo, row_key) not in (select * from unnest($4::text[], $5::text[], $6::text[]))
+	`, day.Project, families, date, memberFamilies, deployRepos, keys); err != nil {
 		return fmt.Errorf("delete the items %s no longer counts on %s: %w", day.Project, date.Format(time.DateOnly), err)
 	}
 	// This write is the rewrite a day owed of its families.
@@ -201,7 +219,7 @@ func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay
 // would leave a live evals view answering the old one while the read answered the new.
 func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
 	return writeDayRows(ctx, tx, rows, builtBy, `
-		on conflict (project_key, eval_id, writer, series, repo, day) do update
+		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do update
 		set listed = excluded.listed, n = excluded.n, sum = excluded.sum, num = excluded.num, den = excluded.den,
 			max = excluded.max, samples = excluded.samples, last_value = excluded.last_value, last_at = excluded.last_at,
 			last_recorded_at = excluded.last_recorded_at, last_reading = excluded.last_reading,
@@ -223,32 +241,32 @@ func upsertDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) e
 }
 
 // zeroStaleDays writes each of the computation's stored rows of project's day of the evals evalIDs
-// names that held is not among as a zero row, in one statement, recording builtBy: n 0, a zero
-// sum, numerator and denominator where the row holds one, an empty sample list where it holds
-// one, no maximum and no last value (nor the write that stored one), each named count 0 and
-// via_repository 0, the zero row the day builders build for a day with no input. Such a row had
-// input once (no write creates a row of a series and repository with none), so its series has a
-// first input day and 0 is that day's value; deleting it would leave the day with no row, which
-// reads as no data, and would log no eval_days change, so a view of the row's numbers would never
-// wake to the change. A row already zero, built_by included, is left as it is and logs nothing; a
-// row already zero under another build takes builtBy and keeps its updated_at, as upsertDays
-// keeps it where no value moved. The readings write's rows of those evals (an eval a register
-// write made logged for a while) are its own, and stay as they are.
+// names, of every deploy repository, that held is not among as a zero row, in one statement,
+// recording builtBy: n 0, a zero sum, numerator and denominator where the row holds one, an empty
+// sample list where it holds one, no maximum and no last value (nor the write that stored one),
+// each named count 0 and via_repository 0, the zero row the day builders build for a day with no
+// input. Such a row had input once (no write creates a row of a series and repository with none),
+// so its series has a first input day and 0 is that day's value; deleting it would leave the day
+// with no row, which reads as no data, and would log no eval_days change, so a view of the row's
+// numbers would never wake to the change. A row already zero, built_by included, is left as it is
+// and logs nothing; a row already zero under another build takes builtBy and keeps its updated_at,
+// as upsertDays keeps it where no value moved. The readings write's rows of those evals (an eval a
+// register write made logged for a while) are its own, and stay as they are.
 func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time, evalIDs []string, held []DayRow, builtBy string) error {
-	evals, series, repos := make([]string, len(held)), make([]string, len(held)), make([]string, len(held))
+	evals, deployRepos, series, repos := make([]string, len(held)), make([]string, len(held)), make([]string, len(held)), make([]string, len(held))
 	for i, row := range held {
-		evals[i], series[i], repos[i] = row.EvalID, row.Series, row.Repo
+		evals[i], deployRepos[i], series[i], repos[i] = row.EvalID, row.DeployRepo, row.Series, row.Repo
 	}
 	if _, err := tx.Exec(ctx, `
 		with stale as (
-			select project_key, eval_id, writer, series, repo, day,
+			select project_key, eval_id, writer, deploy_repo, series, repo, day,
 				case when sum is not null then 0 end as sum, case when num is not null then 0 end as num,
 				case when den is not null then 0 end as den,
 				case when samples is not null then '{}'::double precision[] end as samples,
 				coalesce((select jsonb_object_agg(key, 0) from jsonb_object_keys(counts) as key), '{}'::jsonb) as counts
 			from eval_days
 			where project_key = $1 and day = $2 and eval_id = any($3) and writer = $8
-				and (eval_id, series, repo) not in (select * from unnest($4::text[], $5::text[], $6::text[]))
+				and (eval_id, deploy_repo, series, repo) not in (select * from unnest($4::text[], $9::text[], $5::text[], $6::text[]))
 		)
 		update eval_days
 		set n = 0, sum = stale.sum, num = stale.num, den = stale.den, max = null, samples = stale.samples,
@@ -263,13 +281,14 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 				then now() else eval_days.updated_at end
 		from stale
 		where eval_days.project_key = stale.project_key and eval_days.eval_id = stale.eval_id and eval_days.writer = stale.writer
-			and eval_days.series = stale.series and eval_days.repo = stale.repo and eval_days.day = stale.day
+			and eval_days.deploy_repo = stale.deploy_repo and eval_days.series = stale.series and eval_days.repo = stale.repo
+			and eval_days.day = stale.day
 			and (eval_days.n, eval_days.sum, eval_days.num, eval_days.den, eval_days.max, eval_days.samples,
 				eval_days.last_value, eval_days.last_at, eval_days.last_recorded_at, eval_days.last_reading,
 				eval_days.counts, eval_days.via_repository, eval_days.built_by)
 			is distinct from (0, stale.sum, stale.num, stale.den, null::double precision, stale.samples,
 				null::double precision, null::timestamptz, null::timestamptz, null::uuid, stale.counts, 0, $7::text)
-	`, project, day, evalIDs, evals, series, repos, builtBy, writerComputation); err != nil {
+	`, project, day, evalIDs, evals, series, repos, builtBy, writerComputation, deployRepos); err != nil {
 		return fmt.Errorf("write the day rows %s no longer holds on %s as zero rows: %w", project, day.Format(time.DateOnly), err)
 	}
 	return nil
@@ -279,27 +298,28 @@ func zeroStaleDays(ctx context.Context, tx pgx.Tx, project string, day time.Time
 // statement, each the computation's, and leaves every stored row as it is: the refresher's zero
 // rows of the days a series had no row on, which never stand in for a row a write built.
 func insertMissingDays(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy string) error {
-	return writeDayRows(ctx, tx, rows, builtBy, `on conflict (project_key, eval_id, writer, series, repo, day) do nothing`)
+	return writeDayRows(ctx, tx, rows, builtBy, `on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing`)
 }
 
 // writeDayRows inserts rows in one statement, each the computation's (writer `computation`) with
 // built_by builtBy, and meets a row already stored as conflict says. It takes them in the byte
-// order of their keys (project, eval, series, repository, day), named as `collate "C"` as every
-// statement that inserts or locks day rows names it (compareDayKeys), whatever the database's
-// collation.
+// order of their keys (project, eval, deploy repository, series, repository, day), named as
+// `collate "C"` as every statement that inserts or locks day rows names it (compareDayKeys),
+// whatever the database's collation.
 func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, conflict string) error {
 	if len(rows) == 0 {
 		return nil
 	}
 	count := len(rows)
-	projects, evals, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count)
+	projects, evals, deployRepos, series, repos := make([]string, count), make([]string, count), make([]string, count), make([]string, count), make([]string, count)
 	days, lastAts, lastRecordedAts := make([]time.Time, count), make([]*time.Time, count), make([]*time.Time, count)
 	listed := make([]bool, count)
 	ns, via := make([]int32, count), make([]int32, count)
 	sums, nums, dens, maxes, lastValues := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
 	samples, counts, lastReadings := make([]*string, count), make([]string, count), make([]string, count)
 	for i, row := range rows {
-		projects[i], evals[i], series[i], repos[i], days[i], listed[i] = row.ProjectKey, row.EvalID, row.Series, row.Repo, measures.Midnight(row.Day), row.Listed
+		projects[i], evals[i], deployRepos[i], series[i], repos[i] = row.ProjectKey, row.EvalID, row.DeployRepo, row.Series, row.Repo
+		days[i], listed[i] = measures.Midnight(row.Day), row.Listed
 		ns[i], via[i] = int32(row.N), int32(row.ViaRepository)
 		sums[i], nums[i], dens[i], maxes[i], lastValues[i], lastAts[i] = row.Sum, row.Num, row.Den, row.Max, row.LastValue, row.LastAt
 		lastRecordedAts[i], lastReadings[i] = row.LastRecordedAt, row.LastReading
@@ -311,18 +331,19 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 		counts[i] = string(encoded)
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into eval_days (project_key, eval_id, writer, series, repo, day, listed, n, sum, num, den, max, samples,
+		insert into eval_days (project_key, eval_id, writer, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
 			last_value, last_at, last_recorded_at, last_reading, counts, via_repository, built_by)
-		select project_key, eval_id, $18, series, repo, day, listed, n, sum, num, den, max, samples::double precision[],
+		select project_key, eval_id, $18, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples::double precision[],
 			last_value, last_at, last_recorded_at, nullif(last_reading, '')::uuid, counts::jsonb, via_repository, $17
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::date[], $6::bool[], $7::int[],
+		from unnest($1::text[], $2::text[], $21::text[], $3::text[], $4::text[], $5::date[], $6::bool[], $7::int[],
 			$8::double precision[], $9::double precision[], $10::double precision[], $11::double precision[], $12::text[],
 			$13::double precision[], $14::timestamptz[], $19::timestamptz[], $20::text[], $15::text[], $16::int[])
-			as given(project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
+			as given(project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
 				last_value, last_at, last_recorded_at, last_reading, counts, via_repository)
-		order by given.project_key collate "C", given.eval_id collate "C", given.series collate "C", given.repo collate "C", given.day
+		order by given.project_key collate "C", given.eval_id collate "C", given.deploy_repo collate "C", given.series collate "C",
+			given.repo collate "C", given.day
 		`+conflict, projects, evals, series, repos, days, listed, ns, sums, nums, dens, maxes, samples, lastValues, lastAts, counts, via, builtBy,
-		writerComputation, lastRecordedAts, lastReadings); err != nil {
+		writerComputation, lastRecordedAts, lastReadings, deployRepos); err != nil {
 		return fmt.Errorf("write the day rows of %s: %w", rows[0].ProjectKey, err)
 	}
 	return nil

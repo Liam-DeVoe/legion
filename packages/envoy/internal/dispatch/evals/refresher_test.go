@@ -109,9 +109,14 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	return deliveries, legion
 }
 
-// rowKey is a day row's identity, `<project> <eval id> <series> <repo> <day>`.
+// rowKey is a day row's identity, `<project> <eval id> <series> <repo> <day>`, and ` as <deploy
+// repo>` after it for a row of an eval keyed by the deploy repository (deploy_repos.go).
 func rowKey(row DayRow) string {
-	return strings.Join([]string{row.ProjectKey, row.EvalID, row.Series, row.Repo, row.Day.Format(time.DateOnly)}, " ")
+	key := strings.Join([]string{row.ProjectKey, row.EvalID, row.Series, row.Repo, row.Day.Format(time.DateOnly)}, " ")
+	if row.DeployRepo != "" {
+		key += " as " + row.DeployRepo
+	}
+	return key
 }
 
 // familyOf is the family a pass's report names a row's day under: the delivery and CI rows one

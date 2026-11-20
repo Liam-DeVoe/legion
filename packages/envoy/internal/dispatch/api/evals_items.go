@@ -324,17 +324,26 @@ func (s *server) evalItemSources(ctx context.Context, project string, entry eval
 }
 
 // evalDaysOf is the eval's day rows of read's range (evals.Store.EvalDays, of the request's series
-// and repositories), read once a range (evalRangeReads): the day-row source and pr-ci's job rows
-// both read them.
+// and repositories, and of the deploy repository the settings name where the eval reads it), read
+// once a range (evalRangeReads): the day-row source and pr-ci's job rows both read them.
 func (s *server) evalDaysOf(ctx context.Context, read evalItemsRead) ([]evals.DayRow, error) {
 	if !read.shared.read {
-		days, err := s.registry().EvalDays(ctx, read.entry.Definition, read.request.series, read.request.repos, read.rng.days)
+		days, err := s.registry().EvalDays(ctx, read.entry.Definition, read.deployRepo(), read.request.series, read.request.repos, read.rng.days)
 		if err != nil {
 			return nil, err
 		}
 		read.shared.days, read.shared.read = days, true
 	}
 	return read.shared.days, nil
+}
+
+// deployRepo is the deploy repository the settings name, "" where the deployment has set none:
+// the repository whose rows and items a read of an eval that reads it reads (evals.DeployRepoOf).
+func (read evalItemsRead) deployRepo() string {
+	if read.settings == nil {
+		return ""
+	}
+	return read.settings.DeployRepo
 }
 
 // mergedRowsOf is the pull requests merged in read's range with the deploy runs created from its
@@ -542,14 +551,15 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 }
 
 // counted is the row keys of the items family's day rows of the project counted on the days of
-// days, those of the repositories the request names where it names any. Those of the range's own
-// days are read once a range (evalRangeReads), since two readers of change-fail-rate read them.
+// days, under the deploy repository the eval's read reads (evals.DeployRepoOf), those of the
+// repositories the request names where it names any. Those of the range's own days are read once
+// a range (evalRangeReads), since two readers of change-fail-rate read them.
 func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string]bool, error) {
 	ranged := days == read.rng.days
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
 	}
-	items, err := s.registry().CountedIn(ctx, read.project, family, read.request.repos, days)
+	items, err := s.registry().CountedIn(ctx, read.project, family, evals.DeployRepoOf(read.entry.Definition, read.deployRepo()), read.request.repos, days)
 	if err != nil {
 		return nil, err
 	}

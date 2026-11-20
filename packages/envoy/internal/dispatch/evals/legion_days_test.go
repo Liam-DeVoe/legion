@@ -138,9 +138,9 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		t.Fatalf("write the filings: %v", err)
 	}
 	delivery := ProjectDay{Project: "EVAL", Day: day, Rows: []DayRow{{
-		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), Listed: true,
+		ProjectKey: "EVAL", EvalID: EvalID("EVAL", SlugDeployFrequency), DeployRepo: "acme/web", Listed: true,
 		DayPart: measures.DayPart{Series: "deploys", Day: day, N: 1, Sum: new(1.0)},
-	}}, Members: []Member{{Family: KindDelivery, RowKey: RunMember("acme/web", 7), Repo: "acme/web"}}}
+	}}, Members: []Member{{Family: KindDelivery, DeployRepo: "acme/web", RowKey: RunMember("acme/web", 7), Repo: "acme/web"}}}
 	if err := r.registry.WriteProjectDay(ctx, delivery, testBuild); err != nil {
 		t.Fatalf("write the day's delivery row: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		}
 	}
 	wantMembers := []string{
-		"delivery run:acme/web/7 acme/web 2026-11-03",
+		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
 		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-03", "legion EVAL-3  2026-11-03",
 	}
 	if got := r.members(t, "EVAL"); !slices.Equal(got, wantMembers) {
@@ -262,7 +262,7 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 		t.Errorf("the next day's rows by eval and repository: %v, want slot wait in every cut of all and acme/api", nextGroups)
 	}
 	wantMembers = []string{
-		"delivery run:acme/web/7 acme/web 2026-11-03",
+		"delivery run:acme/web/7 acme/web 2026-11-03 as acme/web",
 		"legion EVAL-1 acme/web 2026-11-03", "legion EVAL-2 acme/api 2026-11-04", "legion EVAL-3  2026-11-03",
 		"legion EVAL-4 acme/web 2026-11-04",
 	}

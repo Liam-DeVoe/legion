@@ -199,13 +199,13 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		select $1, $2, $3, k.series, k.repo, k.day, k.listed, $4
 		from unnest($5::text[], $6::text[], $7::date[], $8::bool[]) as k(series, repo, day, listed)
 		order by k.series collate "C", k.repo collate "C", k.day
-		on conflict (project_key, eval_id, writer, series, repo, day) do nothing
+		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
 	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed); err != nil {
 		return fmt.Errorf("make the day rows of %s: %w", definition.EvalID, err)
 	}
 	locked, err := w.Query(ctx, `
 		select `+dayColumns+` from eval_days
-		where project_key = $1 and eval_id = $2 and writer = $3
+		where project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = ''
 		  and (series, repo, day) in (select * from unnest($4::text[], $5::text[], $6::date[]))
 		order by series collate "C", repo collate "C", day
 		for update
@@ -277,7 +277,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 		from unnest($5::text[], $6::text[], $7::date[], $8::bool[], $9::int[], $10::float8[], $11::float8[],
 			$12::float8[], $13::float8[], $14::float8[], $16::timestamptz[], $18::timestamptz[], $19::text[], $17::int[])
 			as given(series, repo, day, listed, n, sum, num, den, max, last_value, last_at, last_recorded_at, last_reading, first)
-		where d.project_key = $1 and d.eval_id = $2 and d.writer = $3
+		where d.project_key = $1 and d.eval_id = $2 and d.writer = $3 and d.deploy_repo = ''
 		  and d.series = given.series and d.repo = given.repo and d.day = given.day
 	`, definition.ProjectKey, definition.EvalID, writerReadings, builtBy, seriesNames, repos, days, listed, counts, sums, nums,
 		dens, maxes, lastValues, samples, lastAts, firsts, lastRecordedAts, lastReadings); err != nil {

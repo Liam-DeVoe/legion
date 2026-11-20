@@ -45,16 +45,19 @@
 --   updated_at when the walk last moved.
 --
 -- eval_days_settings holds at most one row (singleton, as delivery_settings is keyed): the delivery
--- settings the stored delivery and CI day rows stand built under, the five a day row reads
--- (deploy_repo, production_job_names, production_apply_step_name, staging_e2e_job_name and
--- staging_apply_job_name; evals.settingsMoves says which evals each moves). A pass that reads
--- delivery settings other than these rewrites, before it writes a day under them, every day of the
--- evals the difference moves, in one transaction that records the settings it read here
--- (evals.rewriteSettings), and every eval a setting can move where another build moved a row since
--- updated_at (the release before this one during a roll, which records nothing here); a pass that
--- finds no row begins the delivery walk again, which builds every day under the settings it reads,
--- and records them.
---   updated_at when the row was last recorded, which that check reads rows' updated_at against.
+-- settings the stored delivery and CI day rows stand built under, the four a day row reads
+-- (production_job_names, production_apply_step_name, staging_e2e_job_name and
+-- staging_apply_job_name; evals.settingsMoves says which evals each moves). The deploy repository
+-- is none of them: the rows of the evals that read it are kept for every repository that holds a
+-- delivery run (eval_days.deploy_repo, 20261117100006), and a read chooses among them. A pass that
+-- reads delivery settings other than these rewrites, before it writes a day under them, every day
+-- of the evals the difference moves, in one transaction that records the settings it read here
+-- (evals.rewriteSettings), and every eval a setting can move where another build moved a row or a
+-- member since updated_at (the release before this one during a roll, which records nothing here);
+-- a pass that finds no row begins the delivery walk again, which builds every day under the
+-- settings it reads, and records them.
+--   updated_at when the row was last recorded, which that check reads the rows' and the members'
+--              updated_at against.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
 -- one neither reads nor writes any of them, so the two builds roll together (cmd/dispatch/README.md,
@@ -79,7 +82,6 @@ create table eval_days_walks (
 
 create table eval_days_settings (
     singleton boolean primary key default true check (singleton),
-    deploy_repo text not null,
     production_job_names text[] not null,
     production_apply_step_name text,
     staging_e2e_job_name text,

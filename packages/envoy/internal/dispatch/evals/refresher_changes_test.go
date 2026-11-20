@@ -19,7 +19,9 @@ import (
 // every day, makes one pass, and reads back which days the pass wrote and which rows' updated_at
 // moved (expectDays).
 
-// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay).
+// deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDay)
+// with the deploy repository the settings name, the one repository of the history that holds runs,
+// as the deploy repository: that repository's read of each day.
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	t.Helper()
 	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
@@ -28,11 +30,11 @@ func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		read, err := r.registry.readDeliveryDay(t.Context(), settings, day, nil, nil)
+		read, err := r.registry.readDeliveryDay(t.Context(), settings, []deployRepo{{name: settings.DeployRepo, deploys: true}}, day, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
-		days = append(days, read)
+		days = append(days, read.days[1])
 	}
 	return days
 }

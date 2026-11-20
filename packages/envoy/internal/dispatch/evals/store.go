@@ -287,14 +287,14 @@ func scanReading(row pgx.Row) (Reading, error) {
 }
 
 // dayColumns is the column list scanDay reads from eval_days.
-const dayColumns = `project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
+const dayColumns = `project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
 	last_value, last_at, last_recorded_at, coalesce(last_reading::text, ''), counts, via_repository, built_by, updated_at`
 
 func scanDay(row pgx.Row) (DayRow, error) {
 	var day DayRow
 	var counts []byte
 	if err := row.Scan(
-		&day.ProjectKey, &day.EvalID, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
+		&day.ProjectKey, &day.EvalID, &day.DeployRepo, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
 		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
 		&counts, &day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
 	); err != nil {

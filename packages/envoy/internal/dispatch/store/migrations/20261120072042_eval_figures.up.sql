@@ -6,10 +6,16 @@
 -- 20261117100006). A stored figure is a fold of day rows, and moves only with them: every write of
 -- day rows rewrites, in its own transaction, the figures of the days whose rows it moved.
 --
--- eval_range_figures holds one row per project, repository, range and eval:
+-- eval_range_figures holds one row per project, repository, range, eval and deploy repository:
 --   project_key, eval_id  the eval, of its project, as eval_days holds them.
 --   repo        '' for the fold of the project's own rows, and a repository's name for the fold of
 --               that repository's rows, which a read naming that one repository folds.
+--   deploy_repo the deploy repository of the rows folded, as eval_days.deploy_repo keeps them: ''
+--               for an eval no deploy repository moves, and for an eval that reads it, the
+--               repository its rows are computed as if it were the deploy repository, one fold of
+--               each repository's rows. A read folds the rows of the repository the delivery
+--               settings name, as a read of the day rows does. It is the key's last column: a
+--               read's every other column is one value, and its deploy repository one of a few.
 --   days, end_day
 --               the range: its length in days and its end day, exclusive, so it holds the days
 --               end_day - days to end_day - 1. Every length the Evals tab offers is stored, and
@@ -30,8 +36,8 @@
 --               them reaches them, writing only those that move.
 -- A range that holds no listed row of the eval has no row: its fold is the fold of no parts.
 --
--- eval_day_figures holds one row per project, repository, day and eval that holds a listed day row
--- of the eval:
+-- eval_day_figures holds one row per project, repository, day, eval and deploy repository that
+-- holds a listed day row of the eval:
 --   figures     the day's figures of each headline series that holds a row that day (the per-day
 --               array a read answers), encoded as eval_range_figures' are.
 --   fold_key, built_by
@@ -60,11 +66,12 @@ create table eval_range_figures (
     days integer not null check (days > 0),
     end_day date not null,
     eval_id text not null,
+    deploy_repo text not null default '',
     fold_key bigint not null,
     figures bytea not null,
     oldest_updated_at timestamptz not null,
     built_by text not null,
-    primary key (project_key, repo, days, end_day, eval_id),
+    primary key (project_key, repo, days, end_day, eval_id, deploy_repo),
     constraint eval_range_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
 
@@ -73,11 +80,12 @@ create table eval_day_figures (
     repo text not null,
     day date not null,
     eval_id text not null,
+    deploy_repo text not null default '',
     fold_key bigint not null,
     figures bytea not null,
     rows_stamp bigint not null,
     built_by text not null,
-    primary key (project_key, repo, day, eval_id),
+    primary key (project_key, repo, day, eval_id, deploy_repo),
     constraint eval_day_figures_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
 

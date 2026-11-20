@@ -25,15 +25,19 @@
 --
 -- repo holds the project key and ref the eval id, as an eval_readings row does (20261117100012).
 -- t_old and t_new are midnight UTC of the first and the last day the eval's written rows hold, so
--- the span names those days and the days between them.
+-- the span names those days and the days between them. The rows of every deploy repository of an
+-- eval (eval_days.deploy_repo, 20261117100006) are one change of the eval, its span theirs
+-- together: an evals view reads one repository's rows of it, which the delivery settings choose
+-- at read time, and the stored figures' fold of the span (evals.figureChanges) reads every
+-- repository's.
 --
 -- An update logs only the rows whose content moved: as 0100's and 20261117100002's triggers ignore
 -- the columns a pass rewrites whatever it finds, the update half ignores updated_at and built_by,
 -- so a new build that rebuilds a row to the same values logs nothing. The old and the new rows are
--- matched by the primary key, and a row whose key an update moved matches nothing on either side,
--- so both its old day and its new one are logged. A delete logs nothing: a day the refresher
--- finds no input for keeps an explicit zero row rather than losing its row, and the rows a
--- project's deletion takes go with every view of that project.
+-- matched by the primary key, deploy_repo among its columns, and a row whose key an update moved
+-- matches nothing on either side, so both its old day and its new one are logged. A delete logs
+-- nothing: a day the refresher finds no input for keeps an explicit zero row rather than losing
+-- its row, and the rows a project's deletion takes go with every view of that project.
 --
 -- The census answers 0: three functions and two triggers, reading and rewriting no row.
 create function eval_days_change_log(p_project text, p_eval text, p_first date, p_last date)
@@ -80,7 +84,7 @@ begin
   for span in
     select project_key, eval_id, min(day) as first_day, max(day) as last_day
     from written new_row
-    full join replaced old_row using (project_key, eval_id, writer, series, repo, day)
+    full join replaced old_row using (project_key, eval_id, writer, deploy_repo, series, repo, day)
     where (to_jsonb(old_row) - ignored) is distinct from (to_jsonb(new_row) - ignored)
     group by project_key, eval_id
     order by project_key, eval_id

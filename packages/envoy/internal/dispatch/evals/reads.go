@@ -197,29 +197,33 @@ func readEval(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error
 // refresher has written, an explicit zero row on a day with no input, so a range that starts
 // before it reads "no data" and names it (R12). Each series is one probe of eval_days' primary
 // key, its first day, under its own eval's project and among its own writer's rows
-// (Definition.writer), so the evals of many projects are one read, and a row the other writer made
-// moves no eval's first day.
-func (s *Store) FirstDays(ctx context.Context, entries []Entry) (map[string]map[string]time.Time, error) {
+// (Definition.writer) of the deploy repository its read reads where the delivery settings name
+// deployRepo ("" where none are set; DeployRepoOf), so the evals of many projects are one read, a
+// row the other writer made moves no eval's first day, and an eval that reads the deploy
+// repository begins on that repository's own first day.
+func (s *Store) FirstDays(ctx context.Context, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {
 		return firsts, nil
 	}
 	projects, evalIDs, writers := make([]string, len(entries)), make([]string, len(entries)), make([]string, len(entries))
+	deployRepos := make([]string, len(entries))
 	for index, entry := range entries {
 		projects[index], evalIDs[index], writers[index] = entry.Definition.ProjectKey, entry.Definition.EvalID, entry.Definition.writer()
+		deployRepos[index] = DeployRepoOf(entry.Definition, deployRepo)
 	}
 	rows, err := s.database.Pool.Query(ctx, `
 		select given.eval_id, s.series, first.day
-		from unnest($1::text[], $2::text[], $3::text[]) as given(project_key, eval_id, writer)
+		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
 		cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
 		cross join lateral (
 			select d.day from eval_days d
 			where d.project_key = given.project_key and d.eval_id = given.eval_id and d.writer = given.writer
-			  and d.series = s.series and d.repo = ''
+			  and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
 			order by d.day
 			limit 1
 		) first
-	`, projects, evalIDs, writers)
+	`, projects, evalIDs, writers, deployRepos)
 	if err != nil {
 		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
 	}
@@ -242,19 +246,20 @@ func (s *Store) FirstDays(ctx context.Context, entries []Entry) (map[string]map[
 }
 
 // EvalDays reads every day row of definition's eval on the days of window, listed or not (pr-ci's
-// per-job series are not), among its own writer's rows (Definition.writer): the rows of all its
-// project's repositories, or those of repos where repos names any, and of one series where series
-// is not ""; newest day first, then by series and repository. It is the items route's read of an
-// eval's day rows, one range of eval_days' primary key.
-func (s *Store) EvalDays(ctx context.Context, definition Definition, series string, repos []string, window Range) ([]DayRow, error) {
+// per-job series are not), among its own writer's rows (Definition.writer) of the deploy
+// repository its read reads where the delivery settings name deployRepo ("" where none are set;
+// DeployRepoOf): the rows of all its project's repositories, or those of repos where repos names
+// any, and of one series where series is not ""; newest day first, then by series and repository.
+// It is the items route's read of an eval's day rows, one range of eval_days' primary key.
+func (s *Store) EvalDays(ctx context.Context, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
-	filter := `project_key = $1 and eval_id = $2 and writer = $3 and repo = any($4) and day >= $5::date and day < $6::date`
-	args := []any{definition.ProjectKey, definition.EvalID, definition.writer(), repos, window.From.UTC(), window.To.UTC()}
+	filter := `project_key = $1 and eval_id = $2 and writer = $3 and deploy_repo = $4 and repo = any($5) and day >= $6::date and day < $7::date`
+	args := []any{definition.ProjectKey, definition.EvalID, definition.writer(), DeployRepoOf(definition, deployRepo), repos, window.From.UTC(), window.To.UTC()}
 	if series != "" {
 		args = append(args, series)
-		filter += ` and series = $7`
+		filter += ` and series = $8`
 	}
 	rows, err := s.database.Pool.Query(ctx, `
 		select `+dayColumns+` from eval_days where `+filter+` order by day desc, series, repo
@@ -276,16 +281,18 @@ type Counted struct {
 	Day time.Time
 }
 
-// CountedIn reads the items family's day rows of project counted on the days of window (those of
-// repos where repos names any), by day and then by row key, through eval_day_members_day: the
-// pull requests and deploy runs the delivery evals' rows of those days count, or the runs the CI
-// evals' rows do. An items read answers them, so it lists the items the window's numbers fold.
-func (s *Store) CountedIn(ctx context.Context, project, family string, repos []string, window Range) ([]Counted, error) {
-	filter := `project_key = $1 and family = $2 and day >= $3::date and day < $4::date`
-	args := []any{project, family, window.From.UTC(), window.To.UTC()}
+// CountedIn reads the items family's day rows of project counted on the days of window, under
+// deployRepo (” for the items counted whatever the deploy repository is, a repository's name for
+// those the evals that read it counted with it as the deploy repository; DeployRepoOf), those of
+// repos where repos names any, by day and then by row key, through eval_day_members_day: the pull
+// requests and deploy runs the delivery evals' rows of those days count, or the runs the CI evals'
+// rows do. An items read answers them, so it lists the items the window's numbers fold.
+func (s *Store) CountedIn(ctx context.Context, project, family, deployRepo string, repos []string, window Range) ([]Counted, error) {
+	filter := `project_key = $1 and family = $2 and deploy_repo = $3 and day >= $4::date and day < $5::date`
+	args := []any{project, family, deployRepo, window.From.UTC(), window.To.UTC()}
 	if len(repos) > 0 {
 		args = append(args, repos)
-		filter += ` and repo = any($5)`
+		filter += ` and repo = any($6)`
 	}
 	rows, err := s.database.Pool.Query(ctx, `
 		select row_key, repo, shipped_by, day from eval_day_members where `+filter+` order by day, row_key
@@ -296,7 +303,7 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 	defer rows.Close()
 	var items []Counted
 	for rows.Next() {
-		item := Counted{Member: Member{Family: family}}
+		item := Counted{Member: Member{Family: family, DeployRepo: deployRepo}}
 		if err := rows.Scan(&item.RowKey, &item.Repo, &item.ShippedBy, &item.Day); err != nil {
 			return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
 		}
@@ -318,7 +325,11 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 // date. repos empty reads the projects' own rows (repo is the empty string); repos named reads
 // those repositories' rows, a repository filter's fold. Each eval's rows are its own writer's
 // (Definition.writer, R3): a computed eval's the computation's, a logged eval's the readings
-// write's, so an eval whose source changed folds none of the rows the other writer made.
+// write's, so an eval whose source changed folds none of the rows the other writer made. And they
+// are those of the deploy repository its read reads, where the delivery settings name deployRepo
+// ("" where none are set; DeployRepoOf): of an eval keyed by the deploy repository that
+// repository's rows, and of every other the rows of none, so a move of the deploy repository is
+// this selection (deploy_repos.go).
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
 // read costs is the bytes it sends: no project, repository, listing or build, and a sample list
@@ -328,14 +339,14 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 // last_at by (aggStatistics), comes only with a row of a `last` series in a read that names more
 // than one repository: only that read folds two rows of one series and day, which can tie, and
 // it sets no order. Every other row answers no write: null and the empty string.
-func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	return dayWindow(ctx, s.database.Pool, projects, entries, repos, window, compare)
+func (s *Store) DayWindow(ctx context.Context, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	return dayWindow(ctx, s.database.Pool, projects, entries, deployRepo, repos, window, compare)
 }
 
 // dayWindow is DayWindow's read in q: the pool, or a transaction that writes the rows it reads,
 // as the stored figures' writes fold them (figures.go), so a fold of the rows a write left reads
 // them as a paint does.
-func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
@@ -365,12 +376,14 @@ func dayWindow(ctx context.Context, q delivery.Querier, projects []string, entri
 			from eval_days
 			where project_key = any($1::text[]) and repo = any($2) and listed and eval_id = any($3)
 			  and writer = case when eval_id = any($6::text[]) then '` + writerComputation + `' else '` + writerReadings + `' end
+			  and ` + deployRepoCase("deploy_repo", "$9", "$10") + `
 			  and day >= $` + strconv.Itoa(from) + `::date and day < $` + strconv.Itoa(to) + `::date`
 	}
-	query := ranged("true", 9, 10)
-	args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries, window.From.UTC(), window.To.UTC()}
+	query := ranged("true", 11, 12)
+	args := []any{projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
+		keyedEvals(entries), deployRepo, window.From.UTC(), window.To.UTC()}
 	if compare != nil {
-		query += "\n\t\tunion all\n\t\t" + ranged("false", 11, 12)
+		query += "\n\t\tunion all\n\t\t" + ranged("false", 13, 14)
 		args = append(args, compare.From.UTC(), compare.To.UTC())
 	}
 	rows, err := q.Query(ctx, query, args...)

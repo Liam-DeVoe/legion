@@ -78,10 +78,12 @@ func requireTheListRead(t *testing.T, handler http.Handler, project string, body
 
 // TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone: a reading, a version of a definition and a
 // day row each mark the evals views of their eval's project and no other view at all, and no other
-// kind of change marks an evals view. A filing marks no view: the refresher's rewrite of the day's
-// rows is what wakes the evals view. None of the four kinds reaches the delivery switch's closing
-// `return true`, which would mark every timeline, measures and pipeline view. The versions that
-// mark a delivery view, those of the evals it judges or ranks by, are
+// kind of change marks an evals view but a change of the delivery settings row, which marks every
+// evals view: the deploy repository it can move chooses the rows an evals view reads of the evals
+// that read it, and a move writes no day row. A filing marks no view: the refresher's rewrite of
+// the day's rows is what wakes the evals view. None of the four kinds reaches the delivery switch's
+// closing `return true`, which would mark every timeline, measures and pipeline view. The versions
+// that mark a delivery view, those of the evals it judges or ranks by, are
 // TestAVersionOfAnEvalADeliveryViewReadsMarksIt's; rework-share is none of them.
 func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
@@ -138,7 +140,6 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		{Kind: "run", RunKind: string(delivery.DeliveryRunKindPRChecks), Repo: "acme/widgets", Ref: "8"},
 		{Kind: "run_job", RunKind: string(delivery.DeliveryRunKindDeploy), Repo: "acme/widgets", Ref: "7", TNew: &hourAgo},
 		{Kind: "session_group", Ref: "g-1"},
-		{Kind: "settings"},
 		{Kind: "settings", Repo: "acme/widgets"},
 		issueFactsChange("INFRA", "INFRA-7", dayAgo, hourAgo),
 	}
@@ -151,7 +152,13 @@ func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 			}
 		}
 	}
-	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view",
+	settingsRow := delivery.Change{Seq: 2, Kind: "settings"}
+	for _, view := range views {
+		if view.view.spec.kind == evalsView && !view.view.touchedBy(settingsRow, now) {
+			t.Errorf("a change of the delivery settings row leaves %s unmarked", view.what)
+		}
+	}
+	t.Logf("issue_filings marks %d of %d views; %d changes of every other kind make %d marks of an evals view; the settings row's marks every evals view",
 		filingMarks, len(views), len(others), evalsMarks)
 }
 
@@ -475,9 +482,11 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	sent("the pull request", map[string][]string{"t": {"acme/widgets#1"}})
 
 	step("the day row the refresher writes for the pull request's day", func() {
+		// deploy-frequency reads the deploy repository, so its rows are kept by it (eval_days.deploy_repo)
+		// and the view reads those of acme/widgets, the one the settings name.
 		if _, err := rig.database.Pool.Exec(t.Context(), `
-			insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, counts, built_by)
-			values ('INFRA', 'INFRA/deploy-frequency', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
+			insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+			values ('INFRA', 'INFRA/deploy-frequency', 'acme/widgets', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
 		`, measures.Midnight(merged)); err != nil {
 			t.Fatalf("write deploy-frequency's day row: %v", err)
 		}

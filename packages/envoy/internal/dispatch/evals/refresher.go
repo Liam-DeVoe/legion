@@ -33,7 +33,9 @@ import (
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
 //     day before and after. A change of the delivery settings rewrites, in one transaction, every
-//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a
+//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a move
+//     of the deploy repository moves none, since the evals that read it are kept for every
+//     repository that holds a delivery run and a read chooses among them (deploy_repos.go); a
 //     change of a repository's mapping in repo_projects (20261117100020) begins the delivery walk
 //     again, and every project's Legion walk too.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
@@ -318,7 +320,7 @@ func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 		store: s, build: build, now: now, today: measures.Midnight(now), batch: batch,
 		clock:  func() time.Time { return now },
 		report: refreshed{days: map[builtDay]bool{}},
-		first:  map[walkKey]map[string]time.Time{}, since: map[string]LegionSince{},
+		first:  map[walkKey]map[evalKey]time.Time{}, since: map[string]LegionSince{},
 	}
 }
 

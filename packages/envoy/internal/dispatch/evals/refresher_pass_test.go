@@ -338,9 +338,9 @@ func TestTheShippedMembersReadKeepsItsPartialIndexUnderAGenericPlan(t *testing.T
 	r := newRig(t)
 	ctx := t.Context()
 	if _, err := r.database.Pool.Exec(ctx, `
-		insert into eval_day_members (project_key, family, row_key, day, repo, shipped_by)
-		select 'EVAL', 'delivery', 'pr:acme/web#' || n, date '2026-11-01' + n % 30, 'acme/web',
-		       case when n % 10 = 0 then 'run:acme/deploy/' || n / 10 else '' end
+		insert into eval_day_members (project_key, family, deploy_repo, row_key, day, repo, shipped_by, built_by)
+		select 'EVAL', 'delivery', 'acme/deploy', 'pr:acme/web#' || n, date '2026-11-01' + n % 30, 'acme/web',
+		       case when n % 10 = 0 then 'run:acme/deploy/' || n / 10 else '' end, 'test'
 		from generate_series(1, 5000) as n
 	`); err != nil {
 		t.Fatalf("seed the members: %v", err)

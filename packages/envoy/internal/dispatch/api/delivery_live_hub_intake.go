@@ -384,13 +384,23 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 
 // touchedBy is whether a delivery change can move the view's answer (plan v4 Task 7 Step 7's
 // table), by the change's kind: a write of the stored facts, of an eval's rows or of a filing is
-// answered by its own arm, and every other kind is a delivery row, which moves only a view that
-// reads the delivery rows (touchedByDeliveryRow, behind that test).
+// answered by its own arm, a change of the settings row marks every evals view (below), and every
+// other kind is a delivery row, which moves only a view that reads the delivery rows
+// (touchedByDeliveryRow, behind that test).
 //
 // The rows the named kinds write are rows no delivery view reads, but for one: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
 // figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
+	// A change of the delivery settings row (a settings change that names no repository) can move
+	// the deploy repository, whose rows of the evals that read it an evals view reads
+	// (evals.DeployRepoOf), and a move of it writes no day row, so no eval_days change follows it:
+	// the change itself marks every evals view, and a recompute that reads the same figures sends
+	// nothing. A change of a repository's mapping begins the delivery walk again, whose eval_days
+	// changes mark the views.
+	if view.spec.kind == evalsView && change.Kind == delivery.ChangeKindSettings && change.Repo == "" {
+		return true
+	}
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
@@ -410,10 +420,11 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// view of the eval's project reads (readEvalList). The change's repo holds that project
 		// (migrations 20261117100012 to 20261117100014).
 		//
-		// No other kind marks an evals view. A computed eval's value moves when the refresher
-		// rewrites its day rows, after its input's own change (a pull request, a run, a stored
-		// fact, a filing) was logged: a view woken by the input would read the rows before the
-		// rewrite, and the eval_days change of the rewrite is what wakes it.
+		// No other kind marks an evals view but a change of the settings row (above). A computed
+		// eval's value moves when the refresher rewrites its day rows, after its input's own change
+		// (a pull request, a run, a stored fact, a filing) was logged: a view woken by the input
+		// would read the rows before the rewrite, and the eval_days change of the rewrite is what
+		// wakes it.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
 		// marks every view of that kind too, and readings and day rows mark none: the timeline's

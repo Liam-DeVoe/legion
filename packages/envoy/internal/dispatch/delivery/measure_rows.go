@@ -11,8 +11,9 @@ import (
 // The rows the delivery and CI measures count, read by one function for every reader that counts
 // them: the delivery routes (api's readDeliveryRows and readPipelinePopulation) read their
 // window's (ReadWindowRows), and the eval registry's day rows (the refresher's read of a day, evals'
-// readDeliveryDay) one UTC day's (ReadMergedRows, ReadDeploys), so a route and a day row count the
-// same rows by the same rules, and a deploy's shipped pull requests by the same rule
+// readDeliveryDay) one UTC day's (ListPullRequestsInWindow, and ReadApplyRows and ReadDeploys of
+// each repository the rows are kept for as the deploy repository), so a route and a day row count
+// the same rows by the same rules, and a deploy's shipped pull requests by the same rule
 // (Deploys.ShippedBy).
 
 // MergedRows is the population pull requests merged in a window and the deploy runs that can have
@@ -62,8 +63,8 @@ func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 
 // ApplyRows is MergedRows' apply runs and their jobs read once from a moment on (ReadApplyRows),
 // for a reader of many windows that start at or after it, each of which takes its own part
-// (MergedRowsWith): the refresher's walk over the days, whose every day's read would otherwise
-// read every deploy run created from that day to now again.
+// (Since): the refresher's walk over the days, whose every day's read would otherwise read every
+// deploy run created from that day to now again.
 type ApplyRows struct {
 	from time.Time
 	Runs []DeliveryRun
@@ -161,26 +162,21 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 		RunsWithJobs{Runs: listed.started, Jobs: namedAndFailedJobs(listed.started, named, nil)}, nil
 }
 
-// MergedRowsWith is ReadMergedRows of [from, to), its production jobs alone, with the apply rows
-// taken from applies, read from from or earlier: the runs GitHub created at or after from, oldest
-// creation first, and their jobs, the rows ReadMergedRows reads itself. Only the pull requests
-// are read.
-func MergedRowsWith(ctx context.Context, pool *store.Pool, applies ApplyRows, from, to time.Time) (MergedRows, error) {
-	if from.Before(applies.from) {
-		return MergedRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", applies.from.Format(time.RFC3339), from.Format(time.RFC3339))
+// Since is the apply rows of a window from from, taken from a, read from from or earlier: the runs
+// GitHub created at or after from, oldest creation first, and their jobs, the rows ReadApplyRows
+// reads itself from from.
+func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
+	if from.Before(a.from) {
+		return ApplyRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", a.from.Format(time.RFC3339), from.Format(time.RFC3339))
 	}
-	prs, err := ListPullRequestsInWindow(ctx, pool, from, to)
-	if err != nil {
-		return MergedRows{}, err
-	}
-	rows := MergedRows{PullRequests: prs, ApplyRuns: []DeliveryRun{}, ApplyJobs: map[int64][]DeliveryRunJob{}}
-	for _, run := range applies.Runs {
+	rows := ApplyRows{from: from, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
+	for _, run := range a.Runs {
 		if run.Created().Before(from) {
 			continue
 		}
-		rows.ApplyRuns = append(rows.ApplyRuns, run)
-		if jobs, held := applies.Jobs[run.RunID]; held {
-			rows.ApplyJobs[run.RunID] = jobs
+		rows.Runs = append(rows.Runs, run)
+		if jobs, held := a.Jobs[run.RunID]; held {
+			rows.Jobs[run.RunID] = jobs
 		}
 	}
 	return rows, nil
@@ -188,39 +184,46 @@ func MergedRowsWith(ctx context.Context, pool *store.Pool, applies ApplyRows, fr
 
 // HistoryRows is what every day of the eval registry's delivery and CI day rows reads but its CI
 // runs, read once over the whole history: every population pull request merged before a moment,
-// in ListPullRequestsInWindow's order, and every deploy run on main of the deploy repository,
-// whatever its event, oldest start first and those started in one instant by run id
-// (listRunsStartedIn's order), with its jobs of the names asked for, each run's in ListRunJobs'
-// order. A day's deploys, its apply runs and its deploy cards' push runs are all among those runs,
-// so a reader that builds every day at once (the day-row refresher's rewrite of a settings change,
-// evals' rewriteSettings) gives each day its part, where a read of each day would read every
-// deploy run created from that day on again. No limit bounds it, as one bounds a window's reads
-// (maxPullRequestsPerWindow, maxRunsPerWindow): the whole history is what such a reader builds,
-// and a limit would cut it short without a word.
+// in ListPullRequestsInWindow's order, and, for each repository asked for as the deploy
+// repository, every deploy run on main of it, whatever its event, oldest start first and those
+// started in one instant by run id (listRunsStartedIn's order), with its jobs of the names asked
+// for, each run's in ListRunJobs' order. A day's deploys, its apply runs and its deploy cards'
+// push runs are all among those runs, so a reader that builds every day at once (the day-row
+// refresher's rewrite of a settings change, evals' rewriteSettings) gives each day its part, where
+// a read of each day would read every deploy run created from that day on again. No limit bounds
+// it, as one bounds a window's reads (maxPullRequestsPerWindow, maxRunsPerWindow): the whole
+// history is what such a reader builds, and a limit would cut it short without a word.
 type HistoryRows struct {
 	PullRequests []DeliveryPullRequest
-	Deploys      RunsWithJobs
+	// Deploys is each repository's deploy runs and their jobs, by the repository.
+	Deploys map[string]RunsWithJobs
 }
 
-// ReadHistoryRows reads HistoryRows of deployRepo: the pull requests merged before to, and the
-// deploy runs with their jobs named names, its three reads side by side.
-func ReadHistoryRows(ctx context.Context, pool *store.Pool, deployRepo string, names []string, to time.Time) (HistoryRows, error) {
-	var rows HistoryRows
-	err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) (err error) {
-			rows.PullRequests, err = listPullRequestsMergedBefore(ctx, pool, to)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			rows.Deploys.Runs, err = listDeployRunsOnMain(ctx, pool, deployRepo)
-			return err
-		},
-		func(ctx context.Context) (err error) {
-			rows.Deploys.Jobs, err = listDeployRunJobsOnMain(ctx, pool, deployRepo, names)
-			return err
-		})
-	if err != nil {
+// ReadHistoryRows reads HistoryRows of deployRepos: the pull requests merged before to, and each
+// repository's deploy runs with their jobs named names, every read side by side.
+func ReadHistoryRows(ctx context.Context, pool *store.Pool, deployRepos []string, names []string, to time.Time) (HistoryRows, error) {
+	rows := HistoryRows{Deploys: make(map[string]RunsWithJobs, len(deployRepos))}
+	deploys := make([]RunsWithJobs, len(deployRepos))
+	reads := []func(context.Context) error{func(ctx context.Context) (err error) {
+		rows.PullRequests, err = listPullRequestsMergedBefore(ctx, pool, to)
+		return err
+	}}
+	for i, repo := range deployRepos {
+		reads = append(reads,
+			func(ctx context.Context) (err error) {
+				deploys[i].Runs, err = listDeployRunsOnMain(ctx, pool, repo)
+				return err
+			},
+			func(ctx context.Context) (err error) {
+				deploys[i].Jobs, err = listDeployRunJobsOnMain(ctx, pool, repo, names)
+				return err
+			})
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
 		return HistoryRows{}, err
+	}
+	for i, repo := range deployRepos {
+		rows.Deploys[repo] = deploys[i]
 	}
 	return rows, nil
 }

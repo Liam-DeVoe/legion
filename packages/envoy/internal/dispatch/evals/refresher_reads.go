@@ -314,36 +314,38 @@ func (s *Store) subtreeCloseDays(ctx context.Context, keys []string) ([]projectD
 }
 
 // firstDays is the first day of project's all-repositories rows of each eval rows names, by eval
-// id, among the computation's rows: the earliest over the series rows names of the eval (a zero
-// day's rows, which name each series an eval's builder writes on every day it has input), each the
-// first entry of one range of the primary key. An eval with no such row has no entry.
-func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (map[string]time.Time, error) {
-	first := map[string]time.Time{}
+// and deploy repository (evalKey), among the computation's rows: the earliest over the series rows
+// names of the eval and deploy repository (a zero day's rows, which name each series an eval's
+// builder writes on every day it has input, for each deploy repository whose rows are kept), each
+// the first entry of one range of the primary key. An eval with no such row has no entry.
+func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (map[evalKey]time.Time, error) {
+	first := map[evalKey]time.Time{}
 	if len(rows) == 0 {
 		return first, nil
 	}
-	evals, series := make([]string, len(rows)), make([]string, len(rows))
+	evals, deployRepos, series := make([]string, len(rows)), make([]string, len(rows)), make([]string, len(rows))
 	for i, row := range rows {
-		evals[i], series[i] = row.EvalID, row.Series
+		evals[i], deployRepos[i], series[i] = row.EvalID, row.DeployRepo, row.Series
 	}
 	read, err := s.database.Pool.Query(ctx, `
-		select given.eval_id, min(stored.day)
-		from unnest($2::text[], $3::text[]) as given(eval_id, series)
+		select given.eval_id, given.deploy_repo, min(stored.day)
+		from unnest($2::text[], $5::text[], $3::text[]) as given(eval_id, deploy_repo, series)
 		cross join lateral (
 			select day from eval_days
-			where project_key = $1 and eval_id = given.eval_id and writer = $4 and series = given.series and repo = ''
+			where project_key = $1 and eval_id = given.eval_id and writer = $4 and deploy_repo = given.deploy_repo
+				and series = given.series and repo = ''
 			order by day
 			limit 1
 		) stored
-		group by given.eval_id
-	`, project, evals, series, writerComputation)
+		group by given.eval_id, given.deploy_repo
+	`, project, evals, series, writerComputation, deployRepos)
 	if err != nil {
 		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
 	}
-	var id string
+	var key evalKey
 	var day time.Time
-	if _, err := pgx.ForEachRow(read, []any{&id, &day}, func() error {
-		first[id] = measures.Midnight(day)
+	if _, err := pgx.ForEachRow(read, []any{&key.eval, &key.deployRepo, &day}, func() error {
+		first[key] = measures.Midnight(day)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
@@ -353,15 +355,18 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (m
 
 // deliveryInputStart is the earliest moment a delivery day can hold input: the first merge of a
 // pull request (delivery_pull_requests_merged_at) and the first start of a deploy or PR-checks run
-// of the deploy repository (delivery_runs_kind_started_at), nil where neither exists.
-func (s *Store) deliveryInputStart(ctx context.Context, deployRepo string) (*time.Time, error) {
+// of any of repos, the repositories whose rows are kept per deploy repository (one probe of
+// delivery_runs_kind_started_at for each repository and kind), nil where neither exists.
+func (s *Store) deliveryInputStart(ctx context.Context, repos []string) (*time.Time, error) {
 	var earliest *time.Time
 	if err := s.database.Pool.QueryRow(ctx, `
 		select least(
 			(select min(merged_at) from delivery_pull_requests where merged_at is not null),
-			(select min(started_at) from delivery_runs where repo = $1 and kind = $2),
-			(select min(started_at) from delivery_runs where repo = $1 and kind = $3))
-	`, deployRepo, string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
+			(select min(runs.first) from unnest($1::text[]) as kept(repo)
+				cross join lateral (select least(
+					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $2),
+					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $3)) as first) runs))
+	`, nonNil(repos), string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
 	}
 	return earliest, nil
@@ -452,7 +457,7 @@ func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []str
 		cross join generate_series((stored.day + 1)::timestamp,
 			least(coalesce(stored.next_day - 1, $3::date), $3::date)::timestamp, interval '1 day') as gap(day)
 		order by stored.eval_id collate "C", stored.series collate "C", gap.day
-		on conflict (project_key, eval_id, writer, series, repo, day) do nothing
+		on conflict (project_key, eval_id, writer, deploy_repo, series, repo, day) do nothing
 		returning eval_id, day
 	`, project, SourceLogged, r.today, r.build, writerReadings, evalIDs)
 	if err != nil {

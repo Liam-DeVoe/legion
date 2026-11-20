@@ -792,8 +792,11 @@ func (s *server) evalItemsAndFreshness(ctx context.Context, registry *evals.Stor
 }
 
 // evalItemsOf states each of entries with its values, and answers the items, in entries' order,
-// and the oldest updated_at of the rows it folded. A read of an offered range (evals.FiguresOffered:
-// a window and a compare range each of a length the Evals tab offers, of the projects' own rows or
+// and the oldest updated_at of the rows it folded. Each eval that reads the deploy repository is
+// stated from the rows kept for the repository the delivery settings name now
+// (evals.DeployRepoOf), which it reads first (evalDeployRepo), so a move of the deploy repository
+// is this selection and rewrites nothing. A read of an offered range (evals.FiguresOffered: a
+// window and a compare range each of a length the Evals tab offers, of the projects' own rows or
 // one repository's) reads the stored figures (evals.Store.ReadStoredFigures, two statements) and
 // each series' first day (evals.Store.FirstDays) side by side, and states each eval from its stored
 // rows; an eval they cannot answer (a project whose figures are not built yet, or a stored row of
@@ -810,6 +813,10 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 			oldest = &at
 		}
 	}
+	deployRepo, err := s.evalDeployRepo(ctx, entries)
+	if err != nil {
+		return nil, nil, err
+	}
 	var firsts map[string]map[string]time.Time
 	unstated := make([]int, 0, len(entries))
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
@@ -820,11 +827,11 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 		var stored evals.StoredFigures
 		if err := store.ReadSideBySide(ctx,
 			func(ctx context.Context) (err error) {
-				stored, err = registry.ReadStoredFigures(ctx, evalProjects(entries), entries, repo, ranges.window, ranges.compare)
+				stored, err = registry.ReadStoredFigures(ctx, evalProjects(entries), entries, deployRepo, repo, ranges.window, ranges.compare)
 				return err
 			},
 			func(ctx context.Context) (err error) {
-				firsts, err = registry.FirstDays(ctx, entries)
+				firsts, err = registry.FirstDays(ctx, entries, deployRepo)
 				return err
 			},
 		); err != nil {
@@ -853,12 +860,12 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 		}
 		var rows []evals.WindowRow
 		reads := []func(context.Context) error{func(ctx context.Context) (err error) {
-			rows, err = registry.DayWindow(ctx, evalProjects(rest), rest, repos, ranges.window, ranges.compare)
+			rows, err = registry.DayWindow(ctx, evalProjects(rest), rest, deployRepo, repos, ranges.window, ranges.compare)
 			return err
 		}}
 		if firsts == nil {
 			reads = append(reads, func(ctx context.Context) (err error) {
-				firsts, err = registry.FirstDays(ctx, entries)
+				firsts, err = registry.FirstDays(ctx, entries, deployRepo)
 				return err
 			})
 		}
@@ -885,6 +892,20 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, entries
 		}
 	}
 	return items, oldest, nil
+}
+
+// evalDeployRepo is the deploy repository the delivery settings name, whose rows a read of an eval
+// that reads it folds (evals.DeployRepoOf), "" where the deployment has set none; read only where
+// entries hold such an eval, since no other read needs it.
+func (s *server) evalDeployRepo(ctx context.Context, entries []evals.Entry) (string, error) {
+	if !slices.ContainsFunc(entries, func(entry evals.Entry) bool { return evals.KeyedByDeployRepo(entry.Definition) }) {
+		return "", nil
+	}
+	settings, err := s.evalDeliverySettings(ctx)
+	if err != nil || settings == nil {
+		return "", err
+	}
+	return settings.DeployRepo, nil
 }
 
 // evalProjects is the projects entries are evals of, in the order they first appear.

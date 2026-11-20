@@ -4,7 +4,7 @@
 -- read folds: a window's value is the fold of its days' rows, and a compare range is a second
 -- read of the same rows, so no page read reads a project's population.
 --
--- eval_days holds one row per project, eval, writer, series, repository and day.
+-- eval_days holds one row per project, eval, writer, deploy repository, series, repository and day.
 --   project_key     the project the row counts for, which is also the project of its eval id.
 --   eval_id, series the series the row is a day of.
 --   writer          which writer made the row (R3): `computation`, the refresher and the day
@@ -20,6 +20,16 @@
 --                   side, and an eval whose source changes back finds its own rows as it left
 --                   them. The default is the computation, which writes every row the readings
 --                   write does not.
+--   deploy_repo     '' for the row of an eval no deploy repository moves, and for each of the
+--                   delivery and CI evals that read the deploy repository (evals.deployRepoSlugs:
+--                   the three lead times to production, deploy-frequency, deploy-run-success,
+--                   pr-ci and the deploy cards) the repository the row is computed as if it were
+--                   the deploy repository: one set of those evals' rows for every repository that
+--                   holds a delivery run, each from that repository's own runs. The eval list reads
+--                   the rows of the repository the delivery settings name (evals.DeployRepoOf), so
+--                   a move of the deploy repository is a selection at read time, which rewrites no
+--                   row and whose move back finds the old repository's rows as it left them; a
+--                   repository that holds no run has no such row, and reads "no data".
 --   repo            '' for the row of all the project's repositories, and a repository's name for
 --                   that repository's own row, so a read cut by repository folds those rows and
 --                   a read of the whole project folds the '' rows alone.
@@ -56,15 +66,23 @@
 -- index range per project, repository and range of days, measured on 1,533,000 rows (712 MB) as
 -- one Bitmap Index Scan per range, 18 to 24 ms for 84 days with an 84-day compare range
 -- (dispatch://INFRA-2916/artifact/plan-md, "The design in one page"); the read keeps each eval's
--- rows of its own writer from what the range holds. The primary key is the read and the upsert of
--- one writer's days of one series.
+-- rows of its own writer and deploy repository from what the range holds. The primary key is the
+-- read and the upsert of one writer's days of one series of one deploy repository, and its first
+-- day (evals.Store.FirstDays) is one probe of it.
 --
 -- eval_day_members holds, for each item a family of day rows counted, where it was last counted:
 -- the day and the repository. An item whose day moves, an issue closed again on another day or a
 -- pull request merged again, then rewrites the day it left as well as the day it joined.
---   project_key, family, row_key
---                   the project, the family of evals that counted the item, and the item's key,
---                   which is the row's identity.
+--   project_key, family, deploy_repo, row_key
+--                   the project, the family of evals that counted the item, the deploy repository
+--                   it was counted under, and the item's key, which are the row's identity.
+--                   deploy_repo is eval_days': '' for an item counted whatever the deploy
+--                   repository is (an issue of the Legion family, and a pull request of the
+--                   delivery family as pr-open-to-merge and rework-share count it, which no deploy
+--                   ships), and a repository's name for an item of the delivery and CI evals that
+--                   read the deploy repository, counted as if that repository were it: each pull
+--                   request with the run of that repository that ships it, that repository's
+--                   deploy runs, and its CI runs.
 --   day, repo       the day and the repository the item was last counted in.
 --   shipped_by      for a pull request of the delivery family, the row key of the deploy run that
 --                   shipped it when it was last counted (`run:<repo>/<run id>`), '' for one no
@@ -72,6 +90,11 @@
 --                   request, moves which run ships it (containment), and the run it left counts it
 --                   in its own day's rows: this is how the refresher finds that day once the
 --                   stored rows no longer say it.
+--   built_by        the build that last moved the item (its day, repository or shipping run), and
+--   updated_at      when; a write that leaves the item where it stands writes neither, as a day
+--                   row's updated_at moves with its values alone. So the refresher's settings pass
+--                   sees an item another build moved since it recorded the settings the rows
+--                   stand built under (evals.writtenByAnotherBuild), as it sees a day row.
 -- eval_days_owed holds each project's day of a family whose rows count an item that a write of
 -- another day took from them: a write that moves a member's day off this one (an issue closed
 -- again on another day, a pull request merged again), or moves a pull request's shipped_by off a
@@ -89,7 +112,9 @@
 -- eval_day_members_shipped, (project_key, shipped_by) over the pull requests a deploy shipped, is
 -- the read of the pull requests one deploy run shipped, by project.
 -- eval_days_owed's primary key, (project_key, family, day), is both the refresher's read of the
--- owed days, a handful between two writes, and the read a write of a day clears its own with.
+-- owed days, a handful between two writes, and the read a write of a day clears its own with: a
+-- day's write writes the day's rows and items of every deploy repository, so the day owed names
+-- none.
 --
 -- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
 -- one neither reads nor writes any, so the two builds roll together (cmd/dispatch/README.md,
@@ -100,6 +125,7 @@ create table eval_days (
     project_key text not null references projects (key) on delete cascade,
     eval_id text not null,
     writer text not null default 'computation' check (writer in ('computation', 'readings')),
+    deploy_repo text not null default '',
     series text not null,
     repo text not null default '',
     day date not null,
@@ -118,7 +144,7 @@ create table eval_days (
     via_repository integer not null default 0,
     built_by text not null,
     updated_at timestamptz not null default now(),
-    primary key (project_key, eval_id, writer, series, repo, day),
+    primary key (project_key, eval_id, writer, deploy_repo, series, repo, day),
     constraint eval_days_eval_of_project check (starts_with(eval_id, project_key || '/'))
 );
 create index eval_days_window on eval_days (project_key, repo, day) where listed;
@@ -126,11 +152,14 @@ create index eval_days_window on eval_days (project_key, repo, day) where listed
 create table eval_day_members (
     project_key text not null references projects (key) on delete cascade,
     family text not null,
+    deploy_repo text not null default '',
     row_key text not null,
     day date not null,
     repo text not null default '',
     shipped_by text not null default '',
-    primary key (project_key, family, row_key)
+    built_by text not null,
+    updated_at timestamptz not null default now(),
+    primary key (project_key, family, deploy_repo, row_key)
 );
 create index eval_day_members_day on eval_day_members (project_key, family, day);
 create index eval_day_members_shipped on eval_day_members (project_key, shipped_by) where shipped_by <> '';
