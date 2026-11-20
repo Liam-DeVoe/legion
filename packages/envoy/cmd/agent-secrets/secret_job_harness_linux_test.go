@@ -158,7 +158,10 @@ func (s *promptShell) nextReadWait(ms int64) {
 // setupOutranDeadline is what the helper prints when its prompt, given a deadline inside the
 // entry (AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY), reached its first check of that deadline only
 // after it had passed, before it read anything: the machine stalled across the moment between
-// the helper setting the deadline and the prompt's first read.
+// the helper setting the deadline and the prompt's first read. With
+// AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ it prints it too when the reader's first wait after
+// the input began only once the deadline had passed, so that there is no zero read at the
+// deadline to interrupt.
 const setupOutranDeadline = "SETUP_OUTRAN_DEADLINE"
 
 // stallRetries runs scenario in a new shell, and again in another when it answers false: it does
@@ -392,6 +395,21 @@ func TestPromptJobHelper(t *testing.T) {
 		onSecondSignal = func(sig os.Signal) { fmt.Println("SECOND_SIGNAL_LINE", sig) }
 		defer watchCreateSignals()()
 	}
+	// AGENT_SECRETS_JOB_INTERRUPT_WATCH interrupts every wait for the signal watcher's event that
+	// could block (pollWatch's EINTR), each after 5 ms with no event, as a stream of signals would:
+	// an event already there still ends the wait, so a signal sent to the helper still acts. It
+	// prints WATCH_INTERRUPTED=<n>, the count of waits it interrupted, before RETURNED.
+	interruptWatch, watchInterrupted := os.Getenv("AGENT_SECRETS_JOB_INTERRUPT_WATCH") != "", 0
+	if interruptWatch {
+		pollWatch = func(fds []unix.PollFd, timeout int) (int, error) {
+			if n, err := unix.Poll(fds, 0); n != 0 || err != nil || timeout == 0 {
+				return n, err
+			}
+			time.Sleep(5 * time.Millisecond)
+			watchInterrupted++
+			return 0, unix.EINTR
+		}
+	}
 	reference := os.Getenv("AGENT_SECRETS_JOB_REFERENCE")
 	if reference == "" {
 		// Started in the foreground: bash has already handed it the terminal.
@@ -442,7 +460,11 @@ func TestPromptJobHelper(t *testing.T) {
 	// deadline, where input the test sends on READING_ON would come as if in time. Where the input
 	// itself came after the deadline, the reader is already reading on, and it prints both at once.
 	// With AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE it prints DEADLINE_REACHED once the deadline has
-	// passed, so a test can send its input after it.
+	// passed, so a test can send its input after it. With AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ
+	// that zero read at the deadline is interrupted instead (EINTR), as a signal that comes then
+	// would interrupt it, and the helper prints DEADLINE_READ_INTERRUPTED: the reader then tries the
+	// wait again, and a retry that waited the bound its read began with read the input the test
+	// sends on READING_ON as if it had come in time.
 	var window time.Duration
 	if d := os.Getenv("AGENT_SECRETS_JOB_DEADLINE"); d != "" {
 		var err error
@@ -453,6 +475,7 @@ func TestPromptJobHelper(t *testing.T) {
 	}
 	var deadline time.Time
 	midEntry, held, readOn := os.Getenv("AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY") != "", false, false
+	interruptDeadlineRead := os.Getenv("AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ") != ""
 	real := readTerminal
 	quiet, readSome := false, false
 	announceIgnoredStop := os.Getenv("AGENT_SECRETS_JOB_ANNOUNCE_IGNORED_STOP") != ""
@@ -519,7 +542,14 @@ func TestPromptJobHelper(t *testing.T) {
 				time.Sleep(time.Until(deadline))
 				timeout = 0
 				fmt.Println("DEADLINE_PASSED")
+				if interruptDeadlineRead {
+					fmt.Println("DEADLINE_READ_INTERRUPTED")
+					return 0, unix.EINTR
+				}
 			} else {
+				if interruptDeadlineRead {
+					fmt.Println(setupOutranDeadline)
+				}
 				readOn = true
 				fmt.Println("DEADLINE_PASSED")
 				fmt.Println("READING_ON")
@@ -548,6 +578,9 @@ func TestPromptJobHelper(t *testing.T) {
 		// before it read at all: the machine stalled between the helper setting the deadline and
 		// the prompt's first read, and this run says nothing of the entry (stallRetries).
 		fmt.Println(setupOutranDeadline)
+	}
+	if interruptWatch {
+		fmt.Printf("WATCH_INTERRUPTED=%d\n", watchInterrupted)
 	}
 	restored, restoreErr := unix.IoctlGetTermios(0, unix.TCGETS)
 	fmt.Printf("RETURNED %v MATCH=%t EMPTY=%t RESTORED=%t LABEL_HELD=%t\n", err, value == "headtail", value == "",

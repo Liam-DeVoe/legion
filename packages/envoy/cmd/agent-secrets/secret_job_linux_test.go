@@ -512,12 +512,26 @@ func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
 // deadline passed), and the paste's rest goes only once the prompt has either read on past it or
 // given the terminal back to the shell, so a prompt that gives the paste up shows that rest
 // running there. The notice says the paste must end first: inside it Ctrl-C is pasted text, which
-// deletes nothing.
+// deletes nothing. In the third case a signal interrupts the reader's zero read at the deadline
+// (AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ): the retry must still end at the deadline, where a
+// retry that waited the bound its read began with took the paste's rest as if it had come in time
+// and refused the entry as more than one line, the notice never given.
 func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
-	for _, after := range []bool{false, true} {
-		t.Run(fmt.Sprintf("the paste begun after the deadline=%t", after), func(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		after, interrupted bool
+	}{
+		{"the paste begun after the deadline=false", false, false},
+		{"the paste begun after the deadline=true", true, false},
+		{"the zero read at the deadline interrupted", false, true},
+	} {
+		after := tc.after
+		t.Run(tc.name, func(t *testing.T) {
 			stallRetries(t, func(s *promptShell) bool {
 				s.env = "AGENT_SECRETS_JOB_DEADLINE=2s AGENT_SECRETS_JOB_DEADLINE_MID_ENTRY=1 AGENT_SECRETS_JOB_ANNOUNCE_DEADLINE=1 "
+				if tc.interrupted {
+					s.env += "AGENT_SECRETS_JOB_INTERRUPT_DEADLINE_READ=1 "
+				}
 				// The paste's read after the deadline is held until its rest comes, so the rest
 				// arrives inside the paste's bound however slowly this test runs.
 				release := s.holdReads()
@@ -530,6 +544,9 @@ func TestPromptJobValueDeadlineInsideAPasteDrainsItThroughItsEnd(t *testing.T) {
 				s.send("\x1b[200~pastehead")
 				if s.waitFirst("DEADLINE_PASSED", setupOutranDeadline) == setupOutranDeadline {
 					return false
+				}
+				if tc.interrupted {
+					s.wait("DEADLINE_READ_INTERRUPTED")
 				}
 				if s.waitFirst("READING_ON", "RETURNED") == "RETURNED" {
 					s.wait("PROMPT$ ")
@@ -618,6 +635,23 @@ func TestPromptJobValueDeadlineEndsAPromptWaitingForTheForeground(t *testing.T) 
 	s.wait("LABEL_HELD=false")
 	if strings.Contains(s.out.String(), "Value for") {
 		t.Fatalf("a prompt that never held the terminal showed its label: %q", s.out.String())
+	}
+}
+
+// A prompt waiting in the background for the foreground gives up at its value deadline however
+// often signals interrupt its waits for the watcher's event (AGENT_SECRETS_JOB_INTERRUPT_WATCH):
+// the wait for the foreground hands each of them the deadline (waitForeground), so one interrupted
+// once the deadline has passed ends, where a wait handed no deadline was tried again for as long as
+// the signals kept coming, and the prompt never answered. The helper's count of the waits it
+// interrupted shows the signals reached them.
+func TestPromptJobValueDeadlineEndsAForegroundWaitSignalsKeepInterrupting(t *testing.T) {
+	s := newPromptShell(t)
+	s.env = "AGENT_SECRETS_JOB_DEADLINE=1s AGENT_SECRETS_JOB_INTERRUPT_WATCH=1 "
+	s.start(false, true)
+	s.wait("RETURNED nothing was stored: no value came in time, within 1s")
+	s.wait("LABEL_HELD=false")
+	if said := s.out.String(); !strings.Contains(said, "WATCH_INTERRUPTED=") || strings.Contains(said, "WATCH_INTERRUPTED=0") {
+		t.Fatalf("no wait for the watcher's event was interrupted: %q", said)
 	}
 }
 
