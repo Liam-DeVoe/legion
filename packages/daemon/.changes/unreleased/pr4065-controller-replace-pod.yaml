@@ -18,4 +18,8 @@ body: |-
   no claim records within 30 seconds is refused `503 POD_UPDATE_NOT_RECORDED`. A request waits for
   the update-round sweep's walk over the project's issues while it lasts and at most 30 seconds;
   one that waits longer, or ends first, opens nothing and is refused `503 POD_UPDATE_BUSY` with
-  `Retry-After: 60`, the sweep's interval, which its sentence names too.
+  `Retry-After: 60`, the sweep's interval, which its sentence names too. While the project is
+  paused the route refuses the request `409 PROJECT_PAUSED`, with the pause that stands, before it
+  asks the daemon anything; and as the sweep opens no round over a pod a project's pause holds, the
+  request is refused `409 POD_HELD_BY_PAUSE` for such a pod, which a pause that began after that
+  read, or a hold the resume left on a pod none of whose roles runs yet, can leave.

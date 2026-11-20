@@ -17,7 +17,7 @@ const nonEmptyString = z.string().min(1);
 /** `api.ClaimRequest`, what either of the two claim recoveries names: the claim on `role` of
  * `issue`, under the caller's grant, the project controller's or an architect's for the claims of
  * the issues it owns (below). The controller's four claim operations
- * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 171) take the same body and the
+ * (`POST /legion/v1/claims/stop|retry|suspend|resume`, contract 184) take the same body and the
  * same door, and answer `LegionClaimOperationResponse` (`legion-api.ts`). The project's controller
  * is no role here, so no body can name its claim (`INVALID_ROLE`); `NOT_THE_CONTROLLER`, the
  * daemon's refusal of the controller's own claim, belongs to the operator's door, and this one
@@ -36,7 +36,7 @@ const nonEmptyString = z.string().min(1);
  * below, whose sentence names the operator's `legion claims resume` as what starts the claim.
  *
  * The same six operations take an architect's grant for the claims of the issues it owns alone
- * (contract 171): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
+ * (contract 184): an issue the daemon does not record is `ISSUE_NOT_FOUND` (404), one of another
  * tree `ISSUE_OUTSIDE_TREE` (403), one of its own tree it does not own (for a sub-architect, its
  * tree's root and a sibling's issues) `ISSUE_NOT_OWNED` (403), and the architect's own claim
  * `OWN_CLAIM` (403). Each is refused `SUSPENDED_BY_OPERATOR` (409) for a claim the operator's
@@ -48,6 +48,14 @@ const nonEmptyString = z.string().min(1);
  * that a stop retired are refused `ISSUE_OUT_OF_WORKFLOW` (409) while the claim's issue is out of
  * the workflow or its tree lingers, since the daemon's own rules start that work again. Its
  * suspension is recorded as `architect`, which the controller's resume lifts too.
+ *
+ * While the project is paused (contract 178), every operation of the door that would start a
+ * turn of a claim — `resume`, `retry` and `fresh_session`, which start its session again, and
+ * `compact`, whose end sends its task again — is refused `PROJECT_PAUSED` (409) with the `pause`
+ * that stands, for the controller and an architect alike, and nothing of the claim changes: a
+ * claim the pause stopped is the project's resume's to bring back. A suspension above the caller
+ * is refused in its own code first, bar under the controller's `compact`, which the door lets
+ * past it. `stop` and `suspend` start nothing and still run.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim

@@ -20,6 +20,10 @@ import {
   LegionPhaseRetryRequest,
   LegionPodUpdateRequest,
   LegionPodUpdateResponse,
+  LegionProjectPauseRequest,
+  LegionProjectPauseResponse,
+  LegionProjectResumeRequest,
+  LegionProjectResumeResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -165,8 +169,10 @@ export interface LegionDaemonClient {
   /** The controller's or an architect's `retry`: a claim that failed, or that a stop retired,
    * starts again in the session it recorded, the effect a plain `legion claims retry` runs for an
    * operator; a phase worker is started through its issue's phase. Refused for a claim stored
-   * working (`CLAIM_IN_A_TURN`) and for a claim the operator's own suspension holds
-   * (`SUSPENDED_BY_OPERATOR`). The answer is the claim as the retry left it. */
+   * working (`CLAIM_IN_A_TURN`), for a claim the operator's own suspension holds
+   * (`SUSPENDED_BY_OPERATOR`), and for every claim while the project is paused
+   * (`PROJECT_PAUSED`, with the pause that stands; its resume lifts that refusal). The answer is
+   * the claim as the retry left it. */
   readonly retryClaim: (
     input: z.input<typeof LegionClaimRequest>
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
@@ -181,8 +187,10 @@ export interface LegionDaemonClient {
   ) => Promise<z.output<typeof LegionClaimOperationResponse>>;
   /** The controller's or an architect's `resume`: a suspended claim's session is relaunched, the
    * effect `legion claims resume` runs for an operator, but never over the operator's own
-   * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`).
-   * The answer is the claim as the resume left it.
+   * suspension (`SUSPENDED_BY_OPERATOR`); a claim stored working is refused (`CLAIM_IN_A_TURN`),
+   * and so is every claim while the project is paused (`PROJECT_PAUSED`): a claim the pause
+   * stopped is the project's resume's to bring back. A stop and a suspension still run while the
+   * project is paused. The answer is the claim as the resume left it.
    *
    * An architect's grant reaches the claims of the issues it owns alone, through all six of these
    * claim operations: another tree's claim is refused (`ISSUE_OUTSIDE_TREE`), and so is a claim of
@@ -205,10 +213,25 @@ export interface LegionDaemonClient {
    * wait (`POD_UPDATE_NOT_RECORDED`, 503): a 200 is only ever a round a claim records. A request
    * that waits more than the daemon's bound (30 s) for a sweep's walk over the project's issues
    * opens nothing (`POD_UPDATE_BUSY`, 503), and its sentence names when to ask again; this client
-   * reads no response header. */
+   * reads no response header. While the project is paused it is refused (`PROJECT_PAUSED`, with
+   * the pause that stands), and so is a pod a pause still holds after the resume, until a role
+   * of the pod is live again (`POD_HELD_BY_PAUSE`). */
   readonly issuePodUpdate: (
     input: z.input<typeof LegionPodUpdateRequest>
   ) => Promise<z.output<typeof LegionPodUpdateResponse>>;
+  /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
+   * `legion project pause` runs for an operator. Every role but the controller stops, one in a
+   * turn when that turn ends, and every start waits for the resume. The answer is the pause it
+   * began. */
+  readonly projectPause: (
+    input: z.input<typeof LegionProjectPauseRequest>
+  ) => Promise<z.output<typeof LegionProjectPauseResponse>>;
+  /** The controller's `resume`: the daemon ends its project's pause, whoever made it, the effect
+   * `legion project resume` runs for an operator. The answer is the pause it ended and how many
+   * held rows it let out to run. */
+  readonly projectResume: (
+    input: z.input<typeof LegionProjectResumeRequest>
+  ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -596,6 +619,20 @@ export function createLegionDaemonClient(
       post("/legion/v1/claims/resume", LegionClaimRequest, LegionClaimOperationResponse, input),
     issuePodUpdate: (input) =>
       post("/legion/v1/issues/pod-update", LegionPodUpdateRequest, LegionPodUpdateResponse, input),
+    projectPause: (input) =>
+      post(
+        "/legion/v1/project/pause",
+        LegionProjectPauseRequest,
+        LegionProjectPauseResponse,
+        input
+      ),
+    projectResume: (input) =>
+      post(
+        "/legion/v1/project/resume",
+        LegionProjectResumeRequest,
+        LegionProjectResumeResponse,
+        input
+      ),
     gateRegister: (input) =>
       post("/legion/v1/gates/register", LegionGateRegisterRequest, LegionEmptyResponse, input),
     waveRelease: (input) =>

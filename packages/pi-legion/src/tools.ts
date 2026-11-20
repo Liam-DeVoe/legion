@@ -57,7 +57,7 @@ const CLAIM_OPERATIONS = [
   "stop",
   "retry",
   "suspend",
-  "resume",
+  "resume_claim",
 ] as const;
 
 type ClaimOperation = (typeof CLAIM_OPERATIONS)[number];
@@ -94,7 +94,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
   ],
-  controller: ["read_state", "set_status", "replace_pod", ...CLAIM_OPERATIONS],
+  controller: ["read_state", "set_status", "replace_pod", ...CLAIM_OPERATIONS, "pause", "resume"],
 };
 
 /** The fields each operation beyond the phase ops takes; a phase op's are `PhaseOpArguments`'. */
@@ -110,6 +110,8 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   set_status: ["issue", "status"],
   replace_pod: ["issue"],
   ...Object.fromEntries(CLAIM_OPERATIONS.map((operation) => [operation, CLAIM_FIELDS])),
+  pause: ["reason"],
+  resume: [],
 };
 
 const ISSUE_STATUSES = ["todo", "backlog", "icebox"] as const;
@@ -141,7 +143,7 @@ async function claimOperation(
       return jsonSuccess(await client.retryClaim(request));
     case "suspend":
       return jsonSuccess(await client.suspendClaim(request));
-    case "resume":
+    case "resume_claim":
       return jsonSuccess(await client.resumeClaim(request));
   }
 }
@@ -153,9 +155,85 @@ const STATE_FILTERS = ["issue", "issues", "phase", "settings"] as const;
 /** One claim as the summary shows it, the architect's or a phase worker's. */
 type SummaryClaim = NonNullable<LegionIssue["architect"]>;
 
+/** Who paused the project or ended its pause, as the state names them. */
+type PauseActor = NonNullable<LegionState["lastPause"]>["by"];
+
+/** Who acted on a pause, in the summary's words: the controller with the session it acted from,
+ * or the operator. */
+const pauseActorWords = (by: PauseActor): string =>
+  by.kind === "controller" ? `the controller (session ${by.session})` : "the operator";
+
+/** A pause as the summary's line names it: its id, since when, who paused and why (`pauseWords`
+ * in `packages/daemon/cmd/legion/project.go`). */
+const pauseWords = (
+  pause: Pick<NonNullable<LegionState["lastPause"]>, "id" | "since" | "by" | "reason">
+): string =>
+  `pause ${pause.id} since ${pause.since} by ${pauseActorWords(pause.by)}: ${pause.reason}`;
+
+/**
+ * The summary's line on the project's pause, in the words `legion state` prints for an operator
+ * (`pausedSummary` and `lastPauseSummary` in `packages/daemon/cmd/legion/project.go`), so the
+ * controller and an operator read the same words. The times are not the same text: `legion
+ * state` prints each at whole seconds, and this line prints the daemon's own string. While the
+ * project is paused: the pause, since when, by whom and why, the roles whose stop it still waits
+ * on, each by issue and role, and how many rows it holds, which `legion state` leaves to its
+ * JSON. While the project runs after a pause has ended: that pause, then when and by whom it was
+ * ended. The state carries one of the two at most, and neither before the project's first pause,
+ * when the summary has no such line.
+ */
+function pauseSummary(state: LegionState): string | undefined {
+  const { paused, lastPause } = state;
+  if (paused !== undefined) {
+    const roles = paused.waitsOn.map((stop) => `${stop.issue} ${stop.role}`);
+    const waitsOn =
+      roles.length === 0
+        ? "no role"
+        : `${roles.length} ${roles.length === 1 ? "role" : "roles"} — ${roles.join(", ")}`;
+    const rows = paused.held.length;
+    const holds = rows === 0 ? "no row" : `${rows} ${rows === 1 ? "row" : "rows"}`;
+    return `paused: ${pauseWords(paused)}; waits on ${waitsOn}; holds ${holds}`;
+  }
+  if (lastPause !== undefined) {
+    return (
+      `last pause: ${pauseWords(lastPause)}; ` +
+      `ended ${lastPause.endedAt} by ${pauseActorWords(lastPause.endedBy)}`
+    );
+  }
+  return undefined;
+}
+
+/**
+ * The summary's line on the wakes the daemon's pacing holds until their turn
+ * (`wakesWaiting`): how many, and after `next` the earliest moment any of them is due, which is
+ * when the pacing lets the next one out. The state lists them in claim order, so the earliest is
+ * searched for; it is compared as a time and printed as the daemon wrote it. `wakes waiting 0` is
+ * a state outside every wave. A state that carries no such key has no such line, because it says
+ * nothing of what waits, where a 0 would say that nothing does: the daemon leaves the key off the
+ * state it serves a caller it reads as below the contract that added the key (`api.stateFor`,
+ * `withoutWakesWaiting`; `LegionStateResponse` says which callers those are).
+ */
+function wakesWaitingSummary(state: LegionState): string | undefined {
+  const wakes = state.wakesWaiting;
+  if (wakes === undefined) return undefined;
+  let next: string | undefined;
+  let nextAt = Number.POSITIVE_INFINITY;
+  for (const wake of wakes) {
+    const dueAt = Date.parse(wake.dueAt);
+    if (dueAt < nextAt) {
+      nextAt = dueAt;
+      next = wake.dueAt;
+    }
+  }
+  return `wakes waiting ${wakes.length}${next === undefined ? "" : ` next ${next}`}`;
+}
+
 /** The first line of every summary: what the lines below it are, since they are not JSON. */
 const SUMMARY_LEGEND =
-  "legion state summary. Lines: project; admission cap; active/waiting/blocked; " +
+  "legion state summary. Lines: project; paused: while the project is paused (the pause, since " +
+  "when, by whom and why, the roles whose stop it still waits on, how many rows it holds) or " +
+  "last pause: once a pause has ended (that pause, then when and by whom it was ended); " +
+  "admission cap; active/waiting/blocked; wakes waiting <count> [next <earliest due time>], the " +
+  "wakes the daemon's pacing holds until their turn, 0 outside a wave; " +
   "capability <name> <status> [detail] [config <legion.yaml line>]; " +
   "repository refused <repo> <reason>; issues <count>; then " +
   "<KEY> <phase> <status> for every issue the daemon records, and under each issue Legion still " +
@@ -164,10 +242,10 @@ const SUMMARY_LEGEND =
   "read_state with issue, issues, phase or settings returns the full records it names.";
 
 /**
- * The whole state as the controller reads it between its filtered reads: the project, the
- * admission lists, each capability's status, each repository the daemon refuses and why, one line
- * per recorded issue, and under each issue Legion still runs its slot, its hold, its gate and its
- * claims.
+ * The whole state as the controller reads it between its filtered reads: the project, its pause
+ * or its last pause, the admission lists, the wakes the pacing holds, each capability's status,
+ * each repository the daemon refuses and why, one line per recorded issue, and under each issue
+ * Legion still runs its slot, its hold, its gate and its claims.
  *
  * Line-oriented, not JSON: the INFRA deployment's state is about 160 KB of JSON for the 92 issues
  * it records, and the tool's output reaches the controller cut at about 41 KB
@@ -179,9 +257,11 @@ const SUMMARY_LEGEND =
  */
 function stateSummary(state: LegionState): string {
   const { admission, daemon } = state;
+  const pause = pauseSummary(state);
   const lines = [
     SUMMARY_LEGEND,
     `project ${daemon.project} boots ${daemon.boots} started ${daemon.startedAt}`,
+    ...(pause === undefined ? [] : [pause]),
     `admission cap ${admission.cap}${admission.free === undefined ? "" : ` free ${admission.free}`}`,
     `active ${admission.active.join(" ") || "(none)"}`,
     `waiting ${admission.waiting.join(" ") || "(none)"}`,
@@ -189,6 +269,8 @@ function stateSummary(state: LegionState): string {
   for (const blocked of admission.blocked) {
     lines.push(`blocked ${blocked.issue} on ${blocked.blockedBy.join(" ")}`);
   }
+  const wakesWaiting = wakesWaitingSummary(state);
+  if (wakesWaiting !== undefined) lines.push(wakesWaiting);
   for (const capability of state.capabilities) {
     // A row that is not `present` is one someone acts on, so it keeps the fact its check found
     // and the legion.yaml line that would record a decision; no filter answers for capabilities.
@@ -300,13 +382,13 @@ function toolSchema(pi: PiApi): unknown {
       .optional(),
     issues: z.array(z.string()).optional(),
     to: phaseOp.to,
-    // The why of the two operations that take one, a string as the phase op's own `reason` is.
+    // The why of the operations that take one, a string as the phase op's own `reason` is.
     // Agents sent it to park_child too, whose daemon route keeps no why, so the field says where
     // that why goes.
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, and the controller's pause's why; no other operation takes it. park_child and rerun_child take only issue: say why you park a child in a dispatch comment on it"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -357,9 +439,10 @@ function assertOperationInput(parameters: Record<string, unknown>, operation: st
  * `handoff_complete` is refused here only for the root architect's session, and finds what it
  * reports in the pane first (`handoffReport`); the daemon refuses an architect's completion
  * (ACCEPTANCE_IS_SIGN_OFF where nothing else refuses it first), so it is a phase worker's
- * operation. `read_state`, `set_status` and `replace_pod` belong to the controller, and the claim
- * operations (`CLAIM_OPERATIONS`) to the controller and to an architect, whose reach the daemon
- * limits to the claims of the issues it owns. */
+ * operation. The operations of `OPERATIONS.controller` belong to the controller: `read_state`,
+ * `set_status`, `replace_pod`, `pause` and `resume` to it alone, and the claim operations
+ * (`CLAIM_OPERATIONS`) to it and to an architect, whose reach the daemon limits to the claims of
+ * the issues it owns. */
 export function createLegionTool(deps: {
   readonly pi: PiApi;
   readonly daemon: () => LegionDaemonClient;
@@ -435,7 +518,8 @@ export function createLegionTool(deps: {
         "release_children and rerun_child are refused for a child whose ancestor is in retro or merging " +
         "(CHILD_UNDER_ACCEPTED_PARENT, naming the ancestor), since that ancestor's approved head cannot carry work released " +
         "under it now: wait for the ancestor to close, then release it. " +
-        "The controller's read_state with no field returns a summary of the daemon's whole state — the project, admission, each " +
+        "The controller's read_state with no field returns a summary of the daemon's whole state — the project, the pause " +
+        "that stands or the last one ended, admission, how many wakes the daemon's pacing holds and when the next is due, each " +
         "capability, each repository the daemon refuses with its reason, one line per recorded issue, and under each issue " +
         "Legion still runs its slot, hold, gate and each claim's state with its last turn times — and with issue, issues, " +
         "phase or settings returns the full records it names; " +
@@ -447,7 +531,7 @@ export function createLegionTool(deps: {
         "daemon opens its update round over that pod: it asks each role in the pod to push its work and answer " +
         "ready_for_update, and it replaces the pod when each role has answered, or at the round's bound whatever the " +
         "roles said. A suspension by the operator, the controller or an architect over a role the round asks keeps the " +
-        "pod past the bound, until a resume lifts it. The controller's own suspension counts too, so a controller that " +
+        "pod past the bound, until a resume of that role lifts it. The controller's own suspension counts too, so a controller that " +
         "suspended a role and then asks replace_pod waits on itself, and the round comes back as update-stalled. " +
         "replace_pod is the one way the controller removes an issue pod whose workspace can hold work. The " +
         "answer names the round, its reasons, and opened, which is false when a round was already open over the pod. " +
@@ -460,7 +544,9 @@ export function createLegionTool(deps: {
         "sentence says when to ask again). The daemon answers only once a claim of the issue records the round. It refuses a round " +
         "that no claim records in time (POD_UPDATE_NOT_RECORDED), and answers 500 POD_UPDATE_FAILED where it cannot " +
         "read the claims back after the post: either round can still open, so read updateRound on the issue's claims " +
-        "before you ask again. " +
+        "before you ask again. It refuses replace_pod while the project is paused (PROJECT_PAUSED, naming the pause that " +
+        "stands), and for a pod a pause still holds after the resume, until a role of that pod is running again " +
+        "(POD_HELD_BY_PAUSE); neither opens a round. " +
         "fresh_session (issue, role) has one claim leave the session it runs in behind and start again in a new one: the daemon " +
         "stops the agent if it runs, forgets the session, and starts the claim, which loses everything that session held. A " +
         "phase worker that comes back owing no task is started through its issue's current phase, so it has that phase's work. " +
@@ -503,7 +589,7 @@ export function createLegionTool(deps: {
         "reaches, and one left working under a relaunch the wake pacing parked " +
         "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
         "and for role controller. " +
-        "stop, retry, suspend and resume (issue, role) are the operator's own claim operations. Each answers " +
+        "stop, retry, suspend and resume_claim (issue, role) are the operator's own claim operations. Each answers " +
         "the claim's state after it, with who holds a suspension over it: suspendedBy while the claim is " +
         "suspended, and suspensionHeld with suspensionHeldBy while a suspension waits for a turn to end. " +
         "stop ends the claim: the daemon stops its agent at once, also in a turn, which loses that turn, and " +
@@ -513,14 +599,14 @@ export function createLegionTool(deps: {
         "retry starts a claim that failed, or that a stop retired, again in the session it recorded, with " +
         "new launch budgets. A phase worker is started through its issue's current phase, so it has that " +
         "phase's work, and the answer can show it failed or retired until that start runs. The daemon refuses " +
-        "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume that one, unless the operator suspended it. " +
+        "retry for a claim stored working (CLAIM_IN_A_TURN) and for a suspended claim: resume_claim that one, unless the operator suspended it. " +
         "suspend stops the claim's agent and keeps its session and the task it owes. A claim in a turn " +
         "keeps that turn until it ends, or until the stop timeout, which cuts the turn off, and the answer " +
         "shows suspensionHeld until then. Your suspension holds: no rule of the daemon's starts the claim " +
-        "again until your resume or the operator's. " +
-        "resume starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
-        "The daemon refuses resume for a claim stored working (CLAIM_IN_A_TURN). " +
-        "The daemon refuses resume, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
+        "again until your resume_claim or the operator's resume. " +
+        "resume_claim starts a suspended claim again in the session it recorded, and sends it the task it owes. " +
+        "The daemon refuses resume_claim for a claim stored working (CLAIM_IN_A_TURN). " +
+        "The daemon refuses resume_claim, suspend, stop, retry and fresh_session for a claim the operator suspended, or whose " +
         "suspension by the operator waits for a turn to end (SUSPENDED_BY_OPERATOR), before any refusal of the " +
         "claim's state, and nothing of the claim changes but where fresh_session's own suspension ran first, or " +
         "where fresh_session left behind the session the claim recorded, so the claim starts in a new session once " +
@@ -529,7 +615,7 @@ export function createLegionTool(deps: {
         "in its own codes. The four " +
         "refuse role controller as fresh_session and compact do. " +
         "An architect has the same six operations, fresh_session, compact, stop, retry, suspend and " +
-        "resume (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
+        "resume_claim (issue, role), for the claims of the issues it owns alone: a root architect owns every issue of " +
         "its tree, and a sub-architect its own issue and the issues under it. An architect uses them on a claim " +
         "of an issue it owns that needs action and asks no other session to do it. The daemon refuses an " +
         "architect another tree's claim (ISSUE_OUTSIDE_TREE), a claim of an issue of its tree that it does not own, " +
@@ -540,8 +626,8 @@ export function createLegionTool(deps: {
         "waits for a turn to end, before any refusal of the claim's state. Nothing of the claim changes but where " +
         "fresh_session's own suspension ran first, or where fresh_session left behind the session the claim " +
         "recorded, so the claim starts in a new session once it is started: ask the holder to lift its suspension. " +
-        "An architect's suspension is recorded as architect. An architect's resume lifts it, and the " +
-        "controller's and the operator's resume lift it too. An architect's resume, suspend, stop and " +
+        "An architect's suspension is recorded as architect. An architect's resume_claim lifts it, and the " +
+        "controller's resume_claim and the operator's resume lift it too. An architect's resume_claim, suspend, stop and " +
         "fresh_session are refused for a claim the daemon suspended (SUSPENDED_BY_DAEMON). Its retry " +
         "of such a claim is refused too, since retry reaches no suspended claim. Its suspend takes " +
         "over a claim the daemon released, and its stop retires one. " +
@@ -551,7 +637,21 @@ export function createLegionTool(deps: {
         "issue and its tree are back in the workflow. " +
         "Each refusal says what the claim does now and which operation reaches each state. It " +
         "names no moment to come back at: ask again later, and read the claim's state in " +
-        "read_state. ",
+        "read_state. " +
+        "pause (reason) pauses the whole project, and resume ends its pause; neither takes an issue. While the project " +
+        "is paused the daemon admits no issue, and it starts no role and gives no role a task except the controller. Every " +
+        "other role stops with its conversation kept, an idle one at once and one in a turn when that turn ends, and the " +
+        "pause deletes no pod. Each task, notice and wake for a stopped role waits for the resume. The answer is the " +
+        "pause: its id, since, by and reason. The daemon refuses a second pause (PROJECT_ALREADY_PAUSED, naming the " +
+        "pause that stands) and a pause its configuration cannot hold (PAUSE_UNAVAILABLE, naming the setting). " +
+        "resume ends the pause whoever made it, the operator's included. Each role the pause held something for then " +
+        "starts once, at the daemon's wake pacing, and every other role it stopped stays stopped until its next wake. " +
+        "The answer is the pause with endedAt and endedBy, and released, how many held rows the resume let out. The " +
+        "daemon refuses a resume of a project that is not paused (PROJECT_NOT_PAUSED, naming its last pause when it has one). While " +
+        "the project is paused it refuses fresh_session, compact, retry, resume_claim and replace_pod (PROJECT_PAUSED, " +
+        "naming the pause that stands), since each would start a turn, an architect's included: only the project's " +
+        "resume brings back a role the pause stopped. stop and suspend still run while the project is paused. A claim a " +
+        "suspension holds when the project is resumed stays suspended until that suspension's own resume lifts it. ",
     }),
     defaultInactive: true,
     parameters: toolSchema(pi),
@@ -613,6 +713,18 @@ export function createLegionTool(deps: {
           return await claimOperation(client, operation, { grantId, issue, role });
         }
         if (active.kind === "controller") {
+          // The project's pause and its resume name no issue: the daemon acts on its own project.
+          // Each is validated whole before its grant is minted, and each answer is the daemon's
+          // own: the pause it began, or the pause it ended with how many held rows it let out.
+          if (operation === "pause") {
+            const reason = requiredString(parameters, operation, "reason");
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.projectPause({ grantId, reason }));
+          }
+          if (operation === "resume") {
+            const { grantId } = await controllerGrant(active.sessionID);
+            return jsonSuccess(await client.projectResume({ grantId }));
+          }
           // replace_pod and set_status, each validated whole before its grant is minted. Every
           // other operation of the controller's is answered above, so one that reaches here is
           // named, never run as either.

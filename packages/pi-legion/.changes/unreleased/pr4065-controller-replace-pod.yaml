@@ -14,4 +14,5 @@ body: |-
   which names the limit). It answers only once a claim of the issue records the round, and refuses
   a round no claim records in time (`POD_UPDATE_NOT_RECORDED`), and a request that a sweep of the
   update rounds keeps waiting past its bound (`POD_UPDATE_BUSY`, whose sentence says when to ask
-  again).
+  again). It refuses `replace_pod` while the project is paused (`PROJECT_PAUSED`), and for a pod a
+  pause still holds after the resume until a role of that pod runs again (`POD_HELD_BY_PAUSE`).

@@ -43,7 +43,7 @@ type podUpdateRoute struct {
 func newPodUpdateRoute(t *testing.T, s *supervision, sup *supervisor, log *slog.Logger) *podUpdateRoute {
 	t.Helper()
 	grants := credential.New(nil)
-	grant, err := grants.MintController()
+	grant, err := grants.MintController("ses_controller")
 	if err != nil {
 		t.Fatalf("mint a controller grant: %v", err)
 	}

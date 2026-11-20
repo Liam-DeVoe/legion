@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 171: #4065 -- the project's controller gets the four claim operations the
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 184: #4065 -- the project's controller gets the four claim operations the
 // operator already has, as controller routes beside `claims/fresh-session` and `claims/compact`,
 // each taking that route's `api.ClaimRequest` (`grantId`, `issue`, `role`) and the same door
 // (claimDoor: a controller grant, or an architect grant for a claim of an issue it owns, or `403
@@ -2483,6 +2516,18 @@ package api
 // that waits out that bound, reads nothing and opens nothing, and is `503 POD_UPDATE_BUSY` with a
 // `Retry-After` of the sweep's interval in seconds (60), its sentence naming which of the two
 // ended the wait, and the bound.
+// While the project is paused (178, the entry above), the controller's and an architect's
+// `claims/resume` and `claims/retry` answer 409 `PROJECT_PAUSED`, with the `pause` that stands,
+// for every claim, as their `claims/fresh-session` and `claims/compact` do, and change nothing: a
+// claim the pause stopped is the pause's to bring back at the project's resume, and no agent's
+// operation undoes the pause. Their `claims/stop` and `claims/suspend` start nothing and still
+// run. A suspension of the controller's, an architect's or the operator's and the pause's stop
+// each keep their own source: the pause stops no claim such a suspension already holds, a
+// claim the pause stopped that such a suspension then takes over stays suspended by it at the
+// resume, and the resume brings back only what the pause stopped. `issues/pod-update` answers
+// 409 `PROJECT_PAUSED` while the project is paused, before the daemon is asked anything, and 409
+// `POD_HELD_BY_PAUSE` for a pod a pause still holds once the project runs, until a role of the
+// pod is live again; neither opens a round.
 // (This change took 136, from a census of `const DaemonAPIVersion` at refs/pull/<n>/head of
 // every open pull request that changes version.go or whose file list GitHub cut at 100, taken at
 // 2026-11-15T06:21:19Z over the 148 open pull requests on main d7dce730: main declared 133, and the
@@ -2512,4 +2557,10 @@ package api
 // others, so this entry moved to 171, the lowest number above main's 168 that no other open head
 // declares. Read the base's own number and every open head again at the next merge rather than
 // from this line.)
-const DaemonAPIVersion = 171
+// (At the forward merge of 2026-11-20 that brought main in at c3b75c69, which declares 178 (the
+// entry above), .github/scripts/check-daemon-api-contract.sh named 184 as the lowest number above
+// main's 178 that no open pull request declares: 179 (#4392 and #4540), 180 (#4049 and #4175),
+// 181 (#4273 and #4553), 182 (#4173 and #4495) and 183 (#3712) were declared, so this entry moved
+// from 171 to 184. Read the base's own number and every open head again at the next merge rather
+// than from this line.)
+const DaemonAPIVersion = 184

@@ -1,4 +1,0 @@
-kind: Changed
-body: |-
-  The plugin speaks daemon API contract 171, the contract of the controller's four claim
-  operations.

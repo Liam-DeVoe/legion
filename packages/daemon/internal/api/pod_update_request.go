@@ -74,6 +74,14 @@ const (
 	// opened nothing; its sentence names which of the two ended the wait, and the bound. 503
 	// POD_UPDATE_BUSY, with a Retry-After of the sweep's interval (PodUpdateRefused.RetryAfter).
 	PodUpdateBusy
+	// PodUpdatePauseHeld: a project's pause holds the issue's pod (the daemon's podPauseHolds,
+	// decision 12 of dispatch://INFRA-3759), and no update round opens over a pod a pause holds,
+	// whoever asks for it: the pause kept the pod and the work on its disk for the roles it
+	// stopped. The hold ends when the project is resumed with a role of the pod live, or when a
+	// role of the pod is ready again. 409 POD_HELD_BY_PAUSE. While the project is paused the route
+	// answers PROJECT_PAUSED before it asks the daemon (issuePodUpdate), so this is a pause that
+	// began after that read, or a hold the resume left on a pod none of whose roles is live yet.
+	PodUpdatePauseHeld
 )
 
 // PodUpdateRefused is the daemon's refusal of a request for a pod's update round
@@ -104,6 +112,8 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 		return http.StatusServiceUnavailable, "POD_UPDATE_NOT_RECORDED"
 	case PodUpdateBusy:
 		return http.StatusServiceUnavailable, "POD_UPDATE_BUSY"
+	case PodUpdatePauseHeld:
+		return http.StatusConflict, "POD_HELD_BY_PAUSE"
 	default:
 		return http.StatusInternalServerError, "POD_UPDATE_FAILED"
 	}
@@ -113,9 +123,13 @@ func podUpdateRefusal(refusal PodUpdateRefusal) (int, string) {
 // (PodUpdateRequest). It takes the controller's grant alone, as issues/status does: an
 // architect's or a phase worker's grant is refused `403 CONTROLLER_REQUIRED`. An issue of another
 // project is refused `404 NO_CLAIM` before the daemon is asked anything, since this daemon runs no
-// claim of it. Every other answer is the daemon's (Options.RequestPodUpdate): 200 with the round,
-// opened by this request or already open, which a claim of the issue records in the store by
-// then, or a PodUpdateRefused, with a Retry-After header where the refusal names a wait.
+// claim of it. While the project is paused it is refused `409 PROJECT_PAUSED`, with the pause
+// that stands, before the daemon is asked anything (refusedForPause): a round would ask each role
+// of the pod for a turn, which a paused project starts for no role but the controller, and then
+// replace the pod the pause keeps for its stopped roles. Every other answer is the daemon's
+// (Options.RequestPodUpdate): 200 with the round, opened by this request or already open, which a
+// claim of the issue records in the store by then, or a PodUpdateRefused, with a Retry-After
+// header where the refusal names a wait.
 //
 // The round's ask, its bound and the replacement are the sweep's, as for a round a drift opened:
 // the ask reaches each role at the first sweep that reads the round recorded on its claim, and
@@ -144,11 +158,16 @@ func (s *server) issuePodUpdate(w http.ResponseWriter, r *http.Request) {
 			req.Issue, s.dispatchProject))
 		return
 	}
-	if s.requestPodUpdate == nil {
-		writeFailure(w, http.StatusNotFound, "NO_POD", "this daemon runs no pod update rounds, so it replaces no pod")
+	if s.stopped(w, "the pod update of "+req.Issue) {
 		return
 	}
-	if s.stopped(w, "the pod update of "+req.Issue) {
+	if s.refusedForPause(w, r, "the pod update", req.Issue,
+		"a paused project opens no update round, which would ask each role of the issue's pod for a turn and then replace the pod the pause keeps for the roles it stopped",
+		"issue", req.Issue) {
+		return
+	}
+	if s.requestPodUpdate == nil {
+		writeFailure(w, http.StatusNotFound, "NO_POD", "this daemon runs no pod update rounds, so it replaces no pod")
 		return
 	}
 	answer, err := s.requestPodUpdate(r.Context(), req.Issue)

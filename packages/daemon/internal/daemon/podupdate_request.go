@@ -51,6 +51,15 @@ const requestedPodUpdateReasons = "the project's controller asked for the replac
 //   - no claim records a pod: refused (api.PodUpdateNoPod).
 //   - no claim the round could ask — none has a session, or every one that has has failed, so no
 //     claim would record the round: refused (api.PodUpdateNoPod).
+//   - a project's pause holds the issue's pod (store's project_pause_pod_holds, read as the
+//     sweep reads it, podPauseHolds): refused (api.PodUpdatePauseHeld), as the sweep opens no
+//     round over such a pod (reconcileIssuePodUpdate, decision 12 of dispatch://INFRA-3759). The
+//     pause kept the pod and the work on its disk for its stopped roles, and a round would ask
+//     them to push for a replacement while nothing of theirs runs. The hold ends at the resume
+//     where a role of the pod is live, or once a role of the pod is ready again. While the
+//     project is paused the route refuses the request before it reaches the daemon (api's
+//     PROJECT_PAUSED), so this answers a pause that began after that read, and a hold the resume
+//     left on a pod none of whose roles is live yet.
 //   - this daemon's own opening of the round still in flight, posted and not yet recorded by any
 //     claim: that opening, posted again with its own reasons, opened nothing new.
 //   - a limit of the project that holds the opening back, read as the sweep reads it, against a
@@ -156,8 +165,17 @@ func (s *supervision) postRequestedPodUpdate(ctx context.Context, issue string) 
 	}
 	round := supervise.PodRound(pod)
 	now := s.plan.clock.Now()
+	holds, err := s.podPauseHolds(ctx, group, now)
+	if err != nil {
+		return api.PodUpdateResponse{}, nil, fmt.Errorf("read whether a project's pause holds the pod of %s: %w", issue, err)
+	}
+	clock := s.roundClockAt(now, holds[issue])
+	if clock.held() {
+		return refusePodUpdate(api.PodUpdatePauseHeld,
+			"a project's pause holds the pod %s of %s: the pause kept the pod and the work on its disk for the roles it stopped, and no update round opens over it until the hold ends. The hold ends when the project is resumed with a role of the pod running, or when a role of the pod is ready again. Nothing was opened; ask again then", pod, issue)
+	}
 	sweep := s.beginPodUpdateSweep(now, byIssue)
-	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, now)
+	step := s.openPodUpdateUnderLimits(ctx, &sweep, issue, live, pod, requestedPodUpdateReasons, clock)
 	if step.held != "" {
 		return refusePodUpdate(api.PodUpdateLimited, "%s", s.podUpdateLimitHolds(issue, step.held))
 	}

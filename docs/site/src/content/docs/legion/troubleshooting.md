@@ -933,7 +933,7 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
     ```
   - **`suspendedBy: controller` or `suspendedBy: architect`** (the project's controller, or an
     architect of the worker's tree, suspended it through its `legion` tool): it is that holder's
-    move, and it waits for that holder's `resume`. Ask the holder on its role topic before you act;
+    move, and it waits for that holder's `resume_claim`. Ask the holder on its role topic before you act;
     your own resume or delivery lifts either suspension too, since the operator's outranks both.
 
 - **`retry`** (a failed architect): retry it. The daemon relaunches it on the session it kept, or on

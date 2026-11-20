@@ -107,6 +107,7 @@ var (
 		name:        "a retry",
 		invalidRole: "the controller does not retry its own claim",
 		did:         "retried",
+		startsATurn: true,
 		reaches:     "A retry reaches a claim that failed and one a stop retired",
 	}
 	suspendOp = claimOp{
@@ -121,6 +122,7 @@ var (
 		request:      "resume",
 		did:          "resumed",
 		refusesATurn: true,
+		startsATurn:  true,
 		reaches:      "A resume reaches a suspended claim: the controller's every one but one the operator's own suspension holds, and an architect's one an architect suspended",
 	}
 )
@@ -176,7 +178,10 @@ func (s *server) claimSuspend(w http.ResponseWriter, r *http.Request) {
 // claimResume is the claim door's `legion claims resume` (resumeEvent): the suspended claim's
 // session is relaunched. The controller's resume lifts every suspension but the operator's own,
 // which only the operator lifts; an architect's lifts an architect's suspension alone
-// (claimDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal).
+// (claimDoor, supervise.RequestResume.By, supervise.Claim.ResumeRefusal). While the project is
+// paused it is refused PROJECT_PAUSED and nothing of the claim changes (claimOp.startsATurn): a
+// claim the pause stopped is the pause's to bring back at the project's resume, and no agent's
+// resume undoes the pause.
 func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 	s.claimEventOperation(w, r, resumeOp, func(target claimTarget) supervise.Event {
 		return supervise.RequestResume{Claim: target.token, By: target.by}
@@ -195,9 +200,14 @@ func (s *server) claimResume(w http.ResponseWriter, r *http.Request) {
 // the workflow or whose tree lingers is refused as work the daemon stopped
 // (ISSUE_OUT_OF_WORKFLOW, refuseStartOfStoppedWork); every other refusal is the effect's own, in
 // the words the operator's door gives it. One read of the claim's state decides both refusals.
+// While the project is paused it is refused PROJECT_PAUSED before that read, and nothing of the
+// claim changes (claimOp.startsATurn), as the operator's retry is.
 func (s *server) claimRetry(w http.ResponseWriter, r *http.Request) {
 	target, ok := s.claimDoor(w, r, retryOp)
 	if !ok {
+		return
+	}
+	if retryOp.startsATurn && s.refusedWhilePaused(w, r, "retry", target.machine.View().Claim) {
 		return
 	}
 	state := target.machine.View().State
@@ -314,11 +324,16 @@ func capitalized(sentence string) string {
 // caller authenticated as the project's controller or an architect that owns the claim's issue
 // (claimDoor), the event is posted, and the claim is answered as it then stands, the log line
 // saying the caller op.did it. A suspension the machine holds for the agent's turn is no refusal
-// and answers 202, as the operator's does.
+// and answers 202, as the operator's does. An operation that starts the claim's session again is
+// refused PROJECT_PAUSED while the project is paused, before the event is posted
+// (claimOp.startsATurn, refusedWhilePaused).
 func (s *server) claimEventOperation(w http.ResponseWriter, r *http.Request, op claimOp,
 	event func(claimTarget) supervise.Event) {
 	target, ok := s.claimDoor(w, r, op)
 	if !ok {
+		return
+	}
+	if op.startsATurn && s.refusedWhilePaused(w, r, op.request, target.machine.View().Claim) {
 		return
 	}
 	posted, err := s.postClaimEvent(w, r, target.machine, target.token, op.request, event(target))

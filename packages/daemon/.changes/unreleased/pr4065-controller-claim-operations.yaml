@@ -5,7 +5,14 @@ body: |-
   own claim. A controller's suspension is recorded under its own source, `controller`: it holds
   against every daemon rule, the controller's resume or the operator's lifts it, and
   `legion claims list` prints it as `suspended:controller`. While the operator's own suspension
-  holds a claim, the controller's `stop`, `retry`, `suspend`, `resume` and `fresh_session` are
-  refused `409 SUSPENDED_BY_OPERATOR` and nothing of the claim changes; before this, the
+  holds a claim, the controller's `stop`, `retry`, `suspend`, `resume_claim` and `fresh_session`
+  are refused `409 SUSPENDED_BY_OPERATOR` and nothing of the claim changes; before this, the
   controller's `fresh_session` resumed such a claim. A store migration widens
-  `claims_suspended_by_check`.
+  `claims_suspended_by_check`. While the project is paused, the controller's and an architect's
+  `claims/retry` and `claims/resume` are refused `409 PROJECT_PAUSED`, as their `fresh-session`
+  and `compact` are, and nothing of the claim changes; their `claims/stop` and `claims/suspend`
+  still run. Every `PROJECT_PAUSED` refusal now ends by naming what lifts the pause: the
+  controller's `resume` operation, which names no issue, or the operator's `legion project resume`.
+  A pause stops no claim that a suspension of the controller's, an architect's or the operator's
+  already holds, and such a suspension that takes a stopped claim over holds it through the
+  project's resume.
