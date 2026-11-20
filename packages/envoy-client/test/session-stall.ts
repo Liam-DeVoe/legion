@@ -1361,6 +1361,11 @@ describe.skipIf(hostsSkipped)(
             stdin: "pipe",
             stdout: "pipe",
             stderr: "pipe",
+            // A session of its own, so Claude Code leads a process group that holds what it
+            // starts (its stdio MCP servers) and stop can end that group whole. This row stops no
+            // member, so the session's orphaned group sends it no SIGHUP
+            // (scripts/e2e/lib/own-group.ts says when that matters).
+            detached: true,
           }
         );
         let results = 0;
@@ -1374,11 +1379,33 @@ describe.skipIf(hostsSkipped)(
           }
         })();
         const stderr = new Response(child.stderr).text();
+        // groupLives is whether any process of Claude Code's group still runs: kill(2) with signal 0
+        // to the group's id answers ESRCH once its last member has gone.
+        const groupLives = () => {
+          try {
+            process.kill(-child.pid, 0);
+            return true;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+            throw error;
+          }
+        };
+        const endGroup = () => {
+          if (groupLives()) process.kill(-child.pid, "SIGKILL");
+        };
+        // stop ends the input, which ends Claude Code's run and closes its MCP servers' stdin, and
+        // waits up to 10 s for the whole group to go before it kills what is left of it. The
+        // SIGKILL of Claude Code alone would leave its MCP servers running with no end of input,
+        // beside the `--resume` of the same session that follows (cybermonklabs/legion#4357's
+        // case), so the fallback ends the group, and nothing of this process runs once stop returns.
         const stop = async () => {
           child.stdin.end();
-          const timer = setTimeout(() => child.kill("SIGKILL"), 10_000);
+          const timer = setTimeout(endGroup, 10_000);
           await child.exited;
+          const deadline = Date.now() + 10_000;
+          while (groupLives() && Date.now() < deadline) await Bun.sleep(POLL_MS);
           clearTimeout(timer);
+          endGroup();
         };
         cleanup.push(stop);
         return {
