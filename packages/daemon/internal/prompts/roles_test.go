@@ -660,9 +660,13 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"go/reviewer.md", "and one the change did not make takes the head's one re-run first while you hold `reviewing`"},
 		// A check the counted set does not list yet while a run at the head holds its failed job is
 		// unreported, not absent: it is waited for and gets no re-run, while main's re-run of a
-		// cancelled or absent check stays (the architect's ruling of 2026-11-20 on INFRA-1303's
-		// review round 3).
+		// cancelled or absent check stays, absent meaning a run at the head holds its job while the
+		// check is missing from the list; where no run holds the job, the reviewer tells the
+		// architect and does not approve, the sentence pinned below (the architect's rulings of
+		// 2026-11-20 on INFRA-1303's review round 3).
 		{"go/reviewer.md", "One the counted set does not list yet while a run at the head holds its failed job is unreported, not absent, and gets no re-run: wait for it, as that page's *The act and the wait* says."},
+		{"go/reviewer.md", "One `completed` as `cancelled`, or absent from that set: re-run that run's failed and cancelled jobs, once, then wait"},
+		{"go/reviewer.md", "When no run at the head holds the job, or nothing will run it (a check only a commit status reports, a workflow another repository defines), tell the architect and do not approve."},
 		// The worker part names the same record, and the implementer's overlay the same reading of
 		// whose red it is.
 		{"go/worker-common.md", "after it records the failure in a handoff record of its own phase with `dispatch handoff-write`"},

@@ -804,12 +804,13 @@ const REVIEWER_LEAVES_AN_UNREQUIRED_CHECK =
 
 /**
  * The sentence of `## One re-run belongs to the head` that tells an unreported check from an
- * absent one, pinned whole and literally. The reviewer's existing re-run covers a required check
- * that is cancelled or absent, the counted set holding no check of that name and no run at the
- * head a failed job for it; a check whose failed job a run at the head holds while the counted set
- * does not list it yet is unreported, and is waited for. A reader that lost the sentence takes a
- * failed job it read off the run for an absent check, and re-runs it before GitHub counts it (the
- * architect's ruling of 2026-11-20 on INFRA-1303's review round 3).
+ * absent one, pinned whole and literally. The reviewer's existing re-run, main's, covers a
+ * required check that is cancelled or absent, absent meaning that a run at the head holds its job
+ * while the check is missing from the list; where no run at the head holds the job, the reviewer
+ * tells the architect and does not approve. A check whose failed job a run at the head holds while
+ * the counted set does not list it yet is unreported, and is waited for. A reader that lost the
+ * sentence takes a failed job it read off the run for an absent check, and re-runs it before
+ * GitHub counts it (the architect's rulings of 2026-11-20 on INFRA-1303's review round 3).
  */
 const UNREPORTED_IS_NOT_ABSENT =
   "A check the counted set does not list while a run at the head holds its failed job is unreported, not absent: it gets no re-run and is waited for, as *The act and the wait* says.";
