@@ -416,6 +416,9 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 		"ACME_TOKEN wants an approval": func(t *testing.T, m *Machine) {
 			retag(t, m, policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierHuman, "acme-v1"))
 		},
+		"ACME_TOKEN wants another person's approval": func(t *testing.T, m *Machine) {
+			retag(t, m, policytest.Secret("ACME_TOKEN", otherPerson, policy.TierHuman, "acme-v1"))
+		},
 		"ACME_TOKEN is not served under a tag the loader refuses": func(t *testing.T, m *Machine) {
 			refused := policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")
 			refused.Tags[policy.TagAdmin] = "yes"
@@ -424,6 +427,9 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 		"ACME_TOKEN is not served, its value gone": func(t *testing.T, m *Machine) {
 			fixtureStore(m).Delete(policytest.ID("ACME_TOKEN"))
 			retag(t, m)
+		},
+		"ACME_TOKEN allows at most 5 minutes": func(t *testing.T, m *Machine) {
+			retag(t, m, lowered(policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1")))
 		},
 	}
 	ends := map[string]struct {
@@ -462,6 +468,12 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 		combination{"ACME_TOKEN is not served under a tag the loader refuses", "DEEL_API_KEY is tagged as an administrator's", true},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", false},
 		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is tagged as an administrator's", true},
+		combination{"ACME_TOKEN is not served, its value gone", "AUTO_TOKEN is tagged as an administrator's", true},
+		combination{"ACME_TOKEN is not served under a tag the loader refuses", "AUTO_TOKEN is tagged as an administrator's", true},
+		combination{"ACME_TOKEN allows at most 5 minutes", "AUTO_TOKEN is tagged as an administrator's", true},
+		combination{"ACME_TOKEN wants another person's approval", "AUTO_TOKEN is tagged as an administrator's", true},
+		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY no longer lists the person", true},
+		combination{"ACME_TOKEN is not served, its value gone", "DEEL_API_KEY is served from another source", true},
 	)
 	for _, c := range combinations {
 		path := map[bool]string{false: "the release", true: "the next request"}[c.reuse]
@@ -473,13 +485,17 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 				t.Fatalf("Values before any change = %+v, %v; want all three keys released", release, err)
 			}
 
-			// The pause alone refuses the release and leaves the grant live.
+			// Most setup changes only pause the release. A lowered max-grant is itself a
+			// permanent end, but Create still must find that end before its own max-grant
+			// refusal would return.
 			pauses[c.pause](t, m)
-			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
-				t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.pause, release, err)
-			}
-			if by, audits := endedForGood(t, m, judged); by != "" || audits != 0 {
-				t.Fatalf("after the pause alone: revoked_by %q with %d grant.revoked rows; want the grant paused, not ended", by, audits)
+			if c.pause != "ACME_TOKEN allows at most 5 minutes" {
+				if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
+					t.Fatalf("Values while %s = %+v, %v; want ErrGrantNotLive and nothing released", c.pause, release, err)
+				}
+				if by, audits := endedForGood(t, m, judged); by != "" || audits != 0 {
+					t.Fatalf("after the pause alone: revoked_by %q with %d grant.revoked rows; want the grant paused, not ended", by, audits)
+				}
 			}
 
 			// The end, while ACME_TOKEN still pauses the grant.
@@ -507,6 +523,126 @@ func TestAnEndOnOneKeyOfAJudgedGrantIsNotHiddenByAnotherKeysPause(t *testing.T) 
 				policytest.Secret("ACME_TOKEN", fixtureOperator, policy.TierAgent, "acme-v1"))
 			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || released(release) {
 				t.Errorf("Values once every change is taken back = DEEL_API_KEY %q, AUTO_TOKEN %q, ACME_TOKEN %q, %v; want ErrGrantNotLive and nothing released", releasedValue(release, "DEEL_API_KEY"), releasedValue(release, "AUTO_TOKEN"), releasedValue(release, "ACME_TOKEN"), err)
+			}
+		})
+	}
+}
+
+// TestAChainFailureDoesNotHideAnotherKeysEnd: an adopted grant may have an approval
+// chain signed for another broker address. Its release still writes that chain's warning,
+// but an administrator tag or the other permanent changes end the grant before the chain
+// refusal can leave it live.
+func TestAChainFailureDoesNotHideAnotherKeysEnd(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
+	for _, c := range []struct {
+		name string
+		edit func(airlock.Rules) airlock.Rules
+		end  func() secrets.LocalSecret
+	}{
+		{"an entry is dropped beside an administrator tag", withoutEntry("DEEL_API_KEY"), func() secrets.LocalSecret { return adminSecret("AUTO_TOKEN", "auto-v1") }},
+		{"a judge is removed beside an administrator tag", withJudge("DEEL_API_KEY", nil), func() secrets.LocalSecret { return adminSecret("AUTO_TOKEN", "auto-v1") }},
+		{"a judge is lowered beside an administrator tag", withJudge("DEEL_API_KEY", new(uint32(599))), func() secrets.LocalSecret { return adminSecret("AUTO_TOKEN", "auto-v1") }},
+		{"an entry is dropped beside a requester drop", withoutEntry("DEEL_API_KEY"), func() secrets.LocalSecret {
+			return policytest.ListedSecret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, otherPerson, "auto-v1")
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, session, key, boot := bootedJudgeFixture(t)
+			judged := judgedGrant(t, m, session, key, 600, names...)
+			fixtureStore(m).Delete(policytest.ID("DEEL_API_KEY"))
+			decided := m.Airlock
+			boot(c.edit(decided))
+			retag(t, m, c.end())
+			capture := captureRecords(t)
+
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
+				t.Fatalf("Values after %s = %+v, %v; want the grant ended without a release", c.name, release, err)
+			}
+			if by, audits := endedForGood(t, m, judged); by != GrantEndedActor || audits != 1 {
+				t.Fatalf("after %s: revoked_by %q with %d grant.revoked rows; want one broker end", c.name, by, audits)
+			}
+			if lines := chainLines(t, capture); len(lines) != 1 {
+				t.Fatalf("after %s: %d failed-chain lines; want the one warning beside the end", c.name, len(lines))
+			}
+
+			boot(decided)
+			retag(t, m,
+				policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"),
+				policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"))
+			if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
+				t.Fatalf("Values after every change is restored = %+v, %v; want the ended grant to stay unavailable", release, err)
+			}
+		})
+	}
+
+	t.Run("the failed chain alone remains live and writes its warning", func(t *testing.T) {
+		m, session, key, boot := bootedJudgeFixture(t)
+		judged := judgedGrant(t, m, session, key, 600, names...)
+		fixtureStore(m).Delete(policytest.ID("DEEL_API_KEY"))
+		decided := m.Airlock
+		boot(withoutEntry("DEEL_API_KEY")(decided))
+		capture := captureRecords(t)
+
+		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); !errors.Is(err, ErrGrantChainInvalid) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "" {
+			t.Fatalf("Values of the chain-invalid grant with no ending policy change = %+v, %v; want only its chain refusal", release, err)
+		}
+		if by, audits := endedForGood(t, m, judged); by != "" || audits != 0 {
+			t.Fatalf("the chain-invalid grant alone: revoked_by %q with %d grant.revoked rows; want it live", by, audits)
+		}
+		if lines := chainLines(t, capture); len(lines) != 1 {
+			t.Fatalf("the chain-invalid grant alone: %d failed-chain lines; want one", len(lines))
+		}
+
+		boot(decided)
+		retag(t, m, policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"))
+		if release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{}); err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "AUTO_TOKEN") == "" {
+			t.Fatalf("Values after the chain becomes valid = %+v, %v; want the still-live grant released", release, err)
+		}
+	})
+}
+
+// TestAPendingValueDoesNotHideAnEndAtTheNextRequest: Create still reports a key waiting for
+// its value, but must end a matching live grant first when another key now requires approval.
+func TestAPendingValueDoesNotHideAnEndAtTheNextRequest(t *testing.T) {
+	names := []string{"DEEL_API_KEY", "AUTO_TOKEN"}
+	for _, c := range []struct {
+		name string
+		end  bool
+	}{
+		{"an administrator tag ends the grant", true},
+		{"a pending value alone leaves the grant live", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, session, key := newJudgeFixture(t)
+			judged := judgedGrant(t, m, session, key, 600, names...)
+			waiting := policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "")
+			waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+			created := time.Now()
+			waiting.CreatedAt = &created
+			fixtureStore(m).Delete(policytest.ID("AUTO_TOKEN"))
+			if c.end {
+				retag(t, m, waiting, adminSecret("DEEL_API_KEY", "deel-v1"))
+			} else {
+				retag(t, m, waiting)
+			}
+			if _, err := m.Create(t.Context(), session, signJudgeable(t, m, key, "post the release notes again", 600, names...), "", nil); !errors.Is(err, policy.ErrPendingValue) {
+				t.Fatalf("Create while AUTO_TOKEN waits for its value = %v; want the pending-value refusal", err)
+			}
+			if by, audits := endedForGood(t, m, judged); c.end && (by != GrantEndedActor || audits != 1) {
+				t.Fatalf("the pending-value request with an administrator tag: revoked_by %q with %d grant.revoked rows; want one broker end", by, audits)
+			} else if !c.end && (by != "" || audits != 0) {
+				t.Fatalf("the pending-value request with no ending change: revoked_by %q with %d grant.revoked rows; want it live", by, audits)
+			}
+
+			retag(t, m,
+				policytest.Secret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, "deel-v1"),
+				policytest.Secret("AUTO_TOKEN", fixtureOperator, policy.TierAgent, "auto-v1"))
+			release, err := m.Values(t.Context(), judged, session, nil, ReleaseCall{})
+			if c.end && (!errors.Is(err, ErrGrantNotLive) || releasedValue(release, "DEEL_API_KEY") != "" || releasedValue(release, "AUTO_TOKEN") != "") {
+				t.Fatalf("Values after the pending-value end is restored = %+v, %v; want the grant permanently ended", release, err)
+			}
+			if !c.end && (err != nil || releasedValue(release, "DEEL_API_KEY") == "" || releasedValue(release, "AUTO_TOKEN") == "") {
+				t.Fatalf("Values after the pending-value control is restored = %+v, %v; want the live grant released", release, err)
 			}
 		})
 	}

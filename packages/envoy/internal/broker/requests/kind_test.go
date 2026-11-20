@@ -382,14 +382,6 @@ func TestTheNextRequestEndsAGrantWhoseTypeChanged(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
 	secret := requestTypeSecret("BACK_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)
-	machine.Minters = map[string]Minter{
-		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
-			return secrets.Minted{Value: "minted-token"}, nil
-		},
-		policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
-			return secrets.Minted{Value: "access-token"}, nil
-		},
-	}
 	first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "BACK_TYPE_KEY"), "", nil)
 	if err != nil || first.GrantID == nil {
 		t.Fatalf("Create = %+v, %v", first, err)

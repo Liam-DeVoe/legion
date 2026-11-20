@@ -615,6 +615,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
+	sorted := sortedCopy(names)
+	// A matching live grant must be re-checked before this new request can refuse for a pending
+	// value, the judge pre-check, or a max-grant limit. Those refusals pause or reject the new
+	// request, but cannot keep an old grant live when any key now ends it permanently.
+	if err := m.endMatchingLiveGrants(ctx, enr, sorted, set); err != nil {
+		return Request{}, err
+	}
 	// A secret `agent-secrets secret create` made and has not yet filled is refused as such, never
 	// as unknown, which a caller takes as final: no request row, record or approver for it.
 	for _, name := range names {
@@ -622,7 +630,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
 		}
 	}
-	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	// A key the judge decides grants at most its own judge seconds, but only when the judge
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
 	// keys the judge decides, and one that asks for longer is refused here, before anyone is
@@ -654,7 +661,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%w: %s allows at most %s; ask with agent-secrets --ttl %s", ErrGrantRequiresLifetime, name, limit, limit)
 		}
 	}
-	sorted := sortedCopy(names)
 	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
 		return Request{}, err
 	} else if ok {
