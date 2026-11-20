@@ -50,8 +50,8 @@ func TestK3TradesByDispatchState(t *testing.T) {
 			switch r.URL.Path {
 			case "/api/v1/access/person":
 				_ = json.NewEncoder(w).Encode(map[string]string{"person": person, "member_kind": kind})
-			case "/api/v1/access/projects/INFRA":
-				_ = json.NewEncoder(w).Encode(map[string]any{"project": "INFRA", "visibility": "private", "person": person, "member_kind": kind, "visible": true})
+			case "/api/v1/access/projects/ACC":
+				_ = json.NewEncoder(w).Encode(map[string]any{"project": "ACC", "visibility": "private", "person": person, "member_kind": kind, "visible": true})
 			default:
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = w.Write([]byte(`{"code":"NOT_FOUND"}`))
@@ -95,19 +95,19 @@ func TestK3TradesByDispatchState(t *testing.T) {
 		want      []string // one answer per state, minted or the OAuth error code
 		wantScope string   // the scope a machine login's trade is minted in, where it is
 	}{
-		{name: "named entry, project INFRA", tokenType: oauthwire.SubjectTokenTypeKubernetes, person: full, scope: oauthwire.ProjectScopeNamed, projects: []string{"INFRA"},
+		{name: "named entry, project ACC", tokenType: oauthwire.SubjectTokenTypeKubernetes, person: full, scope: oauthwire.ProjectScopeNamed, projects: []string{"ACC"},
 			want: []string{minted, minted, "server_error", "temporarily_unavailable"}},
 		{name: "full member's sign-in, no project", tokenType: oauthwire.SubjectTokenTypePerson, person: full, scope: oauthwire.ProjectScopePerson,
 			want: []string{minted, minted, minted, minted}},
-		{name: "full member's sign-in, project INFRA", tokenType: oauthwire.SubjectTokenTypePerson, person: full, scope: oauthwire.ProjectScopePerson, projects: []string{"INFRA"},
+		{name: "full member's sign-in, project ACC", tokenType: oauthwire.SubjectTokenTypePerson, person: full, scope: oauthwire.ProjectScopePerson, projects: []string{"ACC"},
 			want: []string{"invalid_request", minted, "server_error", "temporarily_unavailable"}},
 		{name: "full member's machine, no project", tokenType: tokenTypeAccessToken, person: full,
 			want: []string{minted, minted, "server_error", "temporarily_unavailable"}, wantScope: oauthwire.ProjectScopePerson},
-		{name: "full member's machine, project INFRA", tokenType: tokenTypeAccessToken, person: full, projects: []string{"INFRA"},
+		{name: "full member's machine, project ACC", tokenType: tokenTypeAccessToken, person: full, projects: []string{"ACC"},
 			want: []string{"invalid_request", minted, "server_error", "temporarily_unavailable"}, wantScope: oauthwire.ProjectScopePerson},
 		{name: "restricted member's machine, no project", tokenType: tokenTypeAccessToken, person: outside,
 			want: []string{minted, "invalid_request", "server_error", "temporarily_unavailable"}, wantScope: oauthwire.ProjectScopePerson},
-		{name: "restricted member's machine, project INFRA", tokenType: tokenTypeAccessToken, person: outside, projects: []string{"INFRA"},
+		{name: "restricted member's machine, project ACC", tokenType: tokenTypeAccessToken, person: outside, projects: []string{"ACC"},
 			want: []string{"invalid_request", minted, "server_error", "temporarily_unavailable"}, wantScope: oauthwire.ProjectScopeNamed},
 	}
 	for _, trade := range trades {
