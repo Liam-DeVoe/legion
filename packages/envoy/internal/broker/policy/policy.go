@@ -680,9 +680,10 @@ func RequesterRule(t TagSet) RequesterFault {
 //     No other minter reads it, so the tag would narrow nothing and say that it had.
 //   - ReasonGitHubCapType: a secret that is not a github-app one carries a github-repositories
 //     or github-permissions tag, for the same reason.
-//   - ReasonGitHubRepositoriesOwners: a secret carries a github-repositories tag and its
-//     github-owners tag names other than one account. A repository name means nothing without
-//     its account, so a cap naming repositories names the one account they are under.
+//   - ReasonGitHubCapOwners: a secret carries a github-repositories or github-permissions tag and
+//     its github-owners tag names other than one account. A repository name means nothing without
+//     its account, and a capped release mints for one installation, so a capped secret names the
+//     one account its tokens are for.
 //   - ReasonAdminTier: an admin secret is not human tier. An administrator's credential is
 //     released only by a person's approval, which agent tier does not ask for.
 //   - ReasonAdminRequesters: an admin secret carries no requesters tag. Who may ask for an
@@ -707,8 +708,8 @@ func TagRules(t TagSet) string {
 	if (t.GitHubRepositories != "" || t.GitHubPermissions != "") && t.Type != TypeGitHubApp {
 		return ReasonGitHubCapType
 	}
-	if t.GitHubRepositories != "" && len(strings.Fields(t.GitHubOwners)) != 1 {
-		return ReasonGitHubRepositoriesOwners
+	if (t.GitHubRepositories != "" || t.GitHubPermissions != "") && len(strings.Fields(t.GitHubOwners)) != 1 {
+		return ReasonGitHubCapOwners
 	}
 	if t.Admin && t.Tier != TierHuman {
 		return ReasonAdminTier
@@ -1116,13 +1117,14 @@ type Requester struct {
 	// account listed for another service, or for none, proves nothing here.
 	Service string
 	// Project is the one Dispatch project the deployment itself names for a pod whose Service is
-	// proved: the project BROKER_EXCHANGE_ACCOUNTS maps the pod's verified service account to, or
-	// else the account whose token login enrolled it, while BROKER_SERVICE_LOGINS still names
-	// that account for the pod's service (requests.Machine.requester). Several Legion projects'
-	// pods run as one account, legion-worker, and each project's daemon logs in as an account of
-	// its own, so the daemon's account is what tells their pods apart. It is empty for every
-	// session, for a pod with no proved service, for a pod neither account maps, and for one the
-	// two map to different projects. A <service>/<PROJECT> requesters entry reads it (lists).
+	// proved: the project BROKER_EXCHANGE_ACCOUNTS maps the account whose token login enrolled it
+	// to, while BROKER_SERVICE_LOGINS still names that account for the pod's service; where the
+	// pod's own verified account is mapped too, it must name the same project
+	// (requests.Machine.podProject). Several Legion projects' pods run as one account,
+	// legion-worker, and each project's daemon logs in as an account of its own, so the daemon's
+	// account is what tells their pods apart. It is empty for every session, for a pod with no
+	// proved service, for a pod whose launching login maps to no project, and for one the two
+	// accounts map to different projects. A <service>/<PROJECT> requesters entry reads it (lists).
 	Project string
 	// Withheld is the names the session's operator withheld from it by revoking a grant of them
 	// the session got without asking (requests.Machine.RevokeByApprover). Evaluate answers each as

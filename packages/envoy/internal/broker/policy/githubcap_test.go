@@ -90,17 +90,21 @@ func TestTheLoaderRefusesAMalformedOrMisplacedCap(t *testing.T) {
 		secret secrets.LocalSecret
 		reason string
 	}{
-		"REPOS_COMMA":     {edit("REPOS_COMMA", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a,b" }), policy.ReasonGitHubRepositoriesMalformed},
-		"REPOS_OWNER":     {edit("REPOS_OWNER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "acme-org/proofs" }), policy.ReasonGitHubRepositoriesMalformed},
-		"REPOS_EMPTY":     {edit("REPOS_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = " " }), policy.ReasonGitHubRepositoriesMalformed},
-		"REPOS_TWICE":     {edit("REPOS_TWICE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a A" }), policy.ReasonGitHubRepositoriesMalformed},
-		"PERMS_LEVEL":     {edit("PERMS_LEVEL", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks:admin" }), policy.ReasonGitHubPermissionsMalformed},
-		"PERMS_SHAPE":     {edit("PERMS_SHAPE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks" }), policy.ReasonGitHubPermissionsMalformed},
-		"PERMS_EMPTY":     {edit("PERMS_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "" }), policy.ReasonGitHubPermissionsMalformed},
-		"PERMS_TWICE":     {edit("PERMS_TWICE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks:read checks:write" }), policy.ReasonGitHubPermissionsMalformed},
-		"PERMS_UPPER":     {edit("PERMS_UPPER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "Checks:write" }), policy.ReasonGitHubPermissionsMalformed},
-		"CAP_ON_STORED":   {edit("CAP_ON_STORED", func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagType); delete(s.Tags, policy.TagGitHubOwners) }), policy.ReasonGitHubCapType},
-		"TWO_OWNERS":      {edit("TWO_OWNERS", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubOwners] = "acme-org ada" }), policy.ReasonGitHubRepositoriesOwners},
+		"REPOS_COMMA":   {edit("REPOS_COMMA", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a,b" }), policy.ReasonGitHubRepositoriesMalformed},
+		"REPOS_OWNER":   {edit("REPOS_OWNER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "acme-org/proofs" }), policy.ReasonGitHubRepositoriesMalformed},
+		"REPOS_EMPTY":   {edit("REPOS_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = " " }), policy.ReasonGitHubRepositoriesMalformed},
+		"REPOS_TWICE":   {edit("REPOS_TWICE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubRepositories] = "a A" }), policy.ReasonGitHubRepositoriesMalformed},
+		"PERMS_LEVEL":   {edit("PERMS_LEVEL", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks:admin" }), policy.ReasonGitHubPermissionsMalformed},
+		"PERMS_SHAPE":   {edit("PERMS_SHAPE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks" }), policy.ReasonGitHubPermissionsMalformed},
+		"PERMS_EMPTY":   {edit("PERMS_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "" }), policy.ReasonGitHubPermissionsMalformed},
+		"PERMS_TWICE":   {edit("PERMS_TWICE", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "checks:read checks:write" }), policy.ReasonGitHubPermissionsMalformed},
+		"PERMS_UPPER":   {edit("PERMS_UPPER", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubPermissions] = "Checks:write" }), policy.ReasonGitHubPermissionsMalformed},
+		"CAP_ON_STORED": {edit("CAP_ON_STORED", func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagType); delete(s.Tags, policy.TagGitHubOwners) }), policy.ReasonGitHubCapType},
+		"TWO_OWNERS":    {edit("TWO_OWNERS", func(s *secrets.LocalSecret) { s.Tags[policy.TagGitHubOwners] = "acme-org ada" }), policy.ReasonGitHubCapOwners},
+		"PERMS_TWO_OWNERS": {edit("PERMS_TWO_OWNERS", func(s *secrets.LocalSecret) {
+			delete(s.Tags, policy.TagGitHubRepositories)
+			s.Tags[policy.TagGitHubOwners] = "acme-org ada"
+		}), policy.ReasonGitHubCapOwners},
 		"PROJECT_LOWER":   {edit("PROJECT_LOWER", func(s *secrets.LocalSecret) { s.Tags[policy.TagRequesters] = "legion-daemon/ossv" }), policy.ReasonRequestersMalformed},
 		"PROJECT_EMPTY":   {edit("PROJECT_EMPTY", func(s *secrets.LocalSecret) { s.Tags[policy.TagRequesters] = "legion-daemon/" }), policy.ReasonRequestersMalformed},
 		"PROJECT_UNKNOWN": {edit("PROJECT_UNKNOWN", func(s *secrets.LocalSecret) { s.Tags[policy.TagRequesters] = "unregistered/OSSV" }), policy.ReasonRequestersMalformed},

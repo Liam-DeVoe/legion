@@ -9,13 +9,13 @@ body: |-
   narrowing past the cap, a repository outside it or `--github-read-only` on a secret whose
   permissions the cap fixes, is refused `NARROWING_REFUSED` before GitHub is asked. New refusal
   reasons: `github-repositories-malformed`, `github-permissions-malformed`, `github-cap-type` and
-  `github-repositories-owners`.
+  `github-cap-owners`.
 
   A `requesters` entry can name one Dispatch project's pods of a service, `<service>/<PROJECT>`
-  (`legion-daemon/OSSV`). A pod's project is the one `BROKER_EXCHANGE_ACCOUNTS` maps its own
-  account to, or the account whose token login enrolled it while `BROKER_SERVICE_LOGINS` names
-  that account for the pod's service; a pod the two map to different projects, and every session,
-  has none. A broker from before this release refuses a secret carrying such an entry as
+  (`legion-daemon/OSSV`). A pod's project is the one `BROKER_EXCHANGE_ACCOUNTS` maps the account
+  whose token login enrolled it to, while `BROKER_SERVICE_LOGINS` names that account for the
+  pod's service; the pod's own account, where mapped, must agree. A pod whose launching login maps
+  to no project, and every session, has none. A broker from before this release refuses a secret carrying such an entry as
   `requesters-malformed`, so a rollback serves it to nobody: tag a secret with one only once this
   release is deployed, and the entry itself is the secret's rollback guard.
 custom:

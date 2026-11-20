@@ -501,24 +501,21 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 }
 
 // podProject is the one Dispatch project the deployment names for pod enrollment id, whose
-// verified service account account proves service, read through q: the projects
-// BROKER_EXCHANGE_ACCOUNTS maps account to (ProjectsForAccount), together with those it maps the
-// account whose token login enrolled the pod to (launcher_credentials.subject), the latter only
-// while BROKER_SERVICE_LOGINS still names that account for service (ServiceLogins). Every public
-// Legion project's pods run as the one account legion-worker, which no entry maps, and each
-// project's daemon logs in as an account of its own, which its entry maps to its project, so the
-// daemon's account is what names the project of the pods it launches; a pod running as its
-// project's own account (legion-ossv-worker) is named by that account too. It answers "" where
-// the two together name no project or more than one, so a pod one project's daemon launched as
-// another project's account belongs to neither. With no ProjectsForAccount it answers "" and reads
-// nothing.
+// verified service account account proves service, read through q. The account whose token login
+// enrolled the pod (launcher_credentials.subject), while BROKER_SERVICE_LOGINS still names it for
+// service (ServiceLogins), must map to exactly one project in BROKER_EXCHANGE_ACCOUNTS
+// (ProjectsForAccount), and that is the pod's project; where the pod's own account maps too, it
+// must map to that same project. Every public Legion project's pods run as the one account
+// legion-worker, which no entry maps, and each project's daemon logs in as an account of its own,
+// which its entry maps to its project, so the daemon's account is what names the project of the
+// pods it launches. It answers "" for a pod enrolled under a credential that names no subject (a
+// login a person approved), under a login the deployment no longer names for the service, under a
+// login that maps to no project or to several (a standing workload's, or a proof's), and for a pod
+// one project's daemon launched as another project's account: the pod's own account never stands
+// in for the launcher. With no ProjectsForAccount it answers "" and reads nothing.
 func (m *Machine) podProject(ctx context.Context, q querier, id, account, service string) (string, error) {
 	if m.ProjectsForAccount == nil {
 		return "", nil
-	}
-	var projects []string
-	if mapped, ok := m.ProjectsForAccount(account); ok {
-		projects = append(projects, mapped...)
 	}
 	rows, err := q.Query(ctx, `select c.subject from enrollments e join launcher_credentials c on c.id = e.launcher_credential_id where e.id=$1 and c.subject is not null`, id)
 	if err != nil {
@@ -528,19 +525,18 @@ func (m *Machine) podProject(ctx context.Context, q querier, id, account, servic
 	if err != nil {
 		return "", err
 	}
-	for _, launcher := range launchers {
-		if m.ServiceLogins[launcher] != service {
-			continue
-		}
-		if mapped, ok := m.ProjectsForAccount(launcher); ok {
-			projects = append(projects, mapped...)
-		}
+	if len(launchers) != 1 || m.ServiceLogins[launchers[0]] != service {
+		return "", nil
 	}
-	slices.Sort(projects)
-	if projects = slices.Compact(projects); len(projects) == 1 {
-		return projects[0], nil
+	launched, ok := m.ProjectsForAccount(launchers[0])
+	if slices.Sort(launched); !ok || len(slices.Compact(launched)) != 1 {
+		return "", nil
 	}
-	return "", nil
+	project := launched[0]
+	if own, ok := m.ProjectsForAccount(account); ok && slices.ContainsFunc(own, func(p string) bool { return p != project }) {
+		return "", nil
+	}
+	return project, nil
 }
 
 // Create verifies the request object (record.VerifyRequestObject, jti replay through the Replay

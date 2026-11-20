@@ -38,6 +38,7 @@ const (
 	legionInfraWorker = "system:serviceaccount:legion:legion-infra-worker"
 	legionOssvDaemon  = "system:serviceaccount:legion:legion-ossv-daemon"
 	legionInfraDaemon = "system:serviceaccount:legion:legion-infra-daemon"
+	legionProof       = "system:serviceaccount:legion:legion-stage4a-proof"
 	legionDaemon      = "legion-daemon"
 )
 
@@ -68,7 +69,7 @@ func projectFixture(t *testing.T) (*Machine, *[]secrets.MintRequest) {
 		Store: st, Policy: policytest.Current(t, local, legionDaemon), Secrets: policytest.Store(local),
 		PendingTTL: 12 * time.Hour, Audience: testAudience, Skew: time.Minute, Replay: replayer(st),
 		ServicesByAccount: map[string]string{legionWorker: legionDaemon, legionOssvWorker: legionDaemon, legionInfraWorker: legionDaemon},
-		ServiceLogins:     map[string]string{legionOssvDaemon: legionDaemon, legionInfraDaemon: legionDaemon},
+		ServiceLogins:     map[string]string{legionOssvDaemon: legionDaemon, legionInfraDaemon: legionDaemon, legionProof: legionDaemon},
 		ProjectsForAccount: func(account string) ([]string, bool) {
 			project, ok := projects[account]
 			if !ok {
@@ -153,6 +154,9 @@ func TestAProjectsPodsAloneGetTheCappedToken(t *testing.T) {
 		{"a legion-worker pod INFRA's daemon launched", legionInfraDaemon, legionWorker},
 		{"an INFRA-account pod OSSV's daemon launched", legionOssvDaemon, legionInfraWorker},
 		{"a pod whose daemon's login is not configured", "system:serviceaccount:legion:legion-bet-daemon", legionWorker},
+		// A login of the service that maps to no project (a live proof's) cannot hand a pod the
+		// project its own account maps to: the launcher's project is what names the pod's.
+		{"an OSSV-account pod a project-less login launched", legionProof, legionOssvWorker},
 	} {
 		t.Run(pod.name, func(t *testing.T) {
 			*minted = nil

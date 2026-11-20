@@ -44,6 +44,8 @@ func TestGitHubAppMintSendsTheSecretsCapToGitHub(t *testing.T) {
 	}{
 		{"no narrowing", cappedMint(value, nil), false},
 		{"the owner alone", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada"}), false},
+		// An empty list names no repository, as nil does: it takes the cap's, never every one.
+		{"an empty repository list", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{}}), false},
 		{"the cap's repository", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada", Repositories: []string{"Proofs"}}), false},
 		{"a check", cappedMint(value, &secrets.GitHubNarrowing{Owner: "ada"}), true},
 	} {

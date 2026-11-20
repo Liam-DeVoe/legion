@@ -155,7 +155,10 @@ func (c GitHubCap) narrow(narrowing *GitHubNarrowing, owners []string, appID str
 	if narrowing != nil {
 		capped = *narrowing
 	}
-	if len(c.Repositories) > 0 && capped.Repositories == nil {
+	// An empty list names no repository as surely as a nil one does, so either takes the cap's
+	// repositories: GitHub reads a body with no repositories as every repository of the
+	// installation.
+	if len(c.Repositories) > 0 && len(capped.Repositories) == 0 {
 		capped.Repositories = slices.Clone(c.Repositories)
 	}
 	if len(c.Permissions) > 0 {

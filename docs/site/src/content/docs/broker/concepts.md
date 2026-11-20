@@ -394,7 +394,7 @@ marked with tags or annotations:
   revokes it. A caller's narrowing must fit inside the cap: a repository outside it, or
   `--github-read-only` on a secret whose permissions the cap fixes, is refused
   `NARROWING_REFUSED` before GitHub is asked; a release with no narrowing gets the capped token.
-  A secret carrying `github-repositories` lists exactly one owner (`github-repositories-owners`).
+  A capped secret lists exactly one owner (`github-cap-owners`), since a capped release mints for one installation.
   A comma, an empty list, a name written with its owner, a repository named twice, a permission
   named twice, or an entry of another shape or level is refused `github-repositories-malformed`
   or `github-permissions-malformed`. No `agent-secrets` flag writes either tag: the program that
@@ -404,11 +404,12 @@ marked with tags or annotations:
   at all: people by the lowercase email they sign in with, services by the name the deployment
   registers them under, and a service's pods of one Dispatch project as `<service>/<PROJECT>`,
   separated by spaces (`ada@example.com legion-daemon legion-daemon/OSSV`). A pod's project is the
-  one `BROKER_EXCHANGE_ACCOUNTS` maps its own account to, or the account whose token login
-  enrolled it while `BROKER_SERVICE_LOGINS` still names that account for the pod's service: every
-  Legion project's issue pods run as one account, and each project's daemon logs in as its own,
-  so the daemon's account names the project of the pods it launches. A pod the two map to
-  different projects has none, and a session has none. A session whose
+  one `BROKER_EXCHANGE_ACCOUNTS` maps the account whose token login enrolled it to, while
+  `BROKER_SERVICE_LOGINS` still names that account for the pod's service: every Legion project's
+  issue pods run as one account, and each project's daemon logs in as its own, so the daemon's
+  account names the project of the pods it launches. Where the pod's own account is mapped too,
+  it must name the same project. A pod enrolled under a login that maps to no project, or under a
+  credential a person approved, has none, and so does every session. A session whose
   person the list does not name, and a pod whose service (or service and project) it does not
   name, is denied `requester-not-listed`. A comma, a list that names nobody, an email with a
   capital letter, a service the deployment does not register, or a project that is no project key
@@ -580,8 +581,8 @@ whose `requesters` are not its one person owner, or that lists a service where i
 (`requesters-not-owner`), a `scopes` list the broker cannot read (`scopes-malformed`), a `scopes`
 tag on any other type (`scopes-type`), a `github-repositories` or `github-permissions` tag the
 broker cannot read (`github-repositories-malformed`, `github-permissions-malformed`), either on a
-secret that is not a `github-app` one (`github-cap-type`), a `github-repositories` tag beside more
-than one `github-owners` login (`github-repositories-owners`), a malformed
+secret that is not a `github-app` one (`github-cap-type`), either tag beside a `github-owners`
+naming other than one login (`github-cap-owners`), a malformed
 `max-grant`, a name that is not in the form above, a secret encrypted with any key but the
 agent-secrets key, the AWS-managed key included, a secret with no current value (created without
 one, so none of its versions carries the `AWSCURRENT` label), or a type secret whose stored value

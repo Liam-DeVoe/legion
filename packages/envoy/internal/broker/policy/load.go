@@ -139,9 +139,9 @@ const (
 	// github-permissions tag (TagRules). No other minter reads either, so the tag would cap
 	// nothing while saying it had.
 	ReasonGitHubCapType = "github-cap-type"
-	// ReasonGitHubRepositoriesOwners: a secret carries a github-repositories tag and its
-	// github-owners tag names other than exactly one account (TagRules).
-	ReasonGitHubRepositoriesOwners = "github-repositories-owners"
+	// ReasonGitHubCapOwners: a secret carries a github-repositories or github-permissions tag and
+	// its github-owners tag names other than exactly one account (TagRules).
+	ReasonGitHubCapOwners = "github-cap-owners"
 	// ReasonDefaultGrantMalformed: default-grant is set to anything but "session".
 	ReasonDefaultGrantMalformed = "default-grant-malformed"
 	// ReasonRequestersMalformed: the requesters tag holds a comma, names nobody, names a person
