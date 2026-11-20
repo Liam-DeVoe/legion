@@ -651,6 +651,29 @@ var ErrUnknownSecret = errors.New("no agent secret has this name")
 // the secret, never as unknown.
 var ErrPendingValue = errors.New("exists and awaits its first value; ask again after its owner stores it")
 
+// ErrServedOnlyAsProfiles is a request for a source by its own name while profiles of other names
+// use it (Set.ProfilesOf) and none holds that name: the source is served only through them, so no
+// caller gets the whole credential by the source's name. Evaluate's error lists those profiles.
+var ErrServedOnlyAsProfiles = errors.New("is served only through its profiles")
+
+// ErrProfileRefused is a request for a name the profiles file decides and the policy refuses: a
+// profile that failed against its source, or a github-app secret no profile names
+// (ReasonGitHubAppNoProfile). Evaluate's error gives the reason and its detail.
+var ErrProfileRefused = errors.New("is refused by the profiles file")
+
+// notServed is Evaluate's error for a name the set does not serve for a reason the profiles file
+// gives. errors.Is matches its kind, ErrServedOnlyAsProfiles or ErrProfileRefused, and
+// ErrUnknownSecret too: the name is one no secret the policy serves carries, so a caller that
+// answers every such name alike - a release's re-check of a live grant, an approval's - answers
+// these alike, and one that tells them apart (the request route) asks for the kind first.
+type notServed struct {
+	kind error
+	text string
+}
+
+func (e *notServed) Error() string   { return e.text }
+func (e *notServed) Unwrap() []error { return []error{e.kind, ErrUnknownSecret} }
+
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
 // the one that does is scheduled for deletion. It is not a refusal, so it is never in
 // Set.Refused nor written as RefusedMessage: a reread of a name nobody created adds no
@@ -698,11 +721,15 @@ type Secret struct {
 	// administrator's, which the rules hold to human tier, a requesters list and an hour's cap
 	// (TagRules).
 	Admin bool
-	// AirlockDigest is the fingerprint of this secret's entry in the airlock's rules file
-	// (airlock.Rules.Digest), and "" for a secret the rules do not name or a deployment with no
-	// rules file. A string, not a pointer, for the same reason as MaxGrant. It is in Version, so
-	// a change to one secret's entry moves the policy version and ends the grants of that name.
-	AirlockDigest string
+	// ProfileDigest is the fingerprint of the profile this secret is served as (Profiles.Digest),
+	// and "" for a stored secret served by its own name. A string, not a pointer, for the same
+	// reason as MaxGrant. It is in Version, so an edit of one profile's entry moves the policy
+	// version and ends the grants of that name (requests.Machine's checkRelease).
+	ProfileDigest string
+	// Profile is the profiles file's entry this secret is served as, and nil for a stored secret
+	// served by its own name. It points into the one Profiles the boot read, which never changes,
+	// so a Secret stays comparable and two publishes of one profile hold the same pointer.
+	Profile *Profile
 	// SessionDefault is true when the secret's default-grant tag is "session": a request naming
 	// no lifetime gets a grant that lasts until its session ends instead of DefaultGrantLifetime.
 	SessionDefault bool
@@ -787,13 +814,14 @@ func (secret Secret) approver() string {
 // Set is the policy as one load read it, or as a single name's reread left it (NewSet builds both).
 type Set struct {
 	// Version is the SHA-256 of every served secret's name, owner, tier, source, max-grant,
-	// github-owners, requesters, scopes and admin, and of the fingerprint of each one's
-	// airlock entry: equal versions are equal policies. A request records the version it was
-	// decided under, so a live grant is re-evaluated only once the policy changed.
+	// github-owners, requesters, scopes and admin, and of the fingerprint of each profile it
+	// serves: equal versions are equal policies. A request records the version it was decided
+	// under, so a live grant is re-evaluated only once the policy changed.
 	Version string
 	Secrets map[string]Secret
 	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
-	// name in the store (the name its RefusedMessage line carries), with why. It is not in
+	// name in the store (the name its RefusedMessage line carries), and every profile it refuses,
+	// keyed "profile:" and the profile's name (profileKey), with why. It is not in
 	// Version: a refused secret is served to nobody, so a refusal that comes, goes or changes its
 	// reason re-evaluates no live grant the served secrets did not already move. Current compares
 	// it with the set before to write the state-change lines, and broker_unservable_secrets
@@ -809,6 +837,17 @@ type Set struct {
 	// each version and type it has not decoded, and refuses the secret only when the decoder does
 	// (ReasonValueMalformed).
 	versions map[string]string
+	// ProfilesOf is, for each source a profile of another name uses, those profiles' names, in the
+	// profiles file's order, whether they pass or fail: such a source is served only through them,
+	// so Evaluate refuses its own name, naming them (ErrServedOnlyAsProfiles), unless a profile
+	// holds that name too. It is nil for a set no profiles were applied to (Profiles.apply).
+	ProfilesOf map[string][]string
+	// profileRefused is, for each name a request may ask for that the set refuses because of the
+	// profiles file, its refusal as Refused holds it: each failed profile's name, and each
+	// github-app secret no profile names (ReasonGitHubAppNoProfile). Evaluate answers it
+	// ErrProfileRefused. Refused itself is keyed by store id, which Evaluate, holding no prefix,
+	// cannot form.
+	profileRefused map[string]Refusal
 }
 
 // ValueVersion is the version of the type secret name's value as s lists it, and "" for a name s
@@ -821,8 +860,14 @@ type Refusal struct {
 	// Reason is one of the Reason* refusal constants.
 	Reason string
 	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
-	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
+	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows. A
+	// profile's is its source's, "" when the source is not one the store holds.
 	Owner string
+	// Detail says which part of a profile, or of the store's secret beside it, a profile reason
+	// is about (the source's own reason, the account a github block names that the source does
+	// not), and is "" for every reason that is a secret's own tag's. RefusedMessage writes it as
+	// detail.
+	Detail string
 }
 
 // Pending is one secret under the prefix waiting for its first value (ReasonPendingValue), as a
@@ -850,10 +895,10 @@ func setOf(secrets map[string]Secret, refused map[string]Refusal, pending map[st
 // them adds the first two, as a fifth field (time.Duration's form, 0s for none) and a sixth
 // (empty for none), and then ends its line with "\trequesters=<list>", "\tscopes=<list>" and
 // "\tadmin=true", in that order, for each of those three it carries. A
-// secret the airlock's rules name adds one line more, "<Name>\tairlock=<digest>\n", rather than a
-// field of the line above it, so every line a deployment with no rules file writes is
-// byte-identical to the one it writes
-// today and its Version does not shift. Entries are ascending by the secret's name in the store
+// secret served as a profile adds one line more, "<Name>\tprofile=<digest>\n", rather than a
+// field of the line above it, so every line a stored secret served by its own name writes is
+// byte-identical to the one it wrote before profiles existed, and its Version does not shift.
+// Entries are ascending by the secret's name in the store
 // (the slug) — the exact order Load wrote before NewSet existed, so deployed plain-secret digests
 // do not shift. (Sorting by the uppercased Name would NOT be equivalent: '-' is 0x2D, '_' is
 // 0x5F, so "a-b" < "a0" as slugs but "A0" < "A_B" as Names.)
@@ -889,8 +934,8 @@ func NewSet(secrets map[string]Secret) *Set {
 		default:
 			fmt.Fprintf(digest, "%s\t%s\t%s\t%s\t%s\t%s%s%s%s\n", s.secret.Name, s.secret.Owner, s.secret.Tier, s.secret.Source, s.secret.MaxGrant, s.secret.GitHubOwners, requesters, scopes, admin)
 		}
-		if s.secret.AirlockDigest != "" {
-			fmt.Fprintf(digest, "%s\tairlock=%s\n", s.secret.Name, s.secret.AirlockDigest)
+		if s.secret.ProfileDigest != "" {
+			fmt.Fprintf(digest, "%s\tprofile=%s\n", s.secret.Name, s.secret.ProfileDigest)
 		}
 	}
 	return &Set{Version: hex.EncodeToString(digest.Sum(nil)), Secrets: secrets}
@@ -955,21 +1000,24 @@ const ReasonNoReason = "a reason is necessary; ask again with --reason"
 // policy's to see.
 const ReasonSignInOff = "a person must approve it, and this broker signs nobody in (BROKER_SIGNIN=off)"
 
-// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret. A secret
-// whose requesters are listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every
-// requester the list does not name, before owner and tier are read at all. A name withheld from r
-// (Requester.Withheld) is decided as a human-tier secret: what r would have got at once is an
-// approval request to the owner, or to anyone for a shared secret, and a service's own secret,
-// which no person approves, is denied.
+// Evaluate answers r's ask for name. A name the set does not serve is ErrUnknownSecret, or, where
+// the profiles file says why, ErrProfileRefused for a profile that failed or a github-app secret
+// no profile names, and ErrServedOnlyAsProfiles for a source profiles of other names use, each
+// naming what the caller asks for instead or why (notServed). A secret whose requesters are
+// listed (Secret.Requesters) is denied, ReasonRequesterNotListed, to every requester the list
+// does not name, before owner and tier are read at all. A name withheld from r
+// (Requester.Withheld), or a profile whose source is, is decided as a human-tier secret: what r
+// would have got at once is an approval request to the owner, or to anyone for a shared secret,
+// and a service's own secret, which no person approves, is denied.
 func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 	secret, ok := s.Secrets[name]
 	if !ok {
-		return Decision{}, ErrUnknownSecret
+		return Decision{}, s.unservedError(name)
 	}
 	if secret.Requesters != "" && !secret.lists(r) {
 		return Decision{Outcome: Deny, Reason: ReasonRequesterNotListed, Source: secret.Source}, nil
 	}
-	withheld := slices.Contains(r.Withheld, name)
+	withheld := slices.Contains(r.Withheld, name) || (secret.Profile != nil && slices.Contains(r.Withheld, secret.Profile.Source))
 	d := Decision{Source: secret.Source}
 	switch {
 	case secret.ownership == ownerService:
@@ -983,4 +1031,21 @@ func (s *Set) Evaluate(name string, r Requester) (Decision, error) {
 		d.Outcome, d.Approver = Approval, secret.approver()
 	}
 	return d, nil
+}
+
+// unservedError is Evaluate's error for name, which s does not serve: the refusal the profiles file
+// gives it, with its reason and detail; the profiles to ask for in its place; or
+// ErrUnknownSecret.
+func (s *Set) unservedError(name string) error {
+	if refusal, refused := s.profileRefused[name]; refused {
+		why := refusal.Reason
+		if refusal.Detail != "" {
+			why += " (" + refusal.Detail + ")"
+		}
+		return &notServed{kind: ErrProfileRefused, text: name + " " + ErrProfileRefused.Error() + ": " + why}
+	}
+	if profiles := s.ProfilesOf[name]; len(profiles) > 0 {
+		return &notServed{kind: ErrServedOnlyAsProfiles, text: name + " " + ErrServedOnlyAsProfiles.Error() + ": ask for " + strings.Join(profiles, " or ")}
+	}
+	return ErrUnknownSecret
 }

@@ -131,8 +131,8 @@ type grantRelease struct {
 // it, every granted name under the login that decided it, or, for a grant the model judge
 // decided, under the judge the rules still give that name (stillAllowed), that no granted name's
 // max-grant is now shorter than the lifetime the grant's request signed (overMaxGrant), and that
-// no granted name's airlock entry has changed since the request recorded its fingerprint, which
-// ends the grant for good.
+// no granted name's profile has changed since the request recorded its fingerprint, which ends
+// the grant for good.
 //
 // For a person's pod, the session is the pod as requester reads it now. When the setting no
 // longer maps the pod's account to its person, an automatic grant the pod got as that person is
@@ -213,16 +213,16 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 			if limit, over := overMaxGrant(set, g.name, lifetime); over {
 				return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %w: %s now allows grants of at most %s", ErrGrantNotLive, ErrGrantRequiresLifetime, g.name, limit))
 			}
-			// A name whose airlock entry is not the one its request recorded ends this grant
-			// for good: what was granted was decided under the old entry, so putting the entry
+			// A name whose profile is not the one its request recorded ends this grant for
+			// good: what was granted was decided under the old entry, so putting the entry
 			// back does not bring the grant back. The comparison is per name, so only the
 			// grants an entry's change affects end. It sits inside this block because an
 			// entry's change moves the policy version (policy.NewSet folds the fingerprint
 			// in), so the block runs whenever any entry changed and the common path pays
 			// nothing for this. During a roll the two pods may read different files for a
 			// moment; a grant the one with the newer file ends is simply asked for again.
-			if held := set.Secrets[g.name].AirlockDigest; held != g.airlockDigest {
-				return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's airlock entry changed since this grant was decided", ErrGrantNotLive, g.name))
+			if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
+				return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, g.name))
 			}
 		}
 	}
@@ -442,7 +442,7 @@ const GrantEndedActor = "broker:release-recheck"
 // row naming GrantEndedActor and why (reason's text), then answers reason, an ErrGrantNotLive. A
 // release ends a grant this way when what it was granted cannot come back: its frozen source is
 // not the one served now (a type change), its lifetime is longer than the secret's max-grant
-// now, or the name's airlock entry is not the one the request recorded. A secret the policy
+// now, or the name's profile is not the one the request recorded. A secret the policy
 // merely stops serving (no value, a malformed tag) pauses its grants instead, which release
 // again once it is served. A grant another writer revoked first is left as it is, with no second
 // audit row.
@@ -573,8 +573,9 @@ func trimmedValue(value, name string) string {
 
 // requestedSecret is one name a request asked for that the policy did not deny when the request
 // was made: the secret it froze (source), the decision the policy gave it then, and the
-// fingerprint of its airlock entry then (airlockDigest, "" for a name the rules do not name).
-type requestedSecret struct{ name, source, decision, airlockDigest string }
+// fingerprint of the profile it was served as then (profileDigest, from the column
+// airlock_digest; "" for a stored secret served by its own name).
+type requestedSecret struct{ name, source, decision, profileDigest string }
 
 // requestedSecrets reads request requestID's names that the policy did not deny, in name order:
 // what a granted request's grant releases (Values, reuseLiveGrant), and what a pending request
@@ -588,7 +589,7 @@ func requestedSecrets(ctx context.Context, q querier, requestID string) ([]reque
 	var requested []requestedSecret
 	for rows.Next() {
 		var g requestedSecret
-		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.airlockDigest); err != nil {
+		if err := rows.Scan(&g.name, &g.source, &g.decision, &g.profileDigest); err != nil {
 			return nil, err
 		}
 		requested = append(requested, g)

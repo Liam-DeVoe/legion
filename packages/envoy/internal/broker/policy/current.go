@@ -21,7 +21,9 @@ import (
 // listing neither undoes what a single-name read settled nor undoes a change that reload's own
 // re-describe caught. Each set it makes live is compared with the live one before it (publish),
 // and only a change of a secret's state writes a line: a load that finds what the one before
-// found writes nothing, however often it runs.
+// found writes nothing, however often it runs. Every set it makes live has the deployment's
+// profiles applied to what the store holds (withhold, Profiles.apply), and its first writes
+// ProfilesAppliedMessage.
 //
 // It also reads each type secret's stored value, once for each version and type a load or
 // reread lists that this pod has not decoded together, and decodes it with secrets.ParseValue
@@ -256,7 +258,13 @@ var ErrValueUnchecked = errors.New("the reread merged the secret's tags, and its
 //
 // A type secret whose value this pod has not decoded at the version and type the reread
 // lists is then read and decoded (readValues), on ctx, and the answer is the policy's after that:
-// a served secret whose value is refused answers ReasonValueMalformed. The value read waits for
+// a served secret the live policy refuses answers that refusal, ReasonValueMalformed for a value
+// refused, or a reason of the profiles file's (ReasonGitHubAppNoProfile, ReasonProfileNameTaken).
+// A stored secret profiles of other names use answers as the store holds it, served, since what
+// a reread tells its caller is whether the write it made took; a request names one of its
+// profiles. A profile's name (Profiles.Lookup) rereads the profile's source, which is the secret
+// the store holds for it, and answers the profile as the live policy then serves or refuses it.
+// The value read waits for
 // the writer lock to record that read only while ctx lives, and records nothing once ctx has
 // ended: a caller may be waiting on it, and a reread nobody waits on is bounded by ctx's own
 // deadline. When ctx ends before that read is recorded - its Store.Read cut
@@ -273,19 +281,39 @@ func (c *Current) RefreshOne(ctx context.Context, name string) (Lookup, error) {
 	if err := c.CheckName(name); err != nil {
 		return Lookup{}, err
 	}
-	lk, reads, err := c.reread(ctx, name)
+	// A profile's name is no secret in the store: the secret a reread of it reads is its source,
+	// and the answer is the profile as the policy then serves or refuses it.
+	read, profile := name, c.loader.Profiles.Lookup(name)
+	if profile != nil {
+		read = profile.Source
+	}
+	lk, reads, err := c.reread(ctx, read)
 	if err != nil {
 		return Lookup{}, err
 	}
 	if err := c.readValues(ctx, ctx, reads, false); err != nil {
 		return Lookup{}, fmt.Errorf("%w: %w", ErrValueUnchecked, err)
 	}
+	live := c.Get()
+	if profile != nil {
+		return profileLookup(live, name), nil
+	}
 	if lk.Served {
-		if refusal := c.Get().Refused[c.storeID(name)]; refusal.Reason == ReasonValueMalformed {
+		if refusal, refused := live.Refused[c.storeID(name)]; refused {
 			return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
 		}
 	}
 	return lk, nil
+}
+
+// profileLookup is the Lookup of the profile name as set holds it: served, as the Secret its
+// source makes and at its source's value version, or refused, with that refusal.
+func profileLookup(set *Set, name string) Lookup {
+	if secret, served := set.Secrets[name]; served {
+		return Lookup{Secret: secret, Served: true, version: set.versions[name]}
+	}
+	refusal := set.Refused[profileKey(name)]
+	return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}
 }
 
 // reread is RefreshOne up to its value read, under the writer lock: the reread, its merge into
@@ -530,6 +558,12 @@ func (c *Current) readValues(ctx, wait context.Context, reads []valueRead, first
 // lives, the release's own request: one whose caller has gone marks nothing, and the next mint of
 // the secret, or the next load that reads a new version, marks it then.
 func (c *Current) RefuseValue(ctx context.Context, name, version, secretType string) {
+	// A profile has no value of its own: what a release of it decoded is its source's, so the
+	// refusal is the source's, as a load's would be, and every profile of the source is refused
+	// with it (withhold).
+	if profile := c.loader.Profiles.Lookup(name); profile != nil {
+		name = profile.Source
+	}
 	if c.lock(ctx) != nil {
 		return
 	}
@@ -547,8 +581,12 @@ func (c *Current) RefuseValue(ctx context.Context, name, version, secretType str
 
 // withhold is base as Current serves it: each type secret whose value is refused
 // (valueState.refused) taken out of Secrets and put in Refused under ReasonValueMalformed, with
-// its owner tag. With none refused it is base itself. The caller holds mu.
+// its owner tag, and then the profiles applied (Profiles.apply), with none refused too, so every
+// set the four publishes make live (reload, reread, readValues and RefuseValue) holds them, and a
+// profile of a source whose value is refused is refused with that source's reason. The caller
+// holds mu.
 func (c *Current) withhold() *Set {
+	set := c.base
 	var served map[string]Secret
 	var refused map[string]Refusal
 	for name, state := range c.values {
@@ -564,10 +602,10 @@ func (c *Current) withhold() *Set {
 		delete(served, name)
 		refused[c.storeID(name)] = Refusal{Reason: ReasonValueMalformed, Owner: secret.Owner}
 	}
-	if served == nil {
-		return c.base
+	if served != nil {
+		set = setOf(served, refused, c.base.Pending, c.base.versions)
 	}
-	return setOf(served, refused, c.base.Pending, c.base.versions)
+	return c.loader.Profiles.apply(set, c.loader.Prefix)
 }
 
 // publish makes next the live policy, first writing a line for each secret whose state next
@@ -583,11 +621,16 @@ func (c *Current) withhold() *Set {
 // write nothing, nor does its value landing, since a secret coming to be served writes no line,
 // nor its leaving the store. A secret refused for the reason live held writes nothing, whatever its
 // owner tag now says: next carries the new tag, and broker_unservable_secrets with it. A publish
-// that changes no refusal and no wait allocates nothing here.
+// that changes no refusal and no wait allocates nothing here. A refused profile is named by its
+// key (profileKey), and a refusal with a Detail writes it as detail.
+//
+// The first publish of c, the one with no live set before it, writes ProfilesAppliedMessage after
+// those lines, once: c is the process's one policy, so that is once per process.
 func (c *Current) publish(next *Set, first bool) {
 	var before map[string]Refusal
 	var waited map[string]Pending
-	if live := c.set.Load(); live != nil {
+	live := c.set.Load()
+	if live != nil {
 		before, waited = live.Refused, live.Pending
 	}
 	var changed []string
@@ -615,9 +658,9 @@ func (c *Current) publish(next *Set, first bool) {
 		pending, waits := next.Pending[id]
 		switch {
 		case refused && !wasRefused:
-			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", first)
+			slog.Error(RefusedMessage, refusedAttrs(id, now, first, "")...)
 		case refused:
-			slog.Error(RefusedMessage, "name", id, "reason", now.Reason, "owner", now.Owner, "first_load", false, "was", was.Reason)
+			slog.Error(RefusedMessage, refusedAttrs(id, now, false, was.Reason)...)
 		case waits && !wasRefused:
 			slog.Info(PendingMessage, "name", id, "reason", ReasonPendingValue, "owner", pending.Owner, "first_load", first)
 		case waits:
@@ -628,13 +671,48 @@ func (c *Current) publish(next *Set, first bool) {
 			slog.Info(ServableMessage, "name", id, "reason", was.Reason, "owner", was.Owner, "now", "absent")
 		}
 	}
+	if live == nil {
+		c.profilesApplied(next)
+	}
 	c.set.Store(next)
 }
 
-// serves reports whether set serves the secret whose whole name in the store is id. One outside
-// the prefix, or whose name under it is no slug (ReasonNameMalformed), maps to no name a session
-// asks for, so it is served by no set and never taken for the secret its name would fold onto.
+// refusedAttrs are RefusedMessage's fields for the refusal of id: name, reason, owner, first_load,
+// was where the reason before it is not "", and detail where the refusal carries one.
+func refusedAttrs(id string, refusal Refusal, first bool, was string) []any {
+	attrs := []any{"name", id, "reason", refusal.Reason, "owner", refusal.Owner, "first_load", first}
+	if was != "" {
+		attrs = append(attrs, "was", was)
+	}
+	if refusal.Detail != "" {
+		attrs = append(attrs, "detail", refusal.Detail)
+	}
+	return attrs
+}
+
+// profilesApplied writes ProfilesAppliedMessage for next, the first set c makes live: how many
+// of the profiles file's entries it serves and how many it refuses, and the file's digest.
+func (c *Current) profilesApplied(next *Set) {
+	served, refused := 0, 0
+	for _, name := range c.loader.Profiles.Names() {
+		if _, held := next.Refused[profileKey(name)]; held {
+			refused++
+		} else if next.Secrets[name].Profile != nil {
+			served++
+		}
+	}
+	slog.Info(ProfilesAppliedMessage, "served", served, "refused", refused, "file_digest", c.loader.Profiles.fileDigest)
+}
+
+// serves reports whether set serves the secret whose whole name in the store is id, or, for a
+// profile's key (profileKey), the profile of that name. One outside the prefix, or whose name
+// under it is no slug (ReasonNameMalformed), maps to no name a session asks for, so it is served
+// by no set and never taken for the secret its name would fold onto.
 func (c *Current) serves(set *Set, id string) bool {
+	if name, profile := strings.CutPrefix(id, profileKeyPrefix); profile {
+		_, served := set.Secrets[name]
+		return served
+	}
 	slug, ok := strings.CutPrefix(id, c.loader.Prefix)
 	if !ok || !slugPattern.MatchString(slug) {
 		return false

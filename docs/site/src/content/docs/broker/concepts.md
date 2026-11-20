@@ -579,10 +579,27 @@ value once for each new version or type of the secret
 refused `UNKNOWN_SECRET` before anyone is asked to approve it, and a live grant of it releases
 nothing until the broker serves the secret again.
 
+The profiles file (`BROKER_PROFILES_FILE`) is applied to what the store holds at every load and
+reread: each profile that fits its source is served by its name, as its source's owner, value and
+type with the profile's own scope, and each that does not is refused alone, logged and counted as
+`profile:<NAME>`: `profile-source-missing` (its source is no secret the broker serves, or is
+another profile), `profile-name-taken` (a stored secret other than its source holds its name,
+which is refused by that name too), `profile-block-mismatch` (a `github` or `google` block that
+does not fit the source's type, `github-owners` or `scopes`), `profile-looser` (looser than the
+source in tier, `requesters` or `maxGrant`), `profile-needs-proxy` (no `proxy` block on a stored
+value, `google-login` or `azure-login` source), or a tag rule its own tags over its source's break,
+such as `admin-tier` for an agent-tier profile of an `admin` source. A source a profile of another
+name uses is served only through its profiles, and a `github-app` secret no profile names is
+refused by its own name (`github-app-no-profile`), so every GitHub App token the broker mints is a
+profile's. A session whose operator withheld a source asks for each profile of it as for a
+human-tier secret.
+
 The policy's **version** is the SHA-256 of every served secret's name, owner, tier, source, max
-grant, `requesters` list, `scopes` list and `admin` mark, recorded on every request. A type
-secret's source names its type, so a type change moves the version too, and so does any change to
-a list. A secret with no list writes the same bytes into the digest that it always did.
+grant, `requesters` list, `scopes` list and `admin` mark, and of the fingerprint of each profile it
+serves, recorded on every request. A type secret's source names its type, so a type change moves
+the version too, and so does any change to a list or to a profile's entry, which ends that
+profile's grants. A secret with no list and no profile writes the same bytes into the digest that
+it always did.
 
 ### A person's pod
 
@@ -629,7 +646,11 @@ The broker evaluates every name
 - A name the policy does not serve, even after the reread above, refuses the whole request with
   `UNKNOWN_SECRET`, and nothing is recorded. A secret `agent-secrets secret create` made and has not
   yet filled, in the ten minutes it waits for its value, refuses the request with `PENDING_VALUE`
-  instead, which is not final: ask again once its owner has stored the value.
+  instead, which is not final: ask again once its owner has stored the value. A source asked for
+  by its own name while a profile of another name uses it refuses the request with `403`
+  `SERVED_ONLY_AS_PROFILES`, naming the profiles to ask for instead, and a profile the broker
+  refuses, or a `github-app` secret no profile names, with `403` `PROFILE_REFUSED`, giving the
+  reason and its detail.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's
   secret, asked for by anyone but that service, is denied.
 - A request that reaches a person needs a reason. Where a name's answer would be an approval —
@@ -1110,8 +1131,8 @@ not bound. On an entry that lists methods and paths, a request carrying
 `X-HTTP-Method-Override`, `X-HTTP-Method` or `X-Method-Override` is refused the same way
 (`request carries a method override header`), because a service that honours one of those
 acts on the method the header names and not on the one the entry allowed.
-Each entry's own fingerprint is part of what a grant was decided under, so
-an edit to one secret's entry ends the grants that entry affects and no others.
+Each profile's own fingerprint, its whole entry but the guidance, is part of what a grant was
+decided under, so an edit to one profile's entry ends that profile's grants and no others.
 
 What the airlock does not stop is as much of the design as what it does:
 

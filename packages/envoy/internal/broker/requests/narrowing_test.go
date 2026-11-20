@@ -48,7 +48,7 @@ func usedAudits(t *testing.T, machine *Machine, grantID string) []map[string]any
 // and records no narrowing on the grant, so the narrowed token and the owner-wide one never stand
 // in for each other. Each release's audit row records the narrowing it applied.
 func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var got []*secrets.GitHubNarrowing
 	machine.Minters = map[string]Minter{
@@ -90,7 +90,7 @@ func TestANarrowedReleaseLeavesTheGrantOwnerWide(t *testing.T) {
 // that holds one, the narrowing reaches its github-app minter, and every other value is released
 // as it is.
 func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine,
 		requestTypeSecret("LOGIN_KEY", policy.TypeGoogleLogin, policy.TierAgent, ""),
 		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
@@ -141,7 +141,7 @@ func TestANarrowingOfAGrantWithNoGitHubAppSecretReleasesNothing(t *testing.T) {
 // the minter whose failure the operator acts on. The same grant narrowed to a listed account
 // releases, and so does its release with no narrowing.
 func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine,
 		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		policytest.Secret("PLAIN_KEY", fixtureOperator, policy.TierAgent, "plain-v1"),
@@ -178,7 +178,7 @@ func TestANarrowingToAnUnlistedOwnerReleasesNothing(t *testing.T) {
 // (secrets.ErrMintNarrowingRefused: GitHub's 422 to a narrowed token) reaches the caller as that
 // refusal and not as ErrMintFailed, the class whose ERROR line tells the operator to fix the App.
 func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	retag(t, machine, requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	machine.Minters = map[string]Minter{
 		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -204,7 +204,7 @@ func TestANarrowingTheMinterRefusesIsNotAMintFailure(t *testing.T) {
 // written. The same grant without a narrowing releases as it always did, and a grant the rules
 // do not name narrows as it always did.
 func TestANarrowingOfAGrantBehindTheAirlockReleasesNothing(t *testing.T) {
-	machine, enrollmentID, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("APP_KEY", "")}})
+	machine, enrollmentID, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("APP_KEY", "")}}, "APP_KEY", "OPEN_APP_KEY")
 	retag(t, machine,
 		requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),
 		requestTypeSecret("OPEN_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""),

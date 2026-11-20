@@ -117,7 +117,7 @@ func (m *Machine) checkNarrowing(ctx context.Context, enr enrollmentRow, names [
 	// the rule that could answer one of them differently.
 	requested := make([]requestedSecret, 0, len(e.decisions))
 	for _, d := range e.decisions {
-		requested = append(requested, requestedSecret{name: d.Name, source: d.Source, decision: d.Decision, airlockDigest: d.AirlockDigest})
+		requested = append(requested, requestedSecret{name: d.Name, source: d.Source, decision: d.Decision, profileDigest: d.ProfileDigest})
 	}
 	if name, err := m.narrowingRefusal(set, requested, narrowing); err != nil {
 		refusedBeforeApproval(enr.ID, name, err)

@@ -136,13 +136,22 @@ func insertEnrollment(t *testing.T, st *store.Store, kind, runtimeID string, ope
 // record.Sign), and the login DEEL_API_KEY's records name as approver (its owner, the operator).
 func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
 	t.Helper()
+	return newAppFixture(t)
+}
+
+// newAppFixture is newFixture whose deployment serves each of apps, a github-app secret the test
+// stores, through a profile of its own name (policytest.AppProfile), as the broker serves every
+// App it releases: one no profile names is refused (policy.ReasonGitHubAppNoProfile). With no apps
+// the deployment has no profiles file.
+func newAppFixture(t *testing.T, apps ...string) (m *Machine, enrollmentID string, requesterKey *ecdsa.PrivateKey, approver string) {
+	t.Helper()
 	st := storetest.Open(t)
 	local := secrets.NewLocal(fixtureSecrets()...)
 	enrollmentID, requesterKey = newEnrollment(t, st, "session", "box-a-"+t.Name(), new(fixtureOperator), nil)
 
 	m = &Machine{
 		Store:             st,
-		Policy:            policytest.Current(t, local, fixtureService),
+		Policy:            appCurrent(t, local, apps...),
 		Secrets:           policytest.Store(local),
 		PendingTTL:        12 * time.Hour,
 		Audience:          testAudience,
@@ -152,6 +161,20 @@ func newFixture(t *testing.T) (m *Machine, enrollmentID string, requesterKey *ec
 	}
 	m.Chain = NewChainVerifier(st, testAudience, time.Minute, m.Airlock)
 	return m, enrollmentID, requesterKey, fixtureOperator
+}
+
+// appCurrent is the live policy of local with fixtureService registered and, for each of apps, a
+// profile of that github-app secret's own name; with none, a deployment with no profiles file.
+func appCurrent(t *testing.T, local *secrets.Local, apps ...string) *policy.Current {
+	t.Helper()
+	if len(apps) == 0 {
+		return policytest.Current(t, local, fixtureService)
+	}
+	profiles := make([]string, len(apps))
+	for i, app := range apps {
+		profiles[i] = policytest.AppProfile(app)
+	}
+	return policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(profiles...), fixtureService)
 }
 
 // signRequest signs an agent_secret request object over names, ready for Machine.Create.

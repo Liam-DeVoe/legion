@@ -24,6 +24,12 @@ import (
 // value is a deployment with no profiles file, which holds no profile and no proxy block.
 type Profiles struct {
 	list []Profile
+	// digests is Digest of each profile of list, at the same index, computed once as the file is
+	// read, since every set Current makes live carries it (apply).
+	digests []string
+	// fileDigest is the SHA-256, in hex, of the file's bytes as ParseProfiles read them, and ""
+	// for the zero Profiles and for DecodeProfiles' answer. ProfilesAppliedMessage writes it.
+	fileDigest string
 }
 
 // Profile is one entry of the profiles file. A field the file leaves out is the source's: Source
@@ -143,7 +149,13 @@ func ParseProfiles(data []byte) (Profiles, error) {
 		}
 		seen[e.Name] = i
 	}
-	return readProfiles(entries)
+	profiles, err := readProfiles(entries)
+	if err != nil {
+		return Profiles{}, err
+	}
+	sum := sha256.Sum256(data)
+	profiles.fileDigest = hex.EncodeToString(sum[:])
+	return profiles, nil
 }
 
 // DecodeProfiles reads a profiles file as ParseProfiles does, into the same form, and holds it to
@@ -195,7 +207,11 @@ func readProfiles(entries []profileEntry) (Profiles, error) {
 		}
 		list = append(list, p)
 	}
-	return Profiles{list: list}, nil
+	digests := make([]string, len(list))
+	for i := range list {
+		digests[i] = digestOf(list[i])
+	}
+	return Profiles{list: list, digests: digests}, nil
 }
 
 // read is a github block in the form the broker serves: logins lowercased and sorted, each
@@ -518,19 +534,24 @@ func (p Profiles) ProxyRules() airlock.Rules {
 // no others. Guidance is left out because it tells the judge how to decide requests to come and
 // changes nothing a live grant may do, so writing it ends no grant.
 func (p Profiles) Digest(name string) string {
-	profile := p.Lookup(name)
-	if profile == nil {
-		return ""
+	for i := range p.list {
+		if p.list[i].Name == name {
+			return p.digests[i]
+		}
 	}
-	fingerprinted := *profile
+	return ""
+}
+
+// digestOf is Digest's fingerprint of profile.
+func digestOf(profile Profile) string {
 	if profile.Proxy != nil {
 		block := *profile.Proxy
 		block.Guidance = ""
-		fingerprinted.Proxy = &block
+		profile.Proxy = &block
 	}
 	// Marshal cannot fail for a Profile: every field is a string, a duration, a slice or map of
 	// strings, a slice of airlock.Allow, a *uint32 or a pointer to a struct of those.
-	encoded, _ := json.Marshal(fingerprinted)
+	encoded, _ := json.Marshal(profile)
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:])
 }

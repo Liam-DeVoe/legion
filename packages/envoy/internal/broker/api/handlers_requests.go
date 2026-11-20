@@ -125,6 +125,18 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, requests.ErrSessionIDInvalid):
 		writeError(w, http.StatusBadRequest, "SESSION_ID_INPUT", err.Error())
 		return
+	case errors.Is(err, policy.ErrServedOnlyAsProfiles):
+		// A source asked for by its own name, which profiles of other names use: the message
+		// names them, so the caller asks for one of those instead. It is final, as UNKNOWN_SECRET
+		// is, and asked before that code, since the policy's error is that one too.
+		writeError(w, http.StatusForbidden, "SERVED_ONLY_AS_PROFILES", err.Error())
+		return
+	case errors.Is(err, policy.ErrProfileRefused):
+		// A profile the policy refuses against its source, or a github-app secret no profile
+		// names: the message gives the reason and its detail, which the profiles file or the
+		// source's tags fix.
+		writeError(w, http.StatusForbidden, "PROFILE_REFUSED", err.Error())
+		return
 	case errors.Is(err, policy.ErrUnknownSecret):
 		writeError(w, http.StatusBadRequest, "UNKNOWN_SECRET", err.Error())
 		return

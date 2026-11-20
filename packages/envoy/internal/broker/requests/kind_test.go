@@ -43,7 +43,7 @@ func TestAMalformedMintedSourceIsNamedAndReleasesNothing(t *testing.T) {
 }
 
 func TestAgentTypeSecretIsGrantedAtOnceAndMintsForEachRelease(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "GITHUB_APP_KEY")
 	retag(t, machine, requestTypeSecret("GITHUB_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	calls := 0
 	machine.Minters = map[string]Minter{
@@ -68,16 +68,19 @@ func TestAgentTypeSecretIsGrantedAtOnceAndMintsForEachRelease(t *testing.T) {
 	}
 }
 
-// TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow: the minter gets the github-owners the
-// current policy serves for the name, not the list the request was decided under, so a list
-// narrowed after a grant holds at the grant's next release.
+// TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow: the minter gets the accounts the
+// current policy serves for the name, its profile's, not a list the request was decided under, so
+// a github-owners tag narrowed after a grant past the profile's accounts holds at the grant's next
+// release: the profile no longer fits its source, and the grant mints nothing.
 func TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "APP_KEY")
 	secret := requestTypeSecret("APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)
 	var got []string
+	calls := 0
 	machine.Minters = map[string]Minter{
 		policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
+			calls++
 			got = req.GitHubOwners
 			return secrets.Minted{Value: "minted"}, nil
 		},
@@ -96,11 +99,8 @@ func TestAGitHubAppReleaseMintsForTheOwnersThePolicyServesNow(t *testing.T) {
 	narrowed.Tags = maps.Clone(secret.Tags)
 	narrowed.Tags[policy.TagGitHubOwners] = "ada"
 	retag(t, machine, narrowed)
-	if _, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{}); err != nil {
-		t.Fatalf("Values after narrowing github-owners: %v", err)
-	}
-	if !slices.Equal(got, []string{"ada"}) {
-		t.Fatalf("minter's GitHubOwners after narrowing = %v, want [ada]", got)
+	if release, err := machine.Values(t.Context(), *request.GrantID, enrollmentID, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 1 {
+		t.Fatalf("Values after narrowing github-owners past the profile's accounts = %v, %v after %d mints; want ErrGrantNotLive and no second mint", release.Values, err, calls)
 	}
 }
 
@@ -158,15 +158,19 @@ func TestMaxGrantAcceptsALifetimeAtTheTag(t *testing.T) {
 	}
 }
 
+// TestPlainToTypeRetagEndsTheGrant: a stored value retagged to a type is served from another
+// source, which ends a grant of it at its next release, and the session asks again. The type is a
+// google-login one, which the policy serves by its own name with no profile, so the retag alone
+// moves the name.
 func TestPlainToTypeRetagEndsTheGrant(t *testing.T) {
 	machine, enrollmentID, key, _ := newFixture(t)
-	// A stored value the github-app decoder reads, so the retag below is served as that type and
+	// A stored value the google-login decoder reads, so the retag below is served as that type and
 	// moves the grant's source, rather than refused for its value (policy.ReasonValueMalformed).
-	plain := policytest.Secret("PLAIN_TO_TYPE", fixtureOperator, policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp))
+	plain := policytest.Secret("PLAIN_TO_TYPE", fixtureOperator, policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin))
 	retag(t, machine, plain)
 	calls := 0
 	machine.Minters = map[string]Minter{
-		policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+		policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 			calls++
 			return secrets.Minted{Value: "minted"}, nil
 		},
@@ -177,8 +181,7 @@ func TestPlainToTypeRetagEndsTheGrant(t *testing.T) {
 	}
 	typed := plain
 	typed.Tags = maps.Clone(plain.Tags)
-	typed.Tags[policy.TagType] = policy.TypeGitHubApp
-	typed.Tags[policy.TagGitHubOwners] = policytest.FixtureGitHubOwners
+	typed.Tags[policy.TagType] = policy.TypeGoogleLogin
 	retag(t, machine, typed)
 	if release, err := machine.Values(t.Context(), *first.GrantID, enrollmentID, nil, ReleaseCall{}); !errors.Is(err, ErrGrantNotLive) || release.Values != nil || calls != 0 {
 		t.Fatalf("Values after plain-to-type retag = %v, %v after %d mints; want ErrGrantNotLive", release.Values, err, calls)
@@ -209,6 +212,10 @@ func TestDeletedTypeSecretStopsReleasing(t *testing.T) {
 	}
 }
 
+// TestTypeRetagEndsTheGrantAndPreventsReuse: a type secret whose type is cleared or changed is
+// served from another source, so a grant of it ends at its next release and a new request is not
+// answered by that grant. The secret is a google-login one, served by its own name with no profile,
+// so the retag alone moves it.
 func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 	for name, replacement := range map[string]func(secrets.LocalSecret) secrets.LocalSecret{
 		"cleared": func(secret secrets.LocalSecret) secrets.LocalSecret {
@@ -218,26 +225,26 @@ func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 		},
 		"changed": func(secret secrets.LocalSecret) secrets.LocalSecret {
 			secret.Tags = maps.Clone(secret.Tags)
-			secret.Tags[policy.TagType] = policy.TypeGoogleLogin
+			secret.Tags[policy.TagType] = policy.TypeAzureLogin
 			// The value the new type's decoder reads, so the policy serves the secret as that
 			// type rather than refusing it for its value (policy.ReasonValueMalformed).
-			secret.Value = policytest.TypeValue(policy.TypeGoogleLogin)
+			secret.Value = policytest.TypeValue(policy.TypeAzureLogin)
 			return secret
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newFixture(t)
-			secret := requestTypeSecret("RETAG_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
+			secret := requestTypeSecret("RETAG_TYPE_KEY", policy.TypeGoogleLogin, policy.TierAgent, "")
 			retag(t, machine, secret)
 			calls := 0
 			machine.Minters = map[string]Minter{
-				policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
-					calls++
-					return secrets.Minted{Value: "minted-token"}, nil
-				},
 				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 					calls++
 					return secrets.Minted{Value: "access-token"}, nil
+				},
+				policy.TypeAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+					calls++
+					return secrets.Minted{Value: "federated-token"}, nil
 				},
 			}
 			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "RETAG_TYPE_KEY"), "", nil)
@@ -257,7 +264,7 @@ func TestTypeRetagEndsTheGrantAndPreventsReuse(t *testing.T) {
 }
 
 func TestTypeSecretWithoutAMinterDoesNotReleaseItsStoredValue(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "NO_MINTER_KEY")
 	retag(t, machine, requestTypeSecret("NO_MINTER_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	request, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "NO_MINTER_KEY"), "", nil)
 	if err != nil || request.GrantID == nil {
@@ -279,7 +286,11 @@ func TestEveryTypeSecretReleasesItsMintedValueAndNeverItsStoredOne(t *testing.T)
 	for _, secretType := range policy.Types {
 		t.Run(secretType, func(t *testing.T) {
 			const name = "TYPED_KEY"
-			machine, enrollmentID, key, approver := newFixture(t)
+			var apps []string
+			if secretType == policy.TypeGitHubApp {
+				apps = []string{name}
+			}
+			machine, enrollmentID, key, approver := newAppFixture(t, apps...)
 			retag(t, machine, requestTypeSecret(name, secretType, policy.TierHuman, ""))
 			stored := policytest.TypeValue(secretType)
 			minted := "minted-" + secretType + "-token"
@@ -367,19 +378,21 @@ func endedForGood(t *testing.T, machine *Machine, grantID string) (revokedBy str
 
 // TestATypeChangedAwayAndBackLeavesTheGrantEnded: a type retag after a grant ends that grant in
 // the store at its next release, so setting the type back, which serves the same source the grant
-// froze, does not bring it back; the session asks again, and a new request makes a new grant.
+// froze, does not bring it back; the session asks again, and a new request makes a new grant. The
+// secret is a google-login one, served by its own name with no profile, so the type it moves to
+// is served in its place.
 func TestATypeChangedAwayAndBackLeavesTheGrantEnded(t *testing.T) {
-	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
+	for name, away := range map[string]string{"removed": "", "changed": policy.TypeAzureLogin} {
 		t.Run(name, func(t *testing.T) {
 			machine, enrollmentID, key, _ := newFixture(t)
-			secret := requestTypeSecret("BACK_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
+			secret := requestTypeSecret("BACK_TYPE_KEY", policy.TypeGoogleLogin, policy.TierAgent, "")
 			retag(t, machine, secret)
 			machine.Minters = map[string]Minter{
-				policy.TypeGitHubApp: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
 					return secrets.Minted{Value: "minted-token"}, nil
 				},
-				policy.TypeGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
-					return secrets.Minted{Value: "access-token"}, nil
+				policy.TypeAzureLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+					return secrets.Minted{Value: "federated-token"}, nil
 				},
 			}
 			first, err := machine.Create(t.Context(), enrollmentID, signRequest(t, machine, key, "read App key", "BACK_TYPE_KEY"), "", nil)
@@ -525,7 +538,7 @@ func TestAFailedMintsLineNamesItsAttempts(t *testing.T) {
 // no minter, as every unservable secret's does. A new value stored and decoded serves it again,
 // and the same grant mints, since a value's version moves no policy Version.
 func TestAMintThatRefusesTheStoredValueRefusesTheSecret(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "REFUSED_APP_KEY")
 	secret := requestTypeSecret("REFUSED_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 	retag(t, machine, secret)
 	calls, refuse := 0, true

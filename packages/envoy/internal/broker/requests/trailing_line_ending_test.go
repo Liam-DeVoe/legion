@@ -111,7 +111,7 @@ func wantTrimLog(t *testing.T, captured string, changed, unchanged []string) {
 func TestTheBrokerTrimsAStoredValuesTrailingLineEnding(t *testing.T) {
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	logged := policytest.CaptureLog(t)
-	m, enrollmentID, key, _ := newFixture(t)
+	m, enrollmentID, key, _ := newAppFixture(t, "MINTED_INPUT_KEY")
 
 	for _, c := range []struct{ row, secret, stored, want string }{
 		{"token-and-a-line-feed", "LINE_FEED_KEY", "tok\n", "tok"},

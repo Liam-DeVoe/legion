@@ -59,7 +59,7 @@ func newNarrowingRequestServer(t *testing.T, answer airlocktest.GitHubAnswer, ai
 	service.AnswerWith(stand.Answer)
 
 	s := &narrowingRequestServer{stand: stand}
-	s.testServer = newTestServerWith(t, func(d *api.Deps) {
+	s.testServer = newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("NARROW_APP_KEY")), func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: service.URL()}.Mint}
 		if airlocked {
 			d.Machine.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{{Name: "NARROW_APP_KEY", Hosts: []string{"api.example.com"}}}}

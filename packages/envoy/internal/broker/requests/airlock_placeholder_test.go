@@ -25,17 +25,62 @@ const (
 
 // newPlaceholderFixture is newAirlockFixture with the airlock actually in force: the Machine
 // holds rules, the proxy's URL and its certificate, so a release of a name the rules name takes
-// the placeholder path. Each named secret's recorded fingerprint is that entry's own, as a real
-// broker's is; the digests map is returned so a test can move one entry under a live grant.
-func newPlaceholderFixture(t *testing.T, rules airlock.Rules) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, digests map[string]string) {
+// the placeholder path. Each rule is the proxy block of a profile of its own name
+// (rulesProfiles), as a real broker's rules are its profiles' proxy blocks, so each name's
+// recorded fingerprint is its profile's; apps are the github-app secrets the test stores, each
+// served by a profile of its own name. The profiles file is returned so a test can roll one entry
+// under a live grant (rollProfiles).
+func newPlaceholderFixture(t *testing.T, rules airlock.Rules, apps ...string) (m *Machine, enrollmentID string, key *ecdsa.PrivateKey, file string) {
 	t.Helper()
-	digests = map[string]string{}
-	for _, secret := range rules.Secrets {
-		digests[secret.Name] = rules.Digest(secret.Name)
-	}
-	m, enrollmentID, key = newAirlockFixture(t, digests)
+	file = rulesProfiles(t, rules, apps...)
+	m, enrollmentID, key = newAirlockFixture(t, file)
 	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = rules, testProxyURL, testCACertificate
-	return m, enrollmentID, key, digests
+	return m, enrollmentID, key, file
+}
+
+// rulesProfiles is the profiles file of rules and apps: for each rule that names a host, a
+// profile of the rule's own name whose proxy block is that rule, and for each of apps a github
+// block on policytest.AppProfile's accounts, beside the rule's proxy block where a rule names it.
+// A rule with no host has no profile, since no profiles file holds one (policy.ParseProfiles
+// refuses it); the Machine's own rules may still hold it.
+func rulesProfiles(t *testing.T, rules airlock.Rules, apps ...string) string {
+	t.Helper()
+	const github = `"github": {"accounts": ["acme", "ada"], "permissions": {"metadata": "read"}}`
+	var entries []string
+	named := map[string]bool{}
+	for _, rule := range rules.Secrets {
+		if len(rule.Hosts) == 0 {
+			continue
+		}
+		proxy, err := json.Marshal(policy.ProxyBlock{Hosts: rule.Hosts, Headers: rule.Headers, Allow: rule.Allow, Kind: rule.Kind, Judge: rule.Judge, Guidance: rule.Guidance})
+		if err != nil {
+			t.Fatal(err)
+		}
+		entry := `{"name": "` + rule.Name + `", "proxy": ` + string(proxy)
+		if slices.Contains(apps, rule.Name) {
+			entry += ", " + github
+		}
+		entries = append(entries, entry+"}")
+		named[rule.Name] = true
+	}
+	for _, app := range apps {
+		if !named[app] {
+			entries = append(entries, policytest.AppProfile(app))
+		}
+	}
+	return policytest.ProfilesFile(entries...)
+}
+
+// appNames is the name of each of stored that is a github-app secret, which newPlaceholderFixture
+// serves through a profile.
+func appNames(stored ...secrets.LocalSecret) []string {
+	var apps []string
+	for _, secret := range stored {
+		if secret.Tags[policy.TagType] == policy.TypeGitHubApp {
+			apps = append(apps, policy.SlugToName(strings.TrimPrefix(secret.Name, policytest.Prefix)))
+		}
+	}
+	return apps
 }
 
 // rule is one entry of a test's rules file: the name, the hosts it is bound to, and its kind.
@@ -312,7 +357,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("SHAPE_KEY", c.entryKind)}})
+			m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
 			retag(t, m, c.secret)
 			if c.minted != "" {
 				m.Minters = map[string]Minter{c.secret.Tags[policy.TagType]: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
@@ -439,7 +484,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("SHAPE_KEY", c.entryKind)}})
+			m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("SHAPE_KEY", c.entryKind)}}, appNames(c.secret)...)
 			retag(t, m, c.secret)
 			wantExpires := time.Time{}
 			if c.mint != "" {

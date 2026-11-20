@@ -17,7 +17,7 @@ import (
 // get at once is, for another operator's session, a request its owner must approve, which that
 // operator cannot approve; and that session cannot read the owner's live grant.
 func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "OWNERS_APP_KEY")
 	retag(t, machine, requestTypeSecret("OWNERS_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{
@@ -52,7 +52,7 @@ func TestATypeSecretIsNeverReleasedToAnotherOperator(t *testing.T) {
 // request waits on its owner, releases nothing meanwhile, and once approved mints for the owners
 // its github-owners tag lists.
 func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
-	machine, enrollmentID, key, approver := newFixture(t)
+	machine, enrollmentID, key, approver := newAppFixture(t, "HUMAN_APP_KEY")
 	retag(t, machine, requestTypeSecret("HUMAN_APP_KEY", policy.TypeGitHubApp, policy.TierHuman, ""))
 	var owners []string
 	machine.Minters = map[string]Minter{
@@ -81,7 +81,7 @@ func TestAHumanTierGitHubAppSecretWaitsForItsOwnerThenMints(t *testing.T) {
 // TestConcurrentReleasesOfOneTypeSecretAllMint: many releases of one grant at once each mint and
 // each succeeds, and none sees another's token.
 func TestConcurrentReleasesOfOneTypeSecretAllMint(t *testing.T) {
-	machine, enrollmentID, key, _ := newFixture(t)
+	machine, enrollmentID, key, _ := newAppFixture(t, "BUSY_APP_KEY")
 	retag(t, machine, requestTypeSecret("BUSY_APP_KEY", policy.TypeGitHubApp, policy.TierAgent, ""))
 	var calls atomic.Int32
 	machine.Minters = map[string]Minter{

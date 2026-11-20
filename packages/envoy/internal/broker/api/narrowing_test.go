@@ -36,7 +36,7 @@ type narrowingServer struct {
 func newNarrowingServer(t *testing.T) *narrowingServer {
 	t.Helper()
 	s := &narrowingServer{}
-	s.testServer = newTestServerWith(t, func(d *api.Deps) {
+	s.testServer = newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
@@ -245,7 +245,7 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 // arms come in, and this fails once the shared helper answers the sentinel ahead of
 // ErrMintFailed.
 func TestAReleaseForAnAccountTheAppHasNoInstallationOnIsAMintFailure(t *testing.T) {
-	s := newTestServerWith(t, func(d *api.Deps) {
+	s := newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")), func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				if req.GitHubNarrowing == nil {

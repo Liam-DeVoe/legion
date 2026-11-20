@@ -155,16 +155,17 @@ func TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames(t *testing.T) {
 
 // TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged: the proxy's own read makes the full
 // release checks, so a grant Values would end is ended here too rather than going on being
-// proxied by the pod that holds the connection.
+// proxied by the pod that holds the connection: here a grant whose profile's proxy block moved.
 func TestAirlockValuesEndsAGrantWhoseAirlockEntryChanged(t *testing.T) {
-	m, enr, key, digests := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
+	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 	if _, err := m.Values(t.Context(), grantID, enr, nil, ReleaseCall{}); err != nil {
 		t.Fatalf("Values: %v", err)
 	}
 
-	digests["AUTO_TOKEN"] = "the entry moved"
-	reloadAirlock(t, m)
+	moved := rule("AUTO_TOKEN", "")
+	moved.Hosts = []string{"api.example.org"}
+	rollProfiles(t, m, rulesProfiles(t, airlock.Rules{Secrets: []airlock.SecretRule{moved}}))
 	if values, version, err := m.AirlockValues(t.Context(), grantID); !errors.Is(err, ErrGrantNotLive) || values != nil || version != "" {
 		t.Fatalf("AirlockValues after the entry changed = %v, %q, %v; want ErrGrantNotLive and no value", values, version, err)
 	}

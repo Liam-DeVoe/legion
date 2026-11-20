@@ -4,9 +4,9 @@
 // secret it reads, the allowed approver, the policy version and the lifetime its request object
 // signed, else the 12-hour default (defaultLifetime): a grant lasts that long, or until its session
 // ends when the request names none and every name is tagged default-grant=session.
-// Each name's airlock fingerprint is written with the decision rather than with the row: at
+// Each name's profile fingerprint is written with the decision rather than with the row: at
 // creation for a request the policy answers at once, and again when an approval grants one that
-// waited for a person (decidedUnder), so a grant approved after a rules roll is released under
+// waited for a person (decidedUnder), so a grant approved after a profiles roll is released under
 // the entry it was decided under.
 // Its only transitions are pending -> granted | denied | cancelled | expired; each is an UPDATE
 // guarded by state='pending' inside one transaction that also writes the audit row, so a duplicate
@@ -181,10 +181,11 @@ type SecretDecision struct {
 	// "automatic", "approval" or "deny".
 	Decision string `json:"decision"`
 	Source   string `json:"-"`
-	// AirlockDigest is the fingerprint of the name's airlock entry as the policy held it when
-	// the request was decided, "" for a name the rules do not name. The request records it, and
-	// a release ends the grant once it differs from the one the policy holds then.
-	AirlockDigest string `json:"-"`
+	// ProfileDigest is the fingerprint of the profile the name was served as when the request
+	// was decided (policy.Secret.ProfileDigest), "" for a stored secret served by its own name.
+	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
+	// it differs from the one the policy holds then.
+	ProfileDigest string `json:"-"`
 }
 
 // Request is one agent_secret request as Create and Get answer it. Approver is the approver its
@@ -1117,7 +1118,7 @@ func (m *Machine) evaluate(set *policy.Set, names []string, requester policy.Req
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, ProfileDigest: set.Secrets[name].ProfileDigest})
 	}
 	switch {
 	case denied:
@@ -1250,7 +1251,7 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest) values ($1,$2,$3,$4,$5)`, r.id, d.Name, d.Decision, d.Source, d.AirlockDigest); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest) values ($1,$2,$3,$4,$5)`, r.id, d.Name, d.Decision, d.Source, d.ProfileDigest); err != nil {
 			return err
 		}
 	}
@@ -2056,7 +2057,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		}
 	}
 	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
-	// and each name's airlock fingerprint, which the request records as what it was decided
+	// and each name's profile fingerprint, which the request records as what it was decided
 	// under (decidedUnder). One snapshot rather than a read apiece, so a reload landing in the
 	// middle of the decision cannot leave the row recording a policy no part of that decision
 	// was made against.
@@ -2198,10 +2199,10 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 }
 
 // decidedUnder records, for each name of a request an approval is granting, the fingerprint of
-// that name's airlock entry in set, the policy snapshot the approval was made against. A request
-// freezes each name's fingerprint when it is created (insertRequest), which is the whole of it
-// for a request the policy grants or denies at once; one that waits for a person — up to
-// PendingTTL, half a day — can be approved across a rules roll, and what a release compares
+// the profile that name is served as in set, the policy snapshot the approval was made against. A
+// request freezes each name's fingerprint when it is created (insertRequest), which is the whole
+// of it for a request the policy grants or denies at once; one that waits for a person — up to
+// PendingTTL, half a day — can be approved across a profiles roll, and what a release compares
 // against must be the entry the approval was given under, else the grant the person just made
 // ends on its first release with a reason that is not true (checkRelease's per-name comparison).
 //
@@ -2213,13 +2214,14 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 // makes the re-check run more often than it must, and the fingerprint it compares is this one.
 //
 // One statement over every name of the request, by name, since every row's digest is read from
-// the one snapshot: a name the rules do not name records "", as it does at creation. granted is
-// the request's names, read once by the approve path that calls this.
+// the one snapshot: a stored secret served by its own name records "", as it does at creation.
+// The column keeps its name, airlock_digest, from before profiles. granted is the request's names,
+// read once by the approve path that calls this.
 func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []requestedSecret, set *policy.Set) error {
 	names := make([]string, len(granted))
 	digests := make([]string, len(granted))
 	for i, g := range granted {
-		names[i], digests[i] = g.name, set.Secrets[g.name].AirlockDigest
+		names[i], digests[i] = g.name, set.Secrets[g.name].ProfileDigest
 	}
 	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest
 		from unnest($2::text[], $3::text[]) as v(name, digest)
@@ -2296,7 +2298,7 @@ const PolicyDeniedActor = "broker:policy"
 // theirs to approve, and an admin secret is approved by the person its owner tag names, both on
 // the rules below, which are the rules they have always been held to.
 //
-// set is the one snapshot the whole decision is made against, the one whose airlock fingerprints
+// set is the one snapshot the whole decision is made against, the one whose profile fingerprints
 // the request then records as what it was decided under (decidedUnder), and requested the
 // request's names, read once by the approve path that calls this.
 func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, who decider, recordApprover string, lifetime *int) error {

@@ -69,6 +69,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 			store := &abandoningCall{Local: local}
 			loader := policytest.Loader(local)
 			loader.Store = policytest.StoreThrough(local, store)
+			loader.Profiles = policytest.Profiles(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY")))
 			current, err := policy.NewCurrent(t.Context(), loader, time.Hour)
 			if err != nil {
 				t.Fatal(err)

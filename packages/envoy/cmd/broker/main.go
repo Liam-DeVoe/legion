@@ -342,10 +342,11 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
-	// profiles.Digest is "" for every name no profile holds, and so for every secret when no
-	// profiles file was named, which leaves such a deployment's policy version where it is today;
-	// an edit of a profile's entry moves it, and so ends that name's grants.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: profiles.Digest,
+	// The policy serves each profile by its name, checked against its source at every publish,
+	// and folds each profile's digest into its version, so an edit of a profile's entry ends that
+	// name's grants. With no profiles file it serves no profile and refuses every github-app
+	// secret, whose tokens a profile alone scopes.
+	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, Profiles: profiles,
 		StoreReads: policy.NewStoreReads(registry)}
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange

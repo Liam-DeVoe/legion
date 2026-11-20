@@ -539,7 +539,7 @@ type AirlockGrantName struct {
 // primary key with its grant and enrollment joined in, the grant's other placeholders by
 // grant_id, and the enrollment's withheld names by enrollment_id. Each name's type comes from the
 // policy snapshot already in memory, which costs no query. The checks a release makes besides —
-// the approval chain, the policy re-evaluation, the max-grant and the airlock fingerprint — are
+// the approval chain, the policy re-evaluation, the max-grant and the profile fingerprint — are
 // AirlockValues's, once per grant per pod.
 func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (AirlockConnection, error) {
 	var conn AirlockConnection
@@ -611,7 +611,7 @@ type AirlockSecret struct {
 }
 
 // AirlockValues runs the full release checks of Values - the record chain, the policy
-// re-evaluation, the max-grant, the airlock fingerprint - and answers the real value of each
+// re-evaluation, the max-grant, the profile fingerprint - and answers the real value of each
 // slot of each airlock name, which is what the proxy swaps into a request: a placeholder stands
 // for one slot, not for a name's whole released value, so a github-app name answers one token
 // per installation and an AWS pair one string per field. The split is the one the release makes

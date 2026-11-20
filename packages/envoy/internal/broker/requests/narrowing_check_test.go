@@ -155,7 +155,7 @@ func isTokenRequest(seen airlocktest.Request) bool {
 // whose narrowing is therefore checked; AUTO_APP_KEY, agent tier, which the policy grants at
 // once; and UNLISTED_APP_KEY, which a requesters tag naming somebody else turns into a denial —
 // beside PLAIN_KEY, a stored secret of the same owner and tier, which is the request that asks
-// for no github-app secret at all.
+// for no github-app secret at all. Each App is served through a profile of its own name.
 type narrowingFixture struct {
 	*requests.Machine
 	enrollmentID string
@@ -181,7 +181,7 @@ func newNarrowingFixture(t *testing.T, installations map[string]int64) *narrowin
 	stand := newGitHubStand(t, installations)
 	machine := &requests.Machine{
 		Store:      st,
-		Policy:     policytest.Current(t, local),
+		Policy:     policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("OTHER_APP_KEY"), policytest.AppProfile("AUTO_APP_KEY"), policytest.AppProfile("UNLISTED_APP_KEY"))),
 		Secrets:    policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,

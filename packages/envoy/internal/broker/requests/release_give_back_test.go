@@ -81,7 +81,7 @@ func newGiveBackFixture(t *testing.T, rules airlock.Rules) *giveBackFixture {
 	app := secrets.GitHubApp{Base: service.URL()}
 	f.Machine = &requests.Machine{
 		Store:      st,
-		Policy:     policytest.Current(t, local),
+		Policy:     policytest.ProfiledCurrent(t, local, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"))),
 		Secrets:    policytest.Store(local),
 		PendingTTL: 12 * time.Hour,
 		Audience:   checkAudience,

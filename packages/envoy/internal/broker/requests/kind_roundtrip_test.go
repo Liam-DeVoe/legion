@@ -24,7 +24,7 @@ import (
 func TestATypeChangedAwayAndBackWithNoReleaseBetweenLeavesTheGrantAsItWas(t *testing.T) {
 	for name, away := range map[string]string{"removed": "", "changed": policy.TypeGoogleLogin} {
 		t.Run(name, func(t *testing.T) {
-			machine, enrollmentID, key, _ := newFixture(t)
+			machine, enrollmentID, key, _ := newAppFixture(t, "QUIET_TYPE_KEY")
 			secret := requestTypeSecret("QUIET_TYPE_KEY", policy.TypeGitHubApp, policy.TierAgent, "")
 			retag(t, machine, secret)
 			var githubCalls, googleCalls int
