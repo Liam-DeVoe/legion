@@ -495,7 +495,7 @@ test("the description names the retro's rating fields, its scale, its skill and 
   }
 });
 
-// Contract 180: a tester's fail names the step its task returns to, `return_to`, which goes on the
+// Contract 181: a tester's fail names the step its task returns to, `return_to`, which goes on the
 // wire as the daemon's `returnTo`; a completion that names none sends none.
 test("a tester's fail sends return_to as returnTo", async () => {
   const tester = { ...implementer, role: "tester" as const };
