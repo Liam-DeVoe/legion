@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // daemonAccount is the account the daemon's projected token names in these tests.
@@ -46,7 +47,7 @@ func writeToken(t *testing.T, path, token string) {
 func TestADaemonCalloutConnectionKeepsRetryingARefusal(t *testing.T) {
 	s := testnats.StartCallout(t, 4, natsgrant.InboxPrefix(daemonAccount)+".>", "test.>")
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
-	writeToken(t, tokenFile, testnats.ServiceToken(daemonAccount, time.Now().Add(time.Hour)))
+	writeToken(t, tokenFile, testnkeys.ServiceToken(daemonAccount, time.Now().Add(time.Hour)))
 	connected, closed := make(chan struct{}, 1), make(chan struct{}, 1)
 	signal := func(to chan struct{}) func(*nats.Conn) {
 		return func(*nats.Conn) {
@@ -99,14 +100,14 @@ func TestADaemonCalloutConnectionKeepsRetryingARefusal(t *testing.T) {
 func TestConnectWithAServiceTokenReconnectsBeforeExpiry(t *testing.T) {
 	s := testnats.StartCallout(t, 0, natsgrant.InboxPrefix(daemonAccount)+".>")
 	tokenFile := filepath.Join(t.TempDir(), "nats-token")
-	first := testnats.ServiceToken(daemonAccount, time.Now().Add(natscred.ServiceRenewBefore+2*time.Second))
+	first := testnkeys.ServiceToken(daemonAccount, time.Now().Add(natscred.ServiceRenewBefore+2*time.Second))
 	writeToken(t, tokenFile, first)
 	conn, err := natsauth.ConnectService([]string{s.URL}, tokenFile, t.Name(), natsauth.ReconnectForever(), nats.ReconnectWait(50*time.Millisecond))
 	if err != nil {
 		t.Fatalf("ConnectService: %v", err)
 	}
 	defer conn.Close()
-	later := testnats.ServiceToken(daemonAccount, time.Now().Add(time.Hour))
+	later := testnkeys.ServiceToken(daemonAccount, time.Now().Add(time.Hour))
 	writeToken(t, tokenFile, later)
 
 	deadline := time.Now().Add(30 * time.Second)
@@ -128,7 +129,7 @@ func TestConnectWithAServiceTokenReconnectsBeforeExpiry(t *testing.T) {
 func TestServiceIdentityNamesTheTokensAccount(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "token")
-	writeToken(t, good, testnats.ServiceToken(daemonAccount, time.Now().Add(time.Hour)))
+	writeToken(t, good, testnkeys.ServiceToken(daemonAccount, time.Now().Add(time.Hour)))
 	account, err := natsauth.ServiceIdentity(good)
 	if err != nil || account != daemonAccount {
 		t.Fatalf("ServiceIdentity = %q, %v; want %q", account, err, daemonAccount)
