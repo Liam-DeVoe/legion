@@ -169,12 +169,14 @@ func relayUntil(client, server net.Conn, marker []byte, reset bool, broken *atom
 // while Down is set to a stand-in that answers it is starting up (57P03, Refusing), as a store does
 // while it restarts, and counts it in Refused; every other connection reaches the database and is
 // counted in Passed. Whether a connection is refused is decided as it is accepted, so a connection
-// counted in Passed is served by the database however Down changes after.
+// counted in Passed is served by the database however Down changes after. Refuse takes the store
+// down for good in the other way a store goes down: the host refuses every later dial.
 type Flapping struct {
 	// URL is the DSN that reaches the database through the proxy: rewriteDSN's, as Delayed's is.
 	URL             string
 	Down            atomic.Bool
 	Refused, Passed atomic.Int32
+	listener        net.Listener
 }
 
 // NewFlapping is dsn's database behind a Flapping proxy, down from the start when down is set. The
@@ -183,7 +185,7 @@ func NewFlapping(t testing.TB, dsn string, down bool) *Flapping {
 	t.Helper()
 	through, database := relayFor(t, "the database URL to flap", dsn)
 	starting := Refusing(t, "57P03", "the database system is starting up")
-	s := &Flapping{URL: through.url}
+	s := &Flapping{URL: through.url, listener: through.listener}
 	s.Down.Store(down)
 	startRelay(t, through, func() string {
 		if s.Down.Load() {
@@ -194,4 +196,10 @@ func NewFlapping(t testing.TB, dsn string, down bool) *Flapping {
 		return database
 	}, relayPlain)
 	return s
+}
+
+// Refuse closes the store's listener, so the host refuses every dial from now on; the connections
+// it already serves go on until the test ends.
+func (s *Flapping) Refuse() {
+	_ = s.listener.Close()
 }

@@ -201,8 +201,8 @@ func TestTheProxyReadsAFatalErrorAcrossReadsAfterADeclinedEncryption(t *testing.
 		fatal    bool
 	}{
 		"the database declines the encryption (N), then ends the connection starting up (FATAL 57P03)": {answer: 'N', severity: "FATAL", fatal: true},
-		"control: the database accepts the encryption (S), and nothing after it is read":                {answer: 'S', severity: "FATAL"},
-		"control: the database declines the encryption, then answers an ERROR":                          {answer: 'N', severity: "ERROR"},
+		"control: the database accepts the encryption (S), and nothing after it is read":               {answer: 'S', severity: "FATAL"},
+		"control: the database declines the encryption, then answers an ERROR":                         {answer: 'N', severity: "ERROR"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var w wire

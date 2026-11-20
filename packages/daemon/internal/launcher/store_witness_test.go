@@ -151,7 +151,7 @@ func TestAStoreWitnessKeepsWatchingAfterItsFirstAnswer(t *testing.T) {
 	store.Down.Store(false)
 
 	// The child exits with an error once the store answers again; the launcher's ask finds it up.
-	if got := childExitFault(dial, nil, witness.finish(time.Second), time.Second); !ompsessions.StoreFault(got) {
+	if got := childExitFault(dial, nil, nil, witness.finish(time.Second), time.Second); !ompsessions.StoreFault(got) {
 		t.Fatalf("a child whose first open failed on a store that was down for 2.5 s after the witness's first answer was read as %v; want the store's fault", got)
 	}
 }
@@ -160,7 +160,7 @@ func TestAStoreWitnessWithNoStoreFaultReturnsNone(t *testing.T) {
 	store := testdb.NewFlapping(t, testdb.Database(t, "legion_launcher_healthy_witness_test"), false)
 	dial, witness := urlFileWitness(t, store)
 	time.Sleep(2500 * time.Millisecond)
-	if got := childExitFault(dial, nil, witness.finish(time.Second), time.Second); got != nil {
+	if got := childExitFault(dial, nil, nil, witness.finish(time.Second), time.Second); got != nil {
 		t.Fatalf("a child that failed while its store answered was read as %v; want its own exit", got)
 	}
 }

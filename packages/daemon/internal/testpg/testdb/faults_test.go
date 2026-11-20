@@ -3,6 +3,7 @@ package testdb
 import (
 	"context"
 	"errors"
+	"syscall"
 	"testing"
 	"time"
 
@@ -13,8 +14,8 @@ import (
 // Each fixture proxy makes the fault it is named for, so a test that takes it can fail when the
 // code under test meets that fault wrongly: a round trip through Delayed takes at least its delay,
 // Breaking ends the connection that sends its marker and serves the next, and Flapping answers a
-// connection that it cannot take one now (57P03) while Down is set and reaches the database once
-// it is not, counting each.
+// connection that it cannot take one now (57P03) while Down is set, reaches the database once it
+// is not, counting each, and has the host refuse every dial once it refuses.
 func TestEachFixtureProxyMakesItsFault(t *testing.T) {
 	dsn := Database(t, "legion_testdb_fixture_test")
 	open := func(t *testing.T, url string) (*pgx.Conn, error) {
@@ -81,6 +82,10 @@ func TestEachFixtureProxyMakesItsFault(t *testing.T) {
 		}
 		if refused, passed := store.Refused.Load(), store.Passed.Load(); refused != 1 || passed != 1 {
 			t.Fatalf("the store counted %d refused and %d passed, want 1 and 1", refused, passed)
+		}
+		store.Refuse()
+		if _, err := open(t, store.URL); !errors.Is(err, syscall.ECONNREFUSED) {
+			t.Fatalf("a connection once the store refuses answered %v, want the host's refusal", err)
 		}
 	})
 }

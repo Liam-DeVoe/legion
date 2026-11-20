@@ -614,9 +614,12 @@ type child struct {
 	// (wait). Nil for a child whose sessions are no rows, and for a Claude Code child, which never
 	// dials the store: its keeper is the launcher's own.
 	store *sessionDial
-	// witness is the launcher's own record of store from the child's start, for a child whose
+	// witness is the launcher's own look at store for the child's whole life, for a child whose
 	// connections no proxy sees (storeWitness); nil otherwise.
 	witness *storeWitness
+	// report is the child's own report of a session database it could not open, read from its
+	// standard error as it passes (childReport).
+	report *childReport
 	// stopBy is when the stop under way, if any, gives up on the child: the end of its grace
 	// (endGeneration), which bounds the keeper's last save. Guarded by manager.mu.
 	stopBy time.Time
@@ -929,7 +932,8 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// carried, when this launcher serves it, and the environment as it is when it does not
 	// (metadataEnv).
 	env = metadataEnv(env, m.metadataAddress)
-	process, err := m.command(command, env)
+	report := &childReport{}
+	process, err := m.command(command, env, report)
 	if err != nil {
 		return abandon(err)
 	}
@@ -950,7 +954,7 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 		return abandon(fmt.Errorf("start child: %w", err))
 	}
 	store := childStore(env, keeper, clientURL)
-	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: store, witness: watchStore(store, proxy != nil), done: make(chan struct{})}
+	active := &child{generation: command.Generation, pid: process.cmd.Process.Pid, process: process.cmd.Process, dir: dir, status: process.status, output: process.output, proxy: proxy, keeper: keeper, store: store, witness: watchStore(store, proxy != nil), report: report, done: make(chan struct{})}
 	m.child = active
 	result := shimwire.LauncherStartResult{ID: command.ID, OK: true, RunningGeneration: command.Generation}
 	m.requests[command.ID] = request{body: body, result: result}
@@ -987,13 +991,14 @@ func (m *manager) remember(id string, body []byte, result shimwire.Frame) {
 // command is one generation's process: in an issue pod's container, role-init as the init of
 // this role's new user, mount, PID and IPC namespaces, with the pipe it reports the shim's own
 // wait status on and prefixed writers of the generation's own; in the controller's pod, the shim
-// itself in the container's own namespaces.
-func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProcess, error) {
+// itself in the container's own namespaces. Either way report reads the process's standard error
+// as it passes, for the child's own report of a session database it could not open.
+func (m *manager) command(start shimwire.LauncherStart, env []string, report *childReport) (*roleProcess, error) {
 	if m.namespaced {
 		stdout, stderr := m.log.writers(m.role)
 		process, err := newRoleProcess(RoleInitConfig{
 			RoleCover: roleCoverFor(m.cfg.RolesDir), Role: m.role, Generation: start.Generation, Argv: start.Argv,
-		}, env, stdout, stderr)
+		}, env, stdout, report.alongside(stderr))
 		if err != nil {
 			return nil, err
 		}
@@ -1002,7 +1007,11 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 	}
 	cmd := exec.Command(start.Argv[0], start.Argv[1:]...)
 	cmd.Env = env
-	cmd.Stdout, cmd.Stderr = m.stdout, m.stderr
+	cmd.Stdout, cmd.Stderr = m.stdout, report.alongside(m.stderr)
+	// The report makes the child's standard error a pipe the launcher copies, which a descendant
+	// that outlives the child would hold open: Wait waits for it a second at most after the child
+	// exits, and cleanExitedGeneration ends such a descendant after that.
+	cmd.WaitDelay = time.Second
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	return &roleProcess{cmd: cmd}, nil
 }
@@ -1037,7 +1046,7 @@ func (m *manager) command(start shimwire.LauncherStart, env []string) (*roleProc
 // waits out a minute at a time with the session kept and charges nothing for, where any other exit
 // is the child's own end (childExitFault). A Claude Code child never dials the store, so its exit is
 // always its own, whatever its keeper met. The generation's store witness, if it has one, ends here
-// whatever the exit.
+// whatever the exit, and so does the child's report of a store it could not open.
 func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	var reported *syscall.WaitStatus
 	if active.status != nil {
@@ -1080,7 +1089,7 @@ func (m *manager) wait(cmd *exec.Cmd, active *child) {
 	}
 	witnessed := active.witness.finish(bound)
 	if judged {
-		if fault := childExitFault(*active.store, active.proxy, witnessed, time.Until(end)/2); fault != nil {
+		if fault := childExitFault(*active.store, active.proxy, active.report.storeFault(), witnessed, time.Until(end)/2); fault != nil {
 			exit.Session = shimwire.SessionStoreUnreachable
 			m.logf("launcher: generation %d exited with an error on a session database that stopped answering it: %v",
 				active.generation, fault)
@@ -1129,18 +1138,24 @@ func failedExit(exit shimwire.LauncherExit) bool {
 // nil for an exit of the child's own. First the child's own connections, as proxy, the
 // generation's, saw them at the exit: the latest event of the database's own, a dial it refused or
 // never answered or a served connection it ended, with no dial that reached it since
-// (sessionproxy.Proxy.Fault). With no proxy, witnessed, the fault the latest look of the
-// generation's store witness met (storeWitness): a fault no later look found over overlaps the exit,
-// so a store that failed the child's open and answered again only after the witness's last look
-// still reads as the store's, and one a later look found answering does not. With no fault there,
-// the launcher asks the store once, as the child would, within bound, half of what the child's
-// grace leaves, as the proxy's proof dial is bounded by half of it (storeAnswers): through the
-// proxy's socket that ask's own dial is one more event the proxy records.
-func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, witnessed error, bound time.Duration) error {
+// (sessionproxy.Proxy.Fault). With no proxy, reported, the store fault the child reported itself:
+// a first open of its session database whose connection failed before the server answered it
+// (childReport). With no such report, witnessed, the fault the latest look of the generation's
+// store witness met (storeWitness): a fault no later look found over overlaps the exit, so a store
+// that failed the child's open and answered again only after the witness's last look still reads
+// as the store's, and one a later look found answering does not. With no fault there, the launcher
+// asks the store once, as the child would, within bound, half of what the child's grace leaves, as
+// the proxy's proof dial is bounded by half of it (storeAnswers): through the proxy's socket that
+// ask's own dial is one more event the proxy records. A child's report is not read under a proxy,
+// which ends a connection whose sign-in the instance refused as it ends one whose database it
+// could not reach, and records which itself.
+func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, reported, witnessed error, bound time.Duration) error {
 	if proxy != nil {
 		if fault := proxy.Fault(); fault != nil {
 			return fault
 		}
+	} else if reported != nil {
+		return reported
 	}
 	if witnessed != nil {
 		return witnessed
