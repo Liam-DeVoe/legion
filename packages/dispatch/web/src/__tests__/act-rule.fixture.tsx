@@ -9,25 +9,7 @@ import { act as reactAct, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { quietConsoleError } from "./act-warnings";
-
-/** The setter of the count a row's component shows, which the row calls with no event between. */
-interface HeldCount {
-  set: (count: number) => void;
-}
-
-function heldCount(): HeldCount {
-  return {
-    set: () => {
-      throw new Error("the component has not rendered");
-    },
-  };
-}
-
-function useHeldCount(held: HeldCount): string {
-  const [count, setCount] = useState(0);
-  held.set = setCount;
-  return `count ${count}`;
-}
+import { type HeldCount, heldCount, useHeldCount } from "./held-count";
 
 function CountSetInsideAct({ held }: { held: HeldCount }) {
   return <p>{useHeldCount(held)}</p>;
@@ -81,7 +63,9 @@ test("an act inside a waitFor callback fails its row", async () => {
   const held = heldCount();
   render(<CountSetInWaitFor held={held} />);
   await waitFor(() => {
-    reactAct(() => {
+    // React's act over a synchronous callback has nothing to wait for: the row's verdict is the
+    // message the update draws.
+    void reactAct(() => {
       held.set(1);
     });
   });
