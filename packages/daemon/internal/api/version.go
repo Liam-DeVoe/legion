@@ -2454,4 +2454,24 @@ package api
 // refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
-const DaemonAPIVersion = 178
+//
+// 200: the reviewer's own clone. A reviewer works in a git clone of its own rather than in the
+// issue's workspace, and its git runs no program a configuration names. Every launch of a reviewer
+// is told LEGION_WORKSPACE at that clone: under tmux `<state_dir>/reviews/<owner>/<repo>/<issue>`,
+// and in a pod `/legion/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which the
+// reviewer's role-init makes or brings to the head before its shim starts there, refusing to
+// start the reviewer when the clone's HEAD is not that head. A pod's reviewer is also told
+// LEGION_DEFAULT_BRANCH, GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1 and two more
+// GIT_CONFIG pairs (core.fsmonitor=false, core.hooksPath=/dev/null), every one of them a name the
+// runtime owns; the image's git wrapper changes every git command of LEGION_ROLE=reviewer; and the
+// launcher's lock sweep and restore and the shim's release bundle map a review location back to
+// its issue's workspace (workspace.IssueWorkspace). A worker image built before this entry
+// cannot serve such a launch: its launcher would sweep and restore the review location, no
+// role-init of it makes the clone, and its shim's adoption fails in the missing directory. So the
+// image probe, which holds the image's plugin to this number, refuses an earlier image.
+// (This entry takes 200: a reading of `const DaemonAPIVersion` at main and at refs/pull/<n>/head
+// for each open pull request of cybermonklabs/legion, made with
+// .github/scripts/check-daemon-api-contract.sh at 2026-11-20T21:14:22Z, found main at 193 and
+// 194 to 199 each declared by another open pull request. This branch's history stops at 178, the
+// number its base carries; the entries 179 to 193 are main's and arrive with the forward merge.)
+const DaemonAPIVersion = 200
