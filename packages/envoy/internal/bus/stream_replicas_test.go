@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net"
+	"net/url"
 	"reflect"
 	"slices"
 	"strconv"
@@ -33,6 +35,45 @@ func startClusterJetStream(t *testing.T) (*testnats.Cluster, nats.JetStreamConte
 	t.Helper()
 	cluster := testnats.StartCluster(t, 3)
 	return cluster, cluster.JetStream(t)
+}
+
+// A cluster's relay listens on this binary's private loopback address, so a reconnecting client
+// from a binary built before that change cannot reach the port the new cluster reuses and create
+// ENVOY_NOTIFICATIONS before this test's own create does.
+func TestAClusterRejectsAClientOnTheFixedLoopbackBeforeItCreatesTheStream(t *testing.T) {
+	cluster, js := startClusterJetStream(t)
+	member, err := url.Parse(cluster.Servers[0].URL())
+	if err != nil {
+		t.Fatalf("parse member URL: %v", err)
+	}
+	_, port, err := net.SplitHostPort(member.Host)
+	if err != nil {
+		t.Fatalf("split member address %q: %v", member.Host, err)
+	}
+	member.Host = net.JoinHostPort("127.0.0.1", port)
+	legacy, err := nats.Connect(member.String(), nats.Timeout(time.Second), nats.NoReconnect())
+	if err == nil {
+		t.Cleanup(legacy.Close)
+		legacyJS, openErr := legacy.JetStream()
+		if openErr != nil {
+			t.Fatalf("open the fixed-loopback client's JetStream: %v", openErr)
+		}
+		config := deployedClusterStream(func(*nats.StreamConfig) {})
+		if _, createErr := legacyJS.AddStream(&config); createErr != nil {
+			t.Fatalf("the fixed-loopback client create: %v", createErr)
+		}
+		direct := config
+		direct.MaxAge += time.Second
+		if _, createErr := js.AddStream(&direct); createErr == nil {
+			t.Fatalf("a client on %s reached this cluster, created %s, and left the direct create with no collision", member, Stream)
+		} else {
+			t.Fatalf("a client on the reused fixed loopback %s reached this cluster and created %s before the direct create: %v", member, Stream, createErr)
+		}
+	}
+	config := deployedClusterStream(func(*nats.StreamConfig) {})
+	if _, err := js.AddStream(&config); err != nil {
+		t.Fatalf("create %s after the fixed-loopback refusal: %v", Stream, err)
+	}
 }
 
 // clusterConn is a connection to cluster, closed when the test ends: EnsureKeyValue and
