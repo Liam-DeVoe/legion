@@ -89,9 +89,9 @@ export async function holdIssuePatches(page: Page, issueKey: string): Promise<He
  * Resolves once `Date.now()` reads `at` or later: the clock a `HeldPatch` is stamped on, and so
  * the clock of every row that reads how long a save was held. A Node timer is on another clock.
  * It counts whole milliseconds of libuv's own monotonic reading, and on a loop the browser keeps
- * waking - a row's `watchShown` binding fires at every animation frame - a timer of N ms ends
- * when `Date.now()` has moved one to three milliseconds less than N. So a timer that ends early
- * is set again for what is left, as `e2e/delivery-live-probe.ts` arms its `--minutes` again.
+ * waking - a row's `watchShown` binding fires at every animation frame - a timer of N ms can end
+ * before `Date.now()` has moved N. So a timer that ends early is set again for what is left, as
+ * `e2e/delivery-live-probe.ts` arms its `--minutes` again.
  */
 async function nowReaches(at: number): Promise<void> {
   for (let left = at - Date.now(); left > 0; left = at - Date.now()) {
