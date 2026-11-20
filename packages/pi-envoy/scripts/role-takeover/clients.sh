@@ -4,13 +4,13 @@
 # start_omp, and start_claude, which is launch_claude and then claude_started, a wait until the
 # server answers a tool: claude_answers_tools), one command answered on a client's stdout (send),
 # or written and read back later (post, answer_to), the readers of that client's proxy log — the
-# claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder, made_claim,
-# claims_answered, claim_count), the registrations it sent (instance_id, registered_at,
-# first_registered_at), the requests of either kind (claim_writes), its deregistration
-# (delete_answer, deregistered_at), its hand-backs (release_status, release_instance, released)
-# and how old a holder's renewal was when a claim was weighed against it (renewal_age) — and the
-# ways a row makes a holder answer for its claim (renew_omp, renew_claude,
-# renew_claude_until_claimed, renew_claude_until_started).
+# claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder,
+# first_claim_arrived_at, made_claim, claims_answered, claim_count), the registrations it sent
+# (instance_id, registered_at, first_registered_at, first_registration_answered_at), the requests
+# of either kind (claim_writes), its deregistration (delete_answer), its hand-backs
+# (release_status, release_instance, released) and how old a holder's renewal was when a claim
+# was weighed against it (renewal_age) — and the ways a row makes a holder answer for its claim
+# (renew_omp, renew_claude, renew_claude_until_claimed, renew_claude_until_started).
 #
 # smoke-role-takeover.sh sources it, as it sources local-stack.sh and listener-api.sh beside it:
 # what that smoke knows about the stack is in the first file, what it knows about the listener's
@@ -227,6 +227,17 @@ first_claim_holder() {
     "${proxy_log[$1]}" 2>/dev/null
 }
 
+# first_claim_arrived_at LABEL SESSION PREVIOUS: when that client's first soft claim for SESSION
+# naming PREVIOUS reached its proxy (`<log>.arrived`), whether or not the listener has answered
+# it; empty when it made none.
+first_claim_arrived_at() {
+  jq -rs --arg sid "$2" --arg previous "$3" \
+    'map(select(.path == "/v1/roles/set" and .request.session_id == $sid
+                and (.request.previous_session_id // "") == $previous) | .at)
+     | if length == 0 then "" else (min | tostring) end' \
+    "${proxy_log[$1]}.arrived" 2>/dev/null
+}
+
 # instance_id LABEL SESSION: the client instance id that client last registered SESSION with.
 instance_id() {
   jq -r --arg sid "$2" \
@@ -256,6 +267,15 @@ first_registered_at() {
   printf '%s' "${at:-0}"
 }
 
+# first_registration_answered_at LABEL SESSION: when the listener answered that client's first
+# registration of SESSION, empty when it sent none.
+first_registration_answered_at() {
+  jq -rs --arg sid "$2" \
+    'map(select(.path == "/v1/interests/subscribe" and .request.session_id == $sid) | .at + .ms)
+     | if length == 0 then "" else (min | tostring) end' \
+    "${proxy_log[$1]}" 2>/dev/null
+}
+
 # claim_writes LABEL SESSION: how many of that client's requests for SESSION wrote the session's
 # claims — its registrations, each of which renews the claims it holds, and its claims — so a
 # row that must see none after some moment reads it there and again later. A request is logged
@@ -277,15 +297,6 @@ delete_answer() {
      | (.response // {})
      | if type == "object" and has($field) then (.[$field] | tostring) else "" end' \
     "${proxy_log[$1]}" 2>/dev/null | tail -n 1
-}
-
-# deregistered_at LABEL SESSION: when that client's first deregistration of SESSION reached its
-# proxy, empty when it sent none.
-deregistered_at() {
-  jq -rs --arg path "/v1/sessions/$2" \
-    'map(select(.method == "DELETE" and .path == $path) | .at)
-     | if length == 0 then "" else (min | tostring) end' \
-    "${proxy_log[$1]}" 2>/dev/null
 }
 
 made_claim() {

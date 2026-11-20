@@ -171,8 +171,12 @@ holder answers once that server's proxy is up and right before its process start
 every pass until it has claimed, or, where the row needs it refused again and again as its
 heartbeat asks, until its start has ended. Before it reads a refusal, each such row reads how old
 the holder's last answer was at each claim it needs refused, off the two proxies' logs, and fails
-naming the window where a claim was not inside it. A row that waits the window out waits for the
-listener to say so, never for a sleep.
+naming the window where a claim was not inside it. In the Claude Code `/clear` handoff (A5
+scenario 2) nothing renews the holder's claim once it has answered for the last time before the
+`/clear`, so the claims read are every claim the second process made up to the holder's handoff
+claim, or, where the holder made none, up to the listener's answer to its first registration of
+the new id, right after which it reads the role record: the handoff's own steps are inside the
+window. A row that waits the window out waits for the listener to say so, never for a sleep.
 
 Eighteen rows are printed, each with its outcome:
 
@@ -345,11 +349,12 @@ before the server's start ends and the server answers every tool "still starting
 `claude_answers_tools`), the stdin and stdout one command is sent and answered over
 (`client_fifo`, `client_ready`, `send`, or `post` and `answer_to` for a command read back later),
 the readers of each client's proxy log — the claims it made (`claim_status`, `claim_holder`,
-`first_claim_status`, `first_claim_holder`, `made_claim`, `claims_answered`, `claim_count`), the
-registrations it sent (`instance_id`, `registered_at`, `first_registered_at`), the requests of
-either kind (`claim_writes`), its deregistration (`delete_answer`, `deregistered_at`), its
-hand-backs (`release_status`, `release_instance`, `released`) and how old a holder's renewal was
-when one claim, or each claim before a moment, was weighed against it (`renewal_age`) — and the
+`first_claim_status`, `first_claim_holder`, `first_claim_arrived_at`, `made_claim`,
+`claims_answered`, `claim_count`), the registrations it sent (`instance_id`, `registered_at`,
+`first_registered_at`, `first_registration_answered_at`), the requests of either kind
+(`claim_writes`), its deregistration (`delete_answer`), its hand-backs (`release_status`,
+`release_instance`, `released`) and how old a holder's renewal was when one claim, or each claim
+before a moment, was weighed against it (`renewal_age`) — and the
 ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`, and the two loops
 that renew again and again while a channel server `launch_claude` started boots:
 `renew_claude_until_claimed`, until it has claimed, and `renew_claude_until_started`, until its

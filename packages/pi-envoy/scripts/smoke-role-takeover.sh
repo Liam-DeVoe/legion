@@ -892,8 +892,11 @@ row5_claude() {
   # A's handoff claims only while A still holds the role, and B asks for it on every heartbeat.
   # The row needs B to register X after A's last answer, and B's heartbeat is B's own, which a
   # loaded machine or a slow answer to B stretches. So A answers on every pass, one every 2 s,
-  # until B has registered X after A's latest answer, and the window this row needs runs from
-  # that answer to A's handoff: at most 2 s and the /clear.
+  # until B has registered X after A's latest answer. Nothing renews A's claim after that answer:
+  # the /clear deregisters X, and A registers only X2 from then on. So the window this row needs
+  # runs from that answer to A's handoff claim: at most 2 s, and then the whole handoff — the
+  # deregistration, and the file work and NATS flushes before A's first registration of X2,
+  # after which A reads the role record of X and claims.
   answer_until_registered_last() {
     local deadline=$((SECONDS + listener_wait_timeout))
     while ((SECONDS < deadline)); do
@@ -910,11 +913,19 @@ row5_claude() {
   # and the empty status below is this row's failure to report.
   wait_for "$listener_wait_timeout" made_claim cc-a "$x2" "$x" || true
   wait_for 15 made_claim cc-a "$x2" "" || true
-  # A's handoff reaches the listener first as its deregistration of X, and its claim follows; the
-  # claims of B's before that deregistration are the ones A's role must outlast. The /clear the
-  # row sent stands in where the handoff deregistered nothing.
-  handoff_at="$(deregistered_at cc-a "$x")"
-  expect_renewed_inside "every claim B made before A's handoff left X was weighed inside the live window of A's last answer" \
+  # The claims of B's that A's role must outlast are those B made before A read the role record
+  # of X: up to A's handoff claim naming X, as it reached A's proxy, or, where A made none, up to
+  # the listener's answer to A's first registration of X2, right after which A reads that record
+  # (`adoptHandoff` in packages/claude-envoy/src/envoy-channel-server.ts: `register`, then
+  # `transferRole`). A claim of B's granted between A's deregistration of X and that read takes
+  # the role, and A then makes no handoff claim, so the refusal below would read <empty> while a
+  # window read up to the deregistration still read inside. Never up to the moment the row reads
+  # this: a client whose handoff never claims would then be weighed on every claim B made while
+  # the row waited for that claim, and the window would take the blame for the client. The /clear
+  # the row sent stands in where A registered no X2 at all.
+  handoff_at="$(first_claim_arrived_at cc-a "$x2" "$x")"
+  [[ -n "$handoff_at" ]] || handoff_at="$(first_registration_answered_at cc-a "$x2")"
+  expect_renewed_inside "every claim B made before A's handoff read the role record of X was weighed inside the live window of A's last answer" \
     cc-b "$x" "$x" cc-a "$x" "${handoff_at:-$clear_at}"
   expect "process B's entry stayed: A's deregistration of X removed nothing" "$(delete_answer cc-a "$x" deleted)" "false"
   expect "the listener said why it stayed" "$(delete_answer cc-a "$x" reason)" "the registration belongs to another client instance"
