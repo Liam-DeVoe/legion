@@ -2412,6 +2412,7 @@ worker_image:
   - 'packages/envoy/natsversion/**'
   - 'packages/envoy/steprecord/**'
   - 'packages/envoy/testnatsimages/**'
+  - 'packages/envoy/testdeadline/**'
   - '.omp-pin'
   - '.bun-version'
   - '.dockerignore'
