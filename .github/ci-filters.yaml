@@ -2512,7 +2512,6 @@ envoy_client:
   - 'packages/broker-client/**'
   - 'packages/contracts/src/**'
   - 'packages/contracts/schemas/dispatch-openapi.json'
-  - 'packages/contracts/fixtures/go-unicode-isspace.json'
   - 'packages/broker-client/src/**'
   - 'packages/test-fixtures/src/**'
   - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'

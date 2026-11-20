@@ -478,8 +478,8 @@ CLAUDE_ENVOY_JOB = CLAUDE_ENVOY_BUILD + reads(
         (f"{FIX}/daemon-api/**", "packages/claude-envoy/tests/daemon-api-version.test.ts:15, legion-claim.test.ts:43-44, legion-pane-mcp.test.ts:19-20, legion-tool.test.ts:13"),
         (f"{FIX}/envelope-without-role.json", "packages/claude-envoy/tests/envelope-role-field.test.ts:5"),
         ("packages/pi-shared/test/daemon-state.ts", f"{at('claude-envoy', 'Typecheck Claude Envoy plugin')}: packages/claude-envoy/tests/legion-tool.test.ts:8 imports @legion/pi-shared/test/daemon-state, so tsc compiles it in that program"),
-        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:9"),
-        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts:10"),
+        (".agents/plugins/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts imports it as codexMarketplace"),
+        (".claude-plugin/marketplace.json", "packages/claude-envoy/tests/envoy-channel-server.test.ts imports it as marketplace"),
         (".github/scripts/release-claude-envoy-check-packed.sh", "packages/claude-envoy/tests/packed-skills.test.ts's test \"the release's "
                                                                  "check of the packed tarball passes a listing longer than a pipe holds\" "
                                                                  "copies it into a root of its own and runs it over a long listing"),
@@ -781,7 +781,8 @@ RULES = {
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:501-502 countMigrations globs ../../internal/broker/store/migrations/*.up.sql")),
     f"{ENVOY}/cmd/ci-report/action_test.go": reads(
         (".github/actions/dispatch-results/action.yml",
-         "cmd/ci-report/action_test.go:20 actionPath joins ../../../../.github/actions/dispatch-results/action.yml, which TestTheActionRunsTheReporter reads at :71 and whose one step it runs")),
+         "cmd/ci-report/action_test.go:20 actionPath joins ../../../../.github/actions/dispatch-results/action.yml, which "
+         "TestTheActionRunsTheReporter reads at :71 and whose one step it runs")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:822")),
     # The two-build suite's CLI half runs this tree's dispatch command with bun (currentCLI,
     # :42-46), which loads bin/dispatch.ts and its imports: envoy-client's sources and
@@ -2852,7 +2853,7 @@ GATES = [
     gate("contracts", "contracts", reads=reads(
         ("packages/contracts/**", f"{at('contracts', 'Typecheck contracts')}, test (src/, scripts/gen-go.test.ts) and build in packages/contracts"),
         ("skills/dispatch/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts's dispatchSkillHeadings reads skills/dispatch/SKILL.md headings"),
-        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts:1565 existsSync(skills/dispatch-writing-specs/SKILL.md)"),
+        ("skills/dispatch-writing-specs/SKILL.md", "packages/contracts/src/dispatch-tools.test.ts's row \"points dispatch_issue's spec and dispatch_doc_edit at the skill that writes specs\" checks that skills/dispatch-writing-specs/SKILL.md exists"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-href-references.json", "packages/contracts/src/dispatch-href.test.ts:51-55"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-text-references.json", "packages/contracts/src/dispatch-text-references.test.ts:10-14"),
         (f"{ENVOY}/internal/dispatch/text/testdata/dispatch-block-id-encodings.json", "packages/contracts/src/dispatch-block-ref.test.ts:98-102 reads the Go side's own table by relative path and asserts set equality against it, so the two halves are one corpus"),
@@ -2898,7 +2899,6 @@ GATES = [
         (f"{FIX}/envelope-without-role.json", "packages/envoy-client/src/__tests__/transport.test.ts:11"),
         (f"{FIX}/ask-reply-recipients.json", "packages/envoy-client/src/__tests__/ask-reply-recipients.test.ts:61 renders the copies packages/envoy's TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes"),
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
-        (f"{FIX}/go-unicode-isspace.json", "packages/envoy-client/src/__tests__/dispatch-execute.test.ts:27"),
         ("packages/contracts/schemas/dispatch-openapi.json", "packages/envoy-client/test/route-answers.ts's `document` reads the OpenAPI document the server generates: src/__tests__/dispatch-write-rows.test.ts drives every keyed write of the client against each 2xx answer it declares, and the other tests' stubs of a keyed write serve its route's answer through routeAnswer"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:23-30 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts's row \"every skill section a notice cites is a heading of that skill\" reads skills/<skill>/SKILL.md for every skill a notice cites"),
@@ -3689,19 +3689,23 @@ GATES = [
                    ENVOY, ["./cmd/dispatch"], mode="build"),
         script_run("packages/envoy-client/test/ci-results-stack.ts",
                    'packages: ["./cmd/broker", "./cmd/dev-oidc-issuer"],',
-                   f"the secrets broker and the cluster's token issuer that rig hands buildGoBinaries, run by {at(STALL, CI_RESULTS_STEP)}",
+                   f"the secrets broker and the cluster's token issuer that rig hands buildGoBinaries, run by "
+                   f"{at(STALL, CI_RESULTS_STEP)}",
                    ENVOY, ["./cmd/broker", "./cmd/dev-oidc-issuer"], mode="build"),
         script_run("packages/envoy-client/src/__tests__/nats-credential.test.ts",
                    'packages: ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"],',
-                   f"the packages that test hands buildGoBinaries, run by {at(STALL, 'Broker credential tests on a hub behind the auth service')}",
+                   f"the packages that test hands buildGoBinaries, run by "
+                   f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
                    ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
         script_run("packages/envoy-client/src/__tests__/ci-report.live.test.ts",
                    'packages: ["./cmd/ci-report"],',
-                   f"the last step of the fixture CI job, which that test hands buildGoBinaries, run by {at(STALL, CI_REPORT_STEP)}",
+                   f"the last step of the fixture CI job, which that test hands buildGoBinaries, run by "
+                   f"{at(STALL, CI_REPORT_STEP)}",
                    ENVOY, ["./cmd/ci-report"], mode="build"),
         script_run("packages/envoy-client/src/__tests__/ci-report-long-output.live.test.ts",
                    'packages: ["./cmd/ci-report"],',
-                   f"ci-report, which that test hands buildGoBinaries to store a long output's text, run by {at(STALL, CI_REPORT_STEP)}",
+                   f"ci-report, which that test hands buildGoBinaries to store a long output's text, run by "
+                   f"{at(STALL, CI_REPORT_STEP)}",
                    ENVOY, ["./cmd/ci-report"], mode="build"),
         ceiling_run(STALL),
     ], reads=reads(

@@ -20,7 +20,7 @@ inputs:
       The path of the job's `go test -json` report. A relative path is read from the checkout. The
       command that makes it passes no -v and no -test.v but the -test.v=test2json that -json passes
       itself: under any other value a test can print a line that reads as its own pass, and such a
-      report cannot be told from one made without -v, so rule 20 of
+      report cannot be told from one made without -v, so rule 22 of
       .github/scripts/check-ci-filters.sh refuses a job that runs this action and such a
       `go test`.
     required: true
