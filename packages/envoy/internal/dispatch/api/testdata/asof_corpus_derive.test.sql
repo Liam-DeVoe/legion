@@ -1,5 +1,6 @@
--- asof_corpus_derive.sql: the present rows that a read at a cut joins on, derived from a copy of
--- production's event log, for TestAsOfCostOnACorpusCopy (as_of_cost_test.go).
+-- asof_corpus_derive.test.sql: the present rows that a read at a cut joins on, derived from a
+-- copy of production's event log, for TestAsOfCostOnACorpusCopy (as_of_cost_test.go). It is a
+-- test's fixture, so the route-writer guard (TestOnlyTheIssuePatchWritesTheRoute) leaves it out.
 --
 -- The copy is the table corpus.events, which holds the columns of GET /api/v1/events/log: id,
 -- issue_key, artifact_id, project, seq, type, actor, payload and created_at. The shadows read the

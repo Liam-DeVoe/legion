@@ -31,8 +31,8 @@ import (
 // TestAsOfCostOnACorpusCopy reads.
 const asOfCorpusURLEnv = "DISPATCH_ASOF_CORPUS_URL"
 
-// asOfCorpusDerived are the tables that testdata/asof_corpus_derive.sql writes from the copy of
-// the event log, in the order it writes them.
+// asOfCorpusDerived are the tables that testdata/asof_corpus_derive.test.sql writes from the
+// copy of the event log, in the order it writes them.
 var asOfCorpusDerived = []string{
 	"projects", "issues", "artifacts", "artifact_versions", "document_search", "events", "asks", "comments", "messages",
 }
@@ -264,9 +264,9 @@ func asOfCostTargetsAt(t *testing.T, database *store.Store, cut asof.Cut) asOfCo
 //
 // The test migrates the database. The shadows read the present tables beside events, which the
 // event log does not hold, so on its first run the test derives them from the copy and moves the
-// copy into public.events (testdata/asof_corpus_derive.sql), and vacuums them. Each run then fills
-// the keyword table to the copy's newest event (textversions.FillToHorizon), which the first run
-// does from the start of the log. What the copy cannot give, the output says: no event holds a
+// copy into public.events (testdata/asof_corpus_derive.test.sql), and vacuums them. Each run then
+// fills the keyword table to the copy's newest event (textversions.FillToHorizon), which the first
+// run does from the start of the log. What the copy cannot give, the output says: no event holds a
 // document's text, so each document version is empty, and no event holds an embedding, so a search
 // with meaning is not timed.
 func TestAsOfCostOnACorpusCopy(t *testing.T) {
@@ -394,7 +394,7 @@ func asOfCorpusHoldsTheCopy(t *testing.T, database *store.Store) bool {
 }
 
 // deriveAsOfCorpus writes, on the first run, the present tables the shadows join on from the copy
-// in corpus.events, and the copy into public.events (testdata/asof_corpus_derive.sql), then
+// in corpus.events, and the copy into public.events (testdata/asof_corpus_derive.test.sql), then
 // vacuums them, as production's tables are; a later run finds public.events filled and writes
 // nothing. Either way it logs the derived tables with their rows.
 func deriveAsOfCorpus(t *testing.T, database *store.Store) {
@@ -405,7 +405,7 @@ func deriveAsOfCorpus(t *testing.T, database *store.Store) {
 		t.Fatalf("read whether the copy is derived: %v", err)
 	}
 	if !filled {
-		statements, err := os.ReadFile("testdata/asof_corpus_derive.sql")
+		statements, err := os.ReadFile("testdata/asof_corpus_derive.test.sql")
 		if err != nil {
 			t.Fatalf("read the derivation: %v", err)
 		}
@@ -430,7 +430,7 @@ func deriveAsOfCorpus(t *testing.T, database *store.Store) {
 		}
 		counts = append(counts, fmt.Sprintf("%s %d", table, rows))
 	}
-	t.Logf("tables derived from the copy of the event log (testdata/asof_corpus_derive.sql), with their rows: %s",
+	t.Logf("tables derived from the copy of the event log (testdata/asof_corpus_derive.test.sql), with their rows: %s",
 		strings.Join(counts, ", "))
 }
 

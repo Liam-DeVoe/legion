@@ -34,10 +34,11 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  * Against 651db8d5, `reserve-ask.ts`, `stats.ts` and `claim.ts` are byte for byte the same, and
  * the pinned `reserve.ts`, `corpus-io.ts` and `dispatch-read.ts` differ only in what the decision
  * never calls: the `--draw` path option of `runDigestOf`, the two sha256s `readCorpus` records,
- * and `pageEventLog`'s `after` and the new `readBytes`. So the pinned closure is the 651db8d5
- * decision, and any later change to a pinned file fails this check until a reviewed pull request
- * moves the pin. The pinned files are checked again right before the children are spawned
- * (`Decision.confirm`).
+ * `pageEventLog`'s `after` and the new `readBytes`, and how `claimRunOf` reads a reply its author
+ * deleted, with `CommentReply`'s `deleted_at` (dispatch://INFRA-1523). So the pinned closure is
+ * the 651db8d5 decision, and any later change to a pinned file fails this check until a reviewed
+ * pull request moves the pin. The pinned files are checked again right before the children are
+ * spawned (`Decision.confirm`).
  *
  * The children. Each ask is decided by a child process (`spawnDecision`) run with neither
  * `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its environment, so outside the claim's
@@ -56,9 +57,9 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
 export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
   "corpus-io.ts": "3a15ed63b87a66b161b12e2957382b93b190354c81cc35fe5958add81ccc3fb1",
   "decision-preload.ts": "fbd2007b4294be4645e6b38cb31cd92803371d18b1807b3a8dd911586deb5641",
-  "dispatch-read.ts": "d1732d4c3d8a0d4e86496da5223e125335ea623df93f9249ad07ee30c03883d7",
+  "dispatch-read.ts": "89ca0dda1225cfebe147092fb5a0064d240af38f70e06a7f94bf9354e77fa37e",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
-  "reserve.ts": "0f77f64369a1227d7fe09201c19b6d9e77a6b130e26e7155643e2fee152e018c",
+  "reserve.ts": "f266ac9dcda5c054ef69dde8acfe94c23442cd210ba742453d2d4a38c8ed0909",
   "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",
 };
 
