@@ -993,7 +993,9 @@ COPY packages/daemon/docker/codegraph/package.json /in/codegraph/package.json
 # of each other and left sequential rather than backgrounded: this whole RUN is the cached layer
 # the stage comment above describes (a source change, not a pin bump, reuses it, so it rebuilds
 # rarely), and running unauthenticated GitHub raw-content requests in parallel risks tripping its
-# secondary rate limit for a build-time saving that doesn't matter on a layer this cold.
+# secondary rate limit for a build-time saving that doesn't matter on a layer this cold. Each read
+# carries --max-time 60: this whole RUN, its twenty-two reads with it, took 7.4 s at its slowest of
+# 40 green builds (job 136021737782); twice that, rounded up to the minute, is 60 s for each read.
 RUN set -eu; \
     omp_pin="$(cat /omp-pin)"; omp_repo="${omp_pin#github:}"; omp_repo="${omp_repo%@*}"; \
     omp_tag="v${omp_pin##*@}"; \
@@ -1008,7 +1010,7 @@ RUN set -eu; \
       "$omp_repo" "$omp_tag" "$jj_repo" "$jj_tag" "$gh_tag" "$codegraph_node_tag" "$codegraph_version" \
       "$typescript_version" "$tsls_version" "$pyright_version" > /in/tags.env; \
     gh_raw_url() { printf 'https://raw.githubusercontent.com/%s/%s/%s' "$1" "$2" "$3"; }; \
-    fetch() { curl -fsSL "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
+    fetch() { curl -fsSL --max-time 60 "$(gh_raw_url "$1" "$2" "$3")" -o "/in/$4"; }; \
     fetch oven-sh/bun "bun-v${BUN_VERSION}" LICENSE.md bun-LICENSE.md; \
     fetch "$omp_repo" "$omp_tag" LICENSE omp-LICENSE; \
     fetch "$omp_repo" "$omp_tag" packages/coding-agent/THIRD-PARTY-NOTICES.txt omp-coding-agent-THIRD-PARTY-NOTICES.txt; \
@@ -1026,17 +1028,17 @@ RUN set -eu; \
     fetch golang/go "go${GO_VERSION}" LICENSE go-LICENSE; \
     fetch golang/tools "gopls/v${GOPLS_VERSION}" LICENSE gopls-LICENSE; \
     crates() { \
-      curl -fsSIo /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
+      curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url "$1" "$2" Cargo.lock)"; \
       printf '%s links Rust crates whose license texts its release does not ship. They are the packages listed in\nhttps://github.com/%s/blob/%s/Cargo.lock, the lockfile of the release this image installs; the\nlicense of each is published with it on crates.io.\n' "$3" "$1" "$2" > "/in/$4"; \
     }; \
     crates "$jj_repo" "$jj_tag" jj jj-crates; \
     crates astral-sh/uv "$UV_VERSION" uv uv-crates; \
     crates jdx/mise "${MISE_VERSION}" mise mise-crates; \
-    curl -fsSIo /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url golang/tools "gopls/v${GOPLS_VERSION}" gopls/go.mod)"; \
     printf 'gopls links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/golang/tools/blob/gopls/v%s/gopls/go.mod, the module file of the release this image builds; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$GOPLS_VERSION" > /in/gopls-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url kubernetes/kubernetes "v${KUBECTL_VERSION}" go.mod)"; \
     printf 'kubectl links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/kubernetes/kubernetes/blob/v%s/go.mod, the module file of the release this image installs.\nThe k8s.io modules that file replaces with ./staging/src (kubectl itself, client-go, apimachinery, cli-runtime\nand component-base among them) are source of the Kubernetes release itself, each with its license file under\nhttps://github.com/kubernetes/kubernetes/tree/v%s/staging/src/k8s.io; the license of every other module is in\nhttps://github.com/kubernetes/kubernetes/tree/v%s/LICENSES/vendor.\n' "$KUBECTL_VERSION" "$KUBECTL_VERSION" "$KUBECTL_VERSION" > /in/kubectl-modules; \
-    curl -fsSIo /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
+    curl -fsSI --max-time 60 -o /dev/null "$(gh_raw_url mikefarah/yq "v${YQ_VERSION}" go.mod)"; \
     printf 'yq links Go modules whose license texts its binary does not carry. They are the modules listed in\nhttps://github.com/mikefarah/yq/blob/v%s/go.mod, the module file of the release this image installs; the\nlicense of each is published with its source and shown on pkg.go.dev.\n' "$YQ_VERSION" > /in/yq-modules
 # GCLOUD_VERSION, AZURE_CLI_PYTHON_VERSION and azure-cli's lock come in after the fetches, which
 # read none of them; the assembly RUN below is what reads them. BuildKit puts every ARG declared

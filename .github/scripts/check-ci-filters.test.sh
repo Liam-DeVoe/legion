@@ -3710,6 +3710,54 @@ lint_steps "$root" \
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 
+# A curl or a wget waits on the network whatever its URL is written as: the worker image's notices
+# RUN read raw.githubusercontent.com 22 times through `curl -fsSL "$(gh_raw_url …)"` with no bound,
+# and the rule passed it for the URL's spelling. Only a URL the rule can read as this runner's own
+# is no wait: a file: URL, localhost or a loopback address, written out or held by a variable the
+# text sets only to such URLs.
+echo "case: rule 22 reads every curl and wget as a wait on the network, whatever its URL's form"
+root=$(fixture network-url-forms)
+lint_steps "$root" \
+  "a substitution's URL" $'gh_raw_url() { printf \'https://raw.githubusercontent.com/%s\' "$1"; }\ncurl -fsSL "$(gh_raw_url oven-sh/bun/LICENSE.md)" -o LICENSE.md' \
+  "a variable's URL" $'url=https://example.com/tool.tar.gz\ncurl -fsSL -o tool.tar.gz "$url"' \
+  "an unknown variable's URL" 'curl -fsSIo /dev/null "$REMOTE_URL"' \
+  "a wget of a variable" 'wget -q "$REMOTE_URL"' \
+  "a curl whose options come from a file" 'curl -K curl.config' \
+  "the same substitution under --max-time" $'gh_raw_url() { printf \'https://raw.githubusercontent.com/%s\' "$1"; }\ncurl -fsSL --max-time 60 "$(gh_raw_url oven-sh/bun/LICENSE.md)" -o LICENSE.md' \
+  "localhost" 'curl -fsS http://localhost:8080/health' \
+  "loopback with no scheme" 'curl -fsS 127.0.0.1:8080/health' \
+  "a variable set to loopback alone" $'base="http://127.0.0.1:${port}"\ncurl -fsS "$base/health" 2>/dev/null' \
+  "a file URL" 'curl -fsS file:///etc/hostname' \
+  "a wget of loopback" 'wget -qO- http://127.0.0.1:8080/health' \
+  "curl's version" 'curl --version'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the curl whose URL a substitution prints" "$(refused_in "a substitution's URL" "curl")"
+check "names the curl whose URL a variable holds" "$(refused_in "a variable's URL" "curl")"
+check "names the curl of a variable it cannot read" "$(refused_in "an unknown variable's URL" "curl")"
+check "names the wget of a variable it cannot read" "$(refused_in "a wget of a variable" "wget")"
+check "names the curl whose URLs a config file holds" "$(refused_in "a curl whose options come from a file" "curl")"
+for step in "the same substitution under --max-time" "localhost" "loopback with no scheme" \
+  "a variable set to loopback alone" "a file URL" "a wget of loopback" "curl's version"; do
+  check "passes $step" "$(is "$(contains "$out" "in step \"$step\"")" false)"
+done
+root=$(fixture network-url-run)
+mkdir -p "$root/docker"
+cat > "$root/docker/app.Dockerfile" <<'DOCKERFILE'
+FROM ghcr.io/example/base:1
+RUN gh_raw_url() { printf 'https://raw.githubusercontent.com/%s' "$1"; }; \
+    fetch() { curl -fsSL "$(gh_raw_url "$1")" -o "/in/$2"; }; \
+    fetch oven-sh/bun/LICENSE.md bun-LICENSE.md
+DOCKERFILE
+replace "$root/.github/workflows/ci.yaml" $'      - name: Lint everything\n' \
+  $'      - name: Build the image\n        timeout-minutes: 10\n        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0\n        with:\n          context: .\n          file: docker/app.Dockerfile\n      - name: Lint everything\n'
+run_check "$root"
+check "names the RUN's curl whose URL a substitution prints, as the notices stage's were" \
+  "$(contains "$out" "in docker/app.Dockerfile, which step \"Build the image\" builds, runs \`curl\` in step \"RUN at line 2\"")"
+replace "$root/docker/app.Dockerfile" 'curl -fsSL "$(gh_raw_url' 'curl -fsSL --max-time 60 "$(gh_raw_url'
+run_check "$root"
+check "passes it under --max-time" "$(is "$status" 0)"
+
 # A shell script of the repository that the lint job's step runs, as build-dispatch-build.sh runs
 # its `bun install` for dispatch-two-builds.
 echo "case: rule 22 reads the scripts a step runs, and the scripts those run"

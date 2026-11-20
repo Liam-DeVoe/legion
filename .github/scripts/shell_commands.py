@@ -15,7 +15,9 @@ so a backslash inside it continues nothing; escaped whitespace and an escaped `#
 characters (`echo a\\ #` has no comment); a backslash-newline joins lines outside single quotes,
 whatever the number of backslashes before it (an escaped backslash is a character: `printf 'x' \\\\`
 ends its command, `printf 'x' \\\\\\` continues it, and `a\\` + newline + `#` glues `a#`); a quote
-carries across newlines, and `;`, `&`, `|` and `#` inside one are literal; `$(…)`, `<(…)`, `(…)`
+carries across newlines, and `;`, `&`, `|` and `#` inside one are literal; inside ANSI-C quoting,
+`$'…'`, a backslash escapes the character after it, so `$'it\\'s'` is one word whose `\\'` ends no
+quote (dev-broker.test.sh holds such a word); `$(…)`, `<(…)`, `(…)`
 and backticks open a command of their own, inside a double-quoted string too, and the string
 resumes at the close; an unquoted `;`, `&`, `|`, `(`, `)` or newline ends a command, and a
 redirection's target (`>/dev/null`, `>> "$GITHUB_OUTPUT"`, `2>&1`) is not one of its words. A
@@ -288,10 +290,13 @@ class Scanner:
         while i < len(text):
             char = text[i]
             if quote:
-                if char == quote:
+                if char == quote[-1]:
                     quote = None
-                elif char == "\\" and quote == '"':
+                elif char == "\\" and quote in ('"', "$'"):
                     i += 1
+            elif char == "$" and text[i + 1:i + 2] == "'":
+                quote = "$'"  # ANSI-C quoting: a backslash escapes the quote too
+                i += 1
             elif char in "'\"":
                 quote = char
             elif char == "\\":
@@ -336,6 +341,19 @@ class Scanner:
                 open_subs.append(("paren", quote, self.open_frame(), i + 2, "$("))
                 quote = None
                 i += 1
+            elif char == "$" and after == "'" and quote is None:
+                # ANSI-C quoting, `$'…'`, as bash reads it: a backslash escapes the character after
+                # it, a quote included, so `$'it\'s'` is one word and its `\'` ends nothing.
+                i += 2
+                while i < len(text) and text[i] != "'":
+                    if text[i] == "\\" and i + 1 < len(text):
+                        i += 1
+                        self.add({"n": "\n", "t": "\t"}.get(text[i], text[i]))
+                    else:
+                        self.add(text[i])
+                    i += 1
+                self.started = True
+                self.at_word_start = False
             elif quote == '"':
                 if char == '"':
                     quote = None
@@ -381,6 +399,8 @@ class Scanner:
                     if open_subs and open_subs[-1][0] == "subshell":
                         open_subs.pop()
             elif char in "<>":
+                if self.word.isdigit():  # the descriptor of `2>/dev/null`, `2>&1`: no word
+                    self.word, self.started = "", False
                 self.end_word()
                 self.redirect_target = True
                 operator = char

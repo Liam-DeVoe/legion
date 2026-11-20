@@ -101,8 +101,43 @@ PACKAGE_RUNNERS = {"bunx": {"-p", "--package"}, "npx": {"-p", "--package"}, "pnp
 RUNNER_FETCHES = {"--yes", "-y", "-p", "--package"}
 RUNNER_KIND = {"bunx": "bun", "npx": "npm", "pnpx": "pnpm"}
 PLAYWRIGHT_PACKAGES = {"playwright", "@playwright/test", "playwright-core"}
-# The hosts a curl may read with no bound of its own: this runner's own servers.
+# The hosts a curl or a wget may read with no bound of its own: this runner's own servers. A URL
+# whose host is one of these (or 127.x.y.z), and a `file:` URL, is the one read the rule can tell
+# is local; every other URL waits on the network, however it is written (a variable, a substitution
+# such as the worker image's `"$(gh_raw_url …)"`), since its spelling does not make it local.
 LOCAL_HOSTS = {"localhost", "0.0.0.0", "[::1]"}
+# curl's options that take a value of their own (curl 8.5.0's `--help all`, and `-x`/`--proxy`,
+# whose value it prints in brackets), so its URLs are the other words that are no option; a short
+# cluster takes its value from the rest of its word, or from the next word where one of these ends
+# it (`-fsSIo /dev/null`).
+CURL_VALUE_OPTIONS = {
+    "--abstract-unix-socket", "--alt-svc", "--aws-sigv4", "--cacert", "--capath", "--cert", "--cert-type",
+    "--ciphers", "--config", "--connect-timeout", "--connect-to", "--continue-at", "--cookie", "--cookie-jar",
+    "--create-file-mode", "--crlfile", "--curves", "--data", "--data-ascii", "--data-binary", "--data-raw",
+    "--data-urlencode", "--delegation", "--dns-interface", "--dns-ipv4-addr", "--dns-ipv6-addr", "--dns-servers",
+    "--doh-url", "--dump-header", "--egd-file", "--engine", "--etag-compare", "--etag-save", "--expect100-timeout",
+    "--form", "--form-string", "--ftp-account", "--ftp-alternative-to-user", "--ftp-method", "--ftp-port",
+    "--ftp-ssl-ccc-mode", "--happy-eyeballs-timeout-ms", "--header", "--help", "--hostpubmd5", "--hostpubsha256",
+    "--hsts", "--interface", "--ipfs-gateway", "--json", "--keepalive-time", "--key", "--key-type", "--krb",
+    "--libcurl", "--limit-rate", "--local-port", "--login-options", "--mail-auth", "--mail-from", "--mail-rcpt",
+    "--max-filesize", "--max-redirs", "--max-time", "--netrc-file", "--noproxy", "--oauth2-bearer", "--output",
+    "--output-dir", "--parallel-max", "--pass", "--pinnedpubkey", "--preproxy", "--proto", "--proto-default",
+    "--proto-redir", "--proxy", "--proxy-cacert", "--proxy-capath", "--proxy-cert", "--proxy-cert-type",
+    "--proxy-ciphers", "--proxy-crlfile", "--proxy-header", "--proxy-key", "--proxy-key-type", "--proxy-pass",
+    "--proxy-pinnedpubkey", "--proxy-service-name", "--proxy-tls13-ciphers", "--proxy-tlsauthtype",
+    "--proxy-tlspassword", "--proxy-tlsuser", "--proxy-user", "--proxy1", "--pubkey", "--quote", "--random-file",
+    "--range", "--rate", "--referer", "--request", "--request-target", "--resolve", "--retry", "--retry-delay",
+    "--retry-max-time", "--sasl-authzid", "--service-name", "--socks4", "--socks4a", "--socks5",
+    "--socks5-gssapi-service", "--socks5-hostname", "--speed-limit", "--speed-time", "--stderr", "--telnet-option",
+    "--tftp-blksize", "--time-cond", "--tls-max", "--tls13-ciphers", "--tlsauthtype", "--tlspassword", "--tlsuser",
+    "--trace", "--trace-ascii", "--trace-config", "--unix-socket", "--upload-file", "--url-query", "--user",
+    "--user-agent", "--variable", "--write-out",
+}
+CURL_SHORT_VALUES = set("ACDEFHKPQTUXYbcdehmortuwxyz")
+# wget's options that take a value of their own, as separate words (wget's long options take theirs
+# after a `=`, in the same word).
+WGET_VALUE_OPTIONS = {"-O", "-o", "-a", "-P", "-e", "-U", "-T", "-t", "-w", "-i", "-B", "-D", "-I", "-X", "-A",
+                      "-R", "-l", "-Q", "--output-document", "--output-file", "--append-output"}
 # The Lean commands that download the toolchain lean-toolchain names when elan has not installed it.
 LEAN_COMMANDS = {"lake", "lean", "leanc"}
 # How a script's path or its directory is written, which the resolver reads as the script itself.
@@ -207,29 +242,87 @@ def docker_command(name: str, rest: list) -> Docker | None:
     return Docker(f"docker {verb[0]}", words[index] if index < len(words) else "", pull)
 
 
-def _curl_install(rest: list) -> bool:
-    """Whether a curl reads a server outside this runner with no bound of its own: it names a
-    literal URL of another host and no --max-time (curl's own retries and its --connect-timeout
-    leave a body that trickles unbounded)."""
-    if any(w in ("-m", "--max-time") or w.startswith("--max-time=") or re.fullmatch(r"-m[0-9.]+", w)
+def _url_words(rest: list, long_values: set, short_values: set, hiding: set) -> list | None:
+    """The URLs a curl's or a wget's words name: each word that is no option and no option's value,
+    and curl's `--url` values; None where an option of `hiding` reads more words from elsewhere
+    (curl's `-K`/`--config`, wget's `-i` and `-e`), whose URLs the rule cannot read."""
+    urls, index = [], 0
+    while index < len(rest):
+        word = rest[index]
+        index += 1
+        if word in hiding or word.split("=", 1)[0] in hiding:
+            return None
+        if word == "--url":
+            urls += rest[index:index + 1]
+            index += 1
+        elif word in long_values:
+            index += 1
+        elif word.startswith("--") or word == "-":
+            continue
+        elif word.startswith("-") and len(word) > 1:
+            cluster = word[1:]
+            for position, letter in enumerate(cluster):
+                if f"-{letter}" in hiding:
+                    return None
+                if letter in short_values:
+                    index += position == len(cluster) - 1  # its value is the next word
+                    break
+        else:
+            urls.append(word)
+    return urls
+
+
+def _local_url(word: str, local: frozenset) -> bool:
+    """Whether a URL is one of this runner's own: a `file:` URL, a URL whose host is written out and
+    is one of LOCAL_HOSTS or 127.x.y.z (curl reads a URL with no scheme as http://), or a URL that is
+    a variable the text sets only to such URLs (`local`)."""
+    if word.lower().startswith("file:"):
+        return True
+    match = re.fullmatch(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?(/.*)?", word)
+    if match:
+        return match.group(1) in local
+    host = re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*://)?(?:[^@/]*@)?(\[[^]]*\]|[^/:?#]*)", word).group(1).lower()
+    return bool(host) and _literal(host) and (host in LOCAL_HOSTS or host.startswith("127."))
+
+
+def local_urls(assignments: list, known: dict) -> frozenset:
+    """The variables a text, or its step's env, sets to this runner's own URLs alone: every value it
+    gives the name is a local URL (_local_url), so a curl of `"$base/health"` reads that server."""
+    values: dict = {}
+    for name, value in list(known.items()) + list(assignments):
+        values.setdefault(name, []).append(value)
+    return frozenset(name for name, given in values.items()
+                     if given and all(value and _local_url(value, frozenset()) for value in given))
+
+
+def _curl_install(rest: list, local: frozenset = frozenset()) -> bool:
+    """Whether a curl waits on the network with no bound of its own: it carries no --max-time
+    (curl's own retries and its --connect-timeout leave a body that trickles unbounded) and names a
+    URL that is not this runner's own, however that URL is written (_local_url)."""
+    if any(w in ("-m", "--max-time") or w.startswith("--max-time=") or re.fullmatch(r"-[A-Za-z]*m[0-9.]*", w)
            for w in rest):
         return False
-    for word in rest:
-        match = re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://([^/:?#]*)", word)
-        if match and _literal(match.group(1)) and match.group(1):
-            host = match.group(1).lower()
-            if host not in LOCAL_HOSTS and not host.startswith("127."):
-                return True
-    return False
+    urls = _url_words(rest, CURL_VALUE_OPTIONS | {"-x"}, CURL_SHORT_VALUES, {"-K", "--config"})
+    return urls is None or any(not _local_url(url, local) for url in urls)
 
 
-def network_install(words: list) -> tuple[str, str] | None:
+def _wget_install(rest: list, local: frozenset = frozenset()) -> bool:
+    """Whether a wget reads the network: it names a URL that is not this runner's own. wget has no
+    bound on a whole transfer (its --timeout is a wait for the next byte, which a trickle never
+    ends), so every such wget is an install."""
+    urls = _url_words(rest, WGET_VALUE_OPTIONS, set("OoaPeUTtwiBDIXARlQ"),
+                      {"-i", "--input-file", "-e", "--execute"})
+    return urls is None or any(not _local_url(url, local) for url in urls)
+
+
+def network_install(words: list, local: frozenset = frozenset()) -> tuple[str, str] | None:
     """The install a command makes from the network, as the words that say so (`apt-get update`,
     `bun install`) and its kind, network-install.sh's word for it (`apt`, `bun`, `docker`,
     `playwright`, …; an install that script has no kind for is of a kind named after its
-    program), or None where the command makes none. A docker container of an image, a docker
-    build and a Lean command are installs the job's reader decides on, since what an earlier step
-    pulled or installed decides them."""
+    program), or None where the command makes none. `local` names the variables the text sets to
+    this runner's own URLs alone (local_urls). A docker container of an image, a docker build and a
+    Lean command are installs the job's reader decides on, since what an earlier step pulled or
+    installed decides them."""
     name = words[0].rsplit("/", 1)[-1]
     rest = words[1:]
     if name in APT:
@@ -238,9 +331,9 @@ def network_install(words: list) -> tuple[str, str] | None:
             return None
         return (f"{name} {verb}", "apt") if verb in APT_VERBS else None
     if name == "wget":
-        return ("wget", "wget") if _from_verb(rest, {"-O", "-o", "-P", "-e", "--output-document"}) else None
+        return ("wget", "wget") if _wget_install(rest, local) else None
     if name == "curl":
-        return ("curl", "curl") if _curl_install(rest) else None
+        return ("curl", "curl") if _curl_install(rest, local) else None
     if name in ("docker", "docker-compose"):
         docker = docker_command(name, rest)
         if docker is None or docker.verb == "docker build" or docker.pull == "never":
@@ -809,6 +902,7 @@ class NetworkInstalls:
         and each script the resolver cannot place refused."""
         shell = read_shell(run, WRAPPERS)
         _environment(shell.assignments, site)
+        local = local_urls(shell.assignments, known)
         found: list = []
         unfound: list = []
         for pipeline, loops in zip(shell.pipelines, shell.loops):
@@ -817,7 +911,7 @@ class NetworkInstalls:
                 if name == NETWORK_INSTALL.rsplit("/", 1)[-1]:
                     self.read_wrapped(site, words, wrapped, loops, known)
                     continue
-                install = self.install_of(words, site, wrapped)
+                install = self.install_of(words, site, wrapped, local)
                 if install:
                     found.append(install)
                 if name in ("curl", "wget") and name not in site.fakes and \
@@ -854,7 +948,7 @@ class NetworkInstalls:
                               f"directory, from $GITHUB_WORKSPACE or $GITHUB_ACTION_PATH, or from a variable the "
                               f"script sets to its own directory (`here=$(cd \"$(dirname \"$0\")\" && pwd)`)")
 
-    def install_of(self, words: list, site: Site, wrapped: list) -> str | None:
+    def install_of(self, words: list, site: Site, wrapped: list, local: frozenset = frozenset()) -> str | None:
         """The install a command makes, as network_install names it, with what the job did before it
         read in: a container of an image an earlier wrapped `docker pull` of the job pulled, and a
         Lean command after a wrapped install of its toolchain, pull nothing; a docker build reads
@@ -872,7 +966,7 @@ class NetworkInstalls:
             if docker and docker.verb in ("docker run", "docker create") and docker.pull != "always" and \
                     any(word in self.pulled for word in words if _literal(word)):
                 return None  # it names an image an earlier step left on the runner
-        install = network_install(words)
+        install = network_install(words, local)
         return install[0] if install else None
 
     def read_wrapped(self, site: Site, words: list, wrapped: list, loops: tuple, known: dict) -> None:
@@ -1146,9 +1240,12 @@ def check_network_installs(documents: dict, problems: list) -> None:
     run` of a <module>@<version>); elan installing a Lean toolchain (`elan toolchain install`,
     `elan default`, …), and lake or lean before such an install, since elan then checks github.com
     for a newer elan and downloads the toolchain lean-toolchain names, each a wait with no bound of
-    its own; `gh release download`; a wget that names a URL; a curl of another host's literal URL
-    with no --max-time; and a curl or a wget piped into a shell, or handed to one by a substitution
-    (`bash <(curl …)`, `sh -c "$(curl …)"`). timeout(1) alone is refused too: it bounds the wait,
+    its own; `gh release download`; a wget, and a curl with no --max-time, of a URL that is not
+    this runner's own, however the URL is written (a variable or a substitution waits on the network
+    as a literal does; _local_url reads a file: URL, localhost and a loopback address, written out or
+    held by a variable the text sets only to such URLs, as local); and a curl or a wget piped into a
+    shell, or handed to one by a substitution (`bash <(curl …)`, `sh -c "$(curl …)"`). timeout(1)
+    alone is refused too: it bounds the wait,
     but neither tries it again nor names what failed. A call of NETWORK_INSTALL passes when the
     resolver places it at the repository's own script (never by the name's suffix alone), names a
     kind its table bounds (`--bounds`) and wraps no install of another installer, whose bound was
@@ -1173,9 +1270,9 @@ def check_network_installs(documents: dict, problems: list) -> None:
     `http_timeout`'s 30 s, and against a server that sent the answer's headers and then one byte
     every 5 s, `mise install` of the jj install-jj installs ended by itself after four attempts, in
     125 s; a curl with --max-time, as .github/scripts/ci-tools.sh's ci_tools_curl makes each pinned
-    download, and a curl whose URL is a variable, which the rule cannot tell from one of this
-    runner's own servers; a command a test put first on the PATH of the script it runs, which is
-    that test's fake (_fakes); the RUN installs of a recipe PINNED_RECIPES names, while it holds the
+    download, and a curl or a wget of this runner's own server (_local_url); a command a test put
+    first on the PATH of the script it runs, which is that test's fake (_fakes); the RUN installs of
+    a recipe PINNED_RECIPES names, while it holds the
     bytes named there, counted against its build step's own limit; and the modules a `go build`,
     `go test`, `go vet` or `go run` of this repository's own packages downloads by itself, which
     are no step's install: pull request #4434 moves them into one fetch step per job, which this
