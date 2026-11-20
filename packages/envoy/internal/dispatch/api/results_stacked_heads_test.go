@@ -71,14 +71,16 @@ func (b stackedBasis) String() string {
 	return fmt.Sprintf("%s #%d at %s", b.Kind, *b.PullRequest, b.Commit)
 }
 
-// stackedPull is one open pull request of acme/widgets as GitHub names it for its head commit: its
+// stackedPull is one pull request of acme/widgets as GitHub names it for its head commit: its
 // head branch is legion/<the issue's key><suffix>, its base branch base, or the issue's own branch
-// legion/<the issue's key> where base is empty (a pull request stacked on it), and its body body.
+// legion/<the issue's key> where base is empty (a pull request stacked on it), its body body, and
+// open, or merged where merged is set.
 type stackedPull struct {
 	number       int
 	head         string
 	suffix, base string
 	body         string
+	merged       bool
 }
 
 // stackedWorld is a Dispatch whose GitHub names each pull request of pulls for its own head commit,
@@ -97,8 +99,12 @@ type stackedWorld struct {
 	// link records, as Dispatch stores a link to the reference acme/widgets#number, both URLs of
 	// that number on the other issue.
 	link func(number int)
-	// pullRequest stores the other issue's merged pull request number, at head.
+	// pullRequest records the other issue's open pull request number, at head, through the writer
+	// a `pull_request` event of it reaches (delivery.UpsertPullRequestHead).
 	pullRequest func(number int, head string)
+	// offered reports whether the reconcile's head pass would read the pull request number again
+	// now (delivery.ListStalePullRequestHeads, the batch a pass reads).
+	offered func(number int) bool
 }
 
 func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stackedWorld {
@@ -125,10 +131,14 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		if err != nil {
 			t.Errorf("encode the body of #%d: %v", pull.number, err)
 		}
+		state, merged := "open", `false,"merged_at":null`
+		if pull.merged {
+			state, merged = "closed", `true,"merged_at":"2026-11-20T17:00:00Z"`
+		}
 		return fmt.Sprintf(`[{"number":%d,"title":"A change","body":%s,"html_url":"https://github.com/%s/pull/%d",
-			"state":"open","merged":false,"updated_at":"2026-11-20T17:07:00Z",
+			"state":%q,"merged":%s,"updated_at":"2026-11-20T17:07:00Z",
 			"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q}}]`,
-			pull.number, body, repo, pull.number, "legion/"+issue.Key+pull.suffix, sha, repo, cmp.Or(pull.base, "legion/"+issue.Key))
+			pull.number, body, repo, pull.number, state, merged, "legion/"+issue.Key+pull.suffix, sha, repo, cmp.Or(pull.base, "legion/"+issue.Key))
 	})
 	ctx := context.Background()
 	return stackedWorld{
@@ -161,7 +171,24 @@ func newStackedWorld(t *testing.T, project string, pulls ...stackedPull) stacked
 		},
 		pullRequest: func(number int, head string) {
 			t.Helper()
-			writeHead(t, database, "acme/widgets", number, head, "merged", other)
+			key := other
+			if err := delivery.UpsertPullRequestHead(ctx, database.Pool, nil, delivery.PullRequestHead{
+				Repo: "acme/widgets", Number: number, HeadSHA: head, HeadRef: "legion/" + other, BaseRef: "main",
+				State: "open", IssueKey: &key, AttributionSource: "branch", AttributionComplete: true,
+				Title: "Other work", URL: fmt.Sprintf("https://github.com/acme/widgets/pull/%d", number),
+			}); err != nil {
+				t.Fatalf("record #%d, the other issue's pull request: %v", number, err)
+			}
+		},
+		offered: func(number int) bool {
+			t.Helper()
+			stale, err := delivery.ListStalePullRequestHeads(ctx, database.Pool, delivery.PullRequestHeadBatch, time.Now())
+			if err != nil {
+				t.Fatalf("list the heads the reconcile's pass reads: %v", err)
+			}
+			return slices.ContainsFunc(stale, func(head delivery.PullRequestHead) bool {
+				return head.Repo == "acme/widgets" && head.Number == number
+			})
 		},
 	}
 }
@@ -270,6 +297,13 @@ func stackedCommits(bases []stackedBasis) []string {
 // read is the first row's. Before rule 5 the mention outranked the branch, the own pull request was
 // credited to the other issue, and the issue's checks compared with the stacked head alone.
 //
+// The third row is the order a merge can come in: the own pull request, merged, is recorded while
+// Dispatch holds no #53, so its mention reads as a citation of a GitHub issue and credits it to the
+// other issue, as the rule says of a number Dispatch does not know. #53's own event then records it
+// as a pull request, and that write gives the merged row rule 0, so the reconcile's head pass reads
+// it again, as a raised rule has that pass read every merged row; the read credits it to the issue
+// by its branch. Without that mark nothing reads a merged row again, and it stays the other issue's.
+//
 // Two controls. A body that cites #54, a GitHub issue the other issue links and no pull request
 // Dispatch holds, still credits the pull request to the other issue, by the citation, which ranks
 // above the branch. And an issue with one open pull request reads as before each head had a state
@@ -298,6 +332,29 @@ func TestAStackedPullRequestsHeadHasItsOwnStateBesideTheIssuesOwnHead(t *testing
 				fmt.Sprintf("#%d is a pull request Dispatch holds, so the body's #%d cites no GitHub issue and the branch names the issue", stackedCitedPull, stackedCitedPull))
 		}
 		world.requireEachHead(mentioning, onTop, world.passes(own.head))
+	})
+	t.Run("the pull request the body names is recorded after the merged pull request that names it", func(t *testing.T) {
+		merged := own
+		merged.merged = true
+		merged.body = fmt.Sprintf("#%d renamed the helper, so this change calls it by its new name.", stackedCitedPull)
+		world := newStackedWorld(t, "RESSTL", merged)
+		world.link(stackedCitedPull)
+		world.readThrough(merged)
+		world.requireAttribution(merged.number, world.other, "github_issue_link",
+			fmt.Sprintf("Dispatch holds no #%d yet, so the body's #%d reads as a GitHub issue the other issue links", stackedCitedPull, stackedCitedPull))
+		if world.offered(merged.number) {
+			t.Fatalf("the merged #%d, judged by this build's rule, is offered to the reconcile's head pass before anything changed", merged.number)
+		}
+		world.pullRequest(stackedCitedPull, stackedCitedHead)
+		if !world.offered(merged.number) {
+			t.Fatalf("the merged #%d, credited to %s by its body's #%d, is not offered to the reconcile's head pass once Dispatch records #%d as a pull request: nothing reads a merged row again, so it stays the other issue's",
+				merged.number, world.other, stackedCitedPull, stackedCitedPull)
+		}
+		// The pass reads the pull request from GitHub and writes its row through the attribution
+		// the read-through writes it with (attributeHead).
+		world.readThrough(merged)
+		world.requireAttribution(merged.number, world.issue, "branch",
+			fmt.Sprintf("#%d is now a pull request Dispatch holds, so the body's #%d cites no GitHub issue and the branch names the issue", stackedCitedPull, stackedCitedPull))
 	})
 	t.Run("control: a body citing a GitHub issue the other issue links", func(t *testing.T) {
 		citing := own

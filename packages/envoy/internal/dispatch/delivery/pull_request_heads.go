@@ -400,9 +400,15 @@ const headWriteRollback = 2 * time.Second
 // The stored inputs and the head's repository (PullRequestHead.Inputs, HeadInRepo) follow the
 // issue: a complete write replaces them, and an incomplete one leaves them as they stand, so the
 // facts LinksChanged judges a row from are the facts its issue was judged from.
+//
+// The write that first records a pull request also gives rule 0 to every row the attribution
+// credited by a citation of that pull request's number (citingRowsRejudged), so the reconcile's
+// merged arm judges each of them once more, as a raised AttributionRuleVersion has it judge every
+// merged row: a citation of a number Dispatch did not yet hold as a pull request read as a GitHub
+// issue, and this write is what makes it no citation of one (citedPullRequest).
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
 	inputs := storedInputsOf(head)
-	tag, err := db.Exec(ctx, `
+	tag, err := db.Exec(ctx, citingRowsRejudged+`
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule,
@@ -449,6 +455,28 @@ func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (b
 	}
 	return tag.RowsAffected() > 0, nil
 }
+
+// citingRowsRejudged is the WITH clause upsertHeadRow's insert starts with. Where no row of the
+// pull request ($1, $2) exists yet (every sub-statement reads the snapshot from before the
+// insert), it sets attribution_rule to 0 on each row credited by source github_issue_link whose
+// stored cited issues name that pull request's number in its repository, the cited repository
+// read under its canonical name as citedPullRequest reads it. Two first writes of one pull request
+// that cross both mark the rows, and a second judging of them changes nothing. A row credited by
+// another source is left alone: a citation is source 2, so it decided only where it credited the
+// row. The number is bound as an integer (the insert's column) and compared as text. The text is
+// built once, at start, as attributionCandidatesQuery is. A delivery_pull_requests row needs no
+// such mark: AttributePullRequests walks every stored row in turn and judges it from the database.
+var citingRowsRejudged = `with first_record as (
+		select not exists (select 1 from pull_request_heads known where known.repo = $1 and known.number = $2) as first
+	), rejudged as (
+		update pull_request_heads citing set attribution_rule = 0
+		from first_record
+		where first_record.first
+			and citing.attribution_source = '` + string(sourceGitHubIssueLink) + `'
+			and exists (select 1 from unnest(citing.attribution_cited_issues) cited(url)
+				where lower(` + refs.CanonicalRepoSQL(`split_part(cited.url, '/', 4) || '/' || split_part(cited.url, '/', 5)`) + `) = lower($1)
+					and split_part(cited.url, '/', 7) = ($2::integer)::text)
+	)`
 
 // storedInputs is the five values upsertHeadRow binds for the stored inputs of a row, each nil
 // (null) where the write has none to store: an incomplete write, which stores none, and a writer
