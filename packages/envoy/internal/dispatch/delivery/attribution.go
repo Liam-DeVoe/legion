@@ -24,7 +24,8 @@ import (
 //  1. the issue whose external link is the pull request's own URL;
 //  2. the issue whose external link is a GitHub issue the body cites, a full
 //     github.com/<owner>/<repo>/issues/<n> URL or a bare #N in the pull request's own repository,
-//     the first such citation in body order;
+//     the first such citation in body order, where <n> is not a pull request Dispatch holds
+//     (citedPullRequest);
 //  3. a key in its head branch name, whatever its case;
 //  4. a key in its title or body, title first;
 //  5. a key in its commit messages, in commit order.
@@ -77,13 +78,15 @@ import (
 // issue's. 4 is 3 with its inputs and the head's repository stored on the row, so a change of an
 // issue's links judges the row from them; the reconcile's merged arm reads each merged row once
 // more and stores them. A row a change of an issue's links named and could not judge from stored
-// facts gets rule 0, so that arm reads it again (LinksChanged).
+// facts gets rule 0, so that arm reads it again (LinksChanged). 5 is 4 with no citation of a
+// number that is a pull request Dispatch holds (citedPullRequest), so a pull request a mention of
+// another pull request credited to that pull request's issue goes back to the issue it is for.
 //
 // Raising this by one is how a later change to the attribution reaches the merged rows already
 // stored. Nothing else revisits one — an open row comes round every five minutes, but a merged
 // row is read again only by that arm — so a change made without raising it leaves every pull
 // request merged before it judged by the rule of its day for good.
-const AttributionRuleVersion = 4
+const AttributionRuleVersion = 5
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -305,6 +308,8 @@ const attributionCandidateBound = 25
 // owner and repository names are case-insensitive, its answers spell them as their owners do
 // (`Acme/Widgets`), and Dispatch stores an issue's GitHub link lowercased (refs.ExternalRepo) or
 // as a person typed it (issue_external_links_url_lower serves the comparison).
+//
+// The second arm leaves out a citation of a number that is a pull request (citedPullRequest).
 func attributionCandidates(c attributionColumns) string {
 	return `select s.key, s.source, s.rank, s.n from (
 		select l.issue_key as key, '` + string(sourceExternalLink) + `' as source, 0 as rank, 0 as n
@@ -312,6 +317,7 @@ func attributionCandidates(c attributionColumns) string {
 		union all
 		select l.issue_key, '` + string(sourceGitHubIssueLink) + `', 1, c.n
 			from unnest(` + c.CitedIssues + `) with ordinality c(url, n) join issue_external_links l on lower(l.url) = lower(c.url)
+			where not ` + citedPullRequest("c.url") + `
 		union all
 		select b.key, '` + string(sourceBranch) + `', 2, b.n
 			from unnest(` + c.BranchKeys + `) with ordinality b(key, n) join issues i on i.key = b.key
@@ -322,6 +328,24 @@ func attributionCandidates(c attributionColumns) string {
 		select m.key, '` + string(sourceCommitMessage) + `', 4, m.n
 			from unnest(` + c.CommitKeys + `) with ordinality m(key, n) join issues i on i.key = m.key
 	) s order by s.rank, s.n limit ` + strconv.Itoa(attributionCandidateBound)
+}
+
+// citedPullRequest is the condition that the GitHub issue URL the expression url reads, one
+// citedIssues wrote (https://github.com/<owner>/<repo>/issues/<n>), names a pull request Dispatch
+// holds: a pull_request_heads row of that repository, under its canonical name
+// (refs.CanonicalRepoSQL), with that number. GitHub numbers a repository's issues and pull
+// requests in one sequence and answers /issues/<n> for a pull request too, so `#<n>` in a body,
+// and the .../issues/<n> link Dispatch stores for the reference owner/repo#<n>, name the pull
+// request #<n> when it is one. A body that names another pull request mentions that pull
+// request's work; it cites no issue whose work it does. Without this condition, a pull request
+// whose body said "#<n> renamed the helper" was credited to the issue that links #<n>, above the
+// issue its own branch names. A pull request Dispatch holds no head row for reads as an issue. The
+// number is compared as text: a citation's digits are not bounded, and a cast of a longer run of
+// them to an integer fails the statement.
+func citedPullRequest(url string) string {
+	return `exists (select 1 from pull_request_heads cited_pr
+		where lower(cited_pr.repo) = lower(` + refs.CanonicalRepoSQL(`split_part(`+url+`, '/', 4) || '/' || split_part(`+url+`, '/', 5)`) + `)
+			and cited_pr.number::text = split_part(` + url + `, '/', 7))`
 }
 
 // attributionHeld is the condition a candidate of every source but the issue's own link to the
