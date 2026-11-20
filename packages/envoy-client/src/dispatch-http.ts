@@ -2336,7 +2336,14 @@ export class DispatchClient {
     }
     const parsed = write.row.safeParse(value);
     if (!parsed.success)
-      throw this.#missingWriteAnswer(method, url, answer.response, write, answer.text, parsed.error);
+      throw this.#missingWriteAnswer(
+        method,
+        url,
+        answer.response,
+        write,
+        answer.text,
+        parsed.error
+      );
     return value as T;
   }
 

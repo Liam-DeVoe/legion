@@ -1723,7 +1723,9 @@ describe("DispatchClient's writes", () => {
   // once the keyed layer answered it. A write that stores no row (`rowStores`, the related-item
   // check here) lost nothing, so the bodiless answer is its answer; and a 2xx Dispatch replayed from
   // the key settles once its body is read.
-  test.each([204, 205])("a %i the keyed layer answers settles a write that stores no row", async (status) => {
+  test.each([
+    204, 205,
+  ])("a %i the keyed layer answers settles a write that stores no row", async (status) => {
     // A bodiless status is no JSON, so the layer is told it judged every answer.
     const { fetchImpl, sent } = scripted([new Response(null, { status })], { judged: () => true });
 
@@ -1738,7 +1740,9 @@ describe("DispatchClient's writes", () => {
   // The same bodiless answer to a write whose row its callers read gives no row: Dispatch answers a
   // write's 2xx only after the write committed, so the write landed with its answer lost
   // (`#writePayload`), and is never asked again.
-  test.each([204, 205])("a %i the keyed layer answers to a write that stores a row is a landing whose answer was lost", async (status) => {
+  test.each([
+    204, 205,
+  ])("a %i the keyed layer answers to a write that stores a row is a landing whose answer was lost", async (status) => {
     const { fetchImpl, sent } = scripted([new Response(null, { status })], { judged: () => true });
 
     const error = await failure(client(fetchImpl, pacing().retry).comment("DSP-1", comment));
