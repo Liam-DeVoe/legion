@@ -367,7 +367,9 @@ them the pull requests whose issue they see and the deploys that shipped them, w
 no setup form and no session-groups editor. The Priorities, Pipeline, broadcasts and
 machine-login pages answer **Page not found**, and Settings shows no Groups and no Delivery
 timeline. The API refuses them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`.
+`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, except that they
+revoke their own credential grants and end their own sign-ins, as a full member does: the secrets
+broker decides whose each one is.
 
 A private project's Legion daemon needs a `dsp_` token that lists the project: the shared token and
 a token that lists no project read the private project as missing. A person who sees the project

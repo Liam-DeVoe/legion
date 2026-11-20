@@ -88,7 +88,8 @@ What the agent sees depends on the projects its token lists:
   It reads no role of a private project it cannot see, and no direct conversation, its person's
   included, with an agent session it cannot read. A restricted member's token is held as a token
   that lists projects is, and its writes of the whole deployment are refused
-  `403 RESTRICTED_MEMBER`.
+  `403 RESTRICTED_MEMBER`, except the revoke of its person's own credential grant or sign-in,
+  which a token that lists no project makes as its person does.
 - The shared token, and any other credential that acts for no person, sees the public projects,
   within its list when it has one.
 

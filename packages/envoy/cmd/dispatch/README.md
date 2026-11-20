@@ -290,6 +290,7 @@ a message's or a mention's `session:` target it may not see is recorded as `no l
 an open viewer sees every person, and every session `access.SessionClause` passes it, so with no private project it is answered as before (`TestNoBodyNamesAHiddenPersonOrSession`).
 A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential that lists projects and `403 RESTRICTED_MEMBER` to a restricted member, naming the route and the credential's list:
 what it writes belongs to no project such a viewer could be held to.
+A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
 
 The session check holds the rows classed *the calling session's* whose path names a session
