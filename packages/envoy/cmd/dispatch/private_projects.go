@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -66,12 +67,12 @@ type hubAdmission interface {
 }
 
 // startHubAdmission starts admission's loop until ctx is done and answers what the router and the
-// outbox take of it: the switch's gate, and the outbox's hold. A nil admission, a deployment with no
+// outbox take of it: the switch's gate, and the outbox's hold. No admission, a deployment with no
 // proof, answers neither: every switch to private is 409 PRIVATE_PROJECTS_UNAVAILABLE, and the
 // outbox holds nothing, since no project can be private. A deployment that names hubs with no proof
 // to run over them logs that once, naming the hubs, so the operator reads why no switch lands.
 func startHubAdmission(ctx context.Context, boot bootConfig, admission hubAdmission) (api.HubAdmission, func() bool) {
-	if admission == nil {
+	if noHubAdmission(admission) {
 		if len(boot.PrivateHubs) > 0 {
 			slog.Warn("dispatch: DISPATCH_PRIVATE_HUBS names hubs, and this build proves no hub's admission: every switch to private answers 409 PRIVATE_PROJECTS_UNAVAILABLE",
 				"hubs", strings.Join(boot.PrivateHubs, ","))
@@ -80,6 +81,18 @@ func startHubAdmission(ctx context.Context, boot bootConfig, admission hubAdmiss
 	}
 	go admission.Run(ctx)
 	return admission, admission.Ready
+}
+
+// noHubAdmission reports whether admission holds no proof: a nil interface, or a nil pointer held
+// in one, which is what busprojects.NewHubAdmission answers for a deployment with no hub. The two
+// must read alike here: an interface holding a nil pointer is not nil, and would otherwise pass for
+// a proof and skip the WARN above.
+func noHubAdmission(admission hubAdmission) bool {
+	if admission == nil {
+		return true
+	}
+	value := reflect.ValueOf(admission)
+	return value.Kind() == reflect.Pointer && value.IsNil()
 }
 
 // reportIgnoredPrivateProjects logs one ERROR line for each entry of DISPATCH_PRIVATE_PROJECTS
