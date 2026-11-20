@@ -74,11 +74,15 @@ func createFormIssue(t *testing.T, handler http.Handler, parent, title, spec str
 	return decodeBody[formIssue](t, response)
 }
 
-// uploadFormDocument uploads markdown to issue as the document name, as the asking agent.
+// uploadFormDocument uploads markdown to issue as the document name, as the asking agent. An
+// upload that replaces a document the issue holds names the token of the version it replaces, as
+// the route requires (uploadBaseNamed); a first upload names none.
 func uploadFormDocument(t *testing.T, handler http.Handler, issue, name, markdown string) model.Artifact {
 	t.Helper()
-	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{
+	owner := "/api/v1/issues/" + issue + "/artifacts"
+	response := sessionRequest(t, handler, http.MethodPost, owner, map[string]any{
 		"name": name, "content": markdown, "actor": sessionActor(),
+		"precondition": uploadBaseNamed(t, handler, owner, name),
 	})
 	if response.Code != http.StatusCreated {
 		t.Fatalf("upload %s to %s: status=%d body=%s", name, issue, response.Code, response.Body.String())
