@@ -179,10 +179,17 @@ func (r HookPromptRecord) Text() (string, error) {
 
 // The facts that every update round ask gives, which dispatch://INFRA-2981's R4 keeps: the
 // tool op that answers the round, what goes with the pod when the round ends, and where the
-// daemon starts the role's process again.
+// daemon starts the role's process again. Two more are dispatch://INFRA-4203's, which
+// dispatch://INFRA-3686's R8 keeps as fields: UpdateBackgroundStep is its R2's step 2, done
+// before the answer (let each subagent and each background job finish, or stop one that cannot
+// end before the round ends, then commit and push what it made), and UpdateEarlyEnd is when every
+// answer brings the round's end forward, its R1's rule: only once no role is in a turn or reports
+// background work.
 const (
-	UpdateAnswerOp   = "ready_for_update"
-	UpdateRestartsIn = "same_session"
+	UpdateAnswerOp       = "ready_for_update"
+	UpdateRestartsIn     = "same_session"
+	UpdateBackgroundStep = "finish_or_stop_then_push"
+	UpdateEarlyEnd       = "when_no_turn_or_background_work"
 )
 
 // updateGoesWithPod is what goes with the pod when an update round ends: the turn in progress,
@@ -195,12 +202,13 @@ var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_
 // the round, the pod it was opened over, each changed image by its short digest and each changed
 // setting by its key, the text of the drift that a round an older daemon opened records, and the
 // moment the round ends. The facts that dispatch://INFRA-2981's R4 keeps: the branch to push to,
-// the op that answers, that every answer brings the end forward and no answer delays it, that only
-// the role's own push keeps its work, what goes with the pod, where the process starts again, and
-// that the daemon holds the next task until it runs again. NewUpdateAsk sets them. The answers
-// bring the end forward only once no role is in a turn or reports background work
-// (dispatch://INFRA-4203 R1), a rule of every round that the readers' prompts give with the
-// steps they take on reading it.
+// the op that answers, when every answer brings the end forward and that no answer delays it,
+// that only the role's own push keeps its work, what goes with the pod, where the process starts
+// again, and that the daemon holds the next task until it runs again. Between the push and the
+// answer is the step of the role's background work (background_work, dispatch://INFRA-4203 R2's
+// step 2), and every_answer_brings_it_forward says that every answer brings the end forward only
+// once no role is in a turn or reports background work (dispatch://INFRA-4203 R1 and R3).
+// NewUpdateAsk sets them all. The readers' prompts give the steps, and name these two fields there.
 type UpdateAskRecord struct {
 	RoleHead
 	Round                      string    `json:"round"`
@@ -210,8 +218,9 @@ type UpdateAskRecord struct {
 	Reasons                    string    `json:"reasons,omitempty"`
 	EndsAt                     time.Time `json:"ends_at"`
 	PushTo                     string    `json:"push_to"`
+	BackgroundWork             string    `json:"background_work"`
 	Answer                     string    `json:"answer"`
-	EveryAnswerBringsItForward bool      `json:"every_answer_brings_it_forward"`
+	EveryAnswerBringsItForward string    `json:"every_answer_brings_it_forward"`
 	NoAnswerDelaysIt           bool      `json:"no_answer_delays_it"`
 	KeptByPushOnly             bool      `json:"kept_by_push_only"`
 	GoesWithPod                []string  `json:"goes_with_pod"`
@@ -231,8 +240,9 @@ func NewUpdateAsk(issue, round, pod string, images, settings []string, endsAt ti
 		Settings:                   settings,
 		EndsAt:                     endsAt,
 		PushTo:                     claim.IssueBranch(issue),
+		BackgroundWork:             UpdateBackgroundStep,
 		Answer:                     UpdateAnswerOp,
-		EveryAnswerBringsItForward: true,
+		EveryAnswerBringsItForward: UpdateEarlyEnd,
 		NoAnswerDelaysIt:           true,
 		KeptByPushOnly:             true,
 		GoesWithPod:                append([]string(nil), updateGoesWithPod...),

@@ -476,21 +476,6 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "its `usedBytes` and `freeBytes` are the trimmer's last reading, or both zero where it made no reading."},
 }
 
-// keptSteps are the steps that a plugin's own notice keeps in its text: each notice kind that
-// Envoy's client or the Envoy extension writes into its session, and the step it states last, as
-// its `step` line (packages/envoy-client/src/notice-text.ts). No prompt or skill of their reader
-// holds these steps, so they stay in their notices. The test "every plugin notice states its
-// fields", in packages/envoy-client and in packages/pi-envoy, checks that each notice of these
-// kinds states its step. This list is the record beside the table above, and nothing here reads
-// the TypeScript that builds the notices.
-var keptSteps = []struct{ kind, step string }{
-	{"messages may be missing", "read the live source of each thing you wait on"},
-	{"Envoy inbound unavailable", "read live sources until a registration is accepted"},
-	{"message not shown", "read it now with the command read_with names"},
-	{"session id changed", "run envoy_whoami again and send the new id to your peers"},
-	{"unread messages", "read each card above"},
-}
-
 // goldenRepositoryRoot is the repository's root, from this package's directory.
 const goldenRepositoryRoot = "../../../.."
 

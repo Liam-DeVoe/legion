@@ -108,8 +108,9 @@ func TestPodUpdateAskReachesEachRoleOnItsOwnTopic(t *testing.T) {
 			}
 			if ask.Kind != texts.UpdateAsk || ask.Issue != "LEGION-208" || ask.Round != askedRound || ask.Pod != askedPod ||
 				!slices.Equal(ask.Images, []string{askedImage}) || !slices.Equal(ask.Settings, askedSettings) || ask.Reasons != "" ||
-				!ask.EndsAt.Equal(askedEnd) || ask.PushTo != "legion/LEGION-208" || ask.Answer != texts.UpdateAnswerOp ||
-				!ask.EveryAnswerBringsItForward || !ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld {
+				!ask.EndsAt.Equal(askedEnd) || ask.PushTo != "legion/LEGION-208" || ask.BackgroundWork != texts.UpdateBackgroundStep ||
+				ask.Answer != texts.UpdateAnswerOp || ask.EveryAnswerBringsItForward != texts.UpdateEarlyEnd ||
+				!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld {
 				t.Errorf("the ask's record is %+v, want the round's facts and the facts every ask gives", ask)
 			}
 			lines := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`)

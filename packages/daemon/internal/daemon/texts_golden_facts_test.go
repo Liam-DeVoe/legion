@@ -374,15 +374,21 @@ var goldenKept = []goldenKeptOf{
 			return map[string]string{"topic": "", "kept_for": "1h0m0s", "kept_card_field": "kept_at", "kept_card_may_come_first": "true",
 				"sender_told_of_drop": "true", "not_kept_with": "keep: false", "sender_sends_again": "true"}
 		}},
-	{kind: texts.UpdateAsk, what: "the round's id, the push instruction, the moment the round ends, that every role's answer brings it forward and no answer delays it, " +
+	{kind: texts.UpdateAsk, what: "the round's id, the push instruction, the moment the round ends, that every role's answer brings it forward only when no turn or background work runs and no answer delays it, " +
 		"that only the role's own push keeps its work, and what goes with the pod (the push check and its rescue branch are on no daemon at this head)",
-		keptBy: "dispatch://INFRA-2981's R4",
+		keptBy: "dispatch://INFRA-2981's R4, as dispatch://INFRA-4203's R1 and R3 change it",
 		keys: []string{"round", "push_to", "ends_at", "answer", "every_answer_brings_it_forward", "no_answer_delays_it", "kept_by_push_only",
 			"goes_with_pod", "restart", "next_task_held"},
 		values: func(want map[string]string) map[string]string {
 			return map[string]string{"round": want["round"], "push_to": want["push_to"], "ends_at": want["ends_at"], "answer": "ready_for_update",
-				"every_answer_brings_it_forward": "true", "no_answer_delays_it": "true", "kept_by_push_only": "true",
+				"every_answer_brings_it_forward": "when_no_turn_or_background_work", "no_answer_delays_it": "true", "kept_by_push_only": "true",
 				"goes_with_pod": "turn,subagents,background_jobs,named_services,unpushed_work,test_database,caches", "restart": "same_session", "next_task_held": "true"}
+		}},
+	{kind: texts.UpdateAsk, what: "the step of the role's background work before it answers: let each subagent and each background job finish, or stop one that cannot end before the round ends, and commit and push what it made",
+		keptBy: "dispatch://INFRA-3686's R8 (a step that it has the text give stays as a field) and dispatch://INFRA-4203's R2, its step 2",
+		keys:   []string{"background_work"},
+		values: func(map[string]string) map[string]string {
+			return map[string]string{"background_work": "finish_or_stop_then_push"}
 		}},
 	{kind: texts.ReviewStuck, variants: []string{"undecided", "approved-other-code"}, what: "the phrase `APPROVE of head <sha>` in the reason of a round a review ends",
 		keptBy: "dispatch://INFRA-3498's R4",

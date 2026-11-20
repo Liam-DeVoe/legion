@@ -146,13 +146,14 @@ type UpdateStalledRecord struct {
 // type): the round, the pod it was opened over, each changed image by its short
 // digest and each changed setting by its key, and each claim the round asked. Reasons is the text
 // of the drift that a round an older daemon opened records, and empty for a round this daemon
-// opened.
+// opened, which names its drift by those items alone: an empty reasons is left out, as the
+// update ask leaves out its own (UpdateAskRecord.Reasons), so no notice states `reasons: ""`.
 type UpdateRound struct {
 	Round    string          `json:"round"`
 	Pod      string          `json:"pod,omitempty"`
 	Images   []string        `json:"images,omitempty"`
 	Settings []string        `json:"settings,omitempty"`
-	Reasons  string          `json:"reasons"`
+	Reasons  string          `json:"reasons,omitempty"`
 	Waiting  []UpdateWaiting `json:"waiting"`
 }
 

@@ -114,6 +114,14 @@ func TestARoleMessageThePauseHeldForARoleItStoppedIsDeliveredOnceAfterTheResume(
 // of a `low` message (a `med` one is published, and the listener's answer wakes the role): the
 // low message the pause held finishes undelivered once the resume lets its row run, and launches
 // nothing. The message is a CI settlement of an issue in testing, `low` to the implementer.
+//
+// The role was released before the pause, so without the pause the message would have reached
+// no session either, and a launch at the resume would wake a session for nothing. In the sixth
+// test round of dispatch://INFRA-3686 the tester read R5 ("A project's resume still launches each
+// reader it held a `low` text for") as asking for that launch, and wrote a red test that wanted
+// the resume to launch such a role. The issue's architect ruled, in the seventh implementing
+// round, that main's #4088 rule stands here and that the red test is deleted. So this change keeps
+// main's behaviour for a `low` role message held for a role released before the pause.
 func TestARoleMessageThePauseHeldForARoleReleasedBeforeThePauseKeepsMainsRule(t *testing.T) {
 	r := newPauseDaemonRig(t, nil)
 	issue := r.issue(1)

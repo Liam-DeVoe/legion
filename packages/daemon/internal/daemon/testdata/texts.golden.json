@@ -8358,7 +8358,6 @@
             "setting_gre nt_28",
             "setting_bwolkl_29"
           ],
-          "reasons": "",
           "waiting": [
             {
               "claim": "legion-alpha-alpha-1250-implementer",
@@ -8420,7 +8419,6 @@
             "setting_fzyht _28",
             "setting_sivmq _29"
           ],
-          "reasons": "",
           "waiting": [
             {
               "claim": "legion-bravo-bravo-2250-implementer",
@@ -8482,7 +8480,6 @@
             "setting_gre nt_28",
             "setting_bwolkl_29"
           ],
-          "reasons": "",
           "waiting": [
             {
               "claim": "legion-alpha-alpha-1250-implementer",
@@ -8545,7 +8542,6 @@
             "setting_fzyht _28",
             "setting_sivmq _29"
           ],
-          "reasons": "",
           "waiting": [
             {
               "claim": "legion-bravo-bravo-2250-implementer",
@@ -9694,8 +9690,9 @@
         ],
         "ends_at": "2026-11-18T10:15:00Z",
         "push_to": "legion/ALPHA-1260",
+        "background_work": "finish_or_stop_then_push",
         "answer": "ready_for_update",
-        "every_answer_brings_it_forward": true,
+        "every_answer_brings_it_forward": "when_no_turn_or_background_work",
         "no_answer_delays_it": true,
         "kept_by_push_only": true,
         "goes_with_pod": [
@@ -9762,8 +9759,9 @@
         ],
         "ends_at": "2027-04-07T17:30:00Z",
         "push_to": "legion/BRAVO-2260",
+        "background_work": "finish_or_stop_then_push",
         "answer": "ready_for_update",
-        "every_answer_brings_it_forward": true,
+        "every_answer_brings_it_forward": "when_no_turn_or_background_work",
         "no_answer_delays_it": true,
         "kept_by_push_only": true,
         "goes_with_pod": [

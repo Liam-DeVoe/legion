@@ -296,9 +296,13 @@ type PodUpdateOpen struct {
 // report since its last turn started. internal/daemon's roundEnd.holding is the one statement of
 // that rule. No answer, no turn and no background work holds the pod past endsAt. Only the role's
 // own push keeps its work: the daemon saves nothing of the disk before the pod goes. The ask
-// states as fields (texts.NewUpdateAsk) that moment, that every answer can bring it forward and
-// that no answer delays it, the branch to push to, the op that answers, that only the role's own
-// push keeps its work, what goes with the pod — each subagent, each background job and each named
+// states as fields (texts.NewUpdateAsk) that moment, the branch to push to, the step of the
+// role's background work before it answers (dispatch://INFRA-4203 R2's step 2: let each subagent
+// and each background job finish, or stop one that cannot end before endsAt, then commit and push
+// what it made), the op that answers, that every answer brings the moment forward only when no
+// role is in a turn or reports background work (dispatch://INFRA-4203 R1, which its R3 has
+// every_answer_brings_it_forward say), that no answer delays it, that only the role's own push
+// keeps its work, what goes with the pod — each subagent, each background job and each named
 // service that still runs among it, since a named service is in no activity report and holds
 // nothing — and that the role's process starts again in the same session, while its next task
 // waits (dispatch://INFRA-2981 R4).
@@ -306,12 +310,14 @@ type PodUpdateOpen struct {
 // The steps a role takes on reading it are its role prompt's, five in this order
 // (dispatch://INFRA-4203 R2): push, let each subagent and each background job the role started
 // finish or stop it and push what it made, put a scratch file needed as evidence on Dispatch,
-// answer, and end the turn. The push comes first, so a job that outlives endsAt never keeps a
-// role from pushing its own commits. The answer comes after the work, so a role that follows the
-// steps answers with nothing of its own running. A role whose work finishes after its answer
-// pushes what that work made and answers again with the same round, which podUpdateSignalled
-// records in place of the first answer. A role whose `legion` tool has no ready_for_update does
-// the first three steps all the same, because its round ends at endsAt whatever it does.
+// answer, and end the turn. The ask's own fields name the first, the second and the fourth
+// (push_to, background_work, answer). The push comes first, so a job that outlives endsAt never
+// keeps a role from pushing its own commits. The answer comes after the work, so a role that
+// follows the steps answers with nothing of its own running. A role whose work finishes after its
+// answer pushes what that work made and answers again with the same round, which
+// podUpdateSignalled records in place of the first answer. A role whose `legion` tool has no
+// ready_for_update does the first three steps all the same, because its round ends at endsAt
+// whatever it does.
 func UpdateTask(issue, round, pod string, drift []runtime.DriftItem, reasons string, endsAt time.Time) texts.UpdateAskRecord {
 	images, settings := DriftFacts(drift)
 	ask := texts.NewUpdateAsk(issue, round, pod, images, settings, endsAt.UTC())

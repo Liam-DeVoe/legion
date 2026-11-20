@@ -289,19 +289,23 @@ func TestEachNoticeKeyHasOneShape(t *testing.T) {
 // into record.Notice with unknown fields refused (internal/daemon/notice_exceptions.go,
 // DisallowUnknownFields). A key left out decodes to the zero value, which is what main wrote for
 // it, so every reader deployed, main's daemon among them, reads the same value either way. Only a
-// time, or a duration or the text of one, may be listed (mayLeaveOutItsZero), and the list names
-// each by its path, so a member added to it is an edit that a reviewer sees.
+// time, a duration or a text may be listed (mayLeaveOutItsZero), and the list names each by its
+// path, so a member added to it is an edit that a reviewer sees.
 var zeroMeansNone = map[string]bool{
 	// The last step of a worker whose claim's record holds no step of its agent, which only a
 	// background stall, judged by its report, names (admit's silentWorkers), and the time quiet
 	// since it.
 	"silent[].lastStep": true,
 	"silent[].silent":   true,
+	// The drift of an update round as the text an older daemon's round records. A round this
+	// daemon opens names its drift by its items (images, settings) and records no text, so an
+	// update-stalled notice of it states no empty reasons (UpdateRound.Reasons).
+	"update.reasons": true,
 }
 
 // mayLeaveOutItsZero says whether a member of main's notice at path, of main's shape was, may be
 // optional (omitempty or omitzero) where main's was not: a member of zeroMeansNone that is a time,
-// a duration or the text of one, gaining omitempty and never losing it.
+// a duration or a text, gaining omitempty and never losing it.
 func mayLeaveOutItsZero(path string, optional bool, was jsonShape) bool {
 	return optional && zeroMeansNone[path] && (was.kind == "time" || was.kind == "string" || was.kind == reflect.Int64.String())
 }
@@ -485,7 +489,8 @@ func TestTheHelpersWriteTheReferencesInOneForm(t *testing.T) {
 	ends := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
 	ask := NewUpdateAsk("INFRA-3686", "round-7", "pod-a", []string{"5c2b01d9e8f7"}, []string{"runtime.kubernetes.image"}, ends)
 	if ask.Kind != UpdateAsk || ask.Issue != "INFRA-3686" || ask.PushTo != claim.IssueBranch("INFRA-3686") || ask.Answer != "ready_for_update" ||
-		!ask.EveryAnswerBringsItForward || !ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld ||
+		ask.BackgroundWork != UpdateBackgroundStep || ask.EveryAnswerBringsItForward != UpdateEarlyEnd ||
+		!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld ||
 		ask.Restart != UpdateRestartsIn || len(ask.GoesWithPod) != 7 || !ask.EndsAt.Equal(ends) {
 		t.Errorf("NewUpdateAsk gives %+v", ask)
 	}
@@ -502,8 +507,8 @@ func TestTheHelpersWriteTheReferencesInOneForm(t *testing.T) {
 		t.Errorf("a blocked issue with no blocker marshals as %s (%v), want blockedBy []", blocked, err)
 	}
 	round, err := json.Marshal(UpdateRound{Round: "r"})
-	if err != nil || string(round) != `{"round":"r","reasons":"","waiting":[]}` {
-		t.Errorf("an update round that waits on nobody marshals as %s (%v), want waiting []", round, err)
+	if err != nil || string(round) != `{"round":"r","waiting":[]}` {
+		t.Errorf("an update round that waits on nobody and records no reasons marshals as %s (%v), want waiting [] and no reasons", round, err)
 	}
 }
 
