@@ -36,6 +36,7 @@ import {
   DECISIONS_WORDS,
   isReader,
   PRESET_NAMES,
+  STATE_LINES,
 } from "../page-words";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
@@ -567,6 +568,9 @@ export function DecisionsFilterBody({
 
   useTreeKeymap({
     container: body,
+    // The view edits no row: Enter opens the node in the conversation (`onEdit`), so no row's
+    // caret is ever held for the editing to end.
+    editing: false,
     holdsEscape,
     onCycle: () => {
       // Folding the foot takes its rows away, and a focus on one of them would drop to the
@@ -849,7 +853,7 @@ type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number
  *  decisions for the decisions read, and the questions for the asks. A read the seam adds fails
  *  this until the body has a line for it. */
 const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
-  asks: ANSWER_LINES.questions_unreadable,
+  asks: STATE_LINES.asks_unreadable,
   decisions: ANSWER_LINES.decisions_unreadable,
 };
 

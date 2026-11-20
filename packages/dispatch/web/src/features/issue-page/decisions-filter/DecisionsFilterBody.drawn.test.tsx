@@ -34,6 +34,7 @@ import {
   NODE_STATE_WORDS,
   NODE_TYPE_NAMES,
   PRESET_NAMES,
+  STATE_LINES,
 } from "../page-words";
 import { presetView } from "../presets";
 import { ViewStage } from "../slots/stage";
@@ -331,7 +332,7 @@ function words(element: Element | null | undefined): string | null {
 /** What the body says of each read refused before it first answered, in the page's words, by
  *  which a reader tells the two reads' lines apart. */
 const REFUSED_READ_WORDS = {
-  asks: ANSWER_LINES.questions_unreadable,
+  asks: STATE_LINES.asks_unreadable,
   decisions: ANSWER_LINES.decisions_unreadable,
 } as const;
 
