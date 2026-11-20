@@ -818,15 +818,21 @@ given to a command none of those, or the value of a variable read where the read
 none (after its loop). A fetcher whose URLs are not in the text is off the world, whatever they
 name: a curl or a wget that takes its URLs from a file (`-K`, `-i`), since the reader does not
 read the file; and a URL that holds a variable the reader cannot expand, or a command
-substitution, and names no host, given to curl or wget as an operand or curl's `--url`, to git as
-the remote of `clone`, `fetch`, `pull`, `push`, `ls-remote` or `remote add`, or to a fetch of a
-program an interpreter runs or an `eval` cell holds (`urlopen`, `requests.get`, `fetch` and the
-like, given an expression such as `sys.argv[1]` or a template that holds one; and a cell's
-`tool.fetch` given such a URL): `x=$(gh api … --jq .html_url); curl -s "$x"` is refused with `curl's
-URL is $x, which the reader cannot expand, so its host is not known to be one of the run's world`
-(the architect's ruling of 2026-11-20T21:30Z, which the tester's reader holds too). A variable
-anywhere else names no host (`curl -H "Authorization: $TOKEN" …`, `curl -o "$out" …`, `git log
-"$sha"`), and a URL that names its host beside a variable is judged by that host. A `bash`
+substitution (`$(…)` or `` `…` ``, quoted or not), and names no host, given to curl or wget as an
+operand or curl's `--url`, to git as the remote of `clone`, `fetch`, `pull`, `push`, `ls-remote`
+or `remote add`, or to a fetch of a program an interpreter runs or an `eval` cell holds
+(`urlopen`, `requests.get`, `fetch` and the like, given an expression such as `sys.argv[1]` or a
+template that holds one; and a cell's `tool.fetch` given such a URL): `x=$(gh api … --jq
+.html_url); curl -s "$x"` is refused with `curl's URL is $x, which the reader cannot expand, so
+its host is not known to be one of the run's world` (the architect's ruling of 2026-11-20T21:30Z,
+which the tester's reader holds too). So is a fetcher inside a command substitution
+(`body=$(curl -s "$URL")`), and one `xargs` runs that its input or its `-a` file gives the URL
+(each item one more URL of curl's or wget's, git's remote where its words give none, or the item
+in place of `-I`'s string), named as `<xargs's input>` (`echo "$x" | xargs curl -s`, `cat
+remotes | xargs git clone`), unless the text piped into it holds a literal URL, which is judged
+as any URL in the text is (`echo https://… | xargs curl -s`). A variable anywhere else names no
+host (`curl -H "Authorization: $TOKEN" …`, `curl -o "$out" …`, `git log "$sha"`), and a URL that
+names its host beside a variable is judged by that host. A `bash`
 command is read by each program's own grammar, in the places that take a host: a
 remote in scp form (`[user@]host:path`) only where `git`, `jj`, `scp`, `rsync` or `sftp` take an
 address, so `git show HEAD:docs/cli.md` and `jj file show main@origin:docs/cli.md` reach nothing;

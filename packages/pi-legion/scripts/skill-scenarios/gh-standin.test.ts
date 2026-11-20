@@ -2554,6 +2554,85 @@ test("rule 13 refuses a fetcher whose URL holds a variable the reader cannot exp
   }).toEqual({ bash: bashRows, eval: cells });
 });
 
+// Catches (the architect's rulings of 2026-11-20T20:07Z and 21:30Z on rule 13): a health that
+// lets a fetcher xargs runs pass where nothing in the text gives it its URL (`echo "$x" | xargs
+// curl -s`, `cat remotes.txt | xargs git clone`, an `-a` file, an `-I` string in its URL), and one
+// that refuses wider: a literal URL piped into xargs, which is judged as any URL in the text is
+// (refused for a repository the workflow names none of, allowed for the world's host), an xargs
+// that gives a fetcher no URL (`xargs git push origin`, `-I{}` in an output file) or runs no
+// fetcher.
+test("rule 13 refuses a fetcher xargs gives a URL from items the reader does not read, and judges a literal URL piped into it", () => {
+  const dir = workflowRun();
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const file = "sessions/reviewer/a.jsonl";
+  const bash = (command: string) =>
+    offWorldReach([{ file, tool: "bash", args: { command }, at: 1 }], loopback, [dir], allowed);
+  const input = "<xargs's input>";
+  const unread = (url: string, why: string) =>
+    `off-world network: a bash call in ${file} reaches the host ${url} names (${url}), ${why} the reader cannot expand, so its host is not known to be one of the run's world`;
+  const api = "https://api.github.com/repos";
+  const whoami = "http://127.0.0.1:4101/api/v1/whoami";
+  const rows: [command: string, reason: string | undefined][] = [
+    ['echo "$x" | xargs curl -s', unread(input, `curl's URL is ${input}, which`)],
+    [
+      "gh api repos/actions/checkout --jq .html_url | xargs wget -q",
+      unread(input, `wget's URL is ${input}, which`),
+    ],
+    ["cat remotes.txt | xargs git clone", unread(input, `git's remote is ${input}, which`)],
+    ["xargs -a urls.txt curl -s", unread(input, `curl's URL is ${input}, which`)],
+    ["cat urls.txt | xargs -n1 timeout 5 curl -s", unread(input, `curl's URL is ${input}, which`)],
+    [
+      `printf '%s\\n' "$repo" | xargs -I{} curl -s "{}/tags"`,
+      unread(`${input}/tags`, `curl's URL is ${input}/tags, whose ${input}`),
+    ],
+    [
+      `echo ${api}/evil/repo/tags | xargs curl -s`,
+      `off-world network: a bash call in ${file} reaches api.github.com (${api}/evil/repo/tags), no host of the run's world (127.0.0.1, localhost, ::1), and no GET or HEAD with no body or ls-remote of a repository the world's workflow names (actions/checkout, oven-sh/setup-bun)`,
+    ],
+    [`echo ${whoami} | xargs curl -s`, undefined],
+    [
+      'for u in http://127.0.0.1:4101/a http://127.0.0.1:4101/b; do echo "$u"; done | xargs curl -s',
+      undefined,
+    ],
+    ["cat refspecs.txt | xargs git push origin", undefined],
+    [`ls | xargs -I{} curl -s -o {}.json ${whoami}`, undefined],
+    ["git ls-files | xargs grep -l TODO", undefined],
+  ];
+  expect(rows.map(([command]) => [command, bash(command)])).toEqual(rows);
+});
+
+// Catches (the architect's ruling of 2026-11-20T21:30Z on rule 13): a health that reads a
+// fetcher's words only up to where SHELL_COMMAND ends them, so a URL given in a backquoted
+// substitution passes (``curl -s `cmd` ``), one given in an unquoted `$(…)` is named by its `$`
+// alone, and a fetcher inside a command substitution (`body=$(curl -s "$URL")`, `echo "$(wget
+// -qO- "$u")"`) is not read as a command; and one that refuses wider: a fetcher inside a
+// substitution given a literal URL of the world, or a substitution in an output file's place.
+test("rule 13 reads a command substitution as one word of a fetcher's, and each fetcher inside one", () => {
+  const dir = workflowRun();
+  const allowed = offWorldAllowed({ dir, label: "head" });
+  const loopback = new Set(["127.0.0.1", "localhost", "::1"]);
+  const file = "sessions/reviewer/a.jsonl";
+  const bash = (command: string) =>
+    offWorldReach([{ file, tool: "bash", args: { command }, at: 1 }], loopback, [dir], allowed);
+  const unread = (fetcher: string, url: string) =>
+    `off-world network: a bash call in ${file} reaches the host ${url} names (${url}), ${fetcher}'s URL is ${url}, which the reader cannot expand, so its host is not known to be one of the run's world`;
+  const whoami = "http://127.0.0.1:4101/api/v1/whoami";
+  const backquoted = "`gh api repos/actions/checkout --jq .html_url`";
+  const substituted = "$(gh api repos/actions/checkout --jq .html_url)";
+  const rows: [command: string, reason: string | undefined][] = [
+    [`curl -s ${backquoted}`, unread("curl", backquoted)],
+    ["wget -q `cat url.txt`", unread("wget", "`cat url.txt`")],
+    [`curl -s ${substituted}`, unread("curl", substituted)],
+    ['body=$(curl -s "$URL"); echo "$body" | jq .', unread("curl", "$URL")],
+    ['echo "$(wget -qO- "$u")"', unread("wget", "$u")],
+    [`echo \`curl -s ${whoami}\``, undefined],
+    [`x=$(curl -s ${whoami}); echo "$x"`, undefined],
+    [`curl -o $(mktemp) ${whoami}`, undefined],
+  ];
+  expect(rows.map(([command]) => [command, bash(command)])).toEqual(rows);
+});
+
 // Catches: a health that calls every web search off the world, where a production reviewer may
 // search for an action the world's own workflow pins, which tells nothing of the scenario: in the
 // rehearsal of 2026-11-16 a subagent of the reviewer searched `actions/checkout 3d3c42e5… v7.0.1`

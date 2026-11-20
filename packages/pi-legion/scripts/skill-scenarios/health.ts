@@ -107,9 +107,11 @@
  *      (into a shell, xargs or a file, through `eval`, to a command it does not know) reaches its
  *      host, and a fetcher whose URLs are not in the text is off the world: a curl or a wget that
  *      takes its URLs from a file (`-K`, `-i`, URL_FILES), and a URL that holds what the reader
- *      cannot expand and names no host, given to curl or wget as an operand or curl's `--url`, to
- *      git as the remote of clone, fetch, pull, push, ls-remote or `remote add`
- *      (`unexpandedUrls`: `x=$(gh api …); curl -s "$x"`), or to a fetch of a program an
+ *      cannot expand (a variable, a command substitution) and names no host, given to curl or wget
+ *      as an operand or curl's `--url`, to git as the remote of clone, fetch, pull, push,
+ *      ls-remote or `remote add`, by xargs from items no literal URL is piped into, or in a
+ *      command substitution (`unexpandedUrls`: `x=$(gh api …); curl -s "$x"`, ``curl -s `cmd` ``,
+ *      `echo "$x" | xargs curl -s`, `x=$(curl -s "$URL")`), or to a fetch of a program an
  *      interpreter runs or an eval cell holds (`programFetches`: `urlopen(sys.argv[1])`). A bash
  *      command is read by each program's own grammar, in the positions that take a host
  *      (`commandHosts`): a remote in scp form, `[user@]host:path`, only where git, jj, scp, rsync
@@ -2415,6 +2417,29 @@ function ran(operands: readonly string[]): Wrapped | undefined {
   return operands.length === 0 ? undefined : { env: [], command: operands };
 }
 
+/** xargs's options whose value is the next word (xargs(1), GNU findutils 4.9); `-e`, `-i` and
+ * `-l` take a value only against them. */
+const XARGS_VALUED = optionSet(
+  "-a -d -E -I -L -n -P -s --arg-file --delimiter --max-args --max-procs --max-chars --process-slot-var"
+);
+
+/** What xargs gives the command it runs from the items it reads (xargs(1)): each item as one more
+ * argument, or, with `-I R` (`-i` and `--replace`, R `{}` unless given), the item in place of R in
+ * each argument (`replace`); and whether it reads them from a file (`-a`, `--arg-file`) rather
+ * than its input (`file`). */
+interface XargsInput {
+  readonly replace?: string;
+  readonly file: boolean;
+}
+
+/** What the xargs whose words are `words` gives the command it runs (XargsInput). */
+function xargsInput(words: readonly string[]): XargsInput {
+  const args = posixArguments(words, XARGS_VALUED);
+  const replace =
+    valuesOf(args, "-I", "--replace").at(-1) ?? (given(args, "-i", "--replace") ? "{}" : undefined);
+  return { ...(replace ? { replace } : {}), file: given(args, "-a", "--arg-file") };
+}
+
 /** The commands that run another, each read by its own grammar (`posixArguments`, every one of
  * them stopping at its first operand) into the command it runs, or undefined where it runs none.
  * A wrapper is no reach of its own: what it runs is read as if it stood alone (`invocationOf`). */
@@ -2445,17 +2470,9 @@ const WRAPPERS: Readonly<Record<string, (words: readonly string[]) => Wrapped | 
   nice: (words) => ran(posixArguments(words, optionSet("-n --adjustment")).operands),
   // nohup(1): `nohup command`.
   nohup: (words) => ran(posixArguments(words, NO_OPTIONS).operands),
-  // xargs(1): `xargs [options] [command [initial-arguments]]`, `echo` with no command; `-e`,
-  // `-i` and `-l` take a value only against them.
-  xargs: (words) =>
-    ran(
-      posixArguments(
-        words,
-        optionSet(
-          "-a -d -E -I -L -n -P -s --arg-file --delimiter --max-args --max-procs --max-chars --process-slot-var"
-        )
-      ).operands
-    ),
+  // xargs(1): `xargs [options] [command [initial-arguments]]`, `echo` with no command; what it
+  // gives the command from what it reads is read where a fetcher's URL is (`xargsInput`).
+  xargs: (words) => ran(posixArguments(words, XARGS_VALUED).operands),
   // The shell's `command [-p] command`; `command -v` and `-V` print what a name is, running none.
   command: (words) => {
     const args = posixArguments(words, NO_OPTIONS);
@@ -2622,13 +2639,15 @@ const LEAD_WRAPPER =
   /(?:^|[\s;&|(`])(command|exec|env)(?:[ \t]+(?:-i|-|--ignore-environment))*[ \t]+$/;
 
 /** A command as it runs once its wrappers are read off (WRAPPERS): the word that names it, that
- * word's base name, its words, and the variables its prefix assignments and the wrappers before
- * it set. */
+ * word's base name, its words, the variables its prefix assignments and the wrappers before it
+ * set, and, where an xargs among those wrappers runs it, what xargs gives it from what it reads
+ * (`xargsInput`). */
 interface Invocation {
   readonly word: string;
   readonly name: string;
   readonly words: readonly string[];
   readonly env: ReadonlyMap<string, string>;
+  readonly xargs?: XargsInput;
 }
 
 /** The command `one` runs (Invocation), or undefined for a wrapper that runs none (`command -v
@@ -2638,13 +2657,15 @@ function invocationOf(one: ShellCommand): Invocation | undefined {
   const wrapper = LEAD_WRAPPER.exec(one.lead)?.[1];
   let word = wrapper ?? one.word;
   let words = [...(wrapper === undefined ? [] : [one.word]), ...shellWords(one.rest)];
+  let xargs: Invocation["xargs"];
   if (wrapper === undefined && ASSIGNMENT.test(word)) return undefined;
   for (;;) {
     const name = path.posix.basename(word);
     const read = WRAPPERS[name];
-    if (read === undefined) return { word, name, words, env };
+    if (read === undefined) return { word, name, words, env, ...(xargs ? { xargs } : {}) };
     const wrapped = read(words);
     if (wrapped === undefined) return undefined;
+    if (name === "xargs") xargs = xargsInput(words);
     for (const [key, value] of wrapped.env) env.set(key, value);
     [word = "", ...words] = wrapped.command;
   }
@@ -2766,28 +2787,48 @@ function unreadUrl(fetcher: string, what: string, url: string, expansion: string
   };
 }
 
+/** What a fetcher's URL is where xargs gives it from items the reader does not read
+ * (`unexpandedUrls`). */
+const XARGS_INPUT = "<xargs's input>";
+
 /** The URLs a command fetches whose host the reader cannot tell (`unreadUrl`), read off its words
  * as it runs once its wrappers are read off (`invocationOf`), each value the reader holds written
  * in (`literalFlow`): curl's operands and its `--url`, wget's operands, and the remote git's
  * clone, fetch, pull, push, ls-remote and `remote add` take (GIT_REMOTES), where one holds an
- * expansion (EXPANSION) and no host, neither in a URL (`urlHosts`, whose host rule 13 judges as
- * it reads it) nor where the command reads one without a scheme (BARE_HOST, `scpHost`):
- * `curl -s "$x"`, `wget "${base}/x"`, `git clone "$remote"`. A word in any other place is none
- * (a header, `-H "…$TOKEN"`; an output file, `-o "$out"`; a revision, `git log "$sha"`), and so is
- * a command that is given no URL (`git status`). */
-function unexpandedUrls({ name, words }: Pick<Invocation, "name" | "words">): Reach[] {
-  let urls: readonly (string | undefined)[] = [];
-  let bare: (url: string) => string | undefined = () => undefined;
+ * expansion (EXPANSION, a command substitution among them) and no host, neither in a URL
+ * (`urlHosts`, whose host rule 13 judges as it reads it) nor where the command reads one without
+ * a scheme (BARE_HOST, `scpHost`): `curl -s "$x"`, `wget "${base}/x"`, `git clone "$remote"`,
+ * ``curl -s `cmd` ``. Where xargs runs the command and the reader does not read the items it
+ * reads (`input`: a file, or an input no literal URL is piped into, `pipedText`), what xargs gives
+ * it is such an expansion too (XARGS_INPUT): an item in place of its `-I` string, or, with none,
+ * one more URL of curl's or wget's, and git's remote where its words give none (`echo "$x" |
+ * xargs curl -s`, `cat remotes | xargs git clone`). A word in any other place is none (a header,
+ * `-H "…$TOKEN"`; an output file, `-o "$out"`; a revision, `git log "$sha"`), and so is a command
+ * that is given no URL (`git status`). */
+function unexpandedUrls(
+  { name, words, xargs }: Pick<Invocation, "name" | "words" | "xargs">,
+  input: boolean
+): Reach[] {
+  let urls: (string | undefined)[];
+  let bare: (url: string) => string | undefined;
   if (name === "curl" || name === "wget") {
     const args = argumentsOf(words, name === "curl" ? CURL_VALUED : WGET_VALUED);
     urls = [...args.operands, ...(name === "curl" ? valuesOf(args, "--url") : [])];
     bare = (url) => BARE_HOST.exec(url)?.[1];
   } else if (name === "git") {
-    urls = takerAddresses(words.slice(firstOperand(words, GIT_GLOBAL)), NO_OPTIONS, GIT_REMOTES);
+    urls = [
+      ...takerAddresses(words.slice(firstOperand(words, GIT_GLOBAL)), NO_OPTIONS, GIT_REMOTES),
+    ];
     bare = scpHost;
-  }
+  } else return [];
+  const fed = input ? xargs : undefined;
+  const replace = fed?.replace;
+  if (replace !== undefined) urls = urls.map((url) => url?.replaceAll(replace, XARGS_INPUT));
+  else if (fed !== undefined && (name !== "git" || urls.some((url) => url === undefined)))
+    urls.push(XARGS_INPUT);
   return urls.flatMap((url = "") => {
-    const expansion = EXPANSION.exec(url)?.[0];
+    const expansion =
+      EXPANSION.exec(url)?.[0] ?? (url.includes(XARGS_INPUT) ? XARGS_INPUT : undefined);
     const host = bare(url);
     if (expansion === undefined || urlHosts(url).length > 0) return [];
     if (host !== undefined && !/[$`{}*?]/.test(host)) return [];
@@ -2795,16 +2836,178 @@ function unexpandedUrls({ name, words }: Pick<Invocation, "name" | "words">): Re
   });
 }
 
-/** `one`, a command `commandsOf` read off `spoken`, as `code` holds it: `spoken` is `code` with
- * each quoted string that holds a separator emptied at its own length (`bashHosts`), so the same
- * places of `code` hold the command as written, with a URL in a command substitution
- * (`"$(gh api …)"`) and a program an interpreter is given inline (`python3 -c '…'`). */
-function asWritten(one: ShellCommand, code: string): ShellCommand {
-  const text = code.slice(one.at, one.end);
-  const rest = text.slice(text.length - one.rest.length);
-  const word = shellWord(text.slice(one.lead.length, text.length - one.rest.length));
-  const lead = text.slice(0, one.lead.length);
-  return { ...one, word, name: path.posix.basename(word), rest, lead, text };
+/** Where the quoted string or command substitution that opens at `at` of `code` ends, one past
+ * its close, as the shell reads it: `'…'`; `"…"` and `` `…` ``, a backslash escaping the
+ * character after it and a `$(…)` in the first read whole; or `$(…)`, its brackets, quoted
+ * strings and substitutions nested. -1 for one that does not close. */
+function shellSpanEnd(code: string, at: number): number {
+  const open = code[at] ?? "";
+  if (open === "'") {
+    const close = code.indexOf("'", at + 1);
+    return close < 0 ? -1 : close + 1;
+  }
+  const quoted = open === '"' || open === "`";
+  let depth = 0;
+  for (let i = at + (quoted ? 1 : 2); i < code.length; i++) {
+    const char = code[i] ?? "";
+    if (char === "\\") i++;
+    else if (quoted && char === open) return i + 1;
+    else if (
+      code.startsWith("$(", i) ||
+      (!quoted && (char === "'" || char === '"' || char === "`"))
+    ) {
+      const end = shellSpanEnd(code, i);
+      if (end < 0) return -1;
+      i = end - 1;
+    } else if (quoted) continue;
+    else if (char === "(") depth++;
+    else if (char === ")") {
+      if (depth === 0) return i + 1;
+      depth--;
+    }
+  }
+  return -1;
+}
+
+/** The command `one`, read off `spoken` (`commandsOf`), as it runs, read from `code` at the same
+ * places (`spoken` is `code` with each quoted string that holds a separator emptied at its own
+ * length, `bashHosts`): its words as written, a URL in a command substitution (`"$(gh api …)"`)
+ * and a program an interpreter is given inline (`python3 -c '…'`) among them, its text read on
+ * past a command substitution it holds outside quotes (`$(…)`, `` `…` ``, `shellSpanEnd`), which
+ * SHELL_COMMAND ends it at, each one word of it. It ends at a `;`, `&`, `|`, line break or `)`
+ * outside quotes and substitutions, or at the backquote that closes the one it opened in. */
+function writtenInvocation(one: ShellCommand, code: string): Invocation | undefined {
+  const restAt = one.end - one.rest.length;
+  const substitutions: (readonly [from: number, to: number])[] = [];
+  let end = restAt;
+  for (; end < code.length; end++) {
+    const char = code[end] ?? "";
+    if (char === "\\") end++;
+    else if (/[;&|\n)]/.test(char) || (char === "`" && one.lead.startsWith("`"))) break;
+    else if (char === "'" || char === '"' || char === "`" || code.startsWith("$(", end)) {
+      const close = shellSpanEnd(code, end);
+      if (close < 0) break;
+      if (char === "`" || char === "$") substitutions.push([end, close]);
+      end = close - 1;
+    }
+  }
+  // Each substitution a piece of its word SHELL_WORD reads (`\uE000<index>\uE001`), put back after.
+  let rest = "";
+  let from = restAt;
+  for (const [index, [at, to]] of substitutions.entries()) {
+    rest += `${code.slice(from, at)}\uE000${index}\uE001`;
+    from = to;
+  }
+  rest += code.slice(from, end);
+  const lead = code.slice(one.at, one.at + one.lead.length);
+  const word = shellWord(code.slice(one.at + one.lead.length, restAt));
+  const text = code.slice(one.at, end);
+  const run = invocationOf({ ...one, word, name: path.posix.basename(word), rest, lead, text });
+  const written = (piece: string) =>
+    piece.replace(/\uE000(\d+)\uE001/g, (_all, index: string) => {
+      const [at, to] = substitutions[Number(index)] ?? [0, 0];
+      return code.slice(at, to);
+    });
+  return run && { ...run, word: written(run.word), words: run.words.map(written) };
+}
+
+/** The text a pipe hands the command `one` of `spoken` (`commandsOf`) on its input: the commands
+ * of its pipeline before it, each compound command and bracket among them whole, back to the `;`,
+ * `&`, `&&`, `||`, line break or opening bracket outside them that starts the pipeline; "" for a
+ * command no pipe feeds (`|&` among them). Read off `spoken` by its tokens (`scanned`), and given
+ * from `code`, which holds the same places. */
+function pipedText(spoken: string, code: string, one: ShellCommand): string {
+  if (!one.lead.startsWith("|") || spoken[one.at - 1] === "|") return "";
+  const { tokens, raw, starts } = scanned(spoken);
+  let depth = 0;
+  let from = one.at;
+  for (let i = tokens.findLastIndex((token) => token.end <= one.at); i >= 0; i--) {
+    const gap = spoken.slice(tokens[i]?.end ?? 0, from);
+    for (let k = gap.length - 1; k >= 0; k--) {
+      const char = gap[k] ?? "";
+      if (char === ")") depth++;
+      else if (char === "(") depth--;
+      const ends =
+        /[;&\n]/.test(char) || (char === "|" && (gap[k - 1] === "|" || gap[k + 1] === "|"));
+      if (depth < 0 || (depth === 0 && ends)) return code.slice(from, one.at);
+    }
+    const word = raw[i] ?? "";
+    if (starts[i] && CLOSES.has(word)) depth++;
+    else if ((starts[i] && OPENS.has(word)) || word === "{") depth--;
+    if (depth < 0) return code.slice(from, one.at);
+    from = tokens[i]?.at ?? 0;
+  }
+  return code.slice(from, one.at);
+}
+
+/** `code` with each quoted string that holds a `;`, `&`, `|`, a bracket, a backquote or a line
+ * break emptied at its own length, the text `commandsOf` reads a `bash` command's commands off
+ * (`bashHosts`). */
+function spokenOf(code: string): string {
+  return code.replace(SHELL_QUOTED, (quoted) =>
+    /[;&|()`\n]/.test(quoted) ? `${quoted[0]}${"_".repeat(quoted.length - 2)}${quoted[0]}` : quoted
+  );
+}
+
+/** The reaches of the command `one` of `code` (`spoken`, `spokenOf`, the text `commandsOf` read
+ * it off) whose host the reader cannot tell, read off its words as written
+ * (`writtenInvocation`): each URL a fetcher is given that holds what the reader cannot expand and
+ * names no host (`unexpandedUrls`), what xargs gives it from items the reader does not read
+ * among them, the reader reading those where a literal URL is piped into it (`pipedText`: `echo
+ * https://… | xargs curl -s`, which the URL reading judges); and each fetch of a program an
+ * interpreter is given inline whose URL it cannot tell (`programFetches`). */
+function writtenReaches(one: ShellCommand, code: string, spoken: string): Reach[] {
+  const full = writtenInvocation(one, code);
+  if (full === undefined) return [];
+  const input =
+    full.xargs !== undefined &&
+    (full.xargs.file || urlHosts(pipedText(spoken, code, one)).length === 0);
+  const program = SHELL.test(full.name) ? undefined : programOf(full.name, full.words);
+  return [
+    ...unexpandedUrls(full, input),
+    ...(program === undefined ? [] : programFetches(program)).map((reach) => ({
+      ...reach,
+      via: ` in the program ${full.name} runs`,
+    })),
+  ];
+}
+
+/** The text inside each command substitution of `code`, `$(…)` or `` `…` `` (`shellSpanEnd`),
+ * outside single quotes and in double quotes too, but not the ones inside another, which are its
+ * own text's. */
+function substitutionsIn(code: string): string[] {
+  const inner: string[] = [];
+  let double = false;
+  for (let i = 0; i < code.length; i++) {
+    const char = code[i] ?? "";
+    if (char === "\\") i++;
+    else if (char === '"') double = !double;
+    else if (char === "'" && !double) {
+      const close = code.indexOf("'", i + 1);
+      if (close < 0) break;
+      i = close;
+    } else if (char === "`" || code.startsWith("$(", i)) {
+      const end = shellSpanEnd(code, i);
+      if (end < 0) break;
+      inner.push(code.slice(i + (char === "`" ? 1 : 2), end - 1));
+      i = end - 1;
+    }
+  }
+  return inner;
+}
+
+/** The `writtenReaches` of every command in a command substitution of `code`, those nested in it
+ * included (`substitutionsIn`): SHELL_COMMAND reads a substitution among a command's words, an
+ * assignment's value among them (`x=$(curl -s "$URL")`), as text of that command, so its
+ * commands are read here, each as a command of its own. */
+function substitutionReaches(code: string): Reach[] {
+  return substitutionsIn(code).flatMap((inner) => {
+    const spoken = spokenOf(inner);
+    return [
+      ...commandsOf(spoken).flatMap((one) => writtenReaches(one, inner, spoken)),
+      ...substitutionReaches(inner),
+    ];
+  });
 }
 
 /** A gap between two tokens of shell text (`shellTokens`) that holds blanks alone, so the two are
@@ -3453,10 +3656,13 @@ function unfetched(code: string, spoken: string): (readonly [from: number, to: n
  * world's. And a URL a fetcher is given that holds what the reader cannot expand and names no host
  * reaches a host the text does not name, which is off the world whatever it is (`unread`): curl's,
  * wget's or git's (`unexpandedUrls`: `x=$(gh api …); curl -s "$x"`, `wget "$URL"`, `git clone
- * "$remote"`), and the fetch of a program an interpreter is given inline (`python3 -c
- * 'urlopen(sys.argv[1])'`, `programFetches`); each command is read there with its words as the
- * text holds them (`asWritten`), a command substitution among them. No command is read inside a
- * quoted string a command is given as text (`spoken`). A command's words leave its redirections
+ * "$remote"`, ``curl -s `cmd` ``), what xargs gives one from items no literal URL is piped into
+ * (`echo "$x" | xargs curl -s`; `echo https://… | xargs curl -s` is judged by the URL), and the
+ * fetch of a program an interpreter is given inline (`python3 -c 'urlopen(sys.argv[1])'`,
+ * `programFetches`); each command is read there with its words as the text holds them, a command
+ * substitution one word (`writtenReaches`), and so is each command inside a command substitution
+ * (`substitutionReaches`: `x=$(curl -s "$URL")`). No command is otherwise read inside a quoted
+ * string a command is given as text (`spoken`). A command's words leave its redirections
  * out (`shellWords`), so `curl … > report.json` names no host `report.json`. The variables a
  * command runs with are those its prefix and its wrappers set, over those `env` holds (the pane's,
  * `offWorldReach`) and those a command of assignments alone or an `export` set before it: every
@@ -3484,10 +3690,9 @@ function bashHosts(
   // command is given (a commit message, a review body) or a program given whole (`sh -c '…'`):
   // SHELL_COMMAND would read a command inside it at each of those, so a body's `…; ssh keys
   // unchanged` would name a host `keys`. Commands are read with each such string emptied at its
-  // own length, so a shell's program is still read from `code`, where SHELL_INLINE finds it.
-  const spoken = code.replace(SHELL_QUOTED, (quoted) =>
-    /[;&|()`\n]/.test(quoted) ? `${quoted[0]}${"_".repeat(quoted.length - 2)}${quoted[0]}` : quoted
-  );
+  // own length (`spokenOf`), so a shell's program is still read from `code`, where SHELL_INLINE
+  // finds it.
+  const spoken = spokenOf(code);
   // The text the URL reading reads: `code` with each repository URL a gh's `-R` names emptied at
   // its own length, since the gh rule decides that host (github.com is the world's there), and
   // each literal value `literalFlow` wrote where its variable is read and each command of QUIET
@@ -3510,13 +3715,7 @@ function bashHosts(
         if (found !== null) shell.set(found[1] ?? "", found[2] ?? "");
     const runs = new Map([...shell, ...run.env]);
     commands.push(...commandHosts(run, runs));
-    const full = invocationOf(asWritten(one, code));
-    if (full !== undefined) {
-      commands.push(...unexpandedUrls(full));
-      const program = SHELL.test(full.name) ? undefined : programOf(full.name, full.words);
-      for (const reach of program === undefined ? [] : programFetches(program))
-        commands.push({ ...reach, via: ` in the program ${full.name} runs` });
-    }
+    commands.push(...writtenReaches(one, code, spoken));
     if (httpRead(run) || refsRead(run)) {
       for (const reach of urlHosts(code.slice(one.at, one.end))) gets.push({ ...reach, get: true });
       urls.fill("_", one.at, one.end);
@@ -3540,6 +3739,7 @@ function bashHosts(
     for (const reach of bashHosts(text, runs, flow.kept))
       commands.push({ ...reach, via: reach.via ?? ` in the program ${run.name} -c runs` });
   }
+  commands.push(...substitutionReaches(code));
   const reached = urls
     .join("")
     .replace(TEXT_FLAG, (_all, lead, flag, separator) => `${lead}${flag}${separator}''`)
