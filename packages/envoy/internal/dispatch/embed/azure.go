@@ -7,12 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -154,9 +154,11 @@ type azureEmbedResponse struct {
 	} `json:"data"`
 }
 
+// azureErrorResponse is a refusal's body, its code held as Azure's word with the request's record
+// (redact.Answer.Decode): a stand-in can echo the key the call carried there.
 type azureErrorResponse struct {
 	Error struct {
-		Code string `json:"code"`
+		Code redact.RemoteText `json:"code"`
 	} `json:"error"`
 }
 
@@ -221,16 +223,18 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		return nil, azureStatusError(response)
 	}
-	// One byte past the cap is read, so a body that fills the cap exactly is told apart from one
-	// that runs past it, which is refused rather than decoded as far as the cap allows.
-	limited := &io.LimitedReader{R: response.Body, N: azureResponseBodyLimit + 1}
-	var decoded azureEmbedResponse
-	decodeErr := json.NewDecoder(limited).Decode(&decoded)
-	if limited.N == 0 {
+	// A body past the cap is refused rather than decoded as far as the cap allows (redact.ReadAnswer
+	// reads one byte past it to tell the two apart).
+	answer, err := redact.ReadAnswer(response, azureResponseBodyLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, fmt.Errorf("embed: azure response exceeds %d bytes", azureResponseBodyLimit)
 	}
-	if decodeErr != nil {
-		return nil, fmt.Errorf("embed: azure decode response: %w", decodeErr)
+	if err != nil {
+		return nil, fmt.Errorf("embed: azure read response: %w", err)
+	}
+	var decoded azureEmbedResponse
+	if err := answer.Decode(&decoded); err != nil {
+		return nil, fmt.Errorf("embed: azure decode response: %w", err)
 	}
 	return placeAzureVectors(decoded, len(texts))
 }
@@ -240,10 +244,12 @@ func (c *AzureClient) Embed(ctx context.Context, texts []string, inputType Input
 // anything about the texts.
 func azureStatusError(response *http.Response) error {
 	var decoded azureErrorResponse
-	body, _ := io.ReadAll(io.LimitReader(response.Body, azureErrorBodyLimit))
-	_ = json.Unmarshal(body, &decoded)
+	// A body past the limit is cut there, and decodes to no code.
+	if answer, readErr := redact.ReadAnswer(response, azureErrorBodyLimit); readErr == nil {
+		_ = answer.Decode(&decoded)
+	}
 	err := fmt.Errorf("embed: azure embeddings: HTTP %s", response.Status)
-	if decoded.Error.Code != "" {
+	if !decoded.Error.Code.IsEmpty() {
 		err = fmt.Errorf("embed: azure embeddings: HTTP %s, error code %q", response.Status, decoded.Error.Code)
 	}
 	if azureThrottled(response.StatusCode) {

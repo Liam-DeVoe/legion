@@ -37,10 +37,15 @@ import (
 	"golang.org/x/sync/singleflight"
 
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // defaultTimeout is the window every broker call gets, matching envoy.Client's default.
 const defaultTimeout = 5 * time.Second
+
+// maxAnswerBytes bounds one broker answer this client relays: a list of pending requests is far
+// smaller.
+const maxAnswerBytes = 16 << 20
 
 // Client relays Dispatch's UI calls to the broker, authenticating each one with the projected
 // ServiceAccount token Account reads. A nil *Client (the broker URL is unconfigured) means the
@@ -133,21 +138,27 @@ func (c *Client) do(ctx context.Context, method, path string, body json.RawMessa
 		return nil, fmt.Errorf("agent-secrets: %s %s: %w", method, path, err)
 	}
 	defer response.Body.Close()
-	responseBody, err := io.ReadAll(response.Body)
+	answer, err := redact.ReadAnswer(response, maxAnswerBytes)
 	if err != nil {
 		return nil, fmt.Errorf("agent-secrets: read %s %s response: %w", method, path, err)
 	}
+	// The answer is data the page shows, relayed as it came (redact.Answer.StreamTo). A refusal's
+	// body is relayed with every credential the request carried redacted (redact.Carried): an
+	// answer in the broker's place can echo Dispatch's own account token, which no browser may see.
+	var raw bytes.Buffer
+	_, _ = answer.StreamTo(&raw)
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		brokerErr := &Error{Status: response.StatusCode, Body: responseBody}
+		refused := []byte(redact.Tokens(raw.String(), -1, redact.Carried(response)...))
+		brokerErr := &Error{Status: response.StatusCode, Body: refused}
 		var decoded struct {
 			Code string `json:"code"`
 		}
-		if err := json.Unmarshal(responseBody, &decoded); err == nil {
+		if err := json.Unmarshal(refused, &decoded); err == nil {
 			brokerErr.Code = decoded.Code
 		}
 		return nil, brokerErr
 	}
-	return json.RawMessage(responseBody), nil
+	return json.RawMessage(raw.Bytes()), nil
 }
 
 // Pending lists the credential requests awaiting the named approver's decision, and the expired

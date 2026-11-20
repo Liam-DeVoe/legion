@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -126,7 +126,6 @@ func (s *EntraTokenSource) Token(ctx context.Context) (string, error) {
 type entraTokenResponse struct {
 	AccessToken string          `json:"access_token"`
 	ExpiresIn   json.RawMessage `json:"expires_in"`
-	Error       string          `json:"error"`
 }
 
 // exchange makes one client-credentials request. Its errors name the token file's path, the HTTP
@@ -160,20 +159,24 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 		return "", 0, fmt.Errorf("embed: entra token exchange: %w", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(response.Body, entraResponseLimit))
+	answer, err := redact.ReadAnswer(response, entraResponseLimit)
 	if err != nil {
 		return "", 0, fmt.Errorf("embed: entra read response: %w", err)
 	}
-	var decoded entraTokenResponse
-	decodeErr := json.Unmarshal(body, &decoded)
 	if response.StatusCode < 200 || response.StatusCode > 299 {
-		if decoded.Error != "" {
-			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", response.Status, decoded.Error)
+		// Entra's error is its word, or a stand-in's, which can echo the assertion the exchange
+		// carried: it is held with the request's record (redact.Answer.Decode).
+		var refusal struct {
+			Error redact.RemoteText `json:"error"`
+		}
+		if answer.Decode(&refusal) == nil && !refusal.Error.IsEmpty() {
+			return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s, error %q", response.Status, refusal.Error)
 		}
 		return "", 0, fmt.Errorf("embed: entra token exchange: HTTP %s", response.Status)
 	}
-	if decodeErr != nil {
-		return "", 0, fmt.Errorf("embed: entra decode response: %w", decodeErr)
+	var decoded entraTokenResponse
+	if err := answer.Decode(&decoded); err != nil {
+		return "", 0, fmt.Errorf("embed: entra decode response: %w", err)
 	}
 	if decoded.AccessToken == "" {
 		return "", 0, errors.New("embed: entra answered no access_token")
@@ -186,12 +189,13 @@ func (s *EntraTokenSource) exchange(ctx context.Context) (string, time.Duration,
 }
 
 // entraLifetime reads expires_in, the token's lifetime in seconds, which may arrive as a JSON
-// number or as a string; both are accepted.
+// number or as a string; both are accepted. A value it cannot read is refused without quoting it:
+// an answer in Entra's place can put the assertion the exchange carried there.
 func entraLifetime(raw json.RawMessage) (time.Duration, error) {
 	value := strings.Trim(string(raw), `"`)
 	seconds, err := strconv.ParseInt(value, 10, 64)
 	if err != nil || seconds <= 0 {
-		return 0, fmt.Errorf("embed: entra answered expires_in %q, want a positive number of seconds", value)
+		return 0, errors.New("embed: entra answered an expires_in that is no positive number of seconds")
 	}
 	return time.Duration(seconds) * time.Second, nil
 }

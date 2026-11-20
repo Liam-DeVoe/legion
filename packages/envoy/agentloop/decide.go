@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // decidePath is the path a decision is posted to, under the endpoint's base URL.
@@ -154,12 +155,18 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	client := newModelTransport(req.Model.Endpoint).client()
 
 	resp, err := client.Do(post)
-	var raw []byte
+	// The answer is read through redact.ReadAnswer: a model endpoint's words, or a stand-in's,
+	// can repeat the token the call carried, so the detail prints them as the rule reads them, and
+	// a decode's error quotes no value. A body past the cap is cut there and named as such.
+	var answer redact.Answer
+	tooLarge := false
 	if err == nil {
-		// One byte past the cap, so a body that reaches it is told from one that fits.
-		raw, err = io.ReadAll(io.LimitReader(resp.Body, answerLimit+1))
+		answer, err = redact.ReadAnswer(resp, answerLimit)
 		_ = resp.Body.Close()
-		if err != nil {
+		tooLarge = errors.Is(err, redact.ErrAnswerTooLarge)
+		if tooLarge {
+			err = nil
+		} else if err != nil {
 			err = fmt.Errorf("reading the answer: %w", err)
 		}
 	}
@@ -172,19 +179,19 @@ func Decide(ctx context.Context, req DecideRequest) (DecideResult, error) {
 	case err != nil:
 		result.Fault, result.Detail = FaultProviderError, err.Error()
 	case resp.StatusCode/100 != 2:
-		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, raw)
-	case len(raw) > answerLimit:
+		result.Fault, result.Detail = FaultProviderError, fmt.Sprintf("%s: %.500q", resp.Status, answer.Words().String())
+	case tooLarge:
 		result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer went past the %d MiB a decision reads", answerLimit>>20)
 	default:
-		var answer systemOneResponse
-		switch err := json.Unmarshal(raw, &answer); {
+		var decided systemOneResponse
+		switch err := answer.Decode(&decided); {
 		case err != nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, raw)
-		case len(answer.Answers) == 0 || answer.Usage == nil:
-			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer holds no answers or no usage: %.500q", raw)
+			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("%v: %.500q", err, answer.Words().String())
+		case len(decided.Answers) == 0 || decided.Usage == nil:
+			result.Fault, result.Detail = FaultMalformed, fmt.Sprintf("the answer holds no answers or no usage: %.500q", answer.Words().String())
 		default:
-			result.Answers = answer.Answers
-			result.Usage = answer.Usage.priced(req.Model.Price)
+			result.Answers = decided.Answers
+			result.Usage = decided.Usage.priced(req.Model.Price)
 		}
 	}
 	return result, nil

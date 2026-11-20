@@ -14,7 +14,6 @@ package legion
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,6 +22,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // StatePath is the daemon route the sampler reads a project's state from. It authenticates
@@ -119,7 +120,7 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 		return State{}, 0, fmt.Errorf("%w: GET %s: %v", ErrUnavailable, StatePath, callFailure(err))
 	}
 	defer response.Body.Close()
-	body, read, err := readBounded(response.Body)
+	answer, read, err := readBounded(response)
 	if err != nil {
 		return State{}, read, fmt.Errorf("%w: GET %s: %w", ErrUnavailable, StatePath, err)
 	}
@@ -127,23 +128,25 @@ func (c *Client) State(ctx context.Context) (State, int, error) {
 		return State{}, read, fmt.Errorf("%w: GET %s answered %d", ErrUnavailable, StatePath, response.StatusCode)
 	}
 	var state State
-	if err := json.Unmarshal(body, &state); err != nil {
+	if err := answer.Decode(&state); err != nil {
 		return State{}, read, fmt.Errorf("%w: decode GET %s: %v", ErrUnavailable, StatePath, err)
 	}
 	return state, read, nil
 }
 
-// readBounded reads at most ResponseLimit bytes of body and refuses one carrying more. It reads
-// one byte past the cap to tell a body exactly at it from one over it, so the refusal is never a
-// parse of a truncated document; the count it returns for such a body is where the read stopped,
-// the cap and one byte, since nothing counts past a body it refused.
-func readBounded(body io.Reader) ([]byte, int, error) {
-	read, err := io.ReadAll(io.LimitReader(body, ResponseLimit+1))
+// readBounded reads at most ResponseLimit bytes of response's body, through redact.ReadAnswer,
+// and refuses one carrying more. It reads one byte past the cap to tell a body exactly at it from
+// one over it, so the refusal is never a parse of a truncated document; the count it returns for
+// such a body is where the read stopped, the cap and one byte, since nothing counts past a body
+// it refused.
+func readBounded(response *http.Response) (redact.Answer, int, error) {
+	answer, err := redact.ReadAnswer(response, ResponseLimit)
+	if errors.Is(err, redact.ErrAnswerTooLarge) {
+		return redact.Answer{}, ResponseLimit + 1, ErrResponseTooLarge
+	}
 	if err != nil {
-		return nil, len(read), fmt.Errorf("read the answer: %v", err)
+		return redact.Answer{}, 0, fmt.Errorf("read the answer: %v", err)
 	}
-	if len(read) > ResponseLimit {
-		return nil, len(read), ErrResponseTooLarge
-	}
-	return read, len(read), nil
+	read, _ := answer.StreamTo(io.Discard)
+	return answer, int(read), nil
 }

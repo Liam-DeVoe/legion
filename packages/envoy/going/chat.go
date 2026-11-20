@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/internal/redirects"
 )
 
@@ -251,9 +251,11 @@ type chatWireFrame struct {
 	} `json:"choices"`
 }
 
+// chatWireError is a refusal's body, its code held as the service's word with the request's record
+// (redact.Answer.Decode): a service, or a stand-in, can echo the key the call carried there.
 type chatWireError struct {
 	Error struct {
-		Code string `json:"code"`
+		Code redact.RemoteText `json:"code"`
 	} `json:"error"`
 }
 
@@ -344,10 +346,10 @@ func (c *HTTPClient) token(ctx context.Context) (string, error) {
 // is compared without a copy, and json.Unmarshal copies every string it decodes, so nothing the
 // turn keeps aliases a buffer the next line overwrites.
 func readChatStream(response *http.Response, onText func(string) error) ([]ToolCall, error) {
-	// One byte past the cap is read, so a stream that fills the cap exactly is told apart from
-	// one that runs past it, which is refused rather than read without end.
-	limited := &io.LimitedReader{R: response.Body, N: chatStreamLimit + 1}
-	scanner := bufio.NewScanner(limited)
+	// The stream is read through redact.StreamAnswer, which gives up to the cap and refuses a
+	// stream that runs past it rather than reading it without end.
+	stream := redact.StreamAnswer(response, chatStreamLimit)
+	scanner := bufio.NewScanner(stream)
 	scanner.Buffer(make([]byte, 0, 4096), chatFrameLimit)
 	var calls []ToolCall
 	var indexes []int
@@ -395,10 +397,9 @@ func readChatStream(response *http.Response, onText func(string) error) ([]ToolC
 			return calls, nil
 		}
 	}
-	if limited.N == 0 {
+	if err := scanner.Err(); errors.Is(err, redact.ErrAnswerTooLarge) {
 		return nil, fmt.Errorf("going: chat completions: stream exceeds %d bytes", chatStreamLimit)
-	}
-	if err := scanner.Err(); err != nil {
+	} else if err != nil {
 		return nil, fmt.Errorf("going: chat completions: read stream: %w", err)
 	}
 	return calls, nil
@@ -408,9 +409,11 @@ func readChatStream(response *http.Response, onText func(string) error) ([]ToolC
 // at most chatErrorBodyLimit of the body for that code: neither says anything about the question.
 func chatStatusError(response *http.Response) error {
 	var decoded chatWireError
-	body, _ := io.ReadAll(io.LimitReader(response.Body, chatErrorBodyLimit))
-	_ = json.Unmarshal(body, &decoded)
-	if decoded.Error.Code != "" {
+	// A body past the limit is cut there, and decodes to no code.
+	if answer, err := redact.ReadAnswer(response, chatErrorBodyLimit); err == nil {
+		_ = answer.Decode(&decoded)
+	}
+	if !decoded.Error.Code.IsEmpty() {
 		return fmt.Errorf("going: chat completions: HTTP %s, error code %q", response.Status, decoded.Error.Code)
 	}
 	return fmt.Errorf("going: chat completions: HTTP %s", response.Status)

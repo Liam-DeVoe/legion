@@ -19,12 +19,9 @@
 package projectaccess
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -33,6 +30,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The member kinds Dispatch answers for a person.
@@ -355,42 +353,46 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, into an
 		return 0, fmt.Errorf("projectaccess: ask dispatch: %w", err)
 	}
 	defer response.Body.Close()
+	// The answer is read once, through redact.ReadAnswer: its code is Dispatch's word, or a
+	// stand-in's, held with the request's record, and a decode's error quotes no value of it.
+	answer, readErr := redact.ReadAnswer(response, maxAnswerBytes)
 	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
-		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(response.Body))
+		return 0, fmt.Errorf("%w: dispatch answered %s %d with the code %q", ErrBrokerRefused, path, response.StatusCode, refusalCode(answer, readErr))
 	}
-	body, err := io.ReadAll(io.LimitReader(response.Body, maxAnswerBytes+1))
-	if err != nil {
-		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", err)
-	}
-	if len(body) > maxAnswerBytes {
+	if errors.Is(readErr, redact.ErrAnswerTooLarge) {
 		return 0, fmt.Errorf("projectaccess: dispatch's answer to %s is over %d bytes", path, maxAnswerBytes)
+	}
+	if readErr != nil {
+		return 0, fmt.Errorf("projectaccess: read dispatch's answer: %w", readErr)
 	}
 	switch response.StatusCode {
 	case http.StatusOK:
 	case http.StatusNotFound:
-		code := refusalCode(bytes.NewReader(body))
-		if code == projectNotFoundCode {
+		code := refusalCode(answer, nil)
+		if code.Equal(projectNotFoundCode) {
 			return http.StatusNotFound, nil
 		}
 		return 0, fmt.Errorf("projectaccess: dispatch answered %s 404 with the code %q, which is no answer about a project", path, code)
 	default:
-		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(bytes.NewReader(body)))
+		return 0, fmt.Errorf("projectaccess: dispatch answered %s %d with the code %q", path, response.StatusCode, refusalCode(answer, nil))
 	}
-	if err := json.Unmarshal(body, into); err != nil {
+	if err := answer.Decode(into); err != nil {
 		return 0, fmt.Errorf("projectaccess: decode dispatch's answer to %s: %w", path, err)
 	}
 	return http.StatusOK, nil
 }
 
-// refusalCode is the code a refusal's body names, read from at most maxAnswerBytes of it: empty
-// for a body that is cut short, runs past the bound or names none, since the status has already
-// decided what the answer is and the code only adds to its error.
-func refusalCode(body io.Reader) string {
+// refusalCode is the code a refusal's answer names, held as Dispatch's word with the request's
+// record: empty for an answer read failed, which read cut short or ran past the bound (err), or
+// that names none, since the status has already decided what the answer is and the code only
+// adds to its error.
+func refusalCode(answer redact.Answer, err error) redact.RemoteText {
 	var refusal struct {
-		Code string `json:"code"`
+		Code redact.RemoteText `json:"code"`
 	}
-	raw, _ := io.ReadAll(io.LimitReader(body, maxAnswerBytes))
-	_ = json.Unmarshal(raw, &refusal)
+	if err == nil {
+		_ = answer.Decode(&refusal)
+	}
 	return refusal.Code
 }
 
