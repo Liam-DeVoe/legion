@@ -497,7 +497,7 @@ Then:
   The key lands only with a `daemonImage` and a worker image that both carry this release:
   a daemon of an earlier release refuses at boot a key it does not know (`unknown key runtime.kubernetes.test_postgres_disk`), and an older image's launcher refuses the `--test-postgres-disk` flag and has no reset.
   A change that moves either pin back below this release takes the key out first.
-  This release raises the daemon API contract to 181 (`DaemonAPIVersion`, `packages/daemon/internal/api/version.go`) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
+  This release raises the daemon API contract to 189 (`DaemonAPIVersion`, `packages/daemon/internal/api/version.go`) because the launcher's command line gains `--test-postgres-disk`, so the image probe ([The image is probed before it publishes](#the-image-is-probed-before-it-publishes)) pairs a daemon of this release only with a worker image of this release: the two move together.
   A pod whose key is off gets no such flag, and runs as it did before this release.
   Setting the key opens no update round, because the shape a pod records (`legion.dev/pod-shape`) does not hold it:
   a running pod keeps its `emptyDir` until it is replaced, and the pod that replaces it gets the disk.
@@ -6777,6 +6777,11 @@ It logs the same `running copy: no copy of the issue workspace was stored` line 
 Stored, such a copy would be the later of the two copies by the clock, the next pod would be sent it in the bundle's place, and the bundle's row would then hold the issue's pod under `bundle_unrestored` until the issue's work is over.
 A copy whose take began before the take of the issue's stored running copy is not stored either, and a workspace that bundled to nothing drops no such copy; each logs the same line at Info with the reason `newer_copy_stands`, the drop with `bytes` 0, which is no fault and is not one of the reasons above: a copy never replaces a stored running copy whose take began later, nor drops one ([The times the restore compares](#the-times-the-restore-compares)).
 
+While the daemon's project is paused, no copy is taken at all, since a pause saves no workspace ([Pausing a project](#pausing-a-project)).
+Each copy that a turn's end, the cadence or a push asks for then logs the same line at Info with the reason `project_paused` and the open pause's id as `pause`, which is no fault and is not one of the reasons above.
+A copy already asking its shim when the pause begins runs to its end, since it read the workspace before the pause.
+A skipped copy owes a retry, because a turn that ended while the project was paused is in no copy: the cadence takes it once the project has resumed and a role of the issue is live again.
+
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.
 Measured in an issue pod on 2026-11-12: the shim's one snapshotting command takes about 1.36 s in this repository's workspace (five runs, 1.318 s to 1.416 s), so at 12 copies an hour a workspace is inside a copy for about 16 s of each hour, which is 0.45% of it.
@@ -7040,7 +7045,7 @@ It writes the claim and the stop's record, and with them:
 Every other stopped role stays stopped until its next wake, as the role of an idle-released pod does.
 
 **The pods.**
-The pause deletes no pod and saves no workspace.
+The pause deletes no pod and saves no workspace: the idle release saves none, and no running copy of a workspace is taken while the project is paused ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 From the moment the pause stops one role of a pod, it holds that pod (`project_pause_pod_holds`), although another role of the pod may still run its turn.
 A held pod keeps its disk, with the work that its roles did not push.
 These rules pass over it:

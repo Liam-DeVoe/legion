@@ -146,6 +146,13 @@ const (
 	// after that. It is written at Info: it is no fault, and it is not one of the reasons above
 	// that a deployment counts.
 	runningCopyNewerStands = "newer_copy_stands"
+	// runningCopyProjectPaused: the daemon's project is paused (pause.Service.Paused), and a
+	// pause saves no workspace (docs/kubernetes.md, "Pausing a project"): it holds every pod it
+	// stopped a role of, with its disk, so nothing the copy would hold is lost while it stands. It
+	// is written at Info with the open pause's id, since nothing failed, and it owes a retry
+	// (runningCopy.retry): a turn that ended while the project was paused is in no copy, so the
+	// cadence takes it again once the project has resumed and a role of the issue is live.
+	runningCopyProjectPaused = "project_paused"
 )
 
 // runningCopies is what the cadence holds in memory: per issue, whether a copy of that issue is
@@ -744,7 +751,20 @@ func (w *workflowRuntime) startOwedCopy(issue string) {
 // here — the cadence's (copyWorkingWorkspaces), a turn's end (copyWorkspaceAtTurnEnd), a push's
 // (copyWorkspaceAtPush) and the copy owed behind one in flight (done) or behind a release's save
 // (runningCopies.hold) — so each meets it.
+//
+// Before all of that, a copy of a paused project is not taken at all: a pause saves no workspace
+// (runningCopyProjectPaused). The flag is the one every launch of the project reads
+// (pause.Service.Paused), so the check is one atomic load and reads no claim. It is read as the
+// copy starts and again just before the shim is asked (storeRunningCopy), so only a copy already
+// asking its shim when the pause commits runs to its end: it read the workspace before the pause,
+// and the pause holds the pod it came off. The skipped copy starts the issue's period and owes a
+// retry, as one with no live role does.
 func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, claims []supervise.Claim, noRole slog.Level) {
+	if pause, paused := w.projectPaused(); paused {
+		w.copies.untaken(issue, true)
+		w.log.Info(runningCopyUnsavedLine, "issue", issue, "reason", runningCopyProjectPaused, "pause", pause)
+		return
+	}
 	if claims == nil {
 		read, err := w.copyStore.Claims(ctx)
 		if err != nil {
@@ -827,6 +847,13 @@ func (w *workflowRuntime) storeRunningCopy(ctx context.Context, issue string, ro
 	begun, err := w.copyStore.BeginWorkspaceCopy(ctx)
 	if err != nil {
 		w.unsavedCopy(issue, "role", role, "reason", runningCopyClockUnread, "error", err)
+		return true
+	}
+	// The copy read no pause as it started (takeRunningCopy) and has waited on the store since,
+	// so it reads the flag again before it asks the shim: only a copy already asking its shim
+	// when a pause commits runs to its end.
+	if pause, paused := w.projectPaused(); paused {
+		w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyProjectPaused, "pause", pause)
 		return true
 	}
 	bundle, err := w.copyBundler.BundleWorkspace(ctx, issue, role)
@@ -952,4 +979,15 @@ func (w *workflowRuntime) copyTick() time.Duration {
 		return w.idleTick
 	}
 	return idleTickInterval
+}
+
+// projectPaused is the open pause's id and true while the daemon's project is paused, as the
+// pause service last read or made it (pause.Service.Paused), and false for a runtime that holds no
+// pause: run builds the project's pause before supervision and before any copy can start
+// (workflowRuntime.pauses), and a runtime a test builds by hand holds none.
+func (w *workflowRuntime) projectPaused() (int64, bool) {
+	if w.pauses == nil {
+		return 0, false
+	}
+	return w.pauses.service.Paused()
 }

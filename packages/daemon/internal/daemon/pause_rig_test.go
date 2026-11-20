@@ -171,11 +171,22 @@ func (r *pauseRuntime) SuspendIssue(ctx context.Context, issue, _ string, author
 }
 
 // podReads is what the runtime was asked to do to the pods: the issues whose pod a teardown
-// deleted and the issues a release asked for a bundle of.
+// deleted and the issues a release or a running copy asked for a bundle of (bundledSince).
 func (r *pauseRuntime) podReads() (deleted, bundled []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.deleted), slices.Clone(r.bundled)
+}
+
+// bundledSince is every issue the runtime was asked for a bundle of after its first n such asks.
+// A release is not the only caller: the daemon's running copy of a workspace (R1 of
+// dispatch://INFRA-1117) asks too, of every issue with a role in a turn at the cadence's first
+// pass, so a rig that boots with a role in a turn has bundles asked for before it pauses, and a
+// test of what a pause saves counts from the pause (podReads' bundled, read at the pause).
+func (r *pauseRuntime) bundledSince(n int) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.bundled[min(n, len(r.bundled)):])
 }
 
 // suspendedOf is how many times the runtime was asked to stop a process of token.

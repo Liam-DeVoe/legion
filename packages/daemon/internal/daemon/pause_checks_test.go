@@ -41,7 +41,9 @@ import (
 //
 // The negative control is the pause's check taken out of the admission pass
 // (admit.Admission.promoteHolds): Z is then admitted while P is paused, and the test fails at that
-// admission.
+// admission. A second is the pause's check taken out of the running copy
+// (workflowRuntime.projectPaused answering no pause): the end of D's turn is then copied while P
+// is paused, and the test fails at its read of what the runtime bundled.
 func TestPauseHoldsEveryStart(t *testing.T) {
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	X, Y, U, W, V, Z := r.issue(1), r.issue(2), r.issue(3), r.issue(4), r.issue(5), r.issue(6)
@@ -96,6 +98,11 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	launchesBefore := len(r.rt.launches())
 	paused := r.mark()
 	pause := r.pauseProject()
+	// The bundles are counted from the pause: the running copy (R1 of dispatch://INFRA-1117) can
+	// ask for one of X and W at its first pass, since A and D are in their turns, and a copy
+	// already asking its shim as the pause commits runs to its end, so the count starts once the
+	// pause has committed.
+	_, bundledBefore := r.rt.podReads()
 
 	// B stops at once, its session kept; E's parked launch is stopped with the launch owed; A and
 	// D stay in their turns.
@@ -181,7 +188,8 @@ func TestPauseHoldsEveryStart(t *testing.T) {
 	}
 
 	// The pods of X and W stay, held by the pause, and no rule deletes them or saves their work.
-	deleted, bundled := r.rt.podReads()
+	deleted, _ := r.rt.podReads()
+	bundled := r.rt.bundledSince(len(bundledBefore))
 	if len(deleted) != 0 || len(bundled) != 0 {
 		t.Fatalf("the runtime deleted the pods of %v and bundled %v while the project is paused, want none", deleted, bundled)
 	}
@@ -679,7 +687,10 @@ func TestPauseHoldsAcrossRestart(t *testing.T) {
 // past the idle period again, and then sends a wake to pod 1's worker.
 //
 // The negative control is the pause's hold taken out of workflow.UnownedPodRelease: pod 4 is
-// deleted after the idle period once the project resumes, and the test fails there.
+// deleted after the idle period once the project resumes, and the test fails there. No running
+// copy is asked for in this rig while the project is paused: the cadence's 5 minutes run on the
+// wall clock, and pod 3's architect's turn ends into the pause's stop and not into an idle state,
+// so the pause's check in the running copy is k1's to show (TestPauseHoldsEveryStart).
 func TestPauseKeepsThePods(t *testing.T) {
 	r := newPauseDaemonRig(t, func(cfg *config.Config) { cfg.AdmissionCap = 8 })
 	// The update rounds' sweep runs beside the machines (overrides.orphanSweep), reading the test
@@ -700,6 +711,11 @@ func TestPauseKeepsThePods(t *testing.T) {
 	r.boot()
 
 	pause := r.pauseProject()
+	// The bundles are counted from the pause: the running copy (R1 of dispatch://INFRA-1117) can
+	// ask for one of pods 3 and 6 at its first pass, since their architects are in turns, and a
+	// copy already asking its shim as the pause commits runs to its end, so the count starts once
+	// the pause has committed.
+	_, bundledBefore := r.rt.podReads()
 	for _, token := range []claim.Token{worker(1), worker(2), worker(3), architect(4), worker(5), worker(6)} {
 		if c := r.awaitState(token, supervise.StateSuspended, "the pause stops an idle role at once"); !c.Released() {
 			t.Fatalf("%s after its stop is suspended by %s, want released", token, c.SuspendedBy)
@@ -745,7 +761,8 @@ func TestPauseKeepsThePods(t *testing.T) {
 	// Past the idle period and past the rounds' bound, with the project paused.
 	r.advance(pauseRigPodUpdateGrace + time.Minute)
 	r.advance(pauseRigIdleMinutes * time.Minute)
-	deleted, bundled := r.rt.podReads()
+	deleted, _ := r.rt.podReads()
+	bundled := r.rt.bundledSince(len(bundledBefore))
 	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
 		t.Fatalf("while the project is paused the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone",
 			deleted, bundled)
@@ -791,10 +808,20 @@ func TestPauseKeepsThePods(t *testing.T) {
 	}
 	r.advance(pauseRigIdleMinutes*time.Minute + time.Minute)
 	r.advance(time.Minute)
-	deleted, bundled = r.rt.podReads()
-	if !slices.Equal(deleted, []string{pods[4]}) || len(bundled) != 0 {
-		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone: pod 4, which holds only an architect, stands too",
+	// After the resume pod 6's architect is the one role of the project still in a turn, so the
+	// running copy (R1 of dispatch://INFRA-1117) may ask for a bundle of pod 6 and of no other pod;
+	// a release's bundle of any pod is a workspace saved, which the count of workspace_bundles reads.
+	onlyPod6Copies := func(bundled []string) bool {
+		return !slices.ContainsFunc(bundled, func(issue string) bool { return issue != pods[5] })
+	}
+	deleted, _ = r.rt.podReads()
+	bundled = r.rt.bundledSince(len(bundledBefore))
+	if !slices.Equal(deleted, []string{pods[4]}) || !onlyPod6Copies(bundled) {
+		t.Fatalf("after the resume the runtime deleted the pods of %v and bundled %v, want pod 5's deletion alone and no bundle but pod 6's running copy: pod 4, which holds only an architect, stands too",
 			deleted, bundled)
+	}
+	if saved := r.count(`select count(*) from workspace_bundles`); saved != 0 {
+		t.Fatalf("%d workspaces saved after the resume, want none", saved)
 	}
 	for _, issue := range []string{pods[0], pods[1], pods[2], pods[3]} {
 		if !r.openPodHold(issue) {
@@ -819,8 +846,9 @@ func TestPauseKeepsThePods(t *testing.T) {
 	if _, present := r.rt.IssueSandbox(pods[0]); !present {
 		t.Fatal("pod 1's Sandbox is gone at the wake, want the worker launched in the pod that holds its work")
 	}
-	deleted, bundled = r.rt.podReads()
-	if slices.Contains(deleted, pods[0]) || len(bundled) != 0 {
+	deleted, _ = r.rt.podReads()
+	bundled = r.rt.bundledSince(len(bundledBefore))
+	if slices.Contains(deleted, pods[0]) || !onlyPod6Copies(bundled) || r.count(`select count(*) from workspace_bundles`) != 0 {
 		t.Fatalf("pod 1 deleted (%v) or a workspace bundled (%v) at the wake, want the disk kept", deleted, bundled)
 	}
 	r.ready(worker(1))

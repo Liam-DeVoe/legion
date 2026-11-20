@@ -2453,7 +2453,7 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 181: dispatch://INFRA-1117 -- the test database's own disk. Where
+// 189: dispatch://INFRA-1117 -- the test database's own disk. Where
 // `runtime.kubernetes.test_postgres_disk` sets a size, an issue pod that runs the test database
 // keeps its cluster on a generic ephemeral volume of that size in place of the `testpg` emptyDir,
 // and the launcher's command line gains `--test-postgres-disk` after `--test-postgres`
@@ -2470,10 +2470,10 @@ package api
 // paired only with an image of this release. An older daemon renders no such flag, and a
 // launcher of this release given none behaves as before: it reads no free bytes and resets
 // nothing. No frame between the daemon and the launcher moves, and no shape the plugin parses.
-// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 240 open pull requests of
-// this repository, taken between 2026-11-20T00:52:43Z and 01:01:25Z for the merge that brought
-// main in at c7e1cbd5, reads main's 178, which #4115 took, and above it 179 declared by #4392 and
-// #4540 and 180 by #4049 and #4175, so 181 is the lowest number above main's that no other open
-// head declares. Read main's own number and every open pull request's again at the next forward
-// merge rather than from this line.)
-const DaemonAPIVersion = 181
+// (A census of `const DaemonAPIVersion` at refs/pull/<n>/head over all 253 open pull requests of
+// this repository, taken between 2026-11-20T07:03:45Z and 07:10:45Z, reads main's 178, which
+// #4115 took, and above it every number from 179 to 188 declared by another open head: 181 by
+// #4273, which pushed it before this branch did. So 189 is the lowest number above main's that no
+// other open head declares. Read main's own number and every open pull request's again at the
+// next forward merge rather than from this line.)
+const DaemonAPIVersion = 189
