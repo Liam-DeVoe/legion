@@ -1239,10 +1239,10 @@ func longestRunInOrder(places []int) map[int]bool {
 }
 
 // boundedReadBack joins entries, one blank line between them, within editReadBackBound bytes: it
-// writes them in document order until the bound, cuts the entry the bound falls in at a rune
-// boundary, and ends with the line naming what it left out. The room the closing line needs is
-// taken off the bound first, measured at the largest counts it could name, so the whole field
-// holds the bound whatever the cut turns out to be.
+// writes them in document order until the bound, shortens the entry the bound falls in at a rune
+// boundary, and ends with the line saying what the read-back leaves unshown (ReadBackCutLine).
+// The room that closing line needs is taken off the bound first, measured at the largest counts
+// it could name, so the whole field holds the bound whatever the counts turn out to be.
 func boundedReadBack(entries []string) string {
 	bytes, characters := 0, 0
 	for index, entry := range entries {
@@ -1280,10 +1280,21 @@ func boundedReadBack(entries []string) string {
 	return strings.Join(append(kept, ReadBackCutLine(characters, len(entries)-cut)), "\n\n")
 }
 
-// ReadBackCutLine says what a read-back held back at the bound. It is exported so a caller's
-// test reads the line this package writes rather than a copy of its wording.
+// ReadBackCutLine closes a read-back that reached editReadBackBound. It names the read-back and
+// never the document: the read-back is only the answer's echo of the blocks the edit wrote, and
+// the document holds every character of them, so a line saying the edit cut text read as text the
+// edit lost, and an agent reverted a correct edit over it (dispatch://INFRA-4749). characters and
+// blocks count what the read-back leaves unshown: the rest of the block the bound falls in and
+// every block after it. It is exported so a caller's test reads the line this package writes
+// rather than a copy of its wording.
 func ReadBackCutLine(characters, blocks int) string {
-	return fmt.Sprintf("cut %d characters in %d blocks", characters, blocks)
+	// One block is named in the singular, which is shorter, so boundedReadBack's room for the line,
+	// measured at the most blocks it could name, still holds.
+	noun := "blocks"
+	if blocks == 1 {
+		noun = "block"
+	}
+	return fmt.Sprintf("the read-back shows at most %d bytes; %d characters of %d %s are not shown here, and the document holds them", editReadBackBound, characters, blocks, noun)
 }
 
 // runeBoundaryBelow is the largest offset into text at or below bound that opens a rune, so a cut

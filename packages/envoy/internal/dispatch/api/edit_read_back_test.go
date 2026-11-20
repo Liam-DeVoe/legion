@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -157,6 +159,50 @@ func TestDocumentEditReadBackStopsAtItsBound(t *testing.T) {
 		t.Fatalf("applied = %d, want 4", edited.Applied)
 	}
 	checkBoundedReadBack(t, edited.Written, blocks)
+}
+
+// A replace that grows one block past the read-back's bound writes the block whole; only the
+// answer's echo of it stops at the bound. The line closing that echo says what the read-back
+// leaves unshown and that the document holds it, and nothing in the answer says the document,
+// the edit or the block was cut: an agent read `cut N characters in 1 blocks` as text its edit
+// lost, and reverted a correct edit over it (dispatch://INFRA-4749).
+func TestDocumentEditReadBackOfAGrownBlockSaysWhatItDoesNotShow(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "Grown block", "Alpha.\n\nBravo.\n")
+	before := documentMarkdown(t, handler, issue.PrimaryArtifactID)
+	grown := strings.TrimSpace(strings.Repeat("bravo ", 500))
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"ops": []map[string]any{{"op": "replace", "find": "Bravo.", "with": grown}},
+	}, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("edit: status=%d body=%s", response.Code, response.Body.String())
+	}
+	answer := response.Body.String()
+	written := decodeBody[editReadBack](t, response).Written
+
+	if len(written) > 2000 {
+		t.Fatalf("written holds %d bytes, want the 2,000-byte bound", len(written))
+	}
+	shown, line, closed := strings.Cut(written, "\n\n")
+	if !closed || shown == grown || !strings.HasPrefix(grown, shown) {
+		t.Fatalf("written = %q, want the opening of the grown block and the line closing the read-back", written)
+	}
+	left := utf8.RuneCountInString(grown) - utf8.RuneCountInString(shown)
+	if want := docs.ReadBackCutLine(left, 1); line != want {
+		t.Fatalf("written ends %q, want %q", line, want)
+	}
+	for _, says := range []string{"read-back", fmt.Sprintf("%d characters", left), "not shown", "the document holds them"} {
+		if !strings.Contains(line, says) {
+			t.Fatalf("written ends %q, want a line that says %q: what the read-back leaves unshown and that the document holds it", line, says)
+		}
+	}
+	if cut := regexp.MustCompile(`(?i)\bcut\b`).FindString(answer); cut != "" {
+		t.Fatalf("the answer says %q: %s; want no text saying the document, the edit or a block was cut", cut, answer)
+	}
+
+	if after, want := documentMarkdown(t, handler, issue.PrimaryArtifactID), strings.Replace(before, "Bravo.", grown, 1); after != want {
+		t.Fatalf("the document reads %q after the edit, want every character the replace wrote: %q", after, want)
+	}
 }
 
 // The same edit under a block precondition, which resolves and writes the batch in the other
