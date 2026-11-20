@@ -843,6 +843,32 @@ commands on the clone and the move of the workspace aside to `<dir>.removing`; t
 deleted after the lock is released, and a `<dir>.removing` a crash left is cleared by the issue's
 next removal.
 
+The reviewer is the one role that works in no issue workspace. Its pane starts in a clone of its
+own at `<state_dir>/reviews/<owner>/<repo>/<issue, lowercased>`, which no other role's pane works
+in (`workspace.ProvisionReviewClone`). Every reviewer launch, after its issue's workspace, makes
+that clone or brings it to the head, under the issue's turn: a `git clone --no-checkout
+--no-hardlinks` of the shared clone, which copies the object files rather than linking them, with
+origin's branches as the shared clone records them, origin set to GitHub, and a detached checkout
+of `legion/<ISSUE>` at origin, or of the default branch where origin has no such branch, with jj
+colocated in it. A clone that is already there gets those branches fetched again from the shared
+clone, with no network, and a `jj new` on the head. Its stale git locks are removed first, and the
+reviewer's earlier writes stay in a change of their own. The launch is refused, naming both
+commits, when the clone's `HEAD` is not that head afterwards. The shared clone's store lock is
+held only while the clone or its fetch reads the shared clone, and the checkout takes one of the 16
+places. The clone is removed with the issue's workspace. It costs the disk one more copy of the
+repository's objects and one checkout.
+
+The reviewer's pane PATH has `<state_dir>/review-git/bin` after the launcher's `bin/`. That
+directory's `git` is a shim the daemon writes again at every reviewer launch. It runs the next git
+on PATH with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` in front of the subcommand. It
+adds `--no-ext-diff --no-textconv` after a `diff`, `log`, `show`, `format-patch`, `whatchanged`,
+`blame` or `annotate`, and refuses one of those that names `--ext-diff` or `--textconv` itself.
+The pane is also told `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`, and the pod's git
+configuration pairs followed by the same two settings. So no diff driver, text conversion, hook or
+fsmonitor command a configuration names runs under the reviewer's claim. Every pane runs as the
+daemon's own user, so on the host this is defence and not a boundary: a pane can rewrite the shim
+until the next reviewer launch writes it again.
+
 A store may be made before the daemon's first boot, with the same jj the daemon uses, as the
 daemon's user: a colocated `jj git clone https://github.com/<owner>/<repo>` into the clone path,
 then `jj -R <clone> --ignore-working-copy config set --repo git.abandon-unreachable-commits false`.

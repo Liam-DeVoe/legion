@@ -1422,14 +1422,18 @@ COPY --from=go /out/agent-secrets /opt/legion/bin/agent-secrets
 # packages/daemon/docker/gh, the same script a tmux pane's launcher directory holds
 # (packages/daemon/internal/runtime/workerbin).
 COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
-# git in a pod is Legion's wrapper, first on the image PATH. It changes a commit and a push and runs
-# every other command unchanged with the real git at /usr/bin/git. A commit goes to `legion git`,
-# which adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. A push
-# runs with `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken
-# out, so git's own pre-push hook runs the leak guard over the update lines git computed and a
-# role can neither edit that hook nor skip it. The `-c` outranks the runtime's
-# core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
-# packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
+# git in a pod is Legion's wrapper, first on the image PATH. It changes a commit, a push and every
+# command of the reviewer's, and runs every other command unchanged with the real git at
+# /usr/bin/git. A commit goes to `legion git`, which adds the commit's Omp-Session and Legion-Role
+# trailers and then runs the real git. A push runs with `-c core.hooksPath=/opt/legion/githooks`
+# in front and the push's `--no-verify` taken out, so git's own pre-push hook runs the leak guard
+# over the update lines git computed and a role can neither edit that hook nor skip it. The `-c`
+# outranks the runtime's core.hooksPath=/dev/null pin, which still holds for every other command
+# (mainEnvironment, packages/daemon/internal/runtime/sandbox/manifest.go). A reviewer's command
+# (LEGION_ROLE=reviewer) runs with `-c core.fsmonitor=false -c core.hooksPath=/dev/null` in front
+# of its subcommand, and a diff, log, show, format-patch, whatchanged, blame or annotate also with
+# `--no-ext-diff --no-textconv`, so no diff driver, text conversion, hook or fsmonitor command a
+# configuration names runs under the reviewer's claim: packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
 # arguments it was given and checks one thing before a `jj git push`: that the git jj will shell

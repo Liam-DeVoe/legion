@@ -421,8 +421,9 @@ var reviewProvisionEnv = append(ReviewGitEnv(ReviewGitConfig()), "GIT_ALLOW_PROT
 const reviewStagingSuffix = ".review-"
 
 // ProvisionReviewClone makes the reviewer's own clone at request.Dir, or brings the one there to
-// the head. A new one is a `git clone --no-checkout` of the shared clone, which hard-links its
-// objects where the two share a filesystem and copies them where they do not, then origin's
+// the head. A new one is a `git clone --no-checkout --no-hardlinks` of the shared clone, which
+// copies its object files rather than linking them, so no role's write of the shared clone's
+// object files reaches the review clone, then origin's
 // branches as the shared clone records them (its refs/remotes/origin, which the clone alone does
 // not copy), origin set to GitHub with the shared clone's credential helper and gh's default
 // repository, then a checkout of the head, detached, and jj colocated with it, since the shim's
@@ -495,7 +496,7 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 	defer func() { _ = rolefile.RemoveTree(temporary) }()
 	store := &storeLock{locker: request.StoreLock}
 	store.lock()
-	clone := []string{"git", "clone", "--quiet", "--no-checkout", request.Clone, temporary}
+	clone := []string{"git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", request.Clone, temporary}
 	result, err := runCommandTimeout(ctx, run, clone, reviewProvisionEnv, parent, CloneTimeout)
 	if _, err = checkedResult(clone, result, err); err == nil {
 		err = fetchForReview(ctx, run, temporary, "origin")
@@ -538,6 +539,9 @@ func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest
 	if err != nil {
 		return err
 	}
+	if err := requireReviewHead(ctx, run, temporary, head); err != nil {
+		return err
+	}
 	if err := os.Rename(temporary, request.Dir); err != nil {
 		if complete, statErr := pathExists(filepath.Join(request.Dir, ".jj")); cloneCollision(err) && statErr == nil && complete {
 			return nil
@@ -570,12 +574,30 @@ func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) 
 	if err != nil {
 		return err
 	}
-	return inCheckoutPlace(ctx, request, func(bound time.Duration) error {
+	err = inCheckoutPlace(ctx, request, func(bound time.Duration) error {
 		argv := []string{"jj", "new", head, "--color=never", "-R", request.Dir}
 		result, err := runCommandTimeout(ctx, run, argv, nil, request.Dir, bound)
 		_, err = checkedResult(argv, result, err)
 		return err
 	})
+	if err != nil {
+		return err
+	}
+	return requireReviewHead(ctx, run, request.Dir, head)
+}
+
+// requireReviewHead refuses the review clone at dir unless the commit its git HEAD names is head,
+// the one the provision brought it to: a reviewer reads the change through that HEAD, so a clone
+// left at any other commit is refused, naming both, rather than handed to the reviewer.
+func requireReviewHead(ctx context.Context, run Runner, dir, head string) error {
+	result, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "HEAD"}, reviewProvisionEnv, dir)
+	if err != nil {
+		return err
+	}
+	if at := strings.TrimSpace(result.Stdout); at != head {
+		return fmt.Errorf("review clone %s stands on %s, not on %s, the head under review", dir, at, head)
+	}
+	return nil
 }
 
 // inCheckoutPlace runs checkout, a step that writes the review clone's whole working copy, holding
