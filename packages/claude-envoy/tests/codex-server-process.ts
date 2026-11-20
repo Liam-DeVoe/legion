@@ -13,6 +13,7 @@
 import { mkdirSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
+import { until as sharedUntil } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import {
   codexSessionRecordFile,
@@ -120,16 +121,17 @@ export async function recordFor(
   })
 }
 
-/** Polls `condition` every 50 ms until it holds; throws naming `what` after `ms`. */
+/** Waits until `condition` holds, through @legion/test-fixtures/wait's `until`, which takes no
+ *  bound and ends at the row's deadline naming `what`; the failure adds what `state` says then. */
 export async function until(
   condition: () => boolean,
   what: string,
-  ms: number,
   state: () => string,
 ): Promise<void> {
-  const deadline = performance.now() + ms
-  while (!condition()) {
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}: ${state()}`)
-    await Bun.sleep(50)
+  try {
+    await sharedUntil(what, condition)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new Error(`${reason}: ${state()}`, { cause: error })
   }
 }

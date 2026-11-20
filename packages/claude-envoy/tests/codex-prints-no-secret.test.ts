@@ -12,11 +12,11 @@ import { codexHomes, recordFor, startCodexServer, until } from "./codex-server-p
 
 const stops: (() => Promise<void> | void)[] = []
 // Registered before the directories' removal below, which bun runs after it: a server still alive
-// in its directory slows that removal past the removal hook's 5 s. Twenty seconds here, since a
-// server's stop alone may take 5 s, SIGTERM to its SIGKILL (`CodexServer.stop`).
+// in its directory slows that removal. A server's stop alone may take 5 s, SIGTERM to its SIGKILL
+// (`CodexServer.stop`), which the command's guard covers.
 afterEach(async () => {
   for (const stop of stops.splice(0).reverse()) await stop()
-}, 20_000)
+})
 const makeDirectory = temporaryDirectories("codex-prints-no-secret")
 
 /** The refusal the broker's own library writes for a subject token minted for another audience,
@@ -66,11 +66,10 @@ describe("the Codex server's stderr", () => {
     await until(
       () => server.stderr().includes("the subject token was not minted for"),
       "the server to print the broker's refusal",
-      30_000,
       server.stderr,
     )
     const printed = server.stderr()
     expect(printed).toContain("the subject token was not minted for <withheld>")
     expect(printed).not.toContain(shown)
-  }, 60_000)
+  })
 })

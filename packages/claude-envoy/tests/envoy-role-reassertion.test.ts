@@ -3,6 +3,7 @@ import { mkdir, stat, utimes, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { EnvoyApiError, type Interest, type SubscribeResult } from "@legion/envoy-client/transport"
+import { span } from "@legion/test-fixtures/wait"
 import type {
   ChannelBrokerMessage,
   ChannelConnection,
@@ -590,10 +591,13 @@ test("a role taken while a heartbeat's refused claim of the old role is still ou
     //    the write has landed, else after a second, which only bounds how long the test waits
     //    for a write that is not coming before the claim is answered.
     const remembering = session.rememberRole(NEW)
-    const window = Promise.withResolvers<void>()
-    const timer = setTimeout(window.resolve, 1_000)
-    await Promise.race([remembering, window.promise])
-    clearTimeout(timer)
+    await Promise.race([
+      remembering,
+      span(
+        1_000,
+        "a write made in order waits behind the heartbeat's claim, which nothing answers before step 3, so no state shows a write that is not coming; this only bounds the wait for one made at once",
+      ),
+    ])
 
     // 3. The old claim is refused: another live session holds that role.
     const readsBeforeRefusal = interestReads

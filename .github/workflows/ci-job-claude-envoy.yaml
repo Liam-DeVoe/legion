@@ -30,6 +30,10 @@ on:
 jobs:
   claude-envoy:
     runs-on: ubuntu-24.04-arm
+    # At least the job's sum over its 20 newest green merge-group runs up to 2026-11-15: its other
+    # steps at their longest, 50 s, 4 s of its clock over them, and its test step's longest, 104 s,
+    # plus the package script's three guards, 17 s, 120 s and 300 s (the third runs codex-real
+    # alone, which skips here): 595 s in all.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -103,6 +107,8 @@ jobs:
   private-names:
     needs: claude-envoy
     runs-on: ubuntu-24.04
+    # At least the job's longest over its 5 green merge-group runs up to 2026-11-19T20:18Z (runs
+    # 44575625234 to 44598057379), setup included, 9 s; it runs no test step and no guarded command.
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
