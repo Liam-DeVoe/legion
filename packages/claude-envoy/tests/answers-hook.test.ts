@@ -44,9 +44,25 @@ const COMMAND_TOKEN = fixtureSecret("dsp")
 const BEFORE_TOKEN = fixtureSecret("dsp")
 
 const cleanup: (() => Promise<void>)[] = []
+/** The most any one wait of this file gives another process: `eventually`, `refresherFinished`
+ *  and the preload of `preloadAfterRefresher` each give up after it. */
+const WAIT_MS = 15_000
+/** Bun's own limit for a test or a hook that names none: what a step that is not one of the
+ *  waits above (a server's stop, a directory's removal) takes in every other case of this file. */
+const BUN_DEFAULT_MS = 5_000
+// A case's limit, and its cleanup's, is the sum of the waits above it holds in a row, each
+// WAIT_MS at most, and BUN_DEFAULT_MS for its other steps: on a loaded machine the waits run to
+// their bounds, and a limit under their sum fired inside one of them, before the wait could name
+// what it waited for. A test call writes that sum as a number (the formatter keeps a test's body
+// unindented only beside a numeric limit), with the waits it counts named above it.
+//
+// A case's cleanup holds at most one of those waits: each case pushes one `eventually` or one
+// `refresherFinished` at most, and its other steps are a server's stop and a directory's removal.
+// Under Bun's default 5 s the hook timed out inside that wait, Bun killed the case's processes as
+// dangling, and the next case started beside a refresher.
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step()
-})
+}, WAIT_MS + BUN_DEFAULT_MS)
 
 type Route =
   | { readonly kind: "list"; readonly items: readonly SessionAnswer[] }
@@ -151,7 +167,7 @@ async function scratch(): Promise<{
  *  gone. */
 async function refresherFinished(state: string, since: number): Promise<void> {
   const directory = join(state, "sessions", SESSION)
-  const until = Date.now() + 15_000
+  const until = Date.now() + WAIT_MS
   while (Date.now() < until) {
     const outcome = await readFile(join(directory, "answers-refresh.json"), "utf8").then(
       (text): { finished_at: number } => JSON.parse(text),
@@ -173,9 +189,9 @@ async function refresherFinished(state: string, since: number): Promise<void> {
 
 /** Waits, 15 s at most, until `check` holds: for a process that tells nobody what it did. */
 async function eventually(check: () => boolean, what: string): Promise<void> {
-  const until = Date.now() + 15_000
+  const until = Date.now() + WAIT_MS
   while (!check()) {
-    if (Date.now() >= until) throw new Error(`${what} did not happen within 15 s`)
+    if (Date.now() >= until) throw new Error(`${what} did not happen within ${WAIT_MS / 1_000} s`)
     // Another process's state (a file, a process table entry) is the only signal: polled on the
     // real clock, as `refresherFinished` polls.
     await Bun.sleep(20)
@@ -198,7 +214,7 @@ async function preloadAfterRefresher(home: string, state: string, signal: string
       `import { existsSync, readFileSync, writeFileSync } from "node:fs"`,
       `const startedAt = Date.now() - performance.now()`,
       `writeFileSync(${JSON.stringify(signal)}, "")`,
-      `while (performance.now() < 15_000) {`,
+      `while (performance.now() < ${WAIT_MS}) {`,
       `  let finishedAt = 0`,
       `  try {`,
       `    finishedAt = JSON.parse(readFileSync(${outcome}, "utf8")).finished_at`,
@@ -704,7 +720,9 @@ test("a refresher that met a Dispatch with no answers route hands the hook its n
   expect(starting.stdout).not.toContain("answers route")
   await eventually(() => noRefresher(home, state), "the refreshers' end")
   expect(dispatch.requests).toContain(`Bearer ${COMMAND_TOKEN} /api/v1/agents/${SESSION}/answers`)
-}, 20_000)
+  // Its limit, 3 × WAIT_MS + BUN_DEFAULT_MS: the waiting hook's start, its preload's wait for the
+  // refresher, the refreshers' end.
+}, 50_000)
 
 test("a `!` token command runs outside the hook: a quick one gives the bearer, a slow one cannot hold the hook", async () => {
   const dispatch = standinDispatch()
@@ -778,7 +796,8 @@ test("a `!` token command runs outside the hook: a quick one gives the bearer, a
     `Bearer late /api/v1/agents/${SESSION}/answers`,
   ])
   expect(await readdir(tmp)).toEqual([])
-}, 20_000)
+  // Its limit, 3 × WAIT_MS + BUN_DEFAULT_MS: three refreshers' ends.
+}, 50_000)
 
 /** Processes whose command line holds `marker`, as `pgrep -f` finds them. */
 function processesWith(marker: string): string {
@@ -844,7 +863,8 @@ test("a token command slower than the hook's deadline finishes and cleans up aft
   await writeFile(gate, "")
   await refresherFinished(state, secondSince)
   expect(processesWith(gate)).toBe("")
-}, 20_000)
+  // Its limit, 3 × WAIT_MS + BUN_DEFAULT_MS: the command's start and two refreshers' ends.
+}, 50_000)
 
 test("with a slow token command, a list read from another Dispatch than envoy.json names now never stands in", async () => {
   const before = standinDispatch()
@@ -889,7 +909,8 @@ test("with a slow token command, a list read from another Dispatch than envoy.js
   await refresherFinished(state, since)
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
   expect(before.requests).toHaveLength(1)
-}, 20_000)
+  // Its limit, 2 × WAIT_MS + BUN_DEFAULT_MS: two refreshers' ends.
+}, 35_000)
 
 test("a refresher started for the Dispatch envoy.json named before never hands its list to a hook for the Dispatch it names now", async () => {
   // The refresher is shared by every hook of the session, whatever Dispatch each resolves. A
@@ -959,7 +980,9 @@ test("a refresher started for the Dispatch envoy.json named before never hands i
   // The refresher this hook started reads the Dispatch named now.
   await eventually(() => noRefresher(home, state), "the next refresher's end")
   expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
-}, 20_000)
+  // Its limit, 3 × WAIT_MS + BUN_DEFAULT_MS: the command's start, the preload's wait for the
+  // refresher, the next refresher's end.
+}, 50_000)
 
 test("a token command that fails gives the hook its error, not a Dispatch envoy.json no longer names", async () => {
   const dispatch = standinDispatch()
@@ -999,7 +1022,9 @@ test("a token command that fails gives the hook its error, not a Dispatch envoy.
   await eventually(() => noRefresher(home, state), "the refreshers' end")
   expect(dispatch.requests).toEqual([])
   expect(await readdir(tmp)).toEqual([])
-}, 20_000)
+  // Its limit, 3 × WAIT_MS + BUN_DEFAULT_MS: the waiting hook's start, its preload's wait, the
+  // refreshers' end.
+}, 50_000)
 
 /** Writes, as a refresher would, what it read for `dispatchUrl` (null: no Dispatch), finished a
  *  minute from now so a hook started now takes it as its own refresher's. */
@@ -1049,6 +1074,7 @@ test("with envoy.json unreadable, a list read from another Dispatch never stands
   expectWithinDeadline(run)
   // No refresher started for a configuration that names no Dispatch.
   expect(other.requests).toHaveLength(1)
+  // Its limit, WAIT_MS + BUN_DEFAULT_MS: one refresher's end.
 }, 20_000)
 
 test("a list read for the Dispatch envoy.json names stands in even when a refresher read none", async () => {
@@ -1100,6 +1126,7 @@ test("a list read for the Dispatch envoy.json names stands in even when a refres
   expect(context).toContain("the refresher read no Dispatch, not the Dispatch envoy.json names now")
   expect(context).not.toContain("invalid JSON")
   expectWithinDeadline(run)
+  // Its limit, WAIT_MS + BUN_DEFAULT_MS: one refresher's end.
 }, 20_000)
 
 test("hooks started together run a slow token command once", async () => {
@@ -1141,6 +1168,7 @@ test("hooks started together run a slow token command once", async () => {
   expect(await readFile(runs, "utf8")).toBe("run\n")
   expect(dispatch.requests).toHaveLength(1)
   expect(await readdir(tmp)).toEqual([])
+  // Its limit, WAIT_MS + BUN_DEFAULT_MS: one refresher's end.
 }, 20_000)
 
 test("a hook input it cannot read adds nothing and still exits 0", async () => {
