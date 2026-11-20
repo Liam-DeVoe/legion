@@ -369,3 +369,44 @@ test("a send pressed after the composer says its words are gone, which Dispatch 
     client.clear();
   }
 });
+
+// The architect's ruling of 2026-11-20 20:03Z on dispatch://INFRA-1523 (round 42's ruling 4): a
+// composer that mounts again after the delete's reject may draw the deleted post's words only while
+// the page's next read of the document is out, and never once that read has failed. The reader
+// leaves the document and comes back: the composer at the words mounts again over the cache, which
+// holds the read that followed the reject and lacks them, and the page's next read fails. In
+// chromium at 8259e87d the composer drew the inserted words again, 8 s after the page came back
+// with every read of the document's text answered 503 (test round at 8259e87d).
+test("a composer that mounts again after the delete, while the page's next read of the document fails, draws none of the deleted post's words", async () => {
+  const user = userEvent.setup();
+  const start = Date.now();
+  setSystemTime(start);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  land(client, textRead(BEFORE), start - 60_000);
+  const anchor = { artifact: DOCUMENT, mark_id: "mark-insert", quote: QUOTE };
+  const first = render(composeAt(client, anchor));
+  try {
+    await user.click(screen.getByLabelText("Comment"));
+    await user.paste("Which review is this?");
+    setSystemTime(start + 1_000);
+    act(() => land(client, textRead(AFTER)));
+    // The positive control: before it mounts again, the composer says the words are gone.
+    expect(timesDrawn(first.container, QUOTE)).toBe(0);
+  } finally {
+    first.unmount();
+  }
+
+  setSystemTime(start + 5_000);
+  const again = render(composeAt(client, anchor));
+  try {
+    // The next read of the document fails: the cache keeps the read that lacks the words.
+    expect(client.getQueryState(liveTextQueryOptions(DOCUMENT).queryKey)?.dataUpdatedAt).toBe(
+      start + 1_000
+    );
+    expect(timesDrawn(again.container, QUOTE)).toBe(0);
+  } finally {
+    setSystemTime();
+    again.unmount();
+    client.clear();
+  }
+});
