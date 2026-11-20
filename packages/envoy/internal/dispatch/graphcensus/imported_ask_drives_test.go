@@ -428,10 +428,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			}
 		},
 		// The versions' blocks - the spec's new decision with its values, and the decisions
-		// document's section stated gone - the two versions' nodes, the decision's decided_by, the
-		// section's move, the Keep it carries with the keeper's node, and the retired document's
-		// node stated gone.
-		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, map[graphcensus.StoredKind][]string{
+		// document's section stated gone - the two versions' nodes, the spec's a query version with
+		// its definition_version, the decision's decided_by, the section's move, the Keep it
+		// carries with the keeper's node, and the retired document's node stated gone.
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, queryVersionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
 			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
 			{refs.BlockNodeKind, graphstore.TupleMovedTo}:           {"block_move"},

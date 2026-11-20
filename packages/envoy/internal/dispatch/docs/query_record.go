@@ -462,12 +462,12 @@ func ReadQueryRecord(ctx context.Context, q Queryer, issueKey, query string, cut
 	return tree.QueryRecord(ctx, q, query)
 }
 
-// recordLeftOut are the values a record writes no field of among the node's values: its rank,
-// written in a field of its own, and its text, written as its body, since a field written twice
-// gives two builders two digests; and its visibility, its state and its placement, which say who
-// may see a node, where it stands in its life and what decides its parent, and none of which is
-// what was approved.
-var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText, graphstore.AttributeVisibility, graphstore.AttributeState, refs.AttributePlacement}
+// recordLeftOut are the values a record writes no field of among the node's values. It leaves out
+// a value only where another field of the record carries it: the rank, written in a field of its
+// own, and the text, written as the body, since a value written twice would let two builders write
+// two digests. Every other value - the node's visibility, its state and its placement among them -
+// is among the values, so a change of any of them moves the digest.
+var recordLeftOut = []string{refs.AttributeRank, graphstore.AttributeText}
 
 // QueryRecord is the record of query over the walk: for each node the
 // query takes, in the walk's order, seven fields - the node's address, its type, its parent's

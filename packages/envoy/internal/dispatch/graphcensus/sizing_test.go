@@ -1145,8 +1145,10 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		// Each of the window's four versions writes its node and six tuples
 		// (graphstore.VersionFacts): the window document's three, and the image's one, which
 		// states its three bytes on the image's node; both documents are an issue's, created
-		// inside the window.
+		// inside the window. The window document is CORE-1's spec, so each of its three versions
+		// is taken to hold a definition_version.
 		"version": {tuples: 6, writes: 4}, "version_bytes": {tuples: 3, writes: 1}, "document_part_of": {tuples: 1, writes: 2},
+		"query_version": {tuples: 1, writes: 3},
 		// The scratch document removed in the window held one version; no table dates an erase.
 		"version_removed": {tuples: 1, writes: 1}, "erased_version": {tuples: 1, writes: sizingWindowDays / 7, assumed: true},
 		// The comment is alice's first, the delivery records ses_sized and the published copy
@@ -1171,7 +1173,7 @@ func TestTheSizingCountsEveryTupleTheWritersAppend(t *testing.T) {
 		"issue": {tuples: 3, writes: 2}, "issue_relation": {tuples: 1, writes: 2}, "artifact": {tuples: 3, writes: 2},
 		// CORE-1 and CORE-2 are each taken to state a filed_from and a duplicate_of and to be born
 		// converted, each with its room and its decisions query; CORE-1's spec is a query node too.
-		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 20, writes: 2}, "query_node": {tuples: 3, writes: 3},
+		"issue_origin": {tuples: 2, writes: 2}, "issue_room": {tuples: 21, writes: 2}, "query_node": {tuples: 4, writes: 3},
 		// The scratch document removed in the window.
 		"artifact_removed": {tuples: 1, writes: 1},
 		"criterion":        {tuples: 1, writes: 5 * sizingWindowDays, assumed: true},

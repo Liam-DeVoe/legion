@@ -3011,12 +3011,19 @@ func WriteVersionNode(ctx context.Context, tx pgx.Tx, owner graphstore.VersionOw
 }
 
 // ReadVersionOwner is what a version's node takes of document artifactID (graphstore.VersionOwner),
-// read in the version's read phase, since its insert is queued and returns nothing: the address a
-// document this transaction creates was registered under (Ledger.RegisterPendingArtifact), which
-// names no query node, or else one statement of graphstore.VersionOwnerColumns.
+// read in the version's read phase, since its insert is queued and returns nothing: for a document
+// this transaction creates, the address it was registered under (Ledger.RegisterPendingArtifact)
+// and, where the node this transaction writes of it is a query node, that node's query and its
+// definition version (graphstore.QueryDefinitionVersion), as the node holds them once written; or
+// else one statement of graphstore.VersionOwnerColumns.
 func ReadVersionOwner(ctx context.Context, q Queryer, artifactID string) (graphstore.VersionOwner, error) {
-	if address, pending := pendingArtifact(ctx, artifactID); pending {
-		return graphstore.VersionOwner{RefKey: address.RefKey, Project: address.Project, Session: address.Session}, nil
+	ledger := ledgerFrom(ctx)
+	if address, pending := ledger.PendingDocument(artifactID); pending {
+		owner := graphstore.VersionOwner{RefKey: address.RefKey, Project: address.Project, Session: address.Session}
+		if ledger.pendingQuery(artifactID) {
+			owner.Query, owner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
+		}
+		return owner, nil
 	}
 	var owner graphstore.VersionOwner
 	if err := q.QueryRow(ctx, `select `+graphstore.VersionOwnerColumns("$1::uuid"), artifactID).Scan(owner.Targets()...); err != nil {

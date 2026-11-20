@@ -388,6 +388,11 @@ func owedVersionNodes(ctx context.Context, q graphstore.Queryer, rows string, li
 		if err := read.Scan(append([]any{&number, &createdAt, &authorJSON, &mime, &size, &digest}, owner.Targets()...)...); err != nil {
 			return nil, nil, 0, err
 		}
+		// The owner is read as it stands at this run, which can be after the document became a
+		// query node, and its definition version is the one the query node holds now, which says
+		// nothing of the definition the version was written under: a version this pass writes the
+		// node of names none (R14).
+		owner.DefinitionVersion = 0
 		who := backfillActor
 		if len(authorJSON) > 0 {
 			if err := json.Unmarshal(authorJSON, &who); err != nil {

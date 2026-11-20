@@ -308,7 +308,8 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// edit of the spec of an issue of its own, born converted: the room's one index pass over
 		// the spec's new version, its facts caused by that version's event (causeRoomFacts) - the
 		// new paragraph's block with its values and alice's authored_by, as a block of an issue's
-		// room records its authors, and the version's node.
+		// room records its authors, and the version's node, a query version with its
+		// definition_version.
 		Name: "docs/block_index.go#causeRoomFacts, a settlement of an issue's room", Database: r.database,
 		Sites: []string{"docs/block_index.go#causeRoomFacts", "refs/blocks.go#Queue", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
@@ -343,7 +344,7 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
 			`, roomSpec)
 		},
-		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted),
+		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, versionCounted, queryVersionCounted),
 	}, {
 		// The erase of a paragraph inside a callout of a document of its own (grapherase.Erase):
 		// the one version that held it goes, its node stated gone (endErasedVersions), which the

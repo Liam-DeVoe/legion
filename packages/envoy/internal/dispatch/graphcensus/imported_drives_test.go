@@ -322,11 +322,11 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		// An issue born converted, as a fleet that serves the issue room creates every issue: the
 		// issue's node; its spec's node, its part_of and its query values, the spec's blocks with
 		// their values and their authors, alice, whom those first record, and the spec's first
-		// version; and the issue's room, its tree artifact and its decisions query with the query's
-		// values, and the two's first versions.
+		// version, a query version with its definition_version; and the issue's room, its tree
+		// artifact and its decisions query with the query's values, and the two's first versions.
 		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, objectNodeCounted(graphstore.KindIssue),
 			objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, personNodeCounted, issueRoomCounted,
-			queryNodeCounted),
+			queryNodeCounted, queryVersionCounted),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
 		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "docs/mutation.go#WriteVersionNode",
@@ -815,16 +815,16 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 // two base attributes, its in_document and its part_of, which the term block counts, the rank and
 // the placement its first row takes and its text value, which block_values and block_text count,
 // and the authored_by a block of an issue's room takes, which block_author counts; a version's
-// node, which the term version counts; a document's part_of its issue, which document_part_of
-// counts; a person's node and a session's, each with its two base attributes, made by the first
-// write that records the person or the session, which the terms person and session count; the
-// room an issue is born with and a query node's values, which issue_room and query_node count; a
-// run's interaction node, with its base attributes, its words and ends_at values and its
-// authored_by, which the term interaction counts, and the one frame value of the run's terminal
-// frame, which the term frame counts; a lens of alice's with its verdict and a finding under it,
-// which the terms lens and lens_finding count; who asked an ask, which the term ask_opened counts
-// beside the ask's other facts its create states; and a session's follow of an ask, which the
-// term ask_follower counts.
+// node, which the term version counts, and the definition_version of a version of a query, which
+// query_version counts; a document's part_of its issue, which document_part_of counts; a person's
+// node and a session's, each with its two base attributes, made by the first write that records
+// the person or the session, which the terms person and session count; the room an issue is born
+// with and a query node's values, which issue_room and query_node count; a run's interaction node,
+// with its base attributes, its words and ends_at values and its authored_by, which the term
+// interaction counts, and the one frame value of the run's terminal frame, which the term frame
+// counts; a lens of alice's with its verdict and a finding under it, which the terms lens and
+// lens_finding count; who asked an ask, which the term ask_opened counts beside the ask's other
+// facts its create states; and a session's follow of an ask, which the term ask_follower counts.
 var (
 	newBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
@@ -841,7 +841,10 @@ var (
 	roomBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.TupleAuthoredBy}: {"block_author"},
 	}
-	versionCounted        = versionNodeCounted(graphstore.KindVersion)
+	versionCounted      = versionNodeCounted(graphstore.KindVersion)
+	queryVersionCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindVersion, graphstore.AttributeDefinitionVersion}: {"query_version"},
+	}
 	documentPartOfCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindArtifact, graphstore.TuplePartOf}: {"document_part_of"},
 	}
@@ -850,17 +853,20 @@ var (
 		{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
 	}
 	// The tree artifact's node and the decisions query's, each with its base attributes and its
-	// part_of the issue, and the nodes of their first versions.
+	// part_of the issue, and the nodes of their first versions, the decisions query's with its
+	// definition_version.
 	issueRoomCounted = merged(map[graphcensus.StoredKind][]string{
-		{graphstore.KindArtifact, graphstore.AttributeVisibility}: {"issue_room"},
-		{graphstore.KindArtifact, graphstore.AttributeState}:      {"issue_room"},
-		{graphstore.KindArtifact, graphstore.AttributeProject}:    {"issue_room"},
-		{graphstore.KindArtifact, graphstore.TuplePartOf}:         {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeVisibility}:       {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeState}:            {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeProject}:          {"issue_room"},
+		{graphstore.KindArtifact, graphstore.TuplePartOf}:               {"issue_room"},
+		{graphstore.KindVersion, graphstore.AttributeDefinitionVersion}: {"issue_room"},
 	}, versionNodeCounted("issue_room"))
 	queryNodeCounted = map[graphcensus.StoredKind][]string{
-		{graphstore.KindArtifact, graphstore.AttributeQuery}:   {"query_node"},
-		{graphstore.KindArtifact, graphstore.AttributeTakes}:   {"query_node"},
-		{graphstore.KindArtifact, graphstore.AttributeSubtree}: {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeQuery}:             {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeTakes}:             {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeSubtree}:           {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeDefinitionVersion}: {"query_node"},
 	}
 	sessionNodeCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},

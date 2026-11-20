@@ -647,16 +647,18 @@ func (s *server) queueNewArtifact(
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
 	// document, its own dispatch:// address, and the band its blocks rank in - is recorded for
-	// the reads of this transaction that need it: a block pointer of a new document is held to the
-	// document's key and its issue (docs.addressOfDocument), and text this transaction indexes
-	// that cites the new document resolves to that row (refs.Pending). The issue already has its
-	// row, so the address names no pending parent (refs.DocumentAddress).
+	// the reads of this transaction that need it, with whether its node is a query node: a block
+	// pointer of a new document is held to the document's key and its issue
+	// (docs.addressOfDocument), text this transaction indexes that cites the new document resolves
+	// to that row (refs.Pending), and a version of it is a query version where its node is a query
+	// node (docs.ReadVersionOwner). The issue already has its row, so the address names no pending
+	// parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
 		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey),
 		Ref:     refs.ArtifactRef(artifact.IssueKey, artifact.Project, artifact.SessionID, artifact.Slug, artifact.Kind, artifact.Primary),
 		Project: deref(project), Session: deref(session),
 		Band: refs.DocumentBand(target.IssueKey, kind, false, role, slug),
-	})
+	}, query != "")
 	return artifact, documentNode, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at, node_kind, node_address)
 		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10, $11, $12)
@@ -893,7 +895,10 @@ func (s *server) storeArtifact(
 			return
 		}
 		versionOwner = graphstore.VersionOwner{
-			RefKey: artifact.RefKey, Project: artifact.Project, Session: deref(artifact.SessionID), Query: query != "",
+			RefKey: artifact.RefKey, Project: artifact.Project, Session: deref(artifact.SessionID),
+		}
+		if query != "" {
+			versionOwner.Query, versionOwner.DefinitionVersion = true, graphstore.QueryDefinitionVersion
 		}
 		// Its document_rooms row, queued after its own row's insert, which the row's key names, and
 		// recorded on the ledger before its first write, so the seed below writes its fragment of the

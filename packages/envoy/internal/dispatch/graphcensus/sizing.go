@@ -361,6 +361,13 @@ func storeKinds() []StoreKind {
 			" parties, its part_of its document, and its number and created_at values",
 		count: `(select count(*) from artifact_versions where created_at > ` + sizingWindow + `)`,
 	}, {
+		Name: "query_version", MovedBy: movedWithBlocks, Tuples: 1,
+		Driver: "artifact_versions.created_at of a version of an issue's spec, Verification document or plan: the" +
+			" definition_version a version written while its document is a query node holds, so a version of a" +
+			" document of an issue that has not converted is over-stated",
+		count: `(select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id
+			where v.created_at > ` + sizingWindow + ` and ` + roleDocument("a") + `)`,
+	}, {
 		Name: "version_bytes", MovedBy: movedWithBlocks, Tuples: 3,
 		Driver: "artifact_versions.created_at of an image's or a file's version: its document's mime, size and sha256 values",
 		count:  `(select count(*) from artifact_versions where created_at > ` + sizingWindow + ` and mime is not null)`,
@@ -516,15 +523,16 @@ func storeKinds() []StoreKind {
 			" holds, so every issue is taken to state both, which over-states an issue that states neither",
 		count: `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "issue_room", MovedBy: movedWithBlocks, Nodes: 4, Tuples: 20,
+		Name: "issue_room", MovedBy: movedWithBlocks, Nodes: 4, Tuples: 21,
 		Driver: "issues.created_at, each issue born converted: its tree artifact's node and its decisions query's, each" +
 			" with its visibility, state and project and its part_of the issue, and the two documents' empty first" +
-			" versions, each a node with its visibility, state, project, part_of, number and created_at",
+			" versions, each a node with its visibility, state, project, part_of, number and created_at, the decisions" +
+			" query's with its definition_version",
 		count: `(select count(*) from issues where created_at > ` + sizingWindow + `)`,
 	}, {
-		Name: "query_node", MovedBy: movedWithBlocks, Tuples: 3,
+		Name: "query_node", MovedBy: movedWithBlocks, Tuples: 4,
 		Driver: "artifacts.created_at of an issue's spec, Verification document or plan, and issues.created_at, each" +
-			" issue's decisions query: the query node's query, takes and subtree values",
+			" issue's decisions query: the query node's query, takes, subtree and definition_version values",
 		count: `((select count(*) from artifacts where created_at > ` + sizingWindow + ` and ` + roleDocument("artifacts") + `)
 			+ (select count(*) from issues where created_at > ` + sizingWindow + `))`,
 	}, {

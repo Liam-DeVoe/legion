@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -232,7 +234,10 @@ func requireUnder(t *testing.T, what string, tree docs.IssueTree, address, paren
 // id; the spec query takes the memo callout and the criteria and requirements, the verification
 // query the checks and the results under them, the plan query the plan nodes. A relation alone - a
 // retargeted serves, a moved check, a recorded result, a removed check - moves the verification
-// digest; a word of a check moves it and leaves the spec's; a word of a requirement moves the spec's.
+// digest, and so does a value alone: a check's visibility, another's state, a third's placement
+// under the same parent; a word of a check moves it and leaves the spec's; a word of a requirement
+// moves the spec's. The first version of a spec created converted, which the create writes, is a
+// query version holding its query's definition_version, and the review approving it names it.
 // Every field carries its length, so a value that holds the record's own separators and a length
 // prefix of its own reads apart from the store that splits those bytes another way. The head and a
 // version are read through one builder, and a version's record read after a later comment leaves
@@ -270,7 +275,9 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 	}{
 		{"the walk takes each node before its children, siblings by rank, and each query takes its own nodes", digestStepOrderAndTakes},
 		{"a word of a check moves the verification digest alone, and a word of a requirement the spec's", digestStepWords},
+		{"the first version of a spec created converted is a query version holding its definition, and its review names it", digestStepBornConvertedSpec},
 		{"a relation alone moves the verification digest", digestStepRelations},
+		{"a value of a check alone - its visibility, its state, its placement - moves the verification digest", digestStepValues},
 		{"ranks compare byte for byte, and one rank takes the lower node id first", digestStepRanks},
 		{"every field carries its length", digestStepLengths},
 		{"the head and a version are read through one builder, and a later comment stands in no earlier version", digestStepVersions},
@@ -337,6 +344,60 @@ func digestStepWords(t *testing.T, rig *digestRig) {
 	}
 }
 
+// digestStepBornConvertedSpec reads the definition_version of each of the rig issue's four query
+// nodes, the spec, the verification, the plan and the decisions, and finds the one this build's
+// record layout holds. It then creates a second issue, born converted, so its spec's node is a
+// query node from the create on: the version 1 of that spec, which the create itself writes, is a
+// query version holding the query's definition_version, and the review approving it names that
+// node by its artifact_id and its version.
+func digestStepBornConvertedSpec(t *testing.T, rig *digestRig) {
+	ctx := context.Background()
+	want := strconv.Itoa(graphstore.QueryDefinitionVersion)
+	rows, err := rig.database.Pool.Query(ctx, `
+		select attributes->>$3, id from graph_nodes where kind = $1 and supertag = $2 and id like $4 order by id
+	`, graphstore.KindArtifact, graphstore.SupertagQuery, graphstore.AttributeQuery, rig.issue.Key+"/%")
+	if err != nil {
+		t.Fatalf("read the query nodes of %s: %v", rig.issue.Key, err)
+	}
+	queries, err := pgx.CollectRows(rows, pgx.RowToStructByPos[struct{ Query, RefKey string }])
+	if err != nil {
+		t.Fatalf("read the query nodes of %s: %v", rig.issue.Key, err)
+	}
+	nodes := map[string]string{}
+	for _, query := range queries {
+		nodes[query.Query] = query.RefKey
+	}
+	for _, query := range []string{graphstore.QuerySpec, graphstore.QueryVerification, graphstore.QueryPlan, graphstore.QueryDecisions} {
+		refKey, found := nodes[query]
+		if !found {
+			t.Errorf("%s holds no %s query node: %+v", rig.issue.Key, query, queries)
+			continue
+		}
+		value, stated, err := graphstore.CurrentValue(ctx, rig.database.Pool, graphstore.KindArtifact, refKey, graphstore.AttributeDefinitionVersion)
+		if err != nil {
+			t.Fatalf("read the definition_version of %s: %v", refKey, err)
+		}
+		if !stated {
+			value = "none"
+		}
+		if value != want {
+			t.Errorf("query node %s holds definition_version %s, want %s", refKey, value, want)
+		}
+	}
+
+	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec created converted",
+		":::requirement{#r1}\nThe second issue's list comes first.\n:::\n", false)
+	spec := readDecisionDocument(t, rig.database, issue.Key, "spec")
+	if supertag, held := versionDefinition(t, rig.database, spec.refKey, 1); supertag != graphstore.SupertagQueryVersion || definitionHeld(held) != want {
+		t.Errorf("the version 1 of %s, a spec created converted, is a %s holding definition_version %s, want a query version holding %s",
+			spec.refKey, supertag, definitionHeld(held), want)
+	}
+	review := reviewDocument(t, rig.handler, spec.id, "alice", "approved", "")
+	if review.ArtifactID != spec.id || review.Version != 1 {
+		t.Errorf("the review %s names %s at version %d, want version 1 of %s (%s)", review.ID, review.ArtifactID, review.Version, spec.refKey, spec.id)
+	}
+}
+
 func digestStepRelations(t *testing.T, rig *digestRig) {
 	c1, c2, r1, r2 := rig.block("c1"), rig.block("c2"), rig.block("r1"), rig.block("r2")
 	before := rig.record(t, rig.issue.Key, graphstore.QueryVerification)
@@ -389,6 +450,60 @@ func digestStepRelations(t *testing.T, rig *digestRig) {
 	}
 	if slices.Contains(walkAddresses(removed.Nodes), blockAddress(c2)) {
 		t.Errorf("the verification record still takes %s after its removal: %v", c2, walkAddresses(removed.Nodes))
+	}
+}
+
+// digestStepValues changes one value of one check at a time - the visibility of one, the state of
+// another, the placement of a third, whose part_of stays as it was - and reads the verification
+// digest moved by each, with every node of the record where it stood: the record holds every value
+// of a node but its rank and its text, which fields of their own carry.
+func digestStepValues(t *testing.T, rig *digestRig) {
+	ctx := context.Background()
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue.Key, "verification.md", digestChecks("The list reads the urgent asks first.", "")+
+		"\n:::check{#c3 serves=\"dispatch://CORE-1/spec#b-r2\" surface=\"cli\" run=\"go test ./...\"}\nThe list reads an ask's size.\n:::\n"+
+		"\n:::check{#c4 serves=\"dispatch://CORE-1/spec#b-r2\" surface=\"cli\" run=\"go test ./...\"}\nThe list reads an ask's age.\n:::\n")
+	// other is whichever of one and another held is not.
+	other := func(held, one, another string) string {
+		if held == one {
+			return another
+		}
+		return one
+	}
+	for _, change := range []struct {
+		check, attribute string
+		to               func(held string) string
+	}{
+		{"c1", graphstore.AttributeVisibility, func(held string) string {
+			return other(held, graphstore.VisibilityAuthor, graphstore.VisibilityProject)
+		}},
+		{"c3", graphstore.AttributeState, func(string) string { return graphstore.StateProposed }},
+		{"c4", refs.AttributePlacement, func(held string) string { return other(held, refs.PlacementAuthored, refs.PlacementText) }},
+	} {
+		t.Run(change.attribute, func(t *testing.T) {
+			check := rig.block(change.check)
+			held, _, err := graphstore.CurrentValue(ctx, rig.database.Pool, refs.BlockNodeKind, check, change.attribute)
+			if err != nil {
+				t.Fatalf("read the %s of %s: %v", change.attribute, check, err)
+			}
+			to := change.to(held)
+			if to == held {
+				t.Fatalf("%s already holds the %s %q this step changes it to", check, change.attribute, to)
+			}
+			before := rig.record(t, rig.issue.Key, graphstore.QueryVerification)
+			at := slices.IndexFunc(before.Nodes, func(node docs.TreeNode) bool { return node.ID == check })
+			if at < 0 {
+				t.Fatalf("the verification record takes no %s: %v", check, walkAddresses(before.Nodes))
+			}
+			rig.state(t, blockValue(check, change.attribute, to))
+			after := rig.record(t, rig.issue.Key, graphstore.QueryVerification)
+			if after.Digest == before.Digest {
+				t.Errorf("the verification digest held still across a change of %s of %s", change.attribute, blockAddress(check))
+			}
+			if !slices.Equal(walkAddresses(after.Nodes), walkAddresses(before.Nodes)) || after.Nodes[at].Parent != before.Nodes[at].Parent {
+				t.Errorf("the change of %s of %s moves the verification record's nodes from %+v to %+v, want each where it stood",
+					change.attribute, check, before.Nodes, after.Nodes)
+			}
+		})
 	}
 }
 
@@ -608,20 +723,21 @@ func digestStepAnchoredComment(t *testing.T, rig *digestRig) {
 
 // pinnedRecord is the spec record of PIN-1, whose tree holds one requirement, written by hand from
 // the record's layout and never by its encoder: the node's address, its type, its parent's
-// address, its rank, its values field - probe and size, each a name and a value - its body text,
-// and its relations field - its part_of and its serves, each a kind and a far end - each field its
-// byte length, one space, then its bytes. Its placement, state and visibility are values the
-// record leaves out.
+// address, its rank, its values field - placement, probe, size, state and visibility, in the byte
+// order of their names, each a name and a value - its body text, and its relations field - its
+// part_of and its serves, each a kind and a far end - each field its byte length, one space, then
+// its bytes. The rank and the text are the values the record leaves out of its values field, since
+// fields of their own carry them.
 const pinnedRecord = "19 block:PIN-1/spec#r1" +
 	"11 requirement" +
 	"11 issue:PIN-1" +
 	"2 1V" +
-	"23 5 probe3 a b4 size3 1.5" +
+	"79 9 placement8 authored5 probe3 a b4 size3 1.55 state4 live10 visibility7 project" +
 	"35 :::requirement{#r1}\nThe words.\n:::\n" +
 	"53 7 part_of11 issue:PIN-16 serves19 block:PIN-1/spec#k1"
 
 // pinnedDigest is the sha256 of pinnedRecord, in lower-case hex.
-const pinnedDigest = "87eb881089261c30aeeeb55aaf137e51d2d9dd9578b8535a0f5fbb8c7797fed8"
+const pinnedDigest = "48dc5d7bb91bcb43020b726eacd79ca31d7a23c4749ca850dde9938983384e57"
 
 // The record's layout is pinned byte for byte: a tree of one requirement whose every field is
 // written straight into the store reads back as pinnedRecord, with pinnedDigest as its digest. A

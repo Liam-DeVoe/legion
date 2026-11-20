@@ -121,8 +121,11 @@ type Ledger struct {
 	// artifacts is the address of each artifacts row this transaction creates and has not
 	// written yet, by artifact id (RegisterPendingArtifact), and issues the key of each issues
 	// row it creates and has not written yet (RegisterPendingIssue): the two rows a write
-	// indexing its own new issue's spec cites before either exists (refs.Pending).
+	// indexing its own new issue's spec cites before either exists (refs.Pending). queries holds
+	// the id of each of those artifacts rows whose node this transaction writes as a query node
+	// (graphstore.QueryNode), which the nodes of its versions read (ReadVersionOwner).
 	artifacts map[string]refs.DocumentAddress
+	queries   map[string]struct{}
 	issues    map[string]struct{}
 	// rooms holds, per document whose stored history this transaction has queued a write to, the
 	// state its queued writes leave it in (pendingRoom).
@@ -617,12 +620,19 @@ func pendingAnchorsOf(ctx context.Context, artifactID string) []*PendingAnchor {
 // writes, or runs later in its write phase, while the document's own work names the artifact's id
 // from the start, so a read of the document's address here takes it from the ledger rather than
 // from the row (addressOfDocument). The caller records the address the queued insert writes
-// (refs.DocumentAddress).
-func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.DocumentAddress) {
+// (refs.DocumentAddress), and query where the node it writes of the document is a query node
+// (graphstore.QueryNode), which makes each version of it a query version (ReadVersionOwner).
+func (l *Ledger) RegisterPendingArtifact(artifactID string, address refs.DocumentAddress, query bool) {
 	if l.artifacts == nil {
 		l.artifacts = make(map[string]refs.DocumentAddress)
 	}
 	l.artifacts[artifactID] = address
+	if query {
+		if l.queries == nil {
+			l.queries = make(map[string]struct{}, 1)
+		}
+		l.queries[artifactID] = struct{}{}
+	}
 }
 
 // RegisterPendingIssue records key as an issues row this transaction creates and has not written
@@ -675,6 +685,16 @@ func (l *Ledger) PendingDocument(id string) (refs.DocumentAddress, bool) {
 	}
 	address, pending := l.artifacts[id]
 	return address, pending
+}
+
+// pendingQuery reports whether the artifacts row of uuid id this transaction writes is the
+// document of a query node it writes (RegisterPendingArtifact).
+func (l *Ledger) pendingQuery(id string) bool {
+	if l == nil {
+		return false
+	}
+	_, query := l.queries[id]
+	return query
 }
 
 // PendingRoomKey is the ref_key of the issue room the document of ref_key refKey is edited in,
