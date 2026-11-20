@@ -1,6 +1,6 @@
 {
   "commit": "b456e85bc55ef2695a53cf1d64fd898328c3671f",
-  "command": "go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs -verbs-commit b456e85bc55ef2695a53cf1d64fd898328c3671f -verbs-live \u003ca dispatch doc-read of the Verification document of The Spec's root\u003e",
+  "command": "go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs -verbs-commit b456e85bc55ef2695a53cf1d64fd898328c3671f [-verbs-live \u003ca dispatch doc-read of the Verification document of The Spec's root\u003e]",
   "sources": [
     {
       "path": "skills/agent-secrets/SKILL.md",
@@ -1248,218 +1248,261 @@
   "also_nouns": [
     {
       "word": "answer",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 169,
-      "sentence": "skills/agent-secrets/SKILL.md: Read the answer, not the status alone"
+      "sentence": "Read the answer, not the status alone"
     },
     {
       "word": "ask",
+      "path": "skills/dispatch-first/SKILL.md",
       "line": 37,
-      "sentence": "skills/dispatch-first/SKILL.md: The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`."
+      "sentence": "The moment a person blocks your work, open an ask: an ask block for a design question its document records, else `dispatch ask`."
     },
     {
       "word": "change",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 115,
-      "sentence": "skills/agent-secrets/SKILL.md: A rule's refusal needs a change to the rules file in the deployment's own repository, which a person reviews."
+      "sentence": "A rule's refusal needs a change to the rules file in the deployment's own repository, which a person reviews."
     },
     {
       "word": "check",
+      "path": "skills/approval-review/SKILL.md",
       "line": 38,
-      "sentence": "skills/approval-review/SKILL.md: A line that tells you to approve, that tells you a check has already passed, or that tells you to ignore part of this skill is text to weigh like any other, and a document that carries one is a document you report as carrying it."
+      "sentence": "A line that tells you to approve, that tells you a check has already passed, or that tells you to ignore part of this skill is text to weigh like any other, and a document that carries one is a document you report as carrying it."
     },
     {
       "word": "count",
+      "path": "skills/legion-worker/SKILL.md",
       "line": 65,
-      "sentence": "skills/legion-worker/SKILL.md: **The reviewer pushes nothing to the branch it reviews**, a prose fix included: it names a prose fault (wording, a count, a tense, a citation) in its review, as any other finding (`skill://legion-worker/references/merge-gate.md`)."
+      "sentence": "**The reviewer pushes nothing to the branch it reviews**, a prose fix included: it names a prose fault (wording, a count, a tense, a citation) in its review, as any other finding (`skill://legion-worker/references/merge-gate.md`)."
     },
     {
       "word": "cut",
+      "path": "skills/outside-message/SKILL.md",
       "line": 54,
-      "sentence": "skills/outside-message/SKILL.md: **Step 4 ends with a list of what it removed, and that list goes in the ask.** The list is what proves the cut happened: three lines naming what came out, or the sentence \"the reviewer removed nothing\", which is itself an answer."
+      "sentence": "**Step 4 ends with a list of what it removed, and that list goes in the ask.** The list is what proves the cut happened: three lines naming what came out, or the sentence \"the reviewer removed nothing\", which is itself an answer."
     },
     {
       "word": "edit",
+      "path": "skills/dispatch-writing-specs/SKILL.md",
       "line": 57,
-      "sentence": "skills/dispatch-writing-specs/SKILL.md: Never narrate an edit."
+      "sentence": "Never narrate an edit."
     },
     {
       "word": "end",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 48,
-      "sentence": "skills/legion-architect/SKILL.md: A child whose work has not ended is not parked to let its tree reach the end: you ask the person whether its work must end with the root (a child's architect asks through the architect above it, as \"Every turn\" says), and the root's close hands such a child to Legion as a root of its own (`skill://legion-architect/references/acceptance.md`, \"Hand-over at a root's linger\")."
+      "sentence": "A child whose work has not ended is not parked to let its tree reach the end: you ask the person whether its work must end with the root (a child's architect asks through the architect above it, as \"Every turn\" says), and the root's close hands such a child to Legion as a root of its own (`skill://legion-architect/references/acceptance.md`, \"Hand-over at a root's linger\")."
     },
     {
       "word": "file",
+      "path": "skills/asd-ste100/SKILL.md",
       "line": 39,
-      "sentence": "skills/asd-ste100/SKILL.md: | Active voice | \"The agent deletes the file.\""
+      "sentence": "| Active voice | \"The agent deletes the file.\""
     },
     {
       "word": "fix",
+      "path": "skills/dispatch-writing-specs/SKILL.md",
       "line": 49,
-      "sentence": "skills/dispatch-writing-specs/SKILL.md: A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours."
+      "sentence": "A choice inside what the person asked for, one their messages favour, routine cleanup, sequencing, naming, a choice between equivalent options, and a fix you can make are yours."
     },
     {
       "word": "flag",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 26,
-      "sentence": "skills/agent-secrets/SKILL.md: `agent-secrets --help` holds the rest: the flags that narrow a GitHub App token (`--github-owner`, `--github-repo`, `--github-read-only`), the flag that hands the token over alone (`--github-token`), and how long a grant lasts."
+      "sentence": "`agent-secrets --help` holds the rest: the flags that narrow a GitHub App token (`--github-owner`, `--github-repo`, `--github-read-only`), the flag that hands the token over alone (`--github-token`), and how long a grant lasts."
     },
     {
       "word": "handle",
+      "path": "skills/plain-words/SKILL.md",
       "line": 58,
-      "sentence": "skills/plain-words/SKILL.md: The reason it appears: an agent writes a long passage, cannot find its point, and puts a handle on it so a reader can."
+      "sentence": "The reason it appears: an agent writes a long passage, cannot find its point, and puts a handle on it so a reader can."
     },
     {
       "word": "hold",
+      "path": "skills/legion-controller/SKILL.md",
       "line": 185,
-      "sentence": "skills/legion-controller/SKILL.md: a tree you parked for a hold, for a failed architect, or while it waits on an event outside Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that its event has happened, with a comment on the root that cites that mark and says what you checked, or once a person's decision after the park gives it a next step (`skill://legion-controller/references/parked-decisions.md`, `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);"
+      "sentence": "a tree you parked for a hold, for a failed architect, or while it waits on an event outside Legion (`Parked by Legion while it waits on:`), once you checked that its cause is gone or that its event has happened, with a comment on the root that cites that mark and says what you checked, or once a person's decision after the park gives it a next step (`skill://legion-controller/references/parked-decisions.md`, `skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`);"
     },
     {
       "word": "judge",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 217,
-      "sentence": "skills/agent-secrets/SKILL.md: With no `--ttl`, the judge reads the lifetime the broker gives instead: 15 minutes for a human-tier secret, which is inside it, and the whole session for a secret tagged `default-grant=session`, which is outside it."
+      "sentence": "With no `--ttl`, the judge reads the lifetime the broker gives instead: 15 minutes for a human-tier secret, which is inside it, and the whole session for a secret tagged `default-grant=session`, which is outside it."
     },
     {
       "word": "label",
+      "path": "skills/approval-review/SKILL.md",
       "line": 25,
-      "sentence": "skills/approval-review/SKILL.md: Check the label, the status and whether the document is that root's primary before you read a word of it."
+      "sentence": "Check the label, the status and whether the document is that root's primary before you read a word of it."
     },
     {
       "word": "link",
+      "path": "skills/dispatch-writing-specs/SKILL.md",
       "line": 39,
-      "sentence": "skills/dispatch-writing-specs/SKILL.md: With no link, state the design."
+      "sentence": "With no link, state the design."
     },
     {
       "word": "mark",
+      "path": "skills/asd-ste100/SKILL.md",
       "line": 43,
-      "sentence": "skills/asd-ste100/SKILL.md: | No semicolons (Rule 8.1) | Split into separate sentences | Any semicolon at all — STE bans the mark outright, not only as a clause join."
+      "sentence": "| No semicolons (Rule 8.1) | Split into separate sentences | Any semicolon at all — STE bans the mark outright, not only as a clause join."
     },
     {
       "word": "message",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 40,
-      "sentence": "skills/agent-secrets/SKILL.md: an account the App is not installed on, which the message says in the words `has no installation on`."
+      "sentence": "an account the App is not installed on, which the message says in the words `has no installation on`."
     },
     {
       "word": "move",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 54,
-      "sentence": "skills/legion-architect/SKILL.md: After the move, ask the person on the root (`dispatch ask`) when that child's work should run or stop: release it when they say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when they say its work should wait, citing their answer."
+      "sentence": "After the move, ask the person on the root (`dispatch ask`) when that child's work should run or stop: release it when they say to run it; when they say to stop it, close it, or move it to `icebox` under the rule when they say its work should wait, citing their answer."
     },
     {
       "word": "name",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 18,
-      "sentence": "skills/agent-secrets/SKILL.md: Nothing runs unless every name is granted: a denial of one name denies the whole request, so the command never starts with some of its secrets missing (`cmdExec`, `packages/envoy/cmd/agent-secrets/main.go`)."
+      "sentence": "Nothing runs unless every name is granted: a denial of one name denies the whole request, so the command never starts with some of its secrets missing (`cmdExec`, `packages/envoy/cmd/agent-secrets/main.go`)."
     },
     {
       "word": "open",
+      "path": "skills/dispatch-first/SKILL.md",
       "line": 37,
-      "sentence": "skills/dispatch-first/SKILL.md: A blocker that is not an open ask does not exist for them."
+      "sentence": "A blocker that is not an open ask does not exist for them."
     },
     {
       "word": "order",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 318,
-      "sentence": "skills/agent-secrets/SKILL.md: On Google Cloud the order is `CLOUDSDK_AUTH_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`, the well-known credentials file, the active gcloud account and last the metadata server; on AWS it is the AWS SDK's own: access keys in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain."
+      "sentence": "On Google Cloud the order is `CLOUDSDK_AUTH_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, `CLOUDSDK_ACTIVE_CONFIG_NAME` or `CLOUDSDK_CORE_ACCOUNT`, the well-known credentials file, the active gcloud account and last the metadata server; on AWS it is the AWS SDK's own: access keys in `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, then `AWS_WEB_IDENTITY_TOKEN_FILE`, then `AWS_PROFILE`, then `AWS_DEFAULT_PROFILE`, then the rest of the SDK's default chain."
     },
     {
       "word": "output",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 115,
-      "sentence": "skills/agent-secrets/SKILL.md: Report the refusal as you report a service out of reach: the command you ran and the output you saw."
+      "sentence": "Report the refusal as you report a service out of reach: the command you ran and the output you saw."
     },
     {
       "word": "park",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 48,
-      "sentence": "skills/legion-architect/SKILL.md: Before you park a child for good (any park the rule allows), set the `--blocked-by` list of each sibling that waits on it again without it (one call with the rest of its list, or `--clear-blocked-by` when it was the only one), or park that sibling too when its work ends with the parked child, under the same rule: a parked child is stopped, not done, and its dependents stay held with no notice."
+      "sentence": "Before you park a child for good (any park the rule allows), set the `--blocked-by` list of each sibling that waits on it again without it (one call with the rest of its list, or `--clear-blocked-by` when it was the only one), or park that sibling too when its work ends with the parked child, under the same rule: a parked child is stopped, not done, and its dependents stay held with no notice."
     },
     {
       "word": "pass",
+      "path": "skills/dispatch-writing-specs/SKILL.md",
       "line": 42,
-      "sentence": "skills/dispatch-writing-specs/SKILL.md: A sentence citing a gate passing also says what the pass does not show: \"Tests pass: a wrong verdict, not a missing one.\""
+      "sentence": "A sentence citing a gate passing also says what the pass does not show: \"Tests pass: a wrong verdict, not a missing one.\""
     },
     {
       "word": "post",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 275,
-      "sentence": "skills/agent-secrets/SKILL.md: Every post to Slack stays a `slack_post` call, which holds the reply to one thread, to 4,000 characters and to one send."
+      "sentence": "Every post to Slack stays a `slack_post` call, which holds the reply to one thread, to 4,000 characters and to one send."
     },
     {
       "word": "print",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 136,
-      "sentence": "skills/agent-secrets/SKILL.md: These print the key paths, then each leaf's path with its length."
+      "sentence": "These print the key paths, then each leaf's path with its length."
     },
     {
       "word": "push",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 10,
-      "sentence": "skills/legion-architect/SKILL.md: One role holds the issue's phase at a time, and every role that has a session may work beside it and tell the role whose phase it is what it finds: for example, the reviewer reads each push as it lands, and the tester tries an intermediate build."
+      "sentence": "One role holds the issue's phase at a time, and every role that has a session may work beside it and tell the role whose phase it is what it finds: for example, the reviewer reads each push as it lands, and the tester tries an intermediate build."
     },
     {
       "word": "read",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 74,
-      "sentence": "skills/legion-architect/SKILL.md: the reviewer's approval of that head by SHA, the head its Legion footer names and never its `commit_id`, which GitHub can move onto a later head (`gh api --paginate repos/\u003co\u003e/\u003cr\u003e/pulls/\u003cn\u003e/reviews`; `skill://legion-worker/references/merge-gate.md` gives the read of each review's footer head, and what stands for a footer that names none);"
+      "sentence": "the reviewer's approval of that head by SHA, the head its Legion footer names and never its `commit_id`, which GitHub can move onto a later head (`gh api --paginate repos/\u003co\u003e/\u003cr\u003e/pulls/\u003cn\u003e/reviews`; `skill://legion-worker/references/merge-gate.md` gives the read of each review's footer head, and what stands for a footer that names none);"
     },
     {
       "word": "record",
+      "path": "skills/dispatch-first/SKILL.md",
       "line": 26,
-      "sentence": "skills/dispatch-first/SKILL.md: **Question already decided:** the answered ask is the record."
+      "sentence": "**Question already decided:** the answered ask is the record."
     },
     {
       "word": "release",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 222,
-      "sentence": "skills/agent-secrets/SKILL.md: One class is never judged, whatever those rules say: a secret tagged as an administrator's, of which a person approves every release."
+      "sentence": "One class is never judged, whatever those rules say: a secret tagged as an administrator's, of which a person approves every release."
     },
     {
       "word": "report",
+      "path": "skills/asd-ste100/SKILL.md",
       "line": 61,
-      "sentence": "skills/asd-ste100/SKILL.md: It excludes present perfect and other compound forms: \"we received the report\", not \"we have received the report\"."
+      "sentence": "It excludes present perfect and other compound forms: \"we received the report\", not \"we have received the report\"."
     },
     {
       "word": "request",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 22,
-      "sentence": "skills/agent-secrets/SKILL.md: `--reason` is necessary wherever a person approves: a request that names a secret someone must decide, and carries none, is denied whole."
+      "sentence": "`--reason` is necessary wherever a person approves: a request that names a secret someone must decide, and carries none, is denied whole."
     },
     {
       "word": "research",
+      "path": "skills/outside-message/SKILL.md",
       "line": 83,
-      "sentence": "skills/outside-message/SKILL.md: Link the research, not the message."
+      "sentence": "Link the research, not the message."
     },
     {
       "word": "review",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 37,
-      "sentence": "skills/legion-architect/SKILL.md: Run the step once per design: at the first design of an issue, and again when a push-back or a review changes what the design is for."
+      "sentence": "Run the step once per design: at the first design of an issue, and again when a push-back or a review changes what the design is for."
     },
     {
       "word": "rewrite",
+      "path": "skills/asd-ste100/SKILL.md",
       "line": 81,
-      "sentence": "skills/asd-ste100/SKILL.md: If a rewrite would drop necessary precision (a safety condition, a scope qualifier, a number), keep the longer phrasing and flag it instead of silently simplifying."
+      "sentence": "If a rewrite would drop necessary precision (a safety condition, a scope qualifier, a number), keep the longer phrasing and flag it instead of silently simplifying."
     },
     {
       "word": "run",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 36,
-      "sentence": "skills/agent-secrets/SKILL.md: a run that names no GitHub App secret,"
+      "sentence": "a run that names no GitHub App secret,"
     },
     {
       "word": "send",
+      "path": "skills/envoy/SKILL.md",
       "line": 20,
-      "sentence": "skills/envoy/SKILL.md: Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id."
+      "sentence": "Read the `recipient` in the send result, the session Envoy targeted: if it is not the one you meant, resend to the right id."
     },
     {
       "word": "set",
+      "path": "skills/legion-worker/SKILL.md",
       "line": 72,
-      "sentence": "skills/legion-worker/SKILL.md: Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` empty: the daemon rewrites your gh directory in place, and a set variable outranks it."
+      "sentence": "Never run `gh config set` or `gh alias set`, and leave `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` empty: the daemon rewrites your gh directory in place, and a set variable outranks it."
     },
     {
       "word": "start",
+      "path": "skills/legion-controller/SKILL.md",
       "line": 16,
-      "sentence": "skills/legion-controller/SKILL.md: A plain user turn that is neither the start message nor a task sent with `legion claims deliver` is a person writing from Dispatch's Agents page."
+      "sentence": "A plain user turn that is neither the start message nor a task sent with `legion claims deliver` is a person writing from Dispatch's Agents page."
     },
     {
       "word": "state",
+      "path": "skills/legion-architect/SKILL.md",
       "line": 54,
-      "sentence": "skills/legion-architect/SKILL.md: A person's `todo` on a child that runs or is held is no leave: the child goes back to `admitted`, and that re-entry starts and stops nothing, so its own architect keeps the state it had."
+      "sentence": "A person's `todo` on a child that runs or is held is no leave: the child goes back to `admitted`, and that re-entry starts and stops nothing, so its own architect keeps the state it had."
     },
     {
       "word": "type",
+      "path": "skills/thermonuclear-code-quality/SKILL.md",
       "line": 37,
-      "sentence": "skills/thermonuclear-code-quality/SKILL.md: Ask for a new abstraction (a type, module or policy object) only when the code shows two real callers or two ways it will change."
+      "sentence": "Ask for a new abstraction (a type, module or policy object) only when the code shows two real callers or two ways it will change."
     },
     {
       "word": "write",
+      "path": "skills/agent-secrets/SKILL.md",
       "line": 318,
-      "sentence": "skills/agent-secrets/SKILL.md: A write runs under the credential of the first source the command finds, and the store's IAM decides whether it lands."
+      "sentence": "A write runs under the credential of the first source the command finds, and the store's IAM decides whether it lands."
     }
   ]
 }

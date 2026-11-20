@@ -1,7 +1,7 @@
 # The verbs of an instruction (R49.2): each word that opens an instruction sentence of the sources, one a line.
 # Written by its program (instruction_verbs_test.go); do not edit. From packages/envoy:
-#   go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs -verbs-commit b456e85bc55ef2695a53cf1d64fd898328c3671f -verbs-live <a dispatch doc-read of the Verification document of The Spec's root>
-# Sources: skills/*/SKILL.md at b456e85bc55ef2695a53cf1d64fd898328c3671f, and the procedures of testdata/live-procedures.txt. Evidence: testdata/instruction-verbs.json.
+#   go test ./internal/dispatch/specform/ -run '^TestTheVerbListIsItsProgramsOutput$' -args -write-verbs -verbs-commit b456e85bc55ef2695a53cf1d64fd898328c3671f [-verbs-live <a dispatch doc-read of the Verification document of The Spec's root>]
+# Sources: skills/*/SKILL.md at b456e85bc55ef2695a53cf1d64fd898328c3671f, kept in testdata/instruction-verb-sources.json, and the procedures of testdata/live-procedures.txt. Evidence: testdata/instruction-verbs.json.
 accept
 answer
 append
