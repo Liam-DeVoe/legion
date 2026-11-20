@@ -27,12 +27,14 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	brokerstoretest "github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -60,6 +62,8 @@ const (
 	// leaverHumanSecret is the broker rig's human-tier secret, which its operator, ada, owns: a
 	// session's ask for it is an approval request to her (brokertest.NewRig).
 	leaverHumanSecret = "TEST_SECRET"
+	// leaverMachineAccount is the fake Google service account for a person's broker sign-in.
+	leaverMachineAccount = "leaver-machine@example.iam.gserviceaccount.com"
 )
 
 // The people of the tests: ada, a full member whom the fake Google refuses; bob, a full member
@@ -75,8 +79,10 @@ const (
 
 // leaverRig is one Dispatch and one secrets broker.
 type leaverRig struct {
-	// google is the fake Google every sign-in and refresh of Dispatch's goes to.
-	google *oidctest.Issuer
+	// google is the fake Google every sign-in and refresh of Dispatch's goes to. googleKey signs
+	// the metadata and person identity tokens the broker's person-trade configuration accepts.
+	google    *oidctest.Issuer
+	googleKey *oidctest.Key
 	// accounts issues the projected service-account tokens Dispatch admits (DISPATCH_OIDC_ISSUER),
 	// signing them with accountKey.
 	accounts   *oidctest.Issuer
@@ -90,6 +96,9 @@ type leaverRig struct {
 	toBroker      *httptest.Server
 	brokerStopped atomic.Bool
 	cutCalls      atomic.Int64
+	// brokerDispatch is the server the broker's project-access client reaches when the fixture
+	// enables that client. It has a URL before the broker starts and its handler once Dispatch does.
+	brokerDispatch *httptest.Server
 	// outside holds Dispatch's database, its people store and the boot the router serves, with
 	// PRIV and its access list, as newOutsideSignIn builds them.
 	outside *outsideSignIn
@@ -120,6 +129,77 @@ type leaverConfig struct {
 	built []func(t *testing.T, r *leaverRig)
 }
 
+// withBrokerGate puts the broker's real project-access client in front of a Dispatch server. It
+// deliberately builds no hold.Gate: until the production gate exists a held person still reaches
+// the broker, which is the acceptance red these tests must observe.
+func withBrokerGate() leaverOption {
+	return func(c *leaverConfig) {
+		var dispatchHandler http.Handler
+		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
+			server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if dispatchHandler == nil {
+					http.Error(w, "Dispatch router is not built", http.StatusServiceUnavailable)
+					return
+				}
+				dispatchHandler.ServeHTTP(w, req)
+			}))
+			server.Start()
+			t.Cleanup(server.Close)
+			r.brokerDispatch = server
+			accountFile := filepath.Join(t.TempDir(), "broker-dispatch-account")
+			if err := os.WriteFile(accountFile, []byte(r.brokerAccountToken(t)+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return []brokertest.Option{brokertest.WithProjectAccess(server.URL, brokertoken.NewAccountToken(accountFile))}
+		})
+		c.built = append(c.built, func(t *testing.T, r *leaverRig) {
+			if r.brokerDispatch == nil {
+				t.Fatal("withBrokerGate did not start its Dispatch server")
+			}
+			dispatchHandler = r.handler
+		})
+	}
+}
+
+// withPersonSignIns configures the broker to accept a person's Google trade with the machine's
+// metadata identity as its actor. Removing that production exchange wiring makes personSignIn
+// fail at the real token endpoint rather than merely changing a fixture-local value.
+func withPersonSignIns() leaverOption {
+	return func(c *leaverConfig) {
+		c.broker = append(c.broker, func(t *testing.T, r *leaverRig) []brokertest.Option {
+			startLeaverMetadataServer(t, r.google, r.googleKey, leaverMachineAccount)
+			t.Setenv(brokerclient.IdentityVar, brokerclient.IdentityMetadata)
+			t.Setenv(brokerclient.MachineAudienceVar, brokertest.GoogleMachineAudience)
+			return []brokertest.Option{brokertest.WithPersonSignIns(r.google, leaverMachineAccount)}
+		})
+	}
+}
+
+// startLeaverMetadataServer is the small boundary fake for a Compute Engine metadata server. Its
+// request and response shape are startMetadataServer's: only Google-flavoured identity requests
+// for the broker's machine audience receive the fake Google's signed token.
+func startLeaverMetadataServer(t *testing.T, google *oidctest.Issuer, key *oidctest.Key, machineAccount string) {
+	t.Helper()
+	claims := google.Claims(machineAccount, brokertest.GoogleMachineAudience)
+	claims["email"] = machineAccount
+	claims["email_verified"] = true
+	token := google.Mint(t, key, claims)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet ||
+			req.URL.Path != "/computeMetadata/v1/instance/service-accounts/default/identity" ||
+			req.Header.Get("Metadata-Flavor") != "Google" ||
+			req.URL.Query().Get("audience") != brokertest.GoogleMachineAudience ||
+			req.URL.Query().Get("format") != "full" {
+			http.NotFound(w, req)
+			return
+		}
+		w.Header().Set("Metadata-Flavor", "Google")
+		_, _ = io.WriteString(w, token)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(server.URL, "http://"))
+}
+
 // leaverPerson is one person's credentials.
 type leaverPerson struct {
 	email string
@@ -132,6 +212,10 @@ type leaverPerson struct {
 	machineKey   *ecdsa.PrivateKey
 	machineToken *oauth2.Token
 	credential   string
+	// signInKey and signInCredential belong to the Google person trade on the fixture's metadata
+	// machine, so the release test can age and re-trade a real sign-in credential.
+	signInKey        *ecdsa.PrivateKey
+	signInCredential string
 	// enrollment is the session enrolled under the machine login, signing with sessionKey.
 	enrollment string
 	sessionKey *ecdsa.PrivateKey
@@ -167,6 +251,7 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 		opt(&config)
 	}
 	r := &leaverRig{google: signInPool(t, "dispatch-client", "client-secret"), accounts: oidctest.New(t), persons: map[string]*leaverPerson{}}
+	r.googleKey = r.google.PublishKey(t, "broker-person-sign-in-key")
 	r.accountKey = r.accounts.PublishKey(t, "account-key")
 
 	var brokerOptions []brokertest.Option
@@ -384,6 +469,23 @@ func (r *leaverRig) machineLogin(t *testing.T, p *leaverPerson) {
 	p.machineToken = token
 }
 
+// pendingMachineLogin opens a new machine-login decision for p and leaves it pending. The held
+// approval assertion calls Dispatch's real decision route with p's personal token after the hold.
+func (r *leaverRig) pendingMachineLogin(t *testing.T, p *leaverPerson) (recordID, code string) {
+	t.Helper()
+	device := r.client.DeviceLogin(t, brokertest.NewSigningKey(t), p.email, localPart(p.email)+"-pending-box")
+	code = device.UserCode
+	looked := cookieRequest(r.handler, http.MethodPost, "/api/v1/credential-requests/machine-lookup",
+		leaverBody(t, map[string]string{"code": code}), p.signedIn)
+	var lookup struct {
+		RecordID string `json:"record_id"`
+	}
+	if err := json.Unmarshal(looked.Body.Bytes(), &lookup); err != nil || lookup.RecordID == "" {
+		t.Fatalf("Dispatch's machine-lookup of %s's pending login answered %d %s, want its record", p.email, looked.Code, looked.Body.String())
+	}
+	return lookup.RecordID, code
+}
+
 // brokerCredentials gives p, whose machine is logged in, a session enrolled under the machine
 // login, that session's grant of an agent-tier secret p owns and of the human-tier secret, which
 // ada approves on the broker's approval page, and a broker token minted from the machine login.
@@ -422,6 +524,50 @@ func (r *leaverRig) brokerCredentials(t *testing.T, p *leaverPerson) {
 		t.Fatalf("the exchange of %s's machine login's token answered %d %s, want a broker token", p.email, status, refusal)
 	}
 	p.brokerToken = token
+}
+
+// personSignIn trades p's Google identity on the fixture's metadata machine through the real
+// token endpoint. The broker must record the sign-in and mint its launcher credential in one
+// transaction; otherwise the release snapshot below catches the missing row.
+func (r *leaverRig) personSignIn(t *testing.T, p *leaverPerson) {
+	t.Helper()
+	p.signInKey = brokertest.NewSigningKey(t)
+	machineToken, err := googleidentity.Token(t.Context(), brokertest.GoogleMachineAudience)
+	if err != nil {
+		t.Fatalf("read %s's metadata identity: %v", leaverMachineAccount, err)
+	}
+	claims := r.google.Claims("google-"+p.email, brokertest.PersonSignInAudience)
+	claims["email"] = p.email
+	claims["email_verified"] = true
+	claims["hd"] = leaverDomain
+	personToken := r.google.Mint(t, r.googleKey, claims)
+	form := url.Values{
+		"grant_type":          {brokerclient.GrantTypeTokenExchange},
+		"client_id":           {oauthwire.ExchangeClientID},
+		"subject_token":       {personToken},
+		"subject_token_type":  {oauthwire.SubjectTokenTypePerson},
+		"actor_token":         {machineToken},
+		"actor_token_type":    {oauthwire.ActorTokenTypeMachine},
+		oauthwire.FormSession: {localPart(p.email) + "-sign-in"},
+	}
+	client := &http.Client{Transport: brokerclient.NewDPoPTransport(p.signInKey, &http.Transport{}), Timeout: 30 * time.Second}
+	response, err := client.PostForm(r.broker.URL+brokerclient.TokenPath, form)
+	if err != nil {
+		t.Fatalf("trade %s's Google sign-in: %v", p.email, err)
+	}
+	defer response.Body.Close()
+	raw, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read %s's Google sign-in trade: %v", p.email, err)
+	}
+	var answer struct {
+		CredentialID string `json:"credential_id"`
+		Error        string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil || response.StatusCode != http.StatusOK || answer.CredentialID == "" {
+		t.Fatalf("%s's Google sign-in trade answered %d %s, want 200 with a launcher credential", p.email, response.StatusCode, raw)
+	}
+	p.signInCredential = answer.CredentialID
 }
 
 // delist takes email off PRIV's access list, as PRIV's owner does.
@@ -606,6 +752,40 @@ func (r *leaverRig) exchange(t *testing.T, p *leaverPerson) (token string, statu
 	}
 	_ = json.Unmarshal(raw, &answer)
 	return answer.AccessToken, response.StatusCode, answer.Error
+}
+
+// introspection is the broker's real token readback under its listener account. Its held field is
+// a broker row of c-bound: dropping the production gate would leave it false while still serving
+// every other request.
+func (r *leaverRig) introspection(t *testing.T, p *leaverPerson) (status int, held bool, code string) {
+	t.Helper()
+	form := url.Values{"token": {p.brokerToken}}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, r.broker.URL+"/v1/oauth/introspect", strings.NewReader(form.Encode()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+r.broker.ListenerToken)
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("introspect %s's broker token: %v", p.email, err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read %s's introspection answer: %v", p.email, err)
+	}
+	if response.StatusCode >= http.StatusMultipleChoices {
+		status, code := brokerAnswer(response.StatusCode, body)
+		return status, false, code
+	}
+	var answer struct {
+		Held bool `json:"held"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("decode %s's introspection answer %s: %v", p.email, body, err)
+	}
+	return response.StatusCode, answer.Held, ""
 }
 
 // dispatchAnswer is a Dispatch answer as a credential call answers it.
