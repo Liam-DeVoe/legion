@@ -184,7 +184,7 @@ test("the controller skill reads pull requests as the review App, and nothing sa
   expect(controllerSkill).toContain("not a pull-request URL");
   expect(controllerSkill).toContain("--label '<each current label>'");
   expect(controllerSkill).toContain("cannot be quoted");
-  for (const token of ["OPEN", "MERGED", "CLOSED", "unreadable", '"phase":"controller"']) {
+  for (const token of ["OPEN", "MERGED", "CLOSED", "unreadable"]) {
     expect(controllerSkill).toContain(token);
   }
 

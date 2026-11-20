@@ -33,7 +33,7 @@ Read every delivery against live Dispatch and daemon state. You decide labels, `
 
 ## The owner audit
 
-At each pass, read `dispatch issues --project <KEY> --priority 0 --priority 1 --all`:
+At each pass, read the open roots, the same read as the pass's step 1: `dispatch issues --project <KEY> --all`, each row with no parent whose status is not `done`. In that read:
 
 - An unclaimed row in `triage`, `icebox`, `backlog` or `todo` is a decision: someone builds it, or it closes.
 - A close that says a defect cannot happen cites the code that prevents it, or the issue is unread.
