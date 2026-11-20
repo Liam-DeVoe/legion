@@ -1886,7 +1886,9 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // goes to the claim that superseded this one when one has). That runs in a goroutine under a
 // context of its own, so this answer's status and body are exactly what they were and wait for
 // none of it. A try whose takeover record did not store writes no claim and answers 503
-// (errTakeoverUnrecorded).
+// (errTakeoverUnrecorded). When nothing answered the record's write (takeoverRecordUnanswered),
+// that 503's error opens with busUnansweredPrefix, as the claim's own write the bus did not answer
+// does (writeStoreError).
 //
 // The refresh of the claimant's registration can make its session live again, as a registration
 // that returns a session does (subscribeHandler): a process that resumed a session claims its role
@@ -2229,11 +2231,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// Neither wrote a claim, and both are the client's to make again: every try met a
 			// conflict until the deadline, or a try's takeover record did not store.
 			if errors.Is(err, store.ErrRoleClaimContended) || errors.Is(err, errTakeoverUnrecorded) {
+				message := err.Error()
 				if errors.Is(err, errTakeoverUnrecorded) {
 					warnTakeoverUnrecorded(logger, body.Role, body.SessionID, err)
+					if takeoverRecordUnanswered(err) {
+						message = fmt.Sprintf("%s: %s", busUnansweredPrefix, err)
+					}
 				}
 				w.Header().Set("Retry-After", "1")
-				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				writeJSONError(w, http.StatusServiceUnavailable, message)
 				return
 			}
 			var stale *store.ErrRoleClaimRevisionMismatch

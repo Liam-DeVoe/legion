@@ -55,8 +55,23 @@ const takeoverRecordWindow = time.Second
 // errTakeoverUnrecorded wraps the failure of a claim whose takeover record the stream did not
 // store - a full stream, a write that went unanswered within takeoverRecordWindow, a leader
 // election - so the claim wrote nothing (takeoverTries.beforeTry). The claim route answers it 503
-// with Retry-After: 1, and the client claims again.
+// with Retry-After: 1, and the client claims again. A record write nothing answered
+// (takeoverRecordUnanswered) has that 503's error open with busUnansweredPrefix.
 var errTakeoverUnrecorded = errors.New("the takeover record of this claim did not store, so the claim was not written")
+
+// takeoverRecordUnanswered reports whether err, a claim's errTakeoverUnrecorded, is a takeover
+// record write the bus did not answer. The bus answered a write that the stream refused because
+// it is full (bus.ErrStreamFull) and one the server denied (bus.ErrPublishDenied), and this
+// client refused the record's own bytes (bus.ErrRefused) before it sent them. Every other failure
+// of the write did not answer, whatever it names, as storeAnswer reads the claim's own store work.
+func takeoverRecordUnanswered(err error) bool {
+	var unrecorded takeoverUnrecordedError
+	if !errors.As(err, &unrecorded) {
+		return false
+	}
+	cause := unrecorded.err
+	return !errors.Is(cause, bus.ErrStreamFull) && !errors.Is(cause, bus.ErrPublishDenied) && !errors.Is(cause, bus.ErrRefused)
+}
 
 // takeoverUnrecordedError is errTakeoverUnrecorded for the claim of role whose try read previous
 // as the holder: what the claim route's warning names (warnTakeoverUnrecorded).
