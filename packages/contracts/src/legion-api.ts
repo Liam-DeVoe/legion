@@ -871,7 +871,7 @@ const legionIssue = z.object({
  * and never changed, absent while the project has none: a reader that takes this body as its
  * starting point applies only a state message whose `stateId` is this one, since a message of
  * another id is counted in another store and its sequences say nothing of this body's. The three
- * keys of contract 183 are optional because a daemon before that contract writes none of them, and
+ * keys of contract 193 are optional because a daemon before that contract writes none of them, and
  * the route strips them from the body it serves a caller below that contract. */
 const daemonInfo = z.object({
   project: nonEmptyString,

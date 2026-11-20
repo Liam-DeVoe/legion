@@ -1233,7 +1233,7 @@ const pauseContract = 178
 // stateSeqContract is the daemon contract that added `daemon.stateSeq`, the sequence of the newest
 // state event the project's daemon committed, read in the body's own snapshot, and beside it
 // `daemon.stateId`, the id of the store that count is kept in, and `daemon.stateRun`, the id of the
-// daemon run that serves the body (version.go's 183, DaemonInfo.StateSeq, StateID and StateRun).
+// daemon run that serves the body (version.go's 193, DaemonInfo.StateSeq, StateID and StateRun).
 // A plugin before it is served the daemon block without the three keys: one built before
 // sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body for a key it
 // does not name, and one built after strips the keys instead, so the strip is what keeps them from
@@ -1241,7 +1241,7 @@ const pauseContract = 178
 // pauseContract stands below it with no row of stateNarrowings between the two, so a caller in a
 // pod at or above pauseContract and below this contract is served `paused` or `lastPause` where
 // the state carries one and none of `stateSeq`, `stateId` and `stateRun`.
-const stateSeqContract = 183
+const stateSeqContract = 193
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

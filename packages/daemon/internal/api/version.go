@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 183: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 193: dispatch://INFRA-3931 -- the daemon block of `GET /legion/v1/state` gains `stateSeq`
 // (api.DaemonInfo.StateSeq), the sequence of the newest state event the project's daemon
 // committed (state_publication.last_seq, record.Store.StatePublication), read in the route's own
 // repeatable-read snapshot: every state event at or below it is in the body and every one above
@@ -2470,12 +2479,12 @@ package api
 // `stateSeq` is one the body already holds and not a daemon whose sequence went back. The route
 // writes `stateSeq` on every body, 0 while the project has no state row, `stateId` once the
 // project has one, and `stateRun` from a daemon whose state events are on (one with a workflow),
-// and a caller in a pod whose claims record a contract below 183 is served the daemon block
+// and a caller in a pod whose claims record a contract below 193 is served the daemon block
 // without any of the three (stateSeqContract, withoutStateSeq): one built before
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
 // key it does not name, and one built after strips the keys instead.
 // `packages/contracts/src/legion-api.ts` reads the three keys as optional, so a reader of this
-// contract served such a body, or the body of a daemon before 183, takes them as absent rather
+// contract served such a body, or the body of a daemon before 193, takes them as absent rather
 // than as 0.
 // (This change first took 166, the lowest number above main's 152 that no open pull request
 // declared, as `.github/scripts/check-daemon-api-contract.sh` read it on 2026-11-18: 153 #4115,
@@ -2486,11 +2495,16 @@ package api
 // moved again: the same check, read on 2026-11-19, named 175 as the lowest number above main's 168
 // that no open pull request declares, with 169 declared by #3831 and #4065, 170 by #2230, #4030,
 // #4173, #4180 and #4193, 171 by #4115, #4485 and #4495, 172 by #3659, 173 by #4493 and 174 by
-// #4273. While it was still open, main took 178 (the entry above, #4115), which passed over 176
+// #4273. While it was still open, main took 178 (entry 178 above, #4115), which passed over 176
 // and 177 as declared and stands above 175, so at the merge of 2026-11-20 that brought main in at
 // bbd99eae86 the number moved a third time: the same check, read on 2026-11-20, named 183 as the
 // lowest number above main's 178 that no open pull request declares, with 179 declared by #4392
-// and #4540, 180 by #4049 and #4175, 181 by #4273 and #4553, and 182 by #4495.
+// and #4540, 180 by #4049 and #4175, 181 by #4273 and #4553, and 182 by #4495. While it was
+// still open, main took 188 (the entry above, #4543), which stands above 183, so at the merge of
+// 2026-11-20 that brought main in at 1c7c825367 the number moved a fourth time: the same check,
+// read on 2026-11-20 at 10:40Z, named 193 as the lowest number above main's 188 that no open pull
+// request declares, with 189 declared by #3831, #4592 and #4596, 190 by #4493 and #4578, 191 by
+// #4495, and 192 by #4611.
 // That is a reading and never the rule: read main's own number and every open head again at the
 // next forward merge rather than from this line.)
-const DaemonAPIVersion = 183
+const DaemonAPIVersion = 193
