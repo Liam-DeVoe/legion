@@ -145,6 +145,9 @@ type leaverConfig struct {
 	built []func(t *testing.T, r *leaverRig)
 	// iap is withIAP: Dispatch runs under DISPATCH_IDENTITY=iap.
 	iap bool
+	// refreshFlow is withRefreshFlowOfItsOwn: Dispatch's Membership refreshes through a code flow
+	// of its own.
+	refreshFlow bool
 }
 
 // withIAP runs Dispatch as an Identity-Aware Proxy deployment runs it (R9): under
@@ -163,6 +166,17 @@ func withIAP() leaverOption {
 			return []brokertest.Option{brokertest.WithHoldRequiresDeadline()}
 		})
 	}
+}
+
+// withRefreshFlowOfItsOwn has Dispatch's Membership, which Standing and the membership pass ask,
+// refresh through a code flow of its own (signInFlow), not the one the sign-in callback exchanges
+// codes through: the code flow of a Dispatch process started after the person signed in, which has
+// made no grant. A code flow left to x/oauth2's AuthStyleAutoDetect (oidc.tokenAuthStyle) keeps
+// the auth style its first successful grant found, so a refresh through the flow the rig signed
+// the person in through makes one token request where that process makes two: a refused refresh
+// there asks by HTTP Basic and again in the form.
+func withRefreshFlowOfItsOwn() leaverOption {
+	return func(c *leaverConfig) { c.refreshFlow = true }
 }
 
 // withBrokerGate puts the broker's real project-access client in front of a Dispatch server, and
@@ -446,7 +460,11 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	built.Identity, r.membership, err = requestIdentityFor(t.Context(), boot, built.SigningKey, built.People, built.Sessions, built.SignIn, rule)
+	refresh := built.SignIn
+	if config.refreshFlow {
+		refresh = signInFlow(boot)
+	}
+	built.Identity, r.membership, err = requestIdentityFor(t.Context(), boot, built.SigningKey, built.People, built.Sessions, refresh, rule)
 	if err != nil {
 		t.Fatalf("build the request identity: %v", err)
 	}
