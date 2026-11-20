@@ -697,7 +697,7 @@ func TestARepeatOfAnAnswerADeleteEndedSaysWhetherTheRequestWrote(t *testing.T) {
 			if row.wrote {
 				says, never = ran, wroteNothing
 			}
-			if !strings.Contains(text, says) || strings.Contains(text, never) || !strings.Contains(text, "deleted since") {
+			if !strings.Contains(text, says) || strings.Contains(text, never) || !strings.Contains(text, "a comment or a message that was deleted") {
 				t.Fatalf("the repeat says %q, want it to say %q and why, and never %q", text, says, never)
 			}
 		})

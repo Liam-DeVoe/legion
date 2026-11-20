@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,9 +26,14 @@ import (
 // (filler.pass).
 const (
 	// batchEvents and batchBytes bound one batch: at most 500 events, and at most 2 MB of the text
-	// their vectors are made from, each post's body whole and each primary document version by
-	// its version.size; an event larger than that alone is a batch alone. A full batch measured
-	// 0.6 to 1.3 s.
+	// their vectors are made from. Each event of a type a rule reads counts its payload, and a
+	// post whose event cut its body its present row's body too (readEventsQuery); an event that
+	// starts a version counts what that version's vector reads besides (decideVersions): an
+	// issue's row the markdown of the primary document version it names, and a cut post the
+	// whole body the rules give it in place of its row's body where that is longer. The title an
+	// artifact.version's row carries forward is not counted, at most contracts.IssueTitleMax
+	// (about 3 KB) a row. An event that counts more than 2 MB alone is a batch alone. A full
+	// batch measured 0.6 to 1.3 s.
 	batchEvents = 500
 	batchBytes  = 2 << 20
 	// batchStatementBase and batchStatementPerMB bound each statement of a batch: 10 s, and 1 s
@@ -225,7 +231,8 @@ func (f *filler) batchesTo(ctx context.Context, safe int64) (bool, error) {
 // batchResult is what one batch did.
 type batchResult struct {
 	// events is how many events it wrote the rows of, from first to the cursor it moved to;
-	// bytes their text, rows the rows they started, cut how many of those hold a body cut short.
+	// bytes the text they count against the batch's bound (decideVersions), rows the rows they
+	// started, cut how many of those hold a body cut short.
 	events      int
 	first       int64
 	bytes       int64
@@ -254,14 +261,15 @@ const (
 	batchBoundsQuery = `select set_config('lock_timeout', '5s', true),
 	       set_config('idle_in_transaction_session_timeout', '10s', true),
 	       set_config('statement_timeout', $1, true)`
-	// batchStatementQuery sets each statement's time once the batch knows its size ($1); a batch
+	// batchStatementQuery sets each statement's time once the rules have decided the batch and
+	// counted its bytes ($1), before its insert, the statement that makes the vectors; a batch
 	// that holds no text keeps the time batchBoundsQuery set, which is the same.
 	batchStatementQuery = `select set_config('statement_timeout', $1, true)`
 	// lockCursorQuery locks the fill's cursor row for the batch's transaction, so two fills write
 	// one after the other: the second reads the cursor the first moved.
 	lockCursorQuery = `select event_id, event_at, reach, rules from public.search_text_versions_fill where id = 1 for update`
 	// createCursorQuery creates the cursor row where none is: no event written, no reach, the
-	// holder $1 and the rules version $2.
+	// holder $1 and this build's rules version $2.
 	createCursorQuery = `insert into public.search_text_versions_fill (id, event_id, holder, rules) values (1, 0, $1, $2)
 	    on conflict (id) do nothing`
 	// holdCheckQuery answers whether holder $2 may write a batch under hold $1: duty_holds names
@@ -280,11 +288,15 @@ const (
 	emptyCursorQuery = `delete from public.search_text_versions_fill`
 	// advanceCursorQuery moves the cursor to the last event the batch wrote ($1, its created_at
 	// $2), stores the reach $3 where it is later than the one stored (greatest ignores a null, so
-	// a reach computed now never lowers the stored one, and none computed leaves it), and records
-	// the holder $4 and the rules version $5 that wrote it.
+	// a reach computed now never lowers the stored one, and none computed leaves it), records the
+	// holder $4 that wrote it, and keeps in rules the lowest rules version that wrote the rows up
+	// to the cursor: the one stored, or this batch's $5 where that is lower. So a batch of a later
+	// build after an older build's leaves the older version there, and a later build that reads
+	// more event types still finds the events the older rules wrote, to read them again; only
+	// that read again may raise it.
 	advanceCursorQuery = `update public.search_text_versions_fill
 	   set event_id = $1, event_at = $2, reach = greatest(reach, $3::timestamptz), holder = $4,
-	       rules = $5, updated_at = now()
+	       rules = least(rules, $5::smallint), updated_at = now()
 	 where id = 1
 	returning reach`
 	// rulesReadQuery records, once the fill has read again every event earlier rules passed
@@ -292,42 +304,47 @@ const (
 	rulesReadQuery = `update public.search_text_versions_fill set rules = $1, holder = $2, updated_at = now() where id = 1`
 )
 
-// eventTextSize is the size in bytes of the text an event e makes a vector from: its payload, the
-// whole body of a post whose event cut it (its row's, the one source a cut body is most often
-// read from), and for a primary document's version its version.size. Each read of a payload's
-// value as a uuid or a number is guarded, so a payload no rule can read reaches the rules, which
-// name it, rather than failing the statement.
-const eventTextSize = `octet_length(e.payload::text)
-                     + case when e.type = 'artifact.version'
-                                 and jsonb_typeof(e.payload #> '{version,size}') = 'number'
-                                 and exists (select from public.artifacts a
-                                              where a.is_primary
-                                                and a.id = case when pg_input_is_valid(e.payload->>'artifact_id', 'uuid')
-                                                                then (e.payload->>'artifact_id')::uuid end)
-                            then (e.payload #>> '{version,size}')::numeric::bigint
-                            else 0 end
-                     + case when e.payload->>'body_truncated' = 'true'
-                                 and pg_input_is_valid(e.payload->>'id', 'uuid')
-                            then coalesce(case when e.type like 'comment.%'
-                                                 then (select octet_length(c.body) from public.comments c
-                                                        where c.id = (e.payload->>'id')::uuid)
-                                               when e.type like 'message.%'
-                                                 then (select octet_length(m.body) from public.messages m
-                                                        where m.id = (e.payload->>'id')::uuid)
-                                          end, 0)
-                            else 0 end`
+// askBodySQL is the body of the ask event e, as the ask's own search column makes it of the
+// ask's row (asks_search, migrations 0019 and 0087): the question, a space and ask_search_suffix
+// of the options and the answer, over the event's payload; null where the payload holds no
+// question. It reads any JSON value without failing. readEventsQuery reads it of each ask event
+// into event.AskBody, so the body askVersion compares and the insert writes is made in SQL alone,
+// by the function the ask's column reads.
+const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.payload->'options', e.payload->'answer')`
 
-// sizedEvents ends a read of one batch's events after its candidates (the CTE candidates, in id
-// order, each with its size): of those, the first whose sizes come to at most $4 bytes, the first
+// eventColumns are the columns that readEventsQuery and readPassedEventsQuery read of each event
+// e of their CTE candidates: its row, the ask's body of an event of the types $6 (askBodySQL), and
+// for an event of the types $5 the bytes they count of it, those of its payload and, of a post
+// whose event cut its body, those of the body the post's present row holds. Each read of a
+// payload's value as a uuid is guarded, so a payload no rule can read reaches the rules, which
+// name it, rather than failing the statement.
+const eventColumns = `e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
+              case when e.type = any($6::text[]) then ` + askBodySQL + ` end as ask_body,
+              case when e.type = any($5::text[]) then octet_length(e.payload::text) else 0 end as payload_size,
+              case when e.type = any($5::text[])
+                        and e.payload->>'body_truncated' = 'true'
+                        and pg_input_is_valid(e.payload->>'id', 'uuid')
+                   then coalesce(case when e.type like 'comment.%'
+                                        then (select octet_length(c.body) from public.comments c
+                                               where c.id = (e.payload->>'id')::uuid)
+                                      when e.type like 'message.%'
+                                        then (select octet_length(m.body) from public.messages m
+                                               where m.id = (e.payload->>'id')::uuid)
+                                 end, 0)
+                   else 0 end as row_body_size`
+
+// sizedEvents ends a read of one batch's events after its CTE candidates (in id order, each with
+// the columns eventColumns names): of those, the first whose bytes come to at most $4, the first
 // one whatever its size, each with its project, the one the log names for it (its own, its
 // issue's or its document's), and how many candidates there were.
 const sizedEvents = `
      sized as (
-       select c.*, sum(c.size) over (order by c.id) as running, row_number() over (order by c.id) as n,
-              count(*) over () as candidates
+       select c.*, sum(c.payload_size + c.row_body_size) over (order by c.id) as running,
+              row_number() over (order by c.id) as n, count(*) over () as candidates
          from candidates c)
-select s.id, s.type, s.issue_key, coalesce(s.project_key, i.project_key, ar.project_key, ''), s.seq,
-       s.created_at, s.payload, s.size, s.candidates
+select s.id, s.type, s.issue_key, s.artifact_id::text,
+       coalesce(s.project_key, i.project_key, ar.project_key, ''), s.seq,
+       s.created_at, s.payload, s.ask_body, s.payload_size, s.row_body_size, s.candidates
   from sized s
   left join public.issues i on i.key = s.issue_key
   left join public.artifacts ar on ar.id = s.artifact_id
@@ -335,16 +352,25 @@ select s.id, s.type, s.issue_key, coalesce(s.project_key, i.project_key, ar.proj
  order by s.id`
 
 // readEventsQuery reads one batch's events: those above the cursor ($1) and at or below the safe
-// horizon ($2), in id order, at most $3 of them, and of those the first whose text comes to at
-// most $4 bytes, the first one whatever its size (sizedEvents). An event's text is what its vector
-// is made from (eventTextSize), for a type a rule reads ($5); any other type makes no vector and
-// counts nothing.
+// horizon ($2), in id order, at most $3 of them, and of those the first whose bytes come to at
+// most $4, the first one whatever its size (sizedEvents). What it counts of an event is what it
+// can read of the text the event's vector is made from, for a type a rule reads ($5): the bytes
+// of its payload, and of a post whose event cut its body that body as the post's present row
+// holds it, the one source a cut body is most often read from (eventColumns); any other type
+// makes no vector and counts nothing. The rules count the rest as they decide and end the batch
+// at the same bound (decideVersions): the markdown each issue row's vector reads, which the read
+// cannot know before the rules carry an issue's primary document version forward, and a cut
+// post's whole body where it is longer than its row's. So this read bounds what the batch reads
+// of the events and their rows' bodies, and the rules what its vectors read. The title an
+// artifact.version's row carries forward is counted by neither: it is at most
+// contracts.IssueTitleMax, about 3 KB a row. Of an ask's event ($6, askTypes) it reads the ask's
+// body (askBodySQL), and null of every other event. Its project is the one the log names for it:
+// its own, its issue's or its document's. Its document is the one that owns it, for an event of a
+// document of no issue, through which presentBody finds the later events of a comment on that
+// document.
 const readEventsQuery = `
 with candidates as (
-       select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
-              case when e.type = any($5::text[]) then
-                     ` + eventTextSize + `
-                   else 0 end as size
+       select ` + eventColumns + `
          from public.events e
         where e.id > $1 and e.id <= $2
         order by e.id
@@ -352,13 +378,12 @@ with candidates as (
 
 // readPassedEventsQuery reads one batch of the events the fill reads again (filler.reread): those
 // of the types $5 above $1 and at or below the cursor $2 that have no row yet, in id order, at
-// most $3 of them, and of those the first whose text comes to at most $4 bytes, as
-// readEventsQuery reads them. Only an event that began at or after the post body history did can
-// be of those types, which bounds the read to the events since then.
+// most $3 of them, and of those the first whose bytes come to at most $4, each with what
+// readEventsQuery reads of it ($6, askTypes). Only an event that began at or after the post body
+// history did can be of those types, which bounds the read to the events since then.
 const readPassedEventsQuery = `
 with candidates as (
-       select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
-              ` + eventTextSize + ` as size
+       select ` + eventColumns + `
          from public.events e
         where e.id > $1 and e.id <= $2 and e.type = any($5::text[])
           and e.created_at >= ` + asof.PostHistoryBegan + `
@@ -374,11 +399,14 @@ with candidates as (
 // (events.EventLogWasReset) and empties both tables of a log that was reset; reads again, while
 // the cursor row records rules earlier than rulesVersion, the events those rules passed
 // (filler.reread), and otherwise reads the events above the cursor up to safe within the batch's
-// bounds; decides their versions with the rules and writes them; moves the cursor to the last of
-// them; computes the reach (store.ComputeTextVersionsReach) and stores it where it is later than
-// the one stored; and commits. A batch that reads no event still stores the reach, so a fill
-// caught up keeps it current. An event whose payload the rules cannot read stops the batch there:
-// the events before it are written and answered, with the error that names it.
+// bounds on what that read counts (readEventsQuery); decides their versions with the rules, which
+// count what the versions read and end the batch where its bytes reach the bound
+// (decideVersions); bounds its statements by the bytes the rules counted (statementTimeout) and
+// writes the versions; moves the cursor to the last event decided; computes the reach
+// (store.ComputeTextVersionsReach) and stores it where it is later than the one stored; and
+// commits. A batch that reads no event still stores the reach, so a fill caught up keeps it
+// current. An event whose payload the rules cannot read stops the batch there: the events before
+// it are written and answered, with the error that names it.
 func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	started := time.Now()
 	ctx = store.WithTransactionTracking(ctx)
@@ -428,27 +456,28 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	if safe > newest {
 		return batchResult{oldHorizon: true}, nil
 	}
-	read, bytes, candidates, err := f.readEvents(ctx, tx, cursor, safe)
+	read, candidates, err := f.readEvents(ctx, tx, cursor, safe)
 	if err != nil {
 		return batchResult{}, err
 	}
-	if bytes > 0 {
-		if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(bytes)); err != nil {
+	got, n, err := decideVersions(ctx, tx, f.logger, read, f.maxBytes)
+	if err != nil && !errors.Is(err, errUnreadablePayload) {
+		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
+	}
+	unreadable := err
+	read = read[:n]
+	if got.Bytes > 0 {
+		if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(got.Bytes)); err != nil {
 			return batchResult{}, fmt.Errorf("keyword fill: bound the batch's statements: %w", err)
 		}
 	}
-	got, stop, err := f.decide(ctx, tx, read)
-	if err != nil {
-		return batchResult{}, err
-	}
-	read = read[:len(read)-stop.skipped]
 	result := batchResult{
 		events:      len(read),
-		bytes:       bytes,
+		bytes:       got.Bytes,
 		rows:        len(got.Versions),
 		cut:         got.Cut,
 		cursor:      cursor,
-		full:        stop.err == nil && (len(read) < candidates || candidates == f.maxEvents),
+		full:        unreadable == nil && (n < candidates || candidates == f.maxEvents),
 		storedReach: stored,
 	}
 	eventAt := cursorAt
@@ -482,7 +511,65 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 		return batchResult{}, fmt.Errorf("keyword fill: commit the batch: %w", err)
 	}
 	result.took = time.Since(started)
-	return result, stop.err
+	if unreadable != nil {
+		return result, fmt.Errorf("keyword fill: %w", unreadable)
+	}
+	return result, nil
+}
+
+// insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
+// statement. Each row's body is its version's Body, and its vector is made with the functions the
+// items' own search triggers call, so the vector of a version of an unchanged item equals the
+// item's search column: an issue's from its key, its title and the markdown of the version of its
+// primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
+// message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
+// the question, a space and ask_search_suffix of the options and the answer that the ask's
+// trigger reads too, as readEventsQuery made it (askBodySQL).
+const insertVersionsQuery = `
+	insert into public.search_text_versions
+	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	        spec_artifact_id, spec_version, search)
+	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
+	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
+	       case r.kind
+	         when 'issue' then issue_search_vector(r.id, r.body,
+	           (select a.markdown from public.artifact_versions a
+	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
+	         else search_vector('', search_text(r.body))
+	       end
+	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
+	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
+	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	             spec_artifact_id, spec_version)`
+
+// insertVersions writes versions as rows of the keyword table in tx, in one statement
+// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
+// row is never written twice: a version whose (kind, id, event_seq) the table holds fails the
+// statement.
+func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
+	if len(versions) == 0 {
+		return nil
+	}
+	n := len(versions)
+	kinds, ids, projects, bodies, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+	issueKeys, specArtifacts := make([]*string, n), make([]*string, n)
+	eventIDs, seqs, specVersions := make([]int64, n), make([]int32, n), make([]*int32, n)
+	startedAts := make([]time.Time, n)
+	for index, v := range versions {
+		kinds[index], ids[index], issueKeys[index], projects[index] = v.Kind, v.ID, v.IssueKey, v.ProjectKey
+		eventIDs[index], seqs[index], startedAts[index] = v.EventID, v.EventSeq, v.StartedAt
+		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
+		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
+	}
+	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
+		bodyFroms, specArtifacts, specVersions)
+	if err != nil {
+		return fmt.Errorf("write %d keyword versions: %w", n, err)
+	}
+	if tag.RowsAffected() != int64(n) {
+		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
+	}
+	return nil
 }
 
 // lockCursor locks the cursor row for tx, creating it at no event where none is, and answers the
@@ -526,88 +613,96 @@ func (f *filler) holderArg() any {
 	return f.holder
 }
 
-// statementTimeout is the statement_timeout of a batch that holds bytes of text: 10 s and 1 s
-// more for each MB, as set_config takes it.
+// statementTimeout is the statement_timeout of a batch that counts bytes of text against its
+// bound (decideVersions): 10 s and 1 s more for each MB, as set_config takes it.
 func statementTimeout(bytes int64) string {
 	const mb = 1 << 20
 	timeout := batchStatementBase + time.Duration((bytes+mb-1)/mb)*batchStatementPerMB
 	return fmt.Sprintf("%dms", timeout.Milliseconds())
 }
 
-// ruleTypes is the event types a rule reads (versionRules), sorted: the types whose text
+// ruleTypes is the event types a rule reads (versionRules), sorted: the types whose payload
 // readEventsQuery counts.
 var ruleTypes = slices.Sorted(maps.Keys(versionRules))
 
-// readEvents reads the batch's events above cursor up to safe (readEventsQuery), with the bytes
-// of text they hold and how many events the read took before its bound on bytes, so a batch cut
-// short by its bytes is known to leave events for the next one.
-func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) ([]event, int64, int, error) {
-	read, bytes, candidates, err := f.scanEvents(tx.Query(ctx, readEventsQuery, cursor, safe, f.maxEvents, f.maxBytes, ruleTypes))
+// askTypes is the types of ruleTypes that are an ask's (ask.*), whose rule is askVersion: the
+// types readEventsQuery reads the ask's body of (askBodySQL).
+var askTypes = slices.DeleteFunc(slices.Clone(ruleTypes), func(eventType string) bool {
+	return !strings.HasPrefix(eventType, "ask.")
+})
+
+// readEvents reads the batch's events above cursor up to safe (readEventsQuery), each with the
+// bytes the read counted of it, and how many events the read took before its bound on bytes, so
+// a batch cut short by its bytes is known to leave events for the next one.
+func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) ([]event, int, error) {
+	read, candidates, err := f.scanEvents(tx.Query(ctx, readEventsQuery, cursor, safe, f.maxEvents, f.maxBytes, ruleTypes, askTypes))
 	if err != nil {
-		return nil, 0, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
+		return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
 	}
-	return read, bytes, candidates, nil
+	return read, candidates, nil
 }
 
 // scanEvents scans the rows of readEventsQuery or readPassedEventsQuery (sizedEvents): the events,
-// the bytes of text they hold and how many candidates the read took before its bound on bytes.
-func (f *filler) scanEvents(rows pgx.Rows, err error) ([]event, int64, int, error) {
+// each with the bytes the read counted of it, and how many candidates the read took before its
+// bound on bytes.
+func (f *filler) scanEvents(rows pgx.Rows, err error) ([]event, int, error) {
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	read := make([]event, 0, f.maxEvents)
-	var bytes int64
 	var candidates int
 	for rows.Next() {
 		var e event
 		var payload []byte
-		var size, taken int64
-		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload, &size, &taken); err != nil {
-			return nil, 0, 0, err
+		var taken int64
+		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.ArtifactID, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody,
+			&e.PayloadBytes, &e.RowBodyBytes, &taken); err != nil {
+			return nil, 0, err
 		}
 		e.Payload = payload
 		read = append(read, e)
-		bytes += size
 		candidates = int(taken)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, 0, err
+		return nil, 0, err
 	}
-	return read, bytes, candidates, nil
+	return read, candidates, nil
 }
 
 // reread reads again, in tx, one batch of the events that the rules of the version the cursor row
 // records passed without reading: the events at or below the cursor, of the types the later
 // versions of the rules added (addedSince), that have no row yet (readPassedEventsQuery). It
-// decides and writes their versions as a batch writes the events above the cursor, and leaves the
-// cursor and the reach as they are. The batch that reads the last of them records rulesVersion in
-// the cursor row in its own transaction (rulesReadQuery), and every batch after it reads above
-// the cursor again. Each event comes after every row of its item that the earlier rules wrote,
-// so its rule reads the item's text before it (decideVersions).
+// decides and writes their versions as a batch writes the events above the cursor, within the
+// same bounds (decideVersions), and leaves the cursor and the reach as they are. The batch that
+// reads the last of them records rulesVersion in the cursor row in its own transaction
+// (rulesReadQuery), and every batch after it reads above the cursor again. Each event comes
+// after every row of its item that the earlier rules wrote, so its rule reads the item's text
+// before it (decideVersions).
 //
 // rereadAfter keeps the place of this process's reading. A fill in another process, or after a
 // restart, reads from the first again, and passes over each event that has its row.
 func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, cursor int64, rules int) (batchResult, error) {
-	read, bytes, candidates, err := f.scanEvents(tx.Query(ctx, readPassedEventsQuery,
-		f.rereadAfter, cursor, f.maxEvents, f.maxBytes, addedSince(rules)))
+	read, candidates, err := f.scanEvents(tx.Query(ctx, readPassedEventsQuery,
+		f.rereadAfter, cursor, f.maxEvents, f.maxBytes, addedSince(rules), askTypes))
 	if err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: read again the events at or below event %d that rules version %d passed: %w", cursor, rules, err)
 	}
-	if bytes > 0 {
-		if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(bytes)); err != nil {
+	got, n, err := decideVersions(ctx, tx, f.logger, read, f.maxBytes)
+	if err != nil && !errors.Is(err, errUnreadablePayload) {
+		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
+	}
+	unreadable := err
+	read = read[:n]
+	if got.Bytes > 0 {
+		if _, err := tx.Exec(ctx, batchStatementQuery, statementTimeout(got.Bytes)); err != nil {
 			return batchResult{}, fmt.Errorf("keyword fill: bound the batch's statements: %w", err)
 		}
 	}
-	got, stop, err := f.decide(ctx, tx, read)
-	if err != nil {
-		return batchResult{}, err
-	}
-	read = read[:len(read)-stop.skipped]
 	result := batchResult{
 		reread: true,
 		events: len(read),
-		bytes:  bytes,
+		bytes:  got.Bytes,
 		rows:   len(got.Versions),
 		cut:    got.Cut,
 		cursor: cursor,
@@ -618,7 +713,7 @@ func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, curso
 	if err := insertVersions(ctx, tx, got.Versions); err != nil {
 		return batchResult{}, fmt.Errorf("keyword fill: %w", err)
 	}
-	done := stop.err == nil && len(read) == candidates && candidates < f.maxEvents
+	done := unreadable == nil && n == candidates && candidates < f.maxEvents
 	if done {
 		if _, err := tx.Exec(ctx, rulesReadQuery, rulesVersion, f.holderArg()); err != nil {
 			return batchResult{}, fmt.Errorf("keyword fill: record rules version %d: %w", rulesVersion, err)
@@ -636,25 +731,10 @@ func (f *filler) reread(ctx context.Context, tx pgx.Tx, started time.Time, curso
 		f.rereadAfter = result.last
 	}
 	result.took = time.Since(started)
-	return result, stop.err
-}
-
-// stopped is an event the rules cannot read: the error naming it, and how many events of the
-// batch, it and those after it, are left unwritten.
-type stopped struct {
-	err     error
-	skipped int
-}
-
-// decide decides the versions read starts (decideVersions). An event whose payload the rules
-// cannot read stops the decision there: the versions of the events before it are answered, with
-// the error kept for the batch to answer once they are written.
-func (f *filler) decide(ctx context.Context, tx pgx.Tx, read []event) (decided, stopped, error) {
-	got, at, err := decideVersions(ctx, tx, f.logger, read)
-	if !errors.Is(err, errUnreadablePayload) {
-		return got, stopped{}, err
+	if unreadable != nil {
+		return result, fmt.Errorf("keyword fill: %w", unreadable)
 	}
-	return got, stopped{err: fmt.Errorf("keyword fill: the fill stops at event %d: %w", read[at].ID, err), skipped: len(read) - at}, nil
+	return result, nil
 }
 
 // record logs a batch that wrote events: a debug line for each batch, which a measurement reads;

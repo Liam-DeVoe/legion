@@ -435,6 +435,16 @@ export const DISPATCH_EVENT_TYPES: readonly EventType[] = (
 ).sort();
 
 /**
+ * Whether `value` names an event type of the `DispatchEvent` union, so a reader of a frame can
+ * narrow its `type` before it reads the frame as that event. `Object.hasOwn`, not `in`:
+ * `EVENT_TYPE_MEMBERS` inherits `Object.prototype`, so `in` would read `constructor` or
+ * `toString` as an event type.
+ */
+export function isEventType(value: string): value is EventType {
+  return Object.hasOwn(EVENT_TYPE_MEMBERS, value);
+}
+
+/**
  * One event as Dispatch's outbox publishes it to NATS: the event this API serves, plus `quiet`.
  *
  * `quiet` is whether the event carries nothing for a reader following its owner topic

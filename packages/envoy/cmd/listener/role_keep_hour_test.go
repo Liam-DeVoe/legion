@@ -1468,22 +1468,26 @@ func TestADeadLetterClaimIsTakenOverForTheReasonItWasMade(t *testing.T) {
 
 // TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt holds the line a dead letter names its
 // message by (keptCopyNamed), and that the letter keeps every other line it had. A Dispatch
-// frame's summary is the head of a post's body, and the letter is written as late as the end of
-// the copy's hour, after the post's author may have deleted the post, so the letter of a Dispatch
-// frame gives none of the body: it names the post by its id and its dispatch:// reference, and a
-// frame that names no post by the event id alone. A message from any other source keeps its first
-// line. Each Dispatch frame is built as the outbox builds one (internal/dispatch/outbox envelope),
-// from the event types Dispatch writes: the whole event as its payload, and the head of the post's
-// body in its summary.
+// frame's summary is the head of what its event carries, a post's body included, and the letter
+// is written as late as the end of the copy's hour, after the post's author may have deleted the
+// post, so the letter of a Dispatch frame gives none of the summary. It names a comment or a
+// message by its id and its dispatch:// reference, and says that is because its author can edit
+// or delete it; it names any other Dispatch frame - an ask's, an issue's, a delivery receipt, one
+// that names no post - by the event id alone, with no such reason, since no author edits or
+// deletes those. A message from any other source keeps its first line. Each Dispatch frame is
+// built as the outbox builds one (internal/dispatch/outbox envelope), from the event types
+// Dispatch writes: the whole event as its payload, and the head of what it carries in its summary.
 func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 	const (
-		role       = "letter-role"
-		sender     = "ses_letter_sender"
-		phrase     = "zephyr-quokka-7731 is what the author deleted"
-		messageID  = "0b5e7c1e-2f4a-4c0e-9d3b-6a1f8e2c4d71"
-		commentID  = "7d2c9a40-5b1e-4f3a-8c6d-1e9b0a7f3c52"
-		artifactID = "4f1a6b2c-8d3e-4a5f-9b0c-2e7d1a3f6c84"
-		unquoted   = "Envoy does not quote a message from Dispatch, because its author can edit or delete it."
+		role         = "letter-role"
+		sender       = "ses_letter_sender"
+		phrase       = "zephyr-quokka-7731 is what the author deleted"
+		messageID    = "0b5e7c1e-2f4a-4c0e-9d3b-6a1f8e2c4d71"
+		commentID    = "7d2c9a40-5b1e-4f3a-8c6d-1e9b0a7f3c52"
+		askID        = "3c8e1f5a-6b2d-4e9c-a7f0-5d1b8c3e2a96"
+		artifactID   = "4f1a6b2c-8d3e-4a5f-9b0c-2e7d1a3f6c84"
+		postUnquoted = "Envoy names a comment or a message from Dispatch by its ID and its reference and quotes none of it, because its author can edit or delete it."
+		unquoted     = "Envoy does not quote a message from Dispatch, and names this one by its event ID alone."
 	)
 	stored := bus.StoredMessage{Sequence: 11, Time: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
 	dropped := stored.Time.Add(time.Hour + time.Minute)
@@ -1543,7 +1547,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 			Payload: model.MessageEventPayload{Message: model.Message{ID: messageID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
 		}, "CORE-12 message created: "+phrase+" The rest of the post.")
 		line, letter := named(t, item)
-		if want := "The message is Dispatch message " + messageID + ": dispatch://CORE-12/message/" + messageID + ". " + unquoted +
+		if want := "The message is Dispatch message " + messageID + ": dispatch://CORE-12/message/" + messageID + ". " + postUnquoted +
 			" Read the reference to see the message as it is now."; line != want {
 			t.Fatalf("the dead letter names the message as %q, want %q", line, want)
 		}
@@ -1556,7 +1560,7 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 			Payload: model.CommentEventPayload{Comment: model.Comment{ID: commentID, IssueKey: new("CORE-12"), Author: alice, Body: body, CreatedAt: stored.Time}},
 		}, "CORE-12 comment created: "+phrase+" The rest of the post.")
 		line, letter := named(t, item)
-		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE-12/comment/" + commentID + ". " + unquoted +
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE-12/comment/" + commentID + ". " + postUnquoted +
 			" Read the reference to see the comment as it is now."; line != want {
 			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
 		}
@@ -1572,14 +1576,14 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 			},
 		}, "CORE/notes-md comment created: "+phrase+" The rest of the post.")
 		line, letter := named(t, item)
-		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE/artifact/notes-md/comment/" + commentID + ". " + unquoted +
+		if want := "The message is Dispatch comment " + commentID + ": dispatch://CORE/artifact/notes-md/comment/" + commentID + ". " + postUnquoted +
 			" Read the reference to see the comment as it is now."; line != want {
 			t.Fatalf("the dead letter names the comment as %q, want %q", line, want)
 		}
 		quotesNothing(t, letter)
 	})
 
-	t.Run("d a Dispatch frame that names no post is named by its event id alone and gives none of its body", func(t *testing.T) {
+	t.Run("d a Dispatch frame that names no post is named by its event id alone, with no reason of an author's, and gives none of its body", func(t *testing.T) {
 		noEvent := frame(t, model.Event{ID: 44}, phrase)
 		noEvent.Payload = body
 		for _, tc := range []struct {
@@ -1595,10 +1599,21 @@ func TestADeadLetterNamesADispatchPostAndQuotesNoneOfIt(t *testing.T) {
 				ID: 46, IssueKey: new("CORE-12"), Type: "comment.delivery", Actor: alice, CreatedAt: stored.Time,
 				Payload: model.CommentDeliveryEventPayload{CommentID: commentID, Target: "session:ses_letter_target", Attempt: 1, State: "sent"},
 			}, "CORE-12 comment delivery")},
+			{"an ask's frame", frame(t, model.Event{
+				ID: 48, IssueKey: new("CORE-12"), Type: "ask.opened", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.AskEventPayload{Ask: model.Ask{ID: askID, IssueKey: new("CORE-12"), Author: alice, Kind: "question", Question: phrase + "?"}},
+			}, "CORE-12 ask opened: "+phrase+"?")},
+			{"an issue's frame", frame(t, model.Event{
+				ID: 49, IssueKey: new("CORE-12"), Type: "issue.created", Actor: alice, Notify: true, CreatedAt: stored.Time,
+				Payload: model.IssueEventPayload{Issue: model.Issue{Key: "CORE-12", Project: "CORE", Number: 12, Title: phrase, Status: "todo"}},
+			}, "CORE-12 issue created: "+phrase)},
 		} {
 			line, letter := named(t, tc.item)
 			if line != unquoted || strings.Contains(letter.Payload, "dispatch://") {
 				t.Fatalf("%s: the dead letter names the message as %q, want %q and no reference:\n%s", tc.name, line, unquoted, letter.Payload)
+			}
+			if strings.Contains(letter.Payload, "edit or delete") {
+				t.Fatalf("%s: the dead letter gives the reason of a post its author can edit or delete:\n%s", tc.name, letter.Payload)
 			}
 			quotesNothing(t, letter)
 		}

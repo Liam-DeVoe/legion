@@ -147,7 +147,7 @@ export function btwAnswerWarning(messageId: string, error: unknown): string {
   if (mayHaveBeenPosted(error)) {
     return `a BTW answer to message ${messageId} may or may not have been posted — ${messageFor(error)}`
   }
-  return `a BTW answer was not posted — ${messageFor(error)}`
+  return `a BTW answer to message ${messageId} was not posted — ${messageFor(error)}`
 }
 
 /** Answers a BTW on Dispatch with what `ask` makes of its body, and returns without waiting for

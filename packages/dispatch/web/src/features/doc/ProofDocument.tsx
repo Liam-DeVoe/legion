@@ -1,5 +1,5 @@
 import { decodeBlockId, isIdPrefix } from "@legion/contracts";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type ReactNode,
   useCallback,
@@ -72,10 +72,12 @@ import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
 import type { Highlight } from "./highlight";
+import { liveTextQueryOptions } from "./live-text-query";
 import {
   blockOffsets,
   blockPlacements as collectBlockPlacements,
   composerKindFor,
+  insertMarksIn,
   markPlacements,
   selectionBarKindFor,
 } from "./marks";
@@ -104,14 +106,6 @@ function wholeBlockId(root: HTMLElement, prefix: string): string | undefined {
 }
 
 const CONTROL_CHARACTERS = /\p{Cc}/gu;
-
-/** The live document's text as the server reads it now. A read of it decides whether the editor
- * may connect: the server answers `409 DOC_SCHEMA` for a stored tree outside the Proof schema. */
-export const liveTextQueryOptions = (artifactId: string) =>
-  queryOptions({
-    queryKey: ["artifact", artifactId, "text"],
-    queryFn: () => api.getArtifactText(artifactId),
-  });
 
 /** Why an admission left the live editor closed, from its own `/text` read: a tree outside the
  * Proof schema the page offers to repair from markdown, a stored history that cannot load the page
@@ -937,18 +931,26 @@ export function ProofDocument({
                   switch (action.kind) {
                     case "comment":
                     case "suggest":
-                    case "ask":
+                    case "ask": {
                       // The margin owns the mark from here: it removes it when the composer ends
-                      // unsaved and retypes it when the composer's kind changes.
+                      // unsaved and retypes it when the composer's kind changes. The anchor keeps
+                      // the pending inserts the selected words lie in, whose comment's delete
+                      // takes them out of the document (`ComposerAnchor.insertMarks`).
+                      const doc = editor?.view.state.doc;
                       return marginRef.current.composeForMark({
                         anchor: {
                           artifact: artifact.id,
+                          insertMarks:
+                            doc === undefined
+                              ? undefined
+                              : insertMarksIn(doc, action.from, action.to),
                           mark_id: action.markId,
                           placement: action.placement ?? undefined,
                           quote: action.quote,
                         },
                         kind: composerKindFor(action.kind),
                       });
+                    }
                     case "quote-comment": {
                       // A closed issue's document takes no mark: the comment names its text by
                       // quote, and the server writes its mark where the reader selected. The bar
@@ -957,7 +959,7 @@ export function ProofDocument({
                       const doc = editor?.view.state.doc;
                       const anchor =
                         doc === undefined ? undefined : quoteAnchor(doc, action.from, action.to);
-                      if (anchor === undefined) {
+                      if (doc === undefined || anchor === undefined) {
                         setQuoteRefusal(
                           "This selection holds no text to quote. Select text to comment on it."
                         );
@@ -965,7 +967,11 @@ export function ProofDocument({
                       }
                       setQuoteRefusal(undefined);
                       return marginRef.current.composeForMark({
-                        anchor: { artifact: artifact.id, ...anchor },
+                        anchor: {
+                          artifact: artifact.id,
+                          ...anchor,
+                          insertMarks: insertMarksIn(doc, action.from, action.to),
+                        },
                         kind: "comment",
                       });
                     }

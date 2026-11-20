@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // TestEveryEventTypeIsSortedForTheKeywordFill holds the rules to every event type there is: each
@@ -107,12 +109,25 @@ func productionEventTypes(t *testing.T) []string {
 // and holds the version it starts to <type>-<n>.expected.json, which capture.sh's jq read from the
 // same redacted event and never from this package's code: null there is an event that starts no
 // version. It names each shape whose type has no rule.
+//
+// An ask's event is given the body readEventsQuery reads of it, askBodySQL run over its payload
+// in a test database, and the version's body is held to the one ask_search_suffix makes of the
+// expected question, options and answer, so what the fill's SQL reads of an ask's payload is held
+// to what jq read of it. That body is where a version holds an ask's question, so the question is
+// held through it alone.
 func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 	names := payloadFixtures(t)
+	database := storetest.Open(t)
 	var noRule []string
 	for _, name := range names {
 		fixture := readFixtureEvent(t, name)
 		want := readExpectedVersion(t, name)
+		if slices.Contains(askTypes, fixture.Type) {
+			fixture.AskBody = askBodyOfPayload(t, database, name, fixture.Payload)
+		}
+		if want != nil && want.Kind == kindAsk {
+			want.TitleOrBody, want.AskBody = nil, expectedAskBody(t, database, name, *want)
+		}
 		got, started, err := versionOf(event(fixture))
 		switch {
 		case errors.Is(err, errNoRule):
@@ -133,6 +148,45 @@ func TestEveryProductionPayloadShapeGivesItsVersion(t *testing.T) {
 	if len(noRule) > 0 {
 		t.Errorf("%d of the %d payload shapes of production's log have no rule:\n%s",
 			len(noRule), len(names), strings.Join(noRule, "\n"))
+	}
+}
+
+// askBodyOfPayload is the body readEventsQuery reads of the ask event name whose payload is
+// payload: askBodySQL, run over it in database.
+func askBodyOfPayload(t *testing.T, database *store.Store, name string, payload json.RawMessage) *string {
+	t.Helper()
+	var body *string
+	if err := database.Pool.QueryRow(t.Context(), `select `+askBodySQL+` from (select $1::jsonb) as e (payload)`, payload).Scan(&body); err != nil {
+		t.Fatalf("read the ask body of %s: %v", name, err)
+	}
+	return body
+}
+
+// expectedAskBody is the body of the ask want, the expected version of name: its question, a
+// space and ask_search_suffix of its options and answer, made in database.
+func expectedAskBody(t *testing.T, database *store.Store, name string, want expectedVersion) *string {
+	t.Helper()
+	var body *string
+	if err := database.Pool.QueryRow(t.Context(), `select $1 || ' ' || ask_search_suffix($2::jsonb, $3::jsonb)`,
+		want.TitleOrBody, want.Options, want.Answer).Scan(&body); err != nil {
+		t.Fatalf("make the expected ask body of %s: %v", name, err)
+	}
+	return body
+}
+
+// TestAnAskEventReadWithNoBodyIsAFillBug holds askVersion's answer for an ask's event read with
+// no body (event.AskBody) while its payload holds a question: an error that names a bug of the
+// fill, and not errUnreadablePayload, which the fill takes for a payload a person wrote and stops
+// at.
+func TestAnAskEventReadWithNoBodyIsAFillBug(t *testing.T) {
+	_, started, err := versionOf(event(readFixtureEvent(t, "ask.opened-1")))
+	switch {
+	case err == nil:
+		t.Fatalf("an ask's event read with no body answers no error (started %v), want one naming a bug of the fill", started)
+	case errors.Is(err, errUnreadablePayload):
+		t.Fatalf("an ask's event read with no body answers %q, an unreadable payload; want an error naming a bug of the fill", err)
+	case !strings.Contains(err.Error(), "a bug of the fill"):
+		t.Fatalf("an ask's event read with no body answers %q, want an error naming a bug of the fill", err)
 	}
 }
 
@@ -229,16 +283,21 @@ func fixtureOrder(name string) (string, int) {
 }
 
 // fixtureEvent is a captured event as GET /api/v1/events/log answers it: of its envelope, the
-// columns of the event's row the rules read, and its payload. Its fields are event's, in the same
-// order, so it converts to one.
+// columns of the event's row the rules read, and its payload; and of an ask's event the body the
+// fill reads of it, which the envelope does not hold and the test makes (askBodyOfPayload). Its
+// fields are event's, in the same order, so it converts to one; the bytes the fill's read counts
+// of an event, which no rule reads, stay 0.
 type fixtureEvent struct {
-	ID        int64           `json:"id"`
-	Type      string          `json:"type"`
-	IssueKey  *string         `json:"issue_key"`
-	Project   string          `json:"project"`
-	Seq       int32           `json:"seq"`
-	CreatedAt time.Time       `json:"created_at"`
-	Payload   json.RawMessage `json:"payload"`
+	ID                         int64           `json:"id"`
+	Type                       string          `json:"type"`
+	IssueKey                   *string         `json:"issue_key"`
+	ArtifactID                 *string         `json:"artifact_id"`
+	Project                    string          `json:"project"`
+	Seq                        int32           `json:"seq"`
+	CreatedAt                  time.Time       `json:"created_at"`
+	Payload                    json.RawMessage `json:"payload"`
+	AskBody                    *string         `json:"-"`
+	PayloadBytes, RowBodyBytes int64           `json:"-"`
 }
 
 func readFixtureEvent(t *testing.T, name string) fixtureEvent {
@@ -258,7 +317,9 @@ func readFixtureEvent(t *testing.T, name string) fixtureEvent {
 }
 
 // expectedVersion is <type>-<n>.expected.json: the version the payload of <type>-<n>.json
-// starts, null where the payload gives no value. A body_truncated of null reads as false.
+// starts, null where the payload gives no value. A body_truncated of null reads as false. An
+// ask's question, options and answer are no field of a version: they are held through the ask's
+// body.
 type expectedVersion struct {
 	Kind           string          `json:"kind"`
 	ID             string          `json:"id"`
@@ -269,6 +330,11 @@ type expectedVersion struct {
 	SpecArtifactID *string         `json:"spec_artifact_id"`
 	SpecVersion    *int32          `json:"spec_version"`
 	BodyTruncated  bool            `json:"body_truncated"`
+	// AskBody is an ask's body, which no expected file holds: for an expected version, the one
+	// ask_search_suffix makes of its question, options and answer (expectedAskBody), which then
+	// holds the expected question in place of TitleOrBody; for a version the rules started, its
+	// Body. It is nil for any other kind.
+	AskBody *string `json:"-"`
 }
 
 // readExpectedVersion reads <name>.expected.json: nil where it is null, for an event that starts
@@ -288,31 +354,36 @@ func readExpectedVersion(t *testing.T, name string) *expectedVersion {
 	return want
 }
 
-// expectedOf is the version v in the form of an expected one.
+// expectedOf is the version v in the form of an expected one: v's Body is the title_or_body of
+// an issue or a post, null where it is empty, as for an artifact.version of an issue with no
+// version yet, whose title no event gives, and the AskBody of an ask.
 func expectedOf(v version) expectedVersion {
-	return expectedVersion{
+	got := expectedVersion{
 		Kind:           v.Kind,
 		ID:             v.ID,
 		IssueKey:       v.IssueKey,
-		TitleOrBody:    v.Text,
-		Options:        v.Options,
-		Answer:         v.Answer,
 		SpecArtifactID: v.SpecArtifactID,
 		SpecVersion:    v.SpecVersion,
 		BodyTruncated:  v.BodyTruncated,
 	}
+	switch {
+	case v.Kind == kindAsk:
+		got.AskBody = &v.Body
+	case v.Body != "":
+		got.TitleOrBody = &v.Body
+	}
+	return got
 }
 
-// fields is each field of the version with its value as canonical JSON (an absent options or
-// answer as null, an object's keys sorted), which is how two versions are compared.
+// fields is each field a version holds with its value as canonical JSON, which is how two
+// versions are compared: an ask's question, options and answer through its body (AskBody).
 func (e expectedVersion) fields() [][2]string {
 	return [][2]string{
 		{"kind", canonicalJSON(e.Kind)},
 		{"id", canonicalJSON(e.ID)},
 		{"issue_key", canonicalJSON(e.IssueKey)},
 		{"title_or_body", canonicalJSON(e.TitleOrBody)},
-		{"options", canonicalRawJSON(e.Options)},
-		{"answer", canonicalRawJSON(e.Answer)},
+		{"ask_body", canonicalJSON(e.AskBody)},
 		{"spec_artifact_id", canonicalJSON(e.SpecArtifactID)},
 		{"spec_version", canonicalJSON(e.SpecVersion)},
 		{"body_truncated", canonicalJSON(e.BodyTruncated)},
@@ -334,8 +405,9 @@ func (e expectedVersion) differences(got expectedVersion) []string {
 }
 
 func (e expectedVersion) String() string {
-	parts := make([]string, 0, 9)
-	for _, field := range e.fields() {
+	fields := e.fields()
+	parts := make([]string, 0, len(fields))
+	for _, field := range fields {
 		parts = append(parts, field[0]+": "+abridged(field[1], 200))
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
@@ -347,19 +419,6 @@ func canonicalJSON(value any) string {
 		return fmt.Sprintf("<%v>", err)
 	}
 	return string(out)
-}
-
-func canonicalRawJSON(raw json.RawMessage) string {
-	if len(raw) == 0 {
-		return "null"
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return fmt.Sprintf("<%v: %s>", err, raw)
-	}
-	return canonicalJSON(value)
 }
 
 // abridged is text for a failure message: its first length bytes, and "..." after them where

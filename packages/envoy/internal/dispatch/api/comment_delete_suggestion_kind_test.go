@@ -68,9 +68,38 @@ func retypeSuggestedWords(t *testing.T, documentService *docs.Service, artifactI
 	peer.barrier(t)
 }
 
-// orphanedInsert is an insert suggestion whose mark a browser edit took out of the document, as
-// orphanedInsertSuggestion leaves it: quote is its anchor's stored quote.
-type orphanedInsert struct {
+// retypeSuggestedWordsAndRefresh has a browser edit change "suggested" to "revised" under the
+// insert mark m-insert, and a server edit elsewhere refresh the document's anchors, and answers
+// the quote the anchor then stores: "zarquonrevised ", no longer the suggestion's replace_with.
+func retypeSuggestedWordsAndRefresh(t *testing.T, documentService *docs.Service, handler http.Handler, artifactID string) string {
+	t.Helper()
+	retypeSuggestedWords(t, documentService, artifactID, "m-insert", "suggested", "revised")
+	if response := editDocument(t, handler, artifactID, map[string]any{
+		"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
+	}); response.Code != http.StatusOK {
+		t.Fatalf("the server edit that refreshes the anchors: status=%d body=%s", response.Code, response.Body.String())
+	}
+	return suggestedWordsStem + "revised "
+}
+
+// takeStoredKindOff takes the stored kind off the suggestion column of comment id, as a row made
+// before the create stored one holds none.
+func takeStoredKindOff(t *testing.T, database *store.Store, id string) {
+	t.Helper()
+	if _, err := database.Pool.Exec(context.Background(), `
+		update comments set suggestion = suggestion - 'kind' where id = $1
+	`, id); err != nil {
+		t.Fatalf("take the stored kind off the row: %v", err)
+	}
+	if kind, stored := storedSuggestionKind(t, database, id); stored {
+		t.Fatalf("the row still stores the kind %q", kind)
+	}
+}
+
+// suggestionToDelete is a suggestion the rows below delete, as a fixture leaves it - an insert
+// whose mark a browser edit took out of the document (orphanedInsertSuggestion), or a suggestion
+// a reject decided (rejectedSuggestion): quote is its anchor's stored quote.
+type suggestionToDelete struct {
 	handler  http.Handler
 	database *store.Store
 	issueKey string
@@ -84,7 +113,7 @@ type orphanedInsert struct {
 // first, and a server edit elsewhere refresh the document's anchors, so the anchor's stored quote
 // is "zarquonrevised " and no longer the suggestion's replace_with. legacy takes the stored kind
 // off the row, as a row made before the create stored one holds none.
-func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) orphanedInsert {
+func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) suggestionToDelete {
 	t.Helper()
 	const typed = suggestedWordsStem + "suggested "
 	documentService, handler, database := browserDocumentService(t)
@@ -101,13 +130,7 @@ func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) orphanedInsert
 	}, "alice")
 	quote := typed
 	if retyped {
-		retypeSuggestedWords(t, documentService, issue.PrimaryArtifactID, "m-insert", "suggested", "revised")
-		if response := editDocument(t, handler, issue.PrimaryArtifactID, map[string]any{
-			"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
-		}); response.Code != http.StatusOK {
-			t.Fatalf("the server edit that refreshes the anchors: status=%d body=%s", response.Code, response.Body.String())
-		}
-		quote = suggestedWordsStem + "revised "
+		quote = retypeSuggestedWordsAndRefresh(t, documentService, handler, issue.PrimaryArtifactID)
 	}
 	// The positive control: the anchor quotes the words on the standing mark, and a retyped
 	// quote is no longer the suggestion's replace_with.
@@ -117,23 +140,16 @@ func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) orphanedInsert
 			read.Anchor, read.Suggestion, quote)
 	}
 	if legacy {
-		if _, err := database.Pool.Exec(context.Background(), `
-			update comments set suggestion = suggestion - 'kind' where id = $1
-		`, comment.ID); err != nil {
-			t.Fatalf("take the stored kind off the row: %v", err)
-		}
-		if kind, stored := storedSuggestionKind(t, database, comment.ID); stored {
-			t.Fatalf("the row still stores the kind %q", kind)
-		}
+		takeStoredKindOff(t, database, comment.ID)
 	}
 	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The brown dog\n")
-	return orphanedInsert{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
+	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
 }
 
 // deleteAndFindTheWords deletes the suggestion, answers the comment's read after the delete, and
 // names each read that gives any of the suggestion's words: the delete's answer, the comment's
 // read, each event the delete stored, and the event log's read of each event of the comment.
-func (f orphanedInsert) deleteAndFindTheWords(t *testing.T) (model.Comment, []string) {
+func (f suggestionToDelete) deleteAndFindTheWords(t *testing.T) (model.Comment, []string) {
 	t.Helper()
 	var giving []string
 	gives := func(what, text string) {
@@ -336,6 +352,222 @@ func TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
 			}
 			if created != 1 {
 				t.Fatalf("the create stored %d comment.created events, want one", created)
+			}
+		})
+	}
+}
+
+// The architect's ruling of 2026-11-20 16:33Z on dispatch://INFRA-1523: only an accepted insert's
+// words became document text. A pending or a rejected insert's words were only ever the post's
+// own, so the delete empties a suggestion's quote unless an accept decided it, by the kind the
+// create stored, which the accept and the reject keep (commentAction), and on a row with no stored
+// kind by its quote against its replace_with. A rejected insert's words left the document with
+// its reject, so the delete rejects nothing again.
+
+// rejectedSuggestion makes a suggestion of kind, "insert" or "replace", and rejects it. An insert
+// is made on a browser's insert mark around "zarquonsuggested ", whose words and mark the reject
+// takes out of the document; retyped has a browser edit change "suggested" to "revised" under the
+// mark first, and a server edit elsewhere refresh the document's anchors, so the anchor's stored
+// quote is "zarquonrevised " and no longer the suggestion's replace_with. A replace quotes
+// "quick", which is its replace_with too, and its reject leaves that text in the document. legacy
+// takes the stored kind off the row after the reject, as a row made before the create stored one
+// holds none.
+func rejectedSuggestion(t *testing.T, kind string, retyped, legacy bool) suggestionToDelete {
+	t.Helper()
+	const typed = suggestedWordsStem + "suggested "
+	documentService, handler, database := browserDocumentService(t)
+	spec, quote := "The quick brown fox", "quick"
+	input := map[string]any{
+		"body":       "Say this instead.",
+		"anchor":     map[string]any{"artifact": "spec", "quote": "quick"},
+		"suggestion": map[string]string{"replace_with": "quick"},
+	}
+	if kind == "insert" {
+		spec, quote = "The "+typed+"brown fox", typed
+		input["anchor"] = map[string]any{"artifact": "spec", "mark_id": "m-insert"}
+		input["suggestion"] = map[string]string{"replace_with": typed}
+	}
+	issue := createInteractionIssue(t, handler, "TEST", "Delete a rejected "+kind, spec)
+	if kind == "insert" {
+		writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
+			Kind:  docs.MarkSuggestion,
+			ID:    "m-insert",
+			Attrs: pmdoc.Attrs{"id": "m-insert", "by": "user:alice", "kind": "insert"},
+		}, typed)
+	}
+	comment := createThreadComment(t, handler, issue.Key, input, "alice")
+	if retyped {
+		quote = retypeSuggestedWordsAndRefresh(t, documentService, handler, issue.PrimaryArtifactID)
+	}
+
+	rejected := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/reject", map[string]any{}, "alice")
+	if rejected.Code != http.StatusOK || !strings.Contains(rejected.Body.String(), `"accepted":false`) {
+		t.Fatalf("reject the suggestion: status=%d body=%s", rejected.Code, rejected.Body.String())
+	}
+	// The reject keeps the kind the create stored.
+	if stored, held := storedSuggestionKind(t, database, comment.ID); !held || stored != kind {
+		t.Fatalf("the row stores the kind %q after the reject (stored %t), want %q", stored, held, kind)
+	}
+	// An insert's reject took its words out of the document, and a replace's left its quote there.
+	if markdown, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil ||
+		strings.Contains(markdown, suggestedWordsStem) || !strings.Contains(markdown, "brown") {
+		t.Fatalf("the document after the reject = %q (%v), want it holding none of %q", markdown, err, suggestedWordsStem)
+	}
+	// The positive control: after the reject and before the delete, the read still quotes the
+	// words, and a retyped quote is no longer the suggestion's replace_with.
+	if read := readThreadComment(t, handler, comment.ID); read.Anchor == nil || read.Anchor.Quote != quote ||
+		read.Suggestion == nil || read.Suggestion.Accepted == nil || *read.Suggestion.Accepted ||
+		(read.Suggestion.ReplaceWith == read.Anchor.Quote) == retyped {
+		t.Fatalf("the comment after the reject = anchor %#v, suggestion %#v; want the rejected suggestion quoting %q",
+			read.Anchor, read.Suggestion, quote)
+	}
+	if legacy {
+		takeStoredKindOff(t, database, comment.ID)
+	}
+	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
+}
+
+// Row 1 of the ruling of 16:33Z. A browser edit changed some of an insert's words under its mark,
+// an anchor refresh moved the anchor's quote to the words as retyped, and a reject took the words
+// and the mark out of the document. The quote is no longer the suggestion's replace_with, so only
+// the kind the create stored, which the reject kept, says it is the comment's own words, and the
+// delete empties it: neither the delete's answer, the comment's read, the comment.deleted it
+// stores nor any event of the comment the event log reads, its creation's and its reject's
+// included, gives any of them.
+func TestDeletingARejectedInsertSuggestionLeavesNoneOfItsWords(t *testing.T) {
+	fixture := rejectedSuggestion(t, "insert", true, false)
+
+	read, giving := fixture.deleteAndFindTheWords(t)
+
+	if read.Anchor == nil || read.Anchor.Quote != "" || read.Anchor.MarkID != "m-insert" {
+		t.Errorf("the read after the delete gives the anchor %#v, want mark m-insert with an empty quote", read.Anchor)
+	}
+	for _, what := range giving {
+		t.Errorf("%s gives the deleted insert suggestion's words", what)
+	}
+}
+
+// Row 2 of the ruling of 16:33Z. A replace suggestion's quote is document text, which its reject
+// left in the document, so the delete of a rejected replace keeps it. Its replace_with is the very
+// text it quotes, the one quote the rule for a row with no stored kind empties, so only the kind
+// the reject kept keeps it.
+func TestDeletingARejectedReplaceSuggestionKeepsItsQuote(t *testing.T) {
+	fixture := rejectedSuggestion(t, "replace", false, false)
+	beforeDelete := lastEventID(t, fixture.database)
+
+	answer := deleteThreadComment(t, fixture.handler, fixture.comment.ID, "alice")
+
+	if answer.Anchor == nil || answer.Anchor.Quote != "quick" {
+		t.Errorf("the delete's answer gives the anchor %#v, want the quote %q", answer.Anchor, "quick")
+	}
+	if read := readThreadComment(t, fixture.handler, fixture.comment.ID); read.Anchor == nil || read.Anchor.Quote != "quick" {
+		t.Errorf("the read after the delete gives the anchor %#v, want the quote %q", read.Anchor, "quick")
+	}
+	deletes := 0
+	for _, event := range storedCommentEvents(t, fixture.database, fixture.comment.ID, beforeDelete) {
+		if event.eventType != "comment.deleted" {
+			continue
+		}
+		deletes++
+		if quote, ok := payloadAnchorQuote(event.payload); !ok || quote != "quick" {
+			t.Errorf("the stored comment.deleted anchor quote = %q (carried %t), want %q", quote, ok, "quick")
+		}
+	}
+	if deletes != 1 {
+		t.Errorf("the delete stored %d comment.deleted events, want one", deletes)
+	}
+}
+
+// Row 3 of the ruling of 16:33Z. A row made before the create stored the kind holds none, and the
+// delete of its rejected suggestion takes the rule the delete of an orphaned one takes: the quote
+// goes when it is the suggestion's replace_with, byte for byte, as the words of an insert no
+// browser retyped are.
+func TestDeletingARejectedSuggestionOfARowWithNoStoredKindComparesItsQuote(t *testing.T) {
+	fixture := rejectedSuggestion(t, "insert", false, true)
+
+	read, giving := fixture.deleteAndFindTheWords(t)
+
+	if read.Anchor == nil || read.Anchor.Quote != "" {
+		t.Fatalf("the read after the delete gives the anchor %#v, want an empty quote", read.Anchor)
+	}
+	for _, what := range giving {
+		t.Errorf("%s gives the deleted insert suggestion's words", what)
+	}
+}
+
+// An accept and a reject write the suggestion column back as the create wrote it, with the kind
+// it stored, which the delete of a rejected suggestion reads (deleteComment), and no answer of a
+// decided suggestion carries that kind, as no answer of a pending one does
+// (TestASuggestionStoresTheKindOfItsMarkAndNoAnswerCarriesIt): neither the decision's own answer,
+// the read, the comment list nor the stored suggestion.accepted or suggestion.rejected.
+func TestADecidedSuggestionKeepsTheKindOfItsMarkAndNoAnswerCarriesIt(t *testing.T) {
+	for _, action := range []string{"accept", "reject"} {
+		t.Run(action, func(t *testing.T) {
+			documentService, handler, database := browserDocumentService(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Decide a suggestion by "+action, "The quick brown fox")
+			writeBrowserMark(t, database, documentService, issue.PrimaryArtifactID, docs.MarkSpec{
+				Kind:  docs.MarkSuggestion,
+				ID:    "m-browser",
+				Attrs: pmdoc.Attrs{"id": "m-browser", "by": "user:alice", "kind": "insert"},
+			}, "quick")
+			comment := createThreadComment(t, handler, issue.Key, map[string]any{
+				"body": "Say this instead.", "anchor": map[string]any{"artifact": "spec", "mark_id": "m-browser"},
+				"suggestion": map[string]string{"replace_with": "quick"},
+			}, "alice")
+
+			decided := dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/"+action, map[string]any{}, "alice")
+			if decided.Code != http.StatusOK {
+				t.Fatalf("%s the suggestion: status=%d body=%s", action, decided.Code, decided.Body.String())
+			}
+
+			if kind, stored := storedSuggestionKind(t, database, comment.ID); !stored || kind != "insert" {
+				t.Errorf("the row stores the kind %q after the %s (stored %t), want insert", kind, action, stored)
+			}
+			// The decision answers the comment itself (newShapedComment), and the read wraps it in
+			// "comment" (commentRead), beside its replies.
+			answered := decodeBody[struct {
+				Suggestion map[string]any `json:"suggestion"`
+			}](t, decided).Suggestion
+			response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/comments/"+comment.ID, nil, "alice")
+			if response.Code != http.StatusOK {
+				t.Fatalf("read comment: status=%d body=%s", response.Code, response.Body.String())
+			}
+			read := decodeBody[struct {
+				Comment struct {
+					Suggestion map[string]any `json:"suggestion"`
+				} `json:"comment"`
+			}](t, response).Comment.Suggestion
+			for what, suggestion := range map[string]map[string]any{"the " + action + "'s answer": answered, "the read": read} {
+				if suggestion == nil || suggestion["accepted"] != (action == "accept") {
+					t.Errorf("%s gives the suggestion %#v, want it decided by the %s", what, suggestion, action)
+				}
+				if kind, carried := suggestion["kind"]; carried {
+					t.Errorf("%s's suggestion carries the kind %v: %#v", what, kind, suggestion)
+				}
+			}
+			list := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/comments", nil, "alice")
+			if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), comment.ID) {
+				t.Fatalf("list comments: status=%d body=%s", list.Code, list.Body.String())
+			}
+			if strings.Contains(list.Body.String(), `"kind":"insert"`) {
+				t.Errorf("the comment list carries the stored kind: %s", list.Body.String())
+			}
+			decisions := 0
+			for _, event := range storedCommentEvents(t, database, comment.ID, 0) {
+				if event.eventType != "suggestion.accepted" && event.eventType != "suggestion.rejected" {
+					continue
+				}
+				decisions++
+				suggestion, _ := event.payload["suggestion"].(map[string]any)
+				if suggestion == nil {
+					t.Fatalf("the stored %s carries no suggestion: %s", event.eventType, event.raw)
+				}
+				if kind, carried := suggestion["kind"]; carried {
+					t.Errorf("the stored %s suggestion carries the kind %v: %s", event.eventType, kind, event.raw)
+				}
+			}
+			if decisions != 1 {
+				t.Fatalf("the %s stored %d decision events, want one", action, decisions)
 			}
 		})
 	}

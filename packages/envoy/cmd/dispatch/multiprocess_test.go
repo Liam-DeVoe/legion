@@ -67,11 +67,13 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -2039,14 +2041,15 @@ type natsTap struct {
 	sent []byte
 }
 
-// startNATSTap relays to the NATS URL target on a loopback port of its own until the test ends.
+// startNATSTap relays to the NATS URL target on a loopback port and address of its own
+// (testport.LoopbackIP) until the test ends.
 func startNATSTap(t *testing.T, target string) *natsTap {
 	t.Helper()
 	server, err := url.Parse(target)
 	if err != nil || server.Host == "" {
 		t.Fatalf("read the NATS URL %q the tap relays to: %v", target, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for the NATS tap: %v", err)
 	}
@@ -8613,7 +8616,7 @@ const keywordFillTakeOverWithin = 15*time.Second + 10*time.Second + 5*time.Secon
 // has exactly its row.
 func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T) {
 	database := storetest.Open(t)
-	seedKeywordFillIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)
 	url := databaseURLOf(t, database)
 	first := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
@@ -8624,16 +8627,16 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 	second.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 50)
-	waitForKeywordRows(t, database, before, time.Minute)
+	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
 	first.kill(t)
 	killed := time.Now()
 	after := writeKeywordFillComments(t, database, 50)
 	secondHolder := keywordFillHolder(t, second, keywordFillTakeOverWithin-time.Since(killed))
-	waitForKeywordRows(t, database, after, time.Minute-time.Since(killed))
+	textversionstest.AwaitRows(t, database, after, time.Minute-time.Since(killed), nil)
 	t.Logf("the second process wrote the events written after the kill %v after it", time.Since(killed).Round(time.Millisecond))
 
 	requireKeywordFillWritersInTurn(t, writes(), firstHolder, secondHolder)
-	requireKeywordRowsOf(t, database, slices.Concat(before, after))
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, after)...))
 }
 
 // A process killed while it catches up a log of 20,000 events leaves its cursor where its last
@@ -8642,7 +8645,7 @@ func TestTheKeywordFillMovesToTheOtherProcessWhenItsHolderIsKilled(t *testing.T)
 // event has exactly its row, none written twice and none missed.
 func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	database := storetest.Open(t)
-	seedKeywordFillIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)
 	ids := writeKeywordFillComments(t, database, 20000)
 	last := ids[len(ids)-1]
@@ -8652,10 +8655,10 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	firstHolder := keywordFillHolder(t, first, time.Minute)
 	// Four batches of 500 events, out of forty.
 	waitUntil(t, 2*time.Minute, "the first process to write four batches", func() bool {
-		return readKeywordCursor(t, database) >= ids[1999]
+		return textversionstest.Cursor(t, database) >= ids[1999]
 	})
 	first.kill(t)
-	left := readKeywordCursor(t, database)
+	left := textversionstest.Cursor(t, database)
 	if left >= last {
 		t.Fatalf("the first process was killed at cursor %d, past the last event %d: it had caught up already", left, last)
 	}
@@ -8664,7 +8667,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 	second := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey})
 	secondHolder := keywordFillHolder(t, second, time.Minute)
 	waitUntil(t, 5*time.Minute, "the new process to write every event's rows", func() bool {
-		return readKeywordCursor(t, database) == last
+		return textversionstest.Cursor(t, database) == last
 	})
 
 	recorded := writes()
@@ -8683,7 +8686,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 		t.Errorf("the rows of the events through the cursor %d were %s when the first process was killed and are %s now: the new process wrote them again",
 			left, kept, got)
 	}
-	requireKeywordRowsOf(t, database, ids)
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(ids...))
 }
 
 // A holder frozen with its connections open - a long garbage collection pause, a host that stops
@@ -8696,7 +8699,7 @@ func TestTheKeywordFillContinuesFromItsCursorInANewProcess(t *testing.T) {
 // begins finds in duty_holds that the hold is not its own (filler.batch).
 func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testing.T) {
 	database := storetest.Open(t)
-	seedKeywordFillIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	writes := recordKeywordFillWrites(t, database)
 	url := databaseURLOf(t, database)
 	frozen := startDispatchProcessWith(t, url, dispatchOptions{SigningKey: multiprocessSigningKey, OwnProcessGroup: true})
@@ -8707,7 +8710,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 	standby.waitForLog(t, 30*time.Second, keywordFillStandbyLine)
 
 	before := writeKeywordFillComments(t, database, 20)
-	waitForKeywordRows(t, database, before, time.Minute)
+	textversionstest.AwaitRows(t, database, before, time.Minute, nil)
 	frozenAt := frozen.signal(t, syscall.SIGSTOP)
 	resumed := false
 	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
@@ -8721,7 +8724,7 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 
 	whileFrozen := writeKeywordFillComments(t, database, 20)
 	standbyHolder := keywordFillHolder(t, standby, keywordFillTakeOverWithin-time.Since(frozenAt))
-	waitForKeywordRows(t, database, whileFrozen, time.Minute)
+	textversionstest.AwaitRows(t, database, whileFrozen, time.Minute, nil)
 	t.Logf("the standby took the hold and wrote the events written meanwhile %v after the holder was frozen",
 		time.Since(frozenAt).Round(time.Millisecond))
 
@@ -8739,10 +8742,10 @@ func TestAFrozenKeywordFillHolderIsTakenOverAndWritesNothingOnceResumed(t *testi
 		afterResume = append(afterResume, writeKeywordFillComments(t, database, 5)...)
 		time.Sleep(2500 * time.Millisecond)
 	}
-	waitForKeywordRows(t, database, afterResume, time.Minute)
+	textversionstest.AwaitRows(t, database, afterResume, time.Minute, nil)
 
 	requireKeywordFillWritersInTurn(t, writes(), frozenHolder, standbyHolder)
-	requireKeywordRowsOf(t, database, slices.Concat(before, whileFrozen, afterResume))
+	textversionstest.RequireOnlyRowsOf(t, database, textversionstest.OneEach(slices.Concat(before, whileFrozen, afterResume)...))
 	select {
 	case <-frozen.Exited:
 		t.Fatalf("the resumed process exited; it should stand by for the hold:\n%s", frozen.Output.String())
@@ -8841,35 +8844,4 @@ func keywordRowsThrough(t *testing.T, database *store.Store, cursor int64) strin
 		t.Fatalf("read the keyword rows through event %d: %v", cursor, err)
 	}
 	return fmt.Sprintf("%d rows written by transactions [%s]", count, writers)
-}
-
-// waitForKeywordRows waits until every event of ids has its row.
-func waitForKeywordRows(t *testing.T, database *store.Store, ids []int64, within time.Duration) {
-	t.Helper()
-	waitUntil(t, within, fmt.Sprintf("the keyword rows of %d events", len(ids)), func() bool {
-		var rows int
-		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from search_text_versions where event_id = any($1)`, ids).Scan(&rows); err != nil {
-			t.Fatalf("count the keyword rows: %v", err)
-		}
-		return rows == len(ids)
-	})
-}
-
-// requireKeywordRowsOf requires that the keyword table holds exactly one row of each event of ids,
-// each a comment.created that starts one version, and no row of any other event.
-func requireKeywordRowsOf(t *testing.T, database *store.Store, ids []int64) {
-	t.Helper()
-	var written, rows, wrong int
-	if err := database.Pool.QueryRow(context.Background(), `
-		with counted as (select event_id, count(*) as n from search_text_versions group by event_id)
-		select (select count(*) from counted), (select coalesce(sum(n), 0) from counted),
-		       (select count(*) from counted where n <> 1 or not (event_id = any($1)))
-	`, ids).Scan(&written, &rows, &wrong); err != nil {
-		t.Fatalf("count the keyword rows of each event: %v", err)
-	}
-	if written != len(ids) || rows != len(ids) || wrong != 0 {
-		t.Fatalf("the keyword table holds %d rows of %d events, %d of them wrong; want exactly one row of each of the %d events written",
-			rows, written, wrong, len(ids))
-	}
 }

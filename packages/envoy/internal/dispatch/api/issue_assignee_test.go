@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -559,7 +559,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	const session = "ses_narrowed"
-	answers := brokertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
+	answers := ciphertokentest.NarrowedAnswers(t, caller.jkt, session, time.Now().Add(time.Hour).Unix())
 	read := []string{model.ScopeRead}
 	personAndRead := []string{model.ScopePerson, model.ScopeRead}
 	wantScopes := map[string][]string{
@@ -577,7 +577,7 @@ func TestWhoamiNamesReadAndTheCutOfEveryReadOnlyToken(t *testing.T) {
 	}
 	type row struct {
 		name   string
-		answer brokertoken.Introspection
+		answer ciphertoken.Introspection
 		// bearer is a personal token, presented as a bearer, and empty for a token the stub
 		// broker answers for with answer.
 		bearer string

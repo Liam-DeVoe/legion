@@ -32,8 +32,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -505,18 +505,18 @@ func newAsOfRigOn(t *testing.T, database *store.Store) *asOfRig {
 
 // callers are the three credentials every row is read with, each said to the stub broker: a
 // read-only token, INFRA-4619's read entry's token (readOnlyToken); a read-only token that holds
-// person, the token narrowed from a machine login's (brokertokentest.NarrowedAnswers), here
+// person, the token narrowed from a machine login's (ciphertokentest.NarrowedAnswers), here
 // alice's; and a caller the read filter at this head holds, a session token that names a service
 // and no person, so the
 // person scope refuses it on each person route. Each is held to be the credential it is said to
 // be, so a row cannot pass for want of one.
 func (r *asOfRig) callers(t *testing.T) []asOfReader {
 	t.Helper()
-	person := brokertokentest.NarrowedAnswers(t, r.key.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	person := ciphertokentest.NarrowedAnswers(t, r.key.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	person.Person = brokerTestPerson
 	answers := []struct {
 		caller   asOfReader
-		answer   brokertoken.Introspection
+		answer   ciphertoken.Introspection
 		readOnly bool
 	}{
 		{asOfReader{name: "a read-only token", token: "asof-read-only"}, readOnlyToken(r.key.jkt), true},
@@ -538,7 +538,7 @@ func (r *asOfRig) callers(t *testing.T) []asOfReader {
 }
 
 // cutCaller is a read-only token that holds person and carries cut, said to the stub broker: the
-// token narrowed from a machine login's trade with a cut (brokertokentest.NarrowedAnswers,
+// token narrowed from a machine login's trade with a cut (ciphertokentest.NarrowedAnswers,
 // machine-login-with-a-cut), cut at cut and here alice's, so it is the read-only token that holds
 // person among callers but for its cut (cutTokenAnswer). Dispatch's credential of it is held to be
 // read-only, to hold person and to carry cut (sayCutToken).

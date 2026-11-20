@@ -28,6 +28,21 @@ const agentTokenPrefixLength = 8
 // agentTokenColumns is what every statement here answers of a row, as scanAgentToken reads it.
 const agentTokenColumns = `id::text, name, prefix, scopes, created_at, last_used_at, revoked_at`
 
+// The mint and a token's last use each run one of two statements, one per table. Each names its
+// table in its own text, so the census of item-row writers (item_writer_census_test.go) reads the
+// table it writes, and takes what follows the table from one of these, so the two stay one text:
+// agentTokenInsert is the mint's columns, their values and the row it answers (createAgentToken),
+// and agentTokenUse is a token's last use, written at most once a minute (personalTokenActor).
+const (
+	agentTokenInsert = `(owner, name, token_hash, prefix, scopes)
+		values ($1, $2, $3, $4, $5)
+		returning ` + agentTokenColumns
+	agentTokenUse = `set last_used_at = now()
+		where token_hash = $1
+		  and revoked_at is null
+		  and (last_used_at is null or last_used_at < now() - interval '1 minute')`
+)
+
 type createAgentTokenResponse struct {
 	model.AgentToken
 	Token string `json:"token"`
@@ -107,17 +122,10 @@ func (s *server) createAgentToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Each statement names its table in its own text, so the census of item-row writers
-	// (item_writer_census_test.go) reads the table it writes.
-	insert := `
-		insert into agent_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-		returning ` + agentTokenColumns
+	// Each statement names its table in its own text (agentTokenInsert).
+	insert := `insert into agent_tokens ` + agentTokenInsert
 	if slices.Contains(scopes, model.ScopeRead) {
-		insert = `
-		insert into agent_read_tokens (owner, name, token_hash, prefix, scopes)
-		values ($1, $2, $3, $4, $5)
-		returning ` + agentTokenColumns
+		insert = `insert into agent_read_tokens ` + agentTokenInsert
 	}
 
 	plaintext, hash, err := newAgentToken()
@@ -364,22 +372,10 @@ func (s *server) personalTokenActor(ctx context.Context, plaintext string) (mode
 	if revokedAt != nil {
 		return model.Actor{}, errorf(http.StatusUnauthorized, "TOKEN_REVOKED", "agent token has been revoked")
 	}
-	// Each statement names its table in its own text, as the mint's do.
-	recordUse := `
-		update agent_tokens
-		set last_used_at = now()
-		where token_hash = $1
-		  and revoked_at is null
-		  and (last_used_at is null or last_used_at < now() - interval '1 minute')
-	`
+	// Each statement names its table in its own text (agentTokenUse).
+	recordUse := `update agent_tokens ` + agentTokenUse
 	if readOnly {
-		recordUse = `
-		update agent_read_tokens
-		set last_used_at = now()
-		where token_hash = $1
-		  and revoked_at is null
-		  and (last_used_at is null or last_used_at < now() - interval '1 minute')
-	`
+		recordUse = `update agent_read_tokens ` + agentTokenUse
 	}
 	if _, err := s.deps.Store.Pool.Exec(ctx, recordUse, hash[:]); err != nil {
 		return model.Actor{}, fmt.Errorf("record agent token use: %w", err)

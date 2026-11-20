@@ -24,11 +24,12 @@ set -euo pipefail
 fill_types="issue.created issue.updated issue.closed artifact.version comment.created comment.answered comment.edited comment.deleted message.created message.answered message.edited message.deleted ask.opened ask.edited ask.answered"
 
 # expected reads the version a redacted event starts as the first event of its item: its kind
-# and id, its issue, its text (an issue's title, a post's body, an ask's question, and empty text
-# for the delete of a post, whose event carries no body), an ask's options and answer, the
-# issue's primary document and its version, and whether the event cut the body, each as the
-# event carries it and null where it carries none. An issue.created's version holds version 1 of
-# the issue's primary document, which the create writes and which gets no event of its own; an
+# and id, its issue, its text (an issue's title, a post's body, an ask's question), an ask's
+# options and answer, the issue's primary document and its version, and whether the event cut the
+# body, each as the event carries it and null where it carries none. The delete of a post starts a
+# version with empty text, which Go reads as null, as it reads every empty text (expectedOf); its
+# event carries no body. An issue.created's version holds version 1 of the issue's primary
+# document, which the create writes and which gets no event of its own; an
 # artifact.version's is the version it names, of the issue its envelope names. Read in Go, a
 # body_truncated of null is false. It is null for an event that starts no version: an
 # artifact.version of no issue (a project's document, never an issue's primary one) and a message
@@ -47,7 +48,7 @@ read -r -d '' expected <<'JQ' || true
      answer: null, spec_artifact_id: $p.artifact_id, spec_version: $p.version.number,
      body_truncated: null}
   elif $type == "comment.deleted" or $type == "message.deleted" then
-    {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: "",
+    {kind: ($type | split(".")[0]), id: $p.id, issue_key: $p.issue_key, title_or_body: null,
      options: null, answer: null, spec_artifact_id: null, spec_version: null,
      body_truncated: null}
   elif ($type | startswith("comment.")) or ($type | startswith("message.")) then

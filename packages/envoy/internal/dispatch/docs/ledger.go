@@ -377,27 +377,28 @@ func (l *Ledger) NextVersion(ctx context.Context, artifactID string) (int, time.
 }
 
 // pendingVersion is a version this transaction has queued and not yet written, as latestVersion
-// reads a stored one.
+// reads a stored one, with the insert tree its row will store (RenderStamp.InsertTree).
 type pendingVersion struct {
 	version          model.Version
 	markdown         string
+	insertTree       []byte
 	docUpdateVersion int64
 }
 
-// PendingVersionMarkdown is the markdown of version number of artifactID when it is the version
-// this transaction last numbered and queued (writeVersionTx) and has not written yet: a route that
-// reads the version it just made - the diff a named version's event carries - takes it from here,
-// since the table holds the row only once Commit has run the queue. False when this transaction
-// queued no such version.
-func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, bool) {
+// PendingVersionMarkdown is the markdown of version number of artifactID, and the insert tree its
+// row will store, when it is the version this transaction last numbered and queued
+// (writeVersionTx) and has not written yet: a route that reads the version it just made - the diff
+// a named version's event carries - takes it from here, since the table holds the row only once
+// Commit has run the queue. False when this transaction queued no such version.
+func (l *Ledger) PendingVersionMarkdown(artifactID string, number int) (string, []byte, bool) {
 	if l.sealed {
-		return "", false
+		return "", nil, false
 	}
 	pending, queued := l.latest[artifactID]
 	if !queued || pending.version.Number != number {
-		return "", false
+		return "", nil, false
 	}
-	return pending.markdown, true
+	return pending.markdown, pending.insertTree, true
 }
 
 // PendingVersionNumber is the number of the version of artifactID this transaction last numbered

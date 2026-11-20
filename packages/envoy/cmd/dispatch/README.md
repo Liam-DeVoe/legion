@@ -216,7 +216,7 @@ Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` p
 A read-only token is any token that holds `read`, and it may only read.
 The broker mints it from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`): that token holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
 The broker also narrows any trade that asks for `read`: that token keeps the session, the person or the service, and the projects the same trade would have named, under the narrowed project scope `read-named`, `read-person` or `read-none`, and it may carry a cut (`as_of`), the past time it reads at.
-`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with its cut (`model.Credential.Cut`).
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with its cut (`model.Credential.Cut`).
 A `read-person` token that names its person holds the `person` scope alone, never `approve`, and every other read-only broker token holds no OAuth scope.
 A personal token minted with `read` is read-only too (`/api/v1/me/agent-tokens`, below).
 Dispatch serves a read-only token on the reads of its read class and on no other route.
@@ -227,11 +227,14 @@ A read-only token that carries a cut reads at that cut (Reads at a past time, be
 A read that answers `as_of` answers it as of its cut, and `GET /api/v1/whoami` names the cut.
 Every other read, and `GET /ws/live`, answer it `403 AS_OF_TOKEN_NOT_SERVED` (`contracts.DispatchAsOfTokenNotServed`) instead, naming the cut, rather than answer it with the present.
 Both refusals come before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the record of the token's use: a broker token's spent DPoP proof, which the token's verification records before the refusal, or a personal token's last use.
-`GET /api/v1/issues/{key}/results` is a read: a read-only token's read of it asks GitHub what a writer's read asks and answers the same, and it stores no pull request head, no branch commit and no event.
+`GET /api/v1/issues/{key}/results` is a read: a read-only token's read of it asks GitHub what a writer's read made at the same moment asks, answers what that read answers on the rows stored then, and stores no pull request head, no branch commit and no event.
+It keeps GitHub's answers in the process's memory instead, which is empty after a restart: each of its reads of the stored heads runs the writer's own statement with the kept answers laid on, and a kept answer gives way to a row a writer stored after it (`delivery.KeptHeads`).
+A memory holds at most 1,024 answers, logs one WARN when it first drops one, and counts every drop on `envoy_dispatch_read_only_answers_dropped_total`.
+Once a read-only caller's reads name more commits than that, the answers the memory drops are read from GitHub again, and those extra reads repeat on every read-only read, where a writer's stored rows answer them.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers a read-only broker token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries a read-only token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
-A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only broker token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A credential that names one project may write that project and nothing else.
 Every mutating row of the route table declares what its write belongs to (`internal/dispatch/api/routes_table.go`, `writeClasses`;
@@ -1598,12 +1601,17 @@ A process that the registry has not admitted serves no answers read, so the paus
   An event whose payload the rules cannot read stops the fill at that event.
   The fill then tries the pass again after 1 s, doubling to a minute, and logs the error each time.
 
-- A batch reads at most 500 events and at most 2 MB of text to make vectors from: each post's body whole, and each primary document version by its `version.size`.
-  An event larger than that is a batch alone.
+- A batch reads at most 500 events and at most 2 MB of the text its vectors are made from.
+  Each event of a type the rules read counts its payload, and a post whose event cut its body counts the body its present row holds too: the read of the events bounds those.
+  An event that starts a version counts what that version's vector reads besides, measured while the rules decide:
+  an issue's row counts the markdown of the primary document version it names (version 1 for `issue.created`, the version it carries forward for `issue.updated` and `issue.closed`, the named version for `artifact.version`), and a post whose event cut its body counts the whole body the rules give it, where that is longer than its row's.
+  The rules end the batch before the first event that takes it past 2 MB.
+  The title that an `artifact.version`'s row carries forward is not counted, at most 3,000 bytes a row.
+  An event that counts more than 2 MB is a batch alone.
   A batch is one transaction.
   It locks the cursor row, checks that `duty_holds` still names this holder live, writes the rows, moves the cursor, stores the reach, and commits.
   A holder that lost its hold writes nothing.
-  `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB of text.
+  `lock_timeout` is 5 s, and `statement_timeout` is 10 s plus 1 s for each MB the batch counts.
   `idle_in_transaction_session_timeout` is 10 s, which ends the transaction of a holder frozen inside a batch and frees the cursor row.
   After each batch the holder rests for as long as the batch ran, so the fill takes at most half of the time of one backend.
 
@@ -2344,7 +2352,7 @@ The release before it never reads the index and serves beside it unchanged, exce
 the index is left for the next release that reads it.
 
 Migration `0150_dpop_proofs` creates `dpop_proofs`, the record of every RFC 9449 DPoP proof Dispatch has accepted, and its expiry index.
-A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/brokertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
+A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/ciphertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
 the maintenance pass deletes every record past its proof's acceptance window beside the idempotency-key sweep.
 It is a new table that touches no row, which the release before it neither reads nor writes; its census answers `0`.
 
@@ -2622,6 +2630,11 @@ Such a repository is one with an open or merged linked pull request that GitHub 
 The results read compares an `after_merge` or `default_branch` result with that repository's branches where the column names one, and reads a `before_merge` result's pull requests through it.
 A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `check_results` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
 
+Migration `20261120213507_artifact_versions_insert_tree` adds the nullable `jsonb` column `artifact_versions.insert_tree`: the tree a document version's markdown was rendered from, as pmdoc's JSON, written in the insert that stores the markdown and only when that tree holds an insert suggestion's mark (`docs.InsertTree`), and null for every other row, the rows before it included.
+The markdown carries no anchor mark, so the column is the one record of which of a version's words a pending insert put there, by the mark's id: every read of a version's text - the three document version routes, the diff a named version's `artifact.version` event carries and the diff of an `artifact.human_edited` notice - drops the words of each insert whose comment (`anchor.mark_id`) its author deleted and that no accept made document text (`docs.MaskedVersionText`), while the stored markdown, its `sha256` and every approval pinned to it stay as they were.
+A version stored before the column, or by the release before this one during the roll, is read as stored.
+A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUSIVE on `artifact_versions` for the catalog write alone, the previous release neither reads nor writes the column, and its census answers `0`.
+
 Migration `20261116163813_issue_role_holders` creates `issue_role_holders`, the session that holds each Legion role of an issue, which the Legion daemon publishes (`PUT /api/v1/issues/{key}/role-holders`, Routes below).
 The key is `(issue_key, role)`, and a unique index on `(issue_key, session)` keeps a session to one role of an issue.
 The `role` check names the six Legion roles, and a row goes with its issue.
@@ -2654,7 +2667,8 @@ No migration writes a row of either table.
 At production's counts the table and its indexes take about 2 GB (1.9 GB measured on real text, 2,134 MB on the keyed copy) and grow by 30 to 40 MB a day, which is above the census's 1 GiB limit.
 So once the table is filled, the census refuses a later migration that names it unless the census admits every statement of that migration.
 A change to its shape is a new table that the fill writes again.
-A later build that reads more event types reads the cursor row's `rules` to know which events to read again.
+The cursor row's `rules` holds the lowest version of the event rules that wrote the rows up to the cursor: each batch keeps the lower of its own version and the one stored, so a newer build that takes the hold after an older one does not hide the older one's events.
+A later build that reads more event types reads `rules` to know which events to read again, and only that read again raises it.
 
 Migration `20261102122300_pull_request_heads` creates `pull_request_heads`, the newest head Dispatch holds of every pull request it has seen an event for, so a recorded result can say whether it ran at the commit the work stands at.
 This is not `delivery_pull_requests`, which keeps the merged pull requests of the delivery population and no head commit:

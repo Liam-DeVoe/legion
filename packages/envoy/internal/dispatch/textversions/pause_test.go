@@ -12,8 +12,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
-	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 )
 
 // TestThePauseFollowsTheAnswersReadsThisProcessServes holds the fill's pause to each state the
@@ -82,9 +82,9 @@ func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			seedTheIssue(t, database)
+			textversionstest.SeedIssue(t, database)
 			broker := events.NewBroker()
-			written := []int64{commitComment(t, database, broker, theIssue).id, commitComment(t, database, broker, theIssue).id}
+			written := []int64{commitComment(t, database, broker, textversionstest.Issue).id, commitComment(t, database, broker, textversionstest.Issue).id}
 
 			rig := &pauseRig{now: time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC), reads: map[string]sessionanswers.Read{}}
 			rig.latency = sessionanswers.NewLatency(rig.clock)
@@ -102,7 +102,7 @@ func TestThePauseFollowsTheAnswersReadsThisProcessServes(t *testing.T) {
 				}
 				if !rig.paused {
 					rig.paused, rig.pausedAt, rig.pausedAfter = true, rig.now, rig.begun
-					if cursor, want := committedCursor(t, database), cursorAfter(written, rig.begun); cursor != want {
+					if cursor, want := textversionstest.Cursor(t, database), cursorAfter(written, rig.begun); cursor != want {
 						t.Errorf("the fill paused with %d batches begun and its cursor at event %d; want each of them committed, the cursor at event %d",
 							rig.begun, cursor, want)
 					}
@@ -243,17 +243,6 @@ type batchStarts struct {
 func (b batchStarts) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
 	b.begins()
 	return b.txBeginner.BeginTx(ctx, options)
-}
-
-// committedCursor is the cursor the fill's cursor row holds, 0 where it has none yet.
-func committedCursor(t *testing.T, database *store.Store) int64 {
-	t.Helper()
-	var cursor int64
-	if err := database.Pool.QueryRow(t.Context(),
-		`select coalesce((select event_id from search_text_versions_fill where id = 1), 0)`).Scan(&cursor); err != nil {
-		t.Fatalf("read the fill's cursor: %v", err)
-	}
-	return cursor
 }
 
 // cursorAfter is the cursor a fill of one event a batch holds once begun batches committed over

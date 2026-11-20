@@ -1,9 +1,10 @@
 kind: Added
 body: |-
   Four tools for the author of a post: dispatch_edit_comment, dispatch_delete_comment,
-  dispatch_edit_message and dispatch_delete_message, and dispatch_read takes history, which lists
-  the bodies an edit or a delete of one post replaced: a delete writes an entry of its own, and a
-  deleted post's entries carry no body. Each spec's description states what it does.
+  dispatch_edit_message and dispatch_delete_message, and dispatch_read takes history, which lists an
+  entry for each edit of one post and one for its delete, each with the body that write replaced,
+  its actor and its time; no entry of a deleted post carries a body. Each spec's description states
+  what it does.
   Three event kinds join the union: comment.deleted, message.edited and message.deleted. A comment's
   edit and delete events carry its thread_root_id and the thread_logins on its thread, and the
   delete of a comment whose accepted suggestion named a document version after its body carries

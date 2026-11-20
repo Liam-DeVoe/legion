@@ -1,4 +1,4 @@
-import { TradeRetryingError } from "@legion/broker-client/token-errors";
+import { TradeRetryingError } from "@legion/cipher-client/token-errors";
 import type {
   AcceptedMessageDelivery,
   Actor,
@@ -257,11 +257,11 @@ export class DispatchWriteUnsettledError extends Error {
  * under its key answered `409 IDEMPOTENCY_KEY_COMMITTED` (the write landed before its answer was
  * lost, and Dispatch will not run it again) or a replayed 2xx reading
  * `IDEMPOTENCY_ANSWER_NOT_KEPT` (Dispatch gives no copy of its first answer: one larger than the
- * 1 MiB a key keeps, or a success that holds a comment or a message deleted since, or a document
- * version name a delete replaced, which would give back text the delete withdrew). The write took
- * effect, so this is no refusal and deliberately no `DispatchServiceError`; it is never asked
- * again. Its message is the one line a session reads: what was made, why its answer is gone, and
- * to read it back. A call that writes nothing throws this for a `409 KEY_COMMITTED` alone; its
+ * 1 MiB a key keeps, or a success that holds a comment or a message that was deleted, or a
+ * document version name a delete replaced, which would give back text the delete withdrew). The
+ * write took effect, so this is no refusal and deliberately no `DispatchServiceError`; it is never
+ * asked again. Its message is the one line a session reads: what was made, why its answer is gone,
+ * and to read it back. A call that writes nothing throws this for a `409 KEY_COMMITTED` alone; its
  * replayed `IDEMPOTENCY_ANSWER_NOT_KEPT` is a `DispatchAnswerNotKeptError`.
  */
 export class DispatchWriteLandedError extends Error {
@@ -278,7 +278,7 @@ export class DispatchWriteLandedError extends Error {
     const lost =
       code === IDEMPOTENCY_ANSWER_NOT_KEPT
         ? "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
-          "or a message deleted since, or a document version name a delete replaced"
+          "or a message that was deleted, or a document version name a delete replaced"
         : "its answer was lost on the way back";
     const request = `${method} ${shownUrl}`;
     super(
@@ -289,14 +289,14 @@ export class DispatchWriteLandedError extends Error {
 }
 
 /**
- * A call that writes nothing (`markdownRoundTrip`, `related`) whose repeat under its key Dispatch
- * answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch kept no copy of the
- * answer, and the call made nothing, so there is nothing to read back and no landing. The client
- * asks such a call once more under a new key before it throws this (`#writingNothing`); this is
- * what reaches the caller when that ask is answered the same way. It is no refusal, so it is no
- * `DispatchServiceError`, and no `DispatchWriteLandedError`, which says a write was made. Its
- * message is the one line a session reads: the call wrote nothing, Dispatch kept no copy of its
- * answer, and to run the command again, which asks under a new key.
+ * A call that writes nothing (`markdownRoundTrip`, `related`, `dryRunResult`) whose repeat under
+ * its key Dispatch answered with a replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: Dispatch
+ * kept no copy of the answer, and the call made nothing, so there is nothing to read back and no
+ * landing. The client asks such a call once more under a new key before it throws this
+ * (`#writingNothing`); this is what reaches the caller when that ask is answered the same way. It
+ * is no refusal, so it is no `DispatchServiceError`, and no `DispatchWriteLandedError`, which says
+ * a write was made. Its message is the one line a session reads: the call wrote nothing, Dispatch
+ * kept no copy of its answer, and to run the command again, which asks under a new key.
  */
 export class DispatchAnswerNotKeptError extends Error {
   override readonly name = "DispatchAnswerNotKeptError";
@@ -1759,14 +1759,12 @@ export class DispatchClient {
   /**
    * The dry run of `recordResult`: Dispatch refuses the body as the record refuses it before it
    * writes, and answers the pull-request body line the record would answer, recording nothing.
+   * An answer Dispatch kept no copy of is asked for again (`#writingNothing`).
    */
   async dryRunResult(issue: string, input: RecordCheckResultInput): Promise<CheckResultDryRun> {
     const path = ["api", "v1", "issues", await this.#resolveIssue(issue), "results", "dry-run"];
     try {
-      const { payload } = await this.#jsonAnswer<CheckResultDryRun>("POST", path, input, {
-        writes: false,
-      });
-      return payload;
+      return await this.#writingNothing<CheckResultDryRun>(path, input, { writes: false });
     } catch (error) {
       if (!(error instanceof DispatchNoRouteError) && !isNoRoute(error)) throw error;
       const route = `POST /${path.map((segment) => encodeURIComponent(segment)).join("/")}`;
@@ -2538,17 +2536,18 @@ export class DispatchClient {
   }
 
   /**
-   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`). It is sent as
-   * a write is, under a key of its own, so an attempt with no definitive answer is asked again
-   * under that key (`#write`). Such a repeat can come back as a replayed 2xx reading
-   * `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept no copy of its answer.
-   * `#payloadOf` reads that replay as a write's landing (`DispatchWriteLandedError`), but this
-   * request wrote nothing, so it is no landing: it is asked once more under a new key, which
-   * `#writeCall` mints, and which runs it afresh and can double nothing. That ask's answer is the
-   * call's, and a second such replay is thrown as the `DispatchAnswerNotKeptError` it is rather
-   * than asked again, so the call is asked under at most two keys. Every other error, a
-   * `409 IDEMPOTENCY_KEY_COMMITTED` landing among them, is thrown as it came. `options` goes to
-   * `#jsonAnswer` as it is: `writes: false` for a conversion (`markdownRoundTrip`).
+   * A `POST` of JSON to a route that writes nothing (`markdownRoundTrip`, `related`,
+   * `dryRunResult`). It is sent as a write is, under a key of its own, so an attempt with no
+   * definitive answer is asked again under that key (`#write`). Such a repeat can come back as a
+   * replayed 2xx reading `IDEMPOTENCY_ANSWER_NOT_KEPT`: an earlier attempt ran, and Dispatch kept
+   * no copy of its answer. `#payloadOf` reads that replay as a write's landing
+   * (`DispatchWriteLandedError`), but this request wrote nothing, so it is no landing: it is asked
+   * once more under a new key, which `#writeCall` mints, and which runs it afresh and can double
+   * nothing. That ask's answer is the call's, and a second such replay is thrown as the
+   * `DispatchAnswerNotKeptError` it is rather than asked again, so the call is asked under at most
+   * two keys. Every other error, a `409 IDEMPOTENCY_KEY_COMMITTED` landing among them, is thrown as
+   * it came. `options` goes to `#jsonAnswer` as it is: `writes: false` for a conversion
+   * (`markdownRoundTrip`) and a dry run (`dryRunResult`).
    */
   async #writingNothing<T>(
     path: readonly string[],

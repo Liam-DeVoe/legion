@@ -1,13 +1,10 @@
 package delivery
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
-	"slices"
 	"strings"
 	"time"
 
@@ -40,8 +37,8 @@ import (
 // this build judges by has not judged yet — one offer per rule version (AttributionRuleVersion,
 // ListStalePullRequestHeads). A read-only caller's read of an issue's results reads GitHub the
 // same way and writes nothing: it keeps GitHub's answer in memory (ReadCommitPulls,
-// CommitPullAnswers) and reads these rows as they would stand had it been stored
-// (HeadsAttributedToWith, BaseBranchMergedForWith, BaseBranchMergedInWith).
+// CommitPullAnswers), and each of the five reads of these rows on the results path runs its one
+// statement over the stored rows with those answers laid on (resultsHeadsRead, KeptHeads).
 //
 // A write that moves a row from one issue to another, or gives an unattributed row an issue, or
 // takes one away, appends AttributionEventType on the issue the row left and on the issue it
@@ -376,42 +373,62 @@ func sameIssue(left, right *string) bool {
 // rollback here can be undoing and far inside any caller's own patience.
 const headWriteRollback = 2 * time.Second
 
-// upsertHeadRow is the head row's own statement, which UpsertPullRequestHead's doc comment
-// explains in full: it is here, on a refs.Execer — the pool, or a transaction already open on
-// it — so that one statement runs on the pool where it is the whole write and inside the
+// headLaidColumns is the columns of a pull_request_heads row that the reads of the results path
+// read besides its key, (repo, number), in the order headLaidRules writes them.
+const headLaidColumns = `head_sha, base_ref, state, issue_key, event_at, checked_at`
+
+// headLaidRules is upsertHeadRow's rule for each of headLaidColumns, as the select list of one
+// row: stored is the row a write lands on and excluded the row it writes, as `on conflict … do
+// update` names them, and complete is the SQL that says whether the write read every attribution
+// source (PullRequestHead.AttributionComplete). The commit, the base branch and the state are the
+// write's; the issue is the write's only where it read every source; and a time the write carries
+// none of keeps the row's. upsertHeadRow's `do update set` runs it, and so does a read-only
+// caller's read as it lays each answer its memory keeps on the stored row (keptHeadsRelation), so
+// the two lay one answer one way.
+func headLaidRules(complete string) string {
+	return `excluded.head_sha, excluded.base_ref, excluded.state,
+		case when ` + complete + ` then excluded.issue_key else stored.issue_key end,
+		coalesce(excluded.event_at, stored.event_at),
+		coalesce(excluded.checked_at, stored.checked_at)`
+}
+
+// headWriteApplies is upsertHeadRow's event-time guard, over stored and excluded as headLaidRules
+// names them: a write applies unless it carries an event older than the one the row holds. A
+// read-only caller's read tests it as it lays a kept answer on the stored row, and keeps the row
+// as it stands where it is false (keptHeadsRelation).
+const headWriteApplies = `(excluded.event_at is null or stored.event_at is null or excluded.event_at >= stored.event_at)`
+
+// upsertHeadQuery is upsertHeadRow's statement: its parameters are the head's columns in the
+// order of the insert, then $13 the attribution's completeness and $14 AttributionRuleVersion.
+var upsertHeadQuery = `
+	insert into pull_request_heads as stored (
+		repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
+		title, url, event_at, checked_at, attribution_rule
+	)
+	values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
+	on conflict (repo, number) do update set
+		(` + headLaidColumns + `) = (` + headLaidRules("$13::boolean") + `),
+		head_ref = excluded.head_ref,
+		attribution_source = case when $13::boolean
+			then excluded.attribution_source else stored.attribution_source end,
+		title = excluded.title,
+		url = excluded.url,
+		attribution_rule = case when excluded.checked_at is null
+			then stored.attribution_rule else excluded.attribution_rule end
+	where ` + headWriteApplies
+
+// upsertHeadRow is the head row's own statement (upsertHeadQuery), which UpsertPullRequestHead's
+// doc comment explains in full: it is here, on a refs.Execer — the pool, or a transaction already
+// open on it — so that one statement runs on the pool where it is the whole write and inside the
 // transaction where the merge's branch answer, the attribution's own events, or both go with
 // it.
 //
-// It answers whether the write applied: false where the event-time guard below left the row
-// exactly as it was, which is the one way this statement writes nothing and reports no error.
-// Only an applied write can have moved the row's attribution, so that is what
+// It answers whether the write applied: false where the event-time guard (headWriteApplies) left
+// the row exactly as it was, which is the one way this statement writes nothing and reports no
+// error. Only an applied write can have moved the row's attribution, so that is what
 // UpsertPullRequestHead tests before it appends an event.
 func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) (bool, error) {
-	tag, err := db.Exec(ctx, `
-		insert into pull_request_heads (
-			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
-			title, url, event_at, checked_at, attribution_rule
-		)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $14)
-		on conflict (repo, number) do update set
-			head_sha = excluded.head_sha,
-			head_ref = excluded.head_ref,
-			base_ref = excluded.base_ref,
-			state = excluded.state,
-			issue_key = case when $13::boolean
-				then excluded.issue_key else pull_request_heads.issue_key end,
-			attribution_source = case when $13::boolean
-				then excluded.attribution_source else pull_request_heads.attribution_source end,
-			title = excluded.title,
-			url = excluded.url,
-			event_at = coalesce(excluded.event_at, pull_request_heads.event_at),
-			checked_at = coalesce(excluded.checked_at, pull_request_heads.checked_at),
-			attribution_rule = case when excluded.checked_at is null
-				then pull_request_heads.attribution_rule else excluded.attribution_rule end
-		where excluded.event_at is null
-		   or pull_request_heads.event_at is null
-		   or excluded.event_at >= pull_request_heads.event_at
-	`,
+	tag, err := db.Exec(ctx, upsertHeadQuery,
 		head.Repo, head.Number, head.HeadSHA, head.HeadRef, head.BaseRef, head.State,
 		head.IssueKey, head.AttributionSource, head.Title, head.URL, head.EventAt, head.CheckedAt,
 		head.AttributionComplete, AttributionRuleVersion,
@@ -474,13 +491,196 @@ type AttributedHead struct {
 	LinkedRepo string
 }
 
-// headsAttributedQuery is HeadsAttributedTo's statement, its two arms HeadAttributedTo's: the
-// attributed rows and the linked ones, the linked ones naming their repository. `distinct on`
-// the four columns other than linked_repo drops a row both arms read, which a stale attribution
-// can make — one judged while the issue resolved to the pull request's repository — and
-// `linked_repo desc` keeps the linked arm's copy: the row is of a repository the issue does not
-// resolve to, which is what the name says.
-var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
+// The results path reads pull_request_heads in five places, each through one statement that both
+// of its callers run: headsAttributedQuery (HeadsAttributedTo), headStoredAtQuery (HeadStoredAt),
+// baseBranchMergedForQuery (BaseBranchMergedFor), baseBranchMergedInQuery (BaseBranchMergedIn) and
+// newestPullRequestHeadQuery (NewestPullRequestHead). Each reads its heads from the relation
+// pull_request_heads that its WITH list names (headsStatement): the table, for a writer's read,
+// and for a read-only caller's the table with the answers that caller's memory keeps laid on
+// (keptHeadsRelation), as the rows would stand had a writer's read stored each answer when it
+// learned it, so long as no writer has stored that row since. The statement after the WITH list is
+// one text, so a change to it reaches both callers, and no copy of a read in Go answers for either.
+
+// headsStatement is one of those reads whole, in its two forms: writer, over the stored rows, and
+// readOnly, over the stored rows with a read-only caller's kept answers laid on.
+type headsStatement struct {
+	writer, readOnly string
+}
+
+// newHeadsStatement makes both forms of the read whose text after the WITH list is statement:
+// `with recursive`, then linkedPullRequestTerms where linked (statement reads linked_pulls), then
+// the relation pull_request_heads (storedHeadsRelation for a writer, keptHeadsRelation for a
+// read-only caller), then statement. args is how many parameters statement takes, and the kept
+// answers' parameters are numbered after them.
+func newHeadsStatement(statement string, linked bool, args int) headsStatement {
+	with := "with recursive "
+	if linked {
+		with += linkedPullRequestTerms + ",\n\t"
+	}
+	return headsStatement{
+		writer:   with + storedHeadsRelation + "\n" + statement,
+		readOnly: with + keptHeadsRelation(args+1) + "\n" + statement,
+	}
+}
+
+// storedHeadsRelation is the relation a writer's read of the results path reads its heads from:
+// the table alone, named with its schema since the relation takes its name. `not materialized`
+// inlines it at each reference, so the statement's own predicates reach the table's indexes as
+// they would were the table read by name.
+const storedHeadsRelation = `pull_request_heads (repo, number, ` + headLaidColumns + `) as not materialized (
+		select repo, number, ` + headLaidColumns + ` from public.pull_request_heads)`
+
+// keptHeadsRelation is the relation a read-only caller's read of the results path reads its heads
+// from: the stored rows with each head the caller's memory keeps laid on (KeptHeads), the arrays of
+// keptColumns.args its parameters, numbered from first. Its terms:
+//
+//   - kept_heads is the kept heads, one row a head, numbered in the order they were learned.
+//   - standing_heads is the kept heads that stand, each numbered among its pull request's in that
+//     order and carrying its stored row's columns, the one read of that row by its key. A head
+//     stands where the row stored for its pull request, under the canonical name the head
+//     carries, is the row the head was learned against (ReadStoredRows): its xmin equals the kept
+//     one, compared with `=` alone and never by order, or the pull request had no row then and has
+//     none now. A row whose xmin moved, or that exists where none did, is one a writer stored
+//     since, and the head gives way to it whole.
+//   - laid_heads lays each pull request's standing heads on its stored row in turn, by
+//     upsertHeadRow's own rules: with no row stored, the head as the insert writes it; with a row,
+//     headLaidRules where the event-time guard holds (headWriteApplies), and the row as it stands
+//     where it does not. So two answers learned for one pull request give what the upsert gives
+//     when it stores both in turn.
+//   - pull_request_heads is two arms of a `union all`, the stored rows and each pull request's
+//     last laid row, less the stored rows a standing head lands on or drops. A head learned by a
+//     read asked under a name its repository was renamed away from drops the row kept under that
+//     name, as the store does (upsertHeadUnderCanonicalName). The arms carry no predicate of their
+//     own, since PostgreSQL keeps a `union all` arm that has one as a subquery that a join cannot
+//     drive by an index (a linked read then scanned the whole table, 95 ms on 60,000 rows): with
+//     none, the stored arm takes the statement's predicates, its joins' among them, to the table's
+//     indexes. The rows a standing head replaces are left out by a filter over both arms, which
+//     the laid arm passes, `not in` the standing heads' keys, a list PostgreSQL hashes once.
+func keptHeadsRelation(first int) string {
+	parameters := make([]string, len(keptColumnTypes))
+	for index, kind := range keptColumnTypes {
+		parameters[index] = fmt.Sprintf("$%d::%s[]", first+index, kind)
+	}
+	return `kept_heads as (
+		select * from unnest(` + strings.Join(parameters, ", ") + `)
+			with ordinality as kept (` + keptColumnNames + `, learned)
+	),
+	standing_heads as (
+		select kept.*, stored.repo is not null as found,
+			stored.head_sha as stored_head_sha, stored.base_ref as stored_base_ref, stored.state as stored_state,
+			stored.issue_key as stored_issue_key, stored.event_at as stored_event_at,
+			stored.checked_at as stored_checked_at,
+			row_number() over (partition by kept.repo, kept.number order by kept.learned) as step,
+			count(*) over (partition by kept.repo, kept.number) as steps
+		from kept_heads kept
+		left join public.pull_request_heads stored on stored.repo = kept.repo and stored.number = kept.number
+		where case when kept.no_row then stored.repo is null else stored.xmin = kept.stored_xmin end
+	),
+	laid_heads (repo, number, step, last_step, found, ` + headLaidColumns + `) as (
+		select repo, number, 0::bigint, false, found, stored_head_sha, stored_base_ref, stored_state,
+			stored_issue_key, stored_event_at, stored_checked_at
+		from standing_heads where step = 1
+		union all
+		select stored.repo, stored.number, excluded.step, excluded.step = excluded.steps, true, laid.*
+		from laid_heads stored
+		join standing_heads excluded on excluded.repo = stored.repo and excluded.number = stored.number
+			and excluded.step = stored.step + 1
+		cross join lateral (
+			select excluded.head_sha, excluded.base_ref, excluded.state, excluded.issue_key,
+				excluded.event_at, excluded.checked_at
+			where not stored.found
+			union all
+			select ` + headLaidRules("excluded.complete") + `
+			where stored.found and ` + headWriteApplies + `
+			union all
+			select stored.head_sha, stored.base_ref, stored.state, stored.issue_key,
+				stored.event_at, stored.checked_at
+			where stored.found and not ` + headWriteApplies + `
+		) laid
+	),
+	pull_request_heads (repo, number, ` + headLaidColumns + `) as not materialized (
+		select repo, number, ` + headLaidColumns + ` from (
+			select repo, number, ` + headLaidColumns + `, false as laid from public.pull_request_heads
+			union all
+			select repo, number, ` + headLaidColumns + `, true from laid_heads where last_step
+		) heads
+		where heads.laid or (heads.repo, heads.number) not in (
+			select kept.repo, kept.number from standing_heads kept
+			union all
+			select kept.renamed_from, kept.number from standing_heads kept where kept.renamed_from is not null)
+	)`
+}
+
+// KeptHeads is every head the read-only memory keeps (CommitPullAnswers.Learned), as a read-only
+// caller's reads of the results path take them: column by column, the parameters of
+// keptHeadsRelation, and the merges among them, each of whose merge commits is on its base branch
+// by the yes a writer's store of it would have written (mergeLearnedOnBranch). Its zero value keeps
+// nothing, and every read over it answers as a writer's read of the stored rows does.
+type KeptHeads struct {
+	columns keptColumns
+	merges  []PullRequestHead
+}
+
+// keptColumns is the kept heads column by column, in the order they were learned, as
+// keptHeadsRelation unnests them: the head's own columns, as the row its answer would write
+// (ReadCommitPulls); what the read found of the stored row when it learned the head (storedRow),
+// as stored_xmin and no_row; and, as renamed_from, the name the read was asked under where the
+// store would drop the row kept under it (CommitPulls.storedUnder), else null.
+type keptColumns struct {
+	repo, headSHA, baseRef, state []string
+	number                        []int32
+	issueKey, renamedFrom         []*string
+	complete, noRow               []bool
+	eventAt, checkedAt            []*time.Time
+	storedXmin                    []uint32
+}
+
+// keptColumnNames and keptColumnTypes are the name and the type of each array keptColumns.args
+// answers, in its order.
+const keptColumnNames = `repo, number, head_sha, base_ref, state, issue_key, complete, event_at, checked_at,
+				stored_xmin, no_row, renamed_from`
+
+var keptColumnTypes = [...]string{
+	"text", "integer", "text", "text", "text", "text", "boolean", "timestamptz", "timestamptz",
+	"xid", "boolean", "text",
+}
+
+// add appends head, learned against row by a read asked under storedUnder.
+func (c *keptColumns) add(head PullRequestHead, row storedRow, storedUnder string) {
+	c.repo = append(c.repo, head.Repo)
+	c.number = append(c.number, int32(head.Number))
+	c.headSHA = append(c.headSHA, head.HeadSHA)
+	c.baseRef = append(c.baseRef, head.BaseRef)
+	c.state = append(c.state, head.State)
+	c.issueKey = append(c.issueKey, head.IssueKey)
+	c.complete = append(c.complete, head.AttributionComplete)
+	c.eventAt = append(c.eventAt, head.EventAt)
+	c.checkedAt = append(c.checkedAt, head.CheckedAt)
+	c.storedXmin = append(c.storedXmin, row.xmin)
+	c.noRow = append(c.noRow, row.absent)
+	var renamedFrom *string
+	if !strings.EqualFold(storedUnder, head.Repo) {
+		renamedFrom = &storedUnder
+	}
+	c.renamedFrom = append(c.renamedFrom, renamedFrom)
+}
+
+// args is the columns in keptColumnTypes' order, as keptHeadsRelation numbers its parameters. The
+// zero value's are null arrays, which unnest to no row.
+func (c keptColumns) args() []any {
+	return []any{
+		c.repo, c.number, c.headSHA, c.baseRef, c.state, c.issueKey, c.complete, c.eventAt, c.checkedAt,
+		c.storedXmin, c.noRow, c.renamedFrom,
+	}
+}
+
+// headsAttributedQuery is HeadsAttributedTo's statement after its WITH list, its two arms
+// HeadAttributedTo's: the attributed rows and the linked ones, the linked ones naming their
+// repository. `distinct on` the four columns other than linked_repo drops a row both arms read,
+// which a stale attribution can make — one judged while the issue resolved to the pull request's
+// repository — and `linked_repo desc` keeps the linked arm's copy: the row is of a repository the
+// issue does not resolve to, which is what the name says.
+var headsAttributedQuery = `
 	select number, head_sha, checked_at, event_at, linked_repo from (
 		select distinct on (number, head_sha, checked_at, event_at)
 			number, head_sha, checked_at, event_at, linked_repo
@@ -495,6 +695,9 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 		order by number, head_sha, checked_at, event_at, linked_repo desc
 	) heads
 	order by greatest(checked_at, event_at) desc nulls last, number desc`
+
+// headsAttributedRead is headsAttributedQuery whole, for both callers.
+var headsAttributedRead = newHeadsStatement(headsAttributedQuery, true, 1)
 
 // HeadsAttributedTo is every open or merged pull request that is issueKey's — attributed to it,
 // or linked from it in a repository it does not resolve to (linkedPullRequestTerms) — newest
@@ -511,7 +714,20 @@ var headsAttributedQuery = `with recursive ` + linkedPullRequestTerms + `
 // attributed to that issue. The linked rows are read through pull_request_heads_repo_head's
 // leading column, one repository's rows for each linked pull request.
 func HeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string) ([]AttributedHead, error) {
-	rows, err := pool.Query(ctx, headsAttributedQuery, issueKey)
+	return headsAttributedTo(ctx, pool, headsAttributedRead.writer, issueKey)
+}
+
+// ReadOnlyHeadsAttributedTo is HeadsAttributedTo for a read-only caller's read of the results,
+// which stores nothing (api/results_comparison.go, comparisonReader.headBases): the same statement
+// over the stored rows with the heads that caller's memory keeps laid on (keptHeadsRelation).
+func ReadOnlyHeadsAttributedTo(ctx context.Context, pool *store.Pool, issueKey string, kept KeptHeads) ([]AttributedHead, error) {
+	return headsAttributedTo(ctx, pool, headsAttributedRead.readOnly, issueKey, kept.columns.args()...)
+}
+
+// headsAttributedTo runs query, one form of headsAttributedRead, for issueKey, kept the kept heads'
+// parameters of the read-only form.
+func headsAttributedTo(ctx context.Context, q refs.Queryer, query, issueKey string, kept ...any) ([]AttributedHead, error) {
+	rows, err := q.Query(ctx, query, append([]any{issueKey}, kept...)...)
 	if err != nil {
 		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
 	}
@@ -548,13 +764,32 @@ type NewestHead struct {
 //
 // The read uses pull_request_heads_issue_head's leading column, as HeadsAttributedTo's does.
 func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string) (NewestHead, bool, error) {
+	return newestPullRequestHead(ctx, pool, newestPullRequestHeadRead.writer, issueKey)
+}
+
+// ReadOnlyNewestPullRequestHead is NewestPullRequestHead for a read-only caller's read of the
+// results, which stores nothing (api/results_ci.go, comparisonReader.newestPullRequestHead):
+// the same statement over the stored rows with the heads that caller's memory keeps laid on
+// (keptHeadsRelation).
+func ReadOnlyNewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey string, kept KeptHeads) (NewestHead, bool, error) {
+	return newestPullRequestHead(ctx, pool, newestPullRequestHeadRead.readOnly, issueKey, kept.columns.args()...)
+}
+
+// newestPullRequestHeadQuery is NewestPullRequestHead's statement after its WITH list.
+var newestPullRequestHeadQuery = `
+	select repo, number, head_sha from pull_request_heads
+	where issue_key = $1 and state in ('open', 'merged')
+	order by state = 'open' desc, number desc
+	limit 1`
+
+// newestPullRequestHeadRead is newestPullRequestHeadQuery whole, for both callers.
+var newestPullRequestHeadRead = newHeadsStatement(newestPullRequestHeadQuery, false, 1)
+
+// newestPullRequestHead runs query, one form of newestPullRequestHeadRead, for issueKey, kept the
+// kept heads' parameters of the read-only form.
+func newestPullRequestHead(ctx context.Context, q refs.Queryer, query, issueKey string, kept ...any) (NewestHead, bool, error) {
 	var head NewestHead
-	err := pool.QueryRow(ctx, `
-		select repo, number, head_sha from pull_request_heads
-		where issue_key = $1 and state in ('open', 'merged')
-		order by state = 'open' desc, number desc
-		limit 1
-	`, issueKey).Scan(&head.Repo, &head.Number, &head.HeadSHA)
+	err := q.QueryRow(ctx, query, append([]any{issueKey}, kept...)...).Scan(&head.Repo, &head.Number, &head.HeadSHA)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return NewestHead{}, false, nil
 	}
@@ -588,13 +823,33 @@ func NewestPullRequestHead(ctx context.Context, pool *store.Pool, issueKey strin
 // `issue_key is not null` and keyed on the issue, so it serves no lookup by repository and head
 // commit.
 func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (bool, error) {
+	return headStoredAt(ctx, pool, headStoredAtRead.writer, repoFull, sha)
+}
+
+// ReadOnlyHeadStoredAt is HeadStoredAt for a read-only caller's read of the results, which stores
+// nothing (api/results_comparison.go, comparisonReader.headStoredAt): the same statement over the
+// stored rows with the heads that caller's memory keeps laid on (keptHeadsRelation), so a head its
+// own or an earlier read-only read learned holds the read off GitHub as the row a writer's read
+// stored holds the writer's off.
+func ReadOnlyHeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string, kept KeptHeads) (bool, error) {
+	return headStoredAt(ctx, pool, headStoredAtRead.readOnly, repoFull, sha, kept.columns.args()...)
+}
+
+// headStoredAtQuery is HeadStoredAt's statement after its WITH list.
+var headStoredAtQuery = `
+	select exists (
+		select 1 from pull_request_heads
+		where lower(repo) = lower($1) and head_sha = $2 and state in ('open', 'merged')
+	)`
+
+// headStoredAtRead is headStoredAtQuery whole, for both callers.
+var headStoredAtRead = newHeadsStatement(headStoredAtQuery, false, 2)
+
+// headStoredAt runs query, one form of headStoredAtRead, for sha of repoFull, kept the kept heads'
+// parameters of the read-only form.
+func headStoredAt(ctx context.Context, q refs.Queryer, query, repoFull, sha string, kept ...any) (bool, error) {
 	var found bool
-	if err := pool.QueryRow(ctx, `
-		select exists (
-			select 1 from pull_request_heads
-			where lower(repo) = lower($1) and head_sha = $2 and state in ('open', 'merged')
-		)
-	`, repoFull, sha).Scan(&found); err != nil {
+	if err := q.QueryRow(ctx, query, append([]any{repoFull, sha}, kept...)...).Scan(&found); err != nil {
 		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
 	}
 	return found, nil
@@ -633,13 +888,32 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // its leading column, and the rows one issue's key holds are the handful of pull requests
 // attributed to that issue.
 func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
+	return baseBranchMergedFor(ctx, pool, baseBranchMergedForRead.writer, issueKey)
+}
+
+// ReadOnlyBaseBranchMergedFor is BaseBranchMergedFor for a read-only caller's read of the results,
+// which stores nothing (api/results_comparison.go, comparisonReader.baseBranchMergedFor): the same
+// statement over the stored rows with the heads that caller's memory keeps laid on
+// (keptHeadsRelation).
+func ReadOnlyBaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string, kept KeptHeads) (string, error) {
+	return baseBranchMergedFor(ctx, pool, baseBranchMergedForRead.readOnly, issueKey, kept.columns.args()...)
+}
+
+// baseBranchMergedForQuery is BaseBranchMergedFor's statement after its WITH list.
+var baseBranchMergedForQuery = `
+	select base_ref from pull_request_heads
+	where issue_key = $1 and state = 'merged'
+	order by event_at desc nulls last, number desc
+	limit 1`
+
+// baseBranchMergedForRead is baseBranchMergedForQuery whole, for both callers.
+var baseBranchMergedForRead = newHeadsStatement(baseBranchMergedForQuery, false, 1)
+
+// baseBranchMergedFor runs query, one form of baseBranchMergedForRead, for issueKey, kept the kept
+// heads' parameters of the read-only form.
+func baseBranchMergedFor(ctx context.Context, q refs.Queryer, query, issueKey string, kept ...any) (string, error) {
 	var branch string
-	err := pool.QueryRow(ctx, `
-		select base_ref from pull_request_heads
-		where issue_key = $1 and state = 'merged'
-		order by event_at desc nulls last, number desc
-		limit 1
-	`, issueKey).Scan(&branch)
+	err := q.QueryRow(ctx, query, append([]any{issueKey}, kept...)...).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
@@ -1042,7 +1316,8 @@ func RepositoryUnreadable(err error) bool {
 // result stands as its stored rows leave it.
 //
 // A writer's read calls this. A read-only caller's read of an issue's results stores nothing, so
-// it calls ReadCommitPulls alone and keeps the answer in memory (CommitPullAnswers).
+// it calls ReadCommitPulls alone, reads what is stored for the pull requests it names
+// (ReadStoredRows) and keeps the answer in memory (CommitPullAnswers).
 //
 // atHead is the difference between the two answers GitHub gives about a commit no pull request
 // of Dispatch's heads. GitHub naming nothing leaves the question wide open — the pull request
@@ -1078,10 +1353,10 @@ func ReadThroughCommitPulls(
 // CommitPulls is what one read of GitHub found for one commit (ReadCommitPulls): the head row each
 // pull request GitHub named would be written as, in the order GitHub named them, and whether any
 // of them has the commit as its head (AtHead). A writer's read stores it (StoreCommitPulls). A
-// read-only caller's read keeps it in memory instead (CommitPullAnswers) and reads the stored
-// rows as they would stand had it been stored (HeadsAttributedToWith, HeadStoredAtWith,
-// BaseBranchMergedForWith, BaseBranchMergedInWith, Branches.ReadCommitOnBranch), so both reads
-// answer alike.
+// read-only caller's read reads what is stored for each of its pull requests (ReadStoredRows) and
+// keeps it in memory instead (CommitPullAnswers), and its reads of the results path lay what the
+// memory keeps on the stored rows (KeptHeads, Branches.ReadCommitOnBranch), so both reads answer
+// alike.
 type CommitPulls struct {
 	Heads  []PullRequestHead
 	AtHead bool
@@ -1090,6 +1365,9 @@ type CommitPulls struct {
 	// that name where it is not the canonical one the heads are keyed by
 	// (upsertHeadUnderCanonicalName).
 	storedUnder string
+	// rows is what pull_request_heads held for the pull request of each of Heads, in its order,
+	// when a read-only read learned them (ReadStoredRows), and nil until it is read.
+	rows []storedRow
 }
 
 // ReadCommitPulls is the read half of ReadThroughCommitPulls, and writes nothing: it asks GitHub
@@ -1166,361 +1444,76 @@ func StoreCommitPulls(ctx context.Context, pool *store.Pool, broker *events.Brok
 	return written, nil
 }
 
-// HeadsAttributedToWith is HeadsAttributedTo as it would answer had StoreCommitPulls stored each
-// answer of learned, in turn, and nothing else changed: what a read-only caller's results read
-// compares a `before_merge` check with once its own read-throughs have learned pull requests it
-// stores nowhere (api/results_comparison.go, comparisonReader.headBases). It reads
-// headsAttributedQuery's two arms: the rows attributed to issueKey, and the rows of the pull
-// requests its external links name in a repository it does not resolve to (LinkedPullRequests),
-// each naming that repository, a row both arms read kept once as the linked arm's. With nothing
-// learned it is HeadsAttributedTo itself.
-func HeadsAttributedToWith(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) ([]AttributedHead, error) {
-	if !anyLearnedHead(learned) {
-		return HeadsAttributedTo(ctx, pool, issueKey)
+// ReadStoredRows reads, in one statement keyed (repo, number), what pull_request_heads holds for
+// the pull request of each head pulls holds, under the canonical name the head carries
+// (ReadCommitPulls keys every head by it), and answers pulls with it: each row's xmin, or that no
+// row is stored. A read-only caller reads it right after ReadCommitPulls answers and before it
+// keeps the answer (CommitPullAnswers.Keep), the moment a writer's read-through runs its upsert,
+// so a kept head stands for the row a writer's store at that moment would have landed on, and
+// gives way once a writer has stored that row since (keptHeadsRelation). PostgreSQL gives a row a
+// new xmin at each write that applies to it, a write of unchanged values included, and none at an
+// upsert whose event-time guard leaves it as it was, so the xmin says whether the row is the one
+// the head was learned against; it is compared with `=` alone, never by order, since transaction
+// ids wrap. A row kept under a name the repository was renamed away from is never read as the
+// pull request's stored row, since the store drops it (upsertHeadUnderCanonicalName).
+func ReadStoredRows(ctx context.Context, pool *store.Pool, pulls CommitPulls) (CommitPulls, error) {
+	if len(pulls.Heads) == 0 {
+		return pulls, nil
 	}
-	linked, err := LinkedPullRequests(ctx, pool, issueKey)
+	repos, numbers := make([]string, 0, len(pulls.Heads)), make([]int32, 0, len(pulls.Heads))
+	for _, head := range pulls.Heads {
+		repos, numbers = append(repos, head.Repo), append(numbers, int32(head.Number))
+	}
+	query, err := pool.Query(ctx, `
+		select stored.xmin
+		from unnest($1::text[], $2::integer[]) with ordinality as head (repo, number, place)
+		left join pull_request_heads stored on stored.repo = head.repo and stored.number = head.number
+		order by head.place
+	`, repos, numbers)
 	if err != nil {
-		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
+		return pulls, fmt.Errorf("read the stored rows of the pull requests GitHub named: %w", err)
 	}
-	repos, numbers := linkedPairs(linked)
-	rows, err := foldedHeadRows(ctx, pool, learned, linkedRowsMatch+` or issue_key = $5`, repos, numbers, issueKey)
-	if err != nil {
-		return nil, fmt.Errorf("read the pull request heads of %s: %w", issueKey, err)
-	}
-	rows = slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.state != "open" && row.state != "merged" })
-	var heads []AttributedHead
-	for _, row := range rows {
-		if row.issueKey != nil && *row.issueKey == issueKey {
-			heads = append(heads, row.attributedHead(""))
+	defer query.Close()
+	rows := make([]storedRow, 0, len(pulls.Heads))
+	for query.Next() {
+		var xmin *uint32
+		if err := query.Scan(&xmin); err != nil {
+			return pulls, fmt.Errorf("read the stored rows of the pull requests GitHub named: %w", err)
+		}
+		if xmin == nil {
+			rows = append(rows, storedRow{absent: true})
+		} else {
+			rows = append(rows, storedRow{xmin: *xmin})
 		}
 	}
-	for _, pull := range linked {
-		for _, row := range rows {
-			if row.linkedBy(pull) {
-				heads = append(heads, row.attributedHead(pull.Repo))
-			}
-		}
+	if err := query.Err(); err != nil {
+		return pulls, fmt.Errorf("read the stored rows of the pull requests GitHub named: %w", err)
 	}
-	// headsAttributedQuery's `distinct on (number, head_sha, checked_at, event_at)`, which keeps
-	// the greatest linked_repo of each: the linked arm's copy of a row both arms read.
-	var distinct []AttributedHead
-	for _, head := range heads {
-		kept := slices.IndexFunc(distinct, func(other AttributedHead) bool { return sameHead(other, head) })
-		switch {
-		case kept < 0:
-			distinct = append(distinct, head)
-		case head.LinkedRepo > distinct[kept].LinkedRepo:
-			distinct[kept] = head
-		}
-	}
-	// HeadsAttributedTo's order: greatest(checked_at, event_at) desc nulls last, number desc.
-	slices.SortStableFunc(distinct, func(a, b AttributedHead) int {
-		if order := laterFirst(latestOf(a.CheckedAt, a.EventAt), latestOf(b.CheckedAt, b.EventAt)); order != 0 {
-			return order
-		}
-		return cmp.Compare(b.Number, a.Number)
-	})
-	return distinct, nil
+	pulls.rows = rows
+	return pulls, nil
 }
 
-// linkedRowsMatch is the foldedHeadRows match of the rows of the pull requests linkedPairs names,
-// $3 their repositories and $4 their numbers, compared as linkedHeadJoin compares them: the
-// repository without case and the number exactly.
-const linkedRowsMatch = `(lower(repo), number) in (
-			select lower(linked.repo), linked.number from unnest($3::text[], $4::integer[]) as linked(repo, number))`
-
-// linkedPairs is linked as linkedRowsMatch takes it: the repositories and the numbers, in turn.
-func linkedPairs(linked []LinkedPullRequest) ([]string, []int32) {
-	repos, numbers := make([]string, 0, len(linked)), make([]int32, 0, len(linked))
-	for _, pull := range linked {
-		repos, numbers = append(repos, pull.Repo), append(numbers, int32(pull.Number))
-	}
-	return repos, numbers
+// storedRow is what pull_request_heads held for one pull request when a read-only read learned
+// its head (ReadStoredRows): the row's xmin, or absent where no row was stored. Its zero value is a
+// row whose xmin is 0, which no stored row has (PostgreSQL gives no row the invalid transaction
+// id), so a head whose row was never read stands for no row and gives way to whatever is stored.
+type storedRow struct {
+	xmin   uint32
+	absent bool
 }
 
-// linkedBy is whether row is the row of the pull request pull names, as linkedHeadJoin joins
-// them: the same number in the same repository, compared without case.
-func (row learnedHeadRow) linkedBy(pull LinkedPullRequest) bool {
-	return strings.EqualFold(row.repo, pull.Repo) && row.number == pull.Number
-}
-
-// attributedHead is row as HeadsAttributedTo answers it, linkedRepo the repository its linked arm
-// names and "" for its attributed arm.
-func (row learnedHeadRow) attributedHead(linkedRepo string) AttributedHead {
-	return AttributedHead{
-		Number: row.number, HeadSHA: row.headSHA, CheckedAt: row.checkedAt, EventAt: row.eventAt, LinkedRepo: linkedRepo,
-	}
-}
-
-// sameHead is whether a and b are one row of headsAttributedQuery's `distinct on`: the same
-// number, head and times, two missing times being the same.
-func sameHead(a, b AttributedHead) bool {
-	return a.Number == b.Number && a.HeadSHA == b.HeadSHA &&
-		notDistinctTimes(a.CheckedAt, b.CheckedAt) && notDistinctTimes(a.EventAt, b.EventAt)
-}
-
-// notDistinctTimes is SQL's `is not distinct from` over two times: both missing, or both the same
-// moment.
-func notDistinctTimes(a, b *time.Time) bool {
-	if a == nil || b == nil {
-		return a == b
-	}
-	return a.Equal(*b)
-}
-
-// HeadStoredAtWith is HeadStoredAt as it would answer had StoreCommitPulls stored each answer of
-// learned, in turn: what a read-only caller's results read asks before it reads GitHub for a
-// commit, so a head its own or an earlier read-only read learned holds that read off as the row
-// a writer's read stored holds the writer's off (api/results_comparison.go,
-// comparisonReader.headStoredAt). With nothing learned it is HeadStoredAt itself.
-func HeadStoredAtWith(ctx context.Context, pool *store.Pool, repoFull, sha string, learned []CommitPulls) (bool, error) {
-	if !anyLearnedHead(learned) {
-		return HeadStoredAt(ctx, pool, repoFull, sha)
-	}
-	rows, err := foldedHeadRows(ctx, pool, learned, `lower(repo) = lower($3) and head_sha = $4`, repoFull, sha)
-	if err != nil {
-		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
-	}
-	for _, row := range rows {
-		if strings.EqualFold(row.repo, repoFull) && row.headSHA == sha && (row.state == "open" || row.state == "merged") {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// BaseBranchMergedForWith is BaseBranchMergedFor as it would answer had StoreCommitPulls stored
-// each answer of learned, in turn: the branch a read-only caller's results read measures an
-// `after_merge` check against once its own read-throughs have learned a merge it stores nowhere
-// (api/results_comparison.go, comparisonReader.baseBranchMergedFor). With nothing learned it is
-// BaseBranchMergedFor itself.
-func BaseBranchMergedForWith(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) (string, error) {
-	if !anyLearnedHead(learned) {
-		return BaseBranchMergedFor(ctx, pool, issueKey)
-	}
-	rows, err := learnedHeadRows(ctx, pool, issueKey, learned)
-	if err != nil {
-		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
-	}
-	rows = slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.state != "merged" })
-	return newestMergedBase(rows), nil
-}
-
-// BaseBranchMergedInWith is BaseBranchMergedIn as it would answer had StoreCommitPulls stored each
-// answer of learned, in turn: the branch a read-only caller's results read measures an
-// `after_merge` result whose commit is taken to be of repoFull, a repository issueKey links a pull
-// request in and does not resolve to, against once its own read-throughs of that repository have
-// learned a merge they store nowhere (api/results_linked.go, comparisonReader.baseBranchMergedIn).
-// It reads baseBranchMergedInQuery's rows: those of the pull requests the issue's external links
-// name in repoFull (LinkedPullRequests), the repository compared without case. With nothing
-// learned it is BaseBranchMergedIn itself.
-func BaseBranchMergedInWith(ctx context.Context, pool *store.Pool, issueKey, repoFull string, learned []CommitPulls) (string, error) {
-	if !anyLearnedHead(learned) {
-		return BaseBranchMergedIn(ctx, pool, issueKey, repoFull)
-	}
-	linked, err := LinkedPullRequests(ctx, pool, issueKey)
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	linked = slices.DeleteFunc(linked, func(pull LinkedPullRequest) bool { return !strings.EqualFold(pull.Repo, repoFull) })
-	if len(linked) == 0 {
-		return "", nil
-	}
-	repos, numbers := linkedPairs(linked)
-	rows, err := foldedHeadRows(ctx, pool, learned, linkedRowsMatch, repos, numbers)
-	if err != nil {
-		return "", fmt.Errorf("read the merged linked pull request base branch of %s in %s: %w", issueKey, repoFull, err)
-	}
-	rows = slices.DeleteFunc(rows, func(row learnedHeadRow) bool {
-		return row.state != "merged" || !slices.ContainsFunc(linked, row.linkedBy)
-	})
-	return newestMergedBase(rows), nil
-}
-
-// newestMergedBase is the base branch of the first of rows, merged rows all, in
-// BaseBranchMergedFor's order, event_at desc nulls last and number desc, and "" where there are
-// none: the answer BaseBranchMergedFor and BaseBranchMergedIn give of their rows.
-func newestMergedBase(rows []learnedHeadRow) string {
-	if len(rows) == 0 {
-		return ""
-	}
-	newest := slices.MinFunc(rows, func(a, b learnedHeadRow) int {
-		if order := laterFirst(a.eventAt, b.eventAt); order != 0 {
-			return order
-		}
-		return cmp.Compare(b.number, a.number)
-	})
-	return newest.baseRef
-}
-
-// mergeLearnedOnBranch is whether StoreCommitPulls, storing learned, would record sha as on branch
-// of repoFull: the yes UpsertPullRequestHead writes for a merged pull request's merge commit on
-// its base branch (seedsBranch), compared as branch_commits keys it, the repository without case
-// and the branch and the commit exactly (readBranchCommit).
-func mergeLearnedOnBranch(learned []CommitPulls, repoFull, branch, sha string) bool {
-	for _, pulls := range learned {
-		for _, head := range pulls.Heads {
-			if head.seedsBranch() && strings.EqualFold(head.Repo, repoFull) && head.BaseRef == branch && head.MergeCommitSHA == sha {
-				return true
-			}
+// mergeLearnedOnBranch is whether StoreCommitPulls, storing what kept holds, would record sha as
+// on branch of repoFull: the yes UpsertPullRequestHead writes for a merged pull request's merge
+// commit on its base branch (seedsBranch), whether or not its event-time guard applies the head
+// row, compared as branch_commits keys it, the repository without case and the branch and the
+// commit exactly (readBranchCommit).
+func mergeLearnedOnBranch(kept KeptHeads, repoFull, branch, sha string) bool {
+	for _, head := range kept.merges {
+		if strings.EqualFold(head.Repo, repoFull) && head.BaseRef == branch && head.MergeCommitSHA == sha {
+			return true
 		}
 	}
 	return false
-}
-
-// anyLearnedHead is whether learned holds a head row at all: answers that named no pull request
-// would store nothing, and leave every read as the stored rows answer it.
-func anyLearnedHead(learned []CommitPulls) bool {
-	return slices.ContainsFunc(learned, func(pulls CommitPulls) bool { return len(pulls.Heads) > 0 })
-}
-
-// learnedHeadRow is the columns of one pull_request_heads row that HeadsAttributedTo,
-// HeadStoredAt, BaseBranchMergedFor and BaseBranchMergedIn read, as foldedHeadRows folds a
-// learned head into it.
-type learnedHeadRow struct {
-	repo      string
-	number    int
-	headSHA   string
-	baseRef   string
-	state     string
-	issueKey  *string
-	checkedAt *time.Time
-	eventAt   *time.Time
-}
-
-// learnedHeadKey is a row's primary key, (repo, number), the repository compared exactly as the
-// upsert's conflict target compares it.
-type learnedHeadKey struct {
-	repo   string
-	number int
-}
-
-// learnedHeadRows is the rows attributed to issueKey as they would stand had StoreCommitPulls
-// stored each answer of learned, in turn (foldedHeadRows). Nothing is written.
-func learnedHeadRows(ctx context.Context, pool *store.Pool, issueKey string, learned []CommitPulls) ([]learnedHeadRow, error) {
-	rows, err := foldedHeadRows(ctx, pool, learned, `issue_key = $3`, issueKey)
-	if err != nil {
-		return nil, err
-	}
-	return slices.DeleteFunc(rows, func(row learnedHeadRow) bool { return row.issueKey == nil || *row.issueKey != issueKey }), nil
-}
-
-// foldedHeadRows is the rows match selects, and every row a learned head would write or drop, as
-// they would stand had StoreCommitPulls stored each answer of learned, in turn. It reads them in
-// one statement, match's parameters numbered from $3 and given as args, then folds each learned
-// head into the row it lands on as the write would (foldLearnedHead) and drops what the write
-// would drop. Nothing is written. The caller keeps the rows its question is about.
-func foldedHeadRows(ctx context.Context, pool *store.Pool, learned []CommitPulls, match string, args ...any) ([]learnedHeadRow, error) {
-	var repos []string
-	var numbers []int32
-	for _, pulls := range learned {
-		for _, head := range pulls.Heads {
-			repos, numbers = append(repos, head.Repo), append(numbers, int32(head.Number))
-			if !strings.EqualFold(pulls.storedUnder, head.Repo) {
-				repos, numbers = append(repos, pulls.storedUnder), append(numbers, int32(head.Number))
-			}
-		}
-	}
-	query, err := pool.Query(ctx, `
-		select repo, number, head_sha, base_ref, state, issue_key, checked_at, event_at
-		from pull_request_heads
-		where (repo, number) in (select * from unnest($1::text[], $2::integer[])) or (`+match+`)
-	`, append([]any{repos, numbers}, args...)...)
-	if err != nil {
-		return nil, err
-	}
-	defer query.Close()
-	stored := map[learnedHeadKey]learnedHeadRow{}
-	for query.Next() {
-		var row learnedHeadRow
-		if err := query.Scan(&row.repo, &row.number, &row.headSHA, &row.baseRef, &row.state,
-			&row.issueKey, &row.checkedAt, &row.eventAt); err != nil {
-			return nil, err
-		}
-		stored[learnedHeadKey{repo: row.repo, number: row.number}] = row
-	}
-	if err := query.Err(); err != nil {
-		return nil, err
-	}
-	for _, pulls := range learned {
-		for _, head := range pulls.Heads {
-			key := learnedHeadKey{repo: head.Repo, number: head.Number}
-			row, found := stored[key]
-			stored[key] = foldLearnedHead(row, found, head)
-			if !strings.EqualFold(pulls.storedUnder, head.Repo) {
-				delete(stored, learnedHeadKey{repo: pulls.storedUnder, number: head.Number})
-			}
-		}
-	}
-	return slices.Collect(maps.Values(stored)), nil
-}
-
-// foldLearnedHead is upsertHeadRow's statement made in memory: the row head's write leaves behind,
-// given the row it lands on (found false where none is stored). An insert writes the head as it
-// is. An update is refused where the head carries an event time older than the row's; otherwise
-// it writes the head's commit, branches and state, replaces the issue only where the head's
-// attribution is complete, and keeps the row's event and read times where the head carries none.
-// Each time is the one a write and a read of the column give back (asStored).
-func foldLearnedHead(row learnedHeadRow, found bool, head PullRequestHead) learnedHeadRow {
-	eventAt, checkedAt := asStored(head.EventAt), asStored(head.CheckedAt)
-	if !found {
-		return learnedHeadRow{
-			repo: head.Repo, number: head.Number, headSHA: head.HeadSHA, baseRef: head.BaseRef,
-			state: head.State, issueKey: head.IssueKey, checkedAt: checkedAt, eventAt: eventAt,
-		}
-	}
-	if eventAt != nil && row.eventAt != nil && eventAt.Before(*row.eventAt) {
-		return row
-	}
-	row.headSHA, row.baseRef, row.state = head.HeadSHA, head.BaseRef, head.State
-	if head.AttributionComplete {
-		row.issueKey = head.IssueKey
-	}
-	if eventAt != nil {
-		row.eventAt = eventAt
-	}
-	if checkedAt != nil {
-		row.checkedAt = checkedAt
-	}
-	return row
-}
-
-// asStored is t as a timestamptz column gives it back once written: cut to the whole microsecond
-// pgx sends, and in UTC, the zone every connection of the store scans in (store.Open).
-func asStored(t *time.Time) *time.Time {
-	if t == nil {
-		return nil
-	}
-	stored := t.UTC().Truncate(time.Microsecond)
-	return &stored
-}
-
-// latestOf is SQL's greatest over two times: the later of the two, where a missing one is
-// ignored, and nil where both are missing.
-func latestOf(a, b *time.Time) *time.Time {
-	switch {
-	case a == nil:
-		return b
-	case b == nil || !b.After(*a):
-		return a
-	default:
-		return b
-	}
-}
-
-// laterFirst orders two times as SQL's `desc nulls last` does: the later first, a missing one
-// after every present one, and 0 for two equal or two missing.
-func laterFirst(a, b *time.Time) int {
-	switch {
-	case a == nil && b == nil:
-		return 0
-	case a == nil:
-		return 1
-	case b == nil:
-		return -1
-	default:
-		return b.Compare(*a)
-	}
 }
 
 // recordPullRequestHead writes the head row one `pull_request` envelope reports, whatever its

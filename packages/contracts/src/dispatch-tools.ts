@@ -436,7 +436,7 @@ const READ_OWNER_RULE =
 const READ_MESSAGE_RULE =
   "message stands alone: it names the conversation, so name no issue, project, artifact, or ref with it.";
 const READ_HISTORY_RULE =
-  "history reads the bodies an edit of one post replaced, so it needs a ref naming one comment or one issue message: message stands alone and names a whole conversation, which keeps no history of its own.";
+  "history reads each body an edit or the delete of one post replaced, so it needs a ref naming one comment or one issue message: message stands alone and names a whole conversation, which keeps no history of its own.";
 
 /** dispatch_read's refusal: a call with message breaks only the message rule, and a call
  *  without it only the owner rule; history breaks its own rule beside either. */
@@ -2150,7 +2150,7 @@ export const dispatchToolSpecs = [
       "--events N lists the last N, and --all-events every one. " +
       "A comment reply chain names the comment each nested reply answers as `Answers: <comment id>`. " +
       "An edited post reads with the time of its edit, and a deleted one with who deleted it and when, in place of its body; " +
-      "--history, with a ref naming that comment or message, lists the post's history newest first: each body an edit replaced, with the actor and the time, and of a deleted post each entry's actor and time with no body. " +
+      "--history, with a ref naming that comment or message, lists the post's history newest first: each body an edit or the delete replaced, with the actor and the time, and of a deleted post each entry's actor and time with no body. " +
       "Every read ends with `Referenced by:` (what cites or hangs off this node, each with its dispatch:// address, " +
       "an excerpt, and when) and `Links:` (what it cites), so tracing provenance is one call. " +
       "A block read prints `Block:`, `Type:` for a block of a document, `Document:`, every attribute a typed block carries " +
@@ -2207,10 +2207,10 @@ export const dispatchToolSpecs = [
         .boolean()
         .describe(
           "With ref naming one comment or issue message, list that post's history in place " +
-            "of the post itself, newest first: each body an edit replaced, with the actor " +
-            "that replaced it and the time. A post nobody edited or deleted lists nothing; a " +
-            "deleted post is marked deleted, and each of its entries gives its actor and " +
-            "time and no body. Name it with ref alone."
+            "of the post itself, newest first: each body an edit or the delete replaced, with " +
+            "the actor that replaced it and the time. A post nobody edited or deleted lists " +
+            "nothing; a deleted post is marked deleted, and each of its entries gives its " +
+            "actor and time and no body. Name it with ref alone."
         )
         .optional(),
       as_of: asOfArgument(

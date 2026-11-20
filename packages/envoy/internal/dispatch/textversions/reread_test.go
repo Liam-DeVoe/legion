@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 )
 
 // TestTheFillReadsAgainThePostEventsItPassed holds the fill to the events that rules version 1
@@ -23,7 +24,7 @@ import (
 // rolling deploy, writes no row twice.
 func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 
 	const firstMessage = "Can the rotation wait for the freeze?"
@@ -57,7 +58,7 @@ func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 		t.Fatalf("TextVersionsAt while the cursor row records rules version 1 = %v, want a refusal that has reached no time", err)
 	}
 
-	later := commitComment(t, database, broker, theIssue)
+	later := commitComment(t, database, broker, textversionstest.Issue)
 	var rereadLogs bytes.Buffer
 	if err := testFiller(database, events.NewHorizon(database.Pool), &rereadLogs).toHorizon(t.Context()); err != nil {
 		t.Fatalf("the fill that reads again: %v", err)
@@ -67,7 +68,7 @@ func TestTheFillReadsAgainThePostEventsItPassed(t *testing.T) {
 	requireVersion(t, database, messageDelete, "message", message, "")
 	requireVersion(t, database, comment.event, "comment", comment.id, commentBody)
 	requireVersion(t, database, created, "message", message, firstMessage)
-	if rows := rowsOfEvents(t, database, later.id); rows != 1 {
+	if rows := textversionstest.RowsOf(t, database, later.id); rows != 1 {
 		t.Fatalf("the comment written above the cursor has %d rows, want 1", rows)
 	}
 	if cursor := readCursorRow(t, database); cursor.rules != rulesVersion || cursor.eventID < later.id {
@@ -116,8 +117,8 @@ func requireVersion(t *testing.T, database *store.Store, event int64, kind, id, 
 	}
 }
 
-// writeMessage writes an issue message of body on theIssue with its message.created event, in one
-// transaction, as the create route does, and answers its id and the event's id.
+// writeMessage writes an issue message of body on textversionstest.Issue with its message.created
+// event, in one transaction, as the create route does, and answers its id and the event's id.
 func writeMessage(t *testing.T, database *store.Store, broker *events.Broker, body string) (string, int64) {
 	t.Helper()
 	tx, err := database.Pool.Begin(t.Context())
@@ -128,10 +129,10 @@ func writeMessage(t *testing.T, database *store.Store, broker *events.Broker, bo
 	var id string
 	if err := tx.QueryRow(t.Context(), `
 		insert into messages (issue_key, author, body) values ($1, '{"kind":"user","id":"alice"}', $2)
-		returning id::text`, theIssue, body).Scan(&id); err != nil {
+		returning id::text`, textversionstest.Issue, body).Scan(&id); err != nil {
 		t.Fatalf("insert the message: %v", err)
 	}
-	issue := theIssue
+	issue := textversionstest.Issue
 	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: "message.created",
 		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{"id": id, "issue_key": issue, "body": body}})
 	if err != nil {
@@ -143,11 +144,11 @@ func writeMessage(t *testing.T, database *store.Store, broker *events.Broker, bo
 	return id, appended.ID
 }
 
-// changePost writes one change of post id of kind (a comment or a message) on theIssue in one
-// transaction, as the edit and delete routes write it: for an edit, body as the row's body and
-// edited_at the transaction's now(); for a delete (an empty body), the cleared body and deleted_at;
-// and the event of eventType, whose payload carries the new body, and none for a delete. It
-// answers the event's id.
+// changePost writes one change of post id of kind (a comment or a message) on
+// textversionstest.Issue in one transaction, as the edit and delete routes write it: for an edit,
+// body as the row's body and edited_at the transaction's now(); for a delete (an empty body), the
+// cleared body and deleted_at; and the event of eventType, whose payload carries the new body, and
+// none for a delete. It answers the event's id.
 func changePost(t *testing.T, database *store.Store, broker *events.Broker, kind, eventType, id, body string) int64 {
 	t.Helper()
 	tx, err := database.Pool.Begin(t.Context())
@@ -156,7 +157,7 @@ func changePost(t *testing.T, database *store.Store, broker *events.Broker, kind
 	}
 	defer tx.Rollback(t.Context())
 	update := `update ` + kind + `s set body = $2, edited_at = now() where id = $1::uuid`
-	payload := map[string]any{"id": id, "issue_key": theIssue, "body": body}
+	payload := map[string]any{"id": id, "issue_key": textversionstest.Issue, "body": body}
 	if body == "" {
 		update = `update ` + kind + `s set body = $2, deleted_at = now(), deleted_by = '{"kind":"user","id":"alice"}' where id = $1::uuid`
 		delete(payload, "body")
@@ -164,7 +165,7 @@ func changePost(t *testing.T, database *store.Store, broker *events.Broker, kind
 	if _, err := tx.Exec(t.Context(), update, id, body); err != nil {
 		t.Fatalf("write the %s: %v", eventType, err)
 	}
-	issue := theIssue
+	issue := textversionstest.Issue
 	appended, err := broker.Append(t.Context(), tx, model.Event{IssueKey: &issue, Type: eventType,
 		Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: payload})
 	if err != nil {

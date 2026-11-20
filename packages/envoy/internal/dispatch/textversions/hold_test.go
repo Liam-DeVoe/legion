@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
 
@@ -29,7 +30,7 @@ import (
 // holder, once it names the second, never names the first again.
 func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
@@ -39,7 +40,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	var holders cursorHolders
 	var ids []int64
 	for range 10 {
-		ids = append(ids, commitComment(t, database, broker, theIssue).id)
+		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 		first.wake()
 		second.wake()
 		holders.sample(t, database)
@@ -48,7 +49,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 		}
 		time.Sleep(300 * time.Millisecond)
 	}
-	awaitRows(t, database, ids, 30*time.Second, func() { holders.sample(t, database) })
+	textversionstest.AwaitRows(t, database, ids, 30*time.Second, func() { holders.sample(t, database) })
 	if got := holders.read; len(got) != 1 || got[0] != firstHolder {
 		t.Fatalf("while both fills ran the cursor row named %v; want the first's holder %s alone", got, firstHolder)
 	}
@@ -61,10 +62,10 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 	first.stop(t)
 	var next []int64
 	for range 3 {
-		next = append(next, commitComment(t, database, broker, theIssue).id)
+		next = append(next, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
 	second.wake()
-	awaitRows(t, database, next, time.Minute-time.Since(died), func() {
+	textversionstest.AwaitRows(t, database, next, time.Minute-time.Since(died), func() {
 		holders.sample(t, database)
 		second.wake()
 	})
@@ -87,7 +88,7 @@ func TestOneFillHoldsTheLeaseAndAnotherTakesOverWithinSixtySeconds(t *testing.T)
 // its 10 s retry.
 func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
@@ -96,9 +97,9 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	second := startFill(t, standbyStore, released, true)
 	awaitLine(t, second, standingByMessage, 10*time.Second)
 	// The holder writes an event before it stops, so what it releases is a hold it fills under.
-	written := commitComment(t, database, broker, theIssue).id
+	written := commitComment(t, database, broker, textversionstest.Issue).id
 	first.wake()
-	awaitRows(t, database, []int64{written}, 30*time.Second, nil)
+	textversionstest.AwaitRows(t, database, []int64{written}, 30*time.Second, nil)
 
 	first.stop(t)
 	stopped := time.Now()
@@ -108,9 +109,9 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 	if live := liveHolder(t, database); live == firstHolder {
 		t.Fatalf("the holder stopped and the hold still names it, %s", firstHolder)
 	}
-	id := commitComment(t, database, broker, theIssue).id
+	id := commitComment(t, database, broker, textversionstest.Issue).id
 	second.wake()
-	awaitRows(t, database, []int64{id}, 2*time.Second-time.Since(stopped), nil)
+	textversionstest.AwaitRows(t, database, []int64{id}, 2*time.Second-time.Since(stopped), nil)
 	t.Logf("the standby wrote the next event %v after the holder stopped", time.Since(stopped).Round(time.Millisecond))
 	if got := readCursorRow(t, database).holder; got == firstHolder || got == "" {
 		t.Fatalf("the cursor row names holder %q; want the standby's", got)
@@ -122,7 +123,7 @@ func TestAStandbyTakesTheReleasedHoldAtOnce(t *testing.T) {
 // tells the standby, whose retry takes the free hold within its 10 s and writes the next event.
 func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	first := startFill(t, storetest.SecondProcess(t, database), nil, true)
 	firstHolder := awaitLiveHolder(t, database, 10*time.Second)
@@ -132,9 +133,9 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 
 	first.stop(t)
 	stopped := time.Now()
-	id := commitComment(t, database, broker, theIssue).id
+	id := commitComment(t, database, broker, textversionstest.Issue).id
 	second.wake()
-	awaitRows(t, database, []int64{id}, standbyRetry+5*time.Second-time.Since(stopped), nil)
+	textversionstest.AwaitRows(t, database, []int64{id}, standbyRetry+5*time.Second-time.Since(stopped), nil)
 	t.Logf("the standby wrote the next event %v after the holder released its hold", time.Since(stopped).Round(time.Millisecond))
 	if live := liveHolder(t, database); live == "" || live == firstHolder {
 		t.Fatalf("the hold names %q; want the standby's holder", live)
@@ -146,12 +147,12 @@ func TestAStandbyTakesAFreeHoldWithNoNotification(t *testing.T) {
 // the server listens and is admitted to the registry of live server processes, the rows come.
 func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	fill := startFill(t, storetest.SecondProcess(t, database), nil, false)
 	var ids []int64
 	for range 3 {
-		ids = append(ids, commitComment(t, database, broker, theIssue).id)
+		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
 	fill.wake()
 
@@ -170,7 +171,7 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 	}
 
 	close(fill.serving)
-	awaitRows(t, database, ids, 30*time.Second, nil)
+	textversionstest.AwaitRows(t, database, ids, 30*time.Second, nil)
 }
 
 // TestACaughtUpFillSendsNoStatement runs the fill on a store whose every statement a tracer sees,
@@ -179,17 +180,17 @@ func TestTheFillWritesNothingUntilTheServerListens(t *testing.T) {
 // on.
 func TestACaughtUpFillSendsNoStatement(t *testing.T) {
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	broker := events.NewBroker()
 	tracer := &renewalsApart{}
 	fill := startFill(t, storetest.TracedStore(t, database, tracer), nil, true)
 	awaitLiveHolder(t, database, 10*time.Second)
 	var ids []int64
 	for range 3 {
-		ids = append(ids, commitComment(t, database, broker, theIssue).id)
+		ids = append(ids, commitComment(t, database, broker, textversionstest.Issue).id)
 	}
 	fill.wake()
-	awaitRows(t, database, ids, 30*time.Second, nil)
+	textversionstest.AwaitRows(t, database, ids, 30*time.Second, nil)
 
 	// Longer than the horizon's longest re-read (rereadMax), so a fill still reading it again is
 	// not taken for one at rest.
@@ -353,26 +354,6 @@ func awaitLine(t *testing.T, fill *fillProcess, message string, within time.Dura
 			t.Fatalf("the fill logged no %q within %v:\n%s", message, within, fill.logs.String())
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-}
-
-// awaitRows waits until every event of ids has its one row, running each poll between reads when
-// it is set, and fails once within has passed.
-func awaitRows(t *testing.T, database *store.Store, ids []int64, within time.Duration, each func()) {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	for {
-		rows := rowsOfEvents(t, database, ids...)
-		if rows == len(ids) {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the events %v had %d rows within %v; want %d", ids, rows, within, len(ids))
-		}
-		if each != nil {
-			each()
-		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 

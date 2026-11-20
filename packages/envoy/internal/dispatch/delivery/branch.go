@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // branch.go owns every answer about whether one branch of one repository carries one commit,
@@ -302,7 +303,7 @@ func (c *Branches) CommitOnBranch(
 	repoFull, branch, sha string,
 	now time.Time,
 ) BranchAnswer {
-	read := c.readCommitOnBranch(ctx, pool, client, nil, false, repoFull, branch, sha, now)
+	read := c.readCommitOnBranch(ctx, pool, client, KeptHeads{}, false, repoFull, branch, sha, now)
 	if read.asked {
 		if err := writeBranchCommit(ctx, pool, repoFull, read.branch, sha, read.onBranch, now); err != nil {
 			slog.Warn("dispatch: record a commit's branch answer", "repo", repoFull, "branch", read.branch, "commit", sha, "error", err)
@@ -316,10 +317,10 @@ func (c *Branches) CommitOnBranch(
 // reads and answers what CommitOnBranch would answer on the same stored rows, with two
 // differences, both so that it writes no row:
 //
-//   - learned is the answers that caller's read-throughs found and stored nowhere (CommitPulls). A
-//     merged pull request among them is its merge commit on its base branch, the yes a writer's
-//     store of it would have written by now (UpsertPullRequestHead), so it answers as that
-//     stored row would.
+//   - learned is the heads that caller's memory keeps, found by read-throughs and stored nowhere
+//     (CommitPullAnswers.Learned). A merged pull request among them is its merge commit on its
+//     base branch, the yes a writer's store of it would have written by now
+//     (UpsertPullRequestHead), so it answers as that stored row would.
 //   - A compare read's answer is kept in this process's memory in place of the branch_commits row
 //     a writer's read writes, and read where that row is read, before the hold of a branch
 //     refused as unseen and before the repository's own unreadable read: a yes for good, as a
@@ -336,7 +337,7 @@ func (c *Branches) ReadCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
 	client *githubapp.Client,
-	learned []CommitPulls,
+	learned KeptHeads,
 	repoFull, branch, sha string,
 	now time.Time,
 ) BranchAnswer {
@@ -349,6 +350,13 @@ func (c *Branches) ReadCommitOnBranch(
 		c.readOnly.keep(read.key, kept, now)
 	}
 	return read.answer
+}
+
+// CountReadOnlyDrops has the memory of a read-only caller's compare answers (ReadCommitOnBranch)
+// count every answer it drops at ReadOnlyAnswerBound on dropped, as CommitPullAnswers.CountDrops
+// has its own.
+func (c *Branches) CountReadOnlyDrops(dropped *metrics.Counter) {
+	c.readOnly.countDrops(dropped)
 }
 
 // branchRead is what readCommitOnBranch found: the answer, and where a compare read was answered,
@@ -372,7 +380,7 @@ func (c *Branches) readCommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
 	client *githubapp.Client,
-	learned []CommitPulls,
+	learned KeptHeads,
 	readOnly bool,
 	repoFull, branch, sha string,
 	now time.Time,

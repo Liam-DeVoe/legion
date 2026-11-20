@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/textversions/textversionstest"
 )
 
 // TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent holds the reach before the start of a
@@ -32,7 +33,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	if _, err := fill.pass(ctx); err != nil {
 		t.Fatalf("a pass of the fill while A is open: %v", err)
 	}
-	if rows := rowsOfEvents(t, database, aEvent, b.id); rows != 0 {
+	if rows := textversionstest.RowsOf(t, database, aEvent, b.id); rows != 0 {
 		t.Fatalf("the fill wrote %d rows of events the horizon had not passed", rows)
 	}
 	requireReachBefore(t, database, aStart, "while A, which wrote an event, is open")
@@ -43,7 +44,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatWroteAnEvent(t *testing.T) {
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill: %v", err)
 	}
-	requireRowsOfEach(t, database, aEvent, b.id)
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(aEvent, b.id))
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
@@ -64,7 +65,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while A is open: %v", err)
 	}
-	requireRowsOfEach(t, database, b.id)
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(b.id))
 	requireReachBefore(t, database, aStart, "while A, which has written nothing, is open")
 	aEvent := appendCommentEvent(t, a, broker, "comment.created", uuid.NewString(), "The audit starts on Tuesday.", aStart)
 	if err := a.Commit(ctx); err != nil {
@@ -74,7 +75,7 @@ func TestTheReachStaysBeforeAnOpenTransactionThatHasWrittenNothing(t *testing.T)
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill: %v", err)
 	}
-	requireRowsOfEach(t, database, aEvent, b.id)
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(aEvent, b.id))
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
@@ -109,15 +110,15 @@ func TestTheReachStaysBeforeACommittedEventTheFillHasNotWritten(t *testing.T) {
 	if _, err := fill.batch(ctx, safe); err != nil {
 		t.Fatalf("a batch up to the horizon read before A committed: %v", err)
 	}
-	requireRowsOfEach(t, database, b.id)
-	if rows := rowsOfEvents(t, database, aEvent); rows != 0 {
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(b.id))
+	if rows := textversionstest.RowsOf(t, database, aEvent); rows != 0 {
 		t.Fatalf("the batch up to event %d wrote %d rows of A's event %d", safe, rows, aEvent)
 	}
 	requireReachBefore(t, database, aStart, "after A committed an event the fill has not written")
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill: %v", err)
 	}
-	requireRowsOfEach(t, database, aEvent, b.id)
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(aEvent, b.id))
 	awaitReachPast(t, database, aStart, b.startedAt)
 }
 
@@ -156,7 +157,7 @@ func TestTheReachStaysBeforeANoInheritMembersOpenTransaction(t *testing.T) {
 	if err := fill.toHorizon(ctx); err != nil {
 		t.Fatalf("the fill while the member's transaction is open: %v", err)
 	}
-	requireRowsOfEach(t, database, b.id)
+	textversionstest.RequireRowsOf(t, database, textversionstest.OneEach(b.id))
 	requireReachBefore(t, database, heldStart, "while a NOINHERIT member of a role with insert on events holds a transaction open")
 	if err := held.Rollback(ctx); err != nil {
 		t.Fatalf("end the member's transaction: %v", err)
@@ -235,16 +236,17 @@ func TestTheReachHoldsForATransactionWhoseStartItCannotRead(t *testing.T) {
 	}
 }
 
-// reachFixture is a database holding theIssue and otherIssue, a broker, and a fill on it caught up
-// with one event, so it has stored a reach from a cursor at the log's newest event.
+// reachFixture is a database holding textversionstest.Issue and otherIssue, a broker, and a fill
+// on it caught up with one event, so it has stored a reach from a cursor at the log's newest
+// event.
 func reachFixture(t *testing.T) (*store.Store, *events.Broker, *filler) {
 	t.Helper()
 	database := storetest.Open(t)
-	seedTheIssue(t, database)
+	textversionstest.SeedIssue(t, database)
 	seedOtherIssue(t, database)
 	broker := events.NewBroker()
 	fill := testFiller(database, events.NewHorizon(database.Pool), io.Discard)
-	commitComment(t, database, broker, theIssue)
+	commitComment(t, database, broker, textversionstest.Issue)
 	if err := fill.toHorizon(t.Context()); err != nil {
 		t.Fatalf("catch the fill up: %v", err)
 	}
@@ -320,16 +322,6 @@ func reachAs(t *testing.T, database *store.Store) time.Time {
 		t.Fatalf("read the reach: %s, reached: %t, %v", reach, reached, err)
 	}
 	return reach
-}
-
-// requireRowsOfEach holds each of the events ids to one row, as each comment.created starts one.
-func requireRowsOfEach(t *testing.T, database *store.Store, ids ...int64) {
-	t.Helper()
-	for _, id := range ids {
-		if rows := rowsOfEvents(t, database, id); rows != 1 {
-			t.Fatalf("event %d has %d rows; want 1", id, rows)
-		}
-	}
 }
 
 // createRole creates a role named for kind with options, which CREATE ROLE takes, and drops it

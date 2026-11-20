@@ -781,24 +781,25 @@ made whose answer is gone is a `DispatchWriteLandedError` (`code`, an `Idempoten
 `status`): `409 KEY_COMMITTED`, a write that landed before its answer was lost, which Dispatch will
 not run again, or a replayed 2xx (`Idempotency-Replayed: ?1`) reading `ANSWER_NOT_KEPT`, a first
 answer Dispatch gives no copy of: one larger than the 1 MiB a key keeps, or a success that holds a
-comment or a message deleted since, or a document version name a delete replaced (`answerNotKept`,
-shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It is no refusal and no
-`DispatchServiceError`, and it is never asked again. Its message is the one line the session
-reads: the method and URL were made, why the answer is gone, and to read what it made back with
-`dispatch read` or the matching list. The `dispatch` command exits 0 on one and records
-`landed_without_answer: <code>` in its ledger entry. A step before the
+comment or a message that was deleted, or a document version name a delete replaced
+(`answerNotKept`, shared with the page; `IDEMPOTENCY_ANSWER_NOT_KEPT` in `@legion/contracts`). It
+is no refusal and no `DispatchServiceError`, and it is never asked again. Its message is the one
+line the session reads: the method and URL were made, why the answer is gone, and to read what it
+made back with `dispatch read` or the matching list. The `dispatch` command exits 0 on one and
+records `landed_without_answer: <code>` in its ledger entry. A step before the
 command's own write that lands this way fails the command (exit 1) with that line and what it
 means: a picture upload (nothing else was written: run the call again, which uploads it as its
 next version), or the closing reason of `issue-update --status done` (the close was not sent: read
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0. A `POST` that writes nothing
-(`markdownRoundTrip`, `related`) made nothing either, so that replayed 2xx is no landing: the client
-asks the call once more under a new key, which runs it afresh, and a second such answer is a
-`DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no `DispatchServiceError`. Its
-message says the call wrote nothing, that Dispatch kept no copy of its answer, and to run the
-command again, which asks under a new key: `dispatch related` exits 1 on one, and `dispatch
-artifact` refuses the upload its stored-text check could not run, saying to send it again. A
-replayed refusal is the refusal Dispatch first gave, thrown as any other.
+(`markdownRoundTrip`, `related`, `dryRunResult`) made nothing either, so that replayed 2xx is no
+landing: the client asks the call once more under a new key, which runs it afresh, and a second
+such answer is a `DispatchAnswerNotKeptError` (`code` `ANSWER_NOT_KEPT`, `status`), no
+`DispatchServiceError`. Its message says the call wrote nothing, that Dispatch kept no copy of its
+answer, and to run the command again, which asks under a new key: `dispatch related` and a
+`dispatch result --dry-run` exit 1 on one, and `dispatch artifact` refuses the upload its
+stored-text check could not run, saying to send it again. A replayed refusal is the refusal
+Dispatch first gave, thrown as any other.
 
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
@@ -849,7 +850,7 @@ instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`, `brokerCrede
 credential is then a DPoP-bound access token presented under the `DPoP` scheme rather than a
 bearer. Every bearer source above is resolved first and unchanged, so a session that has one
 behaves exactly as it did. The machine's identity is one of three (`machineIdentity` in
-`@legion/broker-client/environment`). `kubernetes` reads a pod's projected token from
+`@legion/cipher-client/environment`). `kubernetes` reads a pod's projected token from
 `AGENT_SECRETS_MACHINE_TOKEN_FILE`. `metadata` asks the metadata server for a Compute Engine
 machine's Google identity token, for the audience `AGENT_SECRETS_MACHINE_AUDIENCE`. `pool` mints
 a Google identity token through a workload identity pool, as the Go client's `PoolIdentity`
@@ -861,7 +862,7 @@ An identity with one of its variables missing is an error that names the variabl
 A pod writes under a session name only once its deployment has registered that name for the pod,
 and its trade can reach the broker first. The broker refuses that trade with a description
 beginning `pod_session_not_registered:`, and that refusal is never final (`podSessionUnregistered`
-in `@legion/broker-client/token-errors`).
+in `@legion/cipher-client/token-errors`).
 
 The client trades through one retry loop per session (`BrokerTokenClient.token`), and no caller
 starts a second one or cuts its wait short, so the broker sees one trade per slot of the loop's

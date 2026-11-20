@@ -24,14 +24,14 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
-	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
@@ -135,7 +135,7 @@ type Deps struct {
 	// BrokerTokens decides a caller presenting an access token the secrets broker issued, under
 	// the DPoP scheme (brokerTokenActor); nil is a deployment with no broker, which has no such
 	// credential kind and answers a DPoP presentation exactly as it always has.
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream relays a live session's own conversation to a human watching it; nil is a
 	// deployment with no NATS, where an agent view is refused STREAM_UNAVAILABLE.
 	AgentStream agentstream.Source
@@ -146,7 +146,7 @@ type Deps struct {
 	// AgentSecrets relays the credential-request UI to the secrets broker; nil (the broker URL
 	// is unconfigured) means the feature is off: the pending list answers null, and every other
 	// handler that needs it answers 404 FEATURE_OFF.
-	AgentSecrets *agentsecrets.Client
+	AgentSecrets *cipher.Client
 	// Files holds uploaded files' bytes outside Postgres (cmd/dispatch: DISPATCH_FILE_STORE_BUCKET);
 	// nil keeps them in each version's row, and a row that still holds bytes is served from the
 	// row either way (files.BackfillRows moves them).
@@ -203,7 +203,9 @@ type Deps struct {
 	// that runs no outbox.
 	OutboxPublishes bool
 	// Metrics is the process's registry, which register adds the gauges of the mention sends held
-	// behind an earlier event to (registerHeldGauges); nil adds none, as this package's tests run.
+	// behind an earlier event to (registerHeldGauges), and the count of the answers a read-only
+	// results read drops from its memory (registerReadOnlyAnswerDrops); nil adds none, as this
+	// package's tests run.
 	Metrics *metrics.Registry
 	// AnswersLatency times each GET /api/v1/agents/{session_id}/answers read this process
 	// serves from the moment it enters the route's handler chain, as the access-log line times
@@ -269,7 +271,7 @@ type DepsInput struct {
 	OIDC          ServiceTokenVerifier
 	// BrokerTokens decides a broker-issued DPoP token; nil where no broker is configured. See
 	// Deps.BrokerTokens; cmd/dispatch builds it (brokerTokenVerifier).
-	BrokerTokens *brokertoken.Verifier
+	BrokerTokens *ciphertoken.Verifier
 	// AgentStream is the live agent conversation relay; nil where the deployment has no NATS.
 	AgentStream agentstream.Source
 	// AgentPublisher queues a targeted message for a session no store of the listener's holds;
@@ -365,9 +367,9 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if err != nil {
 		return Deps{}, err
 	}
-	var agentSecretsClient *agentsecrets.Client
+	var agentSecretsClient *cipher.Client
 	if url := strings.TrimSpace(input.AgentSecretsURL); url != "" {
-		agentSecretsClient = agentsecrets.New(url, input.AgentSecretsTokenFile)
+		agentSecretsClient = cipher.New(url, input.AgentSecretsTokenFile)
 	}
 	heartbeat := input.StreamHeartbeat
 	if heartbeat == 0 {
@@ -586,6 +588,14 @@ type server struct {
 	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
 	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
 	afterMentionCopyRule func()
+	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
+	// rejects leave the document's next version to the settlement the reject arms, as the delete
+	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// every server the deployment builds leaves it, settles in the delete. Only a test sets it:
+	// to time the delete without its settle beside the delete with it, and to reach a document
+	// whose latest version still holds a deleted insert's words, as one does where a build
+	// without the settle served the delete during a rollout, for the readers that mask them.
+	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -822,6 +832,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.takeBootMark()
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
+	s.registerReadOnlyAnswerDrops(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -882,6 +893,22 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	mux.Handle("GET "+liveSocketPattern, s.liveSocketHandler(s.serveLiveSocket))
 	return s
+}
+
+// registerReadOnlyAnswerDrops adds to registry envoy_dispatch_read_only_answers_dropped_total, with
+// no label: the answers this server's two memories of a read-only caller's results reads
+// (readOnlyCommitPulls, and branches' own) dropped at delivery.ReadOnlyAnswerBound, each one a
+// GitHub read a later read-only read of that commit makes again. Each memory logs one WARN when
+// it first drops one, so the count is where every later drop is seen. A nil registry adds none,
+// and the memories count nothing.
+func (s *server) registerReadOnlyAnswerDrops(registry *metrics.Registry) {
+	if registry == nil {
+		return
+	}
+	dropped := registry.NewCounter("envoy_dispatch_read_only_answers_dropped_total",
+		"Answers a read-only caller's results read dropped from its memory at the memory's bound, each one a GitHub read it makes again if that commit is read again")
+	s.readOnlyCommitPulls.CountDrops(dropped)
+	s.branches.CountReadOnlyDrops(dropped)
 }
 
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
@@ -1295,7 +1322,7 @@ const (
 // bearer with the shared token's values (auth.MatchesSharedAgentToken, which logs a value on its
 // way out), and asks no store, no sign-in and no verifier.
 func (s *server) credentialOf(r *http.Request) (credentialKind, string) {
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		return credentialBrokerToken, ""
 	}
 	token, present := auth.BearerToken(r)
@@ -2191,17 +2218,22 @@ func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, ledger *docs.L
 
 // transactionVersionMarkdown is the markdown of version number of artifactID as tx sees it once its
 // queue has run: the ledger's, when it is the version this transaction queued
-// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it.
+// (docs.Ledger.PendingVersionMarkdown), else the stored row's. False when neither holds it. Either
+// is the text every read of the version answers (docs.MaskedVersionText), so the diff a version's
+// event carries gives no word of a pending insert whose comment was deleted.
 func transactionVersionMarkdown(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, artifactID string, number int) (string, bool, error) {
-	if markdown, pending := ledger.PendingVersionMarkdown(artifactID, number); pending {
-		return markdown, true, nil
+	markdown, insertTree, pending := ledger.PendingVersionMarkdown(artifactID, number)
+	if !pending {
+		err := tx.QueryRow(ctx, `
+			select markdown, insert_tree from artifact_versions where artifact_id = $1 and number = $2
+		`, artifactID, number).Scan(&markdown, &insertTree)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
 	}
-	var markdown string
-	err := tx.QueryRow(ctx, `
-		select markdown from artifact_versions where artifact_id = $1 and number = $2
-	`, artifactID, number).Scan(&markdown)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
-	}
-	return markdown, err == nil, err
+	masked, err := docs.MaskedVersionText(ctx, tx, artifactID, markdown, insertTree)
+	return masked, err == nil, err
 }

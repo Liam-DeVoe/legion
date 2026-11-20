@@ -67,7 +67,9 @@ export function specBlockParts(references: GraphReferences): SpecBlockPart[] {
  * The blocks whose text changed in a version above `readVersion`, read from the spec's blocks in
  * document order (`blocks`, the listing, by position) and their parts. Each is named by the
  * heading of the section it sits in - itself, for a heading - or, before the first heading, by
- * its own first line. Undefined when the person has read no version, or nothing changed since.
+ * its own first line. Where those words are empty - a heading or a block whose text a deleted
+ * insert's words lay in, which the delete's correction withdraws (`markCorrectedPost`) - the
+ * block gives no name. Undefined when the person has read no version, or nothing changed since.
  */
 export function changedSinceRead(
   blocks: readonly ArtifactBlock[],
@@ -88,14 +90,16 @@ export function changedSinceRead(
     }
     blockIds.push(block.id);
     const name = section ?? part.text.split("\n", 1)[0]?.trim() ?? "";
-    if (!headings.includes(name)) headings.push(name);
+    if (name !== "" && !headings.includes(name)) headings.push(name);
   }
   return blockIds.length === 0 ? undefined : { blockIds, headings, version: readVersion };
 }
 
-/** The one line above the document. */
+/** The one line above the document, which names the changed blocks' sections where any has a
+ *  name. */
 export function readLineText(changed: ChangedSinceRead): string {
-  return `Changed since you last read version ${changed.version}: ${changed.headings.join(", ")}`;
+  const line = `Changed since you last read version ${changed.version}`;
+  return changed.headings.length === 0 ? line : `${line}: ${changed.headings.join(", ")}`;
 }
 
 /** The editor's block marks: each stale block with its title, then each changed block. */

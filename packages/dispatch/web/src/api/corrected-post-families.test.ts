@@ -9,10 +9,11 @@ import { MemoryRouter } from "react-router-dom";
 import { correction, correctionFeed, DELETION, EDITED_AT } from "../__tests__/correction-feed";
 import { messageCorrectionFields } from "../__tests__/message-fixture";
 import { useMarginItems } from "../features/margin/useMarginItems";
+import { replyRow } from "../features/threads/replies-fixture";
 import { ApiError, api } from "./client";
 import { CORRECTED_POST_FAMILIES, markCorrectedPost, NO_POST_FAMILIES } from "./corrected-post";
 import { useEventFeed } from "./event-feed";
-import { whoAmIQuery } from "./queries";
+import { referenceTargetsQuery, whoAmIQuery } from "./queries";
 import { DispatchQueryClient, hearLiveEvent } from "./query-client";
 import type {
   Artifact,
@@ -387,8 +388,9 @@ test("every family either list names is still keyed in the source, and in one li
   }
 });
 
-// Each written family has a row that proves the write: here below, or one of these tests, which
-// already drive the family's correction through a refetch that fails.
+// Each written family has a row here below: an answer that holds the post's words in every field
+// the family gives them in, which a delete must leave none of. These tests drive a family's
+// correction through a refetch that fails as well, each in the file it names.
 const WRITTEN_ELSEWHERE: Readonly<
   Record<string, { readonly file: string; readonly test: string }>
 > = {
@@ -439,7 +441,12 @@ const WRITTEN_ELSEWHERE: Readonly<
 };
 
 const POST = "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b";
+/** Another comment or message: a reply quoting the post, or the root of a thread the post replies
+ *  in. */
+const OTHER = "6f7a8b9c-0d1e-4f2a-8b3c-4d5e6f7a8b9c";
 const OLD_WORDS = "Hold the deploy until Friday.";
+/** The post's words as the tree a read gives beside them. */
+const WORDS_TREE = { content: [{ text: OLD_WORDS, type: "text" }], type: "doc" };
 
 /** The post as a comment, or a message, as a read answers it before its correction. */
 function commentOf(id = POST, more: Partial<CommentWithTrees> = {}): CommentWithTrees {
@@ -460,20 +467,95 @@ function commentOf(id = POST, more: Partial<CommentWithTrees> = {}): CommentWith
   } as CommentWithTrees;
 }
 
-function messageOf(): MessageWithTrees {
+function messageOf(id = POST): MessageWithTrees {
   return {
     author: { id: "alice", kind: "user" },
     body: OLD_WORDS,
     broadcast_id: null,
     created_at: "2026-11-19T00:00:00Z",
     deliveries: [],
-    id: POST,
+    id,
     in_reply_to: null,
     issue_key: "CORE-1",
     reply_block: null,
     target: "session:019a1c01-0d7b-7a2a-8e93-000000000a01",
     ...messageCorrectionFields(),
   };
+}
+
+/** The post's anchor as a pending insert suggestion holds it: its quote is the text the insert put
+ *  in the document, the post's own words, which the post's delete empties (`clearDeletedPostBody`
+ *  in `api/post_history.go`). */
+const INSERT_ANCHOR = {
+  artifact_id: "doc-1",
+  block_id: null,
+  mark_id: "mark-1",
+  orphaned: false,
+  quote: OLD_WORDS,
+  version: 1,
+};
+
+/** The post as a comment with its words in every field a read gives them in: a pending insert
+ *  suggestion's body and its tree, its replacement text and its anchor quote. */
+const insertComment = () => ({
+  ...commentOf(),
+  anchor: INSERT_ANCHOR,
+  body_tree: WORDS_TREE,
+  suggestion: { accepted: null, replace_with: OLD_WORDS },
+});
+
+/** The post as a message, with its words in its body and its tree. */
+const wordyMessage = () => ({ ...messageOf(), body_tree: WORDS_TREE });
+
+/** A reply of `kind` quoting block b1 of the post, with the block's text and tree as a read of the
+ *  reply gives them (`reply_block`). */
+function quotingReply(kind: "comment" | "message") {
+  const reply_block = {
+    block_id: "b1",
+    node: `${kind}/${POST}#b1`,
+    removed: false,
+    text: OLD_WORDS,
+    text_tree: WORDS_TREE,
+  };
+  return kind === "comment"
+    ? { ...commentOf(OTHER), body: "Agreed.", reply_block, reply_to: POST }
+    : { ...messageOf(OTHER), body: "Agreed.", in_reply_to: POST, reply_block };
+}
+
+/** An ask's thread, as its read and an ask row carry it: the post as a reply in it, and a reply
+ *  quoting a block of the post. */
+const askThread = () => ({
+  ask: { id: "ask-1" },
+  replies: [insertComment(), quotingReply("comment")],
+});
+
+/** doc-1 as a read lists its versions: version 2, which an accept of the post's suggestion named
+ *  after the post's body. */
+const DOCUMENT = {
+  id: "doc-1",
+  name: "spec.md",
+  versions: [
+    { number: 1, summary: null },
+    { number: 2, summary: OLD_WORDS },
+  ],
+};
+
+/** A read of version 2 of doc-1 alone, with its name. */
+const VERSION_TWO = { markdown: "Hold the deploy until Monday.\n", number: 2, summary: OLD_WORDS };
+
+/** Two Inbox thread rows of `kind` (`GET /api/v1/me/replies`): one whose root is the post, with its
+ *  words as the row's subject and, for a comment, the root's anchor, whose quote the card prints
+ *  (`ThreadQuote`); and one whose latest reply is the post, with its words as that reply's first
+ *  line. */
+function threadRows(kind: "comment" | "message") {
+  return [
+    replyRow(POST, {
+      kind,
+      subject: OLD_WORDS,
+      ...(kind === "comment" ? { anchor: INSERT_ANCHOR } : {}),
+    }),
+    replyRow(OTHER, { kind, reply: { ...replyRow(OTHER).reply, first_line: OLD_WORDS, id: POST } }),
+  ];
 }
 
 /** What a row reads of the post's copy an answer holds. */
@@ -488,7 +570,13 @@ interface WriteRow {
   readonly kind: "comment" | "message";
   readonly key: QueryKey;
   readonly answer: unknown;
+  /** Each copy of the post the answer holds that an edit and a delete both mark. */
   readonly copies: (answer: unknown) => readonly CopyMarks[];
+  /** Each copy a delete marks and an edit does not: a thread row's latest reply. */
+  readonly deletedCopies?: (answer: unknown) => readonly CopyMarks[];
+  /** The delete the answer is written: the post's own (`POST_DELETES`), unless the family holds
+   *  a copy only another delete writes. */
+  readonly deleted?: DispatchEvent;
 }
 
 const at = (value: unknown, ...path: (string | number)[]): unknown =>
@@ -499,6 +587,11 @@ const at = (value: unknown, ...path: (string | number)[]): unknown =>
   );
 const marksAt = (value: unknown, ...path: (string | number)[]): CopyMarks =>
   (at(value, ...path) ?? {}) as CopyMarks;
+/** Where the copies are in `askThread` held at `path`: the post, and the quote of a block of it. */
+const threadCopies = (answer: unknown, ...path: (string | number)[]): CopyMarks[] => [
+  marksAt(answer, ...path, "replies", 0),
+  marksAt(answer, ...path, "replies", 1, "reply_block"),
+];
 
 const commentEvent: DispatchEvent = {
   actor: { id: "alice", kind: "user" },
@@ -514,54 +607,179 @@ const commentEvent: DispatchEvent = {
   type: "comment.created",
 } as unknown as DispatchEvent;
 
+/** The post's `created` event of `kind` as the log holds it, with the post's words in every field:
+ *  its body and its tree, and a comment's suggestion and anchor quote. */
+const postEvent = (kind: "comment" | "message") => ({
+  ...commentEvent,
+  payload:
+    kind === "comment"
+      ? {
+          ...commentOf(),
+          anchor: INSERT_ANCHOR,
+          body_truncated: false,
+          suggestion: { accepted: null, replace_with: OLD_WORDS },
+        }
+      : { ...messageOf(), body_truncated: false },
+  trees: { "payload.body": WORDS_TREE },
+  type: `${kind}.created`,
+});
+
+/** The post's delete of each kind: a comment's is the delete of the pending insert suggestion
+ *  `insertComment` is, whose event carries the anchor with the quote the delete emptied. */
+const POST_DELETES = {
+  comment: correction("comment", POST, false, { anchor: { ...INSERT_ANCHOR, quote: "" } }),
+  message: correction("message", POST, false),
+};
+
+/** The delete of the post once an accept made its suggestion document text, so the anchor keeps
+ *  its quote, and named version 2 of doc-1 after the post's body: the delete gives that version a
+ *  name of none of it (`renamed_version`). */
+const ACCEPTED_DELETE = correction("comment", POST, false, {
+  anchor: { ...INSERT_ANCHOR, quote: "Friday" },
+  renamed_version: {
+    artifact_id: "doc-1",
+    number: 2,
+    summary: 'Accepted suggestion: "Friday" → "Monday"',
+  },
+});
+
 const ROWS: readonly WriteRow[] = [
   {
-    answer: { ask: { id: "ask-1" }, replies: [commentOf()] },
-    copies: (answer) => [marksAt(answer, "replies", 0)],
+    answer: askThread(),
+    copies: (answer) => threadCopies(answer),
     family: "ask",
     key: ["ask", "ask-1"],
     kind: "comment",
   },
   {
-    answer: [{ id: "ask-1", thread: { replies: [commentOf()] } }],
-    copies: (answer) => [marksAt(answer, 0, "thread", "replies", 0)],
+    answer: askThread(),
+    copies: (answer) => threadCopies(answer),
+    family: "ask-thread",
+    key: ["ask-thread", "ask-1"],
+    kind: "comment",
+  },
+  {
+    answer: [{ id: "ask-1", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
     family: "asks",
     key: ["asks", "CORE-1", "thread"],
     kind: "comment",
   },
   {
-    answer: [{ id: "ask-1", thread: { replies: [commentOf()] } }],
-    copies: (answer) => [marksAt(answer, 0, "thread", "replies", 0)],
+    answer: [{ id: "ask-1", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
     family: "inbox",
     key: ["inbox"],
     kind: "comment",
   },
   {
-    answer: [commentOf()],
-    copies: (answer) => [marksAt(answer, 0)],
+    answer: [insertComment(), quotingReply("comment")],
+    copies: (answer) => [marksAt(answer, 0), marksAt(answer, 1, "reply_block")],
     family: "artifact",
     key: ["artifact", "doc-1", "comments"],
     kind: "comment",
   },
   {
-    answer: [{ id: "ask-2", thread: { replies: [commentOf()] } }],
-    copies: (answer) => [marksAt(answer, 0, "thread", "replies", 0)],
+    answer: [{ id: "ask-2", thread: askThread() }],
+    copies: (answer) => threadCopies(answer, 0, "thread"),
     family: "artifact",
     key: ["artifact", "doc-1", "asks"],
     kind: "comment",
   },
+  // The reads that hold a version's name, which the accept took from the post's body.
   {
-    answer: { pageParams: [0], pages: [[commentEvent]] },
+    answer: DOCUMENT,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1"],
+    kind: "comment",
+  },
+  {
+    answer: VERSION_TWO,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1", "version", 2],
+    kind: "comment",
+  },
+  {
+    answer: VERSION_TWO,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact",
+    key: ["artifact", "doc-1", 2],
+    kind: "comment",
+  },
+  {
+    answer: DOCUMENT,
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "artifact-ref",
+    key: ["artifact-ref", "CORE/spec"],
+    kind: "comment",
+  },
+  {
+    answer: { artifacts: [DOCUMENT], key: "CORE-1" },
+    copies: () => [],
+    deleted: ACCEPTED_DELETE,
+    family: "issue",
+    key: ["issue", "CORE-1"],
+    kind: "comment",
+  },
+  {
+    answer: { comment: insertComment(), replies: [quotingReply("comment")] },
+    copies: (answer) => [marksAt(answer, "comment"), marksAt(answer, "replies", 0, "reply_block")],
+    family: "comment",
+    key: ["comment", POST],
+    kind: "comment",
+  },
+  {
+    answer: [insertComment(), quotingReply("comment")],
+    copies: (answer) => [marksAt(answer, 0), marksAt(answer, 1, "reply_block")],
+    family: "comments",
+    key: ["comments", "CORE-1"],
+    kind: "comment",
+  },
+  {
+    answer: { pageParams: [0], pages: [[postEvent("comment")]] },
     copies: (answer) => [marksAt(answer, "pages", 0, 0, "payload")],
     family: "events",
     key: ["events", "CORE-1"],
     kind: "comment",
   },
   {
-    answer: [{ message: messageOf(), replies: [] }],
-    copies: (answer) => [marksAt(answer, 0, "message")],
+    answer: [postEvent("message")],
+    copies: (answer) => [marksAt(answer, 0, "payload")],
+    family: "events",
+    key: ["events", "CORE-1", "margin-pinned", [POST]],
+    kind: "message",
+  },
+  {
+    answer: [{ message: wordyMessage(), replies: [quotingReply("message")] }],
+    copies: (answer) => [
+      marksAt(answer, 0, "message"),
+      marksAt(answer, 0, "replies", 0, "reply_block"),
+    ],
     family: "agents",
     key: ["agents", "019a1c01-0d7b-7a2a-8e93-000000000a01", "messages"],
+    kind: "message",
+  },
+  {
+    answer: { message: wordyMessage(), replies: [quotingReply("message")] },
+    copies: (answer) => [marksAt(answer, "message"), marksAt(answer, "replies", 0, "reply_block")],
+    family: "issue-message",
+    key: ["issue-message", "CORE-1", POST],
+    kind: "message",
+  },
+  {
+    answer: [{ message: wordyMessage(), replies: [quotingReply("message")] }],
+    copies: (answer) => [
+      marksAt(answer, 0, "message"),
+      marksAt(answer, 0, "replies", 0, "reply_block"),
+    ],
+    family: "issue-messages",
+    key: ["issue-messages", "CORE-1"],
     kind: "message",
   },
   {
@@ -571,7 +789,13 @@ const ROWS: readonly WriteRow[] = [
         {
           limit: 20,
           offset: 0,
-          rows: [{ ask_id: "ask-1", kind: "reply", reply: { body: OLD_WORDS, id: POST } }],
+          rows: [
+            {
+              ask_id: "ask-1",
+              kind: "reply",
+              reply: { body: OLD_WORDS, body_tree: WORDS_TREE, id: POST },
+            },
+          ],
           total: 1,
         },
       ],
@@ -579,6 +803,48 @@ const ROWS: readonly WriteRow[] = [
     copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0, "reply")],
     family: "me answers",
     key: ["me", "answers"],
+    kind: "comment",
+  },
+  // What the reader dismissed (pages), and one owner's unread set (one page).
+  {
+    answer: {
+      pageParams: [0],
+      pages: [{ limit: 20, offset: 0, rows: threadRows("comment"), total: 2 }],
+    },
+    copies: (answer) => [marksAt(answer, "pages", 0, "rows", 0)],
+    deletedCopies: (answer) => [marksAt(answer, "pages", 0, "rows", 1, "reply")],
+    family: "me replies",
+    key: ["me", "replies", "dismissed"],
+    kind: "comment",
+  },
+  {
+    answer: { limit: 20, offset: 0, rows: threadRows("message"), total: 2 },
+    copies: (answer) => [marksAt(answer, "rows", 0)],
+    deletedCopies: (answer) => [marksAt(answer, "rows", 1, "reply")],
+    family: "me replies",
+    key: ["me", "replies", "unread", "CORE-1"],
+    kind: "message",
+  },
+  // A names read naming the post, and a block of it, with each member's words.
+  {
+    answer: {
+      targets: [
+        { gone: false, kind: "comment", name: OLD_WORDS, ref: `dispatch://CORE-1/comment/${POST}` },
+        {
+          gone: false,
+          kind: "block",
+          name: OLD_WORDS,
+          ref: `dispatch://CORE-1/comment/${POST}#b-b1`,
+          text_tree: WORDS_TREE,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "targets", 0), marksAt(answer, "targets", 1)],
+    family: "reference-targets",
+    key: referenceTargetsQuery([
+      `dispatch://CORE-1/comment/${POST}`,
+      `dispatch://CORE-1/comment/${POST}#b-b1`,
+    ]).queryKey,
     kind: "comment",
   },
   // The Referenced by panel's list (`ReferencedBy.tsx`), which it draws beside "Referenced by
@@ -615,30 +881,69 @@ const ROWS: readonly WriteRow[] = [
     key: ["references", "to", "dispatch://CORE-1"],
     kind: "comment",
   },
+  // A read of a block of the post pinned to its first revision: its text, its tree and the text at
+  // the pin.
+  {
+    answer: {
+      edges: [],
+      node: {
+        block_id: "b2",
+        id: `comment/${POST}#b2`,
+        kind: "block",
+        parent: { id: POST, kind: "comment" },
+        pin: {
+          ref: `dispatch://CORE-1/comment/${POST}#b-b2@v1`,
+          state: "unchanged",
+          text: OLD_WORDS,
+          text_tree: WORDS_TREE,
+          version: 1,
+        },
+        text: OLD_WORDS,
+        text_tree: WORDS_TREE,
+      },
+    },
+    copies: (answer) => [marksAt(answer, "node")],
+    family: "references to",
+    key: ["references", "to", `dispatch://CORE-1/comment/${POST}#b-b2@v1`],
+    kind: "comment",
+  },
+  {
+    answer: {
+      results: [
+        {
+          href: `/issues/CORE-1/comments/${POST}`,
+          id: POST,
+          kind: "comment",
+          rank: 1,
+          snippet: OLD_WORDS,
+          snippet_tree: WORDS_TREE,
+        },
+      ],
+    },
+    copies: (answer) => [marksAt(answer, "results", 0)],
+    family: "search",
+    key: ["search", "deploy", {}],
+    kind: "comment",
+  },
 ];
 
 test("every family a correction writes has a row that proves the write", () => {
   const here = new Set(ROWS.map((row) => row.family));
-  expect(
-    Object.keys(CORRECTED_POST_FAMILIES).filter(
-      (family) => !here.has(family) && !Object.hasOwn(WRITTEN_ELSEWHERE, family)
-    )
-  ).toEqual([]);
+  expect(Object.keys(CORRECTED_POST_FAMILIES).filter((family) => !here.has(family))).toEqual([]);
   for (const [family, { file, test: name }] of Object.entries(WRITTEN_ELSEWHERE)) {
     expect(readFileSync(join(SOURCE_ROOT, file), "utf8"), family).toContain(name);
   }
 });
 
 for (const row of ROWS) {
-  test(`a delete writes its mark into ${row.family} (${JSON.stringify(row.key)}), and keeps none of the post's words`, () => {
+  test(`a delete writes its mark into ${row.family} (${JSON.stringify(row.key)}), and keeps none of the post's words in any field`, () => {
     const client = new QueryClient();
     client.setQueryData(row.key, row.answer);
     expect(JSON.stringify(client.getQueryData(row.key))).toContain(OLD_WORDS);
-    markCorrectedPost(client, correction(row.kind, POST, false));
+    markCorrectedPost(client, row.deleted ?? POST_DELETES[row.kind]);
     const answer = client.getQueryData(row.key);
-    expect(row.copies(answer).map((copy) => copy.deleted_at)).toEqual(
-      row.copies(row.answer).map(() => DELETION.deleted_at)
-    );
+    const marked = [...row.copies(answer), ...(row.deletedCopies?.(answer) ?? [])];
+    expect(marked.map((copy) => copy.deleted_at)).toEqual(marked.map(() => DELETION.deleted_at));
     expect(JSON.stringify(answer)).not.toContain(OLD_WORDS);
   });
 
@@ -900,4 +1205,40 @@ test("a delete empties a cached event's anchor quote where its own event's is em
     insert: { deleted_at: DELETION.deleted_at, quote: "" },
     replace: { deleted_at: DELETION.deleted_at, quote: "the old wording" },
   });
+});
+
+// A delete empties the anchor quote of a cached Inbox thread row whose root is the post, where it
+// emptied the comment's. The row carries its root comment's anchor (`readMyReplyRows` in
+// `api/replies.go`), and the card prints that anchor's quote above the thread (`ThreadQuote`).
+// Where the root is a pending insert suggestion, the quote is the text the insert put in the
+// document, the comment's own words: its delete empties the row's quote, as it does the comment's
+// own copies and its events', so no word of the suggestion stays in the row. The control: a
+// delete that leaves the quote, a replace suggestion's or a plain comment's, which is the
+// document's own text, leaves the row's.
+test("a delete empties a cached Inbox thread row's anchor quote where its own event's is empty, and keeps a quote of the document's text", () => {
+  const rows = ["me", "replies", "inbox"];
+  const rowAfter = (cached: string, deleted: string) => {
+    const client = new QueryClient();
+    client.setQueryData(rows, {
+      limit: 20,
+      offset: 0,
+      rows: [replyRow(POST, { anchor: { ...INSERT_ANCHOR, quote: cached }, subject: OLD_WORDS })],
+      total: 1,
+    });
+    markCorrectedPost(
+      client,
+      correction("comment", POST, false, { anchor: { ...INSERT_ANCHOR, quote: deleted } })
+    );
+    return at(client.getQueryData(rows), "rows", 0);
+  };
+  const insert = rowAfter(OLD_WORDS, "");
+  const kept = rowAfter("the old wording", "the old wording");
+  expect({
+    insert: { deleted_at: at(insert, "deleted_at"), quote: at(insert, "anchor", "quote") },
+    kept: { deleted_at: at(kept, "deleted_at"), quote: at(kept, "anchor", "quote") },
+  }).toEqual({
+    insert: { deleted_at: DELETION.deleted_at, quote: "" },
+    kept: { deleted_at: DELETION.deleted_at, quote: "the old wording" },
+  });
+  expect(JSON.stringify(insert)).not.toContain(OLD_WORDS);
 });

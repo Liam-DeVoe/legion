@@ -1,7 +1,7 @@
 package api
 
 // broker_token.go is the credential that is not a bearer: an access token the secrets broker
-// issued, presented under RFC 9449's DPoP scheme. internal/brokertoken decides it; what is here
+// issued, presented under RFC 9449's DPoP scheme. internal/ciphertoken decides it; what is here
 // is where that decision is made on a request, how it is carried to every layer that resolves
 // the caller, what each refusal says, and what an open connection's heartbeat asks instead.
 //
@@ -16,7 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -40,7 +40,7 @@ import (
 // gate carries that result, its refusal included, as this carries its decision.
 func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, presented := brokertoken.Presented(r); !presented {
+		if _, presented := ciphertoken.Presented(r); !presented {
 			handler(w, r)
 			return
 		}
@@ -59,9 +59,9 @@ func (s *server) decideBrokerToken(handler http.HandlerFunc) http.HandlerFunc {
 // proof that opened the connection, and that proof is spent: checking it again would be the
 // replay it looks like and would close a sound socket on its first heartbeat. It authenticated
 // the upgrade, so what is left to ask is whether the broker still holds the token live, which is
-// brokertoken.Verifier.Live. Nothing is admitted through this, only kept.
+// ciphertoken.Verifier.Live. Nothing is admitted through this, only kept.
 func (s *server) callerStillResolves(r *http.Request) error {
-	if _, presented := brokertoken.Presented(r); presented {
+	if _, presented := ciphertoken.Presented(r); presented {
 		if s.deps.BrokerTokens == nil {
 			return errNoBrokerConfigured()
 		}
@@ -86,7 +86,7 @@ var readOnlyPersonScopes = []string{model.ScopePerson}
 
 // brokerTokenActor authenticates a caller presenting an access token the secrets broker issued,
 // under the DPoP scheme: the broker is asked whether the token is live and the caller is held to
-// the key that token is bound to (internal/brokertoken). A verified caller is the session the
+// the key that token is bound to (internal/ciphertoken). A verified caller is the session the
 // token names, acting for the person it names, or, where the broker names none, for the service
 // the machine holding it belongs to. It is never retried as another credential.
 //
@@ -96,7 +96,7 @@ var readOnlyPersonScopes = []string{model.ScopePerson}
 // empty writer. It holds no OAuth scope either, so the rows a person's own credential reaches
 // turn it away earlier still (gateRouteScopes): there is no person for it to act as.
 //
-// A read-only token writes nothing (brokertoken.Caller.ReadOnly, which only a verifier built with
+// A read-only token writes nothing (ciphertoken.Caller.ReadOnly, which only a verifier built with
 // Options.ServesReadOnly answers). It is the read entry's token, which names a service and no
 // person and holds the scope read alone, or a token narrowed to reading because its trade asked
 // for read, which names the person or the service, and the projects, that the same trade would
@@ -138,19 +138,19 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	caller, err := s.deps.BrokerTokens.Verify(r.Context(), r)
 	switch {
 	case err == nil:
-	case errors.Is(err, brokertoken.ErrNotActive):
+	case errors.Is(err, ciphertoken.ErrNotActive):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_ACTIVE",
 			"the secrets broker does not hold this access token as live")
-	case errors.Is(err, brokertoken.ErrKeyMismatch):
+	case errors.Is(err, ciphertoken.ErrKeyMismatch):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_KEY_MISMATCH",
 			"the DPoP proof's key is not the key this access token is bound to")
-	case errors.Is(err, brokertoken.ErrProofInvalid), errors.Is(err, brokertoken.ErrNotPresented):
+	case errors.Is(err, ciphertoken.ErrProofInvalid), errors.Is(err, ciphertoken.ErrNotPresented):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_PROOF_INVALID",
 			"the DPoP proof did not verify")
-	case errors.Is(err, brokertoken.ErrNotASession):
+	case errors.Is(err, ciphertoken.ErrNotASession):
 		return model.Actor{}, false, errorf(http.StatusUnauthorized, "BROKER_TOKEN_NOT_A_SESSION",
 			"this access token is not a session's credential: the secrets broker names no session for it")
-	case errors.Is(err, brokertoken.ErrRateLimited):
+	case errors.Is(err, ciphertoken.ErrRateLimited):
 		wait := s.deps.BrokerTokens.RetryAfter()
 		refusal := errorf(http.StatusTooManyRequests, "BROKER_TOKEN_RATE_LIMITED",
 			"too many access tokens checked from this address; try again in %s", wait)
@@ -173,13 +173,13 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// is no person for it to act as, and a scope that said otherwise would let it act as the
 	// session's own id on the routes that read what belongs to a person.
 	//
-	// A read-only token is read by its base word (brokertoken.Caller.ProjectScope) as the same
+	// A read-only token is read by its base word (ciphertoken.Caller.ProjectScope) as the same
 	// token without read would be, and holds less: one narrowed from a token that acts as its
 	// person still acts for that person, so it holds the person scope alone, and never approve;
 	// every other holds none. The scope read itself is carried as the credential's ReadOnly mark
 	// and never as a scope a route could require, so no recorded act names it.
 	var scopes []string
-	if caller.Person != "" && caller.ProjectScope == brokertoken.ProjectScopePerson {
+	if caller.Person != "" && caller.ProjectScope == ciphertoken.ProjectScopePerson {
 		scopes = model.Scopes
 		if caller.ReadOnly {
 			scopes = readOnlyPersonScopes
@@ -194,7 +194,7 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 		Credential: &model.Credential{Scopes: scopes, Session: caller.Session, ReadOnly: caller.ReadOnly, Cut: caller.Cut},
 		Proven:     true,
 	}
-	// A caller names a person or a service, never both and never neither (brokertoken.Caller),
+	// A caller names a person or a service, never both and never neither (ciphertoken.Caller),
 	// and the two fields are set from the token alone, never from a body. whoami reports both.
 	if caller.Person != "" {
 		actor.Owner = &caller.Person
@@ -205,14 +205,14 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	// Only a token an operator's entry mapped to one project names that project as the one it
 	// may write, which is today's named-scope rule; a named token naming none (the shared
 	// public-session account's) writes, as a token naming no project does, wherever Dispatch's
-	// own rules let it, and brokertoken refuses a named token naming two. A token narrowed from a
+	// own rules let it, and ciphertoken refuses a named token naming two. A token narrowed from a
 	// named one names its project too, as the project it reads as, and writes none.
 	// A token acting as its person carries the list
-	// its trade asked for (brokertoken.Caller.Projects), and that list limits no write here: a
+	// its trade asked for (ciphertoken.Caller.Projects), and that list limits no write here: a
 	// dev box session's person writes wherever they may, and the token of a machine naming a
 	// service and no person names no project at all. Nor does a token of the project scope none,
 	// the read entry's or one narrowed from it, which names no project and writes none.
-	if caller.ProjectScope == brokertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
+	if caller.ProjectScope == ciphertoken.ProjectScopeNamed && len(caller.Projects) == 1 {
 		project := caller.Projects[0]
 		actor.Project = &project
 	}

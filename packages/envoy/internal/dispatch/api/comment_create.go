@@ -51,15 +51,36 @@ type commentInput struct {
 // suggestion itself, and the kind its mark recorded when the comment was made (docs.SuggestionKind:
 // "insert", "replace" or "delete"; the mark a quote anchor writes is a replace). An insert's mark
 // wraps the words the suggestion itself put in the document, so its anchor's quote is a copy of
-// the comment's own text, and the delete reads the kind to empty that quote once the mark is gone
-// and answers no kind (deleteComment). Only the delete reads it, by its key; every other read
-// decodes the column into model.Suggestion, which has no kind and drops it, so no answer and no
-// event carries it. An accept or a reject writes the column back from model.Suggestion, without
-// the kind, once the suggestion is decided and the delete no longer reads it. A suggestion with no
-// anchor has no mark and stores no kind.
+// the comment's own text until an accept makes those words document text, and the delete reads
+// the kind (loadStoredSuggestion) to empty that quote once the mark is gone and answers no kind:
+// an orphaned suggestion's, and a rejected one's, whose reject took the words out
+// (deleteComment). An accept or a reject merges what it decides into the column, which keeps the
+// kind (commentAction), so a decided suggestion keeps it.
+//
+// Taken is what the reject of an insert records besides: the anchor marks of other asks and
+// comments its removal took text from (docs.TakenAnchorMarks), which the comment's delete reads to
+// empty, or cut back to their document text, the quotes that hold the inserted words
+// (docs.RewriteTakenAnchors). Only the delete reads these keys; every other read decodes the
+// column into model.Suggestion, which has neither and drops both, so no answer and no event
+// carries them. A suggestion with no anchor has no mark and stores no kind.
 type storedSuggestion struct {
 	model.Suggestion
-	Kind string `json:"kind,omitempty"`
+	Kind  string                `json:"kind,omitempty"`
+	Taken docs.TakenAnchorMarks `json:"taken,omitzero"`
+}
+
+// loadStoredSuggestion is the kind and the taken marks comment id's suggestion column holds
+// (storedSuggestion), read in tx. The kind is "" for a row with no suggestion, for one with no
+// anchor, and for one made before the create stored the kind; the taken marks are none for every
+// row but one whose reject took an insert's text out, and for one rejected before the reject
+// recorded them.
+func loadStoredSuggestion(ctx context.Context, tx pgx.Tx, id string) (string, docs.TakenAnchorMarks, error) {
+	var kind string
+	var taken docs.TakenAnchorMarks
+	err := tx.QueryRow(ctx, `
+		select coalesce(suggestion->>'kind', ''), coalesce(suggestion->'taken', '{}'::jsonb) from comments where id = $1
+	`, id).Scan(&kind, &taken)
+	return kind, taken, err
 }
 
 // askReplyTurn is who holds the turn once an ask reply by actor is posted: a human's

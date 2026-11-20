@@ -33,12 +33,13 @@ import { CLAIM_RUN_VARIABLE, RESERVE_VARIABLE } from "./reserve";
  *
  * Against 651db8d5, `reserve-ask.ts`, `stats.ts` and `claim.ts` are byte for byte the same, and
  * the pinned `reserve.ts`, `corpus-io.ts` and `dispatch-read.ts` differ only in what the decision
- * never calls: the `--draw` path option of `runDigestOf`, the two sha256s `readCorpus` records,
- * `pageEventLog`'s `after` and the new `readBytes`, and how `claimRunOf` reads a reply its author
- * deleted, with `CommentReply`'s `deleted_at` (dispatch://INFRA-1523). So the pinned closure is
- * the 651db8d5 decision, and any later change to a pinned file fails this check until a reviewed
- * pull request moves the pin. The pinned files are checked again right before the children are
- * spawned (`Decision.confirm`).
+ * never calls: the `--draw` and `--inputs` path options of `runDigestOf` and the file options of
+ * `s10_judge.py`, the two sha256s `readCorpus` records, `pageEventLog`'s `after` and the new
+ * `readBytes`, and `claimRunOf`'s rule for a start reply its author deleted with the optional
+ * `CommentReply.deleted_at` it reads (dispatch://INFRA-1523; `claimRunOf` is called by
+ * `build-corpus.ts` alone). So the pinned closure is the 651db8d5 decision, and any later change
+ * to a pinned file fails this check until a reviewed pull request moves the pin. The pinned files
+ * are checked again right before the children are spawned (`Decision.confirm`).
  *
  * The children. Each ask is decided by a child process (`spawnDecision`) run with neither
  * `APPROVAL_EVAL_RESERVE` nor `APPROVAL_EVAL_CLAIM_RUN` in its environment, so outside the claim's
@@ -59,7 +60,7 @@ export const RESERVE_ASK_CLOSURE: Readonly<Record<string, string>> = {
   "decision-preload.ts": "fbd2007b4294be4645e6b38cb31cd92803371d18b1807b3a8dd911586deb5641",
   "dispatch-read.ts": "89ca0dda1225cfebe147092fb5a0064d240af38f70e06a7f94bf9354e77fa37e",
   "reserve-ask.ts": "604e2f943ed71f6d43761f594d333e083d9d2811f28df779673b32a2fefdde42",
-  "reserve.ts": "f266ac9dcda5c054ef69dde8acfe94c23442cd210ba742453d2d4a38c8ed0909",
+  "reserve.ts": "f76e8304e8018c0ef754e6b5ab473a37ddc437336bfe0853b632c7172fe6a883",
   "stats.ts": "aaf9b5a598436d3ae5be4173b659f5889a24dd4d8b8afef0be9b5852eec6ffe9",
 };
 

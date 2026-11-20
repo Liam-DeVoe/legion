@@ -19,9 +19,29 @@ import (
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
 // role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
 // either: each read takes the newest pull request head of the issue
-// (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
-// the check's one result from the run its `ci_check` names. The derived result goes through the
-// same comparisonReader a recorded result does, so one rule judges where both kinds stand.
+// (comparisonReader.newestPullRequestHead), reads that commit's check runs from GitHub once, and
+// derives the check's one result from the run its `ci_check` names. The derived result goes
+// through the same comparisonReader a recorded result does, so one rule judges where both kinds
+// stand.
+
+// newestPullRequestHead is the newest pull request head of issueKey that a check CI proves is
+// derived at (delivery.NewestPullRequestHead). It is read after learn, so a writer's read finds
+// the row its own read-through stored. A read-only caller's read runs the same statement over
+// the stored rows with learned laid on (delivery.ReadOnlyNewestPullRequestHead), as every other
+// read of the heads here does: the heads the memory keeps, this read's own among them. A reader
+// that named a commit learns nothing and takes no heads when it is made (newComparisonReader),
+// so its read takes the memory's heads here, as the read-only reads before it left them.
+func (c *comparisonReader) newestPullRequestHead(ctx context.Context, issueKey string) (delivery.NewestHead, bool, error) {
+	pool := c.server.deps.Store.Pool
+	if !c.readOnly {
+		return delivery.NewestPullRequestHead(ctx, pool, issueKey)
+	}
+	kept := c.learned
+	if c.at != noCommitNamed {
+		kept = c.server.readOnlyCommitPulls.Learned()
+	}
+	return delivery.ReadOnlyNewestPullRequestHead(ctx, pool, issueKey, kept)
+}
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
@@ -89,9 +109,11 @@ type ciRun struct {
 // loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
-// at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
-// case of the answer.
-func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
+// at. It runs after reader has learned the heads GitHub names (comparisonReader.learn) and reads
+// the newest head through it (comparisonReader.newestPullRequestHead), so a head this read's
+// read-through learned is the head a check CI proves is derived at. Only a failed read of
+// Dispatch's own database is an error; whatever GitHub answers is a case of the answer.
+func (s *server) deriveCIResults(ctx context.Context, reader *comparisonReader, issueKey string, checks []model.CheckBlock) error {
 	var proved []provedCI
 	names := map[string]struct{}{}
 	for index := range checks {
@@ -110,7 +132,7 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return err
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	head, found, err := reader.newestPullRequestHead(ctx, issueKey)
 	if err != nil {
 		return err
 	}

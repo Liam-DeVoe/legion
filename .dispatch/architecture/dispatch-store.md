@@ -1,7 +1,7 @@
 ---
 title: Postgres store and migrations
 parent: dispatch-server
-depends_on: [contracts, dispatch-auth, dispatch-duty, dispatch-model]
+depends_on: [contracts, dispatch-api, dispatch-auth, dispatch-duty, dispatch-events, dispatch-model]
 paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore, packages/envoy/internal/dispatch/textversions, packages/envoy/internal/dispatch/asof]
 ---
 The schema every other package reads and writes through: ordered migrations applied in one transaction each at boot, the pool, and the session and people rows — which is why it imports `auth`. The boot's migration lock goes back through `duty.FreeSessionLockThenReset`, which returns the connection to the pool only once Postgres has freed the lock — which is why it imports `duty`. `internal/pgmigrate` holds the runner's rules, which the secrets broker's runner shares: the whole migration set is refused before anything applies when two files share a version or a file is misnamed or unreadable, and every migration's lock waits are bounded at five seconds. `internal/pgmigrate` reads migration and census SQL as Postgres 18's lexer does.
@@ -25,6 +25,7 @@ It holds the keyword table of each past version of the searchable text, in two t
 It runs in a serving process, under the hold `search-text-versions-fill`, so one process writes at a time and the others stand by.
 It starts only after the server listens and the registry of live server processes admits the process, so a process that the registry refuses writes nothing.
 It reads the event log up to the safe horizon in batches of at most 500 events and 2 MB of text, and after each batch it rests for as long as the batch ran.
+A batch counts the payload of each event the rules read, and of each version an event starts the text its vector reads besides: the markdown of the primary document version an issue's row names, and the whole body of a post whose event cut it.
 Before each batch it pauses while an answers read that its process serves took longer than 800 ms within the last 10 s, or has run longer than 800 ms (`sessionanswers.Latency`).
 A reset of the event log (`events.EventLogWasReset`) empties both tables and starts the cursor again at the first event.
 `store.TextVersionsAt` gives `store.TextVersions`, the relation of the version of each item that held at a cut, only for a cut at or before the reach.
@@ -33,7 +34,7 @@ It refuses each cut while the fill's cursor row records rules older than `store.
 The relation's `deleted_at` is the post's present `deleted_at`, read from `public.comments` and `public.messages`.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
 `store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less 1 s.
-The fill imports `events`, for the horizon and the reset check, and `sessionanswers`, for the pause.
+The fill imports `events` (`dispatch-events`), for the horizon and the reset check, and `sessionanswers` (`dispatch-api`), for the pause, which is why both are among this note's `depends_on`.
 
 `internal/dispatch/asof` is the reader of Dispatch at a past time, the cut, and it imports no part of the store or of the API: the store imports it.
 It holds a shadow for each table that a read at a cut reads: a SQL definition of the table's columns as they stood at the cut, from `events`, the append-only tables, `post_body_history` and the present rows of the shadowed tables, each kept only where it existed at the cut, with the cut as a `timestamptz` literal and each base table named with the schema `public`.

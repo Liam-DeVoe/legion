@@ -7,6 +7,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // commit_pull_reads.go bounds how often one commit's pull requests are read through
@@ -138,10 +140,16 @@ func (c *CommitPullReads) Settle(repoFull, sha string, now time.Time) {
 // CommitPullAnswers for the pull requests of a commit, and Branches' own for a commit's place on
 // a branch. An answer of either is a handful of short strings (a pull request's head row keeps
 // its title and URL, never its body), so the bound holds each memory to a few megabytes at most.
-// A process whose read-only reads ask about more commits than this drops the answer it learned
-// longest ago and says so in its log (readOnlyAnswers.keep). That is the one place a read-only
-// read may ask GitHub where a writer's stored row would answer: a dropped answer costs one more
-// GitHub read of that commit.
+// A memory at the bound whose every answer still stands drops the answer it learned longest ago
+// for each new commit (readOnlyAnswers.keep). That is the one place a read-only read may ask
+// GitHub where a writer's stored row would answer: a dropped answer is read from GitHub again
+// when its commit is read again. An answer that holds pull requests stands for good, as a
+// branch's yes does, so once a process's read-only reads name more commits than the bound holds,
+// the memory drops one for every new commit, and those extra GitHub reads repeat on every read-only
+// read, where a writer's stored rows answer them.
+// The memory counts every drop on the process's metrics (CommitPullAnswers.CountDrops,
+// Branches.CountReadOnlyDrops) and logs one WARN when it first drops one, and no other until it
+// has fallen below the bound.
 const ReadOnlyAnswerBound = 1024
 
 // readOnlyAnswers is what a read-only caller's results read remembers of GitHub's answers, since
@@ -152,6 +160,11 @@ const ReadOnlyAnswerBound = 1024
 type readOnlyAnswers[K comparable, V any] struct {
 	mu      sync.Mutex
 	entries map[K]readOnlyAnswer[V]
+	// full is whether the memory has dropped an answer at its bound since it was last below it,
+	// which is when its one WARN is written (makeRoomLocked).
+	full bool
+	// dropped counts every answer the memory drops at its bound (countDrops); nil counts none.
+	dropped *metrics.Counter
 }
 
 // readOnlyAnswer is one remembered value, when it was learned, and the moment it stops standing:
@@ -185,9 +198,12 @@ func (a *readOnlyAnswers[K, V]) recallLocked(key K, now time.Time) (readOnlyAnsw
 // keep remembers answer for key, replacing whatever was kept for key.
 //
 // A new key in a memory at ReadOnlyAnswerBound first drops every answer that no longer stands at
-// now. Where every answer still stands, it drops the one learned longest ago and logs that it
-// did, naming the bound and the key, so a memory at its bound is seen in the log rather than in a
-// GitHub bill. Nothing grows past the bound.
+// now; where that leaves fewer than the bound, the memory has fallen below it. Where every answer
+// still stands, it drops the one learned longest ago and counts the drop (countDrops). The first
+// drop since the memory was last below its bound also logs one WARN, naming the bound and the
+// key, so a memory at its bound is seen in the log rather than in a GitHub bill; the drops after
+// it are seen in the count alone, since a memory whose answers stand for good drops one for every
+// new key. Nothing grows past the bound.
 func (a *readOnlyAnswers[K, V]) keep(key K, answer readOnlyAnswer[V], now time.Time) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -212,6 +228,7 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 		}
 	}
 	if len(a.entries) < ReadOnlyAnswerBound {
+		a.full = false
 		return
 	}
 	var oldest K
@@ -223,8 +240,20 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 		}
 	}
 	delete(a.entries, oldest)
-	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers is at its bound; it dropped the answer learned longest ago, which costs one more GitHub read if that commit is read again",
+	a.dropped.Inc()
+	if a.full {
+		return
+	}
+	a.full = true
+	slog.Warn("dispatch: a read-only results read's memory of GitHub's answers reached its bound with every answer still standing, so it drops the answer learned longest ago for each new one, and each dropped answer is read from GitHub again when its commit is read again, so past the bound those extra reads repeat on every read-only read; every drop is counted on the process's metrics, and this is not logged again until the memory has fallen below its bound",
 		"bound", ReadOnlyAnswerBound, "dropped", fmt.Sprintf("%+v", oldest), "learned", learned)
+}
+
+// countDrops has the memory count every answer it drops at its bound on dropped.
+func (a *readOnlyAnswers[K, V]) countDrops(dropped *metrics.Counter) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.dropped = dropped
 }
 
 // CommitPullAnswers is CommitPullReads' twin for a read-only caller's results read: a claim of
@@ -238,14 +267,18 @@ func (a *readOnlyAnswers[K, V]) makeRoomLocked(now time.Time) {
 // requests none of which has the commit as its head. So a read-only read asks GitHub no more and
 // no less often than a writer's does. A read that failed keeps no answer, and its claim refuses
 // the commit for the rest of CommitPullReadStaleAfter, as a writer's failed read is claimed with
-// the rest.
+// the rest. A read that failed after it had attributed some of the pull requests GitHub named
+// keeps that part, as a writer's read stores it, and is not settled (KeepPart).
 //
 // The answer outlives its claim, as the rows a writer's read stores outlive the writer's claim:
-// every later read-only read reads the stored rows as they would stand had each answer been
-// stored (Learned), until a newer answer for the same commit replaces it or the bound drops it.
+// every later read-only read lays it on the stored rows (Learned, KeptHeads) until a newer answer
+// for the same commit replaces it or the bound drops it. Each head of it is kept with what was
+// stored for its pull request when it was learned (ReadStoredRows), and gives way, in those reads,
+// to a row a writer has stored since.
 //
 // Its zero value is an empty memory, and the server holds one for the process
-// (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits.
+// (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits, and counts each
+// one it drops at the bound on the counter the server hands it (CountDrops).
 type CommitPullAnswers struct {
 	answers readOnlyAnswers[commitPullKey, commitPullAnswer]
 }
@@ -307,23 +340,44 @@ func (c *CommitPullAnswers) Claim(repoFull, sha string, now time.Time) CommitPul
 	return CommitPullAsk
 }
 
-// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, in place
-// of the answer kept for it before, and holds the commit off for the span CommitPullAnswers' doc
-// comment gives.
+// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, with what
+// was stored for each of them as ReadStoredRows read it right after, in place of the answer kept
+// for it before, and holds the commit off for the span CommitPullAnswers' doc comment gives.
 func (c *CommitPullAnswers) Keep(repoFull, sha string, pulls CommitPulls, now time.Time) {
 	span := CommitPullReadStaleAfter
 	if len(pulls.Heads) > 0 && !pulls.AtHead {
 		span = CommitPullSettledFor
 	}
+	c.keep(repoFull, sha, pulls, now, span)
+}
+
+// KeepPart is Keep for the part of GitHub's answer a read attributed before a later step of it
+// failed (ReadCommitPulls answers that part with its error), which a writer's read stores all the
+// same (ReadThroughCommitPulls). The commit stays held off for CommitPullReadStaleAfter alone,
+// whatever the part holds, as a writer's read that fails is claimed and not settled
+// (api/results_comparison.go, comparisonReader.readThroughHead).
+func (c *CommitPullAnswers) KeepPart(repoFull, sha string, pulls CommitPulls, now time.Time) {
+	c.keep(repoFull, sha, pulls, now, CommitPullReadStaleAfter)
+}
+
+// keep remembers pulls for sha in repoFull, learned at now and held off for span.
+func (c *CommitPullAnswers) keep(repoFull, sha string, pulls CommitPulls, now time.Time, span time.Duration) {
 	kept := commitPullAnswer{pulls: &pulls, notBefore: now.Add(span)}
 	c.answers.keep(commitPullKey{repo: repoFull, sha: sha}, kept.held(now), now)
 }
 
-// Learned is every answer the memory keeps, in the order they were read, two read at one moment
-// in the order of their repository and commit: what a read-only read reads the stored rows with,
-// as they would stand had a writer's read stored each answer in turn (HeadsAttributedToWith,
-// HeadStoredAtWith, BaseBranchMergedForWith, BaseBranchMergedInWith, Branches.ReadCommitOnBranch).
-func (c *CommitPullAnswers) Learned() []CommitPulls {
+// CountDrops has the memory count every answer it drops at ReadOnlyAnswerBound on dropped, the
+// process's count of them, which the server registers on its metrics. A memory no counter was
+// handed counts nothing.
+func (c *CommitPullAnswers) CountDrops(dropped *metrics.Counter) {
+	c.answers.countDrops(dropped)
+}
+
+// Learned is every head the memory keeps, as a read-only caller's reads of the results path lay
+// them on the stored rows (KeptHeads): the answers in the order they were read, two read at one
+// moment in the order of their repository and commit, and each answer's heads in the order GitHub
+// named them, each with what was stored for its pull request when it was learned.
+func (c *CommitPullAnswers) Learned() KeptHeads {
 	type learned struct {
 		key   commitPullKey
 		pulls *CommitPulls
@@ -340,9 +394,18 @@ func (c *CommitPullAnswers) Learned() []CommitPulls {
 	slices.SortFunc(kept, func(a, b learned) int {
 		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.key.repo, b.key.repo), cmp.Compare(a.key.sha, b.key.sha))
 	})
-	answers := make([]CommitPulls, 0, len(kept))
+	var heads KeptHeads
 	for _, one := range kept {
-		answers = append(answers, *one.pulls)
+		for index, head := range one.pulls.Heads {
+			var row storedRow
+			if index < len(one.pulls.rows) {
+				row = one.pulls.rows[index]
+			}
+			heads.columns.add(head, row, one.pulls.storedUnder)
+			if head.seedsBranch() {
+				heads.merges = append(heads.merges, head)
+			}
+		}
 	}
-	return answers
+	return heads
 }

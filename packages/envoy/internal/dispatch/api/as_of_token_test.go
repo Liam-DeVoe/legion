@@ -18,21 +18,21 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
-	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 // cutTokenAnswer is the broker's answer for the machine login's read token with a cut, as the
-// golden file the broker's own test holds its answers to (brokertokentest.NarrowedAnswers,
+// golden file the broker's own test holds its answers to (ciphertokentest.NarrowedAnswers,
 // machine-login-with-a-cut), bound to jkt, cut at cut and naming the person brokerTestPerson.
 // But for its cut, it is the machine login's read token (machine-login) that the t-routes harness
 // reads with (asOfRig.callers).
-func cutTokenAnswer(t *testing.T, jkt string, cut asof.Cut) brokertoken.Introspection {
+func cutTokenAnswer(t *testing.T, jkt string, cut asof.Cut) ciphertoken.Introspection {
 	t.Helper()
-	answer := brokertokentest.NarrowedAnswers(t, jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login-with-a-cut"]
+	answer := ciphertokentest.NarrowedAnswers(t, jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login-with-a-cut"]
 	if answer.AsOf == "" {
 		t.Fatal("the golden machine-login-with-a-cut answer names no cut")
 	}
@@ -365,7 +365,7 @@ func TestTheLiveSocketRefusesACutTokenNamingTheCut(t *testing.T) {
 	}
 
 	const uncut = "the-same-token-with-no-cut-at-the-live-socket"
-	control := brokertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
+	control := ciphertokentest.NarrowedAnswers(t, caller.jkt, brokerTestSession, time.Now().Add(time.Hour).Unix())["machine-login"]
 	control.Person = brokerTestPerson
 	if control.AsOf != "" {
 		t.Fatalf("the golden machine-login answer names the cut %q, want none", control.AsOf)

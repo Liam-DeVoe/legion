@@ -161,6 +161,11 @@ export const commentEventPayloadFields = {
    *  owns the ask. Carried by `comment.created` alone; absent on a comment outside an ask's thread
    *  and from a Dispatch older than the field. */
   ask_sessions: z.array(z.string()).optional(),
+  /** The id of the root comment of the thread the comment replies in, which its `reply_to` names
+   *  too. Carried by `comment.created`, the `comment.answered` a delivery callback appends,
+   *  `comment.edited` and `comment.deleted`, so a reader routes a correction as it routes the
+   *  post; absent on a root comment, on a reply to an ask and on every other comment event. */
+  thread_root_id: z.string().optional(),
   /** Carried by `comment.deleted` alone, of a comment whose accepted suggestion named a document
    *  version after the comment's body: that version as the delete renamed it - its document, its
    *  number, and the name (`summary`) every read of the document's versions now gives it, which
