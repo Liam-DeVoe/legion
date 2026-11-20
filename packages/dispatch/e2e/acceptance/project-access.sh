@@ -478,8 +478,19 @@ if [ "$priv_private" = 1 ]; then
       expect_status 201 "$server: carol comments on PUB-1 while $caller's live socket is open"
       remember "$server" "live comment for $caller" "$(jq -r .id "$work/body")"
     done
+    # The written file names the PUB comment, written after PRIV's: the probe reads until the feed
+    # has sent every event its log lets the caller read of the writes (socket-access.ts), however
+    # long an open transaction holds the feed back, and the feed sends in id order, so a PRIV event
+    # main leaked has come by the time the PUB comment's does. alice's PRIV token reads no comment
+    # of them, so it names none, and its probe waits for nothing past the log's answer. The file is
+    # written whole and then moved into place, so the probe reads no part of it.
     for server in main twin; do
-      : >"$work/live-written-$server"
+      if [ "$caller" = alice-priv-token ]; then
+        : >"$work/live-written-$server.part"
+      else
+        recalled "$server" "live comment for $caller" >"$work/live-written-$server.part"
+      fi
+      mv "$work/live-written-$server.part" "$work/live-written-$server"
     done
     for server in main twin; do
       status=socket

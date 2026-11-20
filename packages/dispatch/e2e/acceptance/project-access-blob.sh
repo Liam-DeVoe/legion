@@ -709,8 +709,15 @@ for caller in "${callers[@]}"; do
       remember "$build" "live $project comment for $caller" "$(jq -r .id "$work/body")"
     done
   done
+  # The written file names both comments, which every caller is sent with every project public,
+  # PRIV-1's last: the probe reads until the feed has sent every event its log lets the caller
+  # read of them (socket-access.ts), however long an open transaction holds the feed back, and the
+  # feed sends in id order, so anything it sends of the writes before the last comment has come by
+  # then. The file is written whole and then moved into place, so the probe reads no part of it.
   for build in base head; do
-    : >"$work/live-written-$build"
+    printf '%s\n' "$(recalled "$build" "live PUB comment for $caller")" "$(recalled "$build" "live PRIV comment for $caller")" \
+      >"$work/live-written-$build.part"
+    mv "$work/live-written-$build.part" "$work/live-written-$build"
   done
   for build in base head; do
     status=socket
