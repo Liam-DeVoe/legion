@@ -1260,7 +1260,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // (bindSessionName), then the new enrollment's own row (its insert), then the session's lock
 // (store.LockSession, for an enrollment that carries a principal), then the enrollments rows,
 // then the grant, request and withheld rows under them. The session's lock is what an operator's
-// revoke takes before it locks the session's live enrollments, so an adoption reads its
+// revoke takes before it locks the session's live and dormant enrollments, so an adoption reads its
 // predecessors only once no such revoke is in flight, and takes the names it withheld: without
 // it, a revoke that committed while this adoption had read its predecessors and not yet committed
 // would withhold on boxes the session has left and not on this one. The predecessors of both
@@ -1269,7 +1269,7 @@ const carriesForItsSession = `(e.revoked_at is null or e.dormant_since is not nu
 // each other's first row. That is the order every other writer of these tables takes them in —
 // endCredential takes the credential, then its enrollments in id order; Revoke, EndLapsed and
 // EndCarried take an enrollment before the grants and requests under it; an operator's revoke
-// takes the session's lock and then its live enrollments in id order; and this package's
+// takes the session's lock and then its live and dormant enrollments in id order; and this package's
 // enrollment-then-request writers take the enrollment first too (ApplyDecision says so itself) —
 // so none of them can deadlock with this one.
 func adopt(ctx context.Context, tx pgx.Tx, in Enrollment, paired []string, actor string) error {

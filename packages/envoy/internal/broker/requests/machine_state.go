@@ -2713,9 +2713,11 @@ func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string)
 // and changes nothing.
 // The enrollment it reads the operator off is the enrollment the grants row names now, so an
 // approver's revoke reaches a grant that moved. An operator's withhold writes against that
-// enrollment and every other live enrollment of the grant's session (revokeJudged), so it reaches
-// the box the session runs on even where the grant stayed on a box the session left: a box that
-// held nothing live when the session moved off it, whose grants and requests no adoption takes.
+// enrollment and every other live or dormant enrollment of the grant's session (revokeJudged), so
+// it reaches the box the session runs on even where the grant stayed on a box the session left: a
+// box that held nothing live when the session moved off it, whose grants and requests no adoption
+// takes; and it ends the automatic grants of a dormant box, which the session's next adoption
+// would otherwise carry to the box it runs on.
 // The person rule reads the grant on the pool, before the transaction, since it may ask Dispatch,
 // and the transaction reads it again (revokeJudged). An adoption that moves the grant between the
 // two reads would let the transaction decide on a row the rule did not judge: a login exempt as
@@ -2753,10 +2755,10 @@ var errGrantMovedSinceJudged = errors.New("the grant moved to another session af
 const revokeJudgeAttempts = 3
 
 // revokeJudged is RevokeByApprover's transaction, for the grant as the person rule judged it. It
-// locks the enrollment the rule judged first, with every other live enrollment of its session
-// (lockSessionEnrollments), in a statement of its own, and reads the grant in a later one. Every
-// writer that moves a grant off an enrollment locks that enrollment's row before it moves the
-// grant: an adoption takes its predecessors for update (enroll.adopt), and the end that hands a
+// locks the enrollment the rule judged first, with every other live or dormant enrollment of its
+// session (lockSessionEnrollments), in a statement of its own, and reads the grant in a later one.
+// Every writer that moves a grant off an enrollment locks that enrollment's row before it moves
+// the grant: an adoption takes its predecessors for update (enroll.adopt), and the end that hands a
 // claim's rows to another pod (enroll.handOver) runs under the end's own lock of the enrollment.
 // So the lock waits for such a move in flight to commit, and the later read, which under READ
 // COMMITTED takes a snapshot of its own and sees what committed before it started, sees the grant
@@ -2866,15 +2868,17 @@ func (m *Machine) revokeJudged(ctx context.Context, grantID, login, actor string
 	return nil
 }
 
-// lockSessionEnrollments locks enrollment holder, and every other live enrollment of the session
-// it belongs to, for no key update, in id order and in one statement, and answers them, holder
-// apart. Another enrollment of the session is one of the same session name under the same carry
-// principal, the spelling enroll.adopt's session rule matches a successor of the same principal
-// by; a holder that names no session, or follows no principal, locks itself alone. The session
-// name and principal are read first and unlocked: both are written when the enrollment is created
-// and never changed afterwards. It takes the session's lock (store.LockSession) between the two
-// reads, so an adoption of the session in flight commits before the lock statement reads the
-// session's enrollments, and one that starts later reads its predecessors only after this
+// lockSessionEnrollments locks enrollment holder, and every other live or dormant enrollment of
+// the session it belongs to, for no key update, in id order and in one statement, and answers
+// them, holder apart. Another enrollment of the session is one of the same session name under the
+// same carry principal, the spelling enroll.adopt's session rule matches a successor of the same
+// principal by; a holder that names no session, or follows no principal, locks itself alone. A
+// dormant one is among them because the session's next adoption moves its grants to the box the
+// session runs on: an automatic grant of a withheld name left live there would be handed back. The
+// session name and principal are read first and unlocked: both are written when the enrollment is
+// created and never changed afterwards. It takes the session's lock (store.LockSession) between
+// the two reads, so an adoption of the session in flight commits before the lock statement reads
+// the session's enrollments, and one that starts later reads its predecessors only after this
 // transaction ends. The order, the session's lock and then its enrollments in id order, is the one
 // enroll.adopt takes them in, so neither waits on the other in a cycle.
 func lockSessionEnrollments(ctx context.Context, tx pgx.Tx, holder string) (enrollmentRow, []enrollmentRow, error) {
@@ -2889,7 +2893,7 @@ func lockSessionEnrollments(ctx context.Context, tx pgx.Tx, holder string) (enro
 		}
 	}
 	rows, err := tx.Query(ctx, `select id, kind, operator, subject, coalesce(session_id, ''), runtime_id from enrollments e
-		where e.id=$1 or ($2::text <> '' and e.session_id=$2::text and e.carry_principal=$3::text and e.revoked_at is null)
+		where e.id=$1 or ($2::text <> '' and e.session_id=$2::text and e.carry_principal=$3::text and (e.revoked_at is null or e.dormant_since is not null))
 		order by e.id for no key update`, holder, name, carry)
 	if err != nil {
 		return enrollmentRow{}, nil, err

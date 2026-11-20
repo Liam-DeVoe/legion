@@ -49,9 +49,10 @@ grant id no grant has, and a Dispatch that does not answer gets `503 PROJECT_ACC
 revoking nothing. Of the grants they may see, they end one whose approver is `anyone`, and the
 broker refuses them any other `NOT_APPROVER` — so a grant with no approver and no operator has no
 **Revoke** button at all. Its
-row reads **Ends with its machine login** instead:
-[revoke the service's machine login](#end-a-machines-login), which ends every session it started,
-rather than that one row.
+row reads **Ends with its machine login** instead: revoke the machine login that enrolled the
+session ([end a machine's login](#end-a-machines-login)), which ends every session it started,
+rather than that one row. Anyone signed in may revoke a service's login; a person's pod login only
+the person `BROKER_POD_OPERATORS` now maps the pod's account to may revoke.
 
 ```console
 $ printf 'Authorization: Bearer %s' "$(cat "$AGENT_SECRETS_ACCOUNT_TOKEN_FILE")" | curl -s -X POST -H @- -d '{"approver":"ada@example.com"}' "$AGENT_SECRETS_URL/v1/grants/<grant id>/revoke-by-approver"

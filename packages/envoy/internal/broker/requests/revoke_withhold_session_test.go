@@ -183,3 +183,52 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 	}
 	requireRevokedBy(t, m, grantID, dave.person)
 }
+
+// TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName: box A of a session holds an
+// automatic AUTO_TOKEN grant G1; box D of the same session and principal holds its own automatic
+// AUTO_TOKEN grant G2 and then goes dormant, its box ended while holding G2. The operator revokes
+// G1. The revoke locks D with A (a dormant box of the session is among them), withholds AUTO_TOKEN
+// on it and ends G2. The session then enrols on box N, and the adoption moves D's rows and A's
+// withheld name to N (moveSession and the withheld clause): G2 releases nothing on N, and N's next
+// AUTO_TOKEN request waits for a person. The row fails when the revoke takes live boxes only: G2
+// stays live, moves to N, releases there, and is handed back to N's request.
+func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) {
+	m, a, keyA, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	principal := exchange.PersonPrincipal(fixtureOperator)
+	nameTheSession(t, m, a, "sess-dormant", principal)
+	_, g1 := grantOf(t, m, a, keyA, "deploy the worker", "AUTO_TOKEN")
+	d, keyD := newEnrollment(t, m.Store, "session", "box-d-"+t.Name(), new(fixtureOperator), nil)
+	nameTheSession(t, m, d, "sess-dormant", principal)
+	_, g2 := grantOf(t, m, d, keyD, "deploy the worker on d", "AUTO_TOKEN")
+	if _, err := m.Store.Pool.Exec(t.Context(), `update enrollments set revoked_at=now(), dormant_since=now() where id=$1`, d); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RevokeByApprover(t.Context(), g1, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("the operator's revoke of grant %s: %v", g1, err)
+	}
+	if n := withheldCount(t, m, d); n != 1 {
+		t.Errorf("the dormant box withholds %d names after the operator's revoke; want 1, AUTO_TOKEN", n)
+	}
+	var g2Live bool
+	if err := m.Store.Pool.QueryRow(t.Context(), `select revoked_at is null from grants where id=$1`, g2).Scan(&g2Live); err != nil {
+		t.Fatal(err)
+	}
+	if g2Live {
+		t.Errorf("the dormant box's automatic AUTO_TOKEN grant %s is live after the operator withheld AUTO_TOKEN from the session; want it ended", g2)
+	}
+
+	n, keyN := newEnrollment(t, m.Store, "session", "box-n-"+t.Name(), new(fixtureOperator), nil)
+	nameTheSession(t, m, n, "sess-dormant", principal)
+	moveSession(t, m, d, n)
+	if _, err := m.Store.Pool.Exec(t.Context(), `with moved as (delete from withheld_secrets where enrollment_id=$1 returning name, created_at)
+		insert into withheld_secrets (enrollment_id, name, created_at) select $2, name, created_at from moved on conflict do nothing`, a, n); err != nil {
+		t.Fatal(err)
+	}
+	if release, err := m.Values(t.Context(), g2, n, nil, ReleaseCall{}); err == nil || release.Values != nil {
+		t.Errorf("G2 on the box the session moved to released %v, %v; want it refused", release.Values, err)
+	}
+	again, err := m.Create(t.Context(), n, signRequest(t, m, keyN, "deploy again", "AUTO_TOKEN"), "", nil)
+	if err != nil || again.GrantID != nil {
+		t.Errorf("box N's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
+	}
+}

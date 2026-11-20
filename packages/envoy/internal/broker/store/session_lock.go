@@ -16,8 +16,9 @@ import (
 //     it takes from, so an adoption reads its predecessors only once no operator's revoke of a
 //     grant of the session is in flight;
 //   - an operator's revoke (requests.Machine.RevokeByApprover), before it locks the session's
-//     live enrollments and withholds the grant's names from each, so it waits for an adoption in
-//     flight to commit, and then locks and withholds on the enrollment that adoption made.
+//     live and dormant enrollments and withholds the grant's names from each, so it waits for an
+//     adoption in flight to commit, and then locks and withholds on the enrollment that adoption
+//     made.
 //
 // So an enrollment of the session is either adopted after the revoke committed, and takes the
 // withheld names off the boxes it adopts from (enroll.adopt's withheld clause), or committed before
