@@ -474,16 +474,17 @@ class Reader {
    * one that hands a typed or ended field back to the issue, never another reader's title; with
    * nothing out, the reader's own keystroke back to the issue's title with nothing owed, an end
    * that chose nothing and an escape do too (`putBack`). The settle hands it back when nothing is
-   * owed, the field holds the issue's title as typed, and the write landed with it or it was the
-   * reader's ended choice, as an undo to the issue's own title is once a refusal of the write
-   * ahead of it leaves the issue on that title. It compares the text as typed, as a keystroke
-   * does: a space typed before the next word while the write was out is the reader's text, which
-   * neither the write nor the issue holds, so the field stays theirs and keeps it.
+   * owed, the field holds the issue's title, and the write landed with it or it was the reader's
+   * ended choice, as an undo to the issue's own title is once a refusal of the write ahead of it
+   * leaves the issue on that title. Whether the write landed with the field's text compares that
+   * text as typed, as a keystroke does: a space typed before the next word while the write was
+   * out is the reader's text, which neither the write nor the issue holds, so the field stays
+   * theirs and keeps it.
    */
   private settle(title: string, landedWithIt: boolean): void {
     if (this.owed === title) this.owed = null;
     if (landedWithIt) this.marked = false;
-    const handedBack = this.owed === null && this.held() === title && (landedWithIt || this.ended);
+    const handedBack = this.owed === null && this.shown() === title && (landedWithIt || this.ended);
     if (handedBack) {
       this.lastTyped = null;
       this.marked = false;
@@ -510,9 +511,10 @@ class Reader {
    * own record, trimmed, when that is a title other than the one it is judged against - the title
    * of the write out while one is, since the issue is about to hold it, else the issue's. Every
    * end trims, so the field then holds that choice trimmed, the title its write lands with, and
-   * that write's settle hands the field back to the issue. An end that chooses nothing leaves the
-   * field on that title, as an escape does, unless the field is empty: the hook refuses an empty
-   * title and leaves the field as it is.
+   * that write's settle hands the field back to the issue if the field still holds that title and
+   * nothing is owed then (`settle`). An end that chooses nothing leaves the field on that title,
+   * as an escape does, unless the field is empty: the hook refuses an empty title and leaves the
+   * field as it is.
    */
   private choose(): void {
     const shown = this.shown();
@@ -660,6 +662,13 @@ const longest = 5;
  *  the sweep about a quarter slower. */
 const sequencesPerTurn = 100;
 
+/** What the sweep keeps: each check's count of sequences and shortest findings, and how many
+ *  sequences it judged. */
+interface Exploration {
+  broken: Map<Invariant, Broken>;
+  judged: number;
+}
+
 /**
  * Plays every sequence of one to `longest` events. An event that does not apply where it falls (a
  * landing with nothing out) is never chosen there, since the sequence it would leave is a shorter
@@ -668,14 +677,16 @@ const sequencesPerTurn = 100;
  * the play that reaches it first.
  *
  * The sweep keeps nothing of the sequences it has judged but each check's count of sequences and
- * its shortest findings, and writes a sequence's line of the trace to the file as it is judged.
+ * its shortest findings, and how many it judged, and writes a sequence's line of the trace to the
+ * file as it is judged.
  * It lets each tree go: a sequence leaves microtasks queued that hold its unmounted tree until
  * they run, and React's development build puts about nine measures a sequence on the performance
  * timeline, which keeps each one until it is cleared. Played with no turn of the event loop and
  * the timeline kept, the sweep took over 3 GiB of a pod that every role of an issue shares.
  */
-async function explore(): Promise<Map<Invariant, Broken>> {
+async function explore(): Promise<Exploration> {
   const broken = new Map<Invariant, Broken>();
+  let judged = 0;
   // Off by default: a trace of every sequence, one JSON line each, so two heads of the hook can be
   // compared sequence by sequence.
   const tracePath = process.env.DRAFTS_TRACE;
@@ -701,6 +712,7 @@ async function explore(): Promise<Map<Invariant, Broken>> {
           const sequence = events.join(" ");
           const findings = reader.play(event);
           if (depth < firstNew) continue;
+          judged += 1;
           if (session.out === null) findings.push(...atRest(reader));
           if (trace !== null) {
             const line: TraceLine = {
@@ -748,15 +760,15 @@ async function explore(): Promise<Map<Invariant, Broken>> {
   } finally {
     if (trace !== null) closeSync(trace);
   }
-  return broken;
+  return { broken, judged };
 }
 
 // The seven tests below share one exploration: it is the slow part, and it judges all seven at
-// once. It plays about 171,000 sequences of five events, which judge about 187,000 sequences of
-// one to five, about 147 to 201 s in this pod on one core, so each of the seven has a time limit
-// of its own above the suite's minute: whichever runs first pays for the exploration.
-let explored: Promise<Map<Invariant, Broken>> | undefined;
-function exploration(): Promise<Map<Invariant, Broken>> {
+// once. It plays about 171,000 sequences of five events, which judge 186,538 sequences of one to
+// five, about 147 to 201 s in this pod on one core, so each of the seven has a time limit of its
+// own above the suite's minute: whichever runs first pays for the exploration.
+let explored: Promise<Exploration> | undefined;
+function exploration(): Promise<Exploration> {
   explored ??= explore();
   return explored;
 }
@@ -795,7 +807,10 @@ for (const [invariant, statement] of invariants) {
   test(
     `every sequence of one to five events keeps ${invariant}: ${statement}`,
     async () => {
-      const broken = (await exploration()).get(invariant) ?? { sequences: 0, shortest: [] };
+      const broken = (await exploration()).broken.get(invariant) ?? {
+        sequences: 0,
+        shortest: [],
+      };
       expect({
         sequences: broken.sequences,
         shortest: broken.shortest.map((v) => `${v.sequence}: ${v.invariant} ${v.read}`),
@@ -804,6 +819,18 @@ for (const [invariant, statement] of invariants) {
     explorationTimeout
   );
 }
+
+// How many sequences the seven checks judged: every sequence of one to five events the alphabet
+// allows, each judged once. A sweep that stopped early, or judged a sequence twice, would pass the
+// seven checks with this number wrong, so a change to the alphabet, to what an event applies to,
+// or to the enumeration states its new count here.
+test(
+  "the sweep judges every sequence of one to five events once: 186,538",
+  async () => {
+    expect((await exploration()).judged).toBe(186_538);
+  },
+  explorationTimeout
+);
 
 // The three orders below were found in review, each a way the hook sent or showed a title the
 // reader had not chosen.
