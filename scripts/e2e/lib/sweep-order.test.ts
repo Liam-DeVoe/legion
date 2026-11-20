@@ -429,7 +429,7 @@ case $name in
     case \${1:-} in
       ps)
         for a in "$@"; do
-          case $a in name=^*) [ -z "\${STANDIN_DEAD_PID:-}" ] || printf '%snats-%s\\n' "\${a#name=^}" "$STANDIN_DEAD_PID" ;; esac
+          case $a in name=^*-) [ -z "\${STANDIN_DEAD_PID:-}" ] || printf '%snats-%s|\\n' "\${a#name=^}" "$STANDIN_DEAD_PID" ;; esac
         done ;;
       inspect) date -u +%FT%T.%NZ ;;
       run | create)
@@ -585,8 +585,10 @@ function deadPid(): string {
   return Bun.spawnSync(["bash", "-c", "echo $$"], { stdout: "pipe" }).stdout.toString().trim();
 }
 
-// refuse_leftovers reads every process of its PID namespace, three child processes each, so a
-// row's time grows with the machine's processes (14 s on a dev box of 840; leftovers.test.ts).
+// A driver's run here sets no proc_root, so its refuse_leftovers reads every process of its PID
+// namespace, and a row's time grows with the machine's processes: 14 s on a dev box of 840, when
+// the walk started three programs for each process. It now reads them in its own shell and starts
+// one find for them all, and the bound stays the one those rows were given.
 const walkBound = 120_000;
 
 const bin = join(scratch, "bin");

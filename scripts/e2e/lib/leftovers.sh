@@ -112,23 +112,35 @@ leftover_boot_ns() {
 # reported through `fail`, naming them, with status 2: a walk that read nothing found no leftover
 # only because it saw nothing. A working directory this user may not read, another user's
 # process's, or one whose process ended during the walk, is no complaint (proc_walk_complaint).
+#
+# A container's name ends in its driver's pid, or in that pid and the run's 16 random hex digits
+# (<prefix>-<role>-<pid>-<random>, unique where two PID namespaces share a pid). A container that
+# carries the Postgres mark is the removal's (remove_leftover_postgres, above), and no leftover here.
+#
+# A container's owner is the live process of its pid that started no later than the container was
+# made, compared at the precision both clocks give: the owner's start in clock ticks since the
+# boot, and Docker's creation in nanoseconds, turned into ticks since the boot (leftover_boot_ns).
+# Where the two fall in one tick the owner counts as alive: a driver that made its container a few
+# milliseconds after it started is never a leftover, and a later process given a dead driver's pid
+# is taken for it only where it started in the tick (10 ms at 100 a second) its container was made.
 refuse_leftovers() {
-  local prefix=$1 proc=${proc_root:-/proc} name owner created p path target since boot tick i
+  local prefix=$1 proc=${proc_root:-/proc} name mark owner created p path target since boot tick i
   local err complaint status=0
   local -a leftover_list=() entries=() args=() environ=() undecided=() cwd_links=()
   local -A owner_of=()
   boot=$(leftover_boot_ns)
   tick=$((1000000000 / $(getconf CLK_TCK)))
-  while read -r name; do
-    owner=${name##*-}
-    case $owner in '' | *[!0-9]*) continue ;; esac
+  while IFS='|' read -r name mark; do
+    [ -z "$mark" ] || continue
+    [[ $name =~ -([0-9]+)(-[0-9a-f]{16})?$ ]] || continue
+    owner=${BASH_REMATCH[1]}
     created=$(docker inspect -f '{{.Created}}' "$name" 2>/dev/null) || continue
     created=$(date -d "$created" +%s%N) || continue
     # A container made before this boot has no owner among the processes of this boot.
     since=-1
     [ "$created" -lt "$boot" ] || since=$(((created - boot) / tick))
     leftover_owner "$owner" "$since" || leftover_list+=("container $name (docker rm -f -v $name)")
-  done < <(docker ps -a --filter "name=^$prefix-" --format '{{.Names}}')
+  done < <(docker ps -a --filter "name=^$prefix-" --format '{{.Names}}|{{.Label "dev.legion.dispatch-e2e.postgres-mark"}}')
   entries=("$proc"/[0-9]*)
   [ -e "${entries[0]}" ] || {
     fail "refuse_leftovers: $proc lists no process, so whether an earlier $prefix run left processes running was not read"
