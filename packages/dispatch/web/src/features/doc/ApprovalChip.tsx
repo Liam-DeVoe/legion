@@ -49,6 +49,7 @@ import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /**
@@ -87,9 +88,11 @@ export function approvalVersion(approval: ArtifactApproval): number {
   return approval.version ?? approval.latest_version;
 }
 
-/** One review the reader pressed: what it says, and the version of the document the page read,
- *  which is the version it approves or asks changes of. A Retry sends that same version again. */
+/** One review the reader pressed: the document it is of, what it says of that document, and the
+ *  version of the document the page read, which is the version it approves or asks changes of. A
+ *  Retry sends that same version again. */
 interface ReviewPress {
+  readonly artifact: Artifact;
   readonly input: CreateArtifactReviewInput;
   readonly version: number;
 }
@@ -296,11 +299,16 @@ function RequestChangesDialog({
             <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
                   the block and the bound, and so does a version that moved after the page read
-                  it, naming the version a review would now record; any other failure is worth
-                  another try. */}
+                  it, naming the version a review would now record; a review the reader stopped
+                  may have been made, and Request changes is a press of its own; any other failure
+                  is worth another try. */}
               {isCapExceeded(error) || apiErrorCodeIn(error, VERSION_MOVED)
                 ? error.message
-                : "Could not request changes. Try again."}
+                : error instanceof SendStoppedError
+                  ? stoppedWriteNote("your review", "made", {
+                      anew: "Request changes sends a new review.",
+                    })
+                  : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -421,6 +429,9 @@ export interface ApprovalChipProps {
  * first draw: the two actions it draws, held, before the document's read returns are the
  * buttons it acts with once the read has returned, so neither moves, and a reader who reached
  * one with Tab keeps the focus on it.
+ *
+ * It holds the review it made and the change-request dialog, with the reason typed into it, so a
+ * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
  */
 export function ApprovalChip({
   actionsDocument,
@@ -440,56 +451,52 @@ export function ApprovalChip({
   const submitGuard = useSubmitGuard();
   const tooltips = useTooltips();
   const page = usePageWords();
-  /** The document a review is written of. A review is pressed only once the read has given the
-   *  approval, which comes with the document: before that both actions are held. */
-  const reviewed = (): Artifact => {
-    if (artifact === undefined) {
-      throw new Error("A review is pressed only once the document has been read.");
-    }
-    return artifact;
-  };
 
   const review = useKeyedWrite({
-    label: ({ input }: ReviewPress) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed().name}`,
-    onError: (error) => {
+    // The press carries the document it reviews: the indicator names it, the route takes its id,
+    // and the reads made again are its own, from the press rather than from the render the write
+    // runs under.
+    label: ({ artifact: reviewed, input }: ReviewPress) =>
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
+    onError: (error, { artifact: reviewed }) => {
       // The document moved after the page read it: the page reads it again, so the next press
       // reviews the version a review would now record, which the reader then has in front of
       // them, and never one they did not read.
       if (apiErrorCodeIn(error, VERSION_MOVED)) {
-        void queryClient.invalidateQueries({ queryKey: ["artifact", reviewed().id] });
+        void queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] });
       }
     },
     onSettled: () => submitGuard.release(),
-    write: ({ input, version }, bounds) =>
-      api.createArtifactVersionReview(reviewed().id, version, input, bounds),
-    onSuccess: () => {
+    method: "POST",
+    write: ({ artifact: reviewed, input, version }, bounds) =>
+      api.createArtifactVersionReview(reviewed.id, version, input, bounds),
+    onSuccess: (_result, { artifact: reviewed }) => {
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
       // dialog's submit stay refused, and keep the focus, until the new approval is read, and
       // only then does a dialog the reader has not closed (`onClose`) close and give the focus
-      // back to the button that opened it.
-      const target = reviewed();
+      // back to the button that opened it. The reads are the reviewed document's, from the
+      // press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", target.id] }),
-        queryClient.invalidateQueries({ queryKey: ["artifact", target.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-        ...(target.issue_key === null
+        ...(reviewed.issue_key === null
           ? [
               queryClient.invalidateQueries({
-                queryKey: ["project", target.project, "artifacts"],
+                queryKey: ["project", reviewed.project, "artifacts"],
               }),
               queryClient.invalidateQueries({
-                queryKey: ["artifact-ref", `${target.project}/${target.slug}`],
+                queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
               }),
             ]
           : [
-              queryClient.invalidateQueries({ queryKey: ["issue", target.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["artifacts", target.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["asks", target.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] }),
             ]),
       ];
       if (page === null) return;
@@ -553,10 +560,11 @@ export function ApprovalChip({
    *  approval it follows is stale, and which the reading pane draws. Inside `NoTooltips` the
    *  review is remembered (`sentReview`). */
   const send = (input: CreateArtifactReviewInput) => {
-    if (approval === undefined) return;
+    if (artifact === undefined || approval === undefined) return;
+    const press: ReviewPress = { artifact, input, version: approval.latest_version };
     submitGuard.guard(() => {
       if (page !== null) setSentReview(input.state);
-      review.mutate({ input, version: approval.latest_version });
+      review.mutate(press);
     });
   };
   // An Approve the server refused because the version moved, in its words; the dialog shows its

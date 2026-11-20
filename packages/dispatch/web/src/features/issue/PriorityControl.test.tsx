@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -11,12 +11,17 @@ import {
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
+import { realClock } from "../../__tests__/fake-clock";
 import { bodies } from "../../__tests__/issue-picks";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { pickNamed } from "../../__tests__/list-picks";
 import { choiceOf, choicesOf, pickFromMenu } from "../../__tests__/menu-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { NetworkError } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, IssuePriority, IssueSummary } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl, PriorityEditor } from "./PriorityControl";
 import { useIssuePriority } from "./useIssuePriority";
@@ -502,5 +507,31 @@ test("PriorityControl keeps mouse, pointer and touch presses on its trigger out 
     expect(reached).toEqual([]);
   } finally {
     view.unmount();
+  }
+});
+
+// A pick the reader stopped may have been saved: the control says so, and that its Retry asks
+// again under the save's key (`retryLast`), rather than a failure it cannot know of.
+test("a priority the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderControl();
+  try {
+    jest.useFakeTimers();
+    await pickFromMenu(userOnFakeClock(), trigger(), "P0");
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the priority of CORE-1", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
+    patchIssue.mockRestore();
   }
 });

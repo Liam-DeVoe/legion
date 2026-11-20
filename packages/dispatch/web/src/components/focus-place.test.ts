@@ -107,9 +107,9 @@ test("a control that disabled itself gets the focus back when it is enabled agai
   });
 });
 
-// (h) A component that watches its own disabled control, as the Agents composer watches its
-// fieldset (`refocusComposer`), starts its watcher after the rescue's wait has begun, and hands
-// the focus to its own target once the control is enabled again: the focus ends on that target.
+// (h) A component that watches its own disabled control starts its watcher after the rescue's
+// wait has begun, and hands the focus to its own target once the control is enabled again: the
+// focus ends on that target.
 // The rescue settles only after the components have had their turn with that same change.
 test("a component's own watcher, started after the rescue's wait, hands the focus on first", async () => {
   await withRescue(async () => {

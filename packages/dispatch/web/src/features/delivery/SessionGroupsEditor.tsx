@@ -1,7 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useId, useRef, useState } from "react";
 
-import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import { api, type WriteBounds, type WriteMethod } from "../../api/client";
 import { isLiveQuery } from "../../api/query-refresh";
 import type { DeliverySessionGroup } from "../../api/types";
 import { heldPress } from "../../components/held-press";
@@ -19,18 +19,22 @@ import {
 } from "../../theme/classes";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { refusedNote, useKeyedWrite, useRefusalOfSubject } from "../writes/useKeyedWrite";
 import { storedSessionTitle } from "./lib/sessionTitles";
 import { useHoldUntilDrawn } from "./useHoldUntilDrawn";
 
-/** One change to the groups: what it is, in the reader's words, and one attempt of it. A delete
- *  is idempotent and goes without the key. A create names what it makes (`made`), which the
- *  editor says was made when Dispatch lost its answer. */
+/** One change to the groups: what it is, as the editor's sentences name it (`the rename of the
+ *  group Crew`), the group it changes, the method of its request and one attempt of it. A delete
+ *  is idempotent and goes without the key. A create changes no group yet and names what it makes
+ *  (`made`), which the editor says was made when Dispatch lost its answer. */
 interface GroupChange {
-  readonly label: string;
+  readonly group?: DeliverySessionGroup;
   readonly made?: string;
+  readonly method: WriteMethod;
   readonly run: (bounds: WriteBounds) => Promise<unknown>;
+  readonly what: string;
 }
 
 const sectionLabel = `text-xs tracking-wide uppercase ${textMutedOnSurface}`;
@@ -80,9 +84,11 @@ function GroupCard({
           disabled={name.trim() === "" || name.trim() === group.name}
           {...heldPress(held, () =>
             send({
-              label: `Rename of the group ${group.name}`,
+              group,
+              method: "PATCH",
               run: (bounds) =>
                 api.updateDeliverySessionGroup(group.id, { name: name.trim() }, bounds),
+              what: `the rename of the group ${group.name}`,
             })
           )}
           type="button"
@@ -106,9 +112,11 @@ function GroupCard({
               className={`refused:cursor-not-allowed refused:opacity-50 ${dismissButtonText}`}
               {...heldPress(held, () =>
                 send({
-                  label: `Removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
+                  group,
+                  method: "PATCH",
                   run: (bounds) =>
                     api.updateDeliverySessionGroup(group.id, { remove: [session] }, bounds),
+                  what: `the removal of ${text.sessionText(session, storedTitle(session))} from ${group.name}`,
                 })
               )}
               type="button"
@@ -124,8 +132,10 @@ function GroupCard({
           disabled={addable.length === 0}
           {...heldPress(held, () =>
             send({
-              label: `Sessions added to ${group.name}`,
+              group,
+              method: "PATCH",
               run: (bounds) => api.updateDeliverySessionGroup(group.id, { add: addable }, bounds),
+              what: `the sessions added to ${group.name}`,
             })
           )}
           type="button"
@@ -136,8 +146,10 @@ function GroupCard({
           className={`${secondaryButtonCompact} ${dangerText}`}
           {...heldPress(held, () =>
             send({
-              label: `Deletion of the group ${group.name}`,
+              group,
+              method: "DELETE",
               run: (bounds) => api.deleteDeliverySessionGroup(group.id, bounds),
+              what: `the deletion of the group ${group.name}`,
             })
           )}
           type="button"
@@ -155,8 +167,8 @@ function GroupCard({
  *  session is an `AgentName`; a member no pull request of the window names has no stored title, so
  *  it reads by its registry title, else its short id. A save reaches the page's live views as
  *  Dispatch's own delta, so it refreshes only the `["delivery"]` reads that are not live (an open
- *  run's drill-down), and a refusal shows as the server wrote it. A dialog (`useDialog`), at the
- *  right edge as the drill-down is, open while it is mounted. */
+ *  run's drill-down), and a refusal shows as the server wrote it, after the change it refused. A
+ *  dialog (`useDialog`), at the right edge as the drill-down is, open while it is mounted. */
 export function SessionGroupsEditor({
   onClose,
   groups,
@@ -177,7 +189,7 @@ export function SessionGroupsEditor({
   // The editor shows a refusal itself, as the server wrote it.
   const save = useKeyedWrite({
     inline: true,
-    label: (change: GroupChange) => change.label,
+    label: (change: GroupChange) => `Session groups: ${change.what}`,
     onSuccess: () => {
       setSelected([]);
       void queryClient.invalidateQueries({
@@ -185,8 +197,20 @@ export function SessionGroupsEditor({
         predicate: (query) => !isLiveQuery(query),
       });
     },
+    method: (change) => change.method,
     write: (change, bounds) => change.run(bounds),
   });
+  // One refusal speaks for every group, so it names the change it refused, the group's name with
+  // it, and goes once that group is renamed or removed - from another tab, or by another person -
+  // rather than stand beside groups it was never about. A create's has no group to lose.
+  const refused = useRefusalOfSubject(
+    save,
+    ({ group: changed }) =>
+      changed === undefined ||
+      groups.some((group) => group.id === changed.id && group.name === changed.name)
+  )
+    ? save.variables
+    : undefined;
 
   const text = useAgentText();
   const storedTitle = (session: string): string | undefined => storedSessionTitle(titles, session);
@@ -206,10 +230,11 @@ export function SessionGroupsEditor({
   const create = () =>
     save.mutate(
       {
-        label: `New group ${name.trim()}`,
         made: `The group “${name.trim()}”`,
+        method: "POST",
         run: (bounds) =>
           api.createDeliverySessionGroup({ name: name.trim(), sessions: selected }, bounds),
+        what: `the new group ${name.trim()}`,
       },
       // Made either way - with no answer to give too - so the name goes and a second press
       // makes nothing.
@@ -305,9 +330,19 @@ export function SessionGroupsEditor({
         {madeUnanswered === undefined ? null : <LandedWithoutAnswer what={madeUnanswered} />}
       </section>
 
-      {save.isError ? (
-        <QueryError message={apiErrorMessage(save.error, "Couldn't save the session groups.")} />
-      ) : null}
+      {/* A change the reader stopped may have been saved, and every button here is a press of
+          its own, under a key of its own: none makes the stopped change again. */}
+      {refused === undefined ? null : (
+        <QueryError
+          message={
+            save.error instanceof SendStoppedError
+              ? stoppedWriteNote(refused.what, "saved", {
+                  anew: "Making it again sends it as a new write.",
+                })
+              : refusedNote(`save ${refused.what}`, save.error)
+          }
+        />
+      )}
 
       {groups.length === 0 ? null : (
         <section className="grid gap-2">

@@ -790,8 +790,9 @@ test.describe("agents page", () => {
     }
   });
 
-  // The disable takes focus to the document; only that focus is the composer's to take back. A
-  // reader who moved on during the round trip keeps where they went.
+  // The send holds the composer's fieldset `aria-disabled`, never `disabled`, so it moves no
+  // focus, and nothing takes the focus back when it lands: a reader who moved on during the
+  // round trip keeps where they went.
   test("a send in flight does not steal back focus the reader has moved", async ({ browser }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");

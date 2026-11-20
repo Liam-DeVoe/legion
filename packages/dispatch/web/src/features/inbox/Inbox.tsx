@@ -113,7 +113,7 @@ import {
   rowUrgency,
   threadReferenceRoute,
 } from "./list-row";
-import { MARK_ALL_REFUSED_TEXT, useMarkAllRead } from "./mark-all";
+import { MARK_ALL_REFUSED_TEXT, MARK_ALL_STOPPED_TEXT, useMarkAllRead } from "./mark-all";
 import { useMotionHold } from "./motion-hold";
 import { OptionDigitsContext, optionIndex } from "./option-digits";
 import { PaneDivider, usePaneWidth } from "./PaneDivider";
@@ -2056,10 +2056,11 @@ export function Inbox({
     );
   // The page's own controls, or nothing at all: an empty slot would still cost the row a gap.
   const pageControls =
-    !markAll.offered && !markAll.refused && needsYouControl === null ? undefined : (
+    !markAll.offered && markAll.failure === undefined && needsYouControl === null ? undefined : (
       <>
         {/* Only while the list holds an unread Reply or Agent row. It asks nothing first: the
-            rows go, and a refusal brings them back. */}
+            rows go, and a refusal brings them back; a press the reader stopped may have marked
+            them, so the list is read again rather than brought back. */}
         {markAll.offered ? (
           <button
             className={PAGE_CONTROL_CLASS}
@@ -2070,13 +2071,17 @@ export function Inbox({
             Mark all read
           </button>
         ) : null}
-        {markAll.refused ? (
+        {markAll.failure === "refused" ? (
           <p
             className={`text-sm whitespace-nowrap ${dangerText}`}
             data-inbox-mark-all-refused=""
             role="alert"
           >
             {MARK_ALL_REFUSED_TEXT}
+          </p>
+        ) : markAll.failure === "stopped" ? (
+          <p className={`text-sm ${dangerText}`} data-inbox-mark-all-stopped="" role="alert">
+            {MARK_ALL_STOPPED_TEXT}
           </p>
         ) : null}
         {needsYouControl}

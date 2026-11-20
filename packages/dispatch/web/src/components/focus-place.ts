@@ -179,8 +179,7 @@ const PRESS_REGION = `${DIALOG}, [data-control="${CONTROL.selectionBar}"]`;
 
 /** How long the rescue waits for a control a press disabled to be enabled again before it hands
  *  the focus on as if that control had gone: the app's write deadline, past which a write is
- *  late and a composer lets go of what it holds the reader to. A slow send never ends the wait
- *  before its composer's own take-back. */
+ *  late and a composer lets go of what it holds the reader to. */
 const RESCUE_WAIT_MS = SEND_DEADLINE_MS;
 
 /** Whether the page draws `element`: under no `hidden` ancestor, and given a box. */
@@ -1101,12 +1100,11 @@ function handOn(loss: Loss, main: HTMLElement | null, caused: boolean): void {
  * The check runs a frame and a task after the loss, once React has committed and run its passive
  * effects, so every component's own hand-off has had its turn first: every `useFocusPlace`
  * hand-off (ControlRow, DataTable, PanelTrigger and the pages' own), SelectionBar's
- * `returnFocus`, AskCard's, `useDialog`'s return to the opener, the Agents composer's take-back.
- * Each knows its own target better than a place counted in the page does - the row marked last,
- * the opener, the composer's box - so the rescue answers only a loss none of them answered, and
- * acts only while the focus is still lost. It leaves alone a loss the reader left (above), and a
- * loss on a page the reader has since left, since the new page owns its focus. A taken element
- * that is back by then gets the focus back.
+ * `returnFocus`, AskCard's, `useDialog`'s return to the opener. Each knows its own target better
+ * than a place counted in the page does - the row marked last, the opener - so the rescue answers
+ * only a loss none of them answered, and acts only while the focus is still lost. It leaves alone
+ * a loss the reader left (above), and a loss on a page the reader has since left, since the new
+ * page owns its focus. A taken element that is back by then gets the focus back.
  *
  * An element that went - taken away, hidden, no longer drawn, or replaced under a new key - hands
  * the focus on (`handOn`) inside the region it was lost in. For a loss the reader caused
@@ -1230,8 +1228,8 @@ export function useFocusRescue(main: RefObject<HTMLElement | null>): void {
       };
       // The element enabled again, gone, or the wait run out: settled a frame and a task later,
       // as the first check is, so a component answering the same change - its own watcher,
-      // started after this one, such as the Agents composer's take-back, or an effect - moves
-      // the focus first. The first change of a burst schedules it, and the watching ends there.
+      // started after this one, or an effect - moves the focus first. The first change of a burst
+      // schedules it, and the watching ends there.
       const later = () => {
         if (settling !== undefined) return;
         watcher.disconnect();

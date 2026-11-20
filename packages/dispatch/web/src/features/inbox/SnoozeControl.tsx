@@ -6,9 +6,10 @@ import { badgeLow, secondaryButtonCompact, textMutedOnCanvas } from "../../theme
 import { badgeMenuTrigger, badgeSelectBadge } from "../issue/badge-select";
 import { Timestamp } from "../refs/Timestamp";
 import { ControlKeyHint, keyshortcutsOf } from "../shell/ShortcutHelp";
+import { useLiveRegistration } from "../writes/useKeyedWrite";
 import { InboxHandOffContext } from "./pane-selection";
 import { isIndefinite, snoozeChoices, snoozeOf } from "./snooze";
-import { type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
+import { type AskSnoozePress, type SnoozeSettled, useAskSnooze } from "./useAskSnooze";
 
 /**
  * The per-row defer control: the "Snooze" badge, whose press opens the Snooze menu
@@ -39,8 +40,8 @@ export function SnoozeControl({
 }: {
   askId: string;
   label: string;
-  /** Registers this row while its write is in flight or failed; unregistered once it settles
-   *  cleanly or the control unmounts. */
+  /** Registers the row of the ask its write is of while that write is in flight or failed;
+   *  unregistered once it settles cleanly or the control unmounts. */
   onLive: (askId: string, live: boolean) => void;
   /** The keys that open the menu, where the host draws them on the trigger (the reading pane's
    *  head: `b` and `h`, or the person's own). */
@@ -53,16 +54,13 @@ export function SnoozeControl({
 }): ReactNode {
   const write = useAskSnooze(askId);
   const handOff = useContext(InboxHandOffContext);
-  const live = write.pending || write.failed;
-  useEffect(() => {
-    if (!live) return;
-    onLive(askId, true);
-    return () => onLive(askId, false);
-  }, [askId, live, onLive]);
-  /** The ask whose hand-off this control began and whose press has not settled. A press's own
-   *  callbacks run only while this control is mounted, and only for its latest press (TanStack's
-   *  `mutate`), so a hand-off the settling can no longer reach is dropped here: kept, the Inbox
-   *  would give its target the focus at every commit that finds the focus on the page. */
+  // The row held is the one the live snooze is of, which is this row's unless a host has drawn
+  // the control for another ask since that press (`useAskSnooze`).
+  useLiveRegistration(write.liveAskId, onLive);
+  /** The ask whose hand-off this control began and whose press has not settled. A press is heard
+   *  only while this control is mounted, and only the latest press (`useAskSnooze`), so a
+   *  hand-off the settling can no longer reach is dropped here: kept, the Inbox would give its
+   *  target the focus at every commit that finds the focus on the page. */
   const unsettled = useRef<string | undefined>(undefined);
   const dropHandOff = handOff?.dropHandOff;
   useEffect(
@@ -74,19 +72,21 @@ export function SnoozeControl({
   );
   /** Begins the hand-off a snooze press makes, at the press, before its optimistic write moves
    *  the row, and says what its settling tells the Inbox: a landing hands the reader on, a
-   *  refusal drops it. An un-snooze, and a control outside an Inbox, hand nothing on. Any press
-   *  first drops the hand-off of the press before it that has not settled. */
-  const handingOn = (until: string | null | undefined): SnoozeSettled | undefined => {
+   *  refusal drops it. The hand-off is of the press's own ask, which a Retry keeps whichever ask
+   *  the control is drawn for by then. An un-snooze, and a control outside an Inbox, hand nothing
+   *  on. Any press first drops the hand-off of the press before it that has not settled. */
+  const handingOn = (press: AskSnoozePress | undefined): SnoozeSettled | undefined => {
     if (handOff === undefined) return undefined;
     if (unsettled.current !== undefined) handOff.dropHandOff([unsettled.current]);
     unsettled.current = undefined;
-    if (until === null || until === undefined) return undefined;
-    handOff.beginHandOff([askId]);
-    unsettled.current = askId;
+    if (press === undefined || press.until === null) return undefined;
+    const acted = press.askId;
+    handOff.beginHandOff([acted]);
+    unsettled.current = acted;
     return (landed) => {
       unsettled.current = undefined;
-      if (landed) handOff.landHandOff([askId]);
-      else handOff.dropHandOff([askId]);
+      if (landed) handOff.landHandOff([acted]);
+      else handOff.dropHandOff([acted]);
     };
   };
   // `basis-full` inside the header's wrapping row: a refusal is wider than the badge it
@@ -95,7 +95,7 @@ export function SnoozeControl({
     <div className="basis-full">
       <QueryError
         message={write.error ?? `Could not snooze ${label}.`}
-        onRetry={() => write.retry(handingOn(write.failedUntil))}
+        onRetry={() => write.retry(handingOn(write.failedPress))}
         retrying={write.pending}
       />
     </div>
@@ -137,7 +137,7 @@ export function SnoozeControl({
           aria-label={`Un-snooze ${label}`}
           className={secondaryButtonCompact}
           data-inbox-action="unsnooze"
-          {...heldPress(write.pending, () => write.submit(null, handingOn(null)))}
+          {...heldPress(write.pending, () => write.submit(null, handingOn({ askId, until: null })))}
           type="button"
         >
           {pendingLabel ?? "Un-snooze"}
@@ -151,7 +151,7 @@ export function SnoozeControl({
         marks={{ "data-inbox-snooze": "" }}
         onChoose={(choice) => {
           const until = snoozeOf(choice, new Date());
-          write.submit(until, handingOn(until));
+          write.submit(until, handingOn({ askId, until }));
         }}
         shortcutKeys={shortcutKeys}
         triggerClassName={badgeMenuTrigger}

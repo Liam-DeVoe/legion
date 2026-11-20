@@ -1,20 +1,25 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { SendStoppedError } from "../writes/keyed-write";
+import { livePress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
-  /** The server's reason after a refused save, until the next attempt. */
+  /** The server's reason after a refused save, or what one the reader stopped may have done and
+   *  what Retry does with it, until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
-  /** What the failed save asked for while `failed` holds - the moment of a snooze, or `null`
-   *  for an un-snooze - which `retry` sends again; `undefined` otherwise. */
-  failedUntil: string | null | undefined;
+  /** The press the failed save was while `failed` holds - its ask, and the moment of a snooze or
+   *  `null` for an un-snooze - which `retry` makes again; `undefined` otherwise. */
+  failedPress: AskSnoozePress | undefined;
+  /** The ask the newest save is of while that save is in flight or failed, which the list around
+   *  the row holds (`useLiveRegistration`); `undefined` while none is. */
+  liveAskId: string | undefined;
   pending: boolean;
   /** What the in-flight write is doing, and `undefined` when none is: the moment a snooze is
    *  saving, or `null` for an un-snooze. The optimistic update has already moved the row by
@@ -31,11 +36,16 @@ export interface AskSnoozeWrite {
 /** Told once a press settles: true where the server took it, false where it refused it. */
 export type SnoozeSettled = (landed: boolean) => void;
 
-/** The callbacks one press's settling calls, for `mutate`: none where nobody listens. */
-function settledBy(onSettled: SnoozeSettled | undefined) {
-  return onSettled === undefined
-    ? undefined
-    : { onError: () => onSettled(false), onSuccess: () => onSettled(true) };
+/** One press of a row's snooze: the ask it is of, and the moment, or `null` to bring it back. */
+export interface AskSnoozePress {
+  readonly askId: string;
+  readonly until: string | null;
+}
+
+/** Who hears one press settle, with the press it is of. */
+interface SnoozeListener {
+  readonly onSettled: SnoozeSettled;
+  readonly press: AskSnoozePress;
 }
 
 /**
@@ -43,56 +53,107 @@ function settledBy(onSettled: SnoozeSettled | undefined) {
  * so the row drops into `Later` (or climbs back out) on the click, rolls back if the server
  * refuses, and the list refetches once the save settles - the same shape as the issue field
  * writes, without their cross-surface caches: a snooze is on the ask and shows nowhere else.
+ *
+ * Each press carries the ask it is of: `retry()` runs the newest render's `write` with the
+ * press's own values (`useKeyedWrite`), so every byte a Retry sends rides in the press. A host
+ * may draw the row's control for one ask after another, so the Retry of a press the reader
+ * stopped is of that press's ask, and so is the ask the save holds in the list while it is live
+ * (`liveAskId`), whichever ask the hook is rendered for by then.
+ *
+ * The caller of `submit` and `retry` hears whether the server took that press (`onSettled`): of
+ * the newest press only, and only while the hook's host is mounted, as TanStack calls a
+ * `mutate`'s own callbacks. A Retry takes no callbacks of its own (`useKeyedWrite`'s `retry`),
+ * so the hook's own callbacks tell the listener held beside the newest press, found by that
+ * press: a Retry makes that very press again.
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();
   const inboxKey = inboxQuery().queryKey;
+  /** The newest press's listener, set by each `submit` and `retry` and let go once that press is
+   *  heard or the host unmounts. */
+  const listener = useRef<SnoozeListener | undefined>(undefined);
+  useEffect(
+    () => () => {
+      listener.current = undefined;
+    },
+    []
+  );
+  /** Tells the newest press's listener whether the server took `press`; a press before it, or one
+   *  that settles after the host went, tells nobody. */
+  const heard = (press: AskSnoozePress, landed: boolean): void => {
+    const listening = listener.current;
+    if (listening === undefined || listening.press !== press) return;
+    listener.current = undefined;
+    listening.onSettled(landed);
+  };
+  const listen = (press: AskSnoozePress | undefined, onSettled: SnoozeSettled | undefined) => {
+    listener.current =
+      press === undefined || onSettled === undefined ? undefined : { onSettled, press };
+  };
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
-    write: (until: string | null, bounds) =>
-      until === null
-        ? api.unsnoozeAsk(askId, bounds)
-        : api.snoozeAsk(askId, until, bounds).then(() => undefined),
+    // A snooze is a `PUT`, and bringing the row back a `DELETE`.
+    method: ({ until }: AskSnoozePress) => (until === null ? "DELETE" : "PUT"),
+    write: (press: AskSnoozePress, bounds) =>
+      press.until === null
+        ? api.unsnoozeAsk(press.askId, bounds)
+        : api.snoozeAsk(press.askId, press.until, bounds).then(() => undefined),
     inline: true,
-    label: (until) => (until === null ? "Ask brought back now" : "Ask snoozed"),
-    onMutate: async (until) => {
+    label: ({ until }) => (until === null ? "Ask brought back now" : "Ask snoozed"),
+    onMutate: async (press) => {
       await queryClient.cancelQueries({ queryKey: inboxKey });
       const previous = queryClient.getQueriesData<InboxRow[]>({ queryKey: inboxKey });
       queryClient.setQueriesData<InboxRow[]>({ queryKey: inboxKey }, (current) =>
-        current?.map((row) => (row.id === askId ? { ...row, snoozed_until: until } : row))
+        current?.map((row) =>
+          row.id === press.askId ? { ...row, snoozed_until: press.until } : row
+        )
       );
       return previous;
     },
-    onError: (_error, _until, previous) => {
+    onError: (_error, press, previous) => {
       for (const [key, data] of previous ?? []) {
         queryClient.setQueryData(key, data);
       }
+      heard(press, false);
     },
+    onSuccess: (_answer, press) => heard(press, true),
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
   });
   return {
-    error: mutation.error?.message,
+    // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
+    // error's own words are a composer's, of a message.
+    error:
+      stoppedNote(
+        mutation,
+        mutation.variables?.until === null ? "the un-snooze" : "the snooze",
+        "saved"
+      ) ?? mutation.error?.message,
     failed: mutation.isError,
-    failedUntil: mutation.isError ? mutation.variables : undefined,
+    failedPress: mutation.isError ? mutation.variables : undefined,
+    liveAskId: livePress(mutation)?.askId,
     pending: mutation.isPending,
-    pendingUntil: mutation.isPending ? mutation.variables : undefined,
+    pendingUntil: mutation.isPending ? mutation.variables?.until : undefined,
     retry: (onSettled) => {
-      if (mutation.variables !== undefined) {
-        mutation.mutate(mutation.variables, settledBy(onSettled));
-      }
+      listen(mutation.variables, onSettled);
+      mutation.retry();
     },
-    submit: (until, onSettled) => mutation.mutate(until, settledBy(onSettled)),
+    submit: (until, onSettled) => {
+      const press = { askId, until };
+      listen(press, onSettled);
+      mutation.mutate(press);
+    },
   };
 }
 
-/** One ask the server refused, with the reason it gave - the same message the per-row control
- *  shows, so a sign-out never reads like a validation refusal. */
-export interface AskSnoozeFailure {
-  askId: string;
-  reason: string;
-}
+/** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
+ *  same message the per-row control shows, so a sign-out never reads like a validation refusal -
+ *  or one the reader stopped (`stopped`), which may have been saved and is no refusal, so it
+ *  carries no reason. */
+export type AskSnoozeFailure =
+  | { readonly askId: string; readonly reason: string; readonly stopped: false }
+  | { readonly askId: string; readonly stopped: true };
 
 export interface AskSnoozeManyWrite {
   /** True while a bulk save is in flight. */
@@ -146,11 +207,18 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           })
         )
       );
-      const failed = ids.flatMap((askId, index) => {
+      const failed = ids.flatMap((askId, index): AskSnoozeFailure[] => {
         const result = results[index];
         if (result === undefined || result.status !== "rejected") return [];
         const reason: unknown = result.reason;
-        return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
+        if (reason instanceof SendStoppedError) return [{ askId, stopped: true }];
+        return [
+          {
+            askId,
+            reason: reason instanceof Error ? reason.message : String(reason),
+            stopped: false,
+          },
+        ];
       });
       const refused = new Set(failed.map(({ askId }) => askId));
       for (const [key, data] of refused.size === 0 ? [] : previous) {

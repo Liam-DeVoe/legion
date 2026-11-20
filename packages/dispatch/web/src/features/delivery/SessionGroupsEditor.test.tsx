@@ -7,11 +7,12 @@ import { MemoryRouter } from "react-router-dom";
 import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { seedDeliveryReads } from "../../__tests__/live-socket-harness";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Agent, DeliverySessionGroup } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
-import { SEND_DEADLINE_MS } from "../writes/keyed-write";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "../writes/keyed-write";
 import { SessionGroupsEditor } from "./SessionGroupsEditor";
 
 const crew: DeliverySessionGroup = {
@@ -27,8 +28,9 @@ const crew: DeliverySessionGroup = {
 const titles = { s1: "Planner one", s2: "Planner two", s3: "Reviewer" };
 const counts = { s1: 3, s2: 2, s3: 1 };
 
-/** The editor over `groups`, as the Delivery page draws it; `draw` draws it again over the groups
- *  a live update brings, as the page does. */
+/** The editor over `groups`, as the Delivery page draws it; `regroup` draws it again over other
+ *  groups, over the same client, as the page does when Dispatch's delta - a live update - changes
+ *  them. */
 function renderEditor(
   groups: readonly DeliverySessionGroup[] = [],
   values: {
@@ -36,11 +38,11 @@ function renderEditor(
     titles?: Readonly<Record<string, string>>;
     counts?: Readonly<Record<string, number>>;
   } = {}
-): { draw: (next: readonly DeliverySessionGroup[]) => void; queryClient: QueryClient } {
+): { queryClient: QueryClient; regroup: (shown: readonly DeliverySessionGroup[]) => void } {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: none listed unless a test says so.
   queryClient.setQueryData(["agents"], values.agents ?? []);
-  const editor = (shown: readonly DeliverySessionGroup[]) => (
+  const tree = (shown: readonly DeliverySessionGroup[]) => (
     <MemoryRouter>
       <QueryClientProvider client={queryClient}>
         <KeymapProvider>
@@ -54,8 +56,11 @@ function renderEditor(
       </QueryClientProvider>
     </MemoryRouter>
   );
-  const view = render(editor(groups));
-  return { draw: (next) => view.rerender(editor(next)), queryClient };
+  const view = render(tree(groups));
+  return {
+    queryClient,
+    regroup: (shown) => view.rerender(tree(shown)),
+  };
 }
 
 test("it lists the window's sessions busiest first, each with its title, count and group", () => {
@@ -154,12 +159,12 @@ test("rename, add, remove and delete each write their one change", async () => {
   const user = userEvent.setup();
   const update = spyOn(api, "updateDeliverySessionGroup").mockResolvedValue(crew);
   const remove = spyOn(api, "deleteDeliverySessionGroup").mockResolvedValue(undefined);
-  const { draw, queryClient } = renderEditor([crew]);
+  const { queryClient, regroup } = renderEditor([crew]);
   /** Draws `next`, the live update carrying the write just made, once that write has landed, and
    *  answers the group's card as it is drawn now. */
   const drawn = async (next: DeliverySessionGroup) => {
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-    draw([next]);
+    regroup([next]);
     return screen.getByRole("group", { name: next.name });
   };
   try {
@@ -194,6 +199,32 @@ test("rename, add, remove and delete each write their one change", async () => {
   } finally {
     cleanup();
     update.mockRestore();
+    remove.mockRestore();
+  }
+});
+
+// A change the reader stopped may have been saved: the editor says so, and that each button is
+// a press of its own, rather than a failure it cannot know of.
+test("a change the reader stopped says it may have been saved, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
+    new NetworkError("/api/v1/delivery/session-groups", new TypeError("Failed to fetch"))
+  );
+  const { queryClient } = renderEditor([crew]);
+  try {
+    const group = screen.getByRole("group", { name: "Release crew" });
+    await user.click(within(group).getByRole("button", { name: "Delete group" }));
+    await stopTheLateWrite(queryClient);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the deletion of the group Release crew", "saved", {
+        anew: "Making it again sends it as a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
     remove.mockRestore();
   }
 });
@@ -252,7 +283,7 @@ test("a group's buttons stay held after its write lands, until the live update c
   // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
-  const { draw, queryClient } = renderEditor([crew]);
+  const { queryClient, regroup } = renderEditor([crew]);
   try {
     const group = screen.getByRole("group", { name: "Release crew" });
     await user.click(within(group).getByRole("button", { name: "Remove Planner two" }));
@@ -266,7 +297,7 @@ test("a group's buttons stay held after its write lands, until the live update c
       expect(button.disabled).toBe(false);
     }
 
-    draw([removed]);
+    regroup([removed]);
     expect(group).not.toBeInTheDocument();
     const redrawn = screen.getByRole("group", { name: "Release crew" });
     expect(within(redrawn).queryByRole("button", { name: "Remove Planner two" })).toBeNull();
@@ -348,12 +379,47 @@ test("a refusal shows as the server wrote it", async () => {
     await user.click(screen.getByRole("button", { name: "Create group" }));
     expect(
       await screen.findByText(
-        'session s2 is already in the group "Release crew"; remove it there first'
+        `Couldn't save the new group Other — session s2 is already in the group "Release crew"; remove it there first`
       )
     ).toBeDefined();
   } finally {
     cleanup();
     create.mockRestore();
+  }
+});
+
+// One refusal speaks for every group, so it names the group it was about, and goes once that
+// group is renamed or removed - from another tab, or by another person - rather than stand beside
+// groups it was never about, naming one that is not there.
+test("a refusal goes once the group it was about is renamed or removed", async () => {
+  const user = userEvent.setup();
+  const remove = spyOn(api, "deleteDeliverySessionGroup").mockRejectedValue(
+    new ApiError(403, { code: "FORBIDDEN", error: "only its maker may delete a group" })
+  );
+  const other: DeliverySessionGroup = { ...crew, id: "2", name: "Night crew", sessions: ["s3"] };
+  const editor = renderEditor([crew, other]);
+  try {
+    const refusal = (group: string) =>
+      `Couldn't save the deletion of the group ${group} — only its maker may delete a group`;
+    const deleteOf = async (group: string) =>
+      user.click(
+        within(screen.getByRole("group", { name: group })).getByRole("button", {
+          name: "Delete group",
+        })
+      );
+
+    await deleteOf("Release crew");
+    expect(await screen.findByText(refusal("Release crew"))).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }, other]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+
+    await deleteOf("Night crew");
+    expect(await screen.findByText(refusal("Night crew"))).toBeDefined();
+    editor.regroup([{ ...crew, name: "Ship crew", updated_at: "2026-10-12T00:00:00Z" }]);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    cleanup();
+    remove.mockRestore();
   }
 });
 

@@ -13,7 +13,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
-import type { ReplyTarget } from "../conversation/composer-model";
+import type { ListedReplies, ReplyTarget } from "../conversation/composer-model";
 import { useHeldSends } from "../conversation/held-sends";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { PendingSendTurn } from "../conversation/PendingSendTurn";
@@ -37,7 +37,9 @@ export interface AgentReply {
  *  (`useSending`) to hold what a message on its way has already fixed - the picker and the Reply
  *  buttons - and the composer names its send with it, so the two keys cannot drift apart. A row
  *  that mounts again while its send is out, or after it was refused - the reader came back to the
- *  page - shows that send (`useComposerSend`), and holds for it. */
+ *  page - shows that send (`useComposerSend`), and holds for it. The Inbox's thread box names its
+ *  send by its thread instead (`threadSendKey` in ThreadBody.tsx): two threads can be one
+ *  session's, and each holds its own reply. */
 export function agentSendKey(sessionID: string): MutationKey {
   return ["agent-composer", sessionID];
 }
@@ -51,41 +53,58 @@ export function agentSendKey(sessionID: string): MutationKey {
 export function AgentMessageComposer({
   agent,
   hold,
+  listed,
   onCancelReply,
   onClose,
   replyTo,
   sendKey,
   standing = false,
+  thread,
 }: {
   agent: Agent;
   /** The row's hold on that send (`useSending(sendKey)`): while it is out the message is
    *  addressed, so the picker holds until it lands, from Send's own task on. The send's request is
    *  frozen at Send either way. */
   hold: Sending;
+  /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
+   *  or none where its host has not read them, or where the box answers only its own thread's
+   *  newest message (`standing`), which leaves the page with the box. */
+  listed?: ListedReplies;
   onCancelReply: () => void;
   /** One level out of the composer: the row it belongs to takes focus. The composer calls it on
    *  Escape from an untouched draft and on Discard - and also right after a successful send,
    *  which is NOT one level out; that case is filtered below. */
   onClose: () => void;
   replyTo: AgentReply | null;
-  /** The row's `agentSendKey`, which names the composer's send. */
+  /** The name of the composer's send: the row's `agentSendKey`, or the Inbox thread's own. */
   sendKey: MutationKey;
   /** The reply target is this box's standing address rather than a Reply the reader pressed,
    *  so the box takes no focus of its own (`MentionComposer`'s `standing`): what the Inbox
    *  column's thread box is, mounted again for every row the reader steps onto. */
   standing?: boolean;
+  /** The ids of the messages of the one thread this box answers, where it is a thread's box (the
+   *  Inbox's): of the session's other sends it shows only those answering one of them, since a
+   *  send into another thread, or a message of its own, is not this thread's. */
+  thread?: ReadonlySet<string>;
 }): ReactNode {
   const queryClient = useQueryClient();
   const store = useHeldSends();
   const { sending, sendingNow } = hold;
   // The session's other messages still on their way - its live view's - show here too, as their
   // own turns, and Retry, Discard or Stop trying here acts on the same write there: the session is
-  // the write's target, not the surface that made it. This composer's own send shows in it.
+  // the write's target, not the surface that made it. This composer's own send shows in it. A
+  // thread's box shows those answering its thread alone.
   const sends = useSessionSends(agent.session_id);
   const ownName = hashKey(sendKey);
-  const others = sends.pending.filter((held) => hashKey(held.mutationKey) !== ownName);
-  // The issue a held send went to - out, or refused - is the one the picker names when the row
-  // mounts again, so what the toggle says and where Retry sends stay one issue.
+  const others = sends.pending.filter(
+    (held) =>
+      hashKey(held.mutationKey) !== ownName &&
+      (thread === undefined ||
+        (held.request.replyTo !== null && thread.has(held.request.replyTo.id)))
+  );
+  // The issue a held send is addressed to - out, or refused - is the one the picker names when
+  // the row mounts again, so what the toggle says and where Retry sends stay one issue. A pick
+  // made over a refusal carries it to the issue picked (`ownMoves` below), so that is the one.
   const [issueKey, setIssueKey] = useState(() => {
     const held = store.get(sendKey)?.request;
     return held?.replyTo === null && held.owner.kind === "issue" ? held.owner.issueKey : "";
@@ -97,43 +116,19 @@ export function AgentMessageComposer({
   // and consumed by the `onClose` that follows it.
   const sentJustNow = useRef(false);
   const box = useRef<HTMLDivElement>(null);
-  // `MentionComposer` disables its control fieldset while a send is in flight, including this
-  // textarea. The browser then hands focus back to the document, so focus returns the moment React
-  // re-enables the field - watched, rather than guessed at with a frame or timer, because the
-  // write's latency is the server's.
-  const refocusWatcher = useRef<MutationObserver | null>(null);
-  useEffect(() => () => refocusWatcher.current?.disconnect(), []);
-  /** Only the focus the disable took is the composer's to give back: through the whole round trip
-   *  it sits on the document, so a reader who has clicked something else in the meantime keeps
-   *  where they went - otherwise the next keys, `Ctrl+Enter` included, would land in the composer
-   *  they have already sent from, addressed to another agent. */
-  const refocusComposer = () => {
-    const field = box.current?.querySelector("textarea");
-    if (field === null || field === undefined) return;
-    const takeBack = () => {
-      if (focusOnDocument()) field.focus();
-    };
-    refocusWatcher.current?.disconnect();
-    if (!field.matches(":disabled")) {
-      takeBack();
-      return;
-    }
-    const watcher = new MutationObserver(() => {
-      if (field.matches(":disabled")) return;
-      watcher.disconnect();
-      takeBack();
-    });
-    watcher.observe(field.closest("fieldset") ?? field, { attributeFilter: ["disabled"] });
-    refocusWatcher.current = watcher;
-  };
   /** Where the focus goes once the Issue list has closed, set by the close that moves it on: a
    *  pick - the issue changed or not - hands the reader to the message it addresses, and Escape
    *  is one level out, to the row. The list has put the focus on its trigger by then, and leaves
    *  a focus moved on from there where it is. */
   const [handOff, setHandOff] = useState<{ readonly to: "field" | "row" } | null>(null);
+  /** Bumped by every pick, the issue changed or not. The composer counts it among the reader's
+   *  own moves of its address (`ownMoves`): a pick is the reader's, so the draft goes with it, and
+   *  a refusal and the files pasted into the draft with it. */
+  const [commits, setCommits] = useState(0);
   const commitIssue = (value: string) => {
     if (sendingNow()) return;
     setIssueKey(value);
+    setCommits((count) => count + 1);
     setHandOff({ to: "field" });
   };
   // A layout effect, so the frame the close paints already has the focus where it goes rather
@@ -167,8 +162,8 @@ export function AgentMessageComposer({
   // could then reach would be a dead end) and what a pointer wants too.
   //
   // That wait is the whole latency of `GET /issues`, and a reader who has roved on in the
-  // meantime keeps where they went - `takeBack`'s rule above, widened to the row this composer
-  // belongs to: focus is the list's to take only while it is still where the open left it.
+  // meantime keeps where they went: focus is the list's to take only while it is still where the
+  // open left it.
   // Once per open, so a refetch behind the reader never pulls them back either.
   const pickerTookFocus = useRef(false);
   useEffect(() => {
@@ -248,6 +243,7 @@ export function AgentMessageComposer({
             ? undefined
             : [{ target: `session:${agent.session_id}`, title: agent.title || agent.session_id }]
         }
+        listed={listed}
         mutationKey={sendKey}
         onCancelReply={onCancelReply}
         onClose={() => {
@@ -263,10 +259,9 @@ export function AgentMessageComposer({
           void queryClient.invalidateQueries({
             queryKey: agentMessagesQuery(agent.session_id).queryKey,
           });
-          // Focus went to the document when the field disabled itself; take it back.
-          refocusComposer();
         }}
         owner={composerOwner}
+        ownMoves={commits}
         replyTo={replyTo?.target ?? null}
         standing={standing}
       />

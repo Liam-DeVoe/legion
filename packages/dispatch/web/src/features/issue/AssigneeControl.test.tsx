@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the focus that arms the lazy read of who has signed in, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -11,6 +11,7 @@ import {
   holdNotifications,
   recordCommits,
 } from "../../__tests__/commits";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import {
   highlightedRow,
@@ -22,9 +23,12 @@ import {
   textBoxes,
 } from "../../__tests__/list-picks";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { projectDefaultAssigneesQuery, usersQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AssigneeControl } from "./AssigneeControl";
 
 const issue: Issue = {
@@ -573,6 +577,38 @@ test("a held AssigneeControl keeps its focus and Tab stop and drops a pick", asy
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
     unmount();
+    patchIssue.mockRestore();
+  }
+});
+
+// A save the reader stopped may have been made: the control says so in the field's own words
+// (`useIssueFieldWrite`), and that its Retry asks again under the save's key, rather than the
+// stopped write's own words, which are a composer's, of a message.
+test("an assignee the reader stopped says Retry asks again under its key, not a message's words", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount, user } = renderControl();
+  try {
+    // The list is open, with everyone who has signed in, before the clock is held.
+    await user.hover(trigger());
+    const list = await openList(user, ASSIGNEE);
+    await waitFor(() => expect(rows(list)).toHaveLength(3));
+    const bob = within(list).getByRole("option", { name: "bob" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(bob);
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the assignee of CORE-1", "saved", {
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
     patchIssue.mockRestore();
   }
 });
