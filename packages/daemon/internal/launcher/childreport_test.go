@@ -49,8 +49,9 @@ func TestAChildsOwnReportOfAStoreItCouldNotOpenIsReadByWhereItsFailureCameFrom(t
 }
 
 // The pinned Oh My Pi's own report decides its exit where the launcher saw nothing: the store
-// answers the launcher's look at the child's start, then refuses every dial, so the pinned Oh My
-// Pi's first open is refused, and the stop grace leaves no time to ask the store after the exit.
+// answers the launcher's look at the child's start, then the URL file names an address the host
+// refuses, so the pinned Oh My Pi's first open is refused, and the stop grace leaves no time to
+// ask the store after the exit.
 // The control is a server that refuses the password (28P01): Oh My Pi reports that the server
 // answered, which decides nothing, and the exit is charged.
 func TestAPinnedOhMyPiThatReportsItsStoreRefusedItExitsAsAStoreFault(t *testing.T) {
@@ -89,7 +90,9 @@ func TestAPinnedOhMyPiThatReportsItsStoreRefusedItExitsAsAStoreFault(t *testing.
 			}
 			if tc.refusing {
 				awaitAtLeast(t, "connections passed", &store.Passed, 1)
-				store.Refuse()
+				if err := replaceURLFile(urlFile, refusingURL(t)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			markFile(t, marker+".go")
 			exit := g.awaitExitWithin(1, 2*time.Minute)

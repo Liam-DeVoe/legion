@@ -5,25 +5,34 @@ import (
 	"encoding/binary"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
 
-// RefusedAddress is a TCP address on 127.0.0.1 nothing listens on any more, so a dial of it is
-// refused by the host, as a database that is down refuses one.
+// RefusedAddress is a TCP address on 127.0.0.1 that the test holds bound and never listens on, so
+// a dial of it is refused by the host, as a database that is down refuses one, until the test
+// ends. Holding the port is what keeps the refusal: a port that was free and is let go can be
+// bound by any other process on the machine before the dial, which then answers it.
 func RefusedAddress(t testing.TB) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("make a socket to hold a refused port: %v", err)
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
+	syscall.CloseOnExec(fd)
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatalf("bind a port on 127.0.0.1 to refuse: %v", err)
 	}
-	return address
+	bound, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatalf("read the refused port: %v", err)
+	}
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(bound.(*syscall.SockaddrInet4).Port))
 }
 
 // RefusedDial is the error a real dial of RefusedAddress gives, for a stand-in dialer that answers
@@ -169,14 +178,12 @@ func relayUntil(client, server net.Conn, marker []byte, reset bool, broken *atom
 // while Down is set to a stand-in that answers it is starting up (57P03, Refusing), as a store does
 // while it restarts, and counts it in Refused; every other connection reaches the database and is
 // counted in Passed. Whether a connection is refused is decided as it is accepted, so a connection
-// counted in Passed is served by the database however Down changes after. Refuse takes the store
-// down for good in the other way a store goes down: the host refuses every later dial.
+// counted in Passed is served by the database however Down changes after.
 type Flapping struct {
 	// URL is the DSN that reaches the database through the proxy: rewriteDSN's, as Delayed's is.
 	URL             string
 	Down            atomic.Bool
 	Refused, Passed atomic.Int32
-	listener        net.Listener
 }
 
 // NewFlapping is dsn's database behind a Flapping proxy, down from the start when down is set. The
@@ -185,7 +192,7 @@ func NewFlapping(t testing.TB, dsn string, down bool) *Flapping {
 	t.Helper()
 	through, database := relayFor(t, "the database URL to flap", dsn)
 	starting := Refusing(t, "57P03", "the database system is starting up")
-	s := &Flapping{URL: through.url, listener: through.listener}
+	s := &Flapping{URL: through.url}
 	s.Down.Store(down)
 	startRelay(t, through, func() string {
 		if s.Down.Load() {
@@ -196,10 +203,4 @@ func NewFlapping(t testing.TB, dsn string, down bool) *Flapping {
 		return database
 	}, relayPlain)
 	return s
-}
-
-// Refuse closes the store's listener, so the host refuses every dial from now on; the connections
-// it already serves go on until the test ends.
-func (s *Flapping) Refuse() {
-	_ = s.listener.Close()
 }
