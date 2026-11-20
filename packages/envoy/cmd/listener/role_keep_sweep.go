@@ -132,7 +132,7 @@ func sweepKeptRoleLanes(ctx context.Context, cfg listenerDeliveryHandlerConfig, 
 		go func() {
 			from := handOverSweptLane(ctx, cfg, role)
 			release()
-			if from != 0 {
+			if from != 0 && !cfg.noWakeReports {
 				raiseKeptRoleWake(ctx, cfg, role, from)
 			}
 			<-slots
