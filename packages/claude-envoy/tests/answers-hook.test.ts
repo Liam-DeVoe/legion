@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -1022,8 +1022,21 @@ test(
     )
     expect(context).not.toContain(user)
     expect(context).not.toContain(secret)
-    // The refresher this hook started reads the Dispatch named now.
-    await eventually(() => noRefresher(home, state), "the next refresher's end")
+    // The refresher this hook started reads the Dispatch named now. When the hook returns, that
+    // refresher may not hold its lock yet, nor have a command line `pgrep -f` can find (its exec of
+    // bun can be slow on a loaded disk), so `noRefresher` can hold before it even ran: the case
+    // waits for the outcome it writes for the Dispatch named now, and for its lock to go.
+    const directory = join(state, "sessions", SESSION)
+    await eventually(() => {
+      try {
+        const outcome = JSON.parse(readFileSync(join(directory, "answers-refresh.json"), "utf8"))
+        return (
+          outcome.dispatch_url === now.base && !existsSync(join(directory, "answers-refresh.lock"))
+        )
+      } catch {
+        return false
+      }
+    }, "the next refresher's end")
     expect(now.requests).toEqual([`Bearer now-token /api/v1/agents/${SESSION}/answers`])
     // Its waits: the command's start, the preload's wait for the refresher, the next refresher's
     // end.
