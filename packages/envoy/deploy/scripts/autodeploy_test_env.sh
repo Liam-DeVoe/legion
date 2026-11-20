@@ -390,12 +390,32 @@ output=$(AUTODEPLOY_TEST_REDIRECT=http://browser.test:8766/auth/callback deploy_
   fail 'UNKNOWN: the deploy before the poll did not land, so the stop was not judged'
 POLL=3600 AUTODEPLOY_TEST_SLEEP_REAL=1 run_deployer >"$root/poll.out" 2>&1 &
 job=$!
-poll_sleep=
+# children_of PID prints PID's children, read from the children file of each of its threads, which
+# the kernel keeps for PID's own children (CONFIG_PROC_CHILDREN): a read of PID's entries alone, where
+# pgrep -P reads every process of the machine, which a loaded box takes seconds over and which no
+# bound of this row could cut short.
+children_of() {
+  local list
+  local -a kids
+  for list in /proc/"$1"/task/*/children; do
+    { read -r -a kids <"$list"; } 2>/dev/null || continue
+    ((${#kids[@]} == 0)) || printf '%s\n' "${kids[@]}"
+  done
+}
+[[ -e /proc/$job/task/$job/children ]] ||
+  fail "UNKNOWN: /proc/$job/task/$job/children is not there (a kernel without CONFIG_PROC_CHILDREN), so the deployer's poll cannot be found"
+poll_sleep= deployer=
 deadline=$((SECONDS + 30))
 while ((SECONDS < deadline)); do
   # The deployer is the background job itself or its one child, and its poll is its `sleep` child.
-  for pid in "$job" $(pgrep -P "$job" || true); do
-    poll_sleep=$(pgrep -P "$pid" -x sleep) && break 2
+  for pid in "$job" $(children_of "$job"); do
+    for child in $(children_of "$pid"); do
+      comm=
+      { read -r comm <"/proc/$child/comm"; } 2>/dev/null || true
+      [[ "$comm" == sleep ]] || continue
+      poll_sleep=$child deployer=$pid
+      break 3
+    done
   done
   sleep 0.1
 done
@@ -405,7 +425,7 @@ if [[ -z "$poll_sleep" ]]; then
   tree=()
   descendants() {
     local pid=$1 child
-    for child in $(pgrep -P "$pid" || true); do
+    for child in $(children_of "$pid"); do
       descendants "$child"
       tree+=("$child")
     done
@@ -425,7 +445,6 @@ if [[ -z "$poll_sleep" ]]; then
   ((${#alive[@]} == 0)) || left=" (and the give-up left process(es) ${alive[*]} running)"
   fail "UNKNOWN: the deployer reached no poll within 30 s, so its stop was not judged$left; its output: $(<"$root/poll.out")"
 fi
-deployer=$(ps -o ppid= -p "$poll_sleep" | tr -d ' ')
 kill -TERM "$deployer"
 termed=$SECONDS
 stopped=false
