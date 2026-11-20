@@ -426,10 +426,10 @@ func TestAReadOnlyResultsReadAnswersAsAWriterInEveryState(t *testing.T) {
 // In both rows Dispatch holds no row of the linked pull request, and GitHub names that pull
 // request for no commit until the results are recorded, so no record's read-through stores it.
 // The first read's read-through learns it: the writer's read stores the row, and the read-only
-// read keeps it in memory and reads the linked heads and the linked merge as they would stand had
-// it stored the row (delivery.HeadsAttributedToWith, delivery.BaseBranchMergedInWith). A read-only
-// read that learned nothing would read the stored rows alone, as the writer's does, and would
-// prove nothing about those two reads.
+// read keeps it in memory and runs the writer's statements of the linked heads and the linked merge
+// over the stored rows with it laid on (delivery.ReadOnlyHeadsAttributedTo,
+// delivery.ReadOnlyBaseBranchMergedIn). A read-only read that learned nothing would read the stored
+// rows alone, as the writer's does, and would prove nothing about those two reads.
 func TestAReadOnlyResultsReadOfALinkedRepositoryAnswersAsAWriter(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

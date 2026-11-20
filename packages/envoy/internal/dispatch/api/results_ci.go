@@ -19,9 +19,23 @@ import (
 // results_ci.go answers a check CI proves (validCICheck) on the read of an issue's results. No
 // role records a result for such a check (refuseCheckProvedByCI), and nothing is stored for it
 // either: each read takes the newest pull request head of the issue
-// (delivery.NewestPullRequestHead), reads that commit's check runs from GitHub once, and derives
+// (server.newestPullRequestHead), reads that commit's check runs from GitHub once, and derives
 // the check's one result from the run its `ci_check` names. The derived result goes through the
 // same comparisonReader a recorded result does, so one rule judges where both kinds stand.
+
+// newestPullRequestHead is the newest pull request head of issueKey that a check CI proves is
+// derived at (delivery.NewestPullRequestHead). A read-only caller's read runs the same statement
+// over the stored rows with the heads its process's memory keeps laid on
+// (delivery.ReadOnlyNewestPullRequestHead), as its comparisonReader reads every other head: the
+// memory is taken here, since deriveCIResults runs before that reader is made, so the head an
+// earlier read-only read's read-through learned is the head a writer's read finds in the row its
+// read-through stored.
+func (s *server) newestPullRequestHead(ctx context.Context, issueKey string) (delivery.NewestHead, bool, error) {
+	if readOnlyCredential(ctx) != nil {
+		return delivery.ReadOnlyNewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey, s.readOnlyCommitPulls.Learned())
+	}
+	return delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+}
 
 // ciReadDeadline bounds the whole read of one head's check runs, the token mint and every page
 // together: the route is read inside a role's turn and inside the reviewer's gate, and a read
@@ -110,7 +124,7 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 	if err != nil {
 		return err
 	}
-	head, found, err := delivery.NewestPullRequestHead(ctx, s.deps.Store.Pool, issueKey)
+	head, found, err := s.newestPullRequestHead(ctx, issueKey)
 	if err != nil {
 		return err
 	}

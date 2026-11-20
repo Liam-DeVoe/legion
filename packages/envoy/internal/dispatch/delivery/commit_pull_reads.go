@@ -265,11 +265,14 @@ func (a *readOnlyAnswers[K, V]) countDrops(dropped *metrics.Counter) {
 // requests none of which has the commit as its head. So a read-only read asks GitHub no more and
 // no less often than a writer's does. A read that failed keeps no answer, and its claim refuses
 // the commit for the rest of CommitPullReadStaleAfter, as a writer's failed read is claimed with
-// the rest.
+// the rest. A read that failed after it had attributed some of the pull requests GitHub named
+// keeps that part, as a writer's read stores it, and is not settled (KeepPart).
 //
 // The answer outlives its claim, as the rows a writer's read stores outlive the writer's claim:
-// every later read-only read reads the stored rows as they would stand had each answer been
-// stored (Learned), until a newer answer for the same commit replaces it or the bound drops it.
+// every later read-only read lays it on the stored rows (Learned, KeptHeads) until a newer answer
+// for the same commit replaces it or the bound drops it. Each head of it is kept with what was
+// stored for its pull request when it was learned (ReadStoredRows), and gives way, in those reads,
+// to a row a writer has stored since.
 //
 // Its zero value is an empty memory, and the server holds one for the process
 // (api.server.readOnlyCommitPulls). It holds at most ReadOnlyAnswerBound commits, and counts each
@@ -335,14 +338,28 @@ func (c *CommitPullAnswers) Claim(repoFull, sha string, now time.Time) CommitPul
 	return CommitPullAsk
 }
 
-// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, in place
-// of the answer kept for it before, and holds the commit off for the span CommitPullAnswers' doc
-// comment gives.
+// Keep remembers pulls, GitHub's answer for sha's pull requests in repoFull read at now, with what
+// was stored for each of them as ReadStoredRows read it right after, in place of the answer kept
+// for it before, and holds the commit off for the span CommitPullAnswers' doc comment gives.
 func (c *CommitPullAnswers) Keep(repoFull, sha string, pulls CommitPulls, now time.Time) {
 	span := CommitPullReadStaleAfter
 	if len(pulls.Heads) > 0 && !pulls.AtHead {
 		span = CommitPullSettledFor
 	}
+	c.keep(repoFull, sha, pulls, now, span)
+}
+
+// KeepPart is Keep for the part of GitHub's answer a read attributed before a later step of it
+// failed (ReadCommitPulls answers that part with its error), which a writer's read stores all the
+// same (ReadThroughCommitPulls). The commit stays held off for CommitPullReadStaleAfter alone,
+// whatever the part holds, as a writer's read that fails is claimed and not settled
+// (api/results_comparison.go, comparisonReader.readThroughHead).
+func (c *CommitPullAnswers) KeepPart(repoFull, sha string, pulls CommitPulls, now time.Time) {
+	c.keep(repoFull, sha, pulls, now, CommitPullReadStaleAfter)
+}
+
+// keep remembers pulls for sha in repoFull, learned at now and held off for span.
+func (c *CommitPullAnswers) keep(repoFull, sha string, pulls CommitPulls, now time.Time, span time.Duration) {
 	kept := commitPullAnswer{pulls: &pulls, notBefore: now.Add(span)}
 	c.answers.keep(commitPullKey{repo: repoFull, sha: sha}, kept.held(now), now)
 }
@@ -354,11 +371,11 @@ func (c *CommitPullAnswers) CountDrops(dropped *metrics.Counter) {
 	c.answers.countDrops(dropped)
 }
 
-// Learned is every answer the memory keeps, in the order they were read, two read at one moment
-// in the order of their repository and commit: what a read-only read reads the stored rows with,
-// as they would stand had a writer's read stored each answer in turn (HeadsAttributedToWith,
-// HeadStoredAtWith, BaseBranchMergedForWith, BaseBranchMergedInWith, Branches.ReadCommitOnBranch).
-func (c *CommitPullAnswers) Learned() []CommitPulls {
+// Learned is every head the memory keeps, as a read-only caller's reads of the results path lay
+// them on the stored rows (KeptHeads): the answers in the order they were read, two read at one
+// moment in the order of their repository and commit, and each answer's heads in the order GitHub
+// named them, each with what was stored for its pull request when it was learned.
+func (c *CommitPullAnswers) Learned() KeptHeads {
 	type learned struct {
 		key   commitPullKey
 		pulls *CommitPulls
@@ -375,9 +392,18 @@ func (c *CommitPullAnswers) Learned() []CommitPulls {
 	slices.SortFunc(kept, func(a, b learned) int {
 		return cmp.Or(a.at.Compare(b.at), cmp.Compare(a.key.repo, b.key.repo), cmp.Compare(a.key.sha, b.key.sha))
 	})
-	answers := make([]CommitPulls, 0, len(kept))
+	var heads KeptHeads
 	for _, one := range kept {
-		answers = append(answers, *one.pulls)
+		for index, head := range one.pulls.Heads {
+			var row storedRow
+			if index < len(one.pulls.rows) {
+				row = one.pulls.rows[index]
+			}
+			heads.columns.add(head, row, one.pulls.storedUnder)
+			if head.seedsBranch() {
+				heads.merges = append(heads.merges, head)
+			}
+		}
 	}
-	return answers
+	return heads
 }

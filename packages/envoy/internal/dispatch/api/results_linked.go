@@ -529,16 +529,23 @@ func (c *comparisonReader) linkedBranchBases(ctx context.Context, check model.Ch
 // what name its merge there, where baseBranchMergedFor reads the pull requests attributed to it
 // in the repository it resolves to. The key is the issue and the repository: an issue whose work
 // spans two repositories merged once in each. The memo keeps a failed read as
-// baseBranchMergedFor's does, for the same reason. A read-only caller's read reads it as it would
-// stand had a writer's read stored what it and the read-only reads before it learned (learned),
-// as baseBranchMergedFor does: a merged pull request a read-through of a linked repository's
-// commit learned is a row a writer's read-through would have stored, which its read here finds.
+// baseBranchMergedFor's does, for the same reason. A read-only caller's read runs the same
+// statement over the stored rows with the heads its memory keeps laid on (learned,
+// delivery.ReadOnlyBaseBranchMergedIn), as baseBranchMergedFor does: a merged pull request a
+// read-through of a linked repository's commit learned is a row a writer's read-through would have
+// stored, which its read here finds.
 func (c *comparisonReader) baseBranchMergedIn(ctx context.Context, issueKey, repo string) (string, bool) {
 	memo := [2]string{issueKey, repo}
 	if answer, memoized := c.linkedBaseBranches[memo]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, err := delivery.BaseBranchMergedInWith(ctx, c.server.deps.Store.Pool, issueKey, repo, c.learned)
+	var branch string
+	var err error
+	if c.readOnly {
+		branch, err = delivery.ReadOnlyBaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo, c.learned)
+	} else {
+		branch, err = delivery.BaseBranchMergedIn(ctx, c.server.deps.Store.Pool, issueKey, repo)
+	}
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "repo", repo, "error", err)
 	}
