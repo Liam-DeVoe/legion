@@ -704,6 +704,12 @@ restoreEntryLoad();
 beforeAll(() => setNatsConnectForTests(natsStandInConnect));
 afterAll(() => resetNatsConnectForTests());
 
+// A figure in this file names the load it was read at as "N busy loops (the R rung)". A rung is a
+// load: R busy loops on the pods where dispatch://INFRA-1580 first measured its loads, and where
+// the row "session_shutdown resolves within its budget when drain hangs on a dead connection" ran
+// 20 times in about 10.4 min at 96. A slower pod runs the same load as fewer loops, matched by
+// that row's run time there, so N is one pod's count at the time of its reading.
+
 // A bound on work, not a hang guard: nothing here waits. The body removes and makes the row's
 // scratch directories, which a loaded host stretches. 60_000. Worst measured cost: 122.19 ms over
 // 10 runs of the `session_shutdown` budget row at 30 busy loops (the 96 rung) on a two-CPU, 8 GiB
@@ -15332,10 +15338,9 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
-        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
-        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
-        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+        // for with no deadline of its own, or a reply that never arrives. 120_000, the guard of the
+        // row "hands the agent no copy when the host moved on with no session event", sized from
+        // the reading beside that row.
       }, 120_000);
 
       // The same move, with no session event for it: the host moves its session manager first
@@ -15386,10 +15391,10 @@ console.log(JSON.stringify(args));
           )
         ).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
-        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
-        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
-        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+        // for with no deadline of its own, or a reply that never arrives. 120_000. One correct run
+        // of this row was cut by the base's 20_000 at 25 497.91 ms, at 16 busy loops (the 96 rung)
+        // on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, so 120_000 is 4.7 times that cut. Four
+        // other rows of this describe carry the same guard on this reading.
       }, 120_000);
 
       // The same move, made before the command is asked for: the delivery awaits the whole body
@@ -16091,10 +16096,9 @@ console.log(JSON.stringify(args));
           body: `!echo $$ > pid && touch running && until [ -f go ]; do sleep 0.05; done && printf first\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
         });
         // A hang guard: what can hang is a first command that never starts, which the `until` above
-        // waits for with no deadline of its own, or a reply that never arrives. 120_000. This row
-        // and the four other shell rows beside it share the reading: one run of row S2 charged 25
-        // 497.91 ms at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z,
-        // where the base's 20_000 cut it, so 120_000 is 4.7 times that.
+        // waits for with no deadline of its own, or a reply that never arrives. 120_000, the guard
+        // of the row "hands the agent no copy when the host moved on with no session event", sized
+        // from the reading beside that row.
       }, 120_000);
 
       // The agent's copy is withheld where the session the command was asked of is not the one
@@ -16138,10 +16142,9 @@ console.log(JSON.stringify(args));
         ).toEqual([]);
         expect(movedSessionFrames()).toEqual([]);
         // A hang guard: what can hang is a command that never starts, which the `until` above waits
-        // for with no deadline of its own, or a reply that never arrives. 120_000. This row and the
-        // four other shell rows beside it share the reading: one run of row S2 charged 25 497.91 ms
-        // at 16 busy loops (the 96 rung) on the two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the
-        // base's 20_000 cut it, so 120_000 is 4.7 times that.
+        // for with no deadline of its own, or a reply that never arrives. 120_000, the guard of the
+        // row "hands the agent no copy when the host moved on with no session event", sized from
+        // the reading beside that row.
       }, 120_000);
 
       // A command runs in a process group of its own, and the session that was asked for it is
@@ -16178,10 +16181,8 @@ console.log(JSON.stringify(args));
         });
         // A hang guard: what can hang is a command that never writes its pid, which the `until`
         // above waits for with no deadline of its own, or a shutdown that does not end it, whose
-        // reply then never arrives. 120_000. This row and the four other shell rows beside it share
-        // the reading: one run of row S2 charged 25 497.91 ms at 16 busy loops (the 96 rung) on the
-        // two-CPU, 8 GiB pod of 2026-11-19 18:40Z, where the base's 20_000 cut it, so 120_000 is
-        // 4.7 times that.
+        // reply then never arrives. 120_000, the guard of the row "hands the agent no copy when the
+        // host moved on with no session event", sized from the reading beside that row.
       }, 120_000);
 
       // A session shutting down runs no command: one started now would outlive the session it

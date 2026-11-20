@@ -42,14 +42,20 @@ function answersHeardBy(listener: OtherTab | undefined): number {
   ).length;
 }
 
-/** Holds the fake clock until `listener` has heard `count` answers, then runs one more real turn,
- *  on which the app's own copy of the last of them is delivered too. A row that then moves the
- *  clock through a question's answer window moves it only once the answers are in, however many
- *  turns the machine takes to deliver them. */
+/** Holds the fake clock until `listener` has heard `count` answers, for at most the 1_000 real
+ *  turns `onRealTurns` gives a wait, then runs one more real turn, on which the app's own copy of
+ *  the last of them is delivered too. A row that then moves the clock through a question's answer
+ *  window moves it only once the answers are in, as long as they come within those turns. */
 async function answersIn(listener: OtherTab | undefined, count: number): Promise<void> {
   await onRealTurns(() => answersHeardBy(listener) >= count);
   await onRealTurns(() => false, 1);
 }
+
+// A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+// its loads, and where `packages/pi-envoy/extensions/envoy.test.ts`'s row "session_shutdown
+// resolves within its budget when drain hangs on a dead connection" ran 20 times in about 10.4 min
+// at 96. A slower pod runs the same load as fewer loops, matched by that row's run time there, so
+// a figure below written "N busy loops (the R rung)" is one pod's count at the time of its reading.
 
 // W48. A sign-out discards only once Dispatch has answered it. While it is out nothing more goes
 // out here - every write stops trying after the attempt in flight - and every other tab is told to
@@ -684,10 +690,9 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
   }
   // A bound on work, not a hang guard: every wait above ends by its own count of real turns or by
   // `waitFor`'s limit, so this limit only has to sit above the row's loaded cost. 100_000, above
-  // the suite's 60 s flag, which is twice its slowest loaded test and less than twice this row's:
-  // worst measured cost 33 673.56 ms at 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where
-  // main's form of this row cost up to 33 328.32 ms. The row's rung is 96: at 240 one run cost
-  // 56 679.57 ms.
+  // the suite's 60 s flag, which is less than twice this row's: worst measured cost 33 673.56 ms at
+  // 16 busy loops (the 96 rung) on a two-CPU, 8 GiB pod, where main's form of this row cost up to
+  // 33 328.32 ms. The row's rung is 96: at 240 one run cost 56 679.57 ms.
 }, 100_000);
 
 // W43. A lapsed tab shows the writes it keeps: the sign-in page lists the lapsed person's kept

@@ -66,6 +66,12 @@ import { renderTemplate } from "./text";
 // that carry 120_000 run on that deadline too, but `bind`'s default answers their model calls at
 // once, so none of their calls waits on it.
 
+// A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+// its loads, and where `envoy.test.ts`'s row "session_shutdown resolves within its budget when
+// drain hangs on a dead connection" ran 20 times in about 10.4 min at 96. A slower pod runs the
+// same load as fewer loops, matched by that row's run time there, so a figure written "N busy
+// loops (the R rung)" is one pod's count at the time of its reading.
+
 /** Runs a `dispatch` command's --dry-run as the entry's binding does. */
 type DryRunner = (script: string, opts: DryRunOptions) => Promise<DryRunResult>;
 
@@ -194,8 +200,8 @@ const untilAborted = (req: CompleteRequest): Promise<Completion> => {
  * grace it gives each waiting call (`SHUTDOWN_GRACE_MS`) and its own wait (`SHUTDOWN_WAIT_MS`),
  * then fire in the order of their lengths whatever the host's load, where on the real clock a
  * starved host can run the wait out before the grace's entry is written. The clock stops at
- * 5_000, past both, so a handler that never returns answers undefined and fails the row's next
- * assertion.
+ * 5_000, past both, so a handler that never returns answers undefined and fails the row's
+ * assertions on what this answers.
  */
 async function shutdownOnTestClock(g: BoundGate): Promise<number | undefined> {
   jest.useFakeTimers();
@@ -1809,9 +1815,11 @@ describe("deadline and abandonment", () => {
     expect(returnedAt).toBeGreaterThanOrEqual(core.SHUTDOWN_GRACE_MS);
     expect(returnedAt).toBeLessThan(core.SHUTDOWN_WAIT_MS);
     await gated;
-    // A hang guard: what can hang is the call whose model call never settles, should the grace not
-    // end it. 60_000, below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured
-    // cost: 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
+    // A hang guard: what can hang is a gate that never asks its model, which `started` waits for,
+    // or a call the grace ended whose promise never settles, which `gated` waits for; a grace that
+    // does not end the call fails the row at `g.entries` once the handler's wait runs out. 60_000,
+    // below the gate's 90 s deadline by the rule above `DryRunner`. Worst measured cost:
+    // 4 412.72 ms at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
   }, 60_000);
 });
 

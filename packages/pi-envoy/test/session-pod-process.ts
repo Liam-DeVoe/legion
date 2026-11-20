@@ -155,8 +155,7 @@ await start({}, context);
 /**
  * This script for `session`, started the way `spawn` names, and what it reported. A child that
  * hangs is killed at 300 s, which is after the row's own limit of 200 s and before this process's
- * own kill, so the row's limit decides a slow run, and its stderr comes back in the error of a run
- * that is not abandoned first.
+ * own kill, so the row's limit decides a slow run.
  */
 async function child(
   spawn: "no env" | "process.env",

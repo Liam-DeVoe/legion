@@ -629,8 +629,16 @@ describe("userConfigChain", () => {
       .catch(() => 0);
     return Number.isInteger(pid) && pid > 0 ? pid : undefined;
   }
-  // A hang guard: what can hang is a kill or a removal of the rows' directories that never
-  // returns. 60_000. Worst measured cost: 5 104.35 ms over 15 invocations in 3 runs of this
+  // A rung is a load: that many busy loops on the pods where dispatch://INFRA-1580 first measured
+  // its loads, and where `packages/pi-envoy/extensions/envoy.test.ts`'s row "session_shutdown
+  // resolves within its budget when drain hangs on a dead connection" ran 20 times in about
+  // 10.4 min at 96. A slower pod runs the same load as fewer loops, matched by that row's run time
+  // there, so a figure written "N busy loops (the R rung)" is one pod's count at the time of its
+  // reading.
+  //
+  // A bound on work, not a hang guard: nothing here waits on another process. The body reads the
+  // rows' pidfiles, kills what they name and removes the rows' directories, which a loaded host
+  // stretches. 60_000. Worst measured cost: 5 104.35 ms over 15 invocations in 3 runs of this
   // describe at 75 busy loops (the 240 rung) on a two-CPU, 8 GiB pod.
   afterEach(async () => {
     rowGeneration += 1;
