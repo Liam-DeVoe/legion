@@ -1105,11 +1105,21 @@ const searchMeaningCommentJoinedProjection = `meaning_comment as (
 //
 // A search at a cut does not broaden (D2): search_term_stats counts the present text only.
 
-// searchAsOfVersions is the member of a past-time statement's WITH list after q: text_versions,
-// the keyword table at the cut, which each arm reads. It is NOT MATERIALIZED, so that each arm's
-// own match and join reach the table's indexes.
+// searchAsOfVersions is the members of a past-time statement's WITH list after q: text_versions,
+// the keyword table at the cut, and text_matched, its versions that the query matches. The
+// keyword arms read text_matched, the arm of the issues the query names by key and the snippets
+// read text_versions. text_versions is NOT MATERIALIZED, so that each read of it reaches the
+// table's indexes. text_matched is MATERIALIZED: it reads the table's GIN index once, with the
+// query of q, and each arm then joins its shadows for its matches alone. As one relation joined
+// by each arm, the planner took the table's versions at the cut as the outer side, for an
+// estimate of a few dozen rows (it cannot read how many versions a later version ends), joined
+// each version to its item's shadow, and tested the match last: on a copy of production's event
+// log, every comment of a cut, and more than two minutes for a search at the newest cut (task t12).
+// It carries each match's rank (searchKeywordRank) in place of its vector, so its rows are small.
 func searchAsOfVersions(versions store.TextVersions) string {
-	return "text_versions as not materialized " + versions.SQL() + ",\n"
+	return "text_versions as not materialized " + versions.SQL() + ",\n" +
+		"text_matched as materialized (select v.kind, v.id, v.deleted_at, " + searchKeywordRank("v.search") +
+		" as r from text_versions v, q where v.search @@ q.tsq),\n"
 }
 
 // searchAsOfLiteral is the cut of versions as a timestamptz literal. It comes from the time value
@@ -1119,10 +1129,11 @@ func searchAsOfLiteral(versions store.TextVersions) string {
 }
 
 // searchAsOfKeywordLegs is searchKeywordLegs at a cut: the same arms, columns, filters and rank
-// (searchKeywordRank), over the version of each item at the cut (text_versions v) in place of
-// the item's search column. Each arm joins the item's shadow by the version's id, for the
-// columns the row carries and the filters. The id of a comment, a message or an ask is a uuid
-// as text, read through a guarded cast, so a version of another kind never fails the statement.
+// (searchKeywordRank), over the version of each item at the cut that the query matches
+// (text_matched v, searchAsOfVersions, which carries each match's rank as v.r) in place of the
+// item's search column. Each arm joins the item's shadow by the version's id, for the columns the
+// row carries and the filters. The id of a comment, a message or an ask is a uuid as text, read
+// through a guarded cast, so a version of another kind never fails the statement.
 func searchAsOfKeywordLegs() string {
 	rank := searchKeywordRank("v.search")
 	return `
@@ -1130,9 +1141,9 @@ func searchAsOfKeywordLegs() string {
          null::text as window_id, null::text[] as covers,
          i.title as issue_title, i.status as issue_status,
          null::text as owner_project, null::text as owner_slug, null::text as owner_name, i.updated_at,
-         false as own, ` + rank + ` as r
-    from text_versions v join issues i on i.key = v.id, q
-   where v.kind = 'issue' and v.search @@ q.tsq and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
+         false as own, v.r as r
+    from text_matched v join issues i on i.key = v.id, q
+   where v.kind = 'issue' and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
   select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
@@ -1149,36 +1160,36 @@ func searchAsOfKeywordLegs() string {
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name,
          coalesce(i.updated_at, c.created_at),
-         false, ` + rank + `
-    from text_versions v
+         false, v.r
+    from text_matched v
     join comments c on c.id = ` + store.CanonicalUUID(`v.id`) + `
     left join issues i on i.key = c.issue_key
     left join artifacts a on a.id = c.artifact_id
     left join projects p on p.key = a.project_key, q
-   where v.kind = 'comment' and v.deleted_at is null and v.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
+   where v.kind = 'comment' and v.deleted_at is null and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "c.author", "coalesce(c.edited_at, c.created_at)") + `
   union all
   select 'ask' as kind, 'keyword', k.issue_key, case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) else null::uuid end,
          coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `), k.id::text, ` + askBlockNodeSQL + `,
          null::text, null::text[],
          i.title, i.status, p.key, a.slug, a.name, coalesce(i.updated_at, k.created_at),
-         false, ` + rank + `
-    from text_versions v
+         false, v.r
+    from text_matched v
     join asks k on k.id = ` + store.CanonicalUUID(`v.id`) + `
     left join issues i on i.key = k.issue_key
     left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
     left join projects p on p.key = a.project_key, q
-   where v.kind = 'ask' and v.search @@ q.tsq and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
+   where v.kind = 'ask' and ($2 = '' or coalesce(i.project_key, p.key) = $2)` +
 		searchRowFilters("i.status", "k.author", "coalesce(k.edited_at, k.created_at)") + `
   union all
   select 'message' as kind, 'keyword', m.issue_key, null::uuid, null::uuid, m.id::text, null::text,
          null::text, null::text[],
          i.title, i.status, null::text, null::text, null::text, i.updated_at,
-         false, ` + rank + `
-    from text_versions v
+         false, v.r
+    from text_matched v
     join messages m on m.id = ` + store.CanonicalUUID(`v.id`) + `
     join issues i on i.key = m.issue_key, q
-   where v.kind = 'message' and v.deleted_at is null and v.search @@ q.tsq and ($2 = '' or i.project_key = $2)` +
+   where v.kind = 'message' and v.deleted_at is null and ($2 = '' or i.project_key = $2)` +
 		searchRowFilters("i.status", "m.author", "coalesce(m.edited_at, m.created_at)")
 }
 

@@ -89,9 +89,14 @@ func jsonValue(expr string) string {
 }
 
 // ownedBy is true of an event row whose owner is the issue or the document that owns row: an
-// event of an ask, a comment or a document names its owner as the row does (one of issue_key
-// and artifact_id, events_one_owner). It lets a per-row read of a post's events take the
-// owner's index.
+// event of a comment names its owner as the comment does (one of issue_key and artifact_id,
+// events_one_owner). It lets a per-row read of a comment's events that no index of events keys by
+// the comment take the owner's index: its delivery receipts, which name the comment as
+// comment_id. A read of an ask's, a comment's or a message's own events reads them by the id in
+// their payload alone, through the partial index of its types (events_ask_state,
+// events_comment_state, events_message_state, events_ask_follower): the id is the item's, and
+// with the owner beside it the planner reads every event of the owner to intersect them with the
+// few events of the item.
 func ownedBy(event, row string) string {
 	return "(" + event + ".issue_key = " + row + ".issue_key or " + event + ".artifact_id = " + row + ".artifact_id)"
 }
@@ -136,7 +141,13 @@ func postBodyAtCut(post, column, newest, later string) string {
 // each as a timestamptz literal. A name that is not a shadowed table adds no member, so with no
 // shadowed table named the body is empty. Bind puts the shadows of the tables a statement names
 // in front of it. NOT MATERIALIZED lets PostgreSQL push the statement's own filters into each
-// definition, as it does for the table.
+// definition, as it does for the table, and drop each column of a definition that the statement
+// does not read. It stays so where a statement names a table many times (the issue listing names
+// issues in eleven places): a materialized shadow is read once, but for every row of the table
+// and with every column, a search vector and a claim included. On a copy of production's event
+// log (task t12) the issues shadow materialized made each statement measured slower: the issue
+// listing 6.7 s against 8.5 s, the issue read's row 0.15 s against 7.5 s, an issue's asks 0.4 s
+// against 11 s.
 func Shadows(cut Cut, tables ...string) string {
 	var named [len(shadows)]bool
 	for _, table := range tables {

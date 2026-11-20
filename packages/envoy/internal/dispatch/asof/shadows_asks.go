@@ -79,13 +79,12 @@ func asksShadow(cut string) string {
 			from (
 				select hb.id from public.events hb
 				where hb.payload->>'id' = a.id::text and hb.type = 'ask.handed_back'
-					and hb.created_at <= ` + cut + ` and ` + ownedBy("hb", "a") + `
+					and hb.created_at <= ` + cut + `
 				order by hb.id desc limit 1
 			) h
 			cross join lateral (
 				select ce.payload from public.comments c
-				join public.events ce on ce.payload->>'id' = c.id::text and ce.type in ` + sqlList(postCreatedTypes) + `
-					and ` + ownedBy("ce", "c") + `
+				cross join lateral (` + commentCreatedEvent("c", "ce", "") + `) ce
 				where c.ask_id = a.id and ce.id < h.id
 				order by ce.id desc limit 1
 			) r
@@ -98,7 +97,7 @@ func asksShadow(cut string) string {
 	cross join lateral (
 		select e.payload from public.events e
 		where e.payload->>'id' = a.id::text and e.type in ` + sqlList(askStateTypes) + `
-			and e.created_at <= ` + cut + ` and ` + ownedBy("e", "a") + `
+			and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) s`
 }
@@ -123,24 +122,47 @@ func askFollowersShadow(cut string) string {
 				select e.payload->'author'->>'id' as session_id, true as follows, e.id, e.created_at
 				from public.events e
 				where e.payload->>'id' = a.id::text and e.type = 'ask.opened'
-					and e.created_at <= ` + cut + ` and ` + ownedBy("e", "a") + `
+					and e.created_at <= ` + cut + `
 					and e.payload->'author'->>'kind' = 'session'
 				union all
 				select e.payload->'author'->>'id', true, e.id, e.created_at
 				from public.comments c
-				join public.events e on e.payload->>'id' = c.id::text and e.type in ` + sqlList(postCreatedTypes) + `
-					and ` + ownedBy("e", "c") + `
-				where c.ask_id = a.id and e.created_at <= ` + cut + `
-					and e.payload->'author'->>'kind' = 'session'
+				cross join lateral (` + commentCreatedEvent("c", "e", cut) + `) e
+				where c.ask_id = a.id and e.payload->'author'->>'kind' = 'session'
 				union all
 				select e.payload->>'session_id', e.type = 'ask.follower_added', e.id, e.created_at
 				from public.events e
-				where e.type in ('ask.follower_added', 'ask.follower_removed')
-					and e.payload->>'ask_id' = a.id::text and e.created_at <= ` + cut + ` and ` + ownedBy("e", "a") + `
+				where e.type in ` + sqlList(askFollowerTypes) + `
+					and e.payload->>'ask_id' = a.id::text and e.created_at <= ` + cut + `
 			) w
 			where coalesce(w.session_id, '') <> ''
 		) v
 		group by v.session_id
 	) f
 	where f.since is not null`
+}
+
+// askFollowerTypes are the events of a follow and an unfollow, which name the ask as ask_id in
+// their payload. The predicate of the partial index events_ask_follower names exactly these
+// types, in this order, so that the planner can prove that the index serves askFollowersShadow's
+// read of them: a change here needs a new index.
+var askFollowerTypes = []string{"ask.follower_added", "ask.follower_removed"}
+
+// AskFollowerTypes are the event types the ask followers shadow reads a follow and an unfollow
+// from, in the order of the predicate of events_ask_follower.
+func AskFollowerTypes() []string { return slices.Clone(askFollowerTypes) }
+
+// commentCreatedEvent is the event that created the comment aliased comment, under the alias
+// event: its id, its created_at and its payload, read by the comment's id in their payload
+// (events_comment_state), at or before cut when cut is not empty. It is one row, for a lateral
+// join: PostgreSQL keeps no statistics of payload->>'id', and a plain join of the comments to
+// their events it plans as a hash of every comment.created.
+func commentCreatedEvent(comment, event, cut string) string {
+	bound := ""
+	if cut != "" {
+		bound = " and " + event + ".created_at <= " + cut
+	}
+	return `select ` + event + `.id, ` + event + `.created_at, ` + event + `.payload from public.events ` + event + `
+					where ` + event + `.payload->>'id' = ` + comment + `.id::text and ` + event + `.type in ` + sqlList(postCreatedTypes) + bound + `
+					order by ` + event + `.id limit 1`
 }

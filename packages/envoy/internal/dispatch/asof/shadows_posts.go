@@ -3,16 +3,29 @@ package asof
 import "slices"
 
 // commentStateTypes are the events whose payload is the whole comment (model.CommentEventPayload):
-// the comment.* events but the delivery receipt, and the suggestion's accept and reject.
+// the comment.* events but the delivery receipt, and the suggestion's accept and reject. The
+// predicate of the partial index events_comment_state names exactly these types, in this order,
+// so that the planner can prove that the index serves the comments shadow's reads of a comment's
+// events, each of which names these types or some of them: a change here needs a new index.
 var commentStateTypes = []string{
 	"comment.created", "comment.answered", "comment.edited", "comment.deleted",
 	"comment.resolved", "comment.reopened", "comment.anchor_refreshed",
 	"suggestion.accepted", "suggestion.rejected",
 }
 
+// CommentStateTypes are the event types the comments shadow reads a comment from, in the order
+// of the predicate of events_comment_state.
+func CommentStateTypes() []string { return slices.Clone(commentStateTypes) }
+
 // messageStateTypes are the events whose payload is the whole message (model.MessageEventPayload):
-// message.answered creates a reply, as message.created creates every other message.
+// message.answered creates a reply, as message.created creates every other message. The predicate
+// of the partial index events_message_state names exactly these types, in this order, for the
+// messages shadow's reads, as commentStateTypes do for the comments shadow's.
 var messageStateTypes = []string{"message.created", "message.answered", "message.edited", "message.deleted"}
+
+// MessageStateTypes are the event types the messages shadow reads a message from, in the order of
+// the predicate of events_message_state.
+func MessageStateTypes() []string { return slices.Clone(messageStateTypes) }
 
 // commentRewriteTypes and messageRewriteTypes are the events of a post's edit and of its delete.
 // From the time post_body_history began (postHistoryBegan), the transaction of each one writes one
@@ -40,12 +53,12 @@ var CommentBodiesNotGivenStatement = `select c.id::text from public.comments c
 		and coalesce((
 			select (e.payload->>'body_truncated')::boolean from public.events e
 			where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentStateTypes) + `
-				and e.created_at <= $2::timestamptz and ` + ownedBy("e", "c") + `
+				and e.created_at <= $2::timestamptz
 			order by e.id desc limit 1), false)
 		and (
 			select f.created_at from public.events f
 			where f.payload->>'id' = c.id::text and f.type in ` + sqlList(commentRewriteTypes) + `
-				and f.created_at > $2::timestamptz and ` + ownedBy("f", "c") + `
+				and f.created_at > $2::timestamptz
 			order by f.id limit 1) < ` + postHistoryBegan
 
 // ItemsChangedAfterStatement reads, of the items whose ids $1 holds (text[]), the id of each item
@@ -72,17 +85,17 @@ var ItemsChangedAfterStatement = `select distinct e.payload->>'id' from public.e
 // expression reads the events by their bare name, so the binding at the cut reads the events at
 // the cut (the events shadow).
 var (
-	CommentHistoryRowsAtCut = historyRowsAtCut(commentRewriteTypes, ownedBy("e", "p"))
-	MessageHistoryRowsAtCut = historyRowsAtCut(messageRewriteTypes, "e.issue_key = p.issue_key")
+	CommentHistoryRowsAtCut = historyRowsAtCut(commentRewriteTypes)
+	MessageHistoryRowsAtCut = historyRowsAtCut(messageRewriteTypes)
 )
 
 // historyRowsAtCut counts the events of types of the post p that began at or after the time
-// post_body_history began. owned holds each event to the owner of p, so that the read can take the
-// owner's index.
-func historyRowsAtCut(types []string, owned string) string {
+// post_body_history began, by the post's id in their payload (events_comment_state,
+// events_message_state).
+func historyRowsAtCut(types []string) string {
 	return `(select count(*) from events e
 		where e.payload->>'id' = p.id::text and e.type in ` + sqlList(types) + `
-			and e.created_at >= ` + postHistoryBegan + ` and ` + owned + `)`
+			and e.created_at >= ` + postHistoryBegan + `)`
 }
 
 // commentsShadow is decision 2's comments: each comment whose creating event (comment.created, or
@@ -97,6 +110,12 @@ func historyRowsAtCut(types []string, owned string) string {
 //     cut reads deleted with no body, and with no suggestion, which its delete cleared, as the
 //     present read gives it.
 //   - search: what the comments_search trigger computes, from the body at the cut.
+//
+// Each read of the comment's events is a lateral join of one row, by the comment's id in their
+// payload, so it reads events_comment_state for that comment. PostgreSQL keeps no statistics of
+// payload->>'id' (a partial index's expression gives the table none), so it takes a comment to
+// have hundreds of events; an EXISTS of the creating event, which it plans as a semi-join, it
+// then read as a hash of every comment.created.
 func commentsShadow(cut string) string {
 	return `select c.id as id,
 		c.issue_key as issue_key,
@@ -121,22 +140,24 @@ func commentsShadow(cut string) string {
 		c.deleted_by as deleted_by
 	from public.comments c
 	cross join lateral (
+		select from public.events e
+		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(postCreatedTypes) + `
+			and e.created_at <= ` + cut + `
+		limit 1
+	) created
+	cross join lateral (
 		select e.id, e.payload from public.events e
 		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentStateTypes) + `
-			and e.created_at <= ` + cut + ` and ` + ownedBy("e", "c") + `
+			and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) p
 	left join lateral (
 		select e.id, e.created_at from public.events e
 		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(commentRewriteTypes) + `
-			and e.created_at > ` + cut + ` and ` + ownedBy("e", "c") + `
+			and e.created_at > ` + cut + `
 		order by e.id limit 1
 	) f on true
-	cross join lateral (select ` + postBodyAtCut("c", "comment_id", "p", "f") + ` as body) b
-	where exists (
-		select from public.events e
-		where e.payload->>'id' = c.id::text and e.type in ` + sqlList(postCreatedTypes) + `
-			and e.created_at <= ` + cut + ` and ` + ownedBy("e", "c") + `)`
+	cross join lateral (select ` + postBodyAtCut("c", "comment_id", "p", "f") + ` as body) b`
 }
 
 // messagesShadow is decision 2's messages: each message whose creating event (message.created, or
@@ -145,7 +166,8 @@ func commentsShadow(cut string) string {
 // its column's default (api/broadcasts.go), the very value that transaction's event takes, so
 // the row's created_at is that event's.
 //   - body: the body at the cut by the one-clock rule (postBodyAtCut). Only an issue message is
-//     edited or deleted (lockedMessageForCorrection), so its events are its issue's.
+//     edited or deleted (lockedMessageForCorrection). Its events are read by the message's id in
+//     their payload, through events_message_state, as a comment's are through events_comment_state.
 //   - edited_at: the newest payload at the cut; a payload written before the field existed
 //     carries none, as no message was edited then.
 //   - deleted_at and deleted_by: the present values (decision 14).
@@ -169,13 +191,13 @@ func messagesShadow(cut string) string {
 	from public.messages m
 	left join lateral (
 		select e.id, e.payload from public.events e
-		where e.issue_key = m.issue_key and e.payload->>'id' = m.id::text
+		where e.payload->>'id' = m.id::text
 			and e.type in ` + sqlList(messageStateTypes) + ` and e.created_at <= ` + cut + `
 		order by e.id desc limit 1
 	) p on true
 	left join lateral (
 		select e.id, e.created_at from public.events e
-		where e.issue_key = m.issue_key and e.payload->>'id' = m.id::text
+		where e.payload->>'id' = m.id::text
 			and e.type in ` + sqlList(messageRewriteTypes) + ` and e.created_at > ` + cut + `
 		order by e.id limit 1
 	) f on true
@@ -225,7 +247,7 @@ func commentDeliveriesShadow(cut string) string {
 		select e.id from public.events e
 		where d.reply_id is not null and e.payload->>'id' = d.reply_id::text
 			and e.type in ` + sqlList(postCreatedTypes) + `
-			and e.created_at <= ` + cut + ` and ` + ownedBy("e", "c") + `
+			and e.created_at <= ` + cut + `
 		limit 1
 	) y on true
 	where d.created_at <= ` + cut + ` or r.id is not null or y.id is not null`

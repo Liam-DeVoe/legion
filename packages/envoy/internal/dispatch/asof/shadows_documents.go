@@ -5,7 +5,8 @@ package asof
 // and is left out of every list at the cut, as it is now (task t8).
 //   - name: the previous_name of the first artifact.renamed after the cut, which records the
 //     name the correction replaced (renameArtifact, api/artifact_rename.go); else the row's. The
-//     rename's event is its document's owner's: the issue's, or the document's own.
+//     rename names the document in its payload (artifact.id), by which events_artifact_renamed
+//     keys it.
 //   - last_seq: the newest seq of the document's own events at the cut, as the append sets it; 0
 //     for a document whose events are its issue's.
 //   - Every other column: the row's. No write changes slug, kind, is_primary, created_by,
@@ -24,7 +25,7 @@ func artifactsShadow(cut string) string {
 		coalesce((
 			select r.payload->>'previous_name' from public.events r
 			where r.type = 'artifact.renamed' and r.payload->'artifact'->>'id' = a.id::text
-				and r.created_at > ` + cut + ` and (r.issue_key = a.issue_key or r.artifact_id = a.id)
+				and r.created_at > ` + cut + `
 			order by r.id limit 1), a.name) as name,
 		a.kind as kind,
 		a.is_primary as is_primary,

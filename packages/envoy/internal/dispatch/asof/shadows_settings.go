@@ -1,11 +1,24 @@
 package asof
 
+import "slices"
+
 // projectDefaultsRecordedFrom is when Dispatch began to record a project's default assignee in
 // events: 2026-11-15T07:01:28Z, the time of production's first
 // settings.project_default_assignee.updated (event 563,436). Migration 20261111210103 filled the
 // column with no event before then, so a default no event at or before the cut names is the
 // present one only for a cut from this time on (decision 2).
 const projectDefaultsRecordedFrom = `'2026-11-15T07:01:28Z'::timestamptz`
+
+// projectSettingTypes are the events of a project's own settings that projectsShadow reads: its
+// create and update, which carry the project, and its default assignee's change. The predicate
+// of the partial index events_project_setting names exactly these types, in this order, so that
+// the planner can prove that the index serves each read of them, which names one or two of
+// them: a change here needs a new index.
+var projectSettingTypes = []string{"project.created", "project.updated", "settings.project_default_assignee.updated"}
+
+// ProjectSettingTypes are the event types projectsShadow reads a project's settings from, in the
+// order of the predicate of events_project_setting.
+func ProjectSettingTypes() []string { return slices.Clone(projectSettingTypes) }
 
 // projectsShadow is decision 2's projects: each project created at or before the cut.
 //   - default_assignee: the newest settings.project_default_assignee.updated at the cut; else the
@@ -19,9 +32,12 @@ const projectDefaultsRecordedFrom = `'2026-11-15T07:01:28Z'::timestamptz`
 //     since each create numbers its issue in the transaction that appends it (api/issue_create.go).
 //   - last_seq: the newest seq of the project's own events at the cut, as the append sets it.
 //   - key, name and created_at: no write changes them.
+//
+// Each column read from events is a scalar subquery of the select list, so a statement that
+// joins a project for its key alone reads none of its events.
 func projectsShadow(cut string) string {
-	defaultEvent := `'settings.project_default_assignee.updated'`
-	projectEvents := sqlList([]string{"project.created", "project.updated"})
+	defaultEvent := sqlList(projectSettingTypes[2:])
+	projectEvents := sqlList(projectSettingTypes[:2])
 	return `select p.key as key,
 		p.name as name,
 		p.next_number - (
@@ -31,32 +47,23 @@ func projectsShadow(cut string) string {
 		p.created_at as created_at,
 		coalesce((select e.seq from public.events e where e.project_key = p.key and e.created_at <= ` + cut + `
 			order by e.seq desc limit 1), 0) as last_seq,
-		case
-			when d.assignee is not null then d.assignee
-			when ` + cut + ` >= ` + projectDefaultsRecordedFrom + ` and not exists (
+		coalesce(
+			(select e.payload->>'assignee' from public.events e
+				where e.project_key = p.key and e.type in ` + defaultEvent + ` and e.created_at <= ` + cut + `
+				order by e.seq desc limit 1),
+			case when ` + cut + ` >= ` + projectDefaultsRecordedFrom + ` and not exists (
 				select from public.events e
-				where e.project_key = p.key and e.type = ` + defaultEvent + ` and e.created_at > ` + cut + `)
-			then p.default_assignee
-		end as default_assignee,
-		case
-			when g.payload is not null then ` + textArray(`g.payload->'gated_steps'`) + `
-			when not exists (
+				where e.project_key = p.key and e.type in ` + defaultEvent + ` and e.created_at > ` + cut + `)
+			then p.default_assignee end) as default_assignee,
+		coalesce(
+			(select ` + textArray(`e.payload->'gated_steps'`) + ` from public.events e
+				where e.project_key = p.key and e.type in ` + projectEvents + ` and e.created_at <= ` + cut + `
+				order by e.seq desc limit 1),
+			case when not exists (
 				select from public.events e
 				where e.project_key = p.key and e.type in ` + projectEvents + ` and e.created_at > ` + cut + `)
-			then p.gated_steps
-			else '{}'::text[]
-		end as gated_steps
+			then p.gated_steps else '{}'::text[] end) as gated_steps
 	from public.projects p
-	left join lateral (
-		select e.payload->>'assignee' as assignee from public.events e
-		where e.project_key = p.key and e.type = ` + defaultEvent + ` and e.created_at <= ` + cut + `
-		order by e.seq desc limit 1
-	) d on true
-	left join lateral (
-		select e.payload from public.events e
-		where e.project_key = p.key and e.type in ` + projectEvents + ` and e.created_at <= ` + cut + `
-		order by e.seq desc limit 1
-	) g on true
 	where p.created_at <= ` + cut
 }
 
