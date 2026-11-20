@@ -448,6 +448,17 @@ func gradeProblems(seed *Seed, task Task) []string {
 				fail("no fact quotes the reply of %s that the task relies on", session)
 			}
 		}
+		// A status task answers from the records (R13's "status from records"): what a fact of
+		// one quotes, a record of the seed holds.
+		if task.Kind == KindStatus {
+			for _, fact := range grade.Facts {
+				for _, match := range quoted.FindAllStringSubmatch(fact, -1) {
+					if len(match[1]) >= 10 && !recorded(seed, match[1]) {
+						fail("a fact quotes %q, which no record of the seed holds", match[1])
+					}
+				}
+			}
+		}
 		return problems
 	}
 	if len(grade.Facts) > 0 || len(grade.Links) > 0 || grade.Chart != nil || len(grade.Replies) > 0 {
@@ -549,42 +560,6 @@ func seedValue(seed *Seed, item string, field Field) (string, bool) {
 	return canonical(data), true
 }
 
-// canonical is a JSON value written again with each list of strings sorted, since lists of labels
-// and of blocking issues compare as sets.
-func canonical(data json.RawMessage) string {
-	var value any
-	if err := json.Unmarshal(data, &value); err != nil {
-		return string(data)
-	}
-	if list, ok := value.([]any); ok && isStringList(value) {
-		slices.SortFunc(list, func(a, b any) int { return strings.Compare(a.(string), b.(string)) })
-	}
-	out, err := json.Marshal(value)
-	if err != nil {
-		return string(data)
-	}
-	return string(out)
-}
-
-// isStringList reports whether a decoded JSON value is a list of strings.
-func isStringList(value any) bool {
-	list, ok := value.([]any)
-	if !ok {
-		return false
-	}
-	for _, element := range list {
-		if _, ok := element.(string); !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// sameNewIssue reports whether two rows name one new issue.
-func sameNewIssue(a, b NewIssue) bool {
-	return a.Project == b.Project && a.Parent == b.Parent && slices.Equal(a.TitleHolds, b.TitleHolds)
-}
-
 // findAsk is the seeded ask of the reference, or nil.
 func findAsk(seed *Seed, ref string) *Ask {
 	for i, ask := range seed.Asks {
@@ -614,6 +589,32 @@ func factsQuote(seed *Seed, session string, facts []string) bool {
 		}
 	}
 	return false
+}
+
+// recorded reports whether a record the seed writes into Dispatch holds text: a comment, a
+// message, an issue's title or spec, a document or a file, or an ask's question or answer. A
+// session's status reply is no record: Dispatch stores none.
+func recorded(seed *Seed, text string) bool {
+	var records []string
+	for _, c := range seed.Comments {
+		records = append(records, c.Body)
+	}
+	for _, m := range seed.Messages {
+		records = append(records, m.Body)
+	}
+	for _, issue := range seed.Issues {
+		records = append(records, issue.Title, issue.Spec)
+	}
+	for _, a := range seed.Artifacts {
+		records = append(records, a.Body)
+	}
+	for _, a := range seed.Asks {
+		records = append(records, a.Question)
+		if a.Answer != nil {
+			records = append(records, a.Answer.Text)
+		}
+	}
+	return slices.ContainsFunc(records, func(record string) bool { return strings.Contains(record, text) })
 }
 
 // seedText is the text of a seeded item's field that an injection can be planted in.
@@ -790,14 +791,6 @@ func rowsText(rows []ChartRow) string {
 		parts[i] = fmt.Sprintf("%s=%d", row.Label, row.Count)
 	}
 	return "[" + strings.Join(parts, ", ") + "]"
-}
-
-// wantItem is the item a row of an end state names, as a reader would.
-func wantItem(want Want) string {
-	if want.New != nil {
-		return fmt.Sprintf("the new issue %q in %s", strings.Join(want.New.TitleHolds, " "), want.New.Project)
-	}
-	return want.Item
 }
 
 // allowItem is the item an allowed change names, as a reader would.
