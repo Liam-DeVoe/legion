@@ -193,8 +193,10 @@ func (h *harness) wantNothingCharged(when string) {
 // end as neither reading (sandbox's TestAnEvictedPodsEndIsObservedFromItsConditionOrItsReason):
 // it is charged a death, and at the third the claim fails, rather than a task that fills its own
 // disk being relaunched into the same eviction for ever. The control is the eviction a node under
-// pressure makes, which carries the condition and is read as an end from outside the pod: the same
-// first end costs nothing there.
+// pressure makes of a pod whose message names no container over its request, which carries the
+// condition and is read as an end from outside the pod: the same first end costs nothing there.
+// An eviction under pressure that names a container over its request is the pod's own use, read
+// neither way and charged as this one is (sandbox's overRequest).
 func TestAnEvictionWithNoDisruptionTargetIsChargedADeathAndFailsTheClaimAtTheThird(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	for _, kind := range outsideEndClaims {

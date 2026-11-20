@@ -2,9 +2,11 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -316,4 +318,18 @@ func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(stored.At) {
 		t.Fatalf("after the reports of rows the store holds the running copy %+v, want the newer copy as it was", facts)
 	}
+}
+
+// shimBundle asks conn for issue's workspace bundle as the Kubernetes runtime asks a role's shim
+// (sandbox's Runtime.BundleWorkspace): over the role's connection, under the runtimes' own
+// budget, with the connection's error wrapped and the bundle named by the pod it came off. The
+// fake connection answers what its test set (fake.Conn.SetWorkspaceBundle) as the shim and the
+// stream answer it, so a bundle over the bound is refused with its size and never arrives.
+func shimBundle(ctx context.Context, conn *fake.Conn, issue string) (runtime.WorkspaceBundle, error) {
+	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over the rig's shim: %w", issue, err)
+	}
+	bundle.PodUID = releasedPodUID
+	return bundle, nil
 }

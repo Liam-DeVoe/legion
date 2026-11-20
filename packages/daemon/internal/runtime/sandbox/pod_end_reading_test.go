@@ -494,10 +494,12 @@ func TestATerminalPodIsObservedFromItsStatusAloneWhateverDeletionTimestampItCarr
 	}
 }
 
-// An eviction is the pod's own only where the DisruptionTarget condition is not on it, and
-// selfEvicted reads that condition itself, so it never agrees with disruption about a pod: an
-// eviction under node pressure carries the same `Evicted` reason a pod over its own limit gets,
-// and the condition is all that tells them apart. Read from the reason alone, selfEvicted would
+// Of the evictions whose message names no container over its request (overRequest, which
+// capturePodEnd reads first, and which is the pod's own use whatever condition it carries), one is
+// the pod's own only where the DisruptionTarget condition is not on it, and selfEvicted reads that
+// condition itself, so it never agrees with disruption about a pod: an eviction under node
+// pressure carries the same `Evicted` reason a pod over its own limit gets, and among those the
+// condition is all that tells them apart. Read from the reason alone, selfEvicted would
 // call a neighbour's pressure the pod's own, and any order of capturePodEnd's cases that asked it
 // before disruption, or any other caller of it, would have every role of that pod charged.
 func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *testing.T) {

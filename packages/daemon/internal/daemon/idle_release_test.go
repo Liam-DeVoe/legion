@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"slices"
 	"strconv"
@@ -95,20 +94,6 @@ func (r *releaseRuntime) BundleWorkspace(ctx context.Context, issue string, role
 		return shimBundle(ctx, shim, issue)
 	}
 	return bundle, err
-}
-
-// shimBundle asks conn for issue's workspace bundle as the Kubernetes runtime asks a role's shim
-// (sandbox's Runtime.BundleWorkspace): over the role's connection, under the runtimes' own
-// budget, with the connection's error wrapped and the bundle named by the pod it came off. The
-// fake connection answers what its test set (fake.Conn.SetWorkspaceBundle) as the shim and the
-// stream answer it, so a bundle over the bound is refused with its size and never arrives.
-func shimBundle(ctx context.Context, conn *fake.Conn, issue string) (runtime.WorkspaceBundle, error) {
-	bundle, err := conn.BundleWorkspace(ctx, issue, runtime.WorkspaceBundleTimeout)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, fmt.Errorf("bundle %s's workspace over the rig's shim: %w", issue, err)
-	}
-	bundle.PodUID = releasedPodUID
-	return bundle, nil
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {

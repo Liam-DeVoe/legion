@@ -640,7 +640,7 @@ TestNoTextGivesACredentialAsACommandArgument reads each of them.
 
 The ten copies of shipped texts that readExtract (waiting_line_texts_test.go)
 reads to hold them to the texts themselves: the waiting line's four, the two way
-backs' (way_back_doc_test.go:129), the troubleshooting page's refusal table's
+backs' (way_back_doc_test.go:130), the troubleshooting page's refusal table's
 (troubleshooting_refusals_doc_test.go:41) and the three of docs/kubernetes.md's regions
 (workspace_copy_doc_test.go:92), each committed beside the package whose own check
 reads it. They are .txt files, which the module's `'packages/daemon/**/*.go'` in the `text_checks` filter does
