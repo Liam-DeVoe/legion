@@ -480,6 +480,15 @@ test("a claim off the ladder is still reminded after a refused turn and after an
   expect(sent).toEqual([REMINDER, REMINDER]);
 });
 
+// The other control: a turn that ends with its phase open for any reason but a refusal is
+// reminded even while the ladder holds the task, as before: its continuation goes at once.
+test("a claim on the ladder is still reminded after a turn that ends with its phase open", async () => {
+  const { reminder, sent } = rig({ state: onTheLadder(3) });
+
+  expect(await reminder.settle(said("Pushed."))).toBe(REMINDER);
+  expect(sent).toEqual([]);
+});
+
 // The daemon failing this role's claim is its word that the session is finished: the retry runs
 // in a session of its own, and a reminder written into this one reaches nobody who can act on it.
 // It is what stops the reminding on Claude Code, whose turns this host does not settle.

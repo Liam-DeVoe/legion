@@ -256,15 +256,16 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
    * new process, or starts a new session once the daemon's `forgetSession` (its supervise package)
    * has dropped this one — and a reminder written now reaches nobody who can act on it. That is
    * what stops Claude Code's reminder, which has no
-   * refused-turn settle of its own for a turn the provider never answered. The reminder is also
-   * dropped while the daemon's provider-error ladder holds this claim's task (`providerErrorRun`
-   * and `pendingTask` on the claim): the ladder sends that task again after its own pause, and a
-   * reminder before then is one more prompt into a session the provider is refusing. The ladder's
-   * send starts a turn, and that turn's end decides the next reminder. Everything else fails
-   * open and is logged at debug: an unreachable daemon is exactly when a stalled worker must still
-   * be nudged.
+   * refused-turn settle of its own for a turn the provider never answered. A reminder a refused
+   * turn's timer carries (`afterRefusal`) is also dropped while the daemon's provider-error ladder
+   * holds this claim's task (`providerErrorRun` and `pendingTask` on the claim): the ladder sends
+   * that task again after its own pause, and a reminder before then is one more prompt into a
+   * session the provider is refusing. The ladder's send starts a turn, and that turn's end decides
+   * the next reminder. A reminder any other settle earns is sent whatever the ladder holds.
+   * Everything else fails open and is logged at debug: an unreachable daemon is exactly when a
+   * stalled worker must still be nudged.
    */
-  const recordCheck = async (): Promise<RecordCheck> => {
+  const recordCheck = async (afterRefusal = false): Promise<RecordCheck> => {
     const claim = deps.claim();
     if (claim === undefined) return { reminds: true };
     let record: LegionIssue | undefined;
@@ -299,7 +300,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
       });
       return { reminds: false, record };
     }
-    if ((held?.providerErrorRun ?? 0) > 0 && held?.pendingTask !== undefined) {
+    if (afterRefusal && (held?.providerErrorRun ?? 0) > 0 && held?.pendingTask !== undefined) {
       deps.log.debug(
         "legion: the daemon's provider-error ladder holds this claim's task; no reminder is sent",
         {
@@ -440,14 +441,15 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
   /**
    * D4: the one guard. A timer fires only while nothing has happened since it was armed, the phase
    * is still open, no turn is running, and the record check passes. The check awaits the daemon, so
-   * the generation and the turn are read again after it.
+   * the generation and the turn are read again after it. `afterRefusal` is a timer a refused turn
+   * armed, whose check also defers to the provider-error ladder (`recordCheck`).
    */
-  const armReminder = (reminder: string, delayMs: number): void => {
+  const armReminder = (reminder: string, delayMs: number, afterRefusal = false): void => {
     const armedAt = generation;
     armed = { at: Date.now() + delayMs, generation: armedAt };
     deps.armTimer(async () => {
       if (generation !== armedAt || stall.state === "closed" || turnRunning) return;
-      const check = await recordCheck();
+      const check = await recordCheck(afterRefusal);
       if (!check.reminds) return;
       if (generation !== armedAt || turnRunning) return;
       await deliver(reminder, check.record);
@@ -494,7 +496,7 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // holds the claim's task: the ladder sends it again after its own pause.
         advance(turn);
         continued = false;
-        armReminder(reminderText(""), deps.limits.reminderMs);
+        armReminder(reminderText(""), deps.limits.reminderMs, true);
         return undefined;
       }
       const text = turn.lastAssistantText;

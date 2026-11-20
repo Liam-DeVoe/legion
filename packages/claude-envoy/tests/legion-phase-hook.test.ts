@@ -85,6 +85,9 @@ async function harness(
     readonly claim?: ClaimCapability
     /** The state the daemon's record gives the implementer's claim; `working` in the fixture. */
     readonly claimState?: string
+    /** False to take the implementer's claim off the daemon's provider-error ladder: the fixture
+     * gives it a run of 2 provider errors and a pending task, which is the ladder holding it. */
+    readonly onTheLadder?: boolean
     /** Added to (and overriding) `QUICK_LIMITS` and `LEGION_PROJECT`. */
     readonly env?: Record<string, string | undefined>
     /** False for a session outside a Legion pane, which has no inbox at all. */
@@ -109,9 +112,15 @@ async function harness(
       "utf8",
     ),
   ) as { issues: Record<string, { workers: Record<string, { claim: { state: string } }> }> }
-  const implementerClaim = state.issues["LEGION-208"]?.workers["implementer"]?.claim
+  const implementerClaim = state.issues["LEGION-208"]?.workers["implementer"]?.claim as
+    | { state: string; providerErrorRun?: number; pendingTask?: unknown }
+    | undefined
   if (options.claimState !== undefined && implementerClaim !== undefined) {
     implementerClaim.state = options.claimState
+  }
+  if (options.onTheLadder === false && implementerClaim !== undefined) {
+    delete implementerClaim.providerErrorRun
+    delete implementerClaim.pendingTask
   }
   const record = async (): Promise<unknown> => {
     const raw = await readFile(file, "utf8").catch(() => undefined)
@@ -326,14 +335,14 @@ test("a settle that says what it waits on buys the quiet wait, and is reminded o
 // reference", code.claude.com/docs/en/hooks). That is the provider refusing the turn, so the
 // answer carries no continuation: the host would turn one into another turn at once and the
 // provider would refuse that one the same way, as it did for dispatch://INFRA-264's implementer.
-// One timer is armed all the same, because the task that refused turn carried ended with it and
-// nothing else would wake this worker: a single transient refusal would otherwise leave the issue
-// idle. What stops the reminding of a session the provider refuses for ever is the daemon failing
-// the claim at `launch_failure_limit`, which the test below this one holds.
+// One timer is armed all the same, because a turn no daemon task started has no other wake: a
+// single transient refusal would otherwise leave the issue idle. This claim is off the daemon's
+// provider-error ladder; the test below holds that a claim on it is sent nothing by that timer.
 test("a turn that ended on an API error carries no continuation, and is woken once by its timer", async () => {
   const { endpoint, record, inbox, close } = await harness({
     record: recorded("open", 0, { lastMessage: "I pushed the branch." }),
     claim: implementer,
+    onTheLadder: false,
   })
   try {
     expect(
@@ -362,6 +371,40 @@ test("a turn that ended on an API error carries no continuation, and is woken on
     expect(await record()).toEqual({
       state: "open",
       count: 1,
+      reported: false,
+      lastMessage: "I pushed the branch.",
+    })
+  } finally {
+    await close()
+  }
+})
+
+// While the daemon's provider-error ladder holds this claim's task, it sends that task again
+// after its own pause, so the refused turn's timer sends nothing: a reminder before the ladder's
+// send would be one more prompt into a session the provider is refusing.
+test("a turn that ended on an API error while the ladder holds the task is reminded of nothing", async () => {
+  const { endpoint, record, inbox, lines, close } = await harness({
+    record: recorded("open", 0, { lastMessage: "I pushed the branch." }),
+    claim: implementer,
+  })
+  try {
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: 529 Overloaded",
+      }),
+    ).toEqual({})
+    // The line is written inside the timer's own record check, which answers that no reminder
+    // goes, so once it is seen the timer has decided: no fixed wait is needed.
+    await waitFor(
+      async () =>
+        lines.some((line) => line.includes("provider-error ladder holds this claim's task")),
+      "the timer's record check to defer to the ladder",
+    )
+    expect(inbox).toEqual([])
+    expect(await record()).toEqual({
+      state: "open",
+      count: 0,
       reported: false,
       lastMessage: "I pushed the branch.",
     })
