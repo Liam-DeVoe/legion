@@ -10710,6 +10710,69 @@ sleep() { command sleep 0.05; }`;
     expect(missed).toEqual([]);
   });
 
+  // Catches: a guard that reads the reviewer's prompt of a threads-closed run as the rig's own
+  // text. run_threads_closed builds that prompt from the implementer's own messages to the
+  // reviewer (reviewer_wake, kept whole in <run>/reviewer-wake.json), and launch's own comment says
+  // the guard reads "neither the label's install ... nor what the run has written, whose words are
+  // its agents' own". INFRA-764's round 26 at 10c26bb8: the implementer of
+  // threads-closed-correct-head-1 (run b4124d1ea341) wrote "Pushed one text-only commit" to the
+  // reviewer, an ordinary word that 6 of the round's 10 runs' agents used of their own; the guard
+  // refused the reviewer's launch on "text-only" in <run>/prompt.txt, the run had no reviewer half
+  // (unfinished, so unhealthy), and the world-health check refused the batch. The second launch is
+  // the control: the same word in the rig's own line of the prompt, which no message of the run
+  // holds, still refuses, so the guard still reads the prompt.
+  test.skipIf(withoutNamespace)(
+    "a reviewer woken by the implementer's message that says text-only starts; the word in the rig's own line still refuses",
+    () => {
+      const name = "threads-closed-correct-head-1";
+      const wakeOf = (message: string) =>
+        JSON.stringify({
+          wake: [
+            {
+              at: "2026-11-20T16:46:07.292Z",
+              topic: "notifications.role.legion-fernbrookwidgets0da355854a62-wid-1-reviewer",
+              message,
+              sender: "01a1f9d6-d286-7165-97d6-fe3f0206e8b7",
+              subject:
+                "notifications.envoy.kept.role.legion-fernbrookwidgets0da355854a62-wid-1-reviewer",
+            },
+          ],
+        });
+      const said =
+        "Pushed one text-only commit c9268b02bfc2 fixing the open thread PRRT_kwDOfix002.";
+      const agentWork = freshDir("launch-message-word");
+      const agentRan = path.join(runDirOf(agentWork, name), "agent-ran");
+      const agent = launched(agentWork, name, `: >${agentRan}`, [], {
+        files: {
+          "prompt.txt": `Implementer → reviewer, WID-1. ${said}\n`,
+          "reviewer-wake.json": wakeOf(said),
+        },
+      });
+      const plain = "Pushed one commit c9268b02bfc2 fixing the open thread PRRT_kwDOfix002.";
+      const rigWork = freshDir("launch-composed-word");
+      const rigRan = path.join(runDirOf(rigWork, name), "agent-ran");
+      const rig = launched(rigWork, name, `: >${rigRan}`, [], {
+        files: {
+          "prompt.txt": `Implementer → reviewer, WID-1, a text-only round. ${plain}\n`,
+          "reviewer-wake.json": wakeOf(plain),
+        },
+      });
+      expect({
+        agent: { code: agent.result.code, stderr: agent.result.stderr, ran: existsSync(agentRan) },
+        rig: {
+          code: rig.result.code,
+          refused: rig.result.stderr.includes(
+            `the world of ${path.basename(rig.run)} names "text-only" in <run>/prompt.txt`
+          ),
+          ran: existsSync(rigRan),
+        },
+      }).toEqual({
+        agent: { code: 0, stderr: "", ran: true },
+        rig: { code: 1, refused: true, ran: false },
+      });
+    }
+  );
+
   // Catches: a role prompt of the daemon's that names a word of the vocabulary. The daemon
   // composes a worker's system prompt from the files of packages/daemon/internal/prompts/, and
   // the guard reads that prompt as text (run-names.ts's worldNames, `textWords`), so one such word
