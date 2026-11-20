@@ -476,8 +476,9 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		var release, wake, last, recorded int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row, released_id from issue_releases
-			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last, &recorded)
+		var committed bool
+		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row, released_id, committed from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last, &recorded, &committed)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -485,10 +486,14 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		// A release whose teardown recorded it has taken its pod (ReleaseDecision.PodTaken), and
-		// nothing undoes that: its teardown finishes it, and no cancel may resume its roles in a
-		// pod that is gone or delete the bundle the next pod restores.
+		// one whose teardown the runtime was authorized to carry out may have taken it
+		// (ReleaseDecision.Committed). Nothing undoes that: its teardown finishes it, and no cancel
+		// may resume its roles in a pod that is gone or delete the bundle the next pod restores.
 		if recorded != 0 {
 			return fmt.Errorf("the release of %s took its pod and was recorded as release %d, so it cannot be cancelled: its teardown finishes it", issue, recorded)
+		}
+		if committed {
+			return fmt.Errorf("the release of %s was authorized to take its pod, so it cannot be cancelled: its teardown finishes it", issue)
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
@@ -835,8 +840,9 @@ func releasedRoleNames(roles []releasedRole) []string {
 // before it deletes the resumes, the transaction rewrites that task through retell
 // (ReleaseCancelPause.TakenOverWakeTask, retellWakesOf): last is the release's last row, above
 // which the wake queued its start, and the kind retell is told is the kind of the role's newest
-// resume that this call deletes. A cancel calls it with the issue's pause lock and the pause's row
-// held (CancelIssueRelease).
+// resume above wake, read before the delete. That is the resume of the wake this call deletes, or
+// a pause's owed launch, which it keeps, where the pause's stop took that after the wake. A cancel
+// calls it with the issue's pause lock and the pause's row held (CancelIssueRelease).
 func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, suspended []string, stillReleased []releasedRole,
 	wake, last int64, retell func(kind, task string) string) error {
 	released := releasedRoleNames(stillReleased)

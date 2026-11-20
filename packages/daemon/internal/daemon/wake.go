@@ -301,12 +301,13 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // release the teardown recorded and resumes the role in the new pod. A cancel clears the mark too,
 // but it resumes no claim itself. It queues a start for each claim it resumes
 // (store.Store.CancelIssueRelease), and the claim reads released until that start runs, though its
-// pod never went away. While such a start is queued, the call takes nothing and answers the same
-// routine wait, whose text names the start: a wake taken then would record a resume of a pod that
-// no release took, and the records would count that pod's return. The start resumes the role in
-// the same pod, and the row's next attempt finds the claim live and publishes. A start a workflow
-// wake queued holds the row the same way: that start brings the role back. A claim the cancel did
-// not resume is still released with no start queued, and the attempt wakes it in the same pod.
+// pod never went away. While such a start is queued and the role has no open resume, the call
+// takes nothing and answers the same routine wait, whose text names the start: a wake taken then
+// would record a resume of a pod that no release took, and the records would count that pod's
+// return. The start resumes the role in the same pod, and the row's next attempt finds the claim
+// live and publishes. A role with an open resume refuses the take whatever is queued, and the
+// call resumes it below. A claim the cancel did not resume is still released with no start
+// queued, and the attempt wakes it in the same pod.
 //
 // The role's one open resume is what makes the wake one wake however often the row retries, so a
 // notice that backs off for ten minutes resumes the claim once. A claim of an issue that has left
@@ -438,19 +439,19 @@ func (r *outbox) parkedWait(turn time.Time, text string) error {
 
 // logRefusedByOpenResume says why a delivery wake whose take the role's open resume refused
 // resumes a claim that is still released (wakeForDelivery), by whose that open resume is
-// (store.OpenPodResume). A wake that queued a start, a pause's owed launch or a workflow wake of
-// a role the pause stopped, never comes here while that start is queued: the take answers
-// StartQueued, and the delivery waits for the start (store.Store.TakeDeliveryWake). One open resume
-// a pause held is left (its pause, the held wake of decision 15 of dispatch://INFRA-3759): the
-// wake an earlier delivery row of the role that the pause held took after the resume, which
-// queues no start and resumes the role in process through the wake pacing. The resume wakes every
-// lane at once (projectPause.Resumed), so a second held notice, hook prompt, merge-queue removal
-// or merge forward's message of the same role can run while that resume waits for its turn and
-// find the role released under the held wake. Nothing is wrong there, and the line says so at
-// Info. Any other open resume over a released claim is one whose process never came — a resume
-// the store refused after its take committed, or a daemon that stopped between the two — and the
-// line says so at Warn, as it does when the read fails, with its error: the resume goes ahead
-// either way.
+// (store.OpenPodResume). One a pause held (its pause, the held wake of decision 15 of
+// dispatch://INFRA-3759) is that pause's owed launch, whose start row waits in the outbox; the
+// wake an earlier delivery row of the role that the pause held took after the resume; or the
+// workflow's wake of a role the pause stopped, which store.PodRecords.PauseOfWake gives the pause
+// (the listener's report of a role message the pause held, or of a message another session sent
+// the role, a CI settlement or a backstop). A queued start holds no delivery of a role with an open
+// resume (store.Store.TakeDeliveryWake), so the resume wakes every lane at once
+// (projectPause.Resumed), and a held notice, hook prompt, merge-queue removal or merge forward's
+// message of the same role can run before that start, or after that other wake, and find the role
+// released under the held wake. Nothing is wrong there, and the line says so at Info. Any other
+// open resume over a released claim is one whose process never came — a resume the store refused
+// after its take committed, or a daemon that stopped between the two — and the line says so at
+// Warn, as it does when the read fails, with its error: the resume goes ahead either way.
 func (r *outbox) logRefusedByOpenResume(ctx context.Context, issue string, role claim.Role, detail string) {
 	_, pause, open, err := r.trees.OpenPodResume(ctx, r.project, issue, role)
 	if err == nil && open && pause != 0 {

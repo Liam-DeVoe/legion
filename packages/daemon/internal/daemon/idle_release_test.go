@@ -62,6 +62,10 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// failsAfterAuthorize is how many teardowns the store authorized still fail after they took
+	// the pod down, as production's runtime fails when a step after the suspend (the wait for the
+	// pod, the delete of the Secrets, the record on the Sandbox) does not go through.
+	failsAfterAuthorize int
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -110,10 +114,14 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if act {
-		r.suspended++
-	} else {
+	if !act {
 		r.refused++
+		return nil
+	}
+	r.suspended++
+	if r.failsAfterAuthorize > 0 {
+		r.failsAfterAuthorize--
+		return errors.New("the Secrets of the issue's Sandbox could not be deleted")
 	}
 	return nil
 }
@@ -1389,6 +1397,70 @@ func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.
 			if _, taken := rig.rt.reads(); rig.marked(t) || !rig.bundled(t) || len(records.Releases) != 1 || taken != 1 {
 				t.Fatalf("after the next attempt the mark stands = %t, the bundle is saved = %t, the releases = %+v and the runtime took %d pods; want the release finished once: no mark, the bundle kept for the next pod, one release and one pod taken",
 					rig.marked(t), rig.bundled(t), records.Releases, taken)
+			}
+		})
+	}
+}
+
+// The runtime's read under the pod's launch turn is the teardown's point of no return: the runtime
+// takes the pod on it. So that read commits the release where it acts (store's
+// CommitIssueRelease), before the runtime's later steps. Here a later step of the runtime fails
+// after the pod is gone, which leaves no record of the release, and the row runs again after a
+// claim of the pod was taken over or the pod was given work. That attempt finishes the release: it
+// asks the runtime again, records the release once, keeps the bundle of unpushed work for the next
+// pod, and cancels nothing. Before, it read the mark again and cancelled a release whose pod was
+// gone, which deleted the bundle.
+func TestATeardownWhoseRuntimeFailsAfterItTookThePodFinishesOnItsNextAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// between is what happens between the two attempts of the teardown.
+		between func(t *testing.T, rig *idleRig)
+	}{
+		{name: "an operator took a claim over", between: func(t *testing.T, rig *idleRig) {
+			if _, err := rig.pool.Exec(context.Background(), `update claims set suspended_by = 'operator' where token = $1`,
+				string(rig.token)); err != nil {
+				t.Fatalf("take the implementer's claim over as an operator: %v", err)
+			}
+		}},
+		{name: "a start of another role was queued", between: func(t *testing.T, rig *idleRig) {
+			rig.startQueuedAt(t, rig.outboxID(t)+100, claim.RoleTester)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			rig.rt.failsAfterAuthorize = 1
+			rig.w.releaseIdlePod(ctx, rig.issue.Key)
+			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key); err != nil {
+				t.Fatalf("hold the teardown back: %v", err)
+			}
+			rig.drain(t)
+			if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) || !rig.bundled(t) {
+				t.Fatalf("the claim = %s by %s, the mark stands = %t and the bundle is saved = %t; want the release saved and stopped, its teardown to come",
+					got.State, got.SuspendedBy, rig.marked(t), rig.bundled(t))
+			}
+			var teardown record.OutboxRow
+			if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+				t.Fatalf("read the teardown row: %v", err)
+			}
+			if err := rig.runner.execute(ctx, teardown); err == nil {
+				t.Fatal("the teardown's first attempt succeeded, want the runtime's error after it took the pod")
+			}
+			if records := rig.records(t); len(records.Releases) != 0 || !rig.marked(t) {
+				t.Fatalf("after the first attempt the releases = %+v and the mark stands = %t; want no record and the mark left", records.Releases, rig.marked(t))
+			}
+			tc.between(t, rig)
+
+			if err := rig.runner.execute(ctx, teardown); err != nil {
+				t.Fatalf("the teardown's next attempt: %v", err)
+			}
+			records := rig.records(t)
+			asked := rig.rt.teardownsAsked()
+			if rig.marked(t) || !rig.bundled(t) || len(records.Releases) != 1 || !slices.Equal(asked, []string{"ReleaseIssue", "ReleaseIssue"}) {
+				t.Fatalf("after the next attempt the mark stands = %t, the bundle is saved = %t, the releases = %+v and the runtime was asked %v; want the release finished: no mark, the bundle kept, one release, and the runtime asked again",
+					rig.marked(t), rig.bundled(t), records.Releases, asked)
 			}
 		})
 	}

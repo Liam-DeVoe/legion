@@ -194,6 +194,7 @@ type outbox struct {
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
+	CommitIssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
 	IssueReleaseStop(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	IssueReleaseSave(ctx context.Context, project, issue string, row int64) (store.ReleaseDecision, error)
 	ReleaseSuspendedClaim(ctx context.Context, project, issue string, role claim.Role, row int64) error
@@ -3185,12 +3186,18 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // cancelled this release has already resumed what it suspended, and a release that finished
 // left the pod gone and its bundle waiting for the pod that replaces it.
 //
-// Once the runtime has taken the pod, the teardown is one-way. Its first step after that is the
-// release's record, which writes the release on the mark (store.Store.RecordPodRelease). A later
-// step that fails runs the row again, and that attempt reads the mark as a release that took its
-// pod (store.ReleaseDecision.PodTaken): it asks the runtime nothing, cancels nothing, and finishes
-// the steps that are left. A cancel then would resume roles in a pod that is gone, delete the
-// bundle of unpushed work the next pod restores, and drop the wakes the record already counted.
+// The teardown is one-way from the runtime's read under its pod lock, just before the runtime
+// takes the pod: that read commits the release where it acts (store.Store.CommitIssueRelease).
+// A step of the runtime after it can fail once the pod is gone, and the row then runs again. That
+// attempt reads the mark as committed (store.ReleaseDecision.Committed): it cancels nothing, and
+// it asks the runtime again, whose steps are each done at most once (a Sandbox already gone is
+// done, a Suspended one is not patched again, a Secret already gone counts as deleted). Once the
+// runtime has answered, the release's record is the first step, and it writes the release on the
+// mark (store.Store.RecordPodRelease). A later step that fails runs the row again, and that
+// attempt reads the mark as a release that took its pod (store.ReleaseDecision.PodTaken): it asks
+// the runtime nothing, cancels nothing, and finishes the steps that are left. A cancel then would
+// resume roles in a pod that is gone, delete the bundle of unpushed work the next pod restores,
+// and drop the wakes the record already counted.
 func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload record.IssueRelease) error {
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")
@@ -3218,10 +3225,13 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// The runtime reads the store again under its pod lock, which is what orders the teardown
 	// against a physical start, and that read is the one the pod is taken on: it is kept here
 	// and acted on below. A runtime that takes the pod without asking leaves this read's answer
-	// standing, which is the same release.
+	// standing, which is the same release. That read is the teardown's point of no return, so it
+	// commits the release where it acts (store.Store.CommitIssueRelease): the runtime's steps after
+	// it can fail once the pod is gone, and the teardown that runs again then acts and never
+	// cancels.
 	decision := first
 	authorize := func(ctx context.Context) (bool, error) {
-		inner, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
+		inner, err := r.trees.CommitIssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 		if err != nil {
 			return false, err
 		}
@@ -3248,8 +3258,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		return err
 	}
 	// A release whose record stands has taken its pod already: this row is its teardown run
-	// again after a later step failed (store.ReleaseDecision.PodTaken). The runtime is not asked
-	// again, and the steps below finish the release; the record answers the row it wrote.
+	// again after a step of its own failed (store.ReleaseDecision.PodTaken). The runtime is not
+	// asked again, and the steps below finish the release; the record answers the row it wrote. A
+	// committed release (store.ReleaseDecision.Committed) asks the runtime again.
 	if !first.PodTaken {
 		if err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 			return err
@@ -3264,9 +3275,9 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, hold, why)
 		}
 	}
-	// The pod is gone. The record of the release comes first, before any step that can fail: it
-	// writes the release on the mark, so a teardown that runs again after a later step failed
-	// finishes the release and cannot cancel it, and records no second release
+	// The pod is gone. The record of the release comes first, before the teardown's own steps that
+	// can fail: it writes the release on the mark, so a teardown that runs again after one of them
+	// failed finishes the release, does not ask the runtime again and records no second release
 	// (store.Store.RecordPodRelease). A release that suspended no role records neither roles nor
 	// bytes.
 	suspended, bytes := decision.Suspended, savedBytes

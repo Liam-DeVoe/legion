@@ -395,11 +395,14 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // the pod.
 //
 // The record is the release's one-way step too: it writes the release on its mark
-// (store.Store.RecordPodRelease), and the teardown records the release before any step that can
-// fail after the pod is gone. So a teardown that runs again after such a step failed finishes the
-// release and cannot cancel it (store.ReleaseDecision.PodTaken), and its record writes no second
-// row. A record that cannot be written is logged and answered as the teardown's error: the row
-// runs again, and until a record lands, the mark names no release.
+// (store.Store.RecordPodRelease), and the teardown records the release once the runtime has
+// answered, before its own steps that can fail. So a teardown that runs again after such a step
+// failed finishes the release, asks the runtime nothing and cannot cancel it
+// (store.ReleaseDecision.PodTaken), and its record writes no second row. A step of the runtime
+// that fails comes before the record, and the commit of the runtime's read keeps that release
+// from being cancelled (store.Store.CommitIssueRelease). A record that cannot be written is logged
+// and answered as the teardown's error: the row runs again, and until a record lands, the mark
+// names no release.
 func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) error {
 	if r.supervisor == nil || r.supervisor.store == nil {
 		return nil

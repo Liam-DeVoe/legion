@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The reviewer's read-ahead of dispatch://INFRA-3589, finding 2. A root architect's entry start
@@ -364,6 +365,67 @@ func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
 	}
 }
 
+// The runtime's read under the pod's launch turn commits the release where it acts
+// (CommitIssueRelease): the runtime takes the pod on that read, and its later steps can fail
+// once the pod is gone, before any record. A committed mark is answered ReleaseActs, marked
+// Committed and not PodTaken, so the teardown asks the runtime again and then records. That holds
+// after an operator took a claim of the release over, which cancels an uncommitted release; a
+// cancel of the committed mark is refused and leaves the mark. A read that does not act commits
+// nothing.
+func TestACommittedReleaseIsNeverCancelled(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	boundary, stop, last := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	committed, err := st.CommitIssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || committed.Act != ReleaseActs || !committed.Committed || committed.PodTaken {
+		t.Fatalf("the runtime's read = %s (committed %t, pod taken %t), %v; want it to act and commit", committed.Act, committed.Committed, committed.PodTaken, err)
+	}
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+
+	again, err := st.IssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || again.Act != ReleaseActs || !again.Committed || again.PodTaken {
+		t.Fatalf("the teardown's next read = %s for %s (committed %t, pod taken %t), %v; want it to act on the committed release and ask the runtime again",
+			again.Act, again.Cause, again.Committed, again.PodTaken, err)
+	}
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err == nil {
+		t.Fatal("a cancel of a committed release went through, want it refused")
+	}
+	if !releaseMarked(t, st) {
+		t.Fatal("the refused cancel deleted the mark, want it left for the teardown to finish")
+	}
+}
+
+// A runtime read that does not act commits nothing: the release whose claim an operator took over
+// before the runtime asked is cancelled, as it was before the commit existed.
+func TestARuntimeReadThatDoesNotActCommitsNothing(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	boundary, stop, last := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+	release := IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1, TreeGeneration: 1, Row: last}
+	read, err := st.CommitIssueRelease(ctx, "legion", release, record.OutOfWorkflow)
+	if err != nil || read.Act != ReleaseCancel || read.Committed {
+		t.Fatalf("the runtime's read after the takeover = %s (committed %t), %v; want a cancel that commits nothing", read.Act, read.Committed, err)
+	}
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err != nil {
+		t.Fatalf("the cancel of the uncommitted release: %v", err)
+	}
+	if releaseMarked(t, st) {
+		t.Fatal("the cancel left the mark, want it cleared")
+	}
+}
+
 // D2 of the same read-ahead: the cancel deletes the resume of a wake of a role another path took
 // over (dropTakenOverWakes), but a pause's owed launch is no such wake. The stop transaction of a
 // project's pause takes it for a role whose launch the pause owes, and that resume is the record
@@ -417,5 +479,57 @@ func TestADeliveryWakeTakesNothingForAClaimTheRecordHoldsLive(t *testing.T) {
 	wake, err = st.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, time.Now().UTC(), 0)
 	if err != nil || !wake.Taken || wake.NotReleased {
 		t.Fatalf("the delivery wake of the released claim = %+v, %v; want the wake taken", wake, err)
+	}
+}
+
+// The delivery take reads the claim's row `for update`, so it and a write that takes the claim
+// over run one after the other (the class search at 3a255092, entry 51). Here an operator's
+// suspension of the released implementer has written the claim's row and not committed when the
+// take runs. The take waits for it, then reads the claim as no longer released and takes
+// nothing. A read with no lock would read the claim as released, take the wake and record a
+// resume, and the takeover would then commit over it.
+func TestADeliveryWakeWaitsForATakeoverOfItsClaimAndTakesNothing(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	releasedClaim(t, st, claim.RoleImplementer)
+	takeover, err := st.Pool().Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the takeover's transaction: %v", err)
+	}
+	defer func() { _ = takeover.Rollback(ctx) }()
+	if _, err := takeover.Exec(ctx, `update claims set suspended_by = 'operator' where token = $1`, string(releasedToken)); err != nil {
+		t.Fatalf("write the operator's suspension: %v", err)
+	}
+	var holder int32
+	if err := takeover.QueryRow(ctx, `select pg_backend_pid()`).Scan(&holder); err != nil {
+		t.Fatalf("read the takeover's backend: %v", err)
+	}
+	type taken struct {
+		wake DeliveryWake
+		err  error
+	}
+	done := make(chan taken, 1)
+	go func() {
+		wake, err := st.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, time.Now().UTC(), 0)
+		done <- taken{wake, err}
+	}()
+	if !testwait.Holds(20*time.Second, 20*time.Millisecond, func() bool {
+		var waiting bool
+		err := st.Pool().QueryRow(ctx, `select exists (select 1 from pg_stat_activity
+			where $1 = any(pg_blocking_pids(pid)))`, holder).Scan(&waiting)
+		return err == nil && waiting
+	}) {
+		t.Fatal("the delivery take never waited for the takeover's write of the claim")
+	}
+	if err := takeover.Commit(ctx); err != nil {
+		t.Fatalf("commit the takeover: %v", err)
+	}
+	got := <-done
+	if got.err != nil || got.wake.Taken || !got.wake.NotReleased {
+		t.Fatalf("the delivery take after the takeover = %+v, %v; want nothing taken and the claim named not released", got.wake, got.err)
+	}
+	if n := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1`, rootIssue); n != 0 {
+		t.Fatalf("pod_resumes holds %d resumes, want none: the operator took the claim over", n)
 	}
 }

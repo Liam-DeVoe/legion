@@ -5,12 +5,14 @@ body: |-
   the claim released, for at most 15 minutes after the report, and then drops it with one
   warning. A wake records the time the daemon took it as the pod's resume time, not the time of
   the listener's report, so a wake that waited for a release is not reported stuck, and its claim
-  is not reported stranded, while the new pod is still being built. A wake after a cancelled
-  release, whose start is already queued, takes nothing; a production check's look queued for the
-  role is no such start, since the look can end without starting the role. The task of a role woken by a message
-  says what reaches it when Envoy stored or kept the message, and that a message Envoy did not
-  store or keep must be sent again; the task of a role woken by a message to its session no
-  longer says that nothing kept the message. A role wake report of another project decodes to no
+  is not reported stranded, while the new pod is still being built. A listener's wake report, a
+  CI settlement or a backstop for a released role that any start bringing it back is already
+  queued for, such as a cancelled release's resume, takes no wake, records no resume and queues
+  no second start; a CI settlement it does not wake for is sent to the role as a message, and a
+  production check's look queued for the role is no such start, since the look can end without
+  starting the role. The task of a role woken by a message says what reaches it when Envoy stored
+  or kept the message, and that a message Envoy did not store or keep must be sent again. A role
+  wake report of another project decodes to no
   fact and writes no `processed_events` row. The role is read in either form of its name, the
   token alone or `<PROJECT>.<token>`, and a token named under another project is no fact either.
   A wake taken after the release recorded the claim released no longer cancels the release: the
@@ -27,16 +29,19 @@ body: |-
   and a production check's look queued for the woken role; the teardown reads such a start as work
   the pod was given and cancels the release, as it does for a phase's start. A notice, hook prompt,
   merge-queue removal message or merge-forward message for a released role of a pod that a release
-  is still stopping waits in its outbox row until the release ends. Such a message also waits
-  while any start that brings the role back is queued for it, such as a cancelled release's
-  resume, and the release records count no pod return for it. When a close, a linger or an
+  is still stopping waits in its outbox row until the release ends. Such a message for a role with
+  no open wake also waits while a start that brings the role back is queued for it, such as a
+  cancelled release's resume, and the release records count no pod return for it. When a close, a
+  linger or an
   operator took over a woken role's claim before its release was cancelled, that wake's resume is
   not recorded, and the wake's start, which the role reads when an operator resumes it, says that
   the release did not finish and the role goes on in the same pod; a start in the pause's words
-  keeps them. A release whose teardown took the pod is no longer cancelled when a later step of
-  the teardown fails and runs again: the teardown finishes, the bundle of unpushed work stays for
-  the next pod, and the release is recorded once. A record of a release that cannot be written
-  makes the teardown run again, after the warning
+  keeps them. A release is no longer cancelled once the runtime's read under the pod's launch turn
+  has authorized its teardown. A teardown that fails after that read runs again and finishes: it
+  asks the runtime again until the runtime answers without an error, and then records the release
+  once; a teardown that fails after that record asks the runtime nothing and finishes its own
+  steps. The bundle of unpushed work stays for the next pod. A record of a release that cannot be
+  written makes the teardown run again, after the warning
   `outbox: could not record an issue pod's release`.
   A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.

@@ -178,10 +178,10 @@ type DeliveryWake struct {
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
 // wakeForDelivery) in a transaction of its own: the wake for a notice, a hook prompt, a
 // merge-queue removal or a merge forward's message that found the role it is for released. While
-// a release mark of issue stands, it writes nothing and answers InRelease. While a start that
-// brings the role back at generation is queued, it writes nothing and answers StartQueued.
-// Otherwise it takes the wake as PodRecords.TakePodWake does, held by the pause
-// PodRecords.PauseOfWake reads, and answers whether this call took it.
+// a release mark of issue stands, it writes nothing and answers InRelease. While the role has no
+// open resume and a start that brings it back at generation is queued, it writes nothing and
+// answers StartQueued. Otherwise it takes the wake as PodRecords.TakePodWake does, held by the
+// pause PodRecords.PauseOfWake reads, and answers whether this call took it.
 //
 // The delivery wake waits for any release of the issue that still stands, not only for one that
 // recorded the role. Its resume runs in process (supervise.RequestRuleResume), so no `start` row
@@ -203,18 +203,30 @@ type DeliveryWake struct {
 // never went away. A wake taken then would record a resume, paired with the newest release
 // recorded before it, for a pod that no release took, and the records would count that pod's
 // return. So the call reads, after the mark, whether a start that brings the role back is queued,
-// as a listener's wake does (workflow's listenerWakeReleased), and takes nothing while one is. The
-// cancel committed before this read began, so the read sees the cancel's start. The row waits,
-// the start resumes the role in the pod that stayed, and the row's next attempt finds the claim
-// live and hands its delivery over. A start the workflow's wake queued is such a start too: that
-// wake recorded its resume, and its start brings the role back.
+// and takes nothing while one is. The cancel committed before this read began, so the read sees
+// the cancel's start. The row waits, the start resumes the role in the pod that stayed, and the
+// row's next attempt finds the claim live and hands its delivery over. The read is made only for a
+// role with no open resume, which is the cancel's case: the cancel deleted the wakes taken under
+// its mark. A role with an open resume refuses the take whatever is queued, so the take records
+// nothing, and the caller resumes the role in process as it always did (internal/daemon's
+// wakeForDelivery): the pause's held wake, whose start is queued for the pause's resume, and a
+// workflow wake whose start has not run.
 //
 // The caller read the claim as released from its machine, outside this transaction, and a start
 // can run and finish between that read and the read of the queued starts: the cancel's start
 // resumes the role and is deleted. So the call reads the claim's row too, after the starts, and
-// takes nothing unless the record still holds the claim suspended as `released`. A start that
-// finished before the starts' read has written the claim's resume before it was deleted, so the
-// two reads cannot both miss it.
+// takes nothing where the record holds the claim but no longer as suspended by `released`. A
+// start that finished before the starts' read has written the claim's resume before it was
+// deleted, so the two reads cannot both miss it. A claim the record does not hold is read from the
+// caller's machine alone, which is the supervisor that writes every claim it holds. The row is
+// read `for update`, so the take and a write of the claim that takes it over (an operator's
+// suspension or resume, a close's or a linger's suspension, each one write of the claim's row) run
+// one after the other: a write that commits first is what this read finds, and one that comes
+// later waits until the take commits. The lock comes after the mark's and the pause row's
+// (PauseOfWake), the order TakePodWake gives for the mark, the pause's row and the writes after
+// them; the stop transaction of a project's pause, which writes a claim's row, takes the mark and
+// the pause's row first too (internal/daemon's projectPause.stopTx). No transaction that writes a
+// claim's row locks the mark or the pause's row after it, so this lock adds no cycle.
 //
 // How long a delivery waits for a queued start is that start's own fate. The start runs on its
 // lane like any row. Its failures, and those of an older row of the issue that it waits behind
@@ -251,20 +263,27 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		if wake.InRelease, err = lockReleaseMark(ctx, tx, project, issue); err != nil || wake.InRelease {
 			return err
 		}
-		if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
+		_, _, open, err := openPodResume(ctx, tx, project, issue, role)
+		if err != nil {
 			return err
 		}
-		var released bool
-		if err := tx.QueryRow(ctx, `select exists (select 1 from claims where project = $1 and token = $2
-			and state = 'suspended' and suspended_by = 'released')`, project, string(token)).Scan(&released); err != nil {
-			return fmt.Errorf("read whether %s is still released: %w", token, err)
-		}
-		if wake.NotReleased = !released; wake.NotReleased {
-			return nil
+		if !open {
+			if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
+				return err
+			}
 		}
 		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
 			return err
+		}
+		released := true
+		err = tx.QueryRow(ctx, `select state = 'suspended' and suspended_by = 'released' from claims
+			where project = $1 and token = $2 for update`, project, string(token)).Scan(&released)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read whether %s is still released: %w", token, err)
+		}
+		if wake.NotReleased = !released; wake.NotReleased {
+			return nil
 		}
 		wake.Taken, err = records.TakePodWake(ctx, tx, issue, role, pods.WakeDelivery, at, pause)
 		return err

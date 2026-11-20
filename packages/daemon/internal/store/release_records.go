@@ -162,13 +162,15 @@ type PodReleaseRecords struct {
 //
 // The record is also the mark's one-way step: it writes the release's id on the mark
 // (issue_releases.released_id), in the transaction that inserts the row. The teardown records the
-// release once the runtime has taken the pod and before any later step (internal/daemon's
-// releaseIssue), so a mark that names its release is a release whose pod is gone. A teardown that
-// runs again after a later step failed reads it: IssueRelease answers ReleaseActs, and a cancel
-// refuses the mark (CancelIssueRelease). Its record answers the id the mark names and writes
-// nothing, so the release has one row, and the wakes it pointed at itself and retold stay as the
-// first record left them. With no mark, as in a record a test writes alone, there is nothing to
-// stamp, and each call writes a row.
+// release once the runtime has answered it without an error, before the teardown's own later
+// steps (internal/daemon's releaseIssue), so a mark that names its release is a release whose pod
+// is gone. A teardown that runs again after one of those steps failed reads it: IssueRelease
+// answers ReleaseActs and the runtime is not asked again, and a cancel refuses the mark
+// (CancelIssueRelease). A step of the runtime that fails after the pod is gone comes before the
+// record; the mark's commit (CommitIssueRelease) keeps that release from being cancelled. Its
+// record answers the id the mark names and writes nothing, so the release has one row, and the
+// wakes it pointed at itself and retold stay as the first record left them. With no mark, as in a
+// record a test writes alone, there is nothing to stamp, and each call writes a row.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")

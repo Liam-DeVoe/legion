@@ -312,7 +312,9 @@ func ReleasedWakeTask(kind, task string) string {
 // TakenOverWakeTask is the task of a wake's start that a cancel of an idle release keeps for a
 // role whose claim a close, a linger or an operator took over after the wake
 // (store.CancelIssueRelease, store.ReleaseCancelPause.TakenOverWakeTask): kind is the kind of the
-// wake's resume, which the cancel deletes, and task is the task the start carries. The start is
+// role's newest resume taken while the release stood, which the cancel deletes, or a pause's owed
+// launch (pods.WakePause), which it keeps, where the pause's stop took that after the wake; task
+// is the task the start carries. The start is
 // the start of the path that took the claim over. It finishes without acting under a close or a
 // linger, and it runs when an operator resumes the claim. WakeTask wrote its task for a session an
 // idle release stopped (StoppedByRelease), and it says that the pod was released. The cancel made
@@ -389,31 +391,17 @@ func (e *Engine) listenerWake(ctx context.Context, tx pgx.Tx, fact intake.Listen
 	if err != nil || !found {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.listenerWakeReleased(ctx, tx, released, kind, detail, fact)
+	return intake.Result{}, e.listenerWakeReleased(ctx, tx, released, kind, detail)
 }
 
-// listenerWakeReleased wakes the released claim a listener's report names, unless the role is
-// already coming back on a start the outbox holds (Pods.StartQueued). A cancelled release queues
-// that start for each claim it suspended, and the claim reads `released` until the start runs
-// (store.CancelIssueRelease). The pod never went away, so a wake taken then would record a resume
-// and queue a second start for a role that needs neither.
-//
-// StartQueued is the one gate a listener's report reads before wakeReleased reads the others.
-// This reads the issue for it and hands that issue to wakeReleased, so the wake reads the issue
-// once. The report's own time (fact.At) is not the resume's time: wakeReleased records the take's.
-func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string, fact intake.ListenerWake) error {
+// listenerWakeReleased wakes the released claim a listener's report names. It reads the issue and
+// hands it to wakeReleased, so the wake reads the issue once, and wakeReleased reads every gate,
+// the start the outbox already holds for the role among them (Pods.StartQueued). The report's own
+// time (fact.At) is not the resume's time: wakeReleased records the take's.
+func (e *Engine) listenerWakeReleased(ctx context.Context, tx pgx.Tx, released supervise.Claim, kind, detail string) error {
 	issue, err := e.store.Issue(ctx, tx, released.Issue)
 	if err != nil || issue == nil {
 		return err
-	}
-	queued, err := e.cfg.Pods.StartQueued(ctx, tx, issue.Key, released.Role, issue.Generation)
-	if err != nil {
-		return err
-	}
-	if queued {
-		e.log.Info("wake: the role is coming back on a start already queued; this wake takes nothing",
-			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail, "report", fact.Report)
-		return nil
 	}
 	_, err = e.wakeReleased(ctx, tx, issue, released, kind, detail)
 	return err
@@ -606,15 +594,26 @@ func (e *Engine) podBackstopDue(ctx context.Context, tx pgx.Tx, fact intake.PodB
 }
 
 // wakeReleased is the one act every wake of this file performs. issue is the issue of released,
-// which the caller read and hands in. The gates of a wake are read in two places, and both read
-// that one issue, so a wake reads the issue once:
-//   - here, for every wake: the claim the caller read is released, its issue is one this daemon
-//     records (the caller reads no record of another project's issue, and then does not call
-//     this), and its tree is live — neither the issue nor its root has left the workflow and
-//     neither lingers (pods.InWorkflowNotLingering). A pod in any other state is a close's to stop
-//     or an operator's to resume, never a wake's;
-//   - before this, for a listener's report alone: the role is not already coming back on a start
-//     the outbox holds (listenerWakeReleased, Pods.StartQueued).
+// which the caller read and hands in. It reads every gate of a wake, on that one issue: the claim
+// the caller read is released, its issue is one this daemon records (the caller reads no record of
+// another project's issue, and then does not call this), its tree is live — neither the issue nor
+// its root has left the workflow and neither lingers (pods.InWorkflowNotLingering) — and the role
+// is not already coming back on a start the outbox holds (Pods.StartQueued). A pod in any other
+// state is a close's to stop or an operator's to resume, never a wake's.
+//
+// The start the outbox holds is read for every kind of wake: a listener's report, a CI settlement
+// and a backstop. A cancelled release queues a start for each claim it suspended, and the claim
+// reads `released` until that start runs (store.CancelIssueRelease). The pod never went away, so a
+// wake taken then would record a resume of a pod no release took and queue a second start for a
+// role that needs neither. A start a wake already queued is such a start too, and so is an
+// architect's start. Such a wake takes nothing and answers false, and what each kind owes the role
+// still reaches it. A listener's report is of a message Envoy keeps or stores for the role, which
+// reaches the session the start brings back. A CI settlement that woke no role is told to the
+// phase's worker by a role message, as it is told to any live role (tellChecks, which tells every
+// role a settlement did not wake). A backstop owes the role only its return, which the start
+// brings. The start is read after the release mark's lock (PauseOfWake), as the delivery wake
+// reads it (store.Store.TakeDeliveryWake): a cancel that held the mark has committed its start
+// before this read begins.
 //
 // A claim of another project's issue, which the operator's spawn makes under this daemon's token
 // and a project's pause stops as released, finds no record here, even where the database it shares
@@ -671,6 +670,15 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 	pause, stopping, err := e.cfg.Pods.PauseOfWake(ctx, tx, issue.Key, released.Token, 0)
 	if err != nil {
 		return false, err
+	}
+	queued, err := e.cfg.Pods.StartQueued(ctx, tx, issue.Key, released.Role, issue.Generation)
+	if err != nil {
+		return false, err
+	}
+	if queued {
+		e.log.Info("wake: the role is coming back on a start already queued; this wake takes nothing",
+			"issue", issue.Key, "role", released.Role, "kind", kind, "detail", detail)
+		return false, nil
 	}
 	newest, err := e.cfg.Pods.ClosePodGoneResume(ctx, tx, issue.Key, released.Role)
 	if err != nil {

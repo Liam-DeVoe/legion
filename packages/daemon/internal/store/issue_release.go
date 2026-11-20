@@ -107,10 +107,19 @@ func (c ReleaseCause) String() string {
 // is over — carries the zero of it, as it carries the zero of every other field.
 //
 // PodTaken is whether the release has taken its pod: its teardown recorded the release
-// (issue_releases.released_id, RecordPodRelease), which it does once the runtime has taken the pod
-// and before any later step. Only the teardown answers it (IssueRelease), always with ReleaseActs:
-// the teardown that runs again then finishes the steps that are left and takes no pod a second
-// time.
+// (issue_releases.released_id, RecordPodRelease), which it does once the runtime has answered the
+// teardown without an error, and before the teardown's own later steps: the end of the pause's
+// hold on the pod, the backstop and the clear of the mark. Only the teardown answers it
+// (IssueRelease), always with ReleaseActs: the teardown that runs again then finishes the steps
+// that are left and does not ask the runtime again. A step of the runtime that fails after the pod
+// is gone leaves no record; the commit below is what keeps such a release from being cancelled.
+//
+// Committed is whether the release's teardown was authorized to take the pod and has not recorded
+// it yet (issue_releases.committed, CommitIssueRelease): the runtime's own read answered
+// ReleaseActs under the pod's launch turn, and the runtime may have taken the pod before a later
+// step of it failed. Only the teardown answers it, always with ReleaseActs: the teardown that runs
+// again asks the runtime again, whose steps are each done at most once, and then records the
+// release.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
@@ -118,6 +127,7 @@ type ReleaseDecision struct {
 	Suspended      []claim.Role
 	SuspendsNoRole bool
 	PodTaken       bool
+	Committed      bool
 }
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -138,6 +148,9 @@ type releaseMark struct {
 	// released is the pod_releases row the teardown recorded for this release once the runtime
 	// took the pod (RecordPodRelease), 0 while the pod stands.
 	released int64
+	// committed is whether the runtime's own read authorized the teardown to take the pod
+	// (CommitIssueRelease).
+	committed bool
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
@@ -149,9 +162,9 @@ func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.l
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, released_id
+	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, released_id, committed
 		from issue_releases where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.released)
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.released, &mark.committed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -397,13 +410,33 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // gone, so the answer is ReleaseActs whatever the claims and the queue say now, and the teardown
 // finishes the steps that are left. A cancel then would resume the roles in a pod that is gone,
 // delete the bundle of unpushed work that the next pod restores, and drop the wakes the record
-// already counted.
+// already counted. A release whose teardown the runtime was authorized to carry out
+// (ReleaseDecision.Committed, CommitIssueRelease) is answered ReleaseActs for the same reason: the
+// runtime may have taken the pod before a later step of it failed.
 //
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
 // still in the workflow and its tree is live. The two order against each other because each
 // waits on the other's role stops: both read the same `suspend`, `issue_close` and `release` ops.
 func (s *Store) IssueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool) (ReleaseDecision, error) {
+	return s.issueRelease(ctx, project, release, outOfWorkflow, false)
+}
+
+// CommitIssueRelease is IssueRelease as the runtime reads it under the pod's launch turn, just
+// before it takes the pod (the teardown's authorize, runtime.IssueReleaser). Where it answers
+// ReleaseActs, the same transaction marks the release committed (issue_releases.committed). That
+// read is the teardown's point of no return: the runtime acts on it, and each of the runtime's
+// steps after it can fail once the pod is already gone. So from that read on, the release is
+// never cancelled: IssueRelease answers ReleaseActs (ReleaseDecision.Committed), and
+// CancelIssueRelease refuses the mark. The teardown that runs again asks the runtime again, and
+// then records the release (RecordPodRelease), after which the runtime is not asked again
+// (ReleaseDecision.PodTaken).
+func (s *Store) CommitIssueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool) (ReleaseDecision, error) {
+	return s.issueRelease(ctx, project, release, outOfWorkflow, true)
+}
+
+// issueRelease is IssueRelease, and CommitIssueRelease where commit is true.
+func (s *Store) issueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool, commit bool) (ReleaseDecision, error) {
 	if release.Issue == "" || release.Tree == "" || release.IssueGeneration == 0 || release.TreeGeneration == 0 || release.Row <= 0 {
 		return ReleaseDecision{}, errors.New("issue release requires issue, tree, both generations and its outbox row")
 	}
@@ -420,6 +453,10 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
 		if mark.released != 0 {
 			decision.Act, decision.PodTaken = ReleaseActs, true
+			return nil
+		}
+		if mark.committed {
+			decision.Act, decision.Committed = ReleaseActs, true
 			return nil
 		}
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
@@ -499,6 +536,14 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
 		}
 		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
+		if !commit {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `update issue_releases set committed = true where project = $1 and issue = $2`,
+			project, release.Issue); err != nil {
+			return fmt.Errorf("mark the release of %s committed: %w", release.Issue, err)
+		}
+		decision.Committed = true
 		return nil
 	})
 	if err != nil {

@@ -1023,3 +1023,55 @@ func roleMessageTokens(t *testing.T, pool *pgxpool.Pool) []string {
 	}
 	return tokens
 }
+
+// Every wake reads the start the outbox already holds for its role (wakeReleased,
+// Pods.StartQueued). A cancelled release queues a start for each claim it suspended, and the claim
+// reads `released` until that start runs; the pod never went away. So a CI settlement and a
+// backstop of such a role take no wake, record no resume and queue no second start, as a
+// listener's report does. The settlement still reaches the role: a settlement that woke nobody is
+// told to the phase's worker by a role message (tellChecks). A backstop owes the role only its
+// return, which the queued start brings. The start here is the cancel's resume, written as the
+// daemon's builder writes it (a start of the role at the issue's generation, with no task).
+func TestAWakeOfARoleWhoseStartIsQueuedTakesNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		wake func(t *testing.T, rig wakeRig)
+		// told is whether the role is sent a role message in place of the wake's task.
+		told bool
+	}{
+		{name: "a CI settlement", told: true, wake: func(t *testing.T, rig wakeRig) {
+			rig.apply("settled", settlement("head1", "build"))
+		}},
+		{name: "a backstop", wake: func(t *testing.T, rig wakeRig) {
+			id := armBackstop(t, rig.pool, claim.RoleImplementer, wakeAt.Add(-time.Minute))
+			rig.apply("backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: claim.RoleImplementer})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			resume, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
+				Role: claim.RoleImplementer, Generation: wakeIssueGeneration}, wakeAt)
+			if err != nil {
+				t.Fatalf("encode the cancel's resume: %v", err)
+			}
+			if _, err := rig.pool.Exec(context.Background(), `insert into outbox (kind, issue, payload, attempts, next_at, last_error, lease_token)
+				values ($1, 'LEGION-208', $2, 0, now(), '', '')`, string(resume.Kind), string(resume.Payload)); err != nil {
+				t.Fatalf("queue the cancel's resume: %v", err)
+			}
+			tc.wake(t, rig)
+
+			if starts := wakeStarts(t, rig.pool); len(starts) != 1 || starts[0] != (wakeStart{Role: claim.RoleImplementer}) {
+				t.Fatalf("supervise start rows = %+v, want the cancel's one start of the implementer: the wake queues no second one", starts)
+			}
+			if resumes := wakeResumes(t, rig.pool); len(resumes) != 0 {
+				t.Fatalf("pod resumes = %v, want none: the pod never went away", resumes)
+			}
+			implementer := string(wakeToken(t, claim.RoleImplementer))
+			if told := slices.ContainsFunc(roleMessageTokens(t, rig.pool), func(token string) bool {
+				return strings.HasSuffix(token, implementer)
+			}); told != tc.told {
+				t.Fatalf("a role message to the implementer was queued = %t, want %t (role messages to %v)", told, tc.told, roleMessageTokens(t, rig.pool))
+			}
+		})
+	}
+}
