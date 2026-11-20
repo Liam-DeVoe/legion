@@ -530,6 +530,9 @@ function createPi(
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
+    /** The host's answer to each `sendUserMessage`: the promise the host returns, which settles
+     *  when it has taken the prompt and rejects when it fails the send; taken unless a test says. */
+    readonly sendUserMessage?: () => Promise<void>;
   } = {}
 ): {
   readonly commands: RegisteredCommand[];
@@ -607,6 +610,7 @@ function createPi(
       }
       sentUserMessages.push(content);
       sentUserMessageOptions.push(sendOptions);
+      return options.sendUserMessage?.() ?? Promise.resolve();
     },
     appendEntry: (customType, data) => {
       entries.push({ type: "custom", customType, data });
@@ -4106,6 +4110,8 @@ async function launchedController(options: {
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
+  /** The host's answer to each `sendUserMessage` (`createPi`'s): taken unless a test says. */
+  readonly sendUserMessage?: () => Promise<void>;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
   const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
@@ -4230,7 +4236,10 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  const fixture = createPi({
+    bindEnvoy: options.order !== "legion.ts",
+    ...(options.sendUserMessage !== undefined && { sendUserMessage: options.sendUserMessage }),
+  });
   legionExtension(fixture.pi);
   if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
   return {
@@ -5357,6 +5366,62 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       controller.context("ses_controller_shutdown")
     );
 
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+  });
+
+  // The host rejects a start it fails to send (a prompt it drops before dispatch, or refuses): no
+  // run starts, so no `agent_start` clears the mark the send set, and pi-envoy, which holds the
+  // session's startup cards for as long as the mark stands, would hold them for good.
+  test("a start message whose send the host fails clears the startup-turn mark the send set", async () => {
+    const failed = Promise.withResolvers<void>();
+    const marksAtSend: EnvoyPluginInterface["startupTurn"][] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_send_failed",
+      sendUserMessage: () => {
+        marksAtSend.push(envoyPluginInterface().startupTurn);
+        failed.reject(new Error("the host dropped the prompt before dispatch"));
+        return failed.promise;
+      },
+    });
+    await startOperatorController(controller, controller.context("ses_controller_send_failed"));
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(marksAtSend).toEqual([
+      { session: "ses_controller_send_failed", sentAt: expect.any(Number) },
+    ]);
+
+    // The claim's handler was attached at the send, before this one, so it has run once this has.
+    await failed.promise.catch(() => undefined);
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+  });
+
+  // `/legion-claim-controller` claims and sends the start message as the start command does, so
+  // its refusal before the send says the same: the start `session_start` marked due is not coming
+  // from it, and the mark goes.
+  test("/legion-claim-controller refused before the send clears the unsent startup-turn mark", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_claim_refused",
+      register: () => Response.json({ error: "capability revoked" }, { status: 403 }),
+    });
+    const context = controller.context("ses_controller_claim_refused");
+    await controller.handlers.get("session_start")?.({}, context);
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_claim_refused",
+      sentAt: undefined,
+    });
+
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await loggedErrors(async () => {
+      await expect(claimCommand.handler("", commandContext(context))).rejects.toThrow(
+        "POST /legion/v1/claims/register failed with 403: capability revoked"
+      );
+    });
+
+    expect(controller.sentUserMessages).toEqual([]);
     expect(envoyPluginInterface().startupTurn).toBeUndefined();
   });
 

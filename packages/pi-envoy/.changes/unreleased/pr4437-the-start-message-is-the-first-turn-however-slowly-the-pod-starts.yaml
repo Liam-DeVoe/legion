@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The Legion controller's start message is the session's first turn however slowly the pod
+  starts. A card that reached the controller while its start was due waited for the start turn for
+  at most 30 s, from the start's send or from pi-envoy's first read of the start still unsent; on a
+  loaded pod the start came later than that, and the card's wake took the first turn ahead of it.
+  The wait now ends only when `@sjawhar/pi-legion` clears the plugin interface's `startupTurn` on a
+  fact: the session's first run (the start turn, or the operator's own), its shutdown, a claim
+  refused before the send, a failed send, or a session change before the send. An operator's
+  controller whose claim never answers, or whose start command never runs, keeps its startup cards
+  until the operator's first turn, and one wake follows that turn.

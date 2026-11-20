@@ -145,42 +145,45 @@ import type {
  * Pi runs after its startup, sends the start and marks it sent; the daemon's controller in RPC
  * mode is marked sent right before it reports ready, which is when the daemon writes the start
  * prompt, read only once the drain has returned. That start must be the session's first turn,
- * and every startup card still gets a turn after it. Without the mark, a terminal's idle card
- * starts a turn that runs ahead of the start command, and an RPC card's wake fires once the host is
- * idle after the drain, which can be before the daemon's prompt arrives. So while the mark holds —
- * it names this session (the instance's own and the host's live one), and its start is unsent
- * and this module first read that unsent mark less than `STARTUP_TURN_CAP_MS` ago, or was sent
- * less than `STARTUP_TURN_CAP_MS` ago — the phase holds whatever `ctx.mode` is: an idle card in
- * any mode goes as a startup card. An idle check while it holds keeps the phase and the seen
- * startup cards, sends no wake and checks again when the hold may end: at the sent mark's cap, or
- * every `STARTUP_TURN_POLL_MS` while the start is unsent, up to that mark's cap (a poll, since no
- * event tells this module of the send, nor of a start claim refused before the send, which clears
- * the mark). The unsent mark's cap counts from this module's first read of it, never again from a
- * later check, so a start that never comes (a claim that never answers, a session given no start
- * command) holds the cards back once, for that long. A busy check is as before. The start turn's
- * run clears the mark at its `agent_start`, and its `agent_end` checks again: that check ends the
- * phase and sends one wake. A startup card seen while the mark held, at its `message_end` or at a
- * check, is owed that wake unless a turn after the start turn read it, since the start turn's
- * replies after it ran the start procedure rather than reading it (`unreadCards`); every other
- * card is counted as before. An owed card gets no wake while an interrupt is in effect, which at
- * that check is one that stopped the start turn (its aborted reply, an aborted auto-compaction or
- * a cancelled retry): a wake would start the turn the person stopped, so the card stays folded
- * for the person's next turn, as a fold card does, and the check that ends the phase drops it. A
- * sent mark past its cap is a start the host failed and holds nothing back, and a mark naming
- * another session (a `task` subagent's, or a session switched away from) changes nothing.
+ * however slowly the pod starts, and every startup card still gets a turn after it. Without the
+ * mark, a terminal's idle card starts a turn that runs ahead of the start command, and an RPC
+ * card's wake fires once the host is idle after the drain, which can be before the daemon's prompt
+ * arrives. So while the mark names this session (the instance's own and the host's live one),
+ * whether its start is unsent or sent and however long ago, the phase holds whatever `ctx.mode`
+ * is: an idle card in any mode goes as a startup card. No clock ends that hold: only the mark going
+ * does, and the Legion entry clears it on a fact. The session's first `agent_start` clears it (the
+ * start turn's, or an operator's turn typed before the start command ran), and so does the
+ * session's shutdown. So does each fact that says the start is not coming: the start claim refused
+ * before the send (`/legion-controller-start`'s or `/legion-claim-controller`'s), the start's send
+ * failing, and the session changing before the send. A daemon-launched controller whose claim
+ * never answers is stopped by the daemon's registration deadline, which ends the process and its
+ * hold with it. An operator's controller whose claim never answers, or whose start command never
+ * runs, holds its startup cards until the operator's own first turn: the person at that terminal
+ * is the one who can act on either. An idle check while the mark holds keeps the phase and the seen
+ * startup cards, sends no wake and reads the mark again `STARTUP_TURN_POLL_MS` later. A busy
+ * check is as before. The run whose `agent_start` cleared the mark checks again at its
+ * `agent_end`: that check ends the phase and sends one wake. A startup card seen while the mark
+ * held, at its `message_end` or at a check, is owed that wake unless a turn after the start turn
+ * read it, since the start turn's replies after it ran the start procedure rather than reading it
+ * (`unreadCards`); every other card is counted as before. An owed card gets no wake while an
+ * interrupt is in effect, which at that check is one that stopped the start turn (its aborted
+ * reply, an aborted auto-compaction or a cancelled retry): a wake would start the turn the person
+ * stopped, so the card stays folded for the person's next turn, as a fold card does, and the check
+ * that ends the phase drops it. A mark naming another session (a `task` subagent's, or a session
+ * switched away from) changes nothing.
  */
 
 /** How long a card sent in the startup phase may go without its `message_end` before the wake's
  *  check stops waiting for it: one older than this is a send the host failed. */
 export const STARTUP_CARD_CAP_MS = 30_000;
 
-/** How long the start-turn mark holds the startup wake back: from its start's send
- *  (`startupTurn.sentAt`), or, while its start is unsent, from this module's first read of that
- *  unsent mark. A mark older than this is a start the host failed or one that is not coming. */
-export const STARTUP_TURN_CAP_MS = 30_000;
-
-/** How often a check reads a mark whose start is unsent again, until its cap: no event tells this
- *  module that the start was sent, or that a claim refused before the send cleared the mark. */
+/** How long after an idle check the start-turn mark held the check reads the mark again. This is
+ *  a re-read, never a cap: the hold ends only once the mark is gone, and no read ends it before.
+ *  It polls because no event tells this module that the Legion entry cleared the mark on a fact
+ *  with no run of this session behind it (a start claim refused before the send, a failed send, a
+ *  session change before the send). The facts that start a run need no poll, since that run's
+ *  `agent_end` checks again. An event for the clearing would be a hook on the plugin interface,
+ *  which every reader of it would have to take at a new interface version. */
 export const STARTUP_TURN_POLL_MS = 1_000;
 
 /** The `errorMessage` of the assistant message an interrupt ends a run with: the host's
@@ -266,16 +269,13 @@ export interface CardWakeDeps {
   readonly record?: ((step: CardWakeStep) => void) | undefined;
 }
 
-/** One step of the startup phase, for `CardWakeDeps.record`, in this process's `Date.now()`: an
- *  unsent start-turn mark first read; a check the mark held, with the delay it reads the mark
- *  again after, the moment the hold's decision read (`at`) and the moment it counted the cap
- *  from (`from`: the mark's first read, or its start's send); a check an unseen startup card held
- *  back, with the same three and the card's send (`sentAt`); and the wake a check sent, with how
- *  many cards it named. Every number is the one the decision itself used, so a decision that held
- *  at or past its cap shows here whatever its delay. */
+/** One step of the startup phase, for `CardWakeDeps.record`, in this process's `Date.now()`: a
+ *  check the start-turn mark held, with the delay it reads the mark again after and the moment the
+ *  hold's decision read (`at`); a check an unseen startup card held back, with the delay to that
+ *  card's cap, the moment the decision read and the card's send (`sentAt`); and the wake a check
+ *  sent, with how many cards it named. Every number is the one the decision itself used. */
 export type CardWakeStep =
-  | { readonly startTurnMark: { readonly firstRead: number } }
-  | { readonly heldFor: number; readonly at: number; readonly from: number }
+  | { readonly heldFor: number; readonly at: number }
   | { readonly unseenFor: number; readonly at: number; readonly sentAt: number }
   | { readonly woke: number };
 
@@ -368,15 +368,6 @@ export class CardWake {
   /** Startup cards seen while the start-turn mark held, which only a reply after the start turn
    *  reads: the start turn's replies after them ran the start procedure (`unreadCards`). */
   readonly #owed = new Set<string>();
-  /** The unsent start-turn mark this module last read, and when it first read it, which its cap
-   *  counts from. Each marking writes a new object to the interface, so a mark set again is a new
-   *  one whose cap counts from its own first read. */
-  #unsentMark:
-    | {
-        readonly mark: NonNullable<EnvoyPluginInterface["startupTurn"]>;
-        readonly firstRead: number;
-      }
-    | undefined;
   /** When the armed check runs, if one is armed: a sooner one replaces it, a later one waits. */
   #checkDue: number | undefined;
   // A check that a sooner one replaced, or a cancel dropped, is skipped by its generation when it
@@ -399,9 +390,7 @@ export class CardWake {
     // An idle host has no run, whatever end of it no extension was told of.
     if (idle === true) this.#runActive = false;
     const startup =
-      this.#startupPhase &&
-      idle === true &&
-      (context?.mode === "rpc" || this.#startTurnHold() !== undefined);
+      this.#startupPhase && idle === true && (context?.mode === "rpc" || this.#startTurnHolds());
     // The host state at this hand-over, read in the order the delivery itself is decided, so the
     // record says what this module acted on: a context with no idle state says nothing, a startup
     // card is the startup phase's whatever else holds, and the clear above means an idle host has
@@ -465,7 +454,7 @@ export class CardWake {
     if (marker?.wake === undefined) return;
     if (marker.wake === "startup") {
       this.#unseenStartup.delete(marker.envoyCard);
-      if (this.#startTurnHold() !== undefined) this.#owed.add(marker.envoyCard);
+      if (this.#startTurnHolds()) this.#owed.add(marker.envoyCard);
     }
     this.#seen.push({ id: marker.envoyCard, run: this.#run, startup: marker.wake === "startup" });
     this.#arm(context);
@@ -514,30 +503,13 @@ export class CardWake {
   }
 
   /**
-   * How long from now the start-turn mark holds the startup wake back, which is when the check
-   * reads it again: undefined when it does not hold (no mark, a mark naming another session, or one
-   * past its cap), the time to its cap once its start was sent, and while it is unsent the time to
-   * its cap from this module's first read of it, but no more than `STARTUP_TURN_POLL_MS`, so a
-   * mark a refused claim cleared, or one the send replaced, is read again soon. With it, the
-   * moment the decision read (`at`) and the one it counted the cap from (`from`), for the record.
+   * Whether the start-turn mark holds the startup wake back: it names this session, whether its
+   * start is unsent or sent and however long ago. Only the mark going ends the hold, so this reads
+   * no clock.
    */
-  #startTurnHold():
-    | { readonly ms: number; readonly at: number; readonly from: number }
-    | undefined {
+  #startTurnHolds(): boolean {
     const mark = this.#deps.startupTurn();
-    if (mark === undefined || !this.#deps.isOwnSession(mark.session)) return undefined;
-    const now = this.#deps.now();
-    if (mark.sentAt !== undefined) {
-      const left = mark.sentAt + STARTUP_TURN_CAP_MS - now;
-      return left > 0 ? { ms: left, at: now, from: mark.sentAt } : undefined;
-    }
-    if (this.#unsentMark?.mark !== mark) {
-      this.#unsentMark = { mark, firstRead: now };
-      this.#deps.record?.({ startTurnMark: { firstRead: now } });
-    }
-    const from = this.#unsentMark.firstRead;
-    const left = from + STARTUP_TURN_CAP_MS - now;
-    return left > 0 ? { ms: Math.min(left, STARTUP_TURN_POLL_MS), at: now, from } : undefined;
+    return mark !== undefined && this.#deps.isOwnSession(mark.session);
   }
 
   #arm(context: CardWakeContext, delayMs = 0): void {
@@ -577,15 +549,15 @@ export class CardWake {
     // An idle host has no run, whatever end of it no extension was told of.
     this.#runActive = false;
     // The start turn is still to come: the seen startup cards wait for it, owed their wake after
-    // it, and the phase goes on.
-    const hold = this.#startTurnHold();
-    if (hold !== undefined) {
+    // it, and the phase goes on. No event tells this module of a mark the Legion entry cleared on
+    // a fact that starts no run, so the check reads the mark again a poll later.
+    if (this.#startTurnHolds()) {
       for (const card of this.#seen) {
         if (card.startup) this.#owed.add(card.id);
       }
       if (this.#seen.length > 0) {
-        this.#deps.record?.({ heldFor: hold.ms, at: hold.at, from: hold.from });
-        this.#arm(context, hold.ms);
+        this.#deps.record?.({ heldFor: STARTUP_TURN_POLL_MS, at: now });
+        this.#arm(context, STARTUP_TURN_POLL_MS);
       }
       return;
     }

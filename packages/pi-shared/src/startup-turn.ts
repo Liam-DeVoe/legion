@@ -5,12 +5,14 @@ import { envoyPluginInterface, readEnvoyPluginInterface } from "./interface";
 // controller's `/legion-controller-start` sends after Oh My Pi's startup (due from that session's
 // `session_start`, `markStartupTurnPending`), the start message the Legion entry sends to an idle
 // session, or the start prompt the daemon delivers once its controller reports ready. The Legion
-// entry marks it sent right before that start (`markStartupTurnSent`) and clears it from that
-// session's `agent_start` and `session_shutdown`, and an unsent one when the start command's claim
-// fails before the send or hands over to a new session (`clearStartupTurn`). A start message
-// queued as a follow-up behind a turn the operator already started is never marked sent: that run,
-// the session's first, has already fired its one `agent_start`, which cleared an unsent mark, and
-// the follow-up runs inside it.
+// entry marks it sent right before that start (`markStartupTurnSent`) and clears it
+// (`clearStartupTurn`) on a fact, never on a clock: from that session's `agent_start` and
+// `session_shutdown`, an unsent one when a controller claim fails before the send or hands over to
+// a new session, and a sent one when its send fails. pi-envoy holds the session's startup cards for
+// as long as the mark stands (`packages/pi-envoy/src/card-wake.ts`), so every mark set has these
+// ways to go. A start message queued as a follow-up behind a turn the operator already started is
+// never marked sent: that run, the session's first, has already fired its one `agent_start`, which
+// cleared an unsent mark, and the follow-up runs inside it.
 
 /** Marks `sessionID` as the session whose start is due and not sent yet. */
 export function markStartupTurnPending(sessionID: string): void {

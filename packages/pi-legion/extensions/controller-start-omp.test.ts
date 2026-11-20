@@ -238,13 +238,12 @@ interface ControllerSession {
 }
 
 /** One line of pi-envoy's record of the startup phase (`CardWakeStep`, pi-envoy's
- *  src/card-wake.ts): an unsent start-turn mark first read; a check the mark held, with the delay
- *  it reads it again after, the moment the decision read and the moment it counted the cap from;
- *  a check an unseen startup card held back, with the same and that card's send; the wake a check
+ *  src/card-wake.ts): a check the start-turn mark held, with the delay it reads the mark again
+ *  after and the moment the decision read; a check an unseen startup card held back, with the
+ *  delay to that card's cap, the moment the decision read and the card's send; the wake a check
  *  sent. */
 const CardWakeStepSchema = z.union([
-  z.object({ startTurnMark: z.object({ firstRead: z.number() }) }),
-  z.object({ heldFor: z.number(), at: z.number(), from: z.number() }),
+  z.object({ heldFor: z.number(), at: z.number() }),
   z.object({ unseenFor: z.number(), at: z.number(), sentAt: z.number() }),
   z.object({ woke: z.number() }),
 ]);
@@ -1876,23 +1875,27 @@ test.skipIf(skip)(
   }
 );
 
-// The operator's controller marks its start unsent at `session_start`, and while the mark holds,
+// The operator's controller marks its start unsent at `session_start`, and while the mark stands,
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
-// launched without the start word on its command line. A card that reached the idle session must
-// still get a turn of its own, without waiting for the operator to type; pi-envoy's
-// STARTUP_TURN_CAP_MS (30 s) is when.
+// launched without the start word on its command line. No clock ends the hold (pi-envoy's
+// src/card-wake.ts): the operator at the terminal is the one who can act on either, and their own
+// first turn clears the mark. So the card takes no turn of its own however long the mark stands;
+// the operator's first turn is the session's first, with the card in its context, and exactly one
+// wake follows it, since that turn's reply ran the operator's request rather than reading the card.
 //
-// The caps, as the spec sets them: an unsent start mark holds the wake back for
-// STARTUP_TURN_CAP_MS from its first read, an unseen startup card holds the check back for
-// STARTUP_CARD_CAP_MS from its send, and pi-envoy reads an unsent mark again every
-// STARTUP_TURN_POLL_MS. The base held the card's turn to 90 s of the test's clock instead.
-const STARTUP_TURN_CAP_MS = 30_000;
+// How long "however long" is: past the 30 s at which main's STARTUP_TURN_CAP_MS gave the card its
+// own turn, read from pi-envoy's own record of when each check that held decided (R4: the
+// program's own record of when it acted, across the process boundary). A check that held 30 s or
+// more after the first one that held is a hold that outlasted main's cap with no wake; a cap put
+// back shows here as a wake before it. pi-envoy reads the mark again every STARTUP_TURN_POLL_MS,
+// and an unseen startup card holds the check back for STARTUP_CARD_CAP_MS from its send.
+const MAIN_STARTUP_TURN_CAP_MS = 30_000;
 const STARTUP_CARD_CAP_MS = 30_000;
 const STARTUP_TURN_POLL_MS = 1_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
-    `a startup card held by an unsent start mark gets its turn when ${variant}`,
+    `a startup card held by an unsent start mark waits for the operator's first turn when ${variant}, and one wake follows that turn`,
     async () => {
       const startupHold = newHold();
       const registration = newHold();
@@ -1921,42 +1924,51 @@ for (const variant of ["the start claim never answers", "the start command never
       await inbound.repeat(opened, card);
       startupHold.release();
 
-      // The card's own turn, which no typing started. When it comes is pi-envoy's
-      // STARTUP_TURN_CAP_MS, a timer of its own in the pane's process, so the wait here ends at
-      // the row's deadline and the bound is read from pi-envoy's own record of the hold it chose
-      // (R4: the bound the product chose, across the process boundary, not a clock):
-      // src/card-wake.test.ts holds the same timer on a fake clock.
-      const first = await session.until("the startup card's model request", () => session.turns[0]);
-      expect(conversation(first.request)).toContain(card.summary);
-      expect(lastMessage(first.request)).toContain(WAKE_ONE);
-      // The unsent mark held the card back from its first read to its cap, and the wake then came
-      // from a check, not from anything that rescued it later. Each hold is read with the moments
-      // its own decision read (R4: the program's own record of when it acted): the check that
-      // held read the clock before its cap, and holds no further than that cap, so the last read
-      // again comes by the cap whatever the load, and the wake one read after it, well inside
-      // the 90 s the base held the card's turn to. A decision that held at or past its cap - a
-      // cap of its own three times the spec's, or a comparison that kept holding - shows here as
-      // a hold read at or after it. An unseen startup card's hold of the check is held to its own
-      // cap the same way.
-      const steps = await session.cardWakeSteps();
-      const firstReads = steps.flatMap((step) =>
-        "startTurnMark" in step ? [step.startTurnMark.firstRead] : []
+      // The mark holds the card past main's cap, with no wake and no turn: the wait ends on the
+      // first record that shows a check holding MAIN_STARTUP_TURN_CAP_MS or more after the first
+      // one that held, or on a wake, whichever comes first.
+      const held = await session.until(
+        "a check that held 30 s or more after the first one that held, or a wake",
+        async () => {
+          const steps = await session.cardWakeSteps();
+          const holds = steps.flatMap((step) => ("heldFor" in step ? [step] : []));
+          const firstHold = holds[0];
+          const outlasted =
+            firstHold !== undefined &&
+            holds.some((hold) => hold.at - firstHold.at >= MAIN_STARTUP_TURN_CAP_MS);
+          return outlasted || steps.some((step) => "woke" in step) ? steps : undefined;
+        }
       );
-      expect(firstReads.length).toBeGreaterThan(0);
-      const holds = steps.flatMap((step) => ("heldFor" in step ? [step] : []));
-      expect(holds.length).toBeGreaterThan(0);
-      for (const hold of holds) {
-        expect(firstReads).toContain(hold.from);
-        expect(hold.at - hold.from).toBeLessThan(STARTUP_TURN_CAP_MS);
-        expect(hold.heldFor).toBeLessThanOrEqual(STARTUP_TURN_POLL_MS);
-        expect(hold.at + hold.heldFor - hold.from).toBeLessThanOrEqual(STARTUP_TURN_CAP_MS);
-      }
-      for (const step of steps) {
+      expect(held.filter((step) => "woke" in step)).toEqual([]);
+      expect(session.turns).toHaveLength(0);
+      for (const step of held) {
+        if ("heldFor" in step) expect(step.heldFor).toBe(STARTUP_TURN_POLL_MS);
         if (!("unseenFor" in step)) continue;
         expect(step.at - step.sentAt).toBeLessThan(STARTUP_CARD_CAP_MS);
         expect(step.at + step.unseenFor - step.sentAt).toBeLessThanOrEqual(STARTUP_CARD_CAP_MS);
       }
-      expect(steps.filter((step) => "woke" in step)).toEqual([{ woke: 1 }]);
+
+      // The operator types: theirs is the session's first turn, and it has the card.
+      const typed = `TYPED-${randomUUID().slice(0, 8)}`;
+      session.terminal.write(typed);
+      // Enter only once the composer holds the text, so the keystrokes reach the TUI as typing.
+      await session.shows("the typed text in the composer", typed);
+      session.terminal.write("\r");
+      const first = await session.nextTurn("the operator's first turn's model request");
+      expect(lastMessage(first.request)).toContain(typed);
+      expect(conversation(first.request)).toContain(card.summary);
+      expect(conversation(first.request)).not.toMatch(WAKE_TEXT);
+      first.reply("Typed message answered.");
+
+      // That turn's run cleared the mark, and its end sends the one wake.
+      const wake = await session.nextTurn("the startup wake's model request");
+      expect(lastMessage(wake.request)).toContain(WAKE_ONE);
+      wake.reply("Read the startup card.");
+      await settledOn(session, "Read the startup card.");
+      expect(session.turns).toHaveLength(2);
+      expect((await session.cardWakeSteps()).filter((step) => "woke" in step)).toEqual([
+        { woke: 1 },
+      ]);
     }
   );
 }
