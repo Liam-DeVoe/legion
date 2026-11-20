@@ -372,9 +372,12 @@ type Options struct {
 	// the confirmation that drops it once the issue's new pod holds it. The pair carries the work a
 	// release took off the released pod's disk back into the pod that replaces it: the runtime
 	// sends it to that pod's launcher before any role of the pod starts (launchers.restoreWorkspace),
-	// and confirms it on the launcher's Held. The daemon fills them from its store; a runtime given
-	// neither restores nothing, which is what a pod whose issue was never released does anyway.
+	// and confirms it on the launcher's Held. SpentWorkspaceBundle is the same ask with no body read
+	// back, which a start with no time left to send the bundle makes, so it still spends its pod's
+	// one restore attempt. The daemon fills all three from its store; a runtime given fewer than all
+	// three restores nothing, which is what a pod whose issue was never released does anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle
+	SpentWorkspaceBundle    runtime.SpentWorkspaceBundle
 	WorkspaceBundleRestored runtime.WorkspaceBundleRestored
 	// MemoryGuardKilled takes one process an issue pod's memory guard ended, as that pod's
 	// launcher reported it on the connection of the role whose process it was

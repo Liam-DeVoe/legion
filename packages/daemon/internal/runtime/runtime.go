@@ -271,6 +271,16 @@ type WorkspaceBundler interface {
 // issue's pod (workflow.IdleHoldBundleUnrestored).
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
 
+// SpentWorkspaceBundle is SavedWorkspaceBundle's ask with no body read back
+// (store.Store.SpendWorkspaceBundleAttempt): it spends the pod's one restore attempt as that ask
+// does and answers the same take and the bundle's facts, never its bytes. The runtime makes it in
+// place of SavedWorkspaceBundle at a start that has no time left to send a bundle: the attempt must
+// still be spent, or a later start of the pod, or the pod after it, would be sent the bundle over
+// the work that start's role does, and a body of tens of megabytes is what the start's last
+// seconds cannot spare. Nothing is sent, and the work stays in the database, as after a send that
+// failed.
+type SpentWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
+
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one
 // has put the issue's saved work back: its launcher ran the restore and reported that it
 // succeeded, naming the release whose save it restored. It drops that release's saved copy and no

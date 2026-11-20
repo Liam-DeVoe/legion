@@ -324,6 +324,55 @@ func TestAPodNotNewerThanTheSaveSpendsTheAttemptAndClosesTheBundleToEveryLaterPo
 	}
 }
 
+// The ask a start with no time left to send a bundle makes spends the attempt exactly as the take
+// does — the pod the work came off is answered nothing and spends nothing, a pod created after the
+// save takes it as sent, a pod no newer than the save takes it as refused, and no pod after either
+// is answered anything — but it never reads the bundle's bytes back, and the bytes stay whole.
+func TestSpendingTheAttemptRecordsItAsTheTakeDoesAndReadsNoBody(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	at := time.Date(2026, 11, 3, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{
+		Bundle:    bytes.Repeat([]byte("PACK the released work "), 4096),
+		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
+		Bookmarks: map[string]string{"legion/sent-issue": "dffe88ae2f793e13436cef3921adc988433fbd4e"},
+		At:        at,
+		PodUID:    releasedPodUID,
+	}
+	if _, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", "pod-0", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("an issue never released was answered %v (%v), want nothing", take, err)
+	}
+	for issue, release := range map[string]int64{"sent-issue": 11, "refused-issue": 12} {
+		if err := s.PutWorkspaceBundle(ctx, issue, release, saved); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", releasedPodUID, at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod the work came off was answered %v (%v), want nothing and the attempt left", take, err)
+	}
+	spent, take, err := s.SpendWorkspaceBundleAttempt(ctx, "sent-issue", "pod-replacement", at.Add(time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the pod created after the save was answered %v (%v), want the attempt taken as the take takes it", take, err)
+	}
+	if spent.Bundle != nil || spent.Head != saved.Head || spent.Release != 11 || !spent.At.Equal(at) || !slices.Equal(spent.Tips, saved.Tips) {
+		t.Fatalf("the spend answered %d bytes, head %s, release %d at %s, tips %v; want no bytes and the row's facts: head %s, release 11 at %s, tips %v",
+			len(spent.Bundle), spent.Head, spent.Release, spent.At, spent.Tips, saved.Head, at, saved.Tips)
+	}
+	refused, take, err := s.SpendWorkspaceBundleAttempt(ctx, "refused-issue", "pod-skewed-replacement", at.Add(-time.Minute))
+	if err != nil || take != runtime.WorkspaceBundleRefusedOlder || refused.Bundle != nil {
+		t.Fatalf("a pod created before the save was answered %v with %d bytes (%v), want it refused with none", take, len(refused.Bundle), err)
+	}
+	for _, issue := range []string{"sent-issue", "refused-issue"} {
+		if got, take, err := s.TakeWorkspaceBundleForRestore(ctx, issue, "pod-after-an-eviction", at.Add(time.Hour)); err != nil || take != runtime.WorkspaceBundleNone {
+			t.Fatalf("the pod after the spent attempt of %s was answered %d bytes (%v, %v), want nothing: the spend was the bundle's one attempt", issue, len(got.Bundle), take, err)
+		}
+		if size, held, err := s.WorkspaceBundleSize(ctx, issue); err != nil || !held || size != len(saved.Bundle) {
+			t.Fatalf("after the spend %s holds %d bytes (held=%t, %v), want the %d saved kept", issue, size, held, err, len(saved.Bundle))
+		}
+	}
+}
+
 // The idle rule releases no pod of an issue whose stored bundle no pod has restored, and the row's
 // own presence is that record: it is there from the save until a launcher's report deletes it.
 func TestAStoredBundleReadsAsUnrestoredUntilItsConfirmation(t *testing.T) {

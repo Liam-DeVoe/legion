@@ -600,16 +600,18 @@ func TestANegativeIndexPollIsRefused(t *testing.T) {
 // for a start frame and its answer over a pipe.
 const testStartReserve = time.Second
 
-// bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
-// asked for it: each ask is the bundle's one restore attempt spent. err, when set, is a store
-// that does not answer the ask; hang a store that answers nothing until the ask's own context
-// ends, as a statement the database never returns from does; and delay a store that answers
-// after that long, or not at all where the ask's context ends first.
+// bundleSeam is a store of one saved workspace bundle for any pod, counting the asks that read its
+// body (takes) and the asks that read none (spends): each ask of either kind is the bundle's one
+// restore attempt spent. err, when set, is a store that does not answer the ask; hang a store that
+// answers nothing until the ask's own context ends, as a statement the database never returns from
+// does; and delay a store that answers after that long, or not at all where the ask's context
+// ends first.
 type bundleSeam struct {
-	takes atomic.Int32
-	err   error
-	hang  bool
-	delay time.Duration
+	takes  atomic.Int32
+	spends atomic.Int32
+	err    error
+	hang   bool
+	delay  time.Duration
 }
 
 func (b *bundleSeam) take(ctx context.Context, issue, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
@@ -619,6 +621,20 @@ func (b *bundleSeam) take(ctx context.Context, issue, _ string, _ time.Time) (ru
 	}
 	return savedWorkspaceBundle(), runtime.WorkspaceBundleSend, nil
 }
+
+// spend is take with no body read back, as store.SpendWorkspaceBundleAttempt answers.
+func (b *bundleSeam) spend(ctx context.Context, issue, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	b.spends.Add(1)
+	if err := b.wait(ctx, issue); err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
+	}
+	facts := savedWorkspaceBundle()
+	facts.Bundle = nil
+	return facts, runtime.WorkspaceBundleSend, nil
+}
+
+// asks is how often the seam was asked, of either kind.
+func (b *bundleSeam) asks() int32 { return b.takes.Load() + b.spends.Load() }
 
 // wait is how the seam's store answers before it hands over the row: err, a hang until the ask's
 // context ends, or delay, which that context can cut.
@@ -647,7 +663,7 @@ func reserveLaunchers(t *testing.T, reader LeakCheckIndexReader, seam *bundleSea
 	t.Helper()
 	d := newLaunchers(nil, nil, nil, nil, nil, slogTo(log))
 	if seam != nil {
-		d.saved, d.restored = seam.take, seam.restored
+		d.saved, d.spent, d.restored = seam.take, seam.spend, seam.restored
 	}
 	d.leakCheckIndex = reader
 	d.startReserve = testStartReserve
@@ -710,8 +726,9 @@ func TestAStartWithNoMoreThanItsReserveLeftSendsNeitherHop(t *testing.T) {
 	if frames := l.frames(); len(frames) != 1 || frames[0].FrameType() != shimwire.TypeLauncherStart {
 		t.Fatalf("the launcher was sent %v, want its start alone", frameTypes(frames))
 	}
-	if takes := seam.takes.Load(); takes != 1 {
-		t.Fatalf("the store was asked for the saved bundle %d time(s), want once: the ask is what closes this pod's one restore attempt", takes)
+	if takes, spends := seam.takes.Load(), seam.spends.Load(); takes != 0 || spends != 1 {
+		t.Fatalf("the store was asked for the saved bundle %d time(s) with its body and %d without, want once without: the ask is what closes this pod's one restore attempt, and the start will send no body",
+			takes, spends)
 	}
 	if text := logs.String(); strings.Count(text, "level=WARN") != 2 {
 		t.Fatalf("the daemon logged %q, want a warning for each hop it did not send", text)
@@ -743,8 +760,8 @@ func TestABundleAskThatOutlastsTheReserveIsNoStoreFaultAndSendsNothing(t *testin
 	if countOf(frames, shimwire.TypeLauncherBundle) != 0 || len(frames) != 1 || frames[0].FrameType() != shimwire.TypeLauncherStart {
 		t.Fatalf("the launcher was sent %v, want its start alone", frameTypes(frames))
 	}
-	if seam.takes.Load() != 1 {
-		t.Fatalf("the store was asked %d time(s), want once: the ask is the pod's one attempt", seam.takes.Load())
+	if takes, spends := seam.takes.Load(), seam.spends.Load(); takes != 1 || spends != 0 {
+		t.Fatalf("the store was asked %d time(s) with the body and %d without, want once with it: the start had time to send when it asked, and the ask is the pod's one attempt", takes, spends)
 	}
 	if text := logs.String(); !strings.Contains(text, "stays in the daemon's database") {
 		t.Fatalf("the daemon logged %q, want the unsent bundle's warning to say where the work is", text)
@@ -759,6 +776,7 @@ func TestALaterStartOfAPodWhoseBundleHopWasSkippedIsSentNoBundle(t *testing.T) {
 	st, saved := leakCheckStore(t)
 	var logs lockedLog
 	d := newLaunchers(nil, st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle, nil, nil, slogTo(&logs))
+	d.spent = st.SpendWorkspaceBundleAttempt
 	d.startReserve = time.Hour
 	l := &indexLauncher{}
 	connectIndexLauncher(t, d, workerToken, "uid-pod-skipped", false, l)
@@ -832,8 +850,8 @@ func TestABundleAskCutByTheStartsOwnDeadlineIsNoStoreFault(t *testing.T) {
 	if errors.Is(err, runtime.ErrSessionStore) {
 		t.Fatalf("the start answered %v, a store fault; want the start's own deadline, which the store did not cause", err)
 	}
-	if seam.takes.Load() != 1 {
-		t.Fatalf("the store was asked %d time(s), want once", seam.takes.Load())
+	if seam.asks() != 1 {
+		t.Fatalf("the store was asked %d time(s), want once", seam.asks())
 	}
 	if got := countOf(l.frames(), shimwire.TypeLauncherStart); got != 0 {
 		t.Fatalf("the launcher was sent %v, want no start", frameTypes(l.frames()))
@@ -847,7 +865,7 @@ func TestABundleAskCutByTheStartsOwnDeadlineIsNoStoreFault(t *testing.T) {
 func TestALaunchStoppedByTheBundleStoreSendsNoStop(t *testing.T) {
 	seam := &bundleSeam{err: errors.New("take the workspace bundle of " + testTree + ": connection refused")}
 	g := newRig(t, nil, withOptions(func(o *Options) {
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = seam.take, seam.restored
+		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = seam.take, seam.spend, seam.restored
 	}))
 	spec := workerSpec(t)
 	g.launcher(spec.Claim)

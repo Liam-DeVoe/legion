@@ -99,6 +99,30 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // and keeps the work in the database until the issue's own work is over (outbox's
 // dropReleasedWork), which is what the launcher's notice tells the roles.
 func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	return s.takeWorkspaceBundle(ctx, issue, podUID, podCreated, `case when attempt_outcome = 'sent' then bundle end`)
+}
+
+// SpendWorkspaceBundleAttempt is TakeWorkspaceBundleForRestore's one statement with no body read
+// back: it records the same attempt against the pod of podUID, created at podCreated, and answers
+// the same take and the row's facts, but never the bundle's bytes. It is for a start that has no
+// time left to send a bundle (sandbox's launchers.restoreWorkspace): that start must still spend
+// its pod's one attempt, or a later start of the pod, or the pod after it, would be sent the bundle
+// over the work this start's role does; and the body, up to tens of megabytes, is what the time it
+// has left cannot spare.
+//
+// The outcome it writes is the one the take writes: `sent` for a pod created after the save, though
+// nothing will be sent, since an attempt the daemon spent without sending is the row a send that
+// failed halfway leaves, which no pod is sent again; `refused_older` otherwise. So it needs no new
+// outcome, and the row's work stays in the database for a person to recover, holding the issue's
+// pod (workflow.IdleHoldBundleUnrestored).
+func (s *Store) SpendWorkspaceBundleAttempt(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	return s.takeWorkspaceBundle(ctx, issue, podUID, podCreated, `null::bytea`)
+}
+
+// takeWorkspaceBundle is the one statement both asks make, reading back body, an SQL expression of
+// the updated row: the bundle where its outcome is `sent`, or no bytes at all. Both expressions are
+// this file's own constants.
+func (s *Store) takeWorkspaceBundle(ctx context.Context, issue, podUID string, podCreated time.Time, body string) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	if podUID == "" {
 		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the workspace bundle of %s needs the pod it is sent to", issue)
 	}
@@ -114,7 +138,7 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 		set attempt_pod_uid = $2, attempt_at = now(),
 			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
 		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-		returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
+		returning attempt_outcome, `+body+`,
 			at, head, tips, bookmarks, release_id, source_pod_uid`,
 		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
 	if errors.Is(err, pgx.ErrNoRows) {

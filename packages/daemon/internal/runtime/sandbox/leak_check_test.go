@@ -74,7 +74,7 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		o.SavedWorkspaceBundle, o.SpentWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.SpendWorkspaceBundleAttempt, st.DeleteRestoredWorkspaceBundle
 	})
 }
 

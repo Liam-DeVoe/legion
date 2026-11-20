@@ -72,9 +72,11 @@ type launchers struct {
 	startReserve time.Duration
 	indexTurns   map[indexTurnKey]*indexTurn
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
-	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
-	// A launchers built without the pair restores nothing.
+	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored);
+	// spent is saved's ask with no body read back, for a start with no time left to send one
+	// (Options.SpentWorkspaceBundle). A launchers built without all three restores nothing.
 	saved    runtime.SavedWorkspaceBundle
+	spent    runtime.SpentWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
 	// guardKilled takes a memory guard's report of one process it ended into the daemon's fact
 	// path (Options.MemoryGuardKilled). A launchers built without it reads the frame, logs that
@@ -615,19 +617,33 @@ func (s *launcherSession) installedLeakCheckIndex() string {
 
 // beforeTheStart is ctx ended d.startReserve before ctx's own deadline: the bound of a hop a start
 // sends before its start frame and never stops on. Where no more than the reserve is left there is
-// no such hop, and the error says so. A ctx with no deadline bounds the hop alone.
+// no such hop, and the error says so (noTimeBeforeTheStart). A ctx with no deadline bounds the hop
+// alone.
 func (d *launchers) beforeTheStart(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if err := d.noTimeBeforeTheStart(ctx); err != nil {
+		return nil, nil, err
+	}
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		hop, cancel := context.WithCancel(ctx)
 		return hop, cancel, nil
 	}
-	if left := time.Until(deadline); left <= d.startReserve {
-		return nil, nil, fmt.Errorf("the start has %s left, no more than the %s it keeps for its start frame",
-			left.Round(time.Millisecond), d.startReserve)
-	}
 	hop, cancel := context.WithDeadline(ctx, deadline.Add(-d.startReserve))
 	return hop, cancel, nil
+}
+
+// noTimeBeforeTheStart is why a start may send no hop before its start frame — no more than
+// d.startReserve is left of ctx — or nil where it may.
+func (d *launchers) noTimeBeforeTheStart(ctx context.Context) error {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	if left := time.Until(deadline); left <= d.startReserve {
+		return fmt.Errorf("the start has %s left, no more than the %s it keeps for its start frame",
+			left.Round(time.Millisecond), d.startReserve)
+	}
+	return nil
 }
 
 // indexTurn is one pod's turn to push the leak check index to one role's launcher: slot holds the
@@ -785,8 +801,11 @@ const bundleRestoreBound = 2 * time.Minute
 // returned as that.
 //
 // The start's reserve (beforeTheStart) bounds only the slices, which go after the ask: they never
-// take the time the start frame needs. Where the ask has left no more than the reserve, nothing is
-// sent, and the work stays in the database, as after a send that failed.
+// take the time the start frame needs. A start that has no more than the reserve left when it asks
+// makes the ask that reads no body (spent, store.SpendWorkspaceBundleAttempt), since it will send
+// none: it spends the attempt all the same, and a body of tens of megabytes is what its last
+// seconds cannot spare. Where the ask, of either kind, has left no more than the reserve, nothing
+// is sent, and the work stays in the database, as after a send that failed.
 //
 // One attempt per bundle, and the read is it: the store records the pod this send is for before
 // it answers the body, and answers nothing for that bundle afterwards
@@ -806,7 +825,7 @@ const bundleRestoreBound = 2 * time.Minute
 // pushing from the workspace its own fetch provisioned. That refusal is this hop's one warning
 // an operator must read — the work is in the database and no pod will put it back on its own.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) error {
-	if d.saved == nil || d.restored == nil {
+	if d.saved == nil || d.spent == nil || d.restored == nil {
 		return nil
 	}
 	// The session names the issue its pod is of, as the Secret its launcher authenticated with
@@ -819,9 +838,14 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	issue := session.issue
 	// The ask is this pod's one attempt, made before every start of the pod whatever time is left:
 	// a start that did not ask would leave the attempt open for a later start of the pod, or for
-	// the pod after it, to be sent the bundle over the work this start's role does.
+	// the pod after it, to be sent the bundle over the work this start's role does. A start that
+	// will send nothing asks for no body.
+	ask := (func(context.Context, string, string, time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error))(d.saved)
+	if d.noTimeBeforeTheStart(ctx) != nil {
+		ask = d.spent
+	}
 	asking, cancelAsk := context.WithTimeout(ctx, apiTimeout)
-	bundle, take, err := d.saved(asking, issue, podUID, session.podCreated)
+	bundle, take, err := ask(asking, issue, podUID, session.podCreated)
 	cancelAsk()
 	if err != nil {
 		if ctx.Err() != nil {
@@ -839,7 +863,7 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	// had nothing unpushed, this bundle has had its one attempt, or this is the pod the work was
 	// taken off: the pod starts on what its fetch provisioned, as every pod of an issue that was
 	// never released does.
-	if take != runtime.WorkspaceBundleSend || len(bundle.Bundle) == 0 {
+	if take != runtime.WorkspaceBundleSend {
 		return nil
 	}
 	reserved, cancelReserve, noTime := d.beforeTheStart(ctx)
@@ -849,6 +873,9 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		return nil
 	}
 	defer cancelReserve()
+	if len(bundle.Bundle) == 0 {
+		return nil
+	}
 	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
 	defer cancel()
 	frames, err := bundleFrames(issue, bundle)
