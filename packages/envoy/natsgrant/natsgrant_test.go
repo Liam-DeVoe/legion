@@ -2,11 +2,16 @@ package natsgrant_test
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/nats-io/nats-server/v2/server"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -172,4 +177,159 @@ func TestNamesSystemSubject(t *testing.T) {
 		entry, found := natsgrant.NamesSystemSubject(grant)
 		require.False(t, found, "%s names %q", name, entry)
 	}
+}
+
+// grantTable is every grant this package builds, one row per exported function that returns
+// Permissions and takes none, keyed by the function's name, so a test that holds every grant to a
+// rule reads them here. TestTheGrantTableNamesEveryGrant checks the rows against natsgrant.go's
+// declarations, so a grant added there fails it until it is listed here.
+func grantTable(t *testing.T) map[string]natsgrant.Permissions {
+	t.Helper()
+	session, err := natsgrant.Session("ses_a")
+	require.NoError(t, err)
+	return map[string]natsgrant.Permissions{
+		"Listener":       natsgrant.Listener("example-hub"),
+		"ListenerHost":   natsgrant.ListenerHost("example-hub"),
+		"Dispatch":       natsgrant.Dispatch("example-dispatch"),
+		"SessionPattern": natsgrant.SessionPattern(),
+		"Session":        session,
+		"Daemon":         natsgrant.Daemon(),
+		"Host":           natsgrant.Host("example-host-a"),
+		"Measure":        natsgrant.Measure(),
+	}
+}
+
+// grantDeclarations are the names of natsgrant.go's exported functions that build a grant: their
+// first result is Permissions and no parameter is one. ForCallout, which narrows a grant it is
+// given, builds none.
+func grantDeclarations(t *testing.T) []string {
+	t.Helper()
+	file, err := parser.ParseFile(token.NewFileSet(), "natsgrant.go", nil, parser.SkipObjectResolution)
+	require.NoError(t, err)
+	isPermissions := func(field *ast.Field) bool {
+		ident, ok := field.Type.(*ast.Ident)
+		return ok && ident.Name == "Permissions"
+	}
+	var names []string
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok || fn.Recv != nil || !fn.Name.IsExported() || fn.Type.Results == nil || !isPermissions(fn.Type.Results.List[0]) {
+			continue
+		}
+		if slices.ContainsFunc(fn.Type.Params.List, isPermissions) {
+			continue
+		}
+		names = append(names, fn.Name.Name)
+	}
+	require.NotEmpty(t, names, "natsgrant.go declares no grant, so the table is checked against nothing")
+	return names
+}
+
+// The grant table holds one row for each grant natsgrant.go declares, and none it does not. A row
+// may carry its argument after the name, "Operator(held)", and is counted under the name.
+func TestTheGrantTableNamesEveryGrant(t *testing.T) {
+	var rows []string
+	for name := range grantTable(t) {
+		function, _, _ := strings.Cut(name, "(")
+		if !slices.Contains(rows, function) {
+			rows = append(rows, function)
+		}
+	}
+	declared := grantDeclarations(t)
+	slices.Sort(rows)
+	slices.Sort(declared)
+	require.Equal(t, declared, rows, "the grant table and natsgrant.go's grants differ")
+}
+
+// streamConfigurationCalls are the JetStream API calls that make a stream, change its
+// configuration or remove it: a create, an update, a delete, and a restore, which makes the stream
+// a snapshot carries with that snapshot's configuration. A create or an update carries a
+// configuration of the caller's choosing, and a source or a republish in it reads every stream of
+// the account, since nats-server checks a republish destination only against the stream's own
+// subjects.
+var streamConfigurationCalls = []string{
+	"$JS.API.STREAM.CREATE.>",
+	"$JS.API.STREAM.UPDATE.>",
+	"$JS.API.STREAM.DELETE.>",
+	"$JS.API.STREAM.RESTORE.>",
+}
+
+// streamConfigurationEntries are the entries of publish that can reach a stream configuration
+// call, by nats-server's own reading of two subjects (server.SubjectsCollide).
+func streamConfigurationEntries(publish []string) []string {
+	var entries []string
+	for _, entry := range publish {
+		if slices.ContainsFunc(streamConfigurationCalls, func(call string) bool { return server.SubjectsCollide(entry, call) }) {
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+// No grant the auth service answers can make, change or remove a stream: for every grant this
+// package builds, ForCallout's answer holds no publish entry that reaches a stream create, update,
+// delete or restore. The static sets keep theirs (TestEachGrantMatchesTheSetItReplaces), since a
+// hub that runs no auth service renders them and its programs make their own streams.
+func TestOnlyTheOperatorCreatesOrChangesAStream(t *testing.T) {
+	var offenders []string
+	for name, grant := range grantTable(t) {
+		for _, entry := range streamConfigurationEntries(natsgrant.ForCallout(grant).Publish) {
+			offenders = append(offenders, name+": "+entry)
+		}
+	}
+	slices.Sort(offenders)
+	require.Empty(t, offenders, "the auth service's answer may make, change or remove a stream")
+}
+
+// ForCallout removes the stream configuration calls and nothing else, and returns lists of its
+// own: a bucket's writer keeps its reads, its key writes and its watchers' calls, and the
+// measurement job keeps its stream infos and its publishes, losing its stream create, update and
+// delete. A wildcard that reaches a stream configuration call goes whole, whatever else it reaches.
+func TestForCalloutKeepsEveryOtherCall(t *testing.T) {
+	for name, grant := range grantTable(t) {
+		answered := natsgrant.ForCallout(grant)
+		removed := streamConfigurationEntries(grant.Publish)
+		kept := slices.DeleteFunc(slices.Clone(grant.Publish), func(entry string) bool { return slices.Contains(removed, entry) })
+		require.Equal(t, kept, answered.Publish, "%s publish", name)
+		require.Equal(t, grant.Subscribe, answered.Subscribe, "%s subscribe", name)
+		require.Equal(t, grant.PublishDeny, answered.PublishDeny, "%s publish deny", name)
+		require.Equal(t, grant.SubscribeDeny, answered.SubscribeDeny, "%s subscribe deny", name)
+	}
+
+	require.Equal(t, []string{
+		"$JS.API.STREAM.INFO.KV_b",
+		"$JS.API.DIRECT.GET.KV_b.>",
+		"$JS.API.STREAM.MSG.GET.KV_b",
+		"$KV.b.>",
+		"$JS.API.CONSUMER.CREATE.KV_b.>",
+		"$JS.API.CONSUMER.DELETE.KV_b.>",
+		"$JS.FC.KV_b.>",
+	}, natsgrant.ForCallout(natsgrant.Permissions{Publish: natsgrant.KVWrite("b")}).Publish)
+
+	require.Equal(t, natsgrant.Permissions{
+		Publish: []string{
+			"$JS.API.INFO",
+			"$JS.API.STREAM.NAMES",
+			"$JS.API.STREAM.LIST",
+			"$JS.API.STREAM.INFO.*",
+			"$JS.API.CONSUMER.NAMES.*",
+			"$JS.API.CONSUMER.LIST.*",
+			"$JS.API.CONSUMER.INFO.*.*",
+			"$JS.API.DIRECT.GET.KV_envoy_listener.$KV.envoy_listener.lease.>",
+			"envoy-measure.>",
+		},
+		Subscribe: []string{"_INBOX_envoy_measure.>"},
+	}, natsgrant.ForCallout(natsgrant.Measure()))
+
+	wide := natsgrant.Permissions{
+		Publish:     []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">", "$JS.API.STREAM.RESTORE.X"},
+		Subscribe:   []string{"_INBOX.>"},
+		PublishDeny: []string{"$JS.API.STREAM.PURGE.X"},
+	}
+	answered := natsgrant.ForCallout(wide)
+	require.Equal(t, []string{"$JS.API.STREAM.INFO.X"}, answered.Publish)
+	require.Equal(t, []string{"$JS.API.>", "$JS.API.STREAM.*.X", "$JS.API.STREAM.INFO.X", ">", "$JS.API.STREAM.RESTORE.X"}, wide.Publish, "ForCallout changed the grant it was given")
+	answered.Subscribe[0], answered.PublishDeny[0] = "changed", "changed"
+	require.Equal(t, "_INBOX.>", wide.Subscribe[0], "ForCallout's subscribe list is the grant's own")
+	require.Equal(t, "$JS.API.STREAM.PURGE.X", wide.PublishDeny[0], "ForCallout's deny list is the grant's own")
 }

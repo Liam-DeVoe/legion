@@ -374,6 +374,61 @@ func Measure() Permissions {
 	}
 }
 
+// streamConfigurationCalls are the JetStream API calls that make a stream, change its
+// configuration or remove it: a create, an update, a delete, and a restore, which makes the stream
+// a snapshot carries with that snapshot's configuration.
+var streamConfigurationCalls = []string{
+	jsAPI + "STREAM.CREATE.>",
+	jsAPI + "STREAM.UPDATE.>",
+	jsAPI + "STREAM.DELETE.>",
+	jsAPI + "STREAM.RESTORE.>",
+}
+
+// ForCallout is p as the auth service answers it: p without every publish entry that reaches a
+// stream create, update, delete or restore (streamConfigurationCalls), and every other entry as p
+// holds it, in lists of its own. internal/cipher/natscallout answers every connection but the
+// operator's through it, so no client the auth service admits can make, change or remove a
+// stream: a create or an update carries a configuration of the caller's choosing, and a source or
+// a republish in it reads every stream of the account, since nats-server checks a republish
+// destination only against the stream's own subjects. Every stream is made at deploy time by the
+// operator instead (envoy-infra streams), and a start beside the auth service reads its streams and
+// makes none (bus.StreamsOperatorMadeEnvVar).
+//
+// A bucket's writer (KVWrite) keeps its stream info, its direct and stream gets, its key writes,
+// its watchers' consumer calls and their flow-control replies; the listener's grant keeps the
+// notification stream's info and stored-message get; Measure keeps its stream infos and its
+// publishes to envoy-measure.>. An entry that is a wildcard reaching one of those calls goes
+// whole, whatever else it reaches, so the answer is narrower than p and never wider; no grant of
+// this package holds one. The static sets stay as they are: a hub that runs no auth service
+// renders them, and its programs make their own streams.
+func ForCallout(p Permissions) Permissions {
+	publish := slices.DeleteFunc(slices.Clone(p.Publish), func(entry string) bool {
+		return slices.ContainsFunc(streamConfigurationCalls, func(call string) bool { return subjectsCollide(entry, call) })
+	})
+	return Permissions{
+		Publish:       publish,
+		Subscribe:     slices.Clone(p.Subscribe),
+		PublishDeny:   slices.Clone(p.PublishDeny),
+		SubscribeDeny: slices.Clone(p.SubscribeDeny),
+	}
+}
+
+// subjectsCollide reports whether one subject can match both a and b, two subjects or wildcards
+// ("*" one token, ">" the rest), as nats-server's SubjectsCollide reads them.
+func subjectsCollide(a, b string) bool {
+	aTokens, bTokens := strings.Split(a, "."), strings.Split(b, ".")
+	for index := 0; index < len(aTokens) && index < len(bTokens); index++ {
+		aToken, bToken := aTokens[index], bTokens[index]
+		if aToken == ">" || bToken == ">" {
+			return true
+		}
+		if aToken != "*" && bToken != "*" && aToken != bToken {
+			return false
+		}
+	}
+	return len(aTokens) == len(bTokens)
+}
+
 // systemAccountPrefix is the first token of every subject of nats-server's own, the auth
 // service's authorization requests ($SYS.REQ.USER.AUTH) among them.
 const systemAccountPrefix = "$SYS"
