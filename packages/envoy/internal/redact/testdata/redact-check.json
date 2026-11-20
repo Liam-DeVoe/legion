@@ -3913,7 +3913,7 @@
       "mutation": {
         "file": "packages/envoy/internal/dispatch/githubapp/client.go",
         "preimage": "[]byte(redact.Tokens(string(responseBody), -1, redact.Carried(response)...))",
-        "replacement": "responseBody"
+        "replacement": "[]byte(string(responseBody) + redact.Tokens(\"\", -1, redact.Carried(response)...))"
       }
     },
     {
