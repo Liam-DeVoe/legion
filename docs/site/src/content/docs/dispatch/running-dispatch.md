@@ -602,12 +602,15 @@ What a reader sees while two servers are serving:
   within three seconds, whether or not it has anything to send, and gives the publishing up two
   seconds later.
 - A server that takes over from a publishing server that froze ends that server's database
-  sessions within those six seconds, or right after it begins to publish when they leave too
-  little, so a write the frozen server had begun no longer holds back the other server's writes
-  of the same issue. If the frozen server runs again, a request it was serving, through the API
-  or a document's socket, answers `503 DATABASE_SESSION_ENDED`, to be made again, and the server
-  stands by. A server that does not publish and freezes in the middle of a write still holds
-  back the writes of that issue until Postgres ends its connection.
+  sessions before it begins to publish, within those six seconds, so a write the frozen server
+  had begun no longer holds back the other server's writes of the same issue. When the database
+  does not answer that in time, the server logs `late take-over of the publisher hold` with its
+  cause, begins to publish at once and ends the sessions within five seconds more. If the frozen
+  server runs again, a request it was serving, through the API or a document's socket, answers
+  `503 DATABASE_SESSION_ENDED`, to be made again, and the server stands by; its sign-in,
+  `/auth/whoami`, logout and GitHub requests answer `500` then. A server that does not publish
+  and freezes in the middle of a write still holds back the writes of that issue until Postgres
+  ends its connection.
 - Two people on one document see each other's typing, cursors and presence, whichever server each
   one is on. Each server tells the others through Postgres, so this works while the message bus
   is down. A read never returns text older than what is stored. An agent's edit sees what a

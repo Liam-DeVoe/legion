@@ -844,11 +844,18 @@ func ConnectedWithin(client interface{ Connected() bool }, bound time.Duration) 
 
 // connectionReadBound bounds each read of a connection's status that a publish window and
 // ensureConnWithContext make before they decide (readConnection). nats.go reads the status under
-// its lock of the connection, which it holds for microseconds around each write, and across each
-// reconnect attempt's dial and handshake, up to connectTimeout. A read held longer than this
-// bound is held by such an attempt, and so reads as not connected, which it is: a send then
-// answers at once and a probe waits out its own timeout, rather than either waiting out an
-// attempt through a path a silent cut left dead.
+// its lock of the connection, and holds that lock across two waits a read then sits behind: each
+// reconnect attempt's dial and handshake, up to connectTimeout, and each write of its buffered
+// output to the socket (nats.go's flusher), which takes microseconds while the socket accepts the
+// bytes and lasts as long as the write does when it does not, bounded only by nats.go's flusher
+// timeout of a minute. A 16 MiB burst through a link of 64 KiB/s held it 19 s under nats.go
+// v1.53.1, whose flusher holds the lock as v1.55.0's does, while the connection stayed CONNECTED
+// and never reconnected. So a read that has not answered within this bound is
+// "not read", and says only that one of the two holds the lock: the connection is being
+// reconnected, or a write to it is stuck. Either way a send made now would wait as long, so the
+// window takes the connection as not connected: a send answers ErrUnavailable at once and a
+// probe waits out its own timeout, rather than either waiting on the lock. On a link that is
+// only slow, that refuses a send whose connection is still up.
 const connectionReadBound = 250 * time.Millisecond
 
 // connectionState is what readConnection reads of a connection: its status and how often it has

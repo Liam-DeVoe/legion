@@ -846,25 +846,27 @@ const (
 	// new publisher does after it to firstBatchWithin.
 	takeOverWithin = 10 * time.Second
 	// standbyTakesWithin is the requirement: whatever stopped the publisher - a kill, a freeze, a
-	// cut from NATS - a standby becomes the publisher within six seconds of it. Every row holds to
-	// it the moment the standby's outbox logs that it took the publisher hold, which it writes
-	// right after it begins to publish (outbox's publish), and the kill, freeze and slow rows also
-	// the take of the hold itself, on the database's clock. After a kill or a freeze the hold
-	// lapses 5 s after the publisher's last renewal (outbox.publisherHoldOptions) and the other
-	// process takes it and ends the stopped process's sessions within the next second; after a loss
-	// of NATS, found at most 3 s in when the connection goes silent (bus.SilentCutFoundWithin),
-	// the publisher gives the hold up 2 s later (the outbox's natsLossGrace) and the other process
+	// cut from NATS - a standby becomes the publisher within six seconds of it. Every row that
+	// writes while the hold moves holds to it the start of the standby's first batch, the moment
+	// it begins to publish: the batch starts right after the standby stores the hold and logs its
+	// took line, which come after its take and, when the take replaced a lapsed row, after it
+	// ended the stopped process's sessions or gave up on them at the take-over's budget
+	// (outbox's tryHold and publish). The kill, freeze and slow rows also hold to it the take of
+	// the hold itself, on the database's clock. After a kill or a freeze the hold lapses 5 s
+	// after the publisher's last renewal (outbox.publisherHoldOptions) and the other process
+	// takes it and ends the stopped process's sessions within the next second; after a loss of
+	// NATS, found at most 3 s in when the connection goes silent (bus.SilentCutFoundWithin), the
+	// publisher gives the hold up 2 s later (the outbox's natsLossGrace) and the other process
 	// takes it at once.
 	standbyTakesWithin = 6 * time.Second
-	// firstBatchWithin bounds what the new publisher does once it publishes, counted from the same
-	// stop: it logs its first batch, and a session takes a comment written since the stop, each
-	// within it. It is the sum of the bounds of what may run in between, each from the outbox:
-	// the six seconds to become the publisher (standbyTakesWithin); the end of the stopped
-	// process's sessions when the take left it too little of them, under recordTimeout (5 s); a
-	// role forward of the batch, which waits up to roleForwardAckTimeout (5 s) for the stream's
-	// acknowledgement; and the batch's record, under recordTimeout again (5 s). The batch's read
-	// and its other sends have no bound of their own beyond these, and take milliseconds.
-	firstBatchWithin = standbyTakesWithin + 5*time.Second + 5*time.Second + 5*time.Second
+	// firstBatchWithin bounds what the new publisher's first batch does once it has started,
+	// counted from the same stop: the batch's line, which it logs as it ends, and a session taking
+	// a comment written since the stop, each within it. It is the sum of the bounds of what may
+	// run in between, each from the outbox: the six seconds to the batch's start
+	// (standbyTakesWithin); a role forward of the batch, which waits up to roleForwardAckTimeout
+	// (5 s) for the stream's acknowledgement; and the batch's record, under recordTimeout (5 s).
+	// The batch's other sends have no bound of their own beyond these, and take milliseconds.
+	firstBatchWithin = standbyTakesWithin + 5*time.Second + 5*time.Second
 	// outboxDeliveryWithin bounds the wait for what a row wrote to reach every session it is
 	// addressed to.
 	outboxDeliveryWithin = 60 * time.Second
@@ -1055,7 +1057,9 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 		// (dispatch://INFRA-1568, job 42346322118). A binary that stops writing one of them is a
 		// regression, and it is caught here rather than left to turn into a /healthz
 		// disagreement whose reader has to work out where it came from.
-		line.started = moment("started", line.message == tookHold)
+		// A sent batch line dates the batch's start too, the moment the rows hold a take-over to
+		// (requireTakeOver), so it must carry it as well.
+		line.started = moment("started", line.message == tookHold || line.message == sentBatch)
 		line.stopped = moment("stopped", ends)
 		line.stoppedBy = moment("stopped_by", ends)
 		lines = append(lines, line)
@@ -1468,11 +1472,11 @@ func (s *outboxScene) framesSince(at time.Time) map[*testSession][]sessionFrame 
 }
 
 // requireTakeOver waits for p to take the publisher hold at or after since, then to log its first
-// batch, and for a session to take a comment written since since. It requires p to have become the
-// publisher within standbyTakesWithin of since - its took line is written right after its hold is
-// stored (outbox's publish), so the line's time, plus the millisecond slog's text handler
-// truncates it to, is at or after that moment - and the batch and the comment each within
-// firstBatchWithin of since. Every row holds a take-over to this one rule.
+// batch, and for a session to take a comment written since since. It requires p's first batch to
+// have started within standbyTakesWithin of since: the batch's start is the moment p begins to
+// publish, and the line's started, plus the millisecond slog's text handler truncates it to, is at
+// or after it. It requires the batch's line and the comment each within firstBatchWithin of since.
+// Every row that writes while the hold moves holds a take-over to this one rule.
 func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since time.Time, what string) {
 	t.Helper()
 	took := p.waitForOutboxLine(t, tookHold, since, 2*takeOverWithin)
@@ -1483,14 +1487,15 @@ func (s *outboxScene) requireTakeOver(t *testing.T, p *dispatchProcess, since ti
 		arrived, ok = s.firstArrivalSince(since)
 		return ok
 	})
-	t.Logf("after %s, the other process took the publisher hold in %v and logged its first batch in %v, and a session took a comment written since in %v",
-		what, took.at.Sub(since).Round(time.Millisecond), batch.at.Sub(since).Round(time.Millisecond), arrived.Sub(since).Round(time.Millisecond))
+	t.Logf("after %s, the other process took the publisher hold in %v, started its first batch in %v and logged it in %v, and a session took a comment written since in %v",
+		what, took.at.Sub(since).Round(time.Millisecond), batch.started.Sub(since).Round(time.Millisecond),
+		batch.at.Sub(since).Round(time.Millisecond), arrived.Sub(since).Round(time.Millisecond))
 	for _, step := range []struct {
 		what   string
 		at     time.Time
 		within time.Duration
 	}{
-		{"the other process became the publisher", took.at.Add(time.Millisecond), standbyTakesWithin},
+		{"the other process started its first batch", batch.started.Add(time.Millisecond), standbyTakesWithin},
 		{"the other process logged its first batch", batch.at, firstBatchWithin},
 		{"a session took a comment written since", arrived, firstBatchWithin},
 	} {
@@ -2251,6 +2256,9 @@ func TestAPublisherCutFromNATSHandsOverWithin6Seconds(t *testing.T) {
 		reads, unanswered, slowest := health()
 		t.Logf("after its idle NATS connection went silent, the publisher released the hold in %v and the other process took it in %v; the publisher's /healthz answered %d of %d reads meanwhile, the slowest in %v",
 			released.at.Sub(frozen).Round(time.Millisecond), took.at.Sub(frozen).Round(time.Millisecond), reads-unanswered, reads, slowest.Round(time.Millisecond))
+		// Nothing is written while the hold moves, so no batch dates the start of publishing
+		// here. The other process takes a hold the publisher released, which replaces no row and
+		// so ends no session, and its took line, written as it stores the hold, is that start.
 		if after := took.at.Add(time.Millisecond).Sub(frozen); after > standbyTakesWithin {
 			t.Errorf("the other process became the publisher %v after the idle publisher's NATS connection went silent, past the %v bound", after.Round(time.Millisecond), standbyTakesWithin)
 		}
@@ -2473,11 +2481,19 @@ func stopInsideATransaction(t *testing.T, scene *outboxScene, writes *holdWrites
 		t.Fatalf("read the database's clock after the signal: %v", err)
 	}
 	held.letGo()
-	// The watcher: seen is the last moment the backend was read live, gone the first it was read
-	// gone, each read issued from the stop on, so neither waits on the rest of the row.
+	// The watcher: seen is the last moment the backend was read live, the moment that read was
+	// issued, and gone the moment the first read that found it gone answered, each read issued
+	// from the stop on, so neither waits on the rest of the row. The backend ended between the two:
+	// after seen, since the read that found it live ran after it was issued, and by gone, since the
+	// read that found it gone ran before it answered. gone is the bound tookOver holds to the six
+	// seconds, so a read that waited for a connection or for the database cannot date the end
+	// earlier than it was seen.
 	type backendEnd struct {
-		seen, gone time.Time
-		err        error
+		// goneIssued is when the read that found the backend gone was issued: the moment a
+		// watcher that dated the end by the read's issue would hold to the bound, logged beside
+		// gone so a reader sees how much earlier that was.
+		seen, gone, goneIssued time.Time
+		err                    error
 	}
 	ending := make(chan backendEnd, 1)
 	go func() {
@@ -2490,7 +2506,7 @@ func stopInsideATransaction(t *testing.T, scene *outboxScene, writes *holdWrites
 				break
 			}
 			if !live {
-				end.gone = issued
+				end.gone, end.goneIssued = time.Now(), issued
 				break
 			}
 			end.seen = issued
@@ -2556,8 +2572,8 @@ func stopInsideATransaction(t *testing.T, scene *outboxScene, writes *holdWrites
 				holding, err := readBackend(pool, writer, ownerKey)
 				t.Fatalf("the stopped publisher's backend %d still holds %s %v after the stop: %s (%v)", writer, ownerKey, end.seen.Sub(stopped).Round(time.Millisecond), holding, err)
 			}
-			t.Logf("the stopped publisher's backend %d, and %s with it, ended %v to %v after the stop", writer, ownerKey,
-				end.seen.Sub(stopped).Round(time.Millisecond), end.gone.Sub(stopped).Round(time.Millisecond))
+			t.Logf("the stopped publisher's backend %d, and %s with it, ended %v to %v after the stop (the read that found it gone was issued %v after the stop)", writer, ownerKey,
+				end.seen.Sub(stopped).Round(time.Millisecond), end.gone.Sub(stopped).Round(time.Millisecond), end.goneIssued.Sub(stopped).Round(time.Millisecond))
 			if after := end.gone.Sub(stopped); after > standbyTakesWithin {
 				t.Errorf("the stopped publisher's backend held %s until %v after the stop, past the %v bound: every write of %s through the other process waited on it", ownerKey, after.Round(time.Millisecond), standbyTakesWithin, issue)
 			}
