@@ -1,0 +1,5 @@
+kind: Fixed
+body: The release of an issue pod whose claims have all stopped no longer deletes the pod when an operator suspends one of its claims after the release is queued. The teardown reads the operator's suspension again, keeps the pod, and records the hold as `unowned_operator_suspended`.
+time: 2026-11-20T06:49:45.642039305Z
+custom:
+    Issue: pr4589
