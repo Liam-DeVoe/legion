@@ -434,16 +434,7 @@ function eventHead(event: DispatchEvent): string | undefined {
         ? `${head} · forced, the near-copy check did not answer`
         : `${head} · forced past ${forced.past.join(", ")}`;
     }
-    case "issue.updated": {
-      // The fields the write changed, in the order its `changed` list names them, with the
-      // status written beside its own name: a write of `advances` alone reads `advances`, not
-      // the status it left as it was, and the controller finds a park off the lines that name
-      // one. An empty list changed nothing, so its line names nothing. A Dispatch older than the
-      // list writes none, and its line names the status, as every update's line used to.
-      const { changed, status } = event.payload;
-      if (changed === undefined) return `status ${status}`;
-      return changed.map((field) => (field === "status" ? `status ${status}` : field)).join(", ");
-    }
+    case "issue.updated":
     case "issue.closed":
       return `status ${event.payload.status}`;
     default:
