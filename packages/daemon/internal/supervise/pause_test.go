@@ -244,7 +244,7 @@ func TestAPauseHoldOverAWorkingClaimSurvivesAStartAndStopsItAtTheTurnsEnd(t *tes
 // k1 of dispatch://INFRA-3759, role D). The worker's plugin is at TaskTakeContract (currentPlugin),
 // whose report alone finishes a take's task: an older plugin's end frame finishes it, and the hold
 // then runs at the turn's end with nothing to wait for.
-func TestAPauseHoldWaitsForTheTurnsResultAndKeepsATaskAProviderRefused(t *testing.T) {
+func TestAPauseHoldWaitsForTheTurnsReportAndKeepsATaskAProviderRefused(t *testing.T) {
 	h, flag, stops := pauseHarness(t, queuedClaim(), currentPlugin)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
@@ -410,10 +410,10 @@ func TestTheControllersLaunchRunsWhileTheProjectIsPaused(t *testing.T) {
 	stops.wantStops(t)
 }
 
-// No task leaves for a role but the controller while the project is paused (decision 8): the
-// task waits pending and unsent. The resume's event sends it (decision 22), once the flag is
-// cleared.
-func TestNoTaskIsSentWhilePausedButTheControllersAndTheResumeSendsIt(t *testing.T) {
+// No task is taken by a role but the controller while the project is paused (decision 8): the
+// task waits pending, its take refused. The resume's event writes its value again (decision 22),
+// once the flag is cleared, and the worker takes it.
+func TestNoTaskIsTakenWhilePausedButTheControllersAndTheResumeOffersIt(t *testing.T) {
 	t.Run("a phase worker's task waits for the resume", func(t *testing.T) {
 		h, flag, _ := pauseHarness(t, queuedClaim())
 		h.reach(StateReady)
@@ -423,7 +423,7 @@ func TestNoTaskIsSentWhilePausedButTheControllersAndTheResumeSendsIt(t *testing.
 
 		h.wantPrompts(0)
 		if p := h.pending(); !p.ConfirmedAt.IsZero() || p.Task != "implement the plan" {
-			t.Fatalf("the claim holds %+v, want the task pending and unsent", p)
+			t.Fatalf("the claim holds %+v, want the task pending and untaken", p)
 		}
 		h.must(IssueTurnEnded{Claim: h.token})
 		h.wantPrompts(0)
@@ -602,13 +602,13 @@ func TestAHoldWhosePauseEndedHoldsNothingBack(t *testing.T) {
 		stops.wantStops(t)
 	})
 
-	t.Run("a task is sent", func(t *testing.T) {
+	t.Run("a task is taken", func(t *testing.T) {
 		h, stops := heldAtReady(t)
 
 		h.must(RequestDeliver{Claim: h.token, Task: "address the review"})
 
 		if prompts := h.wantPrompts(1); prompts[0].Message != "address the review" {
-			t.Fatalf("the claim was sent %q, want the task delivered", prompts[0].Message)
+			t.Fatalf("the claim's worker took %q, want the task", prompts[0].Message)
 		}
 		if _, held := h.heldPause(); held {
 			t.Fatal("the hold of the ended pause is still held")
@@ -926,101 +926,100 @@ func TestAFailedPauseStopIsWrittenAgainWithThePausesRecords(t *testing.T) {
 	})
 }
 
-// The writes that settle no owed write when they land — the queueing of a task — leave a pause's
-// stop owed: the claim row they write carries nothing of the pause, so the next repair writes the
-// stop transaction, with the delivery they wrote and a launch owed for it. The stop is owed here
-// as a daemon whose stop failed would hold it, on a claim that runs: every write of it while it
-// is owed goes through the stop transaction, which keeps failing until the test lets it land.
-//
-// A provider error's take-back and the ladder's write of it settle no mark either, but in the
-// take they come from the turn-outcome report, whose own write of the claim comes first
-// (turnOutcome's persist) and settles the mark: the report's write is the stop's transaction. So
-// while that transaction fails the report is refused, marked unapplied, and moves nothing of the
-// task: no write of the claim lands without the pause's records. The producer's report sent
-// again, once the transaction lands, lands the stop at its decision's repair, with the task still
-// taken, and then takes the task back to the ladder.
+// owePauseStop leaves h's machine owing pause 7's stop, as a daemon whose stop transaction failed
+// holds it (owedClaimWrite.stops).
+func owePauseStop(h *harness) {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	h.m.owedWrite = &owedClaimWrite{stops: []PauseStop{{Pause: 7}}}
+}
+
+// A write that settles no owed write when it lands — the queueing of a task, which writes the
+// claim beside its delivery through the plain call (putClaimAndDelivery) — leaves a pause's stop
+// owed: the claim row it writes carries nothing of the pause, so the next repair writes the stop
+// transaction, with the delivery it wrote and a launch owed for it. The stop is owed here as a
+// daemon whose stop failed would hold it, on a claim that runs: every write of it while it is
+// owed that settles the mark goes through the stop transaction, which keeps failing until the
+// test lets it land.
 func TestAWriteThatSettlesNoMarkLeavesAPauseStopOwed(t *testing.T) {
-	owe := func(h *harness) {
-		h.m.mu.Lock()
-		defer h.m.mu.Unlock()
-		h.m.owedWrite = &owedClaimWrite{stops: []PauseStop{{Pause: 7}}}
+	h, flag, stops := pauseHarness(t, queuedClaim())
+	h.reach(StateIdle)
+	flag.set(7)
+	owePauseStop(h)
+	stops.failNext(100, brokenConnection())
+
+	h.must(RequestDeliver{Claim: h.token, Task: "review the pull request", ID: "row-9", Row: 9})
+
+	if stored := h.store.load(h.token); !slices.Contains(stored.DeliveredRows, 9) || stored.Pending == nil {
+		t.Fatalf("the stored claim is %+v, want the task and its row written", stored)
+	}
+	if owed := h.owedStopsNow(); !slices.Equal(owed, []PauseStop{{Pause: 7}}) {
+		t.Fatalf("the machine owes %+v after the queue's write, want pause 7's stop still owed", owed)
 	}
 
-	t.Run("a task queued", func(t *testing.T) {
-		h, flag, stops := pauseHarness(t, queuedClaim())
-		h.reach(StateIdle)
-		flag.set(7)
-		owe(h)
-		stops.failNext(100, brokenConnection())
+	stops.failNext(0, nil)
+	h.must(IssueTurnEnded{Claim: h.token})
 
-		h.must(RequestDeliver{Claim: h.token, Task: "review the pull request", ID: "row-9", Row: 9})
+	calls := stops.made()
+	last := calls[len(calls)-1]
+	if !last.landed || last.stop != (PauseStop{Pause: 7, LaunchOwed: true}) || last.claim.Pending == nil || last.claim.Pending.ID != "row-9" {
+		t.Fatalf("the repair's stop was %+v landed %v carrying %+v, want pause 7's with a launch owed for the task row-9",
+			last.stop, last.landed, last.claim.Pending)
+	}
+	if owed := h.owedStopsNow(); len(owed) != 0 {
+		t.Fatalf("the machine still owes %+v after the repair landed", owed)
+	}
+}
 
-		if stored := h.store.load(h.token); !slices.Contains(stored.DeliveredRows, 9) || stored.Pending == nil {
-			t.Fatalf("the stored claim is %+v, want the task and its row written", stored)
-		}
-		if owed := h.owedStopsNow(); !slices.Equal(owed, []PauseStop{{Pause: 7}}) {
-			t.Fatalf("the machine owes %+v after the queue's write, want pause 7's stop still owed", owed)
-		}
+// A provider error's report while a pause's stop is owed moves nothing of the task until the
+// stop's transaction lands. The report's own write of the claim comes first (turnOutcome's
+// persist) and is that transaction, as every write that settles the mark is while a stop is owed
+// (putStops); so is the take-back's and the ladder's write that would follow it
+// (putClaimAndPendingOwed). While the transaction fails the report is refused, marked unapplied,
+// and the take stands: no write of the claim lands without the pause's records. The producer's
+// report sent again, once the transaction lands, lands the stop at its decision's repair, with the
+// task still taken, and then takes the task back to the ladder.
+func TestAProviderErrorsReportWrittenThroughAFailingPauseStopMovesNothingUntilItLands(t *testing.T) {
+	h, flag, stops := pauseHarness(t, queuedClaim(), currentPlugin)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
+	h.must(StreamTurnStart{Claim: h.token})
+	flag.set(7)
+	owePauseStop(h)
+	stops.failNext(100, brokenConnection())
+	task, number := h.pending().ID, h.pending().Number
+	refused := &ProviderError{Status: 529, Message: "overloaded_error", Retryable: true}
 
-		stops.failNext(0, nil)
-		h.must(IssueTurnEnded{Claim: h.token})
+	_ = h.handleQuiet(StreamTurnEnd{Claim: h.token}) // its own claim write goes through the failing stop
+	if err := h.reportTurn(number, refused); err == nil {
+		t.Fatal("the provider error's report whose write went through the failing stop returned no error")
+	}
 
-		calls := stops.made()
-		last := calls[len(calls)-1]
-		if !last.landed || last.stop != (PauseStop{Pause: 7, LaunchOwed: true}) || last.claim.Pending == nil || last.claim.Pending.ID != "row-9" {
-			t.Fatalf("the repair's stop was %+v landed %v carrying %+v, want pause 7's with a launch owed for the task row-9",
-				last.stop, last.landed, last.claim.Pending)
-		}
-		if owed := h.owedStopsNow(); len(owed) != 0 {
-			t.Fatalf("the machine still owes %+v after the repair landed", owed)
-		}
-	})
+	stored, held := h.store.delivery(h.token)
+	if !held || stored.ID != task || stored.ProviderErrorRetries != 0 || stored.ConfirmedAt.IsZero() {
+		t.Fatalf("the stored task is %+v (held %v), want the take of %s standing: the refused report moved nothing", stored, held, task)
+	}
+	if owed := h.owedStopsNow(); !slices.Equal(owed, []PauseStop{{Pause: 7}}) {
+		t.Fatalf("the machine owes %+v after the refused report, want pause 7's stop still owed", owed)
+	}
 
-	t.Run("a provider error's take-back and its ladder", func(t *testing.T) {
-		h, flag, stops := pauseHarness(t, queuedClaim(), currentPlugin)
-		h.reach(StateReady)
-		h.must(RequestDeliver{Claim: h.token, Task: providerErrorTaskText})
-		h.must(StreamTurnStart{Claim: h.token})
-		flag.set(7)
-		owe(h)
-		stops.failNext(100, brokenConnection())
-		task, number := h.pending().ID, h.pending().Number
-		refused := &ProviderError{Status: 529, Message: "overloaded_error", Retryable: true}
+	stops.failNext(0, nil)
+	h.repeatReport(RequestTurnOutcome{Claim: h.token, Generation: h.generation(),
+		Sequence: h.worker.sequence, Task: number, ProviderError: refused})
 
-		_ = h.handleQuiet(StreamTurnEnd{Claim: h.token}) // its own claim write goes through the failing stop
-		if err := h.reportTurn(number, refused); err == nil {
-			t.Fatal("the provider error's report whose write went through the failing stop returned no error")
-		}
-
-		stored, held := h.store.delivery(h.token)
-		if !held || stored.ID != task || stored.ProviderErrorRetries != 0 || stored.ConfirmedAt.IsZero() {
-			t.Fatalf("the stored task is %+v (held %v), want the take of %s standing: the refused report moved nothing", stored, held, task)
-		}
-		if owed := h.owedStopsNow(); !slices.Equal(owed, []PauseStop{{Pause: 7}}) {
-			t.Fatalf("the machine owes %+v after the refused report, want pause 7's stop still owed", owed)
-		}
-
-		stops.failNext(0, nil)
-		if err := h.m.Handle(h.ctx, RequestTurnOutcome{Claim: h.token, Generation: h.generation(),
-			Sequence: h.worker.sequence, Task: number, ProviderError: refused}); err != nil {
-			t.Fatalf("the producer's report sent again = %v", err)
-		}
-		h.m.Wait()
-
-		calls := stops.made()
-		last := calls[len(calls)-1]
-		if !last.landed || last.stop.Pause != 7 || last.claim.Pending == nil || last.claim.Pending.ID != task {
-			t.Fatalf("the repair's stop was %+v landed %v carrying %+v, want pause 7's carrying the task %s",
-				last.stop, last.landed, last.claim.Pending, task)
-		}
-		if owed := h.owedStopsNow(); len(owed) != 0 {
-			t.Fatalf("the machine still owes %+v after the repair landed", owed)
-		}
-		stored, held = h.store.delivery(h.token)
-		if !held || stored.ProviderErrorRetries != 1 || !stored.ConfirmedAt.IsZero() {
-			t.Fatalf("the stored task is %+v (held %v), want it taken back and counted one send", stored, held)
-		}
-	})
+	calls := stops.made()
+	last := calls[len(calls)-1]
+	if !last.landed || last.stop.Pause != 7 || last.claim.Pending == nil || last.claim.Pending.ID != task {
+		t.Fatalf("the repair's stop was %+v landed %v carrying %+v, want pause 7's carrying the task %s",
+			last.stop, last.landed, last.claim.Pending, task)
+	}
+	if owed := h.owedStopsNow(); len(owed) != 0 {
+		t.Fatalf("the machine still owes %+v after the repair landed", owed)
+	}
+	stored, held = h.store.delivery(h.token)
+	if !held || stored.ProviderErrorRetries != 1 || !stored.ConfirmedAt.IsZero() {
+		t.Fatalf("the stored task is %+v (held %v), want it taken back and counted one send", stored, held)
+	}
 }
 
 // A resume that happens while a stop's runtime call runs — the flag cleared and the resume's

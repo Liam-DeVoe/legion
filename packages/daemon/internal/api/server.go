@@ -1013,7 +1013,7 @@ type stateNarrowing struct {
 // word inside such a field: supervise.TaskTakeContract's never_reconnected row serves
 // never_registered in `failure.cause` and `pendingCause`, two keys recordFieldsContract's row drops
 // whole, so a caller below 75 is served neither key whichever runs first, and a caller from 75 to
-// supervise.TaskTakeContract-1 (186) both with the older word. One that puts a key back, or
+// supervise.TaskTakeContract-1 both with the older word. One that puts a key back, or
 // reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
 // kept beyond that so a reader of this table and a reader of version.go walk the contracts the
 // same way.

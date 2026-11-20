@@ -69,12 +69,15 @@ import (
 //     written text: the daemon compacts no Claude Code claim (internal/api's compact refuses it
 //     CLAIM_NOT_ON_OMP), and the bridge serves no abort (fromDaemon). Claude Code itself may: a
 //     task's turn that ends with no echo of the task's own text — an Envoy delivery's echo in that
-//     turn is none — is a text Claude Code dropped, as a step's result with no echo of the
-//     delivery it carried is a delivery it dropped (errNotTaken). That turn is reported naming no
-//     task (result), which puts the take back to awaiting its turn on the daemon (the plan's
-//     decision 8); nothing is held finished, and the number is taken again at its value's next
-//     revision, whose accepted text is written once, at idle, as Oh My Pi's take hands a text
-//     again after its host dropped one (packages/pi-shared/src/task-take.ts, dropped). A Claude
+//     turn is none — and that the provider did not fail is a text Claude Code dropped, as a step's
+//     result with no echo of the delivery it carried is a delivery it dropped (errNotTaken). That
+//     turn is reported naming no task (result), which puts the take back to awaiting its turn on
+//     the daemon (the plan's decision 8); nothing is held finished, and the number is taken again
+//     at its value's next revision, whose accepted text is written once, at idle, as Oh My Pi's
+//     take hands a text again after its host dropped one (packages/pi-shared/src/task-take.ts,
+//     hostDropped). A turn of the task the provider failed is reported naming the number with its
+//     provider error whether or not the echo came, so the daemon's provider-error ladder takes
+//     the task back and gives it again after its wait. A Claude
 //     Code that dropped every text written to it would go round that loop uncharged — the
 //     put-back, the text written again, and a turn of no cause each time, every turn's start and
 //     end resetting R5's count — which the plan states and leaves open: nothing measured says
@@ -96,10 +99,8 @@ import (
 //
 // A seen report or a take the daemon gave no answer to is sent again (daemonLink.untilAnswered)
 // until the daemon answers it or a newer value replaces it (replace): every failure
-// daemonLink.unanswered names, which is any failure of an attempt that got no status, a
-// connection lost before its answer was read whole, and a proxy's uncoded 502, 503 or 504. Such a
-// re-send is the same ask, not a second one, and the daemon answers a take repeated for a number
-// it accepted with the same text.
+// daemonLink.unanswered names. Such a re-send is the same ask, not a second one, and the daemon
+// answers a take repeated for a number it accepted with the same text.
 
 // The task routes the bridge calls.
 const (
@@ -363,7 +364,7 @@ func (b *bridge) takePending() bool { return b.unasked() || b.asking != nil || b
 func (b *bridge) startTask(number uint64, text string) {
 	b.log.Printf("task %d starts a turn", number)
 	b.startRun(text, nil)
-	b.runTask, b.runText = number, text
+	b.run = taskRun{task: number, text: text}
 }
 
 // runEnded takes the end of a turn, the task's turn when task is not 0: one the provider did not

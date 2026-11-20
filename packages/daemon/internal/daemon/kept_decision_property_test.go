@@ -2562,7 +2562,7 @@ func (r *keptRun) turnEnabled(tree *keptTree) bool {
 	if pending == nil {
 		return false
 	}
-	if !pending.ConfirmedAt.IsZero() && !pending.TurnStarted {
+	if takeAwaitsTurn(pending) {
 		return true
 	}
 	return held.State == supervise.StateWorking && !pending.ConfirmedAt.IsZero()
@@ -2594,7 +2594,7 @@ func (r *keptRun) turn(tree *keptTree) {
 func (r *keptRun) endTurn(tree *keptTree, machine *supervise.Machine) {
 	pending := machine.Claim().Pending
 	r.handle(machine, supervise.StreamTurnEnd{Claim: tree.token})
-	if pending != nil && !pending.ConfirmedAt.IsZero() && pending.TurnStarted {
+	if takesTurnStarted(pending) {
 		r.handle(machine, supervise.RequestTurnOutcome{Claim: tree.token, Generation: machine.Claim().Generation,
 			Sequence: turnSequence.Add(1), Task: pending.Number})
 	}
@@ -2726,8 +2726,7 @@ func (r *keptRun) awaitingItsTurn(tree *keptTree) bool {
 	if held.State != supervise.StateReady && held.State != supervise.StateIdle {
 		return false
 	}
-	pending := held.Pending
-	return pending != nil && !pending.ConfirmedAt.IsZero() && !pending.TurnStarted
+	return takeAwaitsTurn(held.Pending)
 }
 
 // retold is whether the machine took back a take of the delivery id whose turn had started and
@@ -3638,7 +3637,7 @@ func (r *keptRun) waitMachines() {
 	for _, tree := range r.roots {
 		if machine, found := r.sup.Machine(tree.token); found {
 			machine.Wait()
-			if p := machine.Claim().Pending; p != nil && !p.ConfirmedAt.IsZero() && p.TurnStarted {
+			if p := machine.Claim().Pending; takesTurnStarted(p) {
 				r.ran[p.ID] = true
 			}
 			r.workerTakes(tree, machine)

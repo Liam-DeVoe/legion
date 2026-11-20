@@ -479,7 +479,9 @@ export function createPhaseReminder(deps: PhaseReminderDeps): PhaseReminder {
         // worker, so a single transient refusal would leave its issue idle, and the daemon counts
         // that turn toward `launch_failure_limit`. A task's refused turn is woken by the daemon as
         // well: its provider-error wait keeps the task and writes its value again once the wait is
-        // over. By the time the timer fires the daemon has had every refusal of the run reported
+        // over, unless the provider answered a 4xx other than 401, 403, 408 and 429, which the
+        // wait cannot wait out and which fails the claim. By the time the timer fires the daemon
+        // has had every refusal of the run reported
         // (`POST /legion/v1/claims/turn-outcome`): at the limit it has failed the claim,
         // and the record check the timer runs drops the reminder, which is what stops the
         // reminding of a session the provider refuses for ever — the whole of

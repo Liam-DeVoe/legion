@@ -90,12 +90,8 @@ type Conn struct {
 
 	mu      sync.Mutex
 	pending map[string]chan shimwire.Frame
-	// stateAsks is the id of every get_state this connection wrote whose request still waits
-	// (GetState): an answer is a TurnAnswered only for one of them (stateAnswered), and an id
-	// goes once it is answered or its request ends.
-	stateAsks map[string]struct{}
-	closed    bool
-	done      chan struct{}
+	closed  bool
+	done    chan struct{}
 
 	// negotiation is a one-slot semaphore rather than a mutex so a request queued behind another
 	// goroutine's negotiation still answers to its own context.
@@ -112,7 +108,6 @@ func newConn(nc net.Conn, token claim.Token, rpcTimeout time.Duration, log *slog
 		log:         log,
 		events:      events,
 		pending:     map[string]chan shimwire.Frame{},
-		stateAsks:   map[string]struct{}{},
 		done:        make(chan struct{}),
 		negotiation: make(chan struct{}, 1),
 	}
@@ -144,21 +139,13 @@ func (c *Conn) Sequence() uint64 { return c.seq }
 // GetState asks OMP whether a turn is running. An answer that does not say is an error, never
 // "not streaming": a restart decides on it whether the turn it recorded is still running. An
 // answer that says reaches the event queue too (TurnAnswered, dispatch), while this request still
-// waits for it: its id is one of the connection's asks (stateAsks) from before the frame is
-// written until it is answered or the request ends.
+// waits for it: its id is one the connection waits on (pending) from before the frame is written
+// until it is answered or the request ends.
 func (c *Conn) GetState(ctx context.Context) (runtime.ConnState, error) {
 	if err := c.Negotiate(ctx); err != nil {
 		return runtime.ConnState{}, err
 	}
 	id := rand.Text()
-	c.mu.Lock()
-	c.stateAsks[id] = struct{}{}
-	c.mu.Unlock()
-	defer func() {
-		c.mu.Lock()
-		delete(c.stateAsks, id)
-		c.mu.Unlock()
-	}()
 	response, err := c.call(ctx, shimwire.GetState{ID: id}, id)
 	if err != nil {
 		return runtime.ConnState{}, err
@@ -522,22 +509,24 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 }
 
 // stateAnswered is a get_state answer that says whether a turn is running, read in its wire place
-// (dispatch). It is a TurnAnswered only where it answers a get_state this connection wrote and
-// still waits on (stateAsks), whose id it then spends, so the same answer read twice is one. Any
-// other answers no ask this connection is waiting on: an answer the shim replays from its backlog
-// after the connection that asked broke between the ask and the answer, a repeat, or the answer
-// to a request that ended first. It is logged and pushes nothing. A replayed answer of no turn
-// would otherwise decide a restored claim's stale-plugin relaunch ahead of the turn the replay
-// goes on to show, and cut that turn (supervise's turnAnswered); the supervisor asks again on the
-// current connection where its request ended unanswered (supervise's askRestoredTurn).
+// (dispatch). It is a TurnAnswered only where it answers a request this connection wrote and still
+// waits on (pending), which dispatch hands it to after it (answerRequest), spending the id, so the
+// same answer read twice is one. The ids are random, and dispatch reads only an answer that names
+// get_state as its command, so the answer to another request of the connection, which names that
+// request's command, is none.
+// Any other answers no ask this connection is waiting on: an answer the shim replays from its
+// backlog after the connection that asked broke between the ask and the answer, a repeat, or the
+// answer to a request that ended first. It is logged and pushes nothing. A replayed answer of no
+// turn would otherwise decide a restored claim's stale-plugin relaunch ahead of the turn the
+// replay goes on to show, and cut that turn (supervise's turnAnswered); the supervisor asks again
+// on the current connection where its request ended unanswered (supervise's askRestoredTurn).
 func (c *Conn) stateAnswered(response shimwire.Response) {
 	streaming, err := c.streamingOf(response)
 	if err != nil {
 		return
 	}
 	c.mu.Lock()
-	_, asked := c.stateAsks[response.ID]
-	delete(c.stateAsks, response.ID)
+	_, asked := c.pending[response.ID]
 	c.mu.Unlock()
 	if !asked {
 		c.log.Info("worker-stream: a get_state answer to no ask this connection waits on; it decides nothing",

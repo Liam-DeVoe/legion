@@ -93,8 +93,8 @@ type taskCostFlags struct {
 
 // addTaskCostFlags registers `legion task-cost`'s flags on flags: --from <RFC 3339>, --to <RFC
 // 3339>, --claim <token> and --take-timeout <seconds>. The command's own flag set holds them
-// (newTaskCostCommand), and parseTaskCostArgs parses a command line with them, so the command and
-// the page's examples are read by one definition.
+// (newTaskCostCommand), and the tests' parseTaskCostArgs parses a command line with them, so the
+// command and the page's examples are read by one definition.
 func addTaskCostFlags(flags *pflag.FlagSet) taskCostFlags {
 	return taskCostFlags{
 		from:  flags.String("from", "", "the window's start, an RFC 3339 time, included (required)"),
@@ -130,20 +130,4 @@ func (f taskCostFlags) Args() (supervise.TaskCostArgs, error) {
 	}
 	parsed.Claim, parsed.Take = *f.claim, time.Duration(*f.take)*time.Second
 	return parsed, nil
-}
-
-// parseTaskCostArgs parses `legion task-cost`'s arguments with the command's flags
-// (addTaskCostFlags) as the command's own parse reads them: a flag may follow a word, and a word
-// is refused. A help flag answers pflag.ErrHelp.
-func parseTaskCostArgs(args []string) (supervise.TaskCostArgs, error) {
-	flags := pflag.NewFlagSet("task-cost", pflag.ContinueOnError)
-	flags.SetOutput(io.Discard)
-	given := addTaskCostFlags(flags)
-	if err := flags.Parse(args); err != nil {
-		return supervise.TaskCostArgs{}, err
-	}
-	if flags.NArg() > 0 {
-		return supervise.TaskCostArgs{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
-	}
-	return given.Args()
 }

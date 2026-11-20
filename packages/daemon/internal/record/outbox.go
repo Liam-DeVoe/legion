@@ -974,10 +974,10 @@ const (
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
 //     raised, whichever is later, counted from no earlier than the moment the wake pacing let
-//     out the launch of the architect that the latest pause held, and, once a turn of the
-//     architect has confirmed a task of that entry, than the moment it first did. While no turn
-//     has confirmed one, the pacing's queue counts against the bound, and a healthy architect
-//     confirms its entry's task long before the bound.
+//     out the launch of the architect that the latest pause held, and, once a take of a task of
+//     that entry by the architect has been accepted, than the moment the first was. While none
+//     has been, the pacing's queue counts against the bound, and a healthy architect takes its
+//     entry's task long before the bound.
 type ArchitectStallArm string
 
 const (

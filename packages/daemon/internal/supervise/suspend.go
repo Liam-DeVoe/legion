@@ -326,21 +326,22 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 	if m.held == nil {
 		return nil
 	}
+	var why, stop string
 	switch {
 	case m.claim.State == StateWorking:
 		m.log.Warn("supervise: the agent's turn has not ended; suspending it mid-turn", "by", m.held.By, "deadline", m.held.Deadline)
-		if err := m.interrupted(ctx, "the held suspension's deadline ended the task's turn", ordinaryEnd); err != nil {
-			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
-		}
+		why, stop = "the held suspension's deadline ended the task's turn", "its forced stop"
 	case m.reportSettles():
 		m.log.Warn(reportMissedLine, "task", m.claim.Pending.Number, "by", m.held.By, "deadline", m.held.Deadline)
-		if err := m.interrupted(ctx, "the held suspension's deadline came before the report of the task's turn", ordinaryEnd); err != nil {
-			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("take back the task of %s before its stop: %w", m.claim.Token, err)
-		}
+		why, stop = "the held suspension's deadline came before the report of the task's turn", "its stop"
 	default:
 		m.log.Info("supervise: trying the held suspension's stop again")
+	}
+	if why != "" {
+		if err := m.interrupted(ctx, why, ordinaryEnd); err != nil {
+			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
+			return fmt.Errorf("take back the task of %s before %s: %w", m.claim.Token, stop, err)
+		}
 	}
 	return m.suspendHeld(ctx)
 }

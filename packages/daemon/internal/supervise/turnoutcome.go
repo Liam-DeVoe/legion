@@ -74,10 +74,7 @@ func (o TurnOutcome) key() TurnOutcomeKey {
 
 // compareKeys orders two keys as compareTurnOutcomes orders the reports kept under them.
 func compareKeys(a, b TurnOutcomeKey) int {
-	if by := cmp.Compare(a.Generation, b.Generation); by != 0 {
-		return by
-	}
-	return cmp.Compare(a.Sequence, b.Sequence)
+	return cmp.Or(cmp.Compare(a.Generation, b.Generation), cmp.Compare(a.Sequence, b.Sequence))
 }
 
 // compareTurnOutcomes orders reports as their turns ran: by generation, and within a generation by
@@ -120,7 +117,6 @@ func (m *Machine) turnOutcomeWindow() int { return m.deps.Limits.LaunchFailures 
 // until it is sent again and applied, however old: dropped, it would fall under the watermark,
 // and the report sent again, which is its first application, would be answered as a repeat.
 func (m *Machine) recordTurnOutcome(o TurnOutcome) (repeat bool) {
-	o = boundMessage(o)
 	window, mark := m.claim.TurnOutcomes, m.turnOutcomeMark()
 	at, found := slices.BinarySearchFunc(window, o, compareTurnOutcomes)
 	if !found && mark != (TurnOutcomeKey{}) && compareKeys(o.key(), mark) <= 0 {
@@ -189,19 +185,8 @@ func (m *Machine) unappliedTurnOutcome(o TurnOutcome) {
 		window[at].Unapplied = true
 		return
 	}
-	o = boundMessage(o)
 	o.Unapplied = true
 	m.setTurnOutcomes(slices.Insert(window, at, o), mark)
-}
-
-// boundMessage is o with the provider's message cut to maxRefusalMessage runes.
-func boundMessage(o TurnOutcome) TurnOutcome {
-	if len(o.Message) > maxRefusalMessage {
-		if runes := []rune(o.Message); len(runes) > maxRefusalMessage {
-			o.Message = string(runes[:maxRefusalMessage]) + "…"
-		}
-	}
-	return o
 }
 
 // owedReport is the report whose effect on the claim's pending task the store does not hold, read
@@ -309,7 +294,7 @@ func (m *Machine) freshRun() { m.claim.TurnOutcomes = nil }
 // (TurnOutcome.Unapplied), so the producer's repeat of it still does what it says of the task.
 func turnOutcome(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(RequestTurnOutcome)
-	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Message: r.Message, Task: r.Task}
+	o := TurnOutcome{Generation: r.Generation, Sequence: r.Sequence, Message: boundRunes(r.Message, maxRefusalMessage), Task: r.Task}
 	if pe := r.ProviderError; pe != nil {
 		o.ProviderError, o.ProviderErrorStatus = true, pe.Status
 	}

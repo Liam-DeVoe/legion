@@ -6,6 +6,7 @@ package main
 // (supervise.ReadTaskCost), print every figure the page shows.
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"regexp"
@@ -130,7 +131,7 @@ func readExample(t *testing.T, example docExample, log []byte) supervise.TaskCos
 	if err != nil {
 		t.Fatalf("the page's example %q: %v", example.command, err)
 	}
-	cost, err := supervise.ReadTaskCost(strings.NewReader(string(log)), args)
+	cost, err := supervise.ReadTaskCost(bytes.NewReader(log), args)
 	if err != nil {
 		t.Fatalf("read the sample for %q: %v", example.command, err)
 	}
@@ -173,7 +174,8 @@ func figures(text string) []figure {
 // them shows, and, where every figure agrees, the text itself.
 func figureDiff(want, got string) string {
 	gave, showed := map[string]string{}, map[string]bool{}
-	for _, f := range figures(got) {
+	read := figures(got)
+	for _, f := range read {
 		gave[f.name] = f.value
 	}
 	var diff []string
@@ -186,7 +188,7 @@ func figureDiff(want, got string) string {
 			diff = append(diff, fmt.Sprintf("%s: the page shows %q, the reading gives %q", f.name, f.value, value))
 		}
 	}
-	for _, f := range figures(got) {
+	for _, f := range read {
 		if !showed[f.name] {
 			diff = append(diff, fmt.Sprintf("%s: the reading gives %q, the page shows no such figure", f.name, f.value))
 		}
@@ -262,7 +264,7 @@ func TestDocExampleTaskCost(t *testing.T) {
 			}
 			day := 24 * time.Hour
 			args.From, args.To = args.From.Add(-day), args.To.Add(-day)
-			cost, err := supervise.ReadTaskCost(strings.NewReader(string(sample)), args)
+			cost, err := supervise.ReadTaskCost(bytes.NewReader(sample), args)
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -136,11 +136,14 @@ each account instead: read access to contents, metadata, pull requests, issues, 
 commit statuses and attestations (`appauth.readPermissions`), cut down the same way. The daemon
 itself reads GitHub with the implement App too, at these moments and at no other: as the workflow
 runtime starts, which covers what arrived while the daemon was down, and a start read that finds
-GitHub's merge state `unknown` asks for the ladder below; once an agent's handoff has
+GitHub's merge state `unknown` asks for the ladder below, except for an issue in `merging` or held
+from it, whose start read is its one read; once an agent's handoff has
 been recorded, the moment the daemon next decides on that pull request's state; in the merge-state
 ladder, five reads half a minute apart, which a review round whose approval waits on GitHub asks
 for, a push to the head of an issue in `implementing` through `merging` asks for, and a push to
-the base asks for each issue standing in `testing` through `merging`; after a ladder whose five
+the base asks for each issue standing in `testing` through `merging`, except that for an issue in
+`merging` or held from it a push to the base asks for one read, with no ladder and no follow,
+since GitHub answers `unknown` for a head in the merge queue; after a ladder whose five
 reads all answered `unknown`, or a second read of a conflict whose five attempts answered no
 state, again and again with waits of one, two, four and eight minutes and then ten, until GitHub
 answers a state, the head moves or the pull request is no longer open, each

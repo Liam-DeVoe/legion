@@ -7,6 +7,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// in is LEGION-208 standing in at.
+func in(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
+
+// heldFrom is LEGION-208 held from at.
+func heldFrom(at phase.Phase) record.Issue {
+	return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
+}
+
 // The gate of the read of GitHub's merge state asks for each of two reasons, and for nothing else
 // (dispatch://INFRA-4374 R0, R4): a fact that moves the head of an issue in implementing through
 // merging, and a push to the base of an issue in testing through merging. A head move before
@@ -16,10 +24,6 @@ import (
 // the gate's: workflow's askMergeStateFor adds it, so a review in reviewing asks nothing here. The
 // daemon's start read reads GitHub itself, and the gate owes it no read in any phase.
 func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
-	in := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
-	heldFrom := func(at phase.Phase) record.Issue {
-		return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
-	}
 	for _, tc := range []struct {
 		name  string
 		issue record.Issue
@@ -66,10 +70,6 @@ func TestTheMergeStateReadGateAsksForEachReasonAlone(t *testing.T) {
 // ladder: a base push or a start read in testing through retro, and a head move in merging too. A
 // hold from merging is read as merging.
 func TestTheMergeStateReadIsOneReadInMergingForABasePushOrTheStartRead(t *testing.T) {
-	in := func(at phase.Phase) record.Issue { return record.Issue{Key: "LEGION-208", Phase: at} }
-	heldFrom := func(at phase.Phase) record.Issue {
-		return record.Issue{Key: "LEGION-208", Phase: phase.Held, Hold: &record.Hold{From: at}}
-	}
 	for _, tc := range []struct {
 		name  string
 		issue record.Issue

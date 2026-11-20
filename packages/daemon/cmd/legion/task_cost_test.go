@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,23 @@ import (
 
 // takeBound is the first bound a reading judges by when --take-timeout is not given:
 // worker_take_timeout_seconds's default.
-const takeBound = 300 * time.Second
+const takeBound = taskCostTakeTimeout * time.Second
+
+// parseTaskCostArgs parses `legion task-cost`'s arguments with the command's flags
+// (addTaskCostFlags) as the command's own parse reads them: a flag may follow a word, and a word
+// is refused. A help flag answers pflag.ErrHelp.
+func parseTaskCostArgs(args []string) (supervise.TaskCostArgs, error) {
+	flags := pflag.NewFlagSet("task-cost", pflag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	given := addTaskCostFlags(flags)
+	if err := flags.Parse(args); err != nil {
+		return supervise.TaskCostArgs{}, err
+	}
+	if flags.NArg() > 0 {
+		return supervise.TaskCostArgs{}, fmt.Errorf("unexpected argument %q", flags.Arg(0))
+	}
+	return given.Args()
+}
 
 // taskCostLog is three lines of a daemon's log, as its JSON handler writes them: a task's value
 // written, its take accepted, and its turn started.

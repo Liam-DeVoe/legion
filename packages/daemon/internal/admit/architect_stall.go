@@ -541,9 +541,9 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // moments: its admission or the moment its architect's entry was last raised, whichever is later
 // (since); the end of the project's latest pause (floor), since the pause stopped the architect,
 // which could register no step while it stood; the let-out of the launch the latest pause held
-// for its architect (letOut, the zero time for none); and, where a turn of its architect has
-// confirmed a task of that entry, the moment it first did. It answers what the record says, with
-// the moment it counted from, and "" for a root it does not read.
+// for its architect (letOut, the zero time for none); and, where a take of a task of that entry
+// by its architect has been accepted, the moment the first was. It answers what the record says,
+// with the moment it counted from, and "" for a root it does not read.
 //
 // The later of the admission and the raised entry is the issue's own decision. A root a person
 // answered after a six hour wait comes back to admitted holding the admission row it has held all
@@ -557,18 +557,19 @@ func architectClaimUnreachable(root record.Issue, row record.PhaseEntry, run rec
 // the resume's own pass admits, or one whose architect the pause stopped, would otherwise count
 // the architect's wait in that queue, about eleven minutes at ninety launches and longer in a
 // larger project, against its 90 minutes. Two moments say when that wait ended. An architect
-// that confirmed its entry before a pause, and that the pause stopped owing a launch, was let out
-// at the stuck clock of its resume of that pause (readPauseLetOuts), which the reservation of
+// that took a task of its entry before a pause, and that the pause stopped owing a launch, was let
+// out at the stuck clock of its resume of that pause (readPauseLetOuts), which the reservation of
 // that launch sets. And the claim's handshake of the entry (record.RoleClaim.Handshake) keeps
-// when a turn first confirmed a task of it, which is after the let-out of the launch that turn
-// ran in; that moment does not move at a later relaunch, since the handshake keeps the first
-// confirmation of an entry that a turn of the worker made (supervise's EntryHandshake).
+// when the first take of a task of it was accepted (supervise's EntryHandshake.confirmed, set
+// where the take is accepted), which is after the let-out of the launch whose worker made that
+// take; that moment does not move at a later relaunch, since the handshake keeps the first
+// accepted take of an entry.
 //
 // While the handshake of the row's entry and the root's run holds no confirmation, the arm counts
 // from since, the floor and the let-out alone, so the pacing's queue can feed it only then. A
-// root whose architect has not confirmed a task of its entry 90 minutes after that moment is one
-// where something other than the queue is wrong — a start that never runs, a task of no entry
-// held ahead of the entry's, an architect that took nothing — and the arm tells of it.
+// root whose architect has had no take of a task of its entry accepted 90 minutes after that
+// moment is one where something other than the queue is wrong — a start that never runs, a task
+// of no entry held ahead of the entry's, an architect that took nothing — and the arm tells of it.
 //
 // It reads a root standing at admitted and no other. A root a hand-over carried in stands in a
 // phase of the run that carried it, where its tree's work is already running under a phase
@@ -593,7 +594,7 @@ func architectSlowBeforeGate(root record.Issue, gate record.TreeGate, admittedAt
 	}
 	if held := run.Claim; held != nil && row.Entry != 0 && held.Handshake.Entry == row.Entry &&
 		held.Handshake.Generation == root.Generation && held.Handshake.ConfirmedAt.After(from) {
-		from, counted = held.Handshake.ConfirmedAt, fmt.Sprintf(" That time is counted from %s, when a turn of its architect first confirmed a task of phase entry %d.",
+		from, counted = held.Handshake.ConfirmedAt, fmt.Sprintf(" That time is counted from %s, when its architect's first take of a task of phase entry %d was accepted.",
 			held.Handshake.ConfirmedAt.UTC().Format(time.RFC3339), row.Entry)
 	}
 	if now.Sub(from) <= workflow.ArchitectGateWake {

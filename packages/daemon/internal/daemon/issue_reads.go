@@ -268,7 +268,7 @@ func (w *workflowRuntime) readIssuesAtStart(ctx context.Context) {
 // record is logged and queues nothing, as a failed start read does: the issue's next fact or
 // handoff reads it again.
 func (w *workflowRuntime) ladderAtStart(ctx context.Context, issue string) {
-	recorded, _, err := issueRecord(ctx, w.pool, w.records, issue)
+	recorded, err := w.recordedIssue(ctx, issue)
 	switch {
 	case err != nil:
 		if ctx.Err() == nil {

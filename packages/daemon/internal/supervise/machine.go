@@ -777,9 +777,10 @@ type ClaimView struct {
 func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c.Tree) }
 
 // Event is everything that reaches a machine: RuntimeObservation, StreamHello, StreamTurnStart,
-// StreamTurnEnd, IssueTurnEnded, StreamClosed, Timer, StalePlugin, PodUpdateOpen, PodUpdateEnded,
-// PodUpdateSignalled, TakeAdopted, ResumePause, and the requests. The transition table has a row
-// or a named ignore for every one in every state.
+// StreamTurnEnd, StreamTurnAnswered, StreamToolStep, StreamAnswered, IssueTurnEnded, StreamClosed,
+// Timer, StalePlugin, StallBackstop, PodUpdateOpen, PodUpdateEnded, PodUpdateSignalled,
+// TakeAdopted, CompactEnded, TaskValueRead, ResumePause, and the requests. The transition table
+// has a row or a named ignore for every one in every state.
 type Event interface{ isEvent() }
 
 // Store is the persistence a machine writes through. A claim and its pending delivery are
@@ -3603,7 +3604,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.wake = nil
 	m.askFirst = false
 	m.askTurn, m.askedAt, m.askTrigger = false, time.Time{}, ""
-	m.held, m.heldForReport, m.heldLaunch = nil, false, false
+	m.dropHeld()
 	m.staleRelaunch = nil
 	m.turnsTask, m.reportedAhead, m.rewrite = 0, aheadReport{}, valueRewrite{}
 	m.cutTurnOf = ""
@@ -3914,12 +3915,15 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // Its callers are the decisions that write both of memory's own rows: the start of an accepted
 // take's turn (startTakesTurn), a take-back that gave back a telling or a handshake's
 // confirmation with the take (takeBack, giveBackTake), a retirement that takes back a take whose
-// turn has not started (retire), settle's write of a delivery an earlier write left unsaved,
-// repair's branch for a claim that holds a pending delivery, and retireTask's write of a project
-// pause's stop it owes before the retirement. Each has a pending delivery by the time it calls,
-// which is what this reads. While a pause's stop is owed, the two rows go through that stop's
-// transaction instead (putStops, Deps.PauseStopped), the delivery carried on the claim it is
-// handed.
+// turn has not started (retire), a suspension that does the same (suspended), the ladder's step
+// after a provider error (providerErrorClears), a pause's stop that took such a take back and is
+// written as a plain claim write — no stop transaction, or a claim write already owed
+// (persistStop) — settle's write of a delivery an earlier write left unsaved, repair's branch for
+// a claim that holds a pending delivery, and retireTask's write of a project pause's stop it owes
+// before the retirement; all but the last three through the owed wrapper
+// (putClaimAndPendingOwed). Each has a pending delivery by the time it calls, which is what this
+// reads. While a pause's stop is owed, the two rows go through that stop's transaction instead
+// (putStops, Deps.PauseStopped), the delivery carried on the claim it is handed.
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if len(m.owedStops()) > 0 {
 		c, pending := m.stored(), *m.claim.Pending

@@ -1403,7 +1403,7 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
 	w.idleFixedPlugin = func(role claim.Role) bool { return noPluginInstall(cfg, role) }
 	w.idleImage = cfg.Runtime.Kubernetes.Image
-	w.outbox.backstop = releaseBackstop(cfg)
+	w.outbox.backstop = release.Backstop()
 }
 
 // replayTerminal applies the ready or failure fact of every stored claim in either state that no

@@ -907,7 +907,8 @@ export default function legionExtension(pi: PiApi): void {
   // report goes, with whether the report carries a provider error (`reportsProviderError`): a
   // task's turn reported without one is finished by that report, so the take holds the number
   // finished from here on; a take the end of the run allows is asked at once, and a text the take
-  // held for the end of this run is sent now, to start the task's own turn.
+  // held for the end of this run is sent now, to start the task's own turn, where the host is
+  // idle, and held again for the end of the run the host goes on with where it is not (`hand`).
   // The report's answer settles that mark: a 2xx finished the number in the record, so it stays,
   // and a 4xx refusal of a report that would have finished it applied nothing, so the take holds
   // the number finished no longer (`reportRefused`), and takes a newer revision of it as owed.

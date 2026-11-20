@@ -43,10 +43,10 @@ func TestInChainFindsATimeoutAnywhereInTheChain(t *testing.T) {
 }
 
 // InChain reads context.DeadlineExceeded wherever errors.Is finds it, which is what lets a caller
-// ask InChain alone whether a failure timed out: the sentinel's own Timeout answers true, so the
-// sentinel, a context's error once its deadline passed, and either of them wrapped with %w, under
-// the client's *url.Error or inside errors.Join, is a timeout to both. A cancelled context's
-// error is neither's.
+// ask InChain alone whether a failure timed out: the sentinel's own Timeout answers true, so a
+// context's error once its deadline passed, which is the sentinel itself, and the sentinel wrapped
+// with %w, under the client's *url.Error or inside errors.Join, is a timeout to both. A cancelled
+// context's error is neither's.
 func TestInChainReadsContextDeadlineExceededWhereverErrorsIsFindsIt(t *testing.T) {
 	expired, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
 	defer cancel()
@@ -57,7 +57,6 @@ func TestInChainReadsContextDeadlineExceededWhereverErrorsIsFindsIt(t *testing.T
 		err  error
 		want bool
 	}{
-		{"the sentinel", context.DeadlineExceeded, true},
 		{"a context's error once its deadline passed", expired.Err(), true},
 		{"the sentinel wrapped", fmt.Errorf("mint the token: %w", context.DeadlineExceeded), true},
 		{"the sentinel under *url.Error", &url.Error{Op: "Post", URL: "http://broker/v1/mint", Err: context.DeadlineExceeded}, true},

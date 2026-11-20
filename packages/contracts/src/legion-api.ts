@@ -1474,9 +1474,9 @@ export const LegionTaskSeenRequest = eitherCaller(taskValueFields);
 export type LegionTaskSeenRequestBody = z.output<typeof LegionTaskSeenRequest>;
 
 /** `claim.TakeRequest`, the body of `POST /legion/v1/claims/take`: the worker asking, because its
- * host is idle, to take the task its value names. A take with no answer — a refused, reset or
- * closed connection, an unreachable host or network, a connect or read timeout, a DNS failure, no
- * answer in 5 minutes, or a 502, 503 or 504 that names no `code` — is sent again unchanged, and a
+ * host is idle, to take the task its value names. A take the daemon gave no answer to — any
+ * failure that carries no HTTP status, no answer in 5 minutes included, and a 502, 503 or 504
+ * that names no `code` — is sent again unchanged (`@legion/pi-shared/daemon-client`), and a
  * take of a number already accepted and not finished is answered the same text again, before its
  * turn starts or after (contract 187). */
 export const LegionTakeRequest = eitherCaller(taskValueFields);

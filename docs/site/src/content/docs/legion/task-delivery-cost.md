@@ -34,9 +34,11 @@ kubectl -n legion logs deploy/legion-<project>-daemon -c legion | legion task-co
   So `kubectl` sends the whole log of the current container, from the start of the container.
   The command reads the lines before `<from>` only to know where each claim and each task stands at `<from>`.
   For example, take a task that the daemon wrote and the worker saw before `<from>`, and that no take reaches in the window.
-  No line in the window names that task.
-  When its first bound passes inside the window, the daemon writes a charge of the worker, `supervise: prompt failure`, but that line has no `task` attribute.
-  A reading of the window alone does not see that task.
+  No `task` attribute in the window names that task, unless its first bound passes inside the window while a hold stands over it.
+  The daemon then writes `supervise: the first bound passed while a hold stands over the task; the worker is not charged`, with the `task` attribute.
+  Without a hold, the daemon charges the worker when the first bound passes, with `supervise: prompt failure`, or `supervise: retired after prompt failures` at the limit.
+  That line names the number of the task only in the text of its `why` attribute, for example `task 3`.
+  Without the hold's line, a reading of the window alone does not see that task.
 
 - `--claim <token>` is optional.
   With it, the command counts the lines of one claim only.
@@ -227,7 +229,7 @@ So each figure that names a task names its claim too.
   - `report` is a worker's report of the task's turn, which named the task.
 
   - `end-frame` is the end of the task's turn, when no report named the task in time.
-    Only a worker whose plugin is older than the delivery by task values has its task finished this way: such a worker names no task in its report.
+    Only a worker whose plugin takes no task, a contract below 187 (`supervise.TaskTakeContract`), has its task finished this way: such a worker names no task in its report.
     A current worker's task finishes only by the report that names it.
 
 - `charges by wait` is the number of charges against the workers' prompt budget, by wait.

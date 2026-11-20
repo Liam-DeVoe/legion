@@ -1753,19 +1753,10 @@ func TestAnOperatorsDeliveryOverAParkedLaunchRunsThatLaunchNow(t *testing.T) {
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
 	h.wantPrompts(0)
-	h.wantState(StateLaunching)
-	h.wantStarts(h.token, 2)
-	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
-		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
-			resume.Previous, replaced)
-	}
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
-	}
+	h.wantParkedLaunchRan(replaced)
 	if p := h.pending(); p.Task != task || p.taken() {
 		t.Fatalf("the task is %+v, want %q untaken: it goes to the process this launch starts", p, task)
 	}
-	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 
 	h.relaunched()
 
@@ -1881,22 +1872,13 @@ func TestAnOperatorsDeliveryReplacingTheLaddersTaskRunsTheParkedLaunchNow(t *tes
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantState(StateLaunching)
-	h.wantStarts(h.token, 2)
-	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
-		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
-			resume.Previous, replaced)
-	}
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
-	}
+	h.wantParkedLaunchRan(replaced)
 	if p := h.pending(); p.Task != task || p.ID == owed.ID || p.Number == owed.Number || p.ProviderErrorRetries != 0 {
 		t.Fatalf("the task is %+v, want the operator's %q queued in place of the owed one, with a ladder of its own", p, task)
 	}
 	if _, armed := h.m.timers[TimerPromptRetry]; armed {
 		t.Error("the ladder's wait is still armed for a task the claim no longer holds")
 	}
-	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 
 	// Only the owed task was ever taken; the operator's is taken at the ready of the process this
 	// launch started.
@@ -1942,15 +1924,7 @@ func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantState(StateLaunching)
-	h.wantStarts(h.token, 2)
-	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
-		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
-			resume.Previous, replaced)
-	}
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
-	}
+	h.wantParkedLaunchRan(replaced)
 	if lines := h.logs.lines("the issue has left the phase this task was queued for; it is dropped rather than taken",
 		"task=1", "delivery=outbox:7"); len(lines) != 1 {
 		t.Fatalf("logged %v, want the take's drop line once for task 1", lines)
@@ -1961,7 +1935,6 @@ func TestAnOperatorsDeliveryOverATaskTheRecordNoLongerOwesRunsTheParkedLaunchNow
 	if p := h.pending(); p.Task != task || p.Number != 2 || p.taken() {
 		t.Fatalf("the task is %+v, want the operator's %q pending untaken as task 2 in place of the dropped one", p, task)
 	}
-	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 
 	h.relaunched()
 
@@ -2009,15 +1982,7 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	h.advance(wakePart)
 	h.must(RequestDeliver{Claim: h.token, Task: task})
 
-	h.wantState(StateLaunching)
-	h.wantStarts(h.token, 2)
-	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
-		t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
-			resume.Previous, replaced)
-	}
-	if held := h.m.View().WakeWaiting; held != nil {
-		t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
-	}
+	h.wantParkedLaunchRan(replaced)
 	if lines := h.logs.lines("supervise: the pending task's turn has run, so the operator's task takes its place",
 		fmt.Sprintf("taken=%d", ran.Number), "delivery="+ran.ID); len(lines) != 1 {
 		t.Fatalf("logged %v, want the retirement of task %d once", lines, ran.Number)
@@ -2028,7 +1993,6 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	if p := h.pending(); p.Task != task || p.Number != ran.Number+1 || p.taken() {
 		t.Fatalf("the task is %+v, want the operator's %q pending untaken as task %d in place of the one whose turn ran", p, task, ran.Number+1)
 	}
-	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 
 	h.relaunched()
 
@@ -2038,6 +2002,24 @@ func TestAnOperatorsDeliveryOverATaskWhoseTurnRanRunsTheParkedLaunchNow(t *testi
 	if sent := h.wantPrompts(2); sent[0].Number != ran.Number || sent[1].Number != ran.Number+1 {
 		t.Fatalf("the takes are %+v, want task %d once and then the operator's, task %d", sent, ran.Number, ran.Number+1)
 	}
+}
+
+// wantParkedLaunchRan holds that an operator's task ran the launch parked over the claim's process
+// where it arrived (runParkedLaunchNow): the claim is launching, its second start replaced the
+// process the gate left running, replaced, no wake waits any more, and the wake line says the
+// pacing did not decide when the launch ran.
+func (h *harness) wantParkedLaunchRan(replaced runtime.Locator) {
+	h.t.Helper()
+	h.wantState(StateLaunching)
+	h.wantStarts(h.token, 2)
+	if resume := h.wantCalls("Resume", 1)[0]; resume.Previous == nil || *resume.Previous != replaced {
+		h.t.Fatalf("the launch the operator's task ran replaced %+v, want the process the gate left running, %+v",
+			resume.Previous, replaced)
+	}
+	if held := h.m.View().WakeWaiting; held != nil {
+		h.t.Fatalf("the claim names wake %+v, want none: an operator's task waits for no turn", held)
+	}
+	h.wantWakeLine(h.token, "kind=launch", "waited=true", "waitedFor="+wakePart.String(), "paced=false")
 }
 
 // The same park over a dead process, reached by a claim that is ready and holds no task: the

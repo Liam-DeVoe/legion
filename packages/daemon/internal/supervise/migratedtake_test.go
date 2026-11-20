@@ -251,12 +251,13 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 //     working and the take's turn started, and the same follows.
 //   - A replayed start and end before an answer of no turn: the relaunch is made, and it finds
 //     the task's turn over, so the task is finished by its contract and nothing is taken back.
-//   - An answer of no turn to the ask of a connection that broke before the answer: the shim
-//     replays it on the next connection ahead of the take's agent_start, and the stream pushes it
-//     as no answer, since that connection never asked it (stream's Conn.stateAnswered). The next
-//     connection's hello asks again on that connection, the replayed start makes the claim
-//     working, and that connection's own answer of a turn holds the relaunch for the turn's end:
-//     the task is finished once.
+//   - A connection that broke between its ask and the agent's answer: the next connection's hello
+//     asks again on that connection, the replayed start makes the claim working, and that
+//     connection's own answer of a turn holds the relaunch for the turn's end: the task is
+//     finished once. The relaunch waits for the answer to the ask of the connection the hello
+//     came on. That the first connection's answer, replayed on the next ahead of the take's
+//     agent_start, reaches the machine as no answer, since that connection never asked it, is the
+//     stream's to hold (Conn.stateAnswered), and stream's conn_test is what catches it.
 //   - An ask the agent does not answer: asked again at the next sweep, and relaunched at the
 //     reconnect deadline counted from the hello, by the lane, charged nothing.
 //   - A hello whose connection closed before the daemon asked on it, from a shim that cannot
@@ -268,9 +269,7 @@ func (h *harness) wantFinishedOnceAndRelaunchedEmpty() {
 // The negative controls are the boot's relaunch made before the hello (refreshPlugin with no
 // askTurn guard) and made at the hello itself (askRestoredTurn deciding on the answer it is
 // returned): in both the relaunch reads the take as one no turn ran, and it runs before the hello
-// or before the replayed turn. The replayed answer's is that answer delivered as the stream
-// delivered it before it held an answer to its connection's own asks: the relaunch is then made
-// on it, before the replayed turn.
+// or before the replayed turn.
 func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 	t.Run("a replayed agent_start before an answer of a turn", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
@@ -312,7 +311,7 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 
 		h.wantFinishedOnceAndRelaunchedEmpty()
 	})
-	t.Run("an answer of no turn to the ask of a connection that broke, replayed on the next ahead of the turn's start", func(t *testing.T) {
+	t.Run("a connection that broke before its answer: the relaunch waits for the next connection's own answer", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
 		// The first connection breaks between the hello's ask and the agent's answer, which
 		// stays in the shim's backlog with the take's agent_start behind it.
@@ -352,16 +351,7 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 2 {
 			t.Fatalf("the asks the agent left unanswered are %q, want the hello's and the sweep's", asks)
 		}
-		h.advance(deadline - deadline/2 - time.Second)
-		h.wantCalls("Resume", 0)
-		h.advance(time.Second)
-
-		h.wantCalls("Resume", 1)
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{})
-		if cause := h.claim().PendingCause; cause != "" {
-			t.Fatalf("the relaunch is pending cause %q, want none: the lane's relaunch is charged nothing", cause)
-		}
+		h.wantRelaunchedUnchargedAtTheDeadline()
 	})
 	t.Run("a hello whose connection closed before its ask", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
@@ -376,16 +366,7 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 		if asks := h.logs.lines("supervise: the agent could not say whether it is in a turn"); len(asks) != 0 {
 			t.Fatalf("the asks made are %q, want none: no connection was there to ask on", asks)
 		}
-		h.advance(deadline - deadline/2 - time.Second)
-		h.wantCalls("Resume", 0)
-		h.advance(time.Second)
-
-		h.wantCalls("Resume", 1)
-		h.wantState(StateLaunching)
-		h.wantBudgets(Budgets{})
-		if cause := h.claim().PendingCause; cause != "" {
-			t.Fatalf("the relaunch is pending cause %q, want none: the lane's relaunch is charged nothing", cause)
-		}
+		h.wantRelaunchedUnchargedAtTheDeadline()
 	})
 	t.Run("no hello", func(t *testing.T) {
 		h := restoreStaleMigrated(t)
@@ -398,4 +379,21 @@ func TestBootRelaunchOfAStaleClaimWaitsForTheTurnOverAnswer(t *testing.T) {
 			t.Fatalf("the relaunch is pending cause %q, want %q", cause, CauseNeverReconnected)
 		}
 	})
+}
+
+// wantRelaunchedUnchargedAtTheDeadline advances the clock to the reconnect deadline counted from a
+// hello the claim's shim said half a deadline after the daemon's start, and holds that the lane
+// relaunches the claim there and not a second before, charged nothing.
+func (h *harness) wantRelaunchedUnchargedAtTheDeadline() {
+	h.t.Helper()
+	h.advance(deadline - deadline/2 - time.Second)
+	h.wantCalls("Resume", 0)
+	h.advance(time.Second)
+
+	h.wantCalls("Resume", 1)
+	h.wantState(StateLaunching)
+	h.wantBudgets(Budgets{})
+	if cause := h.claim().PendingCause; cause != "" {
+		h.t.Fatalf("the relaunch is pending cause %q, want none: the lane's relaunch is charged nothing", cause)
+	}
 }

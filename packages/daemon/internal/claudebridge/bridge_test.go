@@ -79,6 +79,9 @@ func TestMain(m *testing.M) {
 //   - "api-error-529 <text>": the same text, then the result a provider failure ends a turn with
 //     — `terminal_reason` "api_error" and `api_error_status` 529 — as the recordings carry it
 //     (testdata/api-error-529.jsonl:5);
+//   - "unechoed-api-error-529 <text>": the same, with no re-emission of the message: a provider
+//     failure that ends the turn before Claude Code re-emits it, which no recording shows or rules
+//     out;
 //   - "refusal <text>": the result a content filter's refusal ends a turn with, which is the
 //     same but names no `api_error_status` (testdata/refusal-turn.jsonl:5);
 //   - "max-turns": a result Claude Code's own turn limit ended, which is no provider failure;
@@ -173,6 +176,11 @@ func fakeClaude() int {
 		if name, ok := strings.CutPrefix(body, "drop "); ok {
 			released(name)
 			result("success", false)
+			continue
+		}
+		if rest, ok := strings.CutPrefix(body, "unechoed-api-error-529 "); ok {
+			assistant(text(rest))
+			providerFailed(529)
 			continue
 		}
 		emit(map[string]any{"type": "user", "message": msg.Message, "session_id": "s", "parent_tool_use_id": nil,
@@ -1713,7 +1721,11 @@ func TestNoTakeWhileARunIsInProgress(t *testing.T) {
 
 // The report of a task's turn the provider failed names the task and how the provider failed it:
 // the status Claude Code named, the provider, the model the turn's init line named, and its own
-// words. A content filter's refusal names no status (testdata/refusal-turn.jsonl:5).
+// words. A content filter's refusal names no status (testdata/refusal-turn.jsonl:5). A provider
+// failure that ends the turn before Claude Code re-emits the task's text names the task too,
+// whether or not the text reached Claude Code: its report takes the task to the daemon's
+// provider-error ladder, which gives it again after its wait, rather than counting the refusal
+// toward the launch-failure run (result).
 func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 	for _, tc := range []struct {
 		name, text string
@@ -1723,6 +1735,8 @@ func TestTheTurnOutcomeNamesTheTaskAndTheProviderError(t *testing.T) {
 			want: claim.ProviderError{Status: 529, Provider: claudeProvider, Model: fakeClaudeModel, Retryable: true}},
 		{name: "a content filter's refusal, which names none", text: "refusal WAITING on the provider",
 			want: claim.ProviderError{Provider: claudeProvider, Model: fakeClaudeModel}},
+		{name: "a provider failure before Claude Code re-emitted the text", text: "unechoed-api-error-529 WAITING on the provider",
+			want: claim.ProviderError{Status: 529, Provider: claudeProvider, Model: fakeClaudeModel, Retryable: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newTaskDaemon(t)

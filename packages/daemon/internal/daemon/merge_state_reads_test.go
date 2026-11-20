@@ -72,9 +72,7 @@ const (
 // which asks for a read of GitHub's merge state when an approval waits on it (approvedCapture).
 func (rig *readRig) start(t *testing.T) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go rig.w.readMergeStates(ctx)
+	rig.reading(t)
 	applyFact(t, rig.pool, "github", "checks-on-code", settledChecksOnCode(), rig.w.handlers...)
 }
 
@@ -124,7 +122,6 @@ func (rig *readRig) endedWithNoRead(t *testing.T) {
 // (mergeStateRetry), so the waits the lines name are the production ones in a smaller unit.
 func TestTheMergeStateFollowsGitHubAfterTheLadderEndsOnUnknown(t *testing.T) {
 	const retry = readRigWait
-	forever := func(int32) pullAnswer { return unknownPull }
 
 	t.Run("unknown five times and then CONFLICTING is recorded and reaches R0's decision", func(t *testing.T) {
 		rig := newReadRig(t, approvedCapture, func(read int32) pullAnswer {
@@ -339,10 +336,9 @@ func TestTheMergeStateFollowsGitHubAfterASecondReadEndsOnUnknown(t *testing.T) {
 // records the state it answers then. A start read that answers a state queues none. The issue
 // stands in testing, where none of the facts these reads apply owes a read
 // (classify.MergeStateReadOwed), so a ladder here is the start read's alone; in merging the start
-// read is the one read and queues none (TestAStartReadReadsAMergingHeadOnce).
+// read is the one read and queues none (TestABasePushOrAStartReadReadsAMergingHeadOnce).
 func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 	const pull = `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},`
-	clean := pullAnswer{body: pull + `"mergeable":true,"mergeable_state":"clean"}`}
 	for _, tc := range []struct {
 		name   string
 		answer pullAnswer
@@ -350,7 +346,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 	}{
 		{name: "unknown queues a ladder", answer: unknownPull, ladder: true},
 		{name: "mergeable null queues a ladder", answer: pullAnswer{body: pull + `"mergeable":null}`}, ladder: true},
-		{name: "clean queues none", answer: clean},
+		{name: "clean queues none", answer: cleanPull},
 		{name: "dirty queues none", answer: conflictingPull},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -358,7 +354,7 @@ func TestTheMergeStateFollowsGitHubAcrossARestart(t *testing.T) {
 				if read == 1 {
 					return tc.answer
 				}
-				return clean
+				return cleanPull
 			})
 			rig.w.readIssuesAtStart(context.Background())
 			if got := rig.reads.Load(); got != 1 {
@@ -540,7 +536,7 @@ func (rig *readRig) climbedAndFollowed(t *testing.T) {
 
 // readOnceMovingNothing holds that GitHub was read once for CAPTURE-1, which stands in merging with
 // status retro, and that the answer, GitHub's `unknown`, asked for no read after it and moved
-// nothing: the test waits out twenty of the runtime's waits (readRigWait) after the read, so a
+// nothing: the test waits out forty of the runtime's waits (readRigWait) after the read, so a
 // climb's next read, one wait on, would be seen, and the record then holds GitHub's `unknown` as
 // every read's answer is applied, with no base push standing unanswered, no conflict read and no
 // row in the outbox. why says why one read is all.
@@ -557,13 +553,15 @@ func (rig *readRig) readOnceMovingNothing(t *testing.T, why string) {
 	if running, waiting := ladders(rig.w); running != 0 || waiting != 0 {
 		t.Fatalf("%d issues are queued for a read and %d ladders are running, want none after the one read", waiting, running)
 	}
-	got, pr := capturePhase(t, rig.pool)
-	var status string
-	if err := rig.pool.QueryRow(context.Background(), "select status from issues where key = 'CAPTURE-1'").Scan(&status); err != nil {
-		t.Fatalf("read CAPTURE-1's status: %v", err)
+	recorded, pr, err := issueRecord(context.Background(), rig.pool, rig.w.records, "CAPTURE-1")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got != phase.Merging || status != "retro" {
-		t.Fatalf("after the read the issue is in %s with status %q, want it still in merging with retro", got, status)
+	if recorded == nil || recorded.Phase != phase.Merging || recorded.Status != "retro" {
+		t.Fatalf("after the read the issue is %+v, want it still in merging with retro", recorded)
+	}
+	if pr == nil {
+		t.Fatal("after the read CAPTURE-1 records no pull request")
 	}
 	if pr.Mergeability != record.MergeabilityUnknown || pr.MergeState != record.MergeStateUnknown || pr.BaseMoved != "" {
 		t.Fatalf("the record holds %s/%s with the base moved to %q, want GitHub's UNKNOWN/unknown recorded as the read's answer",
@@ -578,54 +576,40 @@ func (rig *readRig) readOnceMovingNothing(t *testing.T, why string) {
 	}
 }
 
-// A push to the base asks one read of GitHub's merge state for the head of an issue that stands in
-// merging (classify.MergeStateReadOnce): its pull request sits in GitHub's merge queue, and GitHub
-// answers `unknown` for a queued head, so a ladder there would climb and then follow the head on
-// the App's rate limit for an answer GitHub does not give while it is queued. The one read's answer
-// is applied as every read's is - the record holds GitHub's `unknown` against the push it answers
-// - and asks for nothing more: no climb, no follow, and the issue moves nowhere. The same push
-// over an issue in reviewing climbs and follows as before, so the one read is the merging phase's
-// rule, not the push's.
-func TestABasePushReadsAMergingHeadOnce(t *testing.T) {
-	forever := func(int32) pullAnswer { return unknownPull }
-
-	t.Run("merging reads once and moves nothing", func(t *testing.T) {
-		rig := newReadRig(t, captureOnMain(phase.Merging, "retro"), forever)
-		rig.reading(t)
-		applyFact(t, rig.pool, "github", "base-push", basePushOntoMain, rig.w.handlers...)
-		rig.readOnceMovingNothing(t, "a base push reads a merging head once")
-	})
-
-	t.Run("reviewing climbs and follows", func(t *testing.T) {
-		rig := newReadRig(t, captureOnMain(phase.Reviewing, "needs_review"), forever)
-		rig.reading(t)
-		applyFact(t, rig.pool, "github", "base-push", basePushOntoMain, rig.w.handlers...)
-		rig.climbedAndFollowed(t)
-	})
-}
-
-// The daemon's start read of an issue that stands in merging is the one read of its head
-// (classify.MergeStateReadOnce): the pull request sits in GitHub's merge queue, where GitHub answers
-// `unknown` for the head, so the start read's `unknown` queues no ladder after it - no climb and no
-// follow - and the issue moves nowhere. The same start over an issue in reviewing queues a ladder,
-// which climbs and follows the head while GitHub answers `unknown` (dispatch://INFRA-4374 R4), so
-// the one read is the merging phase's rule, not the start read's.
-func TestAStartReadReadsAMergingHeadOnce(t *testing.T) {
-	forever := func(int32) pullAnswer { return unknownPull }
-
-	t.Run("merging reads once and moves nothing", func(t *testing.T) {
-		rig := newReadRig(t, captureOnMain(phase.Merging, "retro"), forever)
-		rig.reading(t)
-		rig.w.readIssuesAtStart(context.Background())
-		rig.readOnceMovingNothing(t, "the start read of a merging head is its one read")
-	})
-
-	t.Run("reviewing climbs and follows", func(t *testing.T) {
-		rig := newReadRig(t, captureOnMain(phase.Reviewing, "needs_review"), forever)
-		rig.reading(t)
-		rig.w.readIssuesAtStart(context.Background())
-		rig.climbedAndFollowed(t)
-	})
+// A push to the base, and the daemon's start read, read the head of an issue that stands in
+// merging once (classify.MergeStateReadOnce): its pull request sits in GitHub's merge queue, and
+// GitHub answers `unknown` for a queued head, so a ladder there would climb and then follow the
+// head on the App's rate limit for an answer GitHub does not give while it is queued. The one
+// read's answer is applied as every read's is - the record holds GitHub's `unknown`, against the
+// push where a push asked it - and asks for nothing more: no climb, no follow, and the issue moves
+// nowhere. The same push or start over an issue in reviewing climbs and follows the head while
+// GitHub answers `unknown` (dispatch://INFRA-4374 R4), so the one read is the merging phase's rule,
+// not the push's or the start read's.
+func TestABasePushOrAStartReadReadsAMergingHeadOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name, why string
+		trigger   func(t *testing.T, rig *readRig)
+	}{
+		{name: "a base push", why: "a base push reads a merging head once", trigger: func(t *testing.T, rig *readRig) {
+			applyFact(t, rig.pool, "github", "base-push", basePushOntoMain, rig.w.handlers...)
+		}},
+		{name: "the start read", why: "the start read of a merging head is its one read", trigger: func(_ *testing.T, rig *readRig) {
+			rig.w.readIssuesAtStart(context.Background())
+		}},
+	} {
+		t.Run(tc.name+": merging reads once and moves nothing", func(t *testing.T) {
+			rig := newReadRig(t, captureOnMain(phase.Merging, "retro"), forever)
+			rig.reading(t)
+			tc.trigger(t, rig)
+			rig.readOnceMovingNothing(t, tc.why)
+		})
+		t.Run(tc.name+": reviewing climbs and follows", func(t *testing.T) {
+			rig := newReadRig(t, captureOnMain(phase.Reviewing, "needs_review"), forever)
+			rig.reading(t)
+			tc.trigger(t, rig)
+			rig.climbedAndFollowed(t)
+		})
+	}
 }
 
 // A request for a climb or a follow of an issue outranks a request for one read of it
@@ -636,8 +620,6 @@ func TestAStartReadReadsAMergingHeadOnce(t *testing.T) {
 // climb: it is answered by one read more once the climb is over, whose `unknown` asks for nothing
 // after it.
 func TestAClimbOrAFollowOutranksOneReadOfTheSameIssue(t *testing.T) {
-	forever := func(int32) pullAnswer { return unknownPull }
-	clean := pullAnswer{body: `{"number":86,"state":"open","base":{"ref":"main"},"head":{"ref":"legion/CAPTURE-1","sha":"code"},"mergeable":true,"mergeable_state":"clean"}`}
 	// marked waits until the running ladder of CAPTURE-1 holds the request mark reads.
 	marked := func(t *testing.T, rig *readRig, what string, mark func(*mergeStateRun) bool) {
 		t.Helper()
@@ -702,7 +684,7 @@ func TestAClimbOrAFollowOutranksOneReadOfTheSameIssue(t *testing.T) {
 		// those answers unknown, which a climb would read again.
 		answer, release := heldFirst(func(read int32) pullAnswer {
 			if read == 2 {
-				return clean
+				return cleanPull
 			}
 			return unknownPull
 		})

@@ -150,6 +150,10 @@ const (
 	// HoldSessionNotHeld is a claim recording a session it does not hold, or one the store did not
 	// answer the hold of (holdRecorded): another claim recorded a name of it first, or two did.
 	HoldSessionNotHeld = "session-not-held"
+	// HoldProjectPaused is the project's pause holding the claim (pauseHolds): while the project
+	// is paused no task is taken by any role but the controller (decision 8 of
+	// dispatch://INFRA-3759's plan).
+	HoldProjectPaused = "project-paused"
 	// HoldAdoption is a working copy the shim did not adopt, or a role identity the daemon could
 	// not mint for it (adopt).
 	HoldAdoption = "adoption"
@@ -159,10 +163,6 @@ const (
 	HoldInTurn = "in-turn"
 	// HoldNotReady is a claim whose agent has not said it is ready.
 	HoldNotReady = "not-ready"
-	// HoldProjectPaused is the project's pause holding the claim (pauseHolds): while the project
-	// is paused no task is taken by any role but the controller (decision 8 of
-	// dispatch://INFRA-3759's plan).
-	HoldProjectPaused = "project-paused"
 )
 
 // TakeAnswer is a take's answer: its outcome, the text an accepted take runs, and the hold a

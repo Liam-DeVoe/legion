@@ -1284,7 +1284,7 @@ func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 	if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
 		t.Fatalf("end the turn of %s: %v", token, err)
 	}
-	if pending == nil || pending.ConfirmedAt.IsZero() || !pending.TurnStarted {
+	if !takesTurnStarted(pending) {
 		return
 	}
 	report := supervise.RequestTurnOutcome{Claim: token, Generation: machine.Claim().Generation,
@@ -1292,6 +1292,18 @@ func endTurn(ctx context.Context, t *testing.T, machine *supervise.Machine, toke
 	if err := machine.Handle(ctx, report); err != nil {
 		t.Fatalf("report the end of the turn of task %d on %s: %v", pending.Number, token, err)
 	}
+}
+
+// takeAwaitsTurn is whether p is a task a take holds whose turn has not started, as supervise's
+// Delivery.awaitsTurn reads it.
+func takeAwaitsTurn(p *supervise.Delivery) bool {
+	return p != nil && !p.ConfirmedAt.IsZero() && !p.TurnStarted
+}
+
+// takesTurnStarted is whether p is a task a take holds whose turn has started, as supervise's
+// Delivery.turnStarted reads it.
+func takesTurnStarted(p *supervise.Delivery) bool {
+	return p != nil && !p.ConfirmedAt.IsZero() && p.TurnStarted
 }
 
 // streamEventTypes is every type in internal/stream with an isEvent method: the sealed set the

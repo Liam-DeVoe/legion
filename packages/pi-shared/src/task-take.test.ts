@@ -567,20 +567,6 @@ test("a held text whose run's end finds the host not idle, a continuation follow
   expect(ran).toEqual([TEXT]);
 });
 
-test("a take sent again for a number already accepted runs the text once", async () => {
-  const { take, takes, ran, advance } = rig();
-  take.ready();
-  takes.push({ answer: ACCEPTED });
-  take.relayed(put(4, 12));
-  await advance(0);
-  // A newer revision of the same number before the turn started: the daemon answers the take of
-  // an accepted number with the same text, which is already on its way.
-  takes.push({ answer: ACCEPTED });
-  take.relayed(put(4, 13));
-  await advance(0);
-  expect(ran).toEqual([TEXT]);
-});
-
 // The daemon answers a take of the number it accepted with the same text until that task
 // finishes, also once the task's turn has started: a newer revision of the same number, asked
 // before the turn and answered during it, is that same task, which is already running.

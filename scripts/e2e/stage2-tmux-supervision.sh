@@ -213,11 +213,8 @@ pane_gone() {
   ! grep -qxF "$1" <<<"$listed"
 }
 report_panes() { note "tmux list-panes answered: $(tm list-panes -a -F '#{pane_id}' 2>&1 | tr '\n' ' ')"; }
-# log_count MSG [DELIVERY]: how many JSON lines of the daemon log carry MSG (and that delivery id).
-log_count() {
-  jq -R --arg m "$1" --arg d "${2:-}" 'fromjson? | select(.msg == $m and ($d == "" or .delivery == $d))' \
-    "$daemon_log" | jq -s length
-}
+# log_count MSG: how many JSON lines of the daemon log carry MSG.
+log_count() { jq -R --arg m "$1" 'fromjson? | select(.msg == $m)' "$daemon_log" | jq -s length; }
 # user_turns FILE MARKER: how many user messages in an OMP session file carry MARKER — the turns
 # a task started.
 user_turns() {

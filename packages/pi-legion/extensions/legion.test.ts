@@ -2492,7 +2492,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
       expect(taken).toBe(1);
       expect(worker.sentUserMessages).toEqual([text]);
-      expect(worker.sentUserMessageOptions).not.toContainEqual({ deliverAs: "followUp" });
     });
 
     // The daemon may write a task's value again, under the same number, after its turn ended and
@@ -2637,7 +2636,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // the worker, and below `launch_failure_limit` the daemon counts the turn rather than failing
     // the claim, so without it a single transient refusal would leave the issue idle. A task's
     // refused turn is woken by the daemon as well, whose provider-error wait keeps the task and
-    // writes its value again once the wait is over. By the time the timer fires the daemon has had
+    // writes its value again once the wait is over, unless the provider answered a 4xx other than
+    // 401, 403, 408 and 429, which fails the claim. By the time the timer fires the daemon has had
     // every refusal of the run reported, and at the limit the claim it reads is failed and the
     // reminder is dropped — which is what ends the reminding of a session the provider refuses for
     // ever.

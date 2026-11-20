@@ -109,6 +109,7 @@ export function createClaimSession(deps: {
   readonly persistedTranscript: (
     context: SessionContext
   ) => Promise<{ readonly sessionFile: string; readonly agentId: string }>;
+  /** An accepted take's text to the host (`TaskTakeDeps.run`). */
   readonly runTask: TaskTakeDeps["run"];
   readonly exitProcess: (code: number) => never;
 }): ClaimSession {

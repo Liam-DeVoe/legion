@@ -2196,9 +2196,18 @@ export default function envoyExtension(hostApi: PiApi): void {
             const injectionSessionID = sessionID;
             noteInjectedUserTurn(injectionSessionID, turn.body, turn.messageId);
             notedSessionIDs.add(injectionSessionID);
-            pi.sendUserMessage(
-              delivery.content,
-              turn.mode === "aside" ? { deliverAs: "aside" } : undefined
+            // Oh My Pi rejects a prompt it dropped before its turn began
+            // (`PiApi.sendUserMessage`): the drop is logged.
+            void Promise.resolve(
+              pi.sendUserMessage(
+                delivery.content,
+                turn.mode === "aside" ? { deliverAs: "aside" } : undefined
+              )
+            ).catch((error: unknown) =>
+              scrubbedConsole.warn(
+                `[envoy] Oh My Pi dropped the message ${turn.messageId} before its turn began`,
+                error
+              )
             );
             markPicturesShown(shownPictures(injectionSessionID), delivery.shown);
             // Done once the host writes the user message its text is found as, or at the run's

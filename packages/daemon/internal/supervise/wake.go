@@ -365,10 +365,12 @@ func (m *Machine) waitOnMachine(ctx context.Context, waiting *wake) error {
 //   - A turn the process it replaces may have started is taken back first (interrupted), exactly
 //     as replaceProcess takes one back before it relaunches. The gate let this wake park over a
 //     live process, and that process can have taken a task since: letting it go without the
-//     take-back would leave the task taken in a launching claim, where settle finishes a task
-//     whose turn started by its end frame though the turn never finished (finishTask). The
-//     other half of that race is a take accepted inside the wait, which claimHold refuses for
-//     as long as a launch waits over the process it would reach (launchWaits, take.go).
+//     take-back would leave the task taken in a launching claim, which settle settles in its
+//     place: for a plugin below TaskTakeContract it finishes a task whose turn started by its end
+//     frame though the turn never finished (finishTask), and for a plugin that names its number
+//     it takes the task back as a cut turn. The other half of that race is a take accepted inside
+//     the wait, which claimHold refuses for as long as a launch waits over the process it would
+//     reach (launchWaits, take.go).
 //
 // A turn that comes while the project is paused launches nothing (decision 7 of
 // dispatch://INFRA-3759's plan): the wake is held by the pause's gate instead, and the claim is
@@ -646,10 +648,11 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // no launch waits only because one does (judge). The next report of that process would charge
 // another launch failure, the death it already charged excepted (died).
 //
-// Four things it does not touch. A request the table refuses or ignores decides nothing, so it
-// starts no launch either: the row is read here, before anything runs, exactly as Handle reads
-// it after. A task the row acts on but queue refuses decides nothing either, so it starts no
-// launch: that launch would replace a live process for a request the claim answers with nothing.
+// Five things it does not touch: the four here, and a launch the pause's gate holds (below). A
+// request the table refuses or ignores decides nothing, so it starts no launch either: the row is
+// read here, before anything runs, exactly as Handle reads it after. A task the row acts on but
+// queue refuses decides nothing either, so it starts no launch: that launch would replace a live
+// process for a request the claim answers with nothing.
 // The deliver route sends an operator's task with no id of its own and no outbox row
 // (operatorDelivery, RequestDeliver.ID, Claim.DeliveredRows), so neither of the two repeats queue
 // accepts over a pending delivery — the repeat of that very delivery under its id, and a row

@@ -232,9 +232,17 @@ const maxSendErrorRunes = 2048
 // to the log line this record stands beside (refusedAdoption), which has no store to refuse
 // it, so the operator who needs the megabyte still reads it in the pod's log.
 func scrubSendError(text string) string {
-	text = strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", "")
-	if runes := []rune(text); len(runes) > maxSendErrorRunes {
-		return string(runes[:maxSendErrorRunes]) + "…"
+	return boundRunes(strings.ReplaceAll(strings.ToValidUTF8(text, "\uFFFD"), "\x00", ""), maxSendErrorRunes)
+}
+
+// boundRunes is text cut to its first limit runes, with "…" after a text that was cut. It counts
+// runes rather than bytes, so the cut never ends inside a character.
+func boundRunes(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	if runes := []rune(text); len(runes) > limit {
+		return string(runes[:limit]) + "…"
 	}
 	return text
 }

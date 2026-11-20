@@ -140,7 +140,7 @@ func (m *Machine) launchMet() bool { return m.wake != nil || m.relaunch != nil }
 // taken back where that report never came (interrupted), so it owes the role no launch.
 func (m *Machine) holdsTask() bool {
 	p := m.claim.Pending
-	return p != nil && p.ConfirmedAt.IsZero()
+	return p != nil && !p.taken()
 }
 
 // pauseGate is the gate's hold of a launch while the project is paused (decision 7), reached from
@@ -285,14 +285,16 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 // the stop transaction carries it beside the claim (c.Pending), and a write that fails leaves it
 // unsaved for settle to write again (saved), as putClaimAndPendingOwed would.
 func (m *Machine) persistStop(ctx context.Context, stop PauseStop, withPending bool) error {
-	if m.deps.PauseStopped == nil || m.owedWrite != nil {
-		if m.deps.PauseStopped != nil {
-			m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
-		}
-		if withPending {
-			return m.putClaimAndPendingOwed(ctx)
-		}
-		return m.persist(ctx)
+	write := m.persist
+	if withPending {
+		write = m.putClaimAndPendingOwed
+	}
+	if m.deps.PauseStopped == nil {
+		return write(ctx)
+	}
+	if m.owedWrite != nil {
+		m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
+		return write(ctx)
 	}
 	// Published before the write, so View shows the stopped claim while the stop's transaction
 	// runs.

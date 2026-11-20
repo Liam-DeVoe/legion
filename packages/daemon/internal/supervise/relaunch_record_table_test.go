@@ -99,11 +99,7 @@ func claimInNoTurn(t *testing.T, kinds ...string) *letGoCell {
 // its process reporting after the turn began.
 func claimInATurn(t *testing.T, kinds ...string) *letGoCell {
 	t.Helper()
-	h := newHarnessOf(t, olderToldClaim())
-	h.reach(StateWorking)
-	h.advance(time.Second)
-	h.reportActivity(kinds...)
-	return cellOf(h)
+	return workingInATurn(t, kinds)
 }
 
 // claimInATurnOfACurrentPlugin is claimInATurn on a plugin that names its task's number in its
@@ -111,7 +107,13 @@ func claimInATurn(t *testing.T, kinds ...string) *letGoCell {
 // (endFrameFinishes).
 func claimInATurnOfACurrentPlugin(t *testing.T, kinds ...string) *letGoCell {
 	t.Helper()
-	h := newHarnessOf(t, olderToldClaim(), currentPlugin)
+	return workingInATurn(t, kinds, currentPlugin)
+}
+
+// workingInATurn is claimInATurn over a harness that set tunes.
+func workingInATurn(t *testing.T, kinds []string, set ...func(*Deps)) *letGoCell {
+	t.Helper()
+	h := newHarnessOf(t, olderToldClaim(), set...)
 	h.reach(StateWorking)
 	h.advance(time.Second)
 	h.reportActivity(kinds...)

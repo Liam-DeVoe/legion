@@ -324,11 +324,7 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 			from pending_task_deliveries where claim_token = $1`, want.token).Scan(&number, &origin, &taken, &started, &confirmed, &told); err != nil {
 			t.Fatalf("read the pending task of %s after the migration: %v", want.token, err)
 		}
-		confirmedRight := confirmed == nil
-		if want.confirmed != 0 {
-			confirmedRight = confirmed != nil && confirmed.Equal(at(want.confirmed))
-		}
-		if number != 1 || origin != "" || taken != want.taken || started != want.started || !confirmedRight || !slices.Equal(told, want.told) {
+		if number != 1 || origin != "" || taken != want.taken || started != want.started || !atMinute(confirmed, want.confirmed) || !slices.Equal(told, want.told) {
 			t.Errorf("the pending task of %s = number %d, origin %q, taken text %q, turn started %v, confirmed at %v, told %q; want task 1 of no recorded origin, taken text %q, turn started %v, confirmed at minute %d (0 for none), told %q: %s",
 				want.token, number, origin, taken, started, confirmed, told, want.taken, want.started, want.confirmed, want.told, want.why)
 		}
@@ -337,42 +333,31 @@ func TestMigrationTaskNumbersFillsEachClaimsFirstTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the claims after the migration: %v", err)
 	}
-	acknowledged := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == "legion-LEGION-306-implementer" })
-	if acknowledged < 0 {
-		t.Fatalf("the claims read after the migration hold no legion-LEGION-306-implementer: %+v", claims)
-	}
-	if c := claims[acknowledged]; c.Pending == nil || c.TaskTaken != 1 || c.Pending.TakenText != c.Pending.Task ||
+	if c := claimNamed(t, claims, "legion-LEGION-306-implementer"); c.Pending == nil || c.TaskTaken != 1 || c.Pending.TakenText != c.Pending.Task ||
 		c.Pending.TurnStarted || !c.InTurn() {
 		t.Errorf("the acknowledged claim reads back as %+v holding %+v, want task 1 taken, the take awaiting its turn with the task's text, so the ready claim counts as in a turn",
 			c, c.Pending)
 	}
-	started := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == "legion-LEGION-302-implementer" })
-	if started < 0 {
-		t.Fatalf("the claims read after the migration hold no legion-LEGION-302-implementer: %+v", claims)
-	}
-	if c := claims[started]; c.Pending == nil || c.Pending.TakeTold != (supervise.Sentences{Ended: true}) {
+	started := claimNamed(t, claims, "legion-LEGION-302-implementer").Pending
+	if started == nil || started.TakeTold != (supervise.Sentences{Ended: true}) {
 		t.Errorf("the claim whose task's turn started reads back holding %+v, want its take to have told the let-go's record and not the abandoned session",
-			c.Pending)
+			started)
 	}
 	// The confirmed row's take reads as one whose turn started, with no text kept, as it read when
 	// a confirmed take with no text was read so: the fill set its turn_started, which is all the
 	// claim reads of where the take stands (supervise's Delivery.turnStarted). On an idle claim
 	// such a take no longer works its task; one awaiting its turn would.
-	if c := claims[started]; c.Pending == nil || c.Pending.TakenText != "" || !c.Pending.TurnStarted ||
-		c.Pending.StillWorked(c.Pending.Generation, c.Pending.Phase, supervise.StateIdle) {
+	if started == nil || started.TakenText != "" || !started.TurnStarted ||
+		started.StillWorked(started.Generation, started.Phase, supervise.StateIdle) {
 		t.Errorf("the claim whose task's turn started reads back holding %+v, want its take's turn started with no text kept, so an idle claim no longer works it",
-			c.Pending)
+			started)
 	}
 	// The next process of each of these takes the task afresh: the claim read holds it as a task no
 	// take holds, so the take is decided by the claim's machine and not answered from the record.
 	for _, token := range []claim.Token{"legion-LEGION-307-implementer", "legion-LEGION-308-implementer",
 		"legion-LEGION-309-implementer", "legion-LEGION-310-implementer", "legion-LEGION-311-implementer",
 		"legion-LEGION-312-implementer"} {
-		i := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
-		if i < 0 {
-			t.Fatalf("the claims read after the migration hold no %s: %+v", token, claims)
-		}
-		if c := claims[i]; c.Pending == nil || c.Pending.Number != 1 || c.TaskTaken != 0 || !c.Pending.ConfirmedAt.IsZero() ||
+		if c := claimNamed(t, claims, token); c.Pending == nil || c.Pending.Number != 1 || c.TaskTaken != 0 || !c.Pending.ConfirmedAt.IsZero() ||
 			c.Pending.TakenText != "" {
 			t.Errorf("%s reads back as %+v holding %+v, want task 1 owed and no take of it: no process stood to run the prompt it was sent",
 				token, c, c.Pending)
@@ -485,11 +470,7 @@ func TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills(t *testing.T) {
 			want.token).Scan(&confirmed); err != nil {
 			t.Fatalf("read the handshake of %s after the migration: %v", want.token, err)
 		}
-		right := confirmed == nil
-		if want.confirmed != 0 {
-			right = confirmed != nil && confirmed.Equal(at(want.confirmed))
-		}
-		if !right {
+		if !atMinute(confirmed, want.confirmed) {
 			t.Errorf("the handshake of %s is confirmed at %v after the migration, want minute %d (0 for never): %s",
 				want.token, confirmed, want.confirmed, want.why)
 		}
@@ -498,15 +479,29 @@ func TestMigrationTaskNumbersConfirmsTheHandshakeOfATakeItFills(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the claims after the migration: %v", err)
 	}
-	i := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == "legion-LEGION-401-implementer" })
-	if i < 0 {
-		t.Fatalf("the claims read after the migration hold no legion-LEGION-401-implementer: %+v", claims)
-	}
-	if c, h := claims[i], claims[i].Handshake; c.Pending == nil || c.Pending.ConfirmedAt.IsZero() || h.Entry != 2 ||
-		h.Generation != 1 || !h.QueuedAt.Equal(at(queuedAt)) || !h.ConfirmedAt.Equal(c.Pending.ConfirmedAt) {
+	if c := claimNamed(t, claims, "legion-LEGION-401-implementer"); c.Pending == nil || c.Pending.ConfirmedAt.IsZero() || c.Handshake.Entry != 2 ||
+		c.Handshake.Generation != 1 || !c.Handshake.QueuedAt.Equal(at(queuedAt)) || !c.Handshake.ConfirmedAt.Equal(c.Pending.ConfirmedAt) {
 		t.Errorf("the claim whose take the fill made reads back with the handshake %+v beside %+v, want entry 2 of run 1 queued at minute %d and confirmed at its take's own moment, which a give-back of the take compares",
-			h, c.Pending, queuedAt)
+			c.Handshake, c.Pending, queuedAt)
 	}
+}
+
+// claimNamed is the claim of claims whose token is token, failing t where they hold none.
+func claimNamed(t *testing.T, claims []supervise.Claim, token claim.Token) supervise.Claim {
+	t.Helper()
+	i := slices.IndexFunc(claims, func(c supervise.Claim) bool { return c.Token == token })
+	if i < 0 {
+		t.Fatalf("the claims read after the migration hold no %s: %+v", token, claims)
+	}
+	return claims[i]
+}
+
+// atMinute is whether moment, a nullable column read back, is at(minute), or null for minute 0.
+func atMinute(moment *time.Time, minute int) bool {
+	if minute == 0 {
+		return moment == nil
+	}
+	return moment != nil && moment.Equal(at(minute))
 }
 
 // Every task column round-trips through the store across a restart: a new pool and a new store

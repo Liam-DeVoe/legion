@@ -63,7 +63,7 @@ const (
 // each of which can turn the head conflicting with its base (dispatch://INFRA-4374 R0). The daemon's
 // start asks for it too, for each issue outside merging whose start read GitHub answered `unknown`
 // (readIssuesAtStart, ladderAtStart). It queues a ladder of reads for issue that starts with a climb
-// (queueMergeStateFollow, with no head to follow), or, when once is set, one read
+// (queueMergeStateAsk with an ask that names no head to follow), or, when once is set, one read
 // (readMergeStateOnce): the engine sets once for a push to the base of an issue in merging
 // (classify.MergeStateReadOnce), whose head sits in the merge queue, where GitHub answers
 // `unknown`, and the one read's `unknown` starts no climb and no follow. It only records the issue
