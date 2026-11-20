@@ -799,10 +799,12 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
   test.setTimeout(120_000);
   await phase(browser, seedRows, async (page, seeded) => {
     const reader = { author: READER, shape: GLYPH_TOKENS.authors.person };
+    // The planner, whom the registry does not list, by the title its session stamped on each
+    // write the seed made as it: its messages and asks, and the decisions it wrote, whose
+    // decider the decisions read names with that title (`DecisionEntry.decided_by.title`).
     const plannerAuthor = { author: "Planner", shape: GLYPH_TOKENS.authors.agent };
     // An agent the registry does not list and whose own record stamps no title: the recorder of
-    // the result, and the planner as the decider of each decision it wrote, whom the decisions
-    // read names by its session alone (`DecisionEntry.decided_by`).
+    // the result, whom the page names by its own word for an agent nothing names.
     const unnamedAgent = {
       author: CONTROL_LABELS.unnamed_author,
       shape: GLYPH_TOKENS.authors.agent,
@@ -820,10 +822,10 @@ test("an author is drawn by name and shape, and an agent's decision by its uncer
       [seeded.waitingLong, plannerAuthor],
       [seeded.openQuestion, plannerAuthor],
       [seeded.result, unnamedAgent],
-      [seeded.shaping, unnamedAgent],
-      [seeded.changed, unnamedAgent],
-      [seeded.unsure, unnamedAgent],
-      [seeded.raw, unnamedAgent],
+      [seeded.shaping, plannerAuthor],
+      [seeded.changed, plannerAuthor],
+      [seeded.unsure, plannerAuthor],
+      [seeded.raw, plannerAuthor],
     ]);
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize(size);

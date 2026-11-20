@@ -1131,12 +1131,18 @@ function decisionNodeId(
 /**
  * Who decided, as the page names an author: the far end of an entry's `decided_by` tuple, a
  * session for an agent (`session:<id>`) and a person by login (`person:<login>`), which every
- * other read names as a `user` actor. Undefined where the entry names nobody, or a node of
- * another kind.
+ * other read names as a `user` actor. A session carries the title it stamped on what it wrote
+ * (`decided_by.title`) as its origin's `session_title`, so a session the registry no longer lists
+ * is still named by it (`AgentName.tsx`'s `drawnSessionName`); one that stamped none carries no
+ * origin. Undefined where the entry names nobody, or a node of another kind.
  */
 function deciderOf(node: DecisionEntry["decided_by"]): Actor | undefined {
   if (node === null) return undefined;
-  if (node.kind === "session") return { id: node.id, kind: "session" };
+  if (node.kind === "session") {
+    return node.title === undefined
+      ? { id: node.id, kind: "session" }
+      : { id: node.id, kind: "session", origin: { session_title: node.title } };
+  }
   return node.kind === "person" ? { id: node.id, kind: "user" } : undefined;
 }
 

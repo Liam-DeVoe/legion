@@ -261,20 +261,28 @@ function TreeRow({ node: drawn }: { node: TreeNode }): ReactNode {
 // R9: an agent's decision is drawn with who decided it as the decisions read's entry for it
 // records (`DecisionEntry.decided_by`), which the read's `decisions` member does not carry. The
 // session that wrote it is named by the title the page's sessions read gives it, as any agent's
-// is: its role's word on the row and its whole title in the opened body (ruling 6). A decision
-// whose entry names nobody draws no author on its row, and its opened body says "Author unknown"
-// (ruling 5).
-test("an agent's decision draws the session its entry names as its decider, and Author unknown where it names none", () => {
+// is: its role's word on the row and its whole title in the opened body (ruling 6). A session no
+// registry lists any longer is named by the title it stamped on what it wrote, which the entry
+// carries (`decided_by.title`), in the same two places. A decision whose entry names nobody draws
+// no author on its row, and its opened body says "Author unknown" (ruling 5).
+test("an agent's decision draws the session its entry names as its decider, by the title it stamped where no registry lists it, and Author unknown where it names none", () => {
   const title = "Legion architect · CORE-1";
+  const storedTitle = "Legion planner · CORE-1";
   const named = decision("d-named");
   const unnamed = decision("d-unnamed");
-  const read = decisionsRead([named, unnamed]);
+  const stored = decision("d-stored");
+  const read = decisionsRead([named, unnamed, stored]);
   const root = buildIssueTree({
     decisions: {
       ...read,
-      entries: (read.entries ?? []).map((entry) =>
-        entry.ref === unnamed.ref ? { ...entry, decided_by: null } : entry
-      ),
+      entries: (read.entries ?? []).map((entry) => {
+        if (entry.ref === unnamed.ref) return { ...entry, decided_by: null };
+        if (entry.ref !== stored.ref) return entry;
+        return {
+          ...entry,
+          decided_by: { id: "session-gone", kind: "session", title: storedTitle },
+        };
+      }),
     },
     issue: issueDetails(),
   });
@@ -332,6 +340,13 @@ test("an agent's decision draws the session its entry names as its decider, and 
     kind: "unknown",
     row: null,
     title: null,
+    type: "decision",
+  });
+  expect(drawn(stored)).toEqual({
+    body: null,
+    kind: "agent",
+    row: "planner",
+    title: storedTitle,
     type: "decision",
   });
 });
