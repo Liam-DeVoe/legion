@@ -1589,6 +1589,69 @@
         "capture": "ts.request-echo/description/message"
       },
       {
+        "row": "record-interleaved",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/internal/oidc/record_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.record/interleaved"
+      },
+      {
+        "row": "record-status-line-empty-body",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/internal/oidc/record_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "oidc.record/status-line-empty-body"
+      },
+      {
+        "row": "record-redirect-307-location-to-dead-port",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/internal/redact/record_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.redirect/307-location-to-dead-port"
+      },
+      {
+        "row": "record-redirect-302-second-hop",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/internal/redact/record_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.redirect/302-second-hop"
+      },
+      {
+        "row": "record-fails-closed",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/internal/redact/record_rows_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "redact.no-record"
+      },
+      {
+        "row": "record-userinfo-echo",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/envoy/cmd/agent-secrets/remote_boundary_test.go",
+          "packages/envoy/internal/redact/redacttest/redacttest.go"
+        ],
+        "capture": "agent-secrets.userinfo"
+      },
+      {
+        "row": "record-admin-api-echo",
+        "base": "0cef0dcfd204fd7769e6aadced8520abfbd57f4a",
+        "files": [
+          "packages/daemon/internal/sessionproxy/admin_api_echo_test.go",
+          "packages/daemon/internal/sessionproxy/connector_test.go"
+        ],
+        "capture": "sessionproxy.admin-api-echo"
+      },
+      {
         "row": "status-line-Exchange",
         "base": "c40c4751f93f646b09a3b6b1653a8162ee75e01e",
         "files": [
@@ -3263,13 +3326,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestARefusalsEchoOfItsRequestPrintsNoCredentialItCarried/refusal_client",
-      "production": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
-      "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+      "production": "github.com/sjawhar/envoy/internal/redact.newLibraryError",
+      "function": "github.com/sjawhar/envoy/internal/redact.newLibraryError",
       "capture": "redact.tokens-refusal-library",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "Tokens(text, -1, refused.quotedBy(text)...)",
-        "replacement": "text"
+        "preimage": "text = Tokens(err.Error(), -1, carried...)",
+        "replacement": "text = err.Error()"
       }
     },
     {
@@ -3385,11 +3448,11 @@
       "production": "redact.OAuth2's answer, redact.requestTokens"
     },
     {
-      "id": "library-error-quotes-only",
+      "id": "library-error-needs-its-record",
       "requirement": "r4-unchanged",
       "package": "./internal/redact",
-      "test": "TestALibraryErrorReadsOnlyTheRefusalItQuotes",
-      "production": "redact.LibraryError, refusals.quotedBy"
+      "test": "TestALibraryErrorNeedsTheRecordItCameWith",
+      "production": "redact.LibraryError, redact.CallScope: no record fails closed"
     },
     {
       "id": "request-echo-cookie",
@@ -3446,6 +3509,62 @@
       "package": "./internal/redact",
       "test": "TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal/json-value",
       "production": "redact.RefusalClient, redact.requestTokens, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-cookie",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/cookie",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-metadata-token-header",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/metadata-token-header",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-any-header",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/any-header",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-url-user",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/url-user",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-query-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/query-value",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-form-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/form-value",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-actor-token",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/actor-token",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
+    },
+    {
+      "id": "request-record-json-value",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestEveryCredentialARequestCarriesIsInItsScopesRecord/json-value",
+      "production": "redact.CallScope.Client, redact.record, redact.OAuth2's LibraryError"
     },
     {
       "id": "answer-echo-description-echoes-refresh-token",
@@ -3518,6 +3637,55 @@
       "production": "brokerclient Client.post, redact.Carried, RemoteText.WithoutTokens"
     },
     {
+      "id": "record-interleaved",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryRefusalPrintsOnlyItsOwnRequestsCredentials/interleaved",
+      "production": "oidc.NewKeys, redact.CallScope, redact.record"
+    },
+    {
+      "id": "record-status-line-empty-body",
+      "requirement": "r3-each-site",
+      "package": "./internal/oidc",
+      "test": "TestADiscoveryRefusalPrintsOnlyItsOwnRequestsCredentials/status-line-empty-body",
+      "production": "oidc.NewKeys, redact.record: every hop recorded whatever its body"
+    },
+    {
+      "id": "record-redirect-307-location-to-dead-port",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARedirectedRefreshPrintsNoCredentialOfAnEarlierHop/307-location-to-dead-port",
+      "production": "redact.RefusalClient's hop record, redact.hopError"
+    },
+    {
+      "id": "record-redirect-302-second-hop",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestARedirectedRefreshPrintsNoCredentialOfAnEarlierHop/302-second-hop",
+      "production": "redact.RefusalClient's hop record, redact.hopError"
+    },
+    {
+      "id": "record-fails-closed",
+      "requirement": "r3-each-site",
+      "package": "./internal/redact",
+      "test": "TestALibraryErrorWithNoRecordPrintsItsClassAlone",
+      "production": "redact.OAuth2's withheld reading of an error no record covers"
+    },
+    {
+      "id": "record-userinfo-echo",
+      "requirement": "r3-each-site",
+      "package": "./cmd/agent-secrets",
+      "test": "TestTheUserinfoReadPrintsNoneOfGooglesWords/a_refused_userinfo_read",
+      "production": "gcpUserinfo, redact.Carried off the answer"
+    },
+    {
+      "id": "record-admin-api-echo",
+      "requirement": "r3-each-site",
+      "package": "github.com/sjawhar/legion/daemon/internal/sessionproxy",
+      "test": "TestAnAdminAPIRefusalPrintsNoBearerItEchoes",
+      "production": "sessionproxy connectorOptions' Admin API client, connectorDialer.Dial's scope"
+    },
+    {
       "id": "print-redact.LibraryError",
       "requirement": "r2-held",
       "package": "./internal/redact",
@@ -3578,13 +3746,13 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestTheBoundarysURLErrorPrintsItsCallAsTheRuleReadsIt",
-      "production": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
-      "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+      "production": "github.com/sjawhar/envoy/internal/redact.answerOf",
+      "function": "github.com/sjawhar/envoy/internal/redact.answerOf",
       "capture": "redact.url-error/url",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
-        "preimage": "URL: ruled(ue.URL)",
-        "replacement": "URL: ue.URL"
+        "preimage": "held = ruled(Tokens(ue.URL, -1, carried...))",
+        "replacement": "held = ue.URL"
       }
     },
     {
@@ -3592,8 +3760,8 @@
       "requirement": "r3-each-site",
       "package": "./internal/redact",
       "test": "TestTheBoundarysURLErrorPrintsItsCallAsTheRuleReadsIt",
-      "production": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
-      "function": "github.com/sjawhar/envoy/internal/redact.oauthAnswerOf",
+      "production": "github.com/sjawhar/envoy/internal/redact.answerOf",
+      "function": "github.com/sjawhar/envoy/internal/redact.answerOf",
       "capture": "redact.url-error/op",
       "mutation": {
         "file": "packages/envoy/internal/redact/oauth2.go",
@@ -4330,6 +4498,13 @@
       "file": "packages/contracts/src/public-request-names.test.ts",
       "test": "a request's value is a credential unless its name is public",
       "production": "requestCredentials"
+    },
+    {
+      "id": "ts-record-interleaved",
+      "requirement": "r3-each-site",
+      "file": "packages/contracts/src/remote-text-refusal.test.ts",
+      "test": "interleaved refusals keep each error's own request record",
+      "production": "refusalFetch, LibraryError: the record is the Response"
     },
     {
       "id": "print-ts-box",

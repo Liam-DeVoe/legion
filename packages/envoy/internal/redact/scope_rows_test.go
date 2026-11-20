@@ -2,6 +2,7 @@ package redact_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
 // scopeRoundTripper answers every request with a status line and a body the server controls.
@@ -92,66 +94,61 @@ func TestScopedLibraryErrorsKeepTheirOwnRecord(t *testing.T) {
 	}
 }
 
-// TestAnEmptyRefusalStatusLineUsesItsOwnRecord exercises a body of nothing and a status phrase
-// that echoes the bearer: an error can name the phrase even when it reads no body.
-func TestAnEmptyRefusalStatusLineUsesItsOwnRecord(t *testing.T) {
-	const bearer = "status-bearer-RDX-7e19"
-	client := redact.RefusalClient(&http.Client{Transport: scopeRoundTripper{
-		status: http.StatusForbidden,
-		reason: func(r *http.Request) string { return "gateway echoed " + r.Header.Get("Authorization") },
-		body:   func(*http.Request) string { return "" },
-	}})
-	ctx := context.WithValue(context.Background(), oauth2.HTTPClient, client)
-	s := redact.Scope[*gooidc.Provider](ctx)
-	_, err := redact.OAuth2(s.Read(gooidc.NewProvider(gooidc.ClientContext(s.Context(), client), "https://idp.example")))
-	if err == nil {
-		t.Fatal("discovery answered no error")
+// TestALibraryErrorNeedsTheRecordItCameWith: a request whose credential holds the word
+// "metadata" is refused, and another error names the metadata server. The second error has no
+// record of a request, so it fails closed rather than borrowing the first refusal's credentials.
+// The refusal's own text is read under that refusal's scope and redacts only that request.
+func TestALibraryErrorNeedsTheRecordItCameWith(t *testing.T) {
+	const credential = "metadata-identity-token-RDX"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, "refused: the identity token "+credential+" is not accepted here")
+	}))
+	defer srv.Close()
+	const other = "no metadata server: the metadata server at 127.0.0.1 could not be reached"
+	_, err := redact.OAuth2(struct{}{}, errors.New(other))
+	if strings.Contains(err.Error(), credential) || !strings.Contains(err.Error(), "message withheld") {
+		t.Errorf("an error with no request record = %q, want its class alone", err)
 	}
-	out := err.Error()
-	t.Logf("REDACT-CAPTURE redact.status-empty-body %q", out)
-	if strings.Contains(out, bearer) {
-		t.Fatalf("REDACT-ASSERT redact.status-empty-body: %q", out)
+
+	s := redact.Scope[struct{}](context.Background())
+	request := newRequest(t, http.MethodGet, srv.URL+"/subject?identity="+credential, "", nil)
+	response, err := s.Client(nil).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code 403: %s", answer)))
+	if strings.Contains(err.Error(), credential) {
+		t.Errorf("a report that carries the refusal's record prints its credential: %q", err)
 	}
 }
 
-// TestRedirectHopsKeepTheCredentialsOfEarlierRequests proves that a token endpoint redirect to a
-// Location path carrying its refresh token, whether it reaches a dead port or a second hop that
-// echoes the path, redacts that token from the error.
-func TestRedirectHopsKeepTheCredentialsOfEarlierRequests(t *testing.T) {
-	const refresh = "redirect-refresh-RDX-7e19"
-	mode := ""
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/echo/") {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, "the second hop echoed "+r.URL.Path)
-			return
-		}
-		_ = r.ParseForm()
-		switch mode {
-		case "dead-port":
-			w.Header().Set("Location", "http://127.0.0.1:1/"+r.PostForm.Get("refresh_token")+"/token")
-			w.WriteHeader(http.StatusTemporaryRedirect)
-		case "second-hop":
-			w.Header().Set("Location", "/echo/"+r.PostForm.Get("refresh_token"))
-			w.WriteHeader(http.StatusFound)
-		default:
-			w.WriteHeader(http.StatusBadRequest)
-		}
-	}))
-	defer srv.Close()
-	for _, testMode := range []string{"dead-port", "second-hop"} {
-		t.Run(testMode, func(t *testing.T) {
-			mode = testMode
-			s := redact.Scope[*oauth2.Token](context.Background())
-			config := &oauth2.Config{ClientID: "probe", Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInParams}}
-			_, err := redact.OAuth2(s.Read(config.TokenSource(s.Context(), &oauth2.Token{RefreshToken: refresh}).Token()))
-			if err == nil {
-				t.Fatal("refresh answered no error")
+// TestEveryCredentialARequestCarriesIsInItsScopesRecord: the requests of
+// TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal, sent through a client a scope made,
+// write their records into it, so the library error read under that scope holds none of the
+// credentials each carried, in a header, its URL's user information or query, or its form or JSON
+// body.
+func TestEveryCredentialARequestCarriesIsInItsScopesRecord(t *testing.T) {
+	srv := echoServer(t)
+	for _, row := range requestEchoRows(srv) {
+		t.Run(row.name, func(t *testing.T) {
+			s := redact.Scope[struct{}](context.Background())
+			client := s.Client(&http.Client{})
+			response, err := client.Do(row.send(t, client))
+			if err != nil {
+				t.Fatal(err)
 			}
-			out := err.Error()
-			t.Logf("REDACT-CAPTURE redact.redirect-%s %q", testMode, out)
-			if strings.Contains(out, refresh) {
-				t.Fatalf("REDACT-ASSERT redact.redirect-%s: %q", testMode, out)
+			defer response.Body.Close()
+			body, _ := io.ReadAll(response.Body)
+			if len(redacttest.Held(string(body))) == 0 {
+				t.Fatalf("the control: the answer holds no echo of the request: %q", body)
+			}
+			_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code %d: %s", response.StatusCode, body)))
+			redacttest.RequireNone(t, "redact.request-record/"+row.name, err.Error())
+			if strings.Contains(err.Error(), "message withheld") {
+				t.Errorf("the scope's record covers the error, which prints its class alone: %q", err)
 			}
 		})
 	}

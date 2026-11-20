@@ -8,11 +8,15 @@
 // Its stages run in order, and the first that fails stops the run and names itself:
 //
 //  1. inventory: the inventory parses, holds rows, and holds print-site rows;
-//  2. census: both censuses parse and resolve every production file of the repository's Go
-//     modules and TypeScript packages (UNKNOWN otherwise), and the call census lists every call
-//     of the rule the change adds, each of which a row's mutation must name (census.go,
-//     tscensus.go, scripts/redact-gate/ts-census.ts); the field census lists every field the
-//     library boundary sets, each a closed value or the rule's reading (fields.go);
+//  2. census: the censuses parse and resolve every production file of the repository's Go
+//     modules and TypeScript packages (UNKNOWN otherwise). The call census lists every call of
+//     the rule the change adds, each of which a row's mutation must name (census.go, tscensus.go,
+//     scripts/redact-gate/ts-census.ts). The boundary census reads the libraries' own exported
+//     API and fails on any call of golang.org/x/oauth2, go-oidc, google.golang.org/api/impersonate
+//     or cloud.google.com/go/cloudsqlconn that is not across redact.OAuth2 or oauth2call.Call, on a
+//     call of a text-only library not read under a CallScope, and on a client or token source
+//     handed a library that the boundary did not make (boundary.go). The field census lists every
+//     field the library boundary sets, each a closed value or the rule's reading (fields.go);
 //  3. binding: each mutation's function is in its file and its preimage occurs there once;
 //  4. baseline: each row's test passes unmutated in its scratch copy (the check script runs the
 //     normal verification between stage 3 and this one);

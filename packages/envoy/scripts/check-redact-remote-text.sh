@@ -28,11 +28,16 @@
 #     packages/envoy-client, and fails on a non-zero status.
 #
 # Around those steps it runs the mutation gate, packages/envoy/cmd/redact-gate, whose stages run
-# in this order and stop at the first that fails, naming it: (1) the inventory, (2) the call
-# census, (3) each mutation's binding, before any test runs; then the steps above and (4) each
-# row's test unmutated; then (5) each mutation alone, whose test must fail at its designated
-# assertion with a marker in the output it captured there. `--controls` runs the gate's negative
-# controls instead, each from a passing baseline in its own scratch worktree.
+# in this order and stop at the first that fails, naming it: (1) the inventory; (2) the censuses -
+# the call census (every call of the rule the change adds is a row's mutation), the boundary
+# census (every call of golang.org/x/oauth2, go-oidc, google.golang.org/api/impersonate or
+# cloud.google.com/go/cloudsqlconn is across redact.OAuth2, a text-only one under a CallScope, and
+# every client or token source handed a library is one the boundary made), and the field census
+# (every field the boundary sets is a closed value or the rule's reading); (3) each mutation's
+# binding, before any test runs; then the steps above and (4) each row's test unmutated; then
+# (5) each mutation alone, whose test must fail at its designated assertion with a marker in the
+# output it captured there. `--controls` runs the gate's negative controls instead, each from a
+# passing baseline in its own scratch worktree.
 #
 # A package's own needs stay its own: internal/dispatch/api and internal/broker/helper read the
 # test databases their suites read (DISPATCH_TEST_DATABASE_URL, LEGION_TEST_PG_DSN) where a test

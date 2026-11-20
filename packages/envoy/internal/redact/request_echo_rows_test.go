@@ -47,19 +47,46 @@ func echoServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
+// requestEchoRow is one place a request carries a credential: send builds the request, setting
+// what it needs on client (a cookie jar).
+type requestEchoRow struct {
+	name string
+	send func(t *testing.T, client *http.Client) *http.Request
+}
+
 // TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal: a request carries a credential in
 // any header, in its URL's user information or query, and in any value of its form or its JSON
 // body; whatever answers in the server's place can echo each back. RefusalClient hands the answer
 // on as it came, so a library parses what was answered (the control: the body holds the echo), and
 // the error a library makes of it, `status code <n>: <body>`, holds none of them once OAuth2 reads
 // it, each a designated assertion (the red team's header probes of #4368 at db7e4a0226: a Cookie
-// the client's jar adds, an instance metadata token's header, and the rest).
+// the client's jar adds, an instance metadata token's header, and the rest). Read with no scope,
+// the error holds no record and prints its class alone; TestEveryCredentialARequestCarriesIsInItsScopesRecord
+// reads the same errors under a scope.
 func TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal(t *testing.T) {
 	srv := echoServer(t)
-	for _, row := range []struct {
-		name string
-		send func(t *testing.T, client *http.Client) *http.Request
-	}{
+	for _, row := range requestEchoRows(srv) {
+		t.Run(row.name, func(t *testing.T) {
+			client := &http.Client{}
+			request := row.send(t, client)
+			response, err := redact.RefusalClient(client).Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			body, _ := io.ReadAll(response.Body)
+			if len(redacttest.Held(string(body))) == 0 {
+				t.Fatalf("the control: the answer RefusalClient handed on holds no echo of the request: %q", body)
+			}
+			_, err = redact.OAuth2(0, fmt.Errorf("status code %d: %s", response.StatusCode, body))
+			redacttest.RequireNone(t, "redact.request-echo/"+row.name, err.Error())
+		})
+	}
+}
+
+// requestEchoRows is each place a request to srv carries a credential.
+func requestEchoRows(srv *httptest.Server) []requestEchoRow {
+	return []requestEchoRow{
 		{"cookie", func(t *testing.T, client *http.Client) *http.Request {
 			jar, err := cookiejar.New(nil)
 			if err != nil {
@@ -96,23 +123,6 @@ func TestEveryCredentialARequestCarriesIsRedactedFromItsRefusal(t *testing.T) {
 			return newRequest(t, http.MethodPost, srv.URL+"/token", `{"request":{"proof":"`+redacttest.Token+`"}}`,
 				map[string]string{"Content-Type": "application/json"})
 		}},
-	} {
-		t.Run(row.name, func(t *testing.T) {
-			s := redact.Scope[struct{}](context.Background())
-			client := s.Client(&http.Client{})
-			request := row.send(t, client)
-			response, err := client.Do(request)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer response.Body.Close()
-			body, _ := io.ReadAll(response.Body)
-			if len(redacttest.Held(string(body))) == 0 {
-				t.Fatalf("the control: the answer RefusalClient handed on holds no echo of the request: %q", body)
-			}
-			_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code %d: %s", response.StatusCode, body)))
-			redacttest.RequireNone(t, "redact.request-echo/"+row.name, err.Error())
-		})
 	}
 }
 
@@ -237,36 +247,5 @@ func TestARefusalPrintsAPublicNamesValueAndRedactsAnUnlistedOnes(t *testing.T) {
 	redacttest.RequireNone(t, "redact.public-name/unlisted", err.Error())
 	if !strings.Contains(err.Error(), session) {
 		t.Errorf("the refusal %q does not print the session, a value public by its contract", err.Error())
-	}
-}
-
-// TestALibraryErrorNeedsTheRecordItCameWith: a request whose credential holds the word
-// "metadata" is refused, and another error names the metadata server. The second error has no
-// record of a request, so it fails closed rather than borrowing the first refusal's credentials.
-// The refusal's own text is read under that refusal's scope and redacts only that request.
-func TestALibraryErrorNeedsTheRecordItCameWith(t *testing.T) {
-	const credential = "metadata-identity-token-RDX"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-		_, _ = io.WriteString(w, "refused: the identity token "+credential+" is not accepted here")
-	}))
-	defer srv.Close()
-	const other = "no metadata server: the metadata server at 127.0.0.1 could not be reached"
-	_, err := redact.OAuth2(struct{}{}, errors.New(other))
-	if strings.Contains(err.Error(), credential) || !strings.Contains(err.Error(), "message withheld") {
-		t.Errorf("an error with no request record = %q, want its class alone", err)
-	}
-
-	s := redact.Scope[struct{}](context.Background())
-	request := newRequest(t, http.MethodGet, srv.URL+"/subject?identity="+credential, "", nil)
-	response, err := s.Client(nil).Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	answer, _ := io.ReadAll(response.Body)
-	response.Body.Close()
-	_, err = redact.OAuth2(struct{}{}, s.Err(fmt.Errorf("status code 403: %s", answer)))
-	if strings.Contains(err.Error(), credential) {
-		t.Errorf("a report that carries the refusal's record prints its credential: %q", err)
 	}
 }

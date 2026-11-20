@@ -130,7 +130,9 @@ func TestTheBoundarysAnswerKeepsOnlyItsRetryAfter(t *testing.T) {
 // request's, which a redirect the answering party named can set, query and all. The designated
 // assertion is redact.url-error/<field>.
 func TestTheBoundarysURLErrorPrintsItsCallAsTheRuleReadsIt(t *testing.T) {
-	answer := &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest}, ErrorCode: "invalid_grant"}
+	// The answer holds the request it came of, as every answer x/oauth2 makes does: its record.
+	request := &http.Request{Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: "idp.example", Path: "/token"}}
+	answer := &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusBadRequest, Request: request}, ErrorCode: "invalid_grant"}
 	for name, wrapped := range map[string]*url.Error{
 		"url": {Op: "Get", URL: "https://" + redacttest.User + ":" + redacttest.Password + "@idp.example/next?session=" + redacttest.Token, Err: answer},
 		"op":  {Op: "Get https://" + redacttest.User + ":" + redacttest.Password + "@idp.example/", URL: "https://api.example/v1", Err: answer},
