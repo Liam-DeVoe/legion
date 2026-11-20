@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -54,6 +55,12 @@ func subjectsWithout(t *testing.T, subject string) []string {
 //   - the send route's send marked with a role whose claim names another session than the
 //     target, or none (answerRoleSend), which keeps the message on the role's kept lane over a
 //     stream that dropped that lane, for the same reason and inside the same window;
+//   - the role claim route's claim that takes a role from another session (roleSetHandler), which
+//     writes a takeover record on the role's takeover lane before the claim
+//     (takeoverTries.beforeTry), over a stream that dropped that lane: the route's own 503 with
+//     Retry-After: 1 for a record that did not store (errTakeoverUnrecorded), whose words carry the
+//     bus's ErrStreamLacksSubject with the subject and the generation, with no claim written and no
+//     record stored, inside the claim's budget (sendRequestBudget);
 //   - the publish route's topic publish, whose topic the stream leaves out: refused 400 before
 //     anything is published (ReachesNoSession), as it was, since no session's consumer would hold
 //     it.
@@ -209,6 +216,43 @@ func TestEveryRouteThatEndsInAStoredPublishAnswersAStreamThatLacksTheSubjectAtOn
 		}
 		if stored := storedOnStream(t, client, bus.Stream, subject); stored != 0 {
 			t.Errorf("the stream holds %d copies on %s, want none", stored, subject)
+		}
+	})
+
+	t.Run("the role claim route's claim that takes a role from another session", func(t *testing.T) {
+		const (
+			role     = "lacks-route-takeover"
+			previous = "ses_lacks_route_previous"
+			claimant = "ses_lacks_route_claimant"
+		)
+		lane := bus.TakeoverSubject(role, previous, "")
+		client, url := connect(t, subjectsWithout(t, bus.TakeoverSubject(role, previous, "attempt")))
+		rig := newSessionConsumerRigOn(t, client, url)
+		rig.subscribe(t, consumerRegistration(previous, "epoch-1"))
+		rig.subscribe(t, consumerRegistration(claimant, "epoch-1"))
+		grantRoleClaim(t, rig.mux, previous, role, "", false)
+		started := time.Now()
+		recorder := postRoleClaim(rig.mux, claimant, role, "", false)
+		elapsed := time.Since(started)
+		var refusal listenerwire.APIError
+		_ = json.Unmarshal(recorder.Body.Bytes(), &refusal)
+		retryAfter := recorder.Header().Get("Retry-After")
+		t.Logf("status %d, Retry-After %q, after %s, body %s", recorder.Code, retryAfter, elapsed, strings.TrimSpace(recorder.Body.String()))
+		if recorder.Code != http.StatusServiceUnavailable || retryAfter != "1" {
+			t.Errorf("status %d, Retry-After %q; want 503 and 1", recorder.Code, retryAfter)
+		}
+		if !strings.HasPrefix(refusal.Error, errTakeoverUnrecorded.Error()) || !strings.Contains(refusal.Error, bus.ErrStreamLacksSubject.Error()) ||
+			!strings.Contains(refusal.Error, `"`+lane) || !strings.Contains(refusal.Error, "generation 1000000") {
+			t.Errorf("the refusal reads %q, want the claim's words for a takeover record that did not store, naming a subject on %s and generation 1000000 through %q", refusal.Error, lane, bus.ErrStreamLacksSubject)
+		}
+		if elapsed >= sendRequestBudget {
+			t.Errorf("the refusal was answered after %s, the route's whole window of %s for it", elapsed, sendRequestBudget)
+		}
+		if holder, err := rig.harness.registry.RoleHolder(role); err != nil || holder != previous {
+			t.Errorf("role %s is held by %q (%v), want %s still: the refused claim writes nothing", role, holder, err, previous)
+		}
+		if records, err := client.TakeoverRecords(context.Background(), role); err != nil || len(records) != 0 {
+			t.Errorf("the stream holds %d takeover records of %s (%v), want none", len(records), role, err)
 		}
 	})
 
