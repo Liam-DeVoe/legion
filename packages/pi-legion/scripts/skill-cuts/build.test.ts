@@ -117,10 +117,10 @@ const PEM = [
   `-----END RSA PRIVATE ${"KEY"}-----`,
 ].join("\n");
 
-/** Each made-up session: its store, and how it changes F1. */
+/** Each made-up session: its store, how it changes F1, and its path when not `/sessions/<name>`. */
 const SESSIONS: Record<
   string,
-  { store: string; change?: (lines: Record<string, unknown>[]) => void }
+  { store: string; change?: (lines: Record<string, unknown>[]) => void; path?: string }
 > = {
   good: { store: "store_a" },
   "not-in-base": { store: "store_a" },
@@ -206,6 +206,82 @@ const SESSIONS: Record<
     },
   },
   "no-role": { store: "store_b" },
+  // A Legion root architect, which the daemon starts with "<KEY> is yours and …".
+  "root-architect": {
+    store: "store_b",
+    change: (lines) =>
+      setText(
+        lines,
+        0,
+        () =>
+          "ACME-12 is yours and its tree is open at generation 1, holding an admission slot while nothing in it runs. Take it up in this turn, as your role says."
+      ),
+  },
+  // A Legion architect of a child issue, whose first message is the daemon's catch-up notice.
+  "child-architect": {
+    store: "store_b",
+    change: (lines) => insertAfter(lines, branchHead(lines), catchUpNotice()),
+  },
+  // A Legion reviewer an architect's Envoy message woke: its role is the claim it holds, beside
+  // the workspace its path names.
+  "claimed-reviewer": {
+    store: "store_b",
+    path: "/sessions/--legion-workspaces-acme-widgets-acme-12--/claimed.jsonl",
+    change: (lines) =>
+      insertAfter(lines, branchHead(lines), {
+        type: "custom",
+        customType: "envoy-role-claim",
+        id: "c1a1d001",
+        timestamp: "2026-11-20T01:59:43.600Z",
+        data: { role: "legion-acme-acme-12-reviewer", session_id: "made-up" },
+      }),
+  },
+  // A subagent's session, whose session_init line records its system prompt and tools.
+  subagent: {
+    store: "store_a",
+    change: (lines) =>
+      insertAfter(lines, branchHead(lines), {
+        type: "session_init",
+        id: "5e551017",
+        timestamp: "2026-11-20T01:59:43.500Z",
+        agent: "task",
+        resolvedModel: "anthropic/claude-sonnet-5-5",
+        task: "Read the alpha steps.",
+        tools: SUBAGENT_TOOLS,
+        systemPrompt: SUBAGENT_PROMPT,
+      }),
+  },
+  "bad-init": {
+    store: "store_a",
+    change: (lines) =>
+      insertAfter(lines, branchHead(lines), {
+        type: "session_init",
+        id: "5e551018",
+        timestamp: "2026-11-20T01:59:43.500Z",
+        agent: "task",
+        tools: SUBAGENT_TOOLS,
+      }),
+  },
+  // FILLERS messages between the skill's read and the step, so the step is in the third window.
+  "third-window": {
+    store: "store_a",
+    change: (lines) => {
+      let previous = lines.filter((line) => line.type === "message")[6] ?? {};
+      for (let n = 0; n < FILLERS; n += 1) {
+        const filler = {
+          type: "message",
+          id: `f111${String(n).padStart(4, "0")}`,
+          timestamp: "2026-11-20T01:59:53.300Z",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: `Still working (${n}).` }],
+          },
+        };
+        insertAfter(lines, previous, filler);
+        previous = filler;
+      }
+    },
+  },
   broken: {
     store: "store_a",
     change: (lines) => lines.splice(6, 0, { notJson: true }),
@@ -225,7 +301,45 @@ function compaction(kept: unknown): Record<string, unknown> {
 }
 
 /** The made-up path of session `name`. */
-const sessionPath = (name: string) => `/sessions/${name}.jsonl`;
+const sessionPath = (name: string) => SESSIONS[name]?.path ?? `/sessions/${name}.jsonl`;
+
+/** F1's `thinking_level_change` line, after which an added line opens the session's branch. */
+function branchHead(lines: Record<string, unknown>[]): Record<string, unknown> {
+  const head = lines.find((line) => line.type === "thinking_level_change");
+  if (head === undefined) throw new Error("F1 has no thinking_level_change line");
+  return head;
+}
+
+/** The daemon's catch-up notice to the architect of a child issue, as an Envoy message line. */
+function catchUpNotice(): Record<string, unknown> {
+  return {
+    type: "custom_message",
+    customType: "envoy-message",
+    id: "e0e0e001",
+    timestamp: "2026-11-20T01:59:43.600Z",
+    display: true,
+    content: [
+      "envoy:",
+      "  from: agent",
+      '  at: "2026-11-20T01:59:43Z"',
+      "  summary: catch-up on ACME-12",
+      "  message:",
+      "    kind: catch-up",
+      "    role: architect",
+      '    reason: "the issues under ACME-12, which you own, at generation 1 as the daemon records them now; start or resume your issue as your role says"',
+      "",
+    ].join("\n"),
+  };
+}
+
+/** The subagent session's recorded system prompt and tools. */
+const SUBAGENT_PROMPT = [
+  "You are a made-up subagent.\n<skills>\n- alpha: Use for the alpha steps.\n- beta: Use for the beta greeting.\n</skills>\n",
+  "<project-context>\nA made-up project.\n</project-context>",
+];
+const SUBAGENT_TOOLS = ["read", "bash", "task"];
+/** The messages the third-window session adds between the skill's read and its step. */
+const FILLERS = 90;
 
 /** Session `name`'s transcript text. */
 function sessionText(name: string): string {
@@ -317,17 +431,23 @@ process.stdout.write(" value \\n-------\\n" + rows.map((row) => " " + JSON.strin
 /** The words the `restated` session's prompt adds, which state LINE in other words. */
 const RESTATED = "Put the result of each step on a single line.";
 
-/** The proposal of the stand-in case reader for the session named in the transcript. */
-function caseAnswer(name: string): unknown {
+/** The proposal of the stand-in case reader for the session named in the transcript: the step is
+ *  the message of the window that calls the `task` tool (F1's message 7), and a window that holds
+ *  none gives no step. */
+function caseAnswer(name: string, transcript: string): unknown {
   const criterion = {
     pass: "The step writes each step's result on one line.",
     fail: "The step spreads a result over more than one line.",
   };
-  if (name === "no-step")
+  const step = transcript
+    .split('<message index="')
+    .find((message) => message.includes("[tool call: task]"))
+    ?.split('"')[0];
+  if (name === "no-step" || step === undefined)
     return { step: null, reason: "No step of the transcript is decided by the skill." };
   const text = name === "not-in-base" ? "2. Write each step's result on two lines." : LINE;
   return {
-    step: { messageIndex: 7, what: "calls the task tool" },
+    step: { messageIndex: Number(step), what: "calls the task tool" },
     line: { file: "SKILL.md", text },
     criterion,
     violatingStep: { text: "Step 4.", toolCalls: [VIOLATING_CALL] },
@@ -356,7 +476,7 @@ function readerAnswer(body: {
   const system = body.system[0]?.text ?? "";
   const user = body.messages[0]?.content.map((part) => part.text).join("\n") ?? "";
   if (system.startsWith("You read part of a coding agent's session")) {
-    return JSON.stringify(caseAnswer(/\(case ([a-z-]+)\)/.exec(user)?.[1] ?? ""));
+    return JSON.stringify(caseAnswer(/\(case ([a-z-]+)\)/.exec(user)?.[1] ?? "", user));
   }
   if (system.startsWith("You pick the tasks of a load test")) {
     const fives = (label: string) => [1, 2, 3, 4, 5].map((n) => written(label, n));
@@ -641,6 +761,8 @@ interface Summary {
     reason?: DropReason;
     detail?: string;
     pulls?: number;
+    context?: string;
+    windows?: number;
     restatementCheck?: { read: number; before: number };
   }[];
   readerSpend: { usd: number; models: Record<string, { calls: number }> };
@@ -667,7 +789,17 @@ describe("build-cases over every made-up session", () => {
     expect(printed.join("")).not.toContain("failed");
     expect(code).toBe(0);
     expect(cases.map((each) => each.source.pathHash).sort()).toEqual(
-      ["good", "compacted-before-read", "secret", "legion"]
+      [
+        "good",
+        "compacted-before-read",
+        "secret",
+        "legion",
+        "root-architect",
+        "child-architect",
+        "claimed-reviewer",
+        "subagent",
+        "third-window",
+      ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
     );
@@ -759,6 +891,67 @@ describe("build-cases over every made-up session", () => {
     expect(evidence["left out: the plugin package:@acme/codegraph"]).toContain("installs it");
   });
 
+  test("a root architect's role comes from the daemon's start, a child's architect's from its catch-up notice, and a reviewer's from its claim beside its workspace; a session of no form is dropped with its first words", () => {
+    const evidence = (name: string) =>
+      Object.fromEntries(byName(name)?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(byName("root-architect")?.context).toBe("legion:ACME:architect-root");
+    expect(evidence("root-architect")["role architect-root"]).toContain('"ACME-12 is yours and …"');
+    expect(byName("child-architect")?.context).toBe("legion:ACME:architect");
+    expect(evidence("child-architect")["role architect"]).toContain(
+      '"the issues under ACME-12, which you own …"'
+    );
+    // The catch-up notice is the first message the child's architect read.
+    expect(byName("child-architect")?.messages[0]?.role).toBe("custom");
+    expect(byName("claimed-reviewer")?.context).toBe("legion:ACME:reviewer");
+    expect(evidence("claimed-reviewer")["role reviewer"]).toContain("legion-acme-acme-12-reviewer");
+    const noRole = summaryOf(out).sessions.find(
+      (each) => each.hash === fileHash(sessionPath("no-role"))
+    );
+    const words = (f1Messages()[0]?.content?.[0]?.text ?? "").replace(/\s+/g, " ").slice(0, 80);
+    expect(words).toHaveLength(80);
+    expect(noRole).toMatchObject({
+      reason: "no-role",
+      detail: `no form names its role; its first user message starts: ${JSON.stringify(words)}`,
+    });
+  });
+
+  test("a subagent's case carries its recorded system prompt and tools, and no context file", () => {
+    const c = byName("subagent");
+    expect(c?.context).toBe("subagent:task");
+    expect(c?.profile.systemPrompt).toEqual(SUBAGENT_PROMPT);
+    expect(c?.profile.tools).toEqual(SUBAGENT_TOOLS);
+    expect(c?.profile.contextFiles).toEqual([]);
+    expect(c?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
+    const items = c?.evidence?.map((each) => each.item) ?? [];
+    expect(items).toContain("subagent task");
+    expect(items).toContain("the recorded system prompt and tools");
+    expect(items).toContain("no context files");
+    // The session_init line is no message: the case's messages are F1's first seven.
+    const messages = f1Messages();
+    expect(c?.messages.map((message) => message.role)).toEqual(
+      messages.slice(0, 7).map((message) => message.role)
+    );
+    expect(c?.messages[2]).toEqual(messages[2] as SessionMessage);
+  });
+
+  test("a step in the third window is found, and the restatement check reads that window and the messages before it", () => {
+    const c = byName("third-window");
+    const messages = f1Messages();
+    expect(c?.realStep).toEqual(messages[7] as SessionMessage);
+    expect(c?.messages).toHaveLength(7 + FILLERS);
+    const record = summaryOf(out).sessions.find(
+      (each) => each.hash === fileHash(sessionPath("third-window"))
+    );
+    // Windows of 40 from the read's call (message 1): 1-40, 41-80, then 81 on, with the 20
+    // messages before 81 and the 16 of the window before the step at 97.
+    expect(record?.windows).toBe(3);
+    expect(record?.restatementCheck).toEqual({ read: 20 + 16, before: 7 + FILLERS });
+    // One reader call a window, each holding some of the session's added messages.
+    expect(
+      recorder.requests.filter((request) => request.body.includes("Still working ("))
+    ).toHaveLength(3);
+  });
+
   test("a compaction before the skill's read leaves the summary, the entries it kept, and those after it", () => {
     const c = byName("compacted-before-read");
     const messages = f1Messages();
@@ -802,12 +995,13 @@ describe("build-cases over every made-up session", () => {
       "no-step": 1,
       "not-cut-copy": 1,
       "no-role": 1,
+      "bad-session-init": 1,
       unparseable: 1,
       "not-in-store": 1,
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(4);
+    expect(summary.casesBuilt).toBe(9);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -815,9 +1009,13 @@ describe("build-cases over every made-up session", () => {
     expect(reasonOf("by-path")).toBe("read-by-path");
     expect(reasonOf("other-copy")).toBe("not-cut-copy");
     expect(reasonOf("compacted")).toBe("read-before-compaction");
-    // Readers ran only where the session got as far as the reader; their spend is counted.
+    expect(reasonOf("bad-init")).toBe("bad-session-init");
+    // Readers ran only where the session got as far as the reader, one call a window; their
+    // spend is counted.
     expect(summary.readerSpend.models["claude-opus-5-5"]?.calls).toBe(
-      Object.keys(SESSIONS).length - ["no-read", "other-copy", "no-role", "broken"].length
+      Object.keys(SESSIONS).length -
+        ["no-read", "other-copy", "no-role", "broken", "bad-init"].length +
+        2
     );
     expect(summary.readerSpend.usd).toBeGreaterThan(0);
   });

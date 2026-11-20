@@ -115,6 +115,29 @@ test("a case with the builder's evidence loads, and an evidence entry with no so
   );
 });
 
+test("a subagent's case, with its recorded system prompt and tools, loads; a context of another shape is refused", () => {
+  const base = alphaDir("base-subagent");
+  const c1 = f1Case("c-subagent");
+  const subagent = {
+    ...c1,
+    context: "subagent:task",
+    profile: {
+      ...c1.profile,
+      contextFiles: [],
+      systemPrompt: ["A made-up prompt.\n<skills>\n- alpha: Use for alpha.\n</skills>\n"],
+      tools: ["read", "bash"],
+    },
+  };
+  expect(loadCases(caseFile("subagent", [subagent]), base)).toEqual([subagent]);
+  const odd = { ...f1Case("c-odd"), context: "subagent:" };
+  const noTools = { ...subagent, id: "c-no-tools", profile: { ...subagent.profile, tools: [] } };
+  const file = caseFile("subagent-odd", [odd, noTools]);
+  expect(() => loadCases(file, base)).toThrow(`case c-odd (${file}:1) is not a case: context`);
+  expect(() => loadCases(file, base)).toThrow(
+    `case c-no-tools (${file}:2) is not a case: profile.tools`
+  );
+});
+
 test("refuses a line that is not a whole line of the base text", () => {
   const base = alphaDir("base-line");
   const part = {

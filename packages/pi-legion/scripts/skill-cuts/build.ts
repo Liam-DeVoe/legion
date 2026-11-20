@@ -9,7 +9,7 @@
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
- *       --seed <n> --copies <R4 out dir> --out <cases.jsonl> [--max <n>]
+ *       --seed <n> --copies <R4 out dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl>
  *
@@ -18,7 +18,8 @@
  * of md5 of its path). A line without `path` is resolved with sessions.sql, one query per store
  * and SESSION_BATCH hashes. The candidates are taken in the order judge.ts's `blindOrder` gives
  * them under `--seed` (the summary records the seed and the order), one case per session, until
- * `--max` cases are built. For each session:
+ * `--max` cases are built, or the readers' dollars at list price reach `--budget-usd`, when no
+ * further reader call starts and the build stops (exit 3) with what it has. For each session:
  *
  * 1. Its transcript is pulled by path with pull.sql, PULL_PAGE parts a call, paging by offset, and
  *    joined with psql-rows.ts's `pullText`. Its lines are parsed as transcript.ts's entries; the
@@ -32,26 +33,35 @@
  *    cases.ts's `skillReadFile` reads one) is found, and the copy its `[Skill file: <path>]` line
  *    names must map, by the prefix table of `--copies`, to the cut repository's copy of the skill.
  * 4. The case reader (`skill-cuts read --prompt case`) reads the skill's base text (`--old`) and the
- *    messages from that read's call on, bounded: at most READER_MESSAGES messages and
- *    READER_CHARS characters; and before them, nearest first, at most READER_EARLIER_MESSAGES
- *    messages and READER_EARLIER_CHARS characters of those after the last compaction or context
- *    reset before the read. Each message is cut to MESSAGE_CHARS (its start and its end kept), and
- *    each read result of the skill's files is left out with a note. It proposes the first step
- *    the skill governs, its message index, the line it exercises, the criterion, a violating step
- *    (a plausible next step that breaks the line and otherwise looks valid), and each message
- *    before the step that states the line's instruction in any wording; or no step. The session's
- *    record in the summary says how many of the messages before the step the reader read, beside
- *    how many the case holds (`restatementCheck`).
+ *    session's messages window by window, one call a window, from the read's call on: each window
+ *    at most READER_MESSAGES messages and READER_CHARS characters, and before it, nearest first,
+ *    at most READER_EARLIER_MESSAGES messages and READER_EARLIER_CHARS characters of those after
+ *    the last compaction or context reset before the window. The next window starts after the last
+ *    message of the one before, until the reader proposes a step, READER_WINDOWS windows are read
+ *    (at most READER_WINDOWS × READER_MESSAGES messages after the read), or the messages end. No
+ *    window reads past the first compaction or context reset after the skill's read: a step after
+ *    it would follow a compaction that follows the read, which drops it, so a session whose
+ *    windows reach it with no step is dropped for that (`read-before-compaction`). Each
+ *    message is cut to MESSAGE_CHARS (its start and its end kept), and each read result of the
+ *    skill's files is left out with a note. The reader proposes the first step the skill governs,
+ *    its message index, the line it exercises, the criterion, a violating step (a plausible next
+ *    step that breaks the line and otherwise looks valid), and each message before the step that
+ *    states the line's instruction in any wording; or no step. The session's record in the summary
+ *    says how many windows the reader read (`windows`), and how many of the messages before the
+ *    step it read in the window that found it, beside how many the case holds
+ *    (`restatementCheck`): a step in a later window has its restatements sought in that window and
+ *    the messages just before it only.
  * 5. The case: `messages` the model's messages before the step, `realStep` the real assistant
  *    message at it, `violatingStep` the reader's violating step as an assistant message (its text,
  *    then each tool call), `skillReads` the index of each read result of a `skill://<skill>` file
  *    in `messages`, `model` and `thinking` the branch's last `model_change` and
  *    `thinking_level_change` before the step, `sessionDigest` its last `system-prompt-digest`
  *    before the step, `sessionStart` the header's timestamp, `source` the store and the SHA-256 of
- *    the path (never the path), `context` the store's (`devbox`, or `legion:<project>` with the
- *    role), and `profile` (below). Where a compaction precedes the step and every read of the
- *    skill follows it, `messages` is what Oh My Pi gives the model after it: the summary as a
- *    `compactionSummary` message, the entries it kept, and those after it.
+ *    the path (never the path), `context` (`devbox`; `legion:<project>:<role>` from the session's
+ *    role, below; or `subagent:<agent>`), and `profile` (below). Where a compaction precedes the
+ *    step and every read of the skill follows it, `messages` is what Oh My Pi gives the model
+ *    after it: the summary as a `compactionSummary` message, the entries it kept, and those after
+ *    it.
  * 6. Secrets are taken out of the case (`removeSecrets`: private keys, bearer tokens, known token
  *    shapes, credentials in URLs, and key, token, secret and password assignments), each counted
  *    in `secretsRemoved`.
@@ -59,23 +69,48 @@
  * A session gives no case, and its drop is counted by reason (DROP_REASONS), when: the store holds
  * no file of its hash; the pull fails or returns nothing; a line is not an entry; it has no
  * header; no read of a skill file succeeded; the first read is not the cut repository's copy; a
- * Legion session's first user message names no phase; the reader's every reply is refused, its
- * call fails, or it finds no step (or a step at or before the read); the line is not a whole line
- * of the base text, or no successful read result of its file before the step holds it; a skill
- * read precedes a compaction (or a context reset) that precedes the step, or the compaction is of
- * a kind this file does not rebuild (one that keeps data for the provider, or keeps no entry of
- * the branch); an assistant message before the step quotes the line (less a leading list, heading
- * or quote mark); the case reader finds a message before the step that states the line's
- * instruction in other words; the model before the step is not an `anthropic/` one, or there is
- * none; a read before the step reads a file of the skill by its path or with a selector, which
- * arms.ts does not rebuild (a path that ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is
- * under the skill's installed directory); a GitHub read the profile needs fails; or the profile's
- * units install no copy of the skill from the cut repository.
+ * subagent's `session_init` line is not whole; no form below names a Legion session's role; the
+ * reader's every reply is refused, its call fails, or it finds no step in the windows it reads (or
+ * a step at or before the read); the line is not a whole line of the base text, or no successful
+ * read result of its file before the step holds it; a skill read precedes a compaction (or a
+ * context reset) that precedes the step, or the compaction is of a kind this file does not rebuild
+ * (one that keeps data for the provider, or keeps no entry of the branch); an assistant message
+ * before the step quotes the line (less a leading list, heading or quote mark); the case reader
+ * finds a message before the step that states the line's instruction in other words; the model
+ * before the step is not an `anthropic/` one, or there is none; a read before the step reads a
+ * file of the skill by its path or with a selector, which arms.ts does not rebuild (a path that
+ * ends `/<skill>/SKILL.md`, holds `skills/<skill>/`, or is under the skill's installed directory);
+ * a GitHub read the profile needs fails; or the profile's units install no copy of the skill from
+ * the cut repository.
  *
- * **The role** of a Legion session is read from its first user message: the daemon starts a phase
- * worker with `Continue <title>. Issue: <key>. Phase: <phase>.` (packages/daemon/internal/workflow/
- * effects.go), and the phase's role is phase.go's `RoleFor` (PHASE_ROLES). The case's `evidence`
- * says so.
+ * **A subagent's session** (a transcript under its parent's, `<parent less .jsonl>/<Name>.jsonl`)
+ * starts with a `session_init` line that records the system prompt it was given (its blocks, the
+ * skill listing among them), its tool names and its agent. Its context is `subagent:<agent>`, and
+ * its profile carries that prompt and those tools, which the capture sends in place of a rebuilt
+ * prompt (capture.ts, "A recorded prompt"); it holds no context files apart, since the recorded
+ * prompt holds them. The case's `evidence` says the prompt is the recorded one.
+ *
+ * **The role** of a top-level session of a Legion store (`legion:<project>`) is read, in this
+ * order, from:
+ * 1. its first user message: the daemon's phase task, `Continue <title>. Issue: <key>. Phase:
+ *    <phase>.` (workflow/effects.go), whose phase is worked by phase.go's `RoleFor` (PHASE_ROLES);
+ *    the start of a tree's root architect, `<KEY> is yours and …` (workflow/architect_start.go),
+ *    `architect-root`; or the controller's start, `Legion controller start: …`
+ *    (daemon/controller.go), `controller`;
+ * 2. else the daemon's catch-up notice to an architect (an Envoy message `from: agent`,
+ *    workflow/catch_up.go): `the tree of <KEY> …` for a tree's root (`architect-root`), `the issues
+ *    under <KEY>, which you own …` for an architect of a child issue (`architect`);
+ * 3. else the Envoy role the session claims (its `envoy-role-claim` entry), the daemon's claim
+ *    token `legion-<project>-<issue>-<role>` (claim/token.go, NewToken), whose issue must be the
+ *    one the session's path names as its workspace (Oh My Pi keeps a session under a directory
+ *    named after its working directory, `--legion-workspaces-<owner>-<name>-<issue>--`), or the
+ *    controller's token `legion-<project>-controller`. An architect's claim alone does not say
+ *    whether its issue is its tree's root, which decides its role prompt
+ *    (`Compose(architect, isRoot)`), so it gives no role.
+ * A session no form places is dropped (`no-role`), with its first words (at most 80 characters)
+ * in the drop's detail. A phase worker that an architect's Envoy message woke (its first user
+ * message comes later, or never) is read from its claim. The case's `evidence` says which form
+ * gave the role.
  *
  * **The profile** (plan, "The case context"), from the files of R4's `copies --out` directory
  * (prefix-table.tsv, installers.tsv, manifests.tsv, repositories.tsv) and the session's own reads,
@@ -93,12 +128,14 @@
  *   working directory (`/legion/workspaces/<owner>/<name>/…`) when it has one at that commit, and
  *   the project's instructions file named by its project file (a `legion-project` manifest of
  *   manifests.tsv, `instructions:` read at that commit, under `<dir>/instructions/`). Each one R4's
- *   output or the session does not name is listed as left out.
+ *   output or the session does not name is listed as left out. A subagent's case has none: its
+ *   recorded prompt holds them. Its units and skills are read as its store's context's are.
  *
  * Output: the case file `--out` (one JSON line per case, written whole after each case and checked
  * with cases.ts's `loadCases` against `--old` at the end) and `<out>.summary.json`: the seed and
  * the order, the sessions tried, each session's outcome and the reader's dollars on it, the cases
- * built, the drops by reason, the bounds, the pulls, and the gateway's spend.
+ * built, the drops by reason, the bounds, the pulls, the gateway's spend, and why the build
+ * stopped, if it did.
  *
  * **build-tasks** (plan, R6 "Load test"): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -110,7 +147,8 @@
  * `{"id", "text", "label", "source": "written"}`. `<out>.summary.json` holds the terms, each query's
  * row count (or its error), the messages offered, each task's reason, and the spend.
  *
- * Exit status: 0 written; 1 failed; 2 refused before any store read or model call.
+ * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
+ * `--budget-usd`, with the cases built so far written.
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
@@ -138,7 +176,7 @@ import {
 import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
 import { frontmatter, type Gh, parseTsv, prefixMatches, spawnGh } from "./copies";
 import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
-import { createGateway, type Gateway, type Spent } from "./gateway";
+import { BudgetSpent, createGateway, type Gateway, type Spent } from "./gateway";
 import { blindOrder, MESSAGE_CHARS, renderMessage, skillReadResults } from "./judge";
 import { PullRow, psqlRows, pullText } from "./psql-rows";
 import {
@@ -152,7 +190,9 @@ import {
 } from "./readers";
 
 /** Exit statuses. */
-export const EXIT = { ok: 0, failed: 1, refused: 2 } as const;
+export const EXIT = { ok: 0, failed: 1, refused: 2, stopped: 3 } as const;
+/** The most windows of a session the case reader reads, one call each, until it proposes a step. */
+export const READER_WINDOWS = 6;
 /** The most messages the case reader reads from the skill's read on. */
 export const READER_MESSAGES = 40;
 /** The most characters of rendered messages the case reader reads from the skill's read on. */
@@ -179,7 +219,10 @@ export const DROP_REASONS = {
   "no-read": "no read of a skill:// file of the skill succeeded",
   "not-cut-copy":
     "the skill's first read is not of the cut repository's copy (by the prefix table)",
-  "no-role": "a Legion session's first user message names no phase",
+  "no-role":
+    "a Legion session's role is in none of the forms the builder reads (module comment, The role)",
+  "bad-session-init":
+    "a subagent's session_init line holds no system prompt, no tool names or no agent name",
   "reader-failed": "the case reader's every reply was refused",
   "reader-error": "the case reader's call failed",
   "no-step": "the case reader found no step the skill governs",
@@ -187,7 +230,7 @@ export const DROP_REASONS = {
   "line-not-in-base": "the proposed line is not a whole line of the base text",
   "line-not-in-read": "no successful read result of the line's file before the step holds the line",
   "read-before-compaction":
-    "a skill read precedes a compaction (or a context reset) that precedes the step",
+    "a skill read precedes a compaction (or a context reset) that precedes the step, or the case reader found no step before the first one after the read (a step after it would be so)",
   "compaction-unsupported":
     "a compaction before the step is of a kind this builder does not rebuild",
   "line-quoted": "an assistant message before the step quotes the line",
@@ -213,6 +256,25 @@ export const PHASE_ROLES: Readonly<Record<string, string>> = {
 };
 /** The daemon's first line to a phase worker (workflow/effects.go, `continueLine`). */
 const CONTINUE_LINE = /^Continue [\s\S]*?\. Issue: [A-Z][A-Z0-9]*-\d+\. Phase: ([a-z_]+)\./;
+/** The daemon's start of a tree's root architect: every shape of `ArchitectStartTask`
+ *  (workflow/architect_start.go) says `<KEY> is yours and`, after a person's decision if any. */
+const ROOT_START = /(?:^|\n\n)([A-Z][A-Z0-9]*-\d+) is yours and /;
+/** The daemon's first message to a project's controller (daemon/controller.go). */
+const CONTROLLER_START = "Legion controller start: ";
+/** The reasons of the daemon's catch-up notice to an architect (workflow/catch_up.go): of a
+ *  tree's root, and of a child it owns. */
+const CATCH_UP_ROOT =
+  /the tree of ([A-Z][A-Z0-9]*-\d+) at generation \d+ as the daemon records it now/;
+const CATCH_UP_CHILD = /the issues under ([A-Z][A-Z0-9]*-\d+), which you own, at generation \d+/;
+/** A role claim's token (claim/token.go): `legion-<project>-<issue project>-<number>-<role>`, or
+ *  `legion-<project>-controller`. */
+const ROLE_TOKEN =
+  /^legion-[a-z0-9]+-([a-z][a-z0-9]*)-(\d+)-(architect|planner|implementer|tester|reviewer|merger)$/;
+const CONTROLLER_TOKEN = /^legion-[a-z0-9]+-controller$/;
+/** The issue of a Legion session's workspace, in its transcript's path: Oh My Pi keeps a session
+ *  under a directory named after its working directory, `--legion-workspaces-<owner>-<name>-<issue,
+ *  lowercased>--`. */
+const WORKSPACE_DIR = /\/--legion-workspaces-[A-Za-z0-9._-]*?-([a-z][a-z0-9]*)-(\d+)--\//;
 /** The custom message kinds Oh My Pi 18.18.6 leaves out of the model's messages (plan mode's). */
 const LEFT_OUT_CUSTOM = new Set(["prewalk-plan", "vibe-mode-context"]);
 /** Where a Legion pod's worker image installs its Oh My Pi packages (worker.Dockerfile). */
@@ -658,6 +720,123 @@ function lastBefore<T>(
 }
 
 // ---------------------------------------------------------------------------------------------
+// The session's role
+
+/** A subagent's `session_init` line: the system prompt and tools its session was given. */
+const SessionInit = z.looseObject({
+  type: z.literal("session_init"),
+  agent: z.string().regex(/^[^:\s]+$/),
+  systemPrompt: z.array(z.string()).min(1),
+  tools: z.array(z.string().min(1)).min(1),
+});
+type SessionInit = z.infer<typeof SessionInit>;
+
+/** The `session_init` line of a subagent's transcript, `undefined` for a session that has none,
+ *  or `null` when it has one that is not of that shape. */
+export function sessionInit(entries: readonly SessionEntry[]): SessionInit | null | undefined {
+  const entry = entries.find((each) => each.type === "session_init");
+  if (entry === undefined) return undefined;
+  const parsed = SessionInit.safeParse(entry);
+  return parsed.success ? parsed.data : null;
+}
+
+const RoleClaim = z.looseObject({ data: z.looseObject({ role: z.string() }) });
+
+/** The role of a Legion session as its context names it (`architect-root` for a tree's root
+ *  architect), with how it was read; or why none was, with the session's first words (at most 80
+ *  characters). The forms, in order (the module comment, "The role"). */
+export function sessionRole(
+  branch: readonly SessionEntry[],
+  messages: readonly SessionMessage[],
+  transcriptPath: string
+): { readonly role: string; readonly how: string } | { readonly detail: string } {
+  const firstUser = messages.find((message) => message.role === "user");
+  const text = firstUser === undefined ? "" : messageText(firstUser);
+  const phase = CONTINUE_LINE.exec(text)?.[1];
+  if (phase !== undefined) {
+    const role = PHASE_ROLES[phase];
+    return role === undefined
+      ? { detail: `the phase ${phase} of its first user message has no role` }
+      : {
+          role,
+          how: `the session's first user message starts the daemon's phase task "Continue … Phase: ${phase}." (workflow/effects.go), and ${phase} is worked by the ${role} (phase.go, RoleFor)`,
+        };
+  }
+  const root = ROOT_START.exec(text)?.[1];
+  if (root !== undefined) {
+    return {
+      role: "architect-root",
+      how: `the session's first user message is the daemon's start of a tree's root architect, "${root} is yours and …" (workflow/architect_start.go)`,
+    };
+  }
+  if (text.startsWith(CONTROLLER_START)) {
+    return {
+      role: "controller",
+      how: `the session's first user message is the daemon's controller start, "${CONTROLLER_START}…" (daemon/controller.go)`,
+    };
+  }
+  for (const message of messages) {
+    if (message.role !== "custom" || message.customType !== "envoy-message") continue;
+    const notice = messageText(message);
+    if (!/^\s*from: agent$/m.test(notice)) continue;
+    const tree = CATCH_UP_ROOT.exec(notice)?.[1];
+    if (tree !== undefined) {
+      return {
+        role: "architect-root",
+        how: `the daemon's catch-up notice to the session reads "the tree of ${tree} …", which the daemon writes to a tree's root architect (workflow/catch_up.go)`,
+      };
+    }
+    const owned = CATCH_UP_CHILD.exec(notice)?.[1];
+    if (owned !== undefined) {
+      return {
+        role: "architect",
+        how: `the daemon's catch-up notice to the session reads "the issues under ${owned}, which you own …", which the daemon writes to the architect of an issue that is not a tree's root (workflow/catch_up.go)`,
+      };
+    }
+  }
+  const workspace = WORKSPACE_DIR.exec(transcriptPath);
+  const workspaceIssue =
+    workspace === null ? undefined : `${workspace[1]?.toUpperCase()}-${workspace[2]}`;
+  for (const entry of branch) {
+    if (entry.type !== "custom" || entry.customType !== "envoy-role-claim") continue;
+    const token = RoleClaim.safeParse(entry).data?.data.role;
+    if (token === undefined) continue;
+    if (CONTROLLER_TOKEN.test(token)) {
+      return {
+        role: "controller",
+        how: `the session claims the Envoy role ${token}, a project controller's claim token (claim/token.go, ControllerToken)`,
+      };
+    }
+    const claimed = ROLE_TOKEN.exec(token);
+    if (claimed === null) continue;
+    const issue = `${claimed[1]?.toUpperCase()}-${claimed[2]}`;
+    const role = claimed[3] ?? "";
+    if (issue !== workspaceIssue) {
+      return {
+        detail: `it claims ${token}, and its path is no workspace of ${issue} (${workspaceIssue ?? "no Legion workspace"})`,
+      };
+    }
+    if (role === "architect") {
+      return {
+        detail: `it claims ${token}, an architect's claim, and no message of the daemon says whether ${issue} is its tree's root`,
+      };
+    }
+    return {
+      role,
+      how: `the session claims the Envoy role ${token}, the daemon's claim token of the ${role} of ${issue} (claim/token.go, NewToken), and its path is the workspace of ${issue}`,
+    };
+  }
+  const firstCustom = messages.find((message) => message.role === "custom");
+  const words = (text !== "" ? text : firstCustom === undefined ? "" : messageText(firstCustom))
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return {
+    detail: `no form names its role; its first ${text !== "" ? "user message" : "message"} starts: ${JSON.stringify(words)}`,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
 // Secrets
 
 /** One secret shape: a pattern whose whole match, or the group `group` of it, is a secret. */
@@ -906,15 +1085,17 @@ class GithubReads {
   }
 }
 
-/** What the profile of one case is built from: its context and project, each successful read
- *  result of its messages whose first line is `[Skill file: <path>]` (any skill's), the session's
- *  start, and its working directory. */
+/** What the profile of one case is built from: its context (the store's, for a subagent) and
+ *  project, each successful read result of its messages whose first line is `[Skill file:
+ *  <path>]` (any skill's), the session's start, its working directory, and whether its session
+ *  recorded its own system prompt (a subagent's), which holds its context files. */
 interface ProfileInput {
   readonly context: string;
   readonly project: string | undefined;
   readonly reads: readonly { readonly index: number; readonly header: string }[];
   readonly sessionStart: string;
   readonly cwd: string | undefined;
+  readonly recordedPrompt: boolean;
 }
 
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
@@ -1064,10 +1245,17 @@ async function caseProfile(
     }
   }
 
-  // Context files: the session repository's AGENTS.md and the project's instructions file.
+  // Context files: the session repository's AGENTS.md and the project's instructions file, which
+  // a recorded prompt already holds as its session had them.
   const contextFiles: { repo: string; path: string }[] = [];
   const legion = input.context.startsWith("legion:");
-  if (legion) {
+  if (input.recordedPrompt) {
+    evidence.push({
+      item: "no context files",
+      source:
+        "the session's recorded system prompt holds the context files it was given, and the capture sends that prompt",
+    });
+  } else if (legion) {
     const workspace = LEGION_WORKSPACE.exec(input.cwd ?? "");
     if (workspace === null) {
       evidence.push({
@@ -1175,7 +1363,7 @@ async function caseProfile(
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --out <cases.jsonl> [--max <n>]";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>";
 
@@ -1228,13 +1416,14 @@ function mustBeFile(file: string, what: string): void {
     throw new Refused(`${what} ${file} is not a file`);
 }
 
-/** The gateway of a builder's readers. */
-function readerGateway(config: SkillCutsConfig, keyFile: string): Gateway {
+/** The gateway of a builder's readers, which starts no call once its spend reaches `budgetUsd`. */
+function readerGateway(config: SkillCutsConfig, keyFile: string, budgetUsd?: number): Gateway {
   return createGateway({
     baseUrl: config.gatewayBaseUrl,
     keyFile,
     concurrency: 1,
     timeoutMs: READER_TIMEOUT_MS,
+    ...(budgetUsd === undefined ? {} : { budgetUsd }),
   });
 }
 
@@ -1307,9 +1496,10 @@ interface CaseRun {
   readonly gateway: Gateway;
 }
 
-/** One session's record in the summary. `restatementCheck`, once the case's messages are known:
- *  how many of the messages before the step the case reader read, beside how many the case holds,
- *  so a check that read only some of them shows it. */
+/** One session's record in the summary. `windows`: how many windows of the session the case
+ *  reader read. `restatementCheck`, once the case's messages are known: how many of the messages
+ *  before the step the case reader read, beside how many the case holds, so a check that read
+ *  only some of them shows it. */
 interface SessionRecord {
   store: string;
   hash: string;
@@ -1319,6 +1509,8 @@ interface SessionRecord {
   outcome: string;
   reason?: DropReason;
   detail?: string;
+  context?: string;
+  windows?: number;
   restatementCheck?: { read: number; before: number };
 }
 
@@ -1368,38 +1560,53 @@ async function caseOf(
     );
   }
 
-  // The context, and for a Legion store, the role from the first user message.
+  // The context: a subagent's, from its recorded session_init; else, for a Legion store, the
+  // session's role (the module comment, "The role").
   let context = store.context;
-  let project: string | undefined;
+  const project = store.context.startsWith("legion:")
+    ? store.context.slice("legion:".length)
+    : undefined;
   const evidence: Evidence[] = [];
-  if (store.context.startsWith("legion:")) {
-    project = store.context.slice("legion:".length);
-    const firstUser = t.items.find((item) => item.message.role === "user");
-    const phase = CONTINUE_LINE.exec(
-      firstUser === undefined ? "" : messageText(firstUser.message)
-    )?.[1];
-    const role = phase === undefined ? undefined : PHASE_ROLES[phase];
-    if (phase === undefined || role === undefined) {
-      return drop(
-        "no-role",
-        phase === undefined
-          ? "the first user message does not start `Continue <title>. Issue: <key>. Phase: <phase>.`"
-          : `the phase ${phase} has no role`
-      );
-    }
-    context = `${store.context}:${role}`;
-    evidence.push({
-      item: `role ${role}`,
-      source: `the session's first user message (not its path) starts the daemon's line "Continue … Phase: ${phase}.", and ${phase} is worked by the ${role} (phase.go, RoleFor)`,
-    });
+  const init = sessionInit(entries);
+  if (init === null) {
+    return drop("bad-session-init", DROP_REASONS["bad-session-init"]);
+  }
+  if (init !== undefined) {
+    context = `subagent:${init.agent}`;
+    evidence.push(
+      {
+        item: `subagent ${init.agent}`,
+        source: `the session's session_init line names the agent ${init.agent}; its parent session is another transcript, and the store's context is ${store.context}`,
+      },
+      {
+        item: "the recorded system prompt and tools",
+        source: `the session's session_init line records the system prompt it was given (${init.systemPrompt.length} blocks) and its ${init.tools.length} tools (${init.tools.join(", ")}); the case carries them, and the capture sends that prompt with only the skill's listing line changed per arm, and only those tools`,
+      }
+    );
+  } else if (project !== undefined) {
+    const found = sessionRole(t.branch, allMessages, transcriptPath);
+    if ("detail" in found) return drop("no-role", found.detail);
+    context = `${store.context}:${found.role}`;
+    evidence.push({ item: `role ${found.role}`, source: found.how });
   } else {
     evidence.push({ item: "no role", source: `the store's context is ${store.context}` });
   }
+  record.context = context;
 
-  // The case reader, on the messages from the read's call on, and, for its search for a
-  // restatement of the line, the messages before it that the model still read there: those after
-  // the last compaction or context reset before the read, nearest first.
+  // The case reader, window by window, from the read's call on: each window at most
+  // READER_MESSAGES messages and READER_CHARS characters, and, for its search for a restatement
+  // of the line, before it at most READER_EARLIER_MESSAGES messages and READER_EARLIER_CHARS
+  // characters of those the model still read there (after the last compaction or context reset
+  // before the window), nearest first. The next window starts after the last message of the one
+  // before, until the reader proposes a step, READER_WINDOWS windows are read, or the messages
+  // run out. No window reads past the first compaction or context reset after the skill's read,
+  // since a step after it is dropped (`read-before-compaction`) whatever the reader says.
   const from = Math.min(first.call, first.index);
+  const firstAt = t.items[first.index]?.at ?? 0;
+  const boundaryAfterRead = t.branch.findIndex(
+    (entry, at) => at > firstAt && (entry.type === "compaction" || entry.type === "reset_boundary")
+  );
+  const readable = t.items.filter((item) => boundaryAfterRead < 0 || item.at < boundaryAfterRead);
   const hidden = skillReadResults(allMessages, run.skill);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
     index,
@@ -1413,51 +1620,79 @@ async function caseOf(
           MESSAGE_CHARS
         ),
   });
-  const windowMessages: CaseInput["messages"] = [];
-  let chars = 0;
-  for (
-    let index = from;
-    index < allMessages.length && windowMessages.length < READER_MESSAGES;
-    index += 1
-  ) {
-    const message = allMessages[index];
-    if (message === undefined) break;
-    const each = shown(index, message);
-    if (windowMessages.length > 0 && chars + each.text.length > READER_CHARS) break;
-    chars += each.text.length;
-    windowMessages.push(each);
-  }
-  const readAt = t.items[from]?.at ?? 0;
-  const boundary = t.branch.findLastIndex(
-    (entry, at) => at < readAt && (entry.type === "compaction" || entry.type === "reset_boundary")
-  );
-  const earlier: CaseInput["messages"] = [];
-  let earlierChars = 0;
-  for (let index = from - 1; index >= 0 && earlier.length < READER_EARLIER_MESSAGES; index -= 1) {
-    const item = t.items[index];
-    if (item === undefined || item.at <= boundary) break;
-    const each = shown(index, item.message);
-    if (earlier.length > 0 && earlierChars + each.text.length > READER_EARLIER_CHARS) break;
-    earlierChars += each.text.length;
-    earlier.unshift(each);
-  }
-  let answer: CaseAnswer;
-  try {
-    const result = await runReader(
-      "case",
-      { skill: run.skill, files: run.files, messages: [...earlier, ...windowMessages] },
-      run.gateway
-    );
-    record.readerUsd += usdOf(result.spent);
-    answer = CaseAnswer.parse(result.answer);
-  } catch (error) {
-    if (error instanceof ReaderFailed) {
-      record.readerUsd += usdOf(error.spent);
-      return drop("reader-failed", error.message);
+  let answer: Exclude<CaseAnswer, { step: null }> | undefined;
+  let read: { earlier: number; window: CaseInput["messages"] } = { earlier: 0, window: [] };
+  let noStep = "";
+  let start = from;
+  let windows = 0;
+  while (answer === undefined && windows < READER_WINDOWS && start < readable.length) {
+    windows += 1;
+    record.windows = windows;
+    const windowMessages: CaseInput["messages"] = [];
+    let chars = 0;
+    for (
+      let index = start;
+      index < readable.length && windowMessages.length < READER_MESSAGES;
+      index += 1
+    ) {
+      const item = readable[index];
+      if (item === undefined) break;
+      const each = shown(index, item.message);
+      if (windowMessages.length > 0 && chars + each.text.length > READER_CHARS) break;
+      chars += each.text.length;
+      windowMessages.push(each);
     }
-    return drop("reader-error", messageFor(error));
+    const startAt = t.items[start]?.at ?? 0;
+    const boundary = t.branch.findLastIndex(
+      (entry, at) =>
+        at < startAt && (entry.type === "compaction" || entry.type === "reset_boundary")
+    );
+    const earlier: CaseInput["messages"] = [];
+    let earlierChars = 0;
+    for (
+      let index = start - 1;
+      index >= 0 && earlier.length < READER_EARLIER_MESSAGES;
+      index -= 1
+    ) {
+      const item = t.items[index];
+      if (item === undefined || item.at <= boundary) break;
+      const each = shown(index, item.message);
+      if (earlier.length > 0 && earlierChars + each.text.length > READER_EARLIER_CHARS) break;
+      earlierChars += each.text.length;
+      earlier.unshift(each);
+    }
+    let given: CaseAnswer;
+    try {
+      const result = await runReader(
+        "case",
+        { skill: run.skill, files: run.files, messages: [...earlier, ...windowMessages] },
+        run.gateway
+      );
+      record.readerUsd += usdOf(result.spent);
+      given = CaseAnswer.parse(result.answer);
+    } catch (error) {
+      if (error instanceof BudgetSpent) throw error;
+      if (error instanceof ReaderFailed) {
+        record.readerUsd += usdOf(error.spent);
+        return drop("reader-failed", error.message);
+      }
+      return drop("reader-error", messageFor(error));
+    }
+    if (given.step === null) noStep = given.reason;
+    else answer = given;
+    read = { earlier: earlier.length, window: windowMessages };
+    start = (windowMessages.at(-1)?.index ?? start) + 1;
   }
-  if (answer.step === null) return drop("no-step", answer.reason);
+  if (answer === undefined) {
+    const extent = `${windows} window${windows === 1 ? "" : "s"} read, to message ${start - 1} of ${allMessages.length}`;
+    if (boundaryAfterRead >= 0 && start >= readable.length) {
+      return drop(
+        "read-before-compaction",
+        `the case reader found no step before the ${t.branch[boundaryAfterRead]?.type} after the skill's read, and a step after it would follow a skill read that precedes it (${extent}): ${noStep}`
+      );
+    }
+    return drop("no-step", `${noStep} (${extent})`);
+  }
   const stepIndex = answer.step.messageIndex;
   if (stepIndex <= first.index) {
     return drop("step-not-after-read", `step ${stepIndex}, read result ${first.index}`);
@@ -1487,12 +1722,11 @@ async function caseOf(
   if (!model.startsWith("anthropic/")) return drop("model-not-anthropic", model);
 
   // The messages before the step, and the checks of the line against them.
-  const firstAt = t.items[first.index]?.at ?? 0;
   const before = messagesBefore(t, stepItem.at, firstAt);
   if ("drop" in before) return drop(before.drop, before.detail);
   const messages = before.messages;
   record.restatementCheck = {
-    read: earlier.length + windowMessages.filter((each) => each.index < stepIndex).length,
+    read: read.earlier + read.window.filter((each) => each.index < stepIndex).length,
     before: messages.length,
   };
   const caseReads = skillReads(messages, run.skill);
@@ -1541,7 +1775,7 @@ async function caseOf(
   let profiled: { profile: Profile; evidence: Evidence[] };
   try {
     profiled = await caseProfile(run.copies, run.github, {
-      context,
+      context: store.context,
       project,
       reads: messages.flatMap((message, index) => {
         if (
@@ -1556,6 +1790,7 @@ async function caseOf(
       }),
       sessionStart,
       cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
+      recordedPrompt: init !== undefined,
     });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
@@ -1579,6 +1814,7 @@ async function caseOf(
   const hash = pathHash(transcriptPath);
   const secrets = scrubbed({
     messages,
+    systemPrompt: init?.systemPrompt,
     realStep: stepItem.message,
     violatingStep: {
       role: "assistant",
@@ -1606,7 +1842,10 @@ async function caseOf(
     model,
     thinking: thinking.data,
     context,
-    profile: profiled.profile,
+    profile:
+      init === undefined || secrets.value.systemPrompt === undefined
+        ? profiled.profile
+        : { ...profiled.profile, systemPrompt: secrets.value.systemPrompt, tools: init.tools },
     messages: secrets.value.messages,
     skillReads: caseReads.map((read) => read.index),
     realStep: secrets.value.realStep,
@@ -1635,6 +1874,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       copies: { type: "string" },
       out: { type: "string" },
       max: { type: "string" },
+      "budget-usd": { type: "string" },
     },
     BUILD_CASES_USAGE
   );
@@ -1647,6 +1887,11 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const max = values.max === undefined ? Number.POSITIVE_INFINITY : Number(values.max);
   if (values.max !== undefined && (!/^\d+$/.test(values.max) || max < 1)) {
     throw new Refused(`--max ${values.max} is not a whole number of 1 or more`);
+  }
+  const budget = values["budget-usd"];
+  const budgetUsd = budget === undefined ? undefined : Number(budget);
+  if (budget !== undefined && (budget.trim() === "" || !(Number(budgetUsd) >= 0))) {
+    throw new Refused(`--budget-usd ${budget} is not a number of dollars of 0 or more`);
   }
   const config = configFrom(given.config);
   const cut = config.cuts.find((each) => each.id === given.cut);
@@ -1683,7 +1928,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     files,
     copies,
     github: new GithubReads(io.gh, copies.branches),
-    gateway: readerGateway(config, given["key-file"]),
+    gateway: readerGateway(config, given["key-file"], budgetUsd),
   };
   const summaryFile = `${given.out}.summary.json`;
   const cases: Case[] = [];
@@ -1691,6 +1936,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   const sessions: SessionRecord[] = [];
   const drops: Partial<Record<DropReason, number>> = {};
   let pulls = 0;
+  let stopped: string | undefined;
   const write = () => {
     writeWhole(given.out, cases.map((each) => `${JSON.stringify(each)}\n`).join(""));
     writeWhole(
@@ -1703,12 +1949,17 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
           seed: given.seed,
           order: order.map(({ store, hash }) => ({ store, hash })),
           bounds: {
+            readerWindows: READER_WINDOWS,
             readerMessages: READER_MESSAGES,
             readerChars: READER_CHARS,
+            readerEarlierMessages: READER_EARLIER_MESSAGES,
+            readerEarlierChars: READER_EARLIER_CHARS,
             messageChars: MESSAGE_CHARS,
             pullPage: PULL_PAGE,
             max: Number.isFinite(max) ? max : null,
+            budgetUsd: budgetUsd ?? null,
           },
+          stopped: stopped ?? null,
           sessionsTried: sessions.length,
           casesBuilt: cases.length,
           drops,
@@ -1751,7 +2002,16 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       if (pulled.text === "") return { drop: "pull-failed", detail: "the pull returned no row" };
       return caseOf(run, store, transcriptPath, pulled.text, record);
     };
-    const outcome = await sessionOutcome();
+    let outcome: Outcome;
+    try {
+      outcome = await sessionOutcome();
+    } catch (error) {
+      if (!(error instanceof BudgetSpent)) throw error;
+      stopped = `the readers' spend reached --budget-usd ${budget}: ${error.message}`;
+      record.outcome = "stopped before its case was built: the budget is spent";
+      write();
+      break;
+    }
     if ("drop" in outcome) {
       record.outcome = "dropped";
       record.reason = outcome.drop;
@@ -1772,6 +2032,8 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         thinking: built.thinking,
         context: built.context,
         step: outcome.step,
+        recordedPrompt: built.profile.systemPrompt !== undefined,
+        windows: record.windows,
         messages: built.messages.length,
         skillReads: built.skillReads,
         baseFile: built.baseFile,
@@ -1795,6 +2057,10 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   io.out(
     `build-cases: ${cases.length} cases of ${sessions.length} sessions tried, $${usd.toFixed(4)} of readers at list price; written to ${given.out} and ${summaryFile}\n`
   );
+  if (stopped !== undefined) {
+    io.err(`build-cases: stopped: ${stopped}`);
+    return EXIT.stopped;
+  }
   return EXIT.ok;
 }
 

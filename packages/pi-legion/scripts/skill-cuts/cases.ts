@@ -32,12 +32,18 @@ export type ProfileSkill = z.infer<typeof ProfileSkill>;
 /** What the capture installs for a case, the same in every arm but the case's skill (plan, "The
  * case context"): the installed skills, the plugins the session's context installed at its
  * start, the context files (the repository's `AGENTS.md`, a Legion project's instructions file),
- * and, for a Legion context, the role prompt that goes to `--append-system-prompt`. */
+ * and, for a Legion context, the role prompt that goes to `--append-system-prompt`. A subagent's
+ * session records its own system prompt and tools (its `session_init` line), so its case carries
+ * them: `systemPrompt`, the recorded blocks the capture sends in place of a rebuilt prompt, with
+ * only the case skill's line of their skill listing changed per arm, and `tools`, the recorded
+ * tool names the capture restricts Oh My Pi's tools to. */
 export const Profile = z.strictObject({
   skills: z.array(ProfileSkill),
   plugins: z.array(z.strictObject({ ...RepoPath, name: z.string().min(1) })),
   contextFiles: z.array(z.strictObject(RepoPath)),
   appendSystemPrompt: z.string().min(1).optional(),
+  systemPrompt: z.array(z.string()).min(1).optional(),
+  tools: z.array(z.string().min(1)).min(1).optional(),
 });
 export type Profile = z.infer<typeof Profile>;
 
@@ -57,9 +63,12 @@ const InsidePath = z
  * `lineNumber` (from 1) and `lineCount` (the lines of `baseFile`; a final newline ends the last
  * line, it does not start one). `criterion` says what the line requires at this step, when a reply
  * passes and when it fails; it is written before any run. `model` and `thinking` are the
- * transcript's last `model_change` and `thinking_level_change` before the step. `messages` are the
- * session's Oh My Pi messages up to the step, `skillReads` the indices in `messages` of the read
- * results of this skill's files, and `realStep` the real agent's next assistant message.
+ * transcript's last `model_change` and `thinking_level_change` before the step. `context` is
+ * `devbox`, `legion:<project>:<role>` (`architect-root` for a tree's root architect), or
+ * `subagent:<agent>` for a subagent's session, whose profile carries its recorded system prompt
+ * and tools. `messages` are the session's Oh My Pi messages up to the step, `skillReads` the
+ * indices in `messages` of the read results of this skill's files, and `realStep` the real
+ * agent's next assistant message.
  * `violatingStep` is an assistant message the case reader wrote before any run: a plausible next
  * step that breaks the line and otherwise looks like a valid one (the same goal, the same kind of
  * tool calls); the judge must fail it (judge.ts, `judgeControls`). `source`
@@ -84,7 +93,7 @@ export const Case = z.strictObject({
   criterion: z.strictObject({ pass: z.string().min(1), fail: z.string().min(1) }),
   model: z.string().min(1),
   thinking: Thinking,
-  context: z.string().regex(/^(legion:[^:\s]+:[^:\s]+|devbox)$/),
+  context: z.string().regex(/^(legion:[^:\s]+:[^:\s]+|devbox|subagent:[^:\s]+)$/),
   profile: Profile,
   messages: z.array(SessionMessage),
   skillReads: z.array(z.int().nonnegative()),

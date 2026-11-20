@@ -34,6 +34,17 @@
  * sets `hide` or `disable-model-invocation` is installed but never listed, so it gets no hint. A
  * capture whose listing is not exactly the profile's listed skills under their hints is refused.
  *
+ * **A recorded prompt.** A subagent's case carries the system prompt and tools its session
+ * recorded (`profile.systemPrompt`, `profile.tools`), and its capture sends those blocks in place
+ * of the prompt Oh My Pi builds: the replay hook's `before_agent_start` handler returns them
+ * (`SKILL_CUTS_SYSTEM_PROMPT`), with only the case skill's line of the recorded skill listing
+ * (`- <skill>: <hint>`) changed (`armPromptBlocks`): the arm's hint, written and cached as above,
+ * where the arm lists the skill, and the line removed where it does not (`none`, or an arm whose
+ * text hides the skill). A recording that does not list the skill is sent as recorded in every
+ * arm. `--tools` restricts Oh My Pi's tools to the recorded names. The body's system prompt must
+ * be those blocks byte for byte, or the capture is refused; a recorded tool the body does not
+ * define, or one it defines beyond them, is kept in the record (`tools`).
+ *
  * **The digests.** The record holds the session's `system-prompt-digest` (`sessionDigest`, from
  * the case) and the capture's own, `promptDigest`, which is Oh My Pi's algorithm
  * (packages/coding-agent/src/session/session-tools.ts, `systemPromptDigest`): a wyhash chain over
@@ -61,7 +72,7 @@ import type { Case } from "./cases";
 import { buildContext, type ContextRecord, cacheKey, legionRole, type RepoSource } from "./context";
 import type { Gateway, MessagesBody } from "./gateway";
 import { messageSse, type RecordedRequest, sseResponse, startRecorder } from "./recorder";
-import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE } from "./replay-hook";
+import { HOOK_LOG_VARIABLE, MESSAGES_VARIABLE, SYSTEM_PROMPT_VARIABLE } from "./replay-hook";
 
 /** The scratch profile's name. */
 const PROFILE = "capture";
@@ -88,6 +99,16 @@ const CAPTURE_TRIES = 3;
 /** An Oh My Pi run that ended with no model request a capture can take. */
 class RunEnded extends Error {}
 
+/** The names of the tools a body defines, in order. */
+function bodyToolNames(body: MessagesBody): string[] {
+  return Array.isArray(body.tools)
+    ? body.tools.flatMap((tool: unknown) => {
+        const name = typeof tool === "object" && tool !== null ? Reflect.get(tool, "name") : null;
+        return typeof name === "string" ? [name] : [];
+      })
+    : [];
+}
+
 /** The tools a body defines and the `xd://` devices its system prompt lists, the Legion and
  *  Envoy plugins' among them, and each plugin tool left out with why. */
 function pluginTools(
@@ -97,12 +118,7 @@ function pluginTools(
   role: { readonly role: string } | undefined,
   stderr: string
 ): CaptureRecord["pluginTools"] {
-  const tools = Array.isArray(body.tools)
-    ? body.tools.flatMap((tool: unknown) => {
-        const name = typeof tool === "object" && tool !== null ? Reflect.get(tool, "name") : null;
-        return typeof name === "string" ? [name] : [];
-      })
-    : [];
+  const tools = bodyToolNames(body);
   const devices = systemTexts(body).flatMap((text) =>
     [...text.matchAll(/^- xd:\/\/([A-Za-z0-9_-]+)/gm)].map((match) => match[1] ?? "")
   );
@@ -231,6 +247,22 @@ export interface CaptureRecord {
   readonly scratch: string;
   /** Each skill the body lists, with the text it lists it under. */
   readonly listing: readonly { readonly name: string; readonly hint: string }[];
+  /** For a case whose profile carries a recorded system prompt: how many blocks it holds, what
+   *  became of the case skill's listing line in this arm, and the file of the blocks sent; or
+   *  null. */
+  readonly recordedPrompt: {
+    readonly blocks: number;
+    readonly line: ListingLine;
+    readonly file: string;
+  } | null;
+  /** For a case whose profile carries recorded tool names: those names, the body's, each recorded
+   *  one the body does not define, and each the body defines beyond them; or null. */
+  readonly tools: {
+    readonly recorded: readonly string[];
+    readonly sent: readonly string[];
+    readonly missing: readonly string[];
+    readonly extra: readonly string[];
+  } | null;
   /** Each installed skill's hint: the runner's cache key, Oh My Pi's key, and whether this
    *  capture had it written. */
   readonly hints: readonly {
@@ -351,6 +383,37 @@ export function skillListing(body: unknown): Map<string, string> {
     }
   }
   return listing;
+}
+
+/** What became of the case skill's line of a recorded skill listing in an arm's prompt. */
+export type ListingLine = "replaced" | "removed" | "not listed";
+
+/** The recorded system prompt `blocks` as an arm sends them: the first `<skills>` listing line of
+ *  `skill` (`- <skill>: <text>`) under `hint`, or left out when `hint` is undefined (the arm lists
+ *  no such skill); every other byte as recorded. A recording that lists no line of `skill` is
+ *  given back as it is (`not listed`). */
+export function armPromptBlocks(
+  blocks: readonly string[],
+  skill: string,
+  hint: string | undefined
+): { blocks: string[]; line: ListingLine } {
+  const prefix = `- ${skill}: `;
+  for (const [index, text] of blocks.entries()) {
+    const section = /<skills>\n([\s\S]*?)<\/skills>/.exec(text);
+    if (section?.[1] === undefined) continue;
+    const start = section.index + "<skills>\n".length;
+    const lines = section[1].split("\n");
+    const at = lines.findIndex((line) => line.startsWith(prefix));
+    if (at === -1) continue;
+    if (hint === undefined) lines.splice(at, 1);
+    else lines[at] = `${prefix}${hint}`;
+    const changed = text.slice(0, start) + lines.join("\n") + text.slice(start + section[1].length);
+    return {
+      blocks: blocks.map((each, n) => (n === index ? changed : each)),
+      line: hint === undefined ? "removed" : "replaced",
+    };
+  }
+  return { blocks: [...blocks], line: "not listed" };
 }
 
 /** `model` with its provider, `anthropic` when it names none. */
@@ -662,8 +725,13 @@ export async function captureBody(
   let runs = 0;
   let exit: CaptureRecord["exit"] = { code: 0, signal: null, reason: "" };
   let hookLog = "";
+  // A recorded prompt and tools (a subagent's case): the capture run sends the arm's blocks and
+  // only the recorded tools. The blocks file is written once the arm's hint is known.
+  const recordedTools = c.profile.tools;
+  let promptFile: string | undefined;
   /** One Oh My Pi run. The hint run holds no pane environment: the skill listing does not depend
-   *  on it, and its role claim would end the run before the hints are written. */
+   *  on it, and its role claim would end the run before the hints are written. It holds no
+   *  recorded prompt or tools either, so Oh My Pi lists, and asks a hint for, each skill. */
   const runOmp = async (withPane: boolean): Promise<number> => {
     const runStarted = performance.now();
     runs += 1;
@@ -695,6 +763,7 @@ export async function captureBody(
         ...(context.appendSystemPrompt === undefined
           ? []
           : ["--append-system-prompt", context.appendSystemPrompt]),
+        ...(recordedTools === undefined || hintRun ? [] : ["--tools", recordedTools.join(",")]),
         PLACEHOLDER,
       ],
       {
@@ -711,6 +780,7 @@ export async function captureBody(
             ? {}
             : { PI_CONFIG_FILES: options.configFiles.join(":") }),
           ...(withPane ? paneEnvironment : {}),
+          ...(promptFile === undefined || hintRun ? {} : { [SYSTEM_PROMPT_VARIABLE]: promptFile }),
         },
         stdin: "ignore",
         stdout: Bun.file(out),
@@ -787,6 +857,19 @@ export async function captureBody(
         entry.written = true;
       }
     }
+    // A recorded prompt: its blocks with the case skill's listing line as this arm lists it.
+    const recorded =
+      c.profile.systemPrompt === undefined
+        ? undefined
+        : armPromptBlocks(
+            c.profile.systemPrompt,
+            c.skill,
+            hints.find((entry) => entry.skill.name === c.skill)?.cached?.hint
+          );
+    if (recorded !== undefined) {
+      promptFile = path.join(root, `system-prompt.${arm.name}.json`);
+      await writeWhole(promptFile, JSON.stringify(recorded.blocks));
+    }
     // A Legion pane's run can end before its turn's request (its role claim exits the process
     // when it fails), so such a run is made again, at most CAPTURE_TRIES times in all.
     let captureRunMs = 0;
@@ -806,25 +889,41 @@ export async function captureBody(
     }
     const body = JSON.parse(turn.body) as MessagesBody;
 
-    // The listing must be the installed skills Oh My Pi lists, each under its hint.
+    // A recorded prompt must be sent as the arm's blocks, byte for byte. Otherwise the listing
+    // must be the installed skills Oh My Pi lists, each under its hint.
     const listing = skillListing(body);
     const faults: string[] = [];
-    for (const { skill, cached } of hints) {
-      const shown = listing.get(skill.name);
-      if (shown === undefined) faults.push(`it does not list ${skill.name}`);
-      else if (shown !== cached?.hint) {
-        faults.push(`it lists ${skill.name} as ${JSON.stringify(shown)}, not under its hint`);
+    if (recorded !== undefined) {
+      const sent = systemTexts(body);
+      if (sent.length !== recorded.blocks.length) {
+        faults.push(
+          `it sends ${sent.length} system blocks, not the ${recorded.blocks.length} recorded`
+        );
       }
-    }
-    const names = new Set(listed.map((skill) => skill.name));
-    for (const name of listing.keys()) {
-      if (!names.has(name)) faults.push(`it lists ${name}, which the profile does not list`);
+      for (const [index, block] of recorded.blocks.entries()) {
+        if (sent[index] !== undefined && sent[index] !== block) {
+          faults.push(`its system block ${index} is not the arm's recorded block`);
+        }
+      }
+    } else {
+      for (const { skill, cached } of hints) {
+        const shown = listing.get(skill.name);
+        if (shown === undefined) faults.push(`it does not list ${skill.name}`);
+        else if (shown !== cached?.hint) {
+          faults.push(`it lists ${skill.name} as ${JSON.stringify(shown)}, not under its hint`);
+        }
+      }
+      const names = new Set(listed.map((skill) => skill.name));
+      for (const name of listing.keys()) {
+        if (!names.has(name)) faults.push(`it lists ${name}, which the profile does not list`);
+      }
     }
     if (faults.length > 0) {
       throw new Error(
         `case ${c.id} arm ${arm.name}: the captured body is refused: ${faults.join("; ")}`
       );
     }
+    const sentTools = bodyToolNames(body);
 
     const record: CaptureRecord = {
       case: c.id,
@@ -841,6 +940,19 @@ export async function captureBody(
       captureDigest: promptDigest(body),
       scratch: root,
       listing: [...listing].map(([name, hint]) => ({ name, hint })),
+      recordedPrompt:
+        recorded === undefined || promptFile === undefined
+          ? null
+          : { blocks: recorded.blocks.length, line: recorded.line, file: promptFile },
+      tools:
+        recordedTools === undefined
+          ? null
+          : {
+              recorded: recordedTools,
+              sent: sentTools,
+              missing: recordedTools.filter((name) => !sentTools.includes(name)),
+              extra: sentTools.filter((name) => !recordedTools.includes(name)),
+            },
       hints: hints.map(({ skill, key, cached, written: was }) => ({
         skill: skill.name,
         hint: cached?.hint ?? "",

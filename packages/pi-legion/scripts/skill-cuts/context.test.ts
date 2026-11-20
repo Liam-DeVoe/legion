@@ -128,12 +128,23 @@ func (c *Composer) Compose(role claim.Role, isRoot bool) (Parts, error) {
 	}
 	return Parts{}, fmt.Errorf("unsupported role %q", role)
 }
+
+func (c *Composer) ControllerPromptPaths(headless bool) ([]string, error) {
+	launch := "controller-interactive.md"
+	if headless {
+		launch = "controller-headless.md"
+	}
+	return []string{filepath.Join(c.sharedDir, "controller-root.md"), filepath.Join(c.goDir, launch)}, nil
+}
 `,
   "packages/daemon/internal/prompts/roles/core/common.md": "Core part.\n",
   "packages/daemon/internal/prompts/roles/implementer.md": "Implementer part.\n",
   "packages/daemon/internal/prompts/roles/architect-root.md": "Root architect part.\n",
+  "packages/daemon/internal/prompts/roles/controller-root.md": "Controller part.\n",
   "packages/daemon/internal/prompts/go/worker.md": "Worker part.\n\n",
   "packages/daemon/internal/prompts/go/architect.md": "Architect part.\n",
+  "packages/daemon/internal/prompts/go/controller-headless.md": "Headless controller part.\n",
+  "packages/daemon/internal/prompts/go/controller-interactive.md": "Interactive controller part.\n",
 };
 
 /** A made-up plugin that builds a bundle, ships `dist`, and names `dist/skills` for its skills,
@@ -372,5 +383,28 @@ describe.skipIf(goMissing && !onActions)("a Legion context", () => {
     const kinds = again.record.builds.filter((build) => build.kind !== "tree");
     expect(kinds.every((build) => build.hit)).toBe(true);
     expect(kinds.some((build) => build.kind === "compose")).toBe(true);
+  }, 300_000);
+
+  test("a controller's role prompt is the parts of a headless controller, and the instructions file follows it", async () => {
+    const root = path.join(dir, "controller");
+    const c = aCase("legion:acme:controller", {
+      plugins: [
+        { repo: "acme/legion", commit: COMMIT, path: "plugins/skills-only", name: "skills-only" },
+      ],
+      contextFiles: [{ repo: "acme/infra", commit: COMMIT, path: "legion/instructions/acme.md" }],
+    });
+    const { options, arm } = setUp(root, c);
+    const built = await buildContext(c, arm, options);
+    expect(readFileSync(built.appendSystemPrompt ?? "", "utf8")).toBe(
+      "Controller part.\nHeadless controller part.\n\n# Acme instructions\n\nWork the acme way."
+    );
+    expect(built.record.rolePrompt).toMatchObject({
+      role: "controller",
+      isRoot: false,
+      parts: [
+        "packages/daemon/internal/prompts/roles/controller-root.md",
+        "packages/daemon/internal/prompts/go/controller-headless.md",
+      ],
+    });
   }, 300_000);
 });

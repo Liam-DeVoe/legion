@@ -33,9 +33,12 @@
  *   names at the commit of the plugin repository that holds that file: Compose answers with paths
  *   of the parts it embeds, so it is run once per distinct `prompts.go` blob and role, by a small
  *   Go test written into the cached copy of the repository (never the workspace) and removed after
- *   (`composes/<blob>-<role>`), and each part is then read at the session's commit. The
- *   daemon's addressing sentence, which sits between the two, names the session's claim, which a
- *   case does not hold, so it is left out and the record says so.
+ *   (`composes/<blob>-<role>`), and each part is then read at the session's commit. For the
+ *   controller (`legion:<project>:controller`) the parts are those `ControllerPromptPaths(true)`
+ *   names: a Legion store's controller runs headless in a pod. The daemon's addressing sentence,
+ *   which sits between the two, names the session's claim, which a case does not hold, so it is
+ *   left out and the record says so. A subagent's context (`subagent:<agent>`) has no role prompt:
+ *   its case carries the system prompt its session recorded, which the capture sends whole.
  *
  * `source` reads the repositories: `ghSource` with read-only `gh api` calls (a directory from the
  * commit's tree and its blobs, a whole repository from its tarball), `localSource` from a
@@ -501,8 +504,14 @@ export function legionRole(
 }
 
 /** The Go test that asks the composer of `module` for a role's parts: it writes the paths Compose
- *  answers, relative to the state directory it gave `New`, as a JSON list. */
-function composeTest(module: string): string {
+ *  answers, relative to the state directory it gave `New`, as a JSON list. For the controller it
+ *  asks `ControllerPromptPaths(true)`, the parts of a controller the daemon runs headless in a pod,
+ *  as it runs every controller of a Legion store's sessions. */
+function composeTest(module: string, controller: boolean): string {
+  const call = controller
+    ? "paths, err := composer.ControllerPromptPaths(true)"
+    : `parts, err := composer.Compose(claim.Role(os.Getenv("SKILL_CUTS_ROLE")), os.Getenv("SKILL_CUTS_ROOT") == "1")
+\tpaths := parts.RolePromptPaths`;
   return `package zzskillcuts
 
 import (
@@ -510,8 +519,7 @@ import (
 \t"os"
 \t"path/filepath"
 \t"testing"
-
-\t"${module}/internal/claim"
+${controller ? "" : `\n\t"${module}/internal/claim"`}
 \t"${module}/internal/prompts"
 )
 
@@ -521,12 +529,12 @@ func TestSkillCutsCompose(t *testing.T) {
 \tif err != nil {
 \t\tt.Fatal(err)
 \t}
-\tparts, err := composer.Compose(claim.Role(os.Getenv("SKILL_CUTS_ROLE")), os.Getenv("SKILL_CUTS_ROOT") == "1")
+\t${call}
 \tif err != nil {
 \t\tt.Fatal(err)
 \t}
-\trelative := make([]string, 0, len(parts.RolePromptPaths))
-\tfor _, part := range parts.RolePromptPaths {
+\trelative := make([]string, 0, len(paths))
+\tfor _, part := range paths {
 \t\tname, err := filepath.Rel(state, part)
 \t\tif err != nil {
 \t\t\tt.Fatal(err)
@@ -567,7 +575,10 @@ async function composeParts(
   const out = path.join(state, "parts.json");
   try {
     mkdirSync(testDir, { recursive: true });
-    writeFileSync(path.join(testDir, "compose_test.go"), composeTest(module));
+    writeFileSync(
+      path.join(testDir, "compose_test.go"),
+      composeTest(module, role === "controller")
+    );
     await mustRun(
       ["go", "test", "-count=1", "-run", "^TestSkillCutsCompose$", `./internal/${name}/`],
       {

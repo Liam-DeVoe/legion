@@ -147,16 +147,21 @@ test.
 ```
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
   --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
-  --copies <copies out dir> --out <cases.jsonl> [--max <n>]
+  --copies <copies out dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --store <db>... --out <tasks.jsonl>
 ```
 
 `build.ts`: `build-cases` pulls each candidate session through the config's `psqlCommand`, has
-the `case` reader propose the step the skill governs, and writes the cases `loadCases` reads,
-each with the evidence for its rebuilt context; `build-tasks` writes the need and near-miss tasks
-of a load test from the first requests of real sessions. The case file holds real session text,
-so it stays outside the repository.
+the `case` reader propose the step the skill governs, reading the session from the skill's read
+on in windows of at most 40 messages, at most 6 windows a session, and writes the cases
+`loadCases` reads, each with the evidence for its rebuilt context; `build-tasks` writes the need
+and near-miss tasks of a load test from the first requests of real sessions. A Legion session's
+role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
+beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
+its `session_init` line recorded, and its capture sends that prompt with only the skill's
+listing line changed per arm. `--budget-usd` stops the build once its readers cost that much at
+list price (exit 3). The case file holds real session text, so it stays outside the repository.
 
 ## The request log
 

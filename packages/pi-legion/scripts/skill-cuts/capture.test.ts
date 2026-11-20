@@ -7,6 +7,7 @@ import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import { SessionEntry, type SessionMessage, stripSkillHeader } from "../skill-scenarios/transcript";
 import { type Arm, type ArmName, buildArm } from "./arms";
 import {
+  armPromptBlocks,
   type Capture,
   type CaptureOptions,
   captureBody,
@@ -58,6 +59,18 @@ const messages: SessionMessage[] = readFileSync(F1, "utf8")
   .filter((line) => line.trim() !== "")
   .map((line) => SessionEntry.parse(JSON.parse(line)))
   .flatMap((entry) => (entry.type === "message" && entry.message ? [entry.message] : []));
+/** The session_init line of F1's subagent ProductiveChicken: the system prompt its session
+ *  recorded (its skill listing names alpha and beta) and its tool names. */
+const SUBAGENT_INIT = readFileSync(
+  path.join(F1.replace(/\.jsonl$/, ""), "ProductiveChicken.jsonl"),
+  "utf8"
+)
+  .split("\n")
+  .filter((line) => line.trim() !== "")
+  .map((line) => JSON.parse(line) as { type: string; systemPrompt?: string[]; tools?: string[] })
+  .find((entry) => entry.type === "session_init");
+const SUBAGENT_PROMPT = SUBAGENT_INIT?.systemPrompt ?? [];
+const SUBAGENT_TOOLS = SUBAGENT_INIT?.tools ?? [];
 /** The file F1's read result at `index` read, as it was on disk. */
 function f1File(index: number): string {
   return `${stripSkillHeader(messages[index]?.content?.[0]?.text ?? "")}\n`;
@@ -244,6 +257,60 @@ function captures(): Promise<Captures> {
     return { arms, old, fresh, none, again, hintsAfterFirst, hintsBeforeAgain };
   })();
   return captured;
+}
+
+/** `blocks` less every line of the skill listing that names `skill`. */
+function withoutListingLine(blocks: readonly string[], skill: string): string[] {
+  return blocks.map((block) =>
+    block
+      .split("\n")
+      .filter((line) => !line.startsWith(`- ${skill}: `))
+      .join("\n")
+  );
+}
+
+test("an arm's recorded prompt is the recording with only the skill's listing line changed: under the arm's hint, or left out", () => {
+  expect(SUBAGENT_PROMPT.length).toBeGreaterThan(1);
+  const recordedLine = skillListing({
+    system: SUBAGENT_PROMPT.map((text) => ({ type: "text", text })),
+  }).get("alpha");
+  expect(recordedLine).toBeDefined();
+  const replaced = armPromptBlocks(SUBAGENT_PROMPT, "alpha", "Use for the arm's alpha.");
+  expect(replaced.line).toBe("replaced");
+  expect(skillListing({ system: replaced.blocks.map((text) => ({ type: "text", text })) })).toEqual(
+    new Map([
+      ["alpha", "Use for the arm's alpha."],
+      [
+        "beta",
+        skillListing({ system: SUBAGENT_PROMPT.map((text) => ({ type: "text", text })) }).get(
+          "beta"
+        ) ?? "",
+      ],
+    ])
+  );
+  const removed = armPromptBlocks(SUBAGENT_PROMPT, "alpha", undefined);
+  expect(removed.line).toBe("removed");
+  for (const each of [replaced, removed]) {
+    expect(withoutListingLine(each.blocks, "alpha")).toEqual(
+      withoutListingLine(SUBAGENT_PROMPT, "alpha")
+    );
+  }
+  expect(removed.blocks.join("").length).toBe(
+    SUBAGENT_PROMPT.join("").length - `- alpha: ${recordedLine}\n`.length
+  );
+  expect(armPromptBlocks(SUBAGENT_PROMPT, "gamma", "Use for gamma.")).toEqual({
+    blocks: SUBAGENT_PROMPT,
+    line: "not listed",
+  });
+});
+
+/** The texts of a body's `system` blocks, in order. */
+function systemBlocks(body: { readonly [field: string]: unknown }): string[] {
+  return Array.isArray(body.system)
+    ? body.system.map((block: unknown) =>
+        typeof block === "object" && block !== null ? String(Reflect.get(block, "text")) : ""
+      )
+    : [];
 }
 
 describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
@@ -610,6 +677,67 @@ describe.skipIf(skip)("capture on the pinned Oh My Pi", () => {
       expect(texts(body.messages).some((text) => text.includes("127.0.0.1"))).toBe(false);
       expect(texts(body).some((text) => text.includes("placeholder prompt"))).toBe(false);
       expect(record.exit.code === 0 || record.exit.reason !== "").toBe(true);
+    },
+    ROW_TIMEOUT_MS
+  );
+
+  test(
+    "a subagent case's capture sends its recorded system prompt byte for byte but for the skill's listing line, per arm, and only its recorded tools",
+    async () => {
+      await captures();
+      const base = f1Case("subagent-1");
+      const c: Case = {
+        ...base,
+        context: "subagent:task",
+        profile: {
+          ...base.profile,
+          contextFiles: [],
+          systemPrompt: SUBAGENT_PROMPT,
+          tools: SUBAGENT_TOOLS,
+        },
+      };
+      const dirs = { old: path.join(dir, "old"), new: path.join(dir, "new") };
+      for (const name of ["old", "new", "none"] as const) {
+        const { body, record } = await captureBody(
+          c,
+          buildArm(c, name, dirs, path.join(dir, "arms-subagent")),
+          {
+            omp: binary(),
+            outDir: path.join(dir, "out"),
+            scratchDir: path.join(dir, "scratch"),
+            cacheDir: path.join(dir, "cache"),
+            source: localSource(path.join(dir, "repos")),
+            models: path.join(dir, "models.yml"),
+            hints,
+          }
+        );
+        const sent = systemBlocks(body);
+        expect(sent).toHaveLength(SUBAGENT_PROMPT.length);
+        // Every byte the recording holds but the skill's line of its listing.
+        expect(withoutListingLine(sent, "alpha")).toEqual(
+          withoutListingLine(SUBAGENT_PROMPT, "alpha")
+        );
+        const hint = record.hints.find((each) => each.skill === "alpha")?.hint;
+        const listing = skillListing(body);
+        if (name === "none") {
+          expect(listing.has("alpha")).toBe(false);
+          expect(record.recordedPrompt?.line).toBe("removed");
+        } else {
+          expect(hint).toStartWith("Use for the alpha work, stand-in hint ");
+          expect(listing.get("alpha")).toBe(hint as string);
+          expect(record.recordedPrompt?.line).toBe("replaced");
+        }
+        expect(sent).toEqual(
+          armPromptBlocks(SUBAGENT_PROMPT, "alpha", name === "none" ? undefined : hint).blocks
+        );
+        expect(record.recordedPrompt?.blocks).toBe(SUBAGENT_PROMPT.length);
+        expect(record.tools).toEqual({
+          recorded: SUBAGENT_TOOLS,
+          sent: SUBAGENT_TOOLS,
+          missing: [],
+          extra: [],
+        });
+      }
     },
     ROW_TIMEOUT_MS
   );
