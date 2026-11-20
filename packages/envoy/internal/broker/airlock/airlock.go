@@ -36,8 +36,8 @@ type Allow struct {
 }
 
 // SecretRule is one secret's entry: where its value may go and in which headers, and who decides
-// a request for it. An entry with no host binds the value nowhere — the broker releases it to the
-// command, as it releases a name with no entry — and carries only its judge and guidance.
+// a request for it. An entry is a proxy block, so it binds its value to at least one host:
+// Validate refuses an entry that names none.
 type SecretRule struct {
 	Name    string   `json:"name"`
 	Hosts   []string `json:"hosts"`
@@ -76,9 +76,9 @@ func (r Rules) Guidance(name string) string {
 // names no header at all, and this answers that empty list.
 //
 // It is the one place the default lives. Rewrite swaps in these headers and nothing else, and
-// `broker airlock-check` reports what a file adds and removes against them, so the report says
-// what the swap does rather than what a second copy of the default says it does. The slice an
-// entry names points into that entry, as Rules.Lookup's does; the default is a fresh slice.
+// `envoy-broker profiles check` reports what a file adds and removes against them, so the report
+// says what the swap does rather than what a second copy of the default says it does. The slice
+// an entry names points into that entry, as Rules.Lookup's does; the default is a fresh slice.
 func (s SecretRule) HeaderNames() []string {
 	if s.Headers == nil {
 		return []string{"authorization"}
@@ -131,11 +131,12 @@ const maxJudgeSeconds = 900
 
 // Validate reports why the file is not valid, naming the entry by its secret name and its
 // index. It reads the entries in order and reports the first failure: a repeated name, a judge
-// above 900 seconds, a kind other than "", "aws" or "azure", or a host that binds the secret
-// nowhere (HostShapeOK). An entry with no host is valid: it binds the value nowhere and says who
-// decides a request for the key, and Decide refuses every proxy request for it ("secret not
-// behind airlock"). Whether it answers nil is the same answer as the Lean model's validate, so a
-// new refusal here is a new refusal there.
+// above 900 seconds, a kind other than "", "aws" or "azure", an entry that names no host, or a
+// host that binds the secret nowhere (HostShapeOK). An entry is a proxy block, and one that binds
+// its value to no host would hold the value back and carry it nowhere, so it is refused here
+// (theorem T4 of the model) rather than left to Decide, which still refuses every proxy request
+// for one ("secret not behind airlock"). Whether it answers nil is the same answer as the Lean
+// model's validate, so a new refusal here is a new refusal there.
 func Validate(rules Rules) error {
 	seen := make(map[string]bool, len(rules.Secrets))
 	for i, s := range rules.Secrets {
@@ -146,10 +147,11 @@ func Validate(rules Rules) error {
 			return fmt.Errorf("%s: judge %d is above %d seconds", entry(i, s), *s.Judge, maxJudgeSeconds)
 		case s.Kind != "" && s.Kind != "aws" && s.Kind != "azure":
 			return fmt.Errorf("%s: kind %q is not %q, %q or %q", entry(i, s), s.Kind, "", "aws", "azure")
+		case len(s.Hosts) == 0:
+			return fmt.Errorf("%s: the entry names no host", entry(i, s))
 		}
 		// A host HostShapeOK refuses binds the secret nowhere although the entry names it to bind
-		// one: the command gets its placeholder and no call of it is ever swapped. An entry meant to
-		// bind nowhere names no host at all.
+		// one: the command gets its placeholder and no call of it is ever swapped.
 		for _, h := range s.Hosts {
 			if !HostShapeOK(h) {
 				return fmt.Errorf("%s: host %q is not a DNS name or a %q suffix, so the airlock binds the secret nowhere", entry(i, s), h, "*.")
