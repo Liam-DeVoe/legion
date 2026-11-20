@@ -39,6 +39,18 @@ export interface PriorityItem {
  *  issue's own priority, a different thing. */
 export const orderLabel = (index: number): string => `#${index + 1}`;
 
+/** What a priority is named by beside its title: its place in the one order, from 1, then its
+ *  title (`#3 Ship it`), as its chip's accessible name and the picker's option read. A priority
+ *  the priorities read does not hold, one deleted since, is named by its id. */
+export function priorityName(
+  id: string,
+  place: number | undefined,
+  title: string | undefined
+): string {
+  const label = place === undefined ? id : orderLabel(place - 1);
+  return title === undefined ? label : `${label} ${title}`;
+}
+
 const countOf = (by: PriorityRow["work"]["by_status"], statuses: readonly string[]): number =>
   statuses.reduce((total, status) => total + (by?.[status] ?? 0), 0);
 
@@ -90,6 +102,9 @@ export function matchesPrioritySearch(item: PriorityItem, search: string): boole
 export const ownerOf = (item: PriorityItem): string =>
   item.priority.owner.trim() === "" ? "No owner" : item.priority.owner.trim();
 
+/** The width and the shape of each of the four count columns (`numeric`). */
+const COUNT = { size: 76, min: 76, numeric: true } as const;
+
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
  *  the left edge while the counts scroll. Each header reads in 16 characters or fewer, in the
  *  words a status is named by (INFRA-3221, R13). What closed in the last 7 days opens hidden, one
@@ -122,10 +137,10 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     values: (item) => [ownerOf(item)],
     group: ownerOf,
   },
-  { id: "in-flight", header: "Active", size: 76, min: 76, numeric: true },
-  { id: "waiting", header: "Triage, Todo", size: 76, min: 76, numeric: true },
-  { id: "parked", header: "Backlog, icebox", size: 76, min: 76, numeric: true },
-  { id: "closed", header: "Closed, 7 days", size: 76, min: 76, numeric: true, hidden: true },
+  { id: "in-flight", header: "Active", ...COUNT },
+  { id: "waiting", header: "Triage, Todo", ...COUNT },
+  { id: "parked", header: "Backlog, icebox", ...COUNT },
+  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true },
   {
     id: "newest",
     header: "Newest event",

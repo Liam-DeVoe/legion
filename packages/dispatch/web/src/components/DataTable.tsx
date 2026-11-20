@@ -314,6 +314,11 @@ export interface DataTableProps<Row> {
   readonly noun: RowNoun;
   /** The width of a last, unheaded column that each row draws itself. */
   readonly trailingWidth?: number;
+  /** Whether the box ends with its last row rather than standing empty down to the window's
+   *  foot: it takes its own rows' height, with the height the window leaves it as its most
+   *  (`useTableLayout`'s `boxHeight`), so the rows scroll inside it only once they are more
+   *  than the window holds. Unset, the box is always that height. */
+  readonly fitRows?: boolean;
 }
 
 /**
@@ -325,6 +330,7 @@ export function DataTable<Row>({
   noun,
   filterCounts,
   filterUnloaded,
+  fitRows = false,
   label,
   model,
   onOpenFilterChange,
@@ -351,7 +357,8 @@ export function DataTable<Row>({
         data-testid={scrollTestId}
         style={{
           overflowAnchor: "none",
-          height: layout.boxHeight,
+          height: fitRows ? undefined : layout.boxHeight,
+          maxHeight: fitRows ? layout.boxHeight : undefined,
           scrollPaddingTop: 64,
         }}
       >
@@ -471,13 +478,7 @@ function TableHeaderCell<TData>({
     );
   return (
     <th
-      aria-sort={
-        column.getIsSorted() === "asc"
-          ? "ascending"
-          : column.getIsSorted() === "desc"
-            ? "descending"
-            : undefined
-      }
+      aria-sort={sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : undefined}
       className={`sticky top-0 border-b px-1 py-2 pr-2 text-left align-middle text-xs font-semibold md:px-2 ${borderDefault} ${surfaceBg} ${textSecondaryOnCanvas} ${pinned ? "z-30" : "z-20"} ${pinned && column.getIsLastColumn("left") ? "border-r" : ""}`}
       onDragOver={(event) => {
         if (dragColumn !== undefined && !pinned) event.preventDefault();

@@ -104,9 +104,11 @@ export function IssuesTable({
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
-  // The width drawn after the columns for a row's Start next, where the listing can hold a row it
-  // acts on (`listsQueued`); a fault list of the priorities page holds none, and draws none.
-  const actions = listsQueued(listing) ? ROW_ACTIONS_WIDTH : 0;
+  // Whether the listing can hold a row a reader starts next (`listsQueued`), and the width drawn
+  // after the columns for that row's Start next; a fault list of the priorities page holds none,
+  // and draws none.
+  const queued = listsQueued(listing);
+  const actions = queued ? ROW_ACTIONS_WIDTH : 0;
   // The columns this table has - the listing columns its listing gives a use (`listingColumns`)
   // beside the registry's - which it opens with and at which widths.
   const columnsLayout = issueTableLayout(
@@ -304,7 +306,7 @@ export function IssuesTable({
       </p>
     );
 
-  const visibleColumns = table.getVisibleLeafColumns().length + (actions === 0 ? 0 : 1);
+  const visibleColumns = table.getVisibleLeafColumns().length + (queued ? 1 : 0);
 
   return (
     <section aria-label={name} className="space-y-3 sm:pb-24">
@@ -451,7 +453,7 @@ export function IssuesTable({
             index={index}
             measure={measure}
             moved={moved}
-            onStartNext={actions === 0 ? undefined : (key) => startNext([key])}
+            onStartNext={queued ? (key) => startNext([key]) : undefined}
             row={row}
           />
         )}

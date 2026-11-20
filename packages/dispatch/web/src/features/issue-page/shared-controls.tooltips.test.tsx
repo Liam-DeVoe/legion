@@ -1460,8 +1460,7 @@ const MAIN_TITLES: ReadonlyMap<Mount, readonly string[]> = new Map([
   ],
   // The priorities' line draws each priority as its chip (`PriorityChip`), which carries the
   // whole title as its `title`, and says so of one inherited from an issue above; while the
-  // picker is open its options carry theirs, as `MultiSelect` draws them. These are INFRA-2947's
-  // chips, not `main`'s links.
+  // picker is open its options carry theirs, as `MultiSelect` draws them.
   [
     mountNamed("IssuePriorityLine, its own priority and an inherited one"),
     [

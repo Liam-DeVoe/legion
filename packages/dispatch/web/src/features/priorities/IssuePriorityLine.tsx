@@ -17,13 +17,14 @@ import {
   pagePaneBg,
   pageQuietText,
   secondaryButtonBorder,
-  secondaryButtonHoverBorder,
+  secondaryButtonGroupDisabledText,
+  secondaryButtonGroupHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PriorityChip } from "./PriorityChip";
-import { orderLabel } from "./priorities-model";
+import { priorityName } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
 /** What the line knows of each priority the read answered, by its id: its place in the one
@@ -115,7 +116,7 @@ export function IssuePriorityLine({
   // A priority's order and title, as the picker offers it and the new issue page names it.
   const labelOf = (id: string) => {
     const known = places.get(id);
-    return known === undefined ? id : `${orderLabel(known.place - 1)} ${known.title}`;
+    return priorityName(id, known?.place, known?.title);
   };
   const write = useKeyedWrite({
     // The line says why a write was refused, beside the control it came from.
@@ -256,16 +257,19 @@ export function IssuePriorityLine({
       // as the P0-P3 tag's beside it is (`badge-select.ts`). Inside `NoTooltips` it is 28 px tall
       // from `md`, as the controls beside it in Details are (the repository's box, `main`'s input
       // in `RepoControl.tsx`, with its `md:min-h-7`; the labels' and the components' triggers'
-      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor.
+      // `sm:min-h-7`). Below 1280 px `styles.css` gives each a 44 px floor. The square lights under
+      // the pointer and dims while the trigger is `disabled` or `aria-disabled`, as the labels'
+      // trigger does: the trigger is the `group` its states are read from, since the square
+      // itself is never disabled.
       triggerClassName={
         page === null
-          ? `inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 ${focusVisibleRing}`
+          ? `group inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg outline-none focus-visible:ring-2 md:min-h-8 md:min-w-8 ${focusVisibleRing}`
           : `inline-flex min-h-11 shrink-0 items-center rounded-full px-2 py-2 text-sm whitespace-nowrap outline-none ${pagePaneBg} ${pageMutedText} hover:text-page-ink md:min-h-7 md:py-1`
       }
     >
       {page === null ? (
         <span
-          className={`inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}
+          className={`inline-flex size-5.5 items-center justify-center rounded-lg border text-xs leading-none font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonGroupHoverBorder} ${secondaryButtonGroupDisabledText}`}
         >
           +
         </span>

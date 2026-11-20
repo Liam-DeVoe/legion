@@ -203,8 +203,11 @@ async function seedPriorities(): Promise<Seeded> {
  *  `WIDE_LAYOUT_MIN_PX` in `e2e/review-routes.ts`), so three rows below read the Priorities
  *  entry from it. */
 async function priorityPage(page: Page): Promise<void> {
-  await page.setViewportSize({ height: 900, width: 1440 });
+  await page.setViewportSize(WIDE);
 }
+
+/** The desktop `priorityPage` sets (1440 by 900 px, INFRA-2947 R7). */
+const WIDE = { height: 900, width: 1440 } as const;
 
 /** The phone the page is measured on (390 by 844 px, INFRA-2947 R7). */
 const PHONE = { height: 844, width: 390 } as const;
@@ -553,7 +556,7 @@ test("the priorities page opens on the order, and each fault list is a tab of it
     // At 1280 by 800 the table fits its box as well, every header's words whole, two lines of
     // them at most where a count's column is as narrow as its numbers; the Priority column takes
     // what the others leave. The first line of a closed row's description reads whole under its
-    // title, wrapped as the title is, where it once ended in an ellipsis at the column's edge.
+    // title, wrapped as the title is.
     await page.setViewportSize(DESKTOP);
     await expect.poll(() => tablesOverflow(page)).toEqual({ "Priorities table": 0 });
     expect(await cutHeaders(prioritiesTable)).toEqual([]);
@@ -1625,9 +1628,8 @@ test("an issue's header names the priorities it advances and links to each", asy
     // An own chip is a filled badge with a solid border; an inherited one, below, is dashed.
     await expect(link.locator("span")).toHaveCSS("border-top-style", "solid");
     await expect(header).not.toContainText("Advances");
-    await expect(
-      header.getByTestId("issue-metadata-rail").getByTestId("issue-advances")
-    ).toHaveCount(0);
+    const rail = header.getByTestId("issue-metadata-rail");
+    await expect(rail.getByTestId("issue-advances")).toHaveCount(0);
     expect(
       await line.evaluate(
         (element) =>
@@ -1643,8 +1645,7 @@ test("an issue's header names the priorities it advances and links to each", asy
     // chips stand inside it on the tag's line. Below 768 px the state row has no room left on its
     // first line, so the chips stand first in the details row instead, which scrolls: the first
     // item of that row, inside the viewport with the row unscrolled, and the state row holds none.
-    const rail = header.getByTestId("issue-metadata-rail");
-    for (const size of [{ height: 900, width: 1440 }, PHONE]) {
+    for (const size of [WIDE, PHONE]) {
       await page.setViewportSize(size);
       await expect
         .poll(() =>
@@ -1659,7 +1660,7 @@ test("an issue's header names the priorities it advances and links to each", asy
         )
         .toEqual({ overflow: "visible", past: 0, wrap: "wrap" });
       if (size === PHONE) {
-        await expect(chipsLine(page)).toHaveCount(0);
+        await expect(line).toHaveCount(0);
         const inRail = rail.getByTestId("issue-advances");
         await expect(inRail.getByRole("link", { name: `#1 ${seed.titles[0]}` })).toBeVisible();
         expect(

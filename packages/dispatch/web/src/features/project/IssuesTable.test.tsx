@@ -2094,8 +2094,9 @@ test("a scoped table lists the issues the server answers for the priority, over 
     ],
     "",
     undefined,
-    // What both callers pass: the priority's own listing, no project and the priorities' titles,
-    // under the prefix the page keeps this table's view in (`priorities/PriorityPage.tsx`).
+    // A scoped table that names no layout, the fallback: the priority's own listing, no project
+    // and the priorities' titles. `PriorityPage` passes the same with a layout and key of its own
+    // (`priority-page-work`).
     {
       listing: { advances: "PRI-7" },
       priorityTitles: new Map([["PRI-7", "Ship it"]]),
@@ -2111,10 +2112,10 @@ test("a scoped table lists the issues the server answers for the priority, over 
   // The table is named for what it lists rather than for a project it does not stand on.
   expect(screen.getByRole("table", { name: "Priority issues table" })).toBeDefined();
   expect(screen.queryByRole("table", { name: "Project issues table" })).toBeNull();
-  // One stored layout for every scoped table, under no key that names a priority: the work
-  // advancing a priority is one table, drawn in two places. It has Project and Advances, both
-  // hidden until the reader shows them, and no Moved there or Reason, since its listing asks for
-  // no move.
+  // The fallback's one stored layout, shared by every scoped table that names no layout, under
+  // no key that names a priority; `PriorityPage` keeps its own key (`priority-page-work`). It has
+  // Project and Advances, both hidden until the reader shows them, and no Moved there or Reason,
+  // since its listing asks for no move.
   expect(localStorage.getItem("dispatch.project-table.priority-work")).toBe(
     '{"sizing":{},"order":[],"visibility":{"updated":false,"project":false,"advances":false}}'
   );

@@ -217,7 +217,6 @@ export function InPlaceField({
   const fieldId = useId();
   // Whether the reader has opened a field drawn `closed`; any other is always open.
   const [opened, setOpened] = useState(false);
-  const open = closed === undefined || opened;
   const box = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null);
   // Where the field stands against the server's text (`FieldStand`): what the edit started from,
   // and the texts written that the server has not answered with yet, oldest first.
@@ -343,7 +342,7 @@ export function InPlaceField({
   if (closed === "heading") {
     return (
       <>
-        {open ? (
+        {opened ? (
           <h1 className={`-mx-2 min-w-0 ${TITLE_TYPE} ${textPrimaryOnSurface}`}>
             <textarea
               {...typing}
@@ -391,7 +390,7 @@ export function InPlaceField({
     <>
       {closed === undefined ? (
         field
-      ) : open ? (
+      ) : opened ? (
         <span className="inline-flex min-h-11 max-w-full items-center gap-2 text-sm sm:min-h-7">
           <label htmlFor={fieldId}>{label}</label>
           {field}
@@ -407,7 +406,8 @@ export function InPlaceField({
           <span>{draft === "" ? placeholder : draft}</span>
         </button>
       )}
-      {listId === undefined ? null : (
+      {/* The suggestions of an open box: a chip draws no input that could offer them. */}
+      {listId === undefined || (closed !== undefined && !opened) ? null : (
         <datalist id={listId}>
           {(options ?? []).map((option) => (
             <option key={option} value={option} />

@@ -8,7 +8,7 @@ import {
   textMutedOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
-import { orderLabel } from "./priorities-model";
+import { orderLabel, priorityName } from "./priorities-model";
 import { priorityPath } from "./priority-routes";
 
 /**
@@ -46,7 +46,7 @@ export function PriorityChip({
   const tooltips = useTooltips();
   const page = usePageWords();
   const label = place === undefined ? id : orderLabel(place - 1);
-  const named = title === undefined ? label : `${label} ${title}`;
+  const named = priorityName(id, place, title);
   const whole = title ?? id;
   const chip = `rounded-sm border px-1.5 py-0.5 text-xs font-semibold tabular-nums whitespace-nowrap group-hover:underline ${
     inherited

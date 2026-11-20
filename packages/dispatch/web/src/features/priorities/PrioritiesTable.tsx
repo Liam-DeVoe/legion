@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useCallback, useMemo, useState } from "react";
+import { type ReactNode, useCallback, useMemo, useState } from "react";
 import type { PriorityRow } from "../../api/types";
 import {
   DataTable,
@@ -40,14 +40,6 @@ const NONE_DRAWN: readonly string[] = [];
 /** The one text of a priority a row writes: its description. A title is written on the
  *  priority's own page, so a refused write of one is that page's, or the shell's line's. */
 const ROW_TEXTS: readonly EditedText[] = ["description"];
-/** The `data-testid` of the box the rows scroll in. */
-const SCROLL_TEST_ID = "priorities-table-scroll";
-/** The box ends with its last row rather than standing empty down to the window's foot. The
- *  shared box is drawn at the height the window leaves it (`useTableLayout`'s `boxHeight`); here
- *  it takes its own rows' height instead, with that one as its most (`--box-height`, set on the
- *  section), so the rows scroll inside it only once they are more than the window holds. */
-const FIT_BOX =
-  "[&_[data-testid=priorities-table-scroll]]:h-auto! [&_[data-testid=priorities-table-scroll]]:max-h-(--box-height)";
 
 /**
  * The priorities themselves: one row per priority in the one order, with the counts that say
@@ -65,7 +57,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   // On a desktop the title fills the box: it takes the width the other shown columns leave, so
   // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`).
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
-  const { attachAbove, boxHeight, boxWidth } = layout;
+  const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
   const [openFilter, setOpenFilter] = useState<string>();
@@ -218,11 +210,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   const visibleColumns = table.getVisibleLeafColumns().length;
 
   return (
-    <section
-      aria-label="Priorities"
-      className={`space-y-3 ${FIT_BOX}`}
-      style={{ "--box-height": `${boxHeight}px` } as CSSProperties}
-    >
+    <section aria-label="Priorities" className="space-y-3">
       <div className="space-y-3" ref={attachAbove}>
         <TableToolbar
           searchLabel="Search priorities"
@@ -249,6 +237,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
         <DataTable
           empty="No priorities match these filters."
           filterCounts={facets}
+          fitRows
           label="Priorities table"
           model={model}
           noun={NOUN}
@@ -296,7 +285,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
               row={row}
             />
           )}
-          scrollTestId={SCROLL_TEST_ID}
+          scrollTestId="priorities-table-scroll"
         />
       </PriorityRowActionsContext.Provider>
     </section>

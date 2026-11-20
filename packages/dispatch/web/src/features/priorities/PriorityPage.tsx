@@ -8,13 +8,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { issueProject } from "../../lib/issue-key";
-import {
-  borderDefault,
-  card,
-  linkHoverText,
-  linkText,
-  textSecondaryOnCanvas,
-} from "../../theme/classes";
+import { card, linkHoverText, linkText, textSecondaryOnCanvas } from "../../theme/classes";
 import { IssuesTable } from "../project/IssuesTable";
 import { selectIssues } from "../project/issues-table-model";
 import { useKeymapScope } from "../shell/keymap";
@@ -48,7 +42,13 @@ const WORK_LAYOUT = {
 } as const;
 
 /** The way back to the priorities page, above the page's header as above an empty page. */
-const BACK = "‹ Priorities";
+function BackLink(): ReactNode {
+  return (
+    <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
+      ‹ Priorities
+    </Link>
+  );
+}
 
 /**
  * `/priorities/<id>`: one priority, edited where it is read, in the shape an issue's page takes.
@@ -122,11 +122,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
   if (item === undefined)
     return (
       <EmptyState
-        action={
-          <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
-            {BACK}
-          </Link>
-        }
+        action={<BackLink />}
         label="Priority empty state"
         message="No priority of that id is written."
       />
@@ -139,9 +135,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
   return (
     <div className="flex flex-col gap-6 lg:flex-row">
       <div className="min-w-0 flex-1 space-y-3">
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={PRIORITIES_PATH}>
-          {BACK}
-        </Link>
+        <BackLink />
         <header className={`min-w-0 rounded-xl border p-3 ${card}`} data-testid="priority-header">
           {/* The title's notice of the reader's kept texts stands under the heading, outside it:
               drawn in it, it would be read as part of the heading's name. */}
@@ -190,10 +184,7 @@ function PriorityView({ id }: { id: string }): ReactNode {
         {/* The disclosure's control is 44 px tall around its 20 px line, so the card's padding
             above and below it is that much less than at its sides: its words stand 16 px in from
             each edge, as the card's padding at its sides sets them. */}
-        <section
-          aria-label="Description"
-          className={`rounded-xl border px-4 py-1 ${card} ${borderDefault}`}
-        >
+        <section aria-label="Description" className={`rounded-xl border px-4 py-1 ${card}`}>
           <DisclosureToggle
             expanded={open}
             label={open ? "Description" : "Description, closed"}
