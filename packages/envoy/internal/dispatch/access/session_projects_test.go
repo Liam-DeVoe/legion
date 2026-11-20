@@ -31,28 +31,28 @@ func TestAPairRecordedTwiceReadsAsOnce(t *testing.T) {
 	// the only kind the live insert records.
 	broker := events.NewBroker()
 	session := model.Actor{Kind: "session", ID: "ses_twice", Act: &model.ActorAct{Session: "ses_twice"}}
-	issueEvent := func(key string) []model.Event {
-		return []model.Event{{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}}
+	issueEvent := func(key string) model.Event {
+		return model.Event{IssueKey: new(key), Type: "issue.updated", Actor: session, Payload: map[string]any{}}
 	}
 	first, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the first write: %v", err)
 	}
 	defer first.Rollback(ctx)
-	if _, err := broker.AppendAll(ctx, first, issueEvent("PRIV-1")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PRIV-1")); err != nil {
 		t.Fatalf("the first write: %v", err)
 	}
 	second, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the second write: %v", err)
 	}
-	if _, err := broker.AppendAll(context.Background(), second, issueEvent("PRIV-2")); err != nil {
+	if _, err := broker.Append(context.Background(), second, issueEvent("PRIV-2")); err != nil {
 		t.Fatalf("the second write: %v", err)
 	}
 	if err := second.Commit(context.Background()); err != nil {
 		t.Fatalf("commit the second write: %v", err)
 	}
-	if _, err := broker.AppendAll(ctx, first, issueEvent("PRIV-2")); err != nil {
+	if _, err := broker.Append(ctx, first, issueEvent("PRIV-2")); err != nil {
 		t.Fatalf("the first write on PRIV-2: %v", err)
 	}
 	if err := first.Commit(ctx); err != nil {

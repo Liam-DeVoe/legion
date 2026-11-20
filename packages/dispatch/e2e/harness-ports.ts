@@ -22,7 +22,11 @@
  * the issuer's report, since the broker takes the issuer's URL as its token issuer and its sign-in
  * provider. `FAKE_EMBEDDER_PORT` is the fake embedder's (`e2e/fake-embedder.ts`), started only by
  * a run whose server embeds there (`e2e/harness-embedder.ts`), so it takes part in the collision
- * check only then.
+ * check only then. `DISPATCH_E2E_ACCESS_ISSUER_PORT` is the access issuer's
+ * (`e2e/run-access-issuer.sh`), the dev OIDC issuer that keeps the secrets broker's token under
+ * `DISPATCH_E2E_ACCESS_ISSUER=1` (`e2e/harness-access.ts`): it takes part in the collision check
+ * only then, and it always serves on a port the OS chooses, so the script refuses it set, as the
+ * other two issuers' scripts do.
  *
  * A set value that is not a port in canonical decimal is refused naming its variable, because
  * every later consumer turns it into something that names nothing: `net.connect` raises
@@ -56,6 +60,7 @@
  * thing one stack owns (`refuseStackConflicts` at the end of this file).
  */
 
+import { usesAccessIssuer } from "./harness-access";
 import { usesFakeEmbedder } from "./harness-embedder";
 import { harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
@@ -67,7 +72,7 @@ import { harnessSignIn } from "./harness-signin";
  *  every worker process that environment. */
 export const stacksVariable = "DISPATCH_E2E_STACKS";
 
-/** The last manifest parsed, and the text it was parsed from. `harnessPorts()` resolves eleven
+/** The last manifest parsed, and the text it was parsed from. `harnessPorts()` resolves twelve
  *  variables through the manifest and a row calls it whenever it addresses a listener, so a run
  *  would otherwise parse the same JSON tens of thousands of times. The text is the key, so an
  *  environment that changes - a test that hands in another manifest, a process that clears a
@@ -135,6 +140,7 @@ export function stackValue(env: NodeJS.ProcessEnv, variable: string): string | u
 
 /** Each harness listener's port variable. */
 export const harnessVariables = {
+  accessIssuer: "DISPATCH_E2E_ACCESS_ISSUER_PORT",
   devIssuer: "DEV_OIDC_ISSUER_PORT",
   dispatch: "DISPATCH_E2E_PORT",
   dispatchA: "DISPATCH_E2E_PORT_A",
@@ -205,12 +211,14 @@ function harnessPort(env: NodeJS.ProcessEnv, variable: string): HarnessPort {
  *  without naming a variable. Refused here, where the ports resolve, so every caller refuses it
  *  the same way, including the Bun listeners. A's and B's ports take part only in two-process
  *  mode, the one mode that listens on them, the sign-in issuer's only under
- *  `DISPATCH_E2E_SIGNIN=oidc` or `google`, and the real broker's and its issuer's only when this
- *  run starts that pair (`e2e/harness-real-broker.ts`). */
+ *  `DISPATCH_E2E_SIGNIN=oidc` or `google`, the access issuer's only under
+ *  `DISPATCH_E2E_ACCESS_ISSUER=1`, and the real broker's and its issuer's only when this run
+ *  starts that pair (`e2e/harness-real-broker.ts`). */
 export function harnessPorts(
   env: NodeJS.ProcessEnv = process.env
 ): Record<HarnessListenerKey, HarnessPort> {
   const ports = {
+    accessIssuer: harnessPort(env, harnessVariables.accessIssuer),
     devIssuer: harnessPort(env, harnessVariables.devIssuer),
     dispatch: harnessPort(env, harnessVariables.dispatch),
     dispatchA: harnessPort(env, harnessVariables.dispatchA),
@@ -228,6 +236,7 @@ export function harnessPorts(
       entry.port !== 0 &&
       (harnessProcessCount === 2 || (entry !== ports.dispatchA && entry !== ports.dispatchB)) &&
       (harnessSignIn !== "dev" || entry !== ports.signinIssuer) &&
+      (usesAccessIssuer || entry !== ports.accessIssuer) &&
       (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker)) &&
       (usesFakeEmbedder || entry !== ports.fakeEmbedder)
   );

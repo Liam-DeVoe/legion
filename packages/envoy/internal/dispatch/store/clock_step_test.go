@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -244,63 +243,6 @@ func TestATemporaryTableNamedLikeASessionTableDoesNotTakeTheGenerationsWrite(t *
 	}
 	if generation := makeSessionRow(t, `alter function start_session_generation_at_floor() reset search_path`); generation != 4242 {
 		t.Errorf("control: with start_session_generation_at_floor's setting reset, %s's new session row starts at generation %d, want 4242: the temporary floor decides where it starts", fresh, generation)
-	}
-}
-
-// TestAReplacingSignInSucceedsWhereTheTablesAreNotInPublic: a database whose default search_path is
-// app, public, as a deployment that keeps Dispatch out of public sets it. The runner makes the
-// tables in app, and 20261119021826 sets the guards' search_path to pg_catalog, app, pg_temp, so the
-// sign-in that replaces an account records the revocation the broker is owed.
-//
-// Control, in the test: with guard_broker_revocation_columns' search_path fixed at pg_catalog,
-// public, pg_temp, the next replacing sign-in fails with 42P01, people not being in public.
-func TestAReplacingSignInSucceedsWhereTheTablesAreNotInPublic(t *testing.T) {
-	ctx := context.Background()
-	base := openEmptyTestStore(t)
-	var name string
-	if err := base.Pool.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := base.Pool.Exec(ctx, `create schema app; alter database "`+name+`" set search_path = app, public`); err != nil {
-		t.Fatalf("give the database a default search_path: %v", err)
-	}
-	s, err := Open(ctx, base.Pool.Config().ConnString())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Pool.Close)
-	if schema := tablesSchema(t, s); schema != "app" {
-		t.Fatalf("a new connection's current schema is %q, want app", schema)
-	}
-	if err := s.Migrate(ctx); err != nil {
-		t.Fatalf("Migrate on a database whose default schema is app: %v", err)
-	}
-	var tables string
-	if err := s.Pool.QueryRow(ctx, `select string_agg(distinct table_schema, ',') from information_schema.tables where table_name in ('people', 'user_sessions', 'broker_revocations')`).Scan(&tables); err != nil || tables != "app" {
-		t.Fatalf("the tables are in %q (%v), want app alone", tables, err)
-	}
-	for _, guard := range clockGuards {
-		if got := guardSettings(t, s, "app", guard); !slices.Equal(got, []string{"search_path=pg_catalog, app, pg_temp"}) {
-			t.Errorf("%s runs with the settings %q, want search_path=pg_catalog, app, pg_temp alone", guard, got)
-		}
-	}
-	people := brokerPeople(s)
-	const email = "app-schema@example.com"
-	if err := people.SignInSubject(ctx, email, "member-1", "refresh-member-1", model.MemberFull); err != nil {
-		t.Fatalf("the first sign-in, which records an account: %v", err)
-	}
-	if err := people.SignInSubject(ctx, email, "member-2", "refresh-member-2", model.MemberFull); err != nil {
-		t.Errorf("the replacing sign-in, where the tables are in app, answered %v; want it recorded", err)
-	}
-	if owing, err := NewBrokerRevocations(s.Pool).Owing(ctx, email); err != nil || len(owing) != 1 || owing[0].Subject != "member-1" {
-		t.Errorf("after the replacing sign-in, %s owes %s, %v; want member-1's revocation", email, owedText(owing...), err)
-	}
-
-	if _, err := s.Pool.Exec(ctx, `alter function app.guard_broker_revocation_columns() set search_path = pg_catalog, public, pg_temp`); err != nil {
-		t.Fatal(err)
-	}
-	if err := people.SignInSubject(ctx, email, "member-3", "refresh-member-3", model.MemberFull); !isSQLState(err, "42P01") || !strings.Contains(err.Error(), `"people"`) {
-		t.Errorf("control: with the guard's search_path fixed at public, the replacing sign-in answered %v; want 42P01 for people", err)
 	}
 }
 

@@ -15,8 +15,9 @@
 -- gives search_path (pgmigrate.Pin), which a database's or a role's default can set to another
 -- schema first, and the tables are created in current_schema() under it. So the setting is built
 -- from current_schema() as this migration runs, quoted with %I, in a DO block; a fixed public would
--- make every write of broker_revocations fail with 42P01 where the tables are elsewhere
--- (TestAReplacingSignInSucceedsWhereTheTablesAreNotInPublic).
+-- make every write of broker_revocations fail with 42P01 where the tables are elsewhere. (Dispatch's
+-- owner lock, 20261115200014, names the schema public, so a release with it keeps its tables there;
+-- this setting does not rest on that.)
 --
 -- It is a migration of its own because 20261118200651 shipped without the setting, and the migrator
 -- records a version with no checksum: a database that ran 20261118200651 takes this one. It alters

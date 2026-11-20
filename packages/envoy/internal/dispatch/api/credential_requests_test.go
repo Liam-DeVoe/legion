@@ -102,6 +102,7 @@ var featureOffRoutes = []struct {
 }{
 	{http.MethodPost, "/api/v1/credential-requests/rec1/approve"},
 	{http.MethodPost, "/api/v1/credential-requests/rec1/deny"},
+	{http.MethodPost, "/api/v1/credential-requests/rec1/dismiss"},
 	{http.MethodPost, "/api/v1/credential-requests/machine-lookup"},
 	{http.MethodGet, "/api/v1/credential-grants"},
 	{http.MethodPost, "/api/v1/credential-grants/grant1/revoke"},
@@ -271,10 +272,11 @@ func TestCredentialRouteRelaysRequestBodyVerbatim(t *testing.T) {
 }
 
 // TestDecisionsNameTheCallerNeverTheBrowsersApprover pins what Dispatch adds to a decision: the
-// broker trusts the approver field on its listed caller's word, so approve, deny and revoke must
-// send the login Dispatch's own session resolved, canonical lowercase, and forward a machine
-// login's typed code — never an approver, or anything else, the browser put in its body; and an
-// approve carries the session generation its check read, 0 here, where alice's address holds
+// broker trusts the approver field on its listed caller's word, so approve, deny, dismiss and
+// revoke must send the login Dispatch's own session resolved, canonical lowercase, and forward a
+// machine login's typed code — never an approver, or anything else, the browser put in its body. A
+// dismissal reads no body at all, so it sends the approver alone whatever the browser sent. An
+// approve also carries the session generation its check read, 0 here, where alice's address holds
 // none (TestAnApproveCarriesTheSessionGenerationItsCheckRead).
 func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 	browserBody := map[string]any{"approver": "bob", "code": "ABCD-1234", "assertion": map[string]string{"id": "x"}}
@@ -286,6 +288,8 @@ func TestDecisionsNameTheCallerNeverTheBrowsersApprover(t *testing.T) {
 		{"/api/v1/credential-requests/rec1/approve", browserBody, `{"approver":"alice","code":"ABCD-1234","approver_session_generation":0}`},
 		{"/api/v1/credential-requests/rec1/deny", browserBody, `{"approver":"alice","code":"ABCD-1234"}`},
 		{"/api/v1/credential-requests/rec1/approve", nil, `{"approver":"alice","approver_session_generation":0}`},
+		{"/api/v1/credential-requests/rec1/dismiss", browserBody, `{"approver":"alice"}`},
+		{"/api/v1/credential-requests/rec1/dismiss", nil, `{"approver":"alice"}`},
 		{"/api/v1/credential-grants/grant1/revoke", browserBody, `{"approver":"alice"}`},
 		{"/api/v1/machine-logins/cred1/revoke", browserBody, `{"approver":"alice"}`},
 	} {
@@ -402,16 +406,21 @@ func TestCredentialRouteWithAnUnreadableAccountTokenNamesDispatchsOwnCredential(
 	}
 }
 
+// The list asks the broker for the caller's own records in both states, the pending ones and the
+// expired ones nobody has dismissed, on every call: the browser's URL names neither, and a state
+// the browser does add narrows nothing.
 func TestListCredentialPendingResolvesApproverMeToCallerCanonicalLogin(t *testing.T) {
 	rig := newFakeBrokerRig(t)
 	handler := newCredentialTestHandler(t, rig.server.URL)
 
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credential-requests?approver=me", nil, "alice")
-	if response.Code != http.StatusOK {
-		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
-	}
-	if rig.lastQuery != "approver=alice" {
-		t.Fatalf("broker saw query %q, want approver=alice", rig.lastQuery)
+	for _, target := range []string{"/api/v1/credential-requests?approver=me", "/api/v1/credential-requests?approver=me&state=pending"} {
+		response := dispatchRequest(t, handler, http.MethodGet, target, nil, "Alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s: status = %d: %s", target, response.Code, response.Body.String())
+		}
+		if want := "approver=alice&state=pending&state=expired"; rig.lastQuery != want {
+			t.Fatalf("GET %s: broker saw query %q, want %s", target, rig.lastQuery, want)
+		}
 	}
 }
 

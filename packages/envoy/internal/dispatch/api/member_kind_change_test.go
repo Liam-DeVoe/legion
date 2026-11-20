@@ -350,13 +350,15 @@ func (f *failingOnceIdentity) Login(*http.Request) (string, error) {
 	return f.login, nil
 }
 
-// A full member holds a live delivery view, a timeline, which reads the whole deployment's pull
-// requests, PUB's among them, a public project whose list does not name them; PRIV's does. The
-// hourly confirmation then restricts them (ConfirmSubject, the write it makes for an account that
-// left the Workspace), and a restricted member reads no deployment-wide view (liveReadRefusal). From
-// the confirmation's commit the hub reads dave again, refuses his view DEPLOYMENT_READ_REFUSED and
-// drops it, so a pull request of PUB's repository merged after the confirmation reaches his page
-// in no frame.
+// A full member holds a live delivery view, a timeline, which shows every pull request whose issue
+// its reader sees: PUB's, a public project whose list does not name them, among them; PRIV's list
+// names them. The hourly confirmation then restricts them (ConfirmSubject, the write it makes for
+// an account that left the Workspace), and a restricted member reads only the projects that name
+// them. From the confirmation's commit the hub reads dave again, so acme/widgets#7, a pull request
+// of PUB's issue written after the confirmation, reaches his page in no frame. acme/secret#8, a
+// pull request of PRIV's issue written after it, does: the read that names it has read
+// acme/widgets#7's row as well, and would name it too were it made for the full member dave was.
+// The test ends on that frame, and fails when no frame names it.
 //
 // Control: the confirmation announces nothing. The hub keeps the full member's reader it had, and
 // the next delta sends dave acme/widgets#7, which the test names.
@@ -370,11 +372,6 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 	}
 	seed.mustRequest(t, callerCarol, http.MethodPut, "/api/v1/projects/"+seedPrivate+"/access/people/"+dave, nil, http.StatusOK)
 	seedHubSettings(t, seed.database)
-	if _, err := seed.database.Pool.Exec(ctx, `
-		insert into repo_projects (repo, project, created_by) values ('acme/widgets', 'PUB', '{"kind":"user","id":"operator"}')
-	`); err != nil {
-		t.Fatalf("map acme/widgets to PUB: %v", err)
-	}
 	clock := newNoonHubClock()
 	now := clock.Now()
 	rig := hubOn(t, seed.handler, seed.database, seed.deps, clock, nil)
@@ -394,13 +391,17 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 	if err := people.ConfirmSubject(ctx, dave, "dave-subject", "refresh-dave", "refresh-dave-confirmed", model.MemberRestricted); err != nil {
 		t.Fatalf("dave's hourly confirmation as a restricted member: %v", err)
 	}
-	upsertPR(t, seed.database, hubPR(7, now.Add(-time.Hour)))
+	public := hubPR(7, now.Add(-time.Hour))
+	public.IssueKey = new(seed.issue[seedPublic])
+	upsertPR(t, seed.database, public)
+	secret := hubPR(8, now.Add(-time.Hour))
+	secret.Repo, secret.URL = "acme/secret", "https://github.com/acme/secret/pull/8"
+	secret.IssueKey = new(seed.issue[seedPrivate])
+	upsertPR(t, seed.database, secret)
 
-	// Every frame dave's page is sent, until the hub refuses his view and for two seconds after,
-	// names no pull request of acme/widgets.
-	refused := false
+	// Every frame dave's page is sent, snapshot or delta, names no pull request of PUB, up to the
+	// first that names acme/secret#8, written after acme/widgets#7.
 	deadline := time.After(15 * time.Second)
-	var drain <-chan time.Time
 	for {
 		select {
 		case frame := <-conn.frames:
@@ -408,15 +409,11 @@ func TestADeliveryViewStopsCarryingAProjectOnceTheHourlyConfirmationRestrictsIts
 			if slices.Contains(ids, "acme/widgets#7") {
 				t.Fatalf("dave, restricted by his hourly confirmation, was sent acme/widgets#7, a pull request of PUB: %.300s", raw)
 			}
-			var refusal LiveError
-			if !refused && json.Unmarshal(raw, &refusal) == nil && refusal.Sub == "t" && refusal.Code == "DEPLOYMENT_READ_REFUSED" {
-				refused = true
-				drain = time.After(2 * time.Second)
+			if slices.Contains(ids, "acme/secret#8") {
+				return
 			}
-		case <-drain:
-			return
 		case <-deadline:
-			t.Fatalf("the hub never refused dave's timeline once his hourly confirmation restricted him: it still reads for the full member he was")
+			t.Fatal("no frame dave's page was sent within 15s named acme/secret#8, a pull request of PRIV, whose list names him")
 		}
 	}
 }

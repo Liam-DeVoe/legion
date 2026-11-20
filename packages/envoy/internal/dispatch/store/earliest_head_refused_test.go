@@ -70,42 +70,41 @@ func TestADatabaseOfTheEarliestHeadsShapeIsRefusedAtMigrate(t *testing.T) {
 	// The refusal stands for the whole of Migrate: the sign-in that used to fail with 42703 never
 	// runs, because a server whose Migrate refused does not start.
 
-	// The same two databases in a schema whose name needs quotes. Pasted together, the name folds
+	// The migration alone, in a schema whose name needs quotes. Pasted together, the name folds
 	// Dispatch to dispatch: Postgres then answers 3F000 (schema "dispatch" does not exist) at this
-	// migration, on the earliest shape and on a healthy database alike, so every deployment whose
-	// schema needs quotes would fail to migrate. The migration builds the name with format %I.
-	inQuotedSchema := func(t *testing.T) *Store {
+	// migration, on the earliest shape and on a correct one alike. The migration builds the name
+	// with format %I. A whole Migrate cannot run in such a schema, since Dispatch runs in the schema
+	// public (20261115200014_owner_lock_legacy_gate, and store.ownersLock, name public), so this runs
+	// 20261119064905's own statements in a transaction whose search_path is "Dispatch" alone, over a
+	// broker_revocations made there.
+	refusal, err := migrationFiles.ReadFile("migrations/20261119064905_earliest_head_broker_revocations_refused.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted := openEmptyTestStore(t)
+	inQuotedSchema := func(t *testing.T, table string) error {
 		t.Helper()
-		base := openEmptyTestStore(t)
-		var name string
-		if err := base.Pool.QueryRow(ctx, `select current_database()`).Scan(&name); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := base.Pool.Exec(ctx, `create schema "Dispatch"; alter database "`+name+`" set search_path = "Dispatch"`); err != nil {
-			t.Fatalf("give the database a schema whose name needs quotes: %v", err)
-		}
-		s, err := Open(ctx, base.Pool.Config().ConnString())
+		tx, err := quoted.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(s.Pool.Close)
-		if schema := tablesSchema(t, s); schema != "Dispatch" {
-			t.Fatalf("a new connection's current schema is %q, want Dispatch", schema)
+		defer tx.Rollback(ctx)
+		for _, statement := range []string{`create schema "Dispatch"`, `set local search_path = "Dispatch"`, table} {
+			if _, err := tx.Exec(ctx, statement); err != nil {
+				t.Fatalf("make broker_revocations in the schema Dispatch (%.60s): %v", statement, err)
+			}
 		}
-		return s
-	}
-	healthy := inQuotedSchema(t)
-	if err := healthy.Migrate(ctx); err != nil {
-		t.Errorf("Migrate on an empty database in the schema Dispatch answered %v; want it migrated", err)
-	}
-	capitals := inQuotedSchema(t)
-	migrateThrough(t, capitals, 20261116232216)
-	for _, statement := range []string{earliestHeadBrokerRevocations, `insert into schema_migrations (version) values (20261116232217)`} {
-		if _, err := capitals.Pool.Exec(ctx, statement); err != nil {
-			t.Fatalf("make the earliest head's shape in the schema Dispatch: %v", err)
+		var schema string
+		if err := tx.QueryRow(ctx, `select current_schema()`).Scan(&schema); err != nil || schema != "Dispatch" {
+			t.Fatalf("the transaction's current schema is %q (%v), want Dispatch", schema, err)
 		}
+		_, err = tx.Exec(ctx, string(refusal))
+		return err
 	}
-	if err := capitals.Migrate(ctx); err == nil || !strings.Contains(err.Error(), "broker_revocations holds no issuer column") {
-		t.Errorf("Migrate over the earliest head's broker_revocations in the schema Dispatch answered %v; want the same refusal as in an unquoted schema", err)
+	if err := inQuotedSchema(t, earliestHeadBrokerRevocations); err == nil || !strings.Contains(err.Error(), "broker_revocations holds no issuer column") {
+		t.Errorf("20261119064905 over the earliest head's broker_revocations in the schema Dispatch answered %v; want the same refusal as in public", err)
+	}
+	if err := inQuotedSchema(t, `create table broker_revocations (email text not null, issuer text not null, subject text not null)`); err != nil {
+		t.Errorf("20261119064905 over a broker_revocations with an issuer column in the schema Dispatch answered %v; want it to pass", err)
 	}
 }

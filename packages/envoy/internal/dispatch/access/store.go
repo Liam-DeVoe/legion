@@ -30,6 +30,7 @@ var (
 	ErrSlackChannelInput     = errors.New("a Slack channel is named by its id, such as C0123456789")
 	ErrSlackChannelsFull     = fmt.Errorf("a project names at most %d Slack channels", MaxSlackChannels)
 	ErrGroupsPerOwnerFull    = fmt.Errorf("an owner holds at most %d groups", model.MaxGroupsPerOwner)
+	ErrSlackChannelShared    = errors.New("a Slack channel belongs to one private project")
 )
 
 // The bounds of an access list and of a group.
@@ -87,12 +88,12 @@ func MemberKind(ctx context.Context, q Querier, login string) (model.MemberKind,
 }
 
 // The lock order every access write takes, so no two of them wait on each other in a cycle: a
-// group's name first (LockGroupName), then a project's row, then the rows a write appends events
-// on. A write of a group (PutGroup, DeleteGroup) takes the name and then the projects its delete
-// sweeps; a write of a project's list that names a group takes the same name before the project
-// (LockForAccessWrite), so a delete of that group and the write are ordered by the name: the
-// delete waits for the write and then sweeps its row, or the write, seeing the delete committed,
-// finds no group.
+// group's name first (LockGroupName), then the project's owner lock (store.LockOwner), then the
+// rows a write appends events on. A write of a group (PutGroup, DeleteGroup) takes the name and
+// then the projects its delete sweeps; a write of a project's list that names a group takes the
+// same name before the project (LockForAccessWrite), so a delete of that group and the write are
+// ordered by the name: the delete waits for the write and then sweeps its row, or the write,
+// seeing the delete committed, finds no group.
 
 // LockGroupName takes, for the rest of tx, the lock that orders every write of group name.
 func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
@@ -103,26 +104,36 @@ func LockGroupName(ctx context.Context, tx pgx.Tx, name string) error {
 }
 
 // LockForAccessWrite takes, in the order above, the locks a write of project key's access takes:
-// the group's name when the write names a group (empty when it names none), then the project's row,
-// `for no key update`, the level TestNoForUpdateOnOwnerTables holds every lock on projects to. It
-// answers the project's owner as tx reads it under that lock, nil for a project with none, and
-// ErrProjectNotFound for an unknown key. AddPrincipal and RemovePrincipal of a group are sound only
-// after it.
+// the group's name when the write names a group (empty when it names none), then the project's
+// owner lock, the advisory lock every writer of a project takes (store.LockOwner), and never a
+// row lock on projects (TestNoForUpdateOnOwnerTables). It answers the project's owner as tx reads
+// it in the statement after that lock, nil for a project with none, and ErrProjectNotFound for an
+// unknown key. AddPrincipal and RemovePrincipal of a group are sound only after it.
 func LockForAccessWrite(ctx context.Context, tx pgx.Tx, key, group string) (*string, error) {
 	if group != "" {
 		if err := LockGroupName(ctx, tx, group); err != nil {
 			return nil, err
 		}
 	}
+	if err := lockProject(ctx, tx, key); err != nil {
+		return nil, err
+	}
 	var owner *string
-	err := tx.QueryRow(ctx, `select owner from projects where key = $1 for no key update`, key).Scan(&owner)
+	err := tx.QueryRow(ctx, `select owner from projects where key = $1`, key).Scan(&owner)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("lock project %s: %w", key, err)
+		return nil, fmt.Errorf("read the owner of project %s: %w", key, err)
 	}
 	return owner, nil
+}
+
+// lockProject takes project key's owner lock for the rest of tx; taking it again in tx returns at
+// once. The read it guards is a statement of its own after it (store.LockOwner). Its failure is
+// the store's, which names the project ("lock project <key>: …"), so it is not wrapped again.
+func lockProject(ctx context.Context, tx pgx.Tx, key string) error {
+	return store.LockOwner(ctx, tx, store.ProjectOwner(key))
 }
 
 // ReadProject answers who may see project key and who changes that, as viewer reads it: viewer is
@@ -146,13 +157,14 @@ func readProject(ctx context.Context, q Querier, key, where string, args ...any)
 		select p.key, coalesce(p.owner, ''), p.visibility,
 			array(select principal from project_access where project_key = p.key and principal_kind = 'person' order by principal collate "C"),
 			array(select principal from project_access where project_key = p.key and principal_kind = 'group' order by principal collate "C"),
-			p.slack_channels,
+			p.slack_channels, p.slack_channels_changed_at,
 			array(select listed.principal from project_access listed
 				where listed.project_key = p.key and listed.principal_kind = 'person'
 					and not exists (select 1 from people where email = listed.principal)
 				order by listed.principal collate "C")
 		from projects p
-		where `+where, args...).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups, &access.SlackChannels, &access.NotSignedIn)
+		where `+where, args...).Scan(&access.Project, &access.Owner, &access.Visibility, &access.People, &access.Groups,
+		&access.SlackChannels, &access.SlackChannelsChangedAt, &access.NotSignedIn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
 	}
@@ -186,6 +198,11 @@ func OwnerAllowed(ctx context.Context, q Querier, owner string) (string, error) 
 func SetOwner(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, owner string, by model.Actor) (model.ProjectAccess, model.Event, error) {
 	login, err := OwnerAllowed(ctx, tx, owner)
 	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	// The previous owner is read under the project's owner lock, the lock updateProject takes
+	// before the row, so it is the owner the write replaces.
+	if err := lockProject(ctx, tx, key); err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	var previous string
@@ -229,8 +246,21 @@ var slackChannel = regexp.MustCompile(`^[CG][A-Z0-9]{8,20}$`)
 // SetSlackChannels replaces the Slack channel ids project key's credentials may post to, sorted
 // and with each id named once. The secrets broker releases the Legion Slack bot token to a
 // private project's credentials for these channels alone (R14), so only the project's owner
-// writes them: the caller makes that check first. It appends project.access_changed in tx.
-func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor) (model.ProjectAccess, model.Event, error) {
+// writes them: the caller makes that check first, under the project's owner lock
+// (LockForAccessWrite). A list different from the one stored, compared sorted, sets
+// slack_channels_changed_at in the same update to statement_timestamp(), that update's own start:
+// it comes after the project's owner lock and the channel lock are held, so it never precedes a
+// lock wait, and two writes of one project are stamped in the order they wrote. The transaction's
+// now() would be its start, before those waits. The same list leaves the time.
+//
+// A Slack channel belongs to one private project. So every call takes the channel lock
+// (lockSlackChannels) before it reads anything, and a private project's write naming a channel
+// another private project lists is refused with ErrSlackChannelShared, which names that project
+// only to a viewer who sees it (refuseSharedSlackChannel); a public project's write is never
+// refused for it. by is the person the write records, and viewer what the request's own caller
+// sees, as the API resolved it for the request (readerOf), whom the refusal is written for. It
+// appends project.access_changed in tx.
+func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key string, channels []string, by model.Actor, viewer *model.Viewer) (model.ProjectAccess, model.Event, error) {
 	named := make([]string, 0, len(channels))
 	for _, channel := range channels {
 		id := strings.TrimSpace(channel)
@@ -244,17 +274,132 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 	if len(named) > MaxSlackChannels {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %d given", ErrSlackChannelsFull, len(named))
 	}
-	tag, err := tx.Exec(ctx, `update projects set slack_channels = $2 where key = $1`, key, named)
-	if err != nil {
-		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("write the Slack channels of project %s: %w", key, err)
+	// The project's owner lock and then the channel lock, in the order every access write takes its
+	// locks: a caller that took the first already (LockForAccessWrite) takes it again at once.
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
-	if tag.RowsAffected() == 0 {
+	if err := lockSlackChannels(ctx, tx); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	var visibility string
+	err := tx.QueryRow(ctx, `select visibility from projects where key = $1`, key).Scan(&visibility)
+	if errors.Is(err, pgx.ErrNoRows) {
 		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("%w: %s", ErrProjectNotFound, key)
+	}
+	if err != nil {
+		return model.ProjectAccess{}, model.Event{}, fmt.Errorf("read the visibility of project %s: %w", key, err)
+	}
+	if visibility == model.ProjectPrivate {
+		if err := refuseSharedSlackChannel(ctx, tx, key, named, viewer); err != nil {
+			return model.ProjectAccess{}, model.Event{}, err
+		}
+	}
+	if err := updateProject(ctx, tx, key, `
+		update projects set slack_channels = $2,
+			slack_channels_changed_at = case
+				when array(select stored from unnest(slack_channels) stored order by stored collate "C") = $2::text[]
+					then slack_channels_changed_at
+				else statement_timestamp()
+			end
+		where key = $1
+	`, named); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
 	}
 	return appendProjectChange(ctx, tx, ev, key, model.AccessSlackChannelsChanged, "", by)
 }
 
-func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value string) error {
+// lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
+// channels takes before it reads any project's list, so two writes naming one channel for two
+// private projects cannot both read the other's list as it was and both commit. It comes after the
+// project's owner lock (LockForAccessWrite, lockProject) in the order every access write takes its
+// locks, and no writer takes a project's owner lock after it.
+func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
+		return fmt.Errorf("lock the Slack channels: %w", err)
+	}
+	return nil
+}
+
+// refuseSharedSlackChannel answers ErrSlackChannelShared when a private project other than key
+// lists one of channels, and nil when none does. Sound only under lockSlackChannels. The refusal
+// names that project only when viewer sees it (Sees, or All), the viewer the request resolved
+// before its transaction opened, so nothing is resolved here and no person's own sight stands in
+// for the credential's: an agent credential that lists no project sees only public ones, so it
+// never reads a private project's name here, whoever its person is. A nil viewer names nothing.
+func refuseSharedSlackChannel(ctx context.Context, tx pgx.Tx, key string, channels []string, viewer *model.Viewer) error {
+	channel, other, err := SharedSlackChannel(ctx, tx, key, channels)
+	if err != nil || channel == "" {
+		return err
+	}
+	refusal := slackChannelShared{channel: channel}
+	if viewer != nil && (viewer.All || slices.Contains(viewer.Sees, other)) {
+		refusal.other = other
+	}
+	return refusal
+}
+
+// slackChannelShared is ErrSlackChannelShared for one channel: naming other, the private project
+// that lists it, or, with other empty, no project, as a caller who does not see it reads it.
+type slackChannelShared struct{ channel, other string }
+
+func (refusal slackChannelShared) Error() string {
+	if refusal.other == "" {
+		return refusal.channel + " is listed by a private project you cannot see"
+	}
+	return refusal.channel + " is listed by " + refusal.other + ", a private project; " + ErrSlackChannelShared.Error()
+}
+
+func (slackChannelShared) Unwrap() error { return ErrSlackChannelShared }
+
+// SharedSlackChannel answers the first of channels, by id, that a private project other than key
+// lists, and that project, the first by key when several do; "" for both when none does.
+func SharedSlackChannel(ctx context.Context, q Querier, key string, channels []string) (channel, other string, err error) {
+	err = q.QueryRow(ctx, `
+		select key, c from projects, unnest(slack_channels) c
+		where visibility = 'private' and key <> $1 and c = any($2)
+		order by c, key limit 1
+	`, key, channels).Scan(&other, &channel)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", nil
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("read the private projects listing the Slack channels of project %s: %w", key, err)
+	}
+	return channel, other, nil
+}
+
+// PrivateProjects answers every private project's Slack channels and when they last changed, by
+// key, read live: the list GET /api/v1/access/private-projects answers the secrets broker. It is
+// [] when no project is private, never nil, since a reader takes anything but an array for the
+// answer being down.
+func PrivateProjects(ctx context.Context, q Querier) ([]model.PrivateProjectChannels, error) {
+	rows, err := q.Query(ctx, `
+		select key, slack_channels, slack_channels_changed_at from projects where visibility = 'private' order by key
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list the private projects: %w", err)
+	}
+	projects, err := pgx.AppendRows(make([]model.PrivateProjectChannels, 0), rows, func(row pgx.CollectableRow) (model.PrivateProjectChannels, error) {
+		var project model.PrivateProjectChannels
+		err := row.Scan(&project.Project, &project.SlackChannels, &project.SlackChannelsChangedAt)
+		return project, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list the private projects: %w", err)
+	}
+	return projects, nil
+}
+
+// updateProject writes one column of project key's row after the project's owner lock, the order
+// store.LockOwner's contract names: the lock and then the row. Written first, the row would be held
+// while the append waits for the lock, and a holder of the lock that writes the row next, as an
+// issue create does, would wait for it in turn (TestAProjectWriteTakesTheOwnerLockBeforeTheRow).
+// A caller that holds the lock already, the routes after LockForAccessWrite, takes it again at once.
+func updateProject(ctx context.Context, tx pgx.Tx, key, statement string, value any) error {
+	if err := lockProject(ctx, tx, key); err != nil {
+		return err
+	}
 	tag, err := tx.Exec(ctx, statement, key, value)
 	if err != nil {
 		return fmt.Errorf("write project %s: %w", key, err)
@@ -289,13 +434,16 @@ func AddPrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kind, 
 		return model.ProjectAccess{}, model.Event{}, err
 	}
 	by = by.Recorded()
-	// One statement reads the project, the group and the list's size, and writes the row only
-	// when all three allow it, so the answer says which refused.
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
+	// One statement, after the project's lock, reads the project, the group and the list's size,
+	// and writes the row only when all three allow it, so the answer says which refused.
 	var project, group, listed bool
 	var size int
 	if err := tx.QueryRow(ctx, `
 		with target as (
-			select key from projects where key = $1 for no key update
+			select key from projects where key = $1
 		), named_group as (
 			select 1 from access_groups where $2 = 'group' and name = $3
 		), size as (
@@ -338,10 +486,13 @@ func RemovePrincipal(ctx context.Context, tx pgx.Tx, ev *events.Broker, key, kin
 	if err != nil {
 		return model.ProjectAccess{}, model.Event{}, err
 	}
+	if err := lockProject(ctx, tx, key); err != nil {
+		return model.ProjectAccess{}, model.Event{}, err
+	}
 	var project bool
 	if err := tx.QueryRow(ctx, `
 		with target as (
-			select key from projects where key = $1 for no key update
+			select key from projects where key = $1
 		), removed as (
 			delete from project_access
 			where project_key = $1 and principal_kind = $2 and principal = $3 and exists (select 1 from target)
@@ -580,9 +731,11 @@ func groupChangeEvent(name, change string, by model.Actor) model.Event {
 }
 
 // DeleteGroup deletes group name and takes it off every access list that named it, so a later
-// group of the same name inherits no project. It appends one project.access_changed for each such
-// project and access_group.changed, all in tx, in that order. Who may delete the group is the
-// caller's to decide first.
+// group of the same name inherits no project. It takes the owner lock of each such project
+// (store.LockOwners) before it appends there, so the record of each change it writes beside the
+// event (recordProjectChanges: the project's owner and visibility) carries every write the lock
+// ordered first, and appends one project.access_changed for each project, in key order, and then
+// access_group.changed, all in tx. Who may delete the group is the caller's to decide first.
 func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string, by model.Actor) ([]model.Event, error) {
 	if err := LockGroupName(ctx, tx, name); err != nil {
 		return nil, err
@@ -605,13 +758,27 @@ func DeleteGroup(ctx context.Context, tx pgx.Tx, ev *events.Broker, name string,
 		return nil, fmt.Errorf("take group %s off its lists: %w", name, err)
 	}
 	slices.Sort(projects)
+	owners := make([]store.Owner, len(projects))
+	for index, project := range projects {
+		owners[index] = store.ProjectOwner(project)
+	}
+	if err := store.LockOwners(ctx, tx, owners...); err != nil {
+		return nil, fmt.Errorf("lock the projects that listed group %s: %w", name, err)
+	}
 	changes := make([]model.Event, 0, len(projects)+1)
 	for _, project := range projects {
 		changes = append(changes, projectChangeEvent(project, model.AccessGroupRemoved, by))
 	}
 	changes = append(changes, groupChangeEvent(name, model.AccessGroupDeleted, by))
-	appended, err := ev.AppendAll(ctx, tx, changes)
-	if err != nil {
+	appended := make([]model.Event, len(changes))
+	if err := store.RunWrite(ctx, tx, func(batch *store.WriteBatch) error {
+		for index, change := range changes {
+			if err := ev.QueueAppend(batch, change, func(written model.Event) { appended[index] = written }); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		return nil, fmt.Errorf("append the events of group %s's delete: %w", name, err)
 	}
 	projectEvents := make([]int64, 0, len(projects))

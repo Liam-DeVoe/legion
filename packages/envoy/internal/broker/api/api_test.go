@@ -345,12 +345,14 @@ type wireRecord struct {
 }
 
 type wireCreateRequestResponse struct {
-	RequestID  string  `json:"request_id"`
-	State      string  `json:"state"`
-	GrantID    *string `json:"grant_id"`
-	RecordID   *string `json:"record_id"`
-	Coalesced  bool    `json:"coalesced"`
-	ApproveURL *string `json:"approve_url"`
+	RequestID     string  `json:"request_id"`
+	State         string  `json:"state"`
+	GrantID       *string `json:"grant_id"`
+	RecordID      *string `json:"record_id"`
+	Coalesced     bool    `json:"coalesced"`
+	ApproveURL    *string `json:"approve_url"`
+	JudgeDeciding *bool   `json:"judge_deciding"`
+	Detail        *string `json:"detail"`
 }
 
 type wireRequestDecision struct {
@@ -359,12 +361,13 @@ type wireRequestDecision struct {
 }
 
 type wireRequestStatus struct {
-	State      string               `json:"state"`
-	GrantID    *string              `json:"grant_id"`
-	RecordID   *string              `json:"record_id"`
-	DecidedAt  *time.Time           `json:"decided_at"`
-	Decision   *wireRequestDecision `json:"decision"`
-	ApproveURL *string              `json:"approve_url"`
+	State         string               `json:"state"`
+	GrantID       *string              `json:"grant_id"`
+	RecordID      *string              `json:"record_id"`
+	DecidedAt     *time.Time           `json:"decided_at"`
+	Decision      *wireRequestDecision `json:"decision"`
+	ApproveURL    *string              `json:"approve_url"`
+	JudgeDeciding *bool                `json:"judge_deciding"`
 }
 
 type wirePendingEntry struct {
@@ -374,6 +377,9 @@ type wirePendingEntry struct {
 	RequestedAt time.Time   `json:"requested_at"`
 	Session     wireSession `json:"session"`
 	ApproveURL  *string     `json:"approve_url"`
+	State       string      `json:"state"`
+	// ExpiresAt is nil for a row that carries no expires_at.
+	ExpiresAt *time.Time `json:"expires_at"`
 }
 
 // wirePageRefusal is a refusal naming the record's approval page.

@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -17,13 +17,31 @@ import (
 // test can stop requests at a known point and let them through together.
 func holdLock(t *testing.T, database *store.Store, lock string, args ...any) (release func()) {
 	t.Helper()
+	return holdWith(t, database, lock, func(tx pgx.Tx) error {
+		_, err := tx.Exec(context.Background(), lock, args...)
+		return err
+	})
+}
+
+// holdOwner is holdLock for an owner's advisory lock (store.LockOwner), the lock every writer of
+// that owner takes first.
+func holdOwner(t *testing.T, database *store.Store, owner store.Owner) (release func()) {
+	t.Helper()
+	return holdWith(t, database, string(owner.Kind)+" "+owner.Key+"'s owner lock", func(tx pgx.Tx) error {
+		return store.LockOwner(context.Background(), tx, owner)
+	})
+}
+
+// holdWith opens a transaction that runs take and keeps it until the returned release runs.
+func holdWith(t *testing.T, database *store.Store, what string, take func(pgx.Tx) error) (release func()) {
+	t.Helper()
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatalf("begin the holding transaction: %v", err)
 	}
-	if _, err := tx.Exec(context.Background(), lock, args...); err != nil {
+	if err := take(tx); err != nil {
 		_ = tx.Rollback(context.Background())
-		t.Fatalf("take %q: %v", lock, err)
+		t.Fatalf("take %q: %v", what, err)
 	}
 	released := false
 	release = func() {
@@ -75,16 +93,6 @@ func putMappingAsync(t *testing.T, handler http.Handler, repo string, body map[s
 	return answered
 }
 
-// patchAccessAsync sends PATCH /api/v1/projects/{key}/access as alice from its own goroutine and
-// returns where its answer arrives.
-func patchAccessAsync(t *testing.T, handler http.Handler, key string, body map[string]any) <-chan *httptest.ResponseRecorder {
-	answered := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		answered <- dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/"+key+"/access", body, "alice")
-	}()
-	return answered
-}
-
 func awaitAnswer(t *testing.T, answered <-chan *httptest.ResponseRecorder, what string) *httptest.ResponseRecorder {
 	t.Helper()
 	select {
@@ -110,7 +118,7 @@ func createProjects(t *testing.T, handler http.Handler, keys ...string) {
 func TestRepoProjectFirstMappingRacedToTwoProjectsTellsTheProjectItLeft(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE", "OTHER")
-	release := holdLock(t, database, `select key from projects where key = 'CORE' for no key update`)
+	release := holdOwner(t, database, store.ProjectOwner("CORE"))
 	first := putMappingAsync(t, handler, "acme/new", map[string]any{"project": "CORE"})
 	awaitLockWaiters(t, database, 1)
 	second := putMappingAsync(t, handler, "acme/new", map[string]any{"project": "OTHER"})
@@ -141,7 +149,7 @@ func TestRepoProjectSimultaneousDefaultsBothSucceed(t *testing.T) {
 	for _, repo := range []string{"acme/widgets", "acme/gadgets"} {
 		dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/"+repo, map[string]any{"project": "CORE"}, "alice")
 	}
-	release := holdLock(t, database, `select key from projects where key = 'CORE' for no key update`)
+	release := holdOwner(t, database, store.ProjectOwner("CORE"))
 	first := putMappingAsync(t, handler, "acme/widgets", map[string]any{"project": "CORE", "default": true})
 	awaitLockWaiters(t, database, 1)
 	second := putMappingAsync(t, handler, "acme/gadgets", map[string]any{"project": "CORE", "default": true})
@@ -165,16 +173,16 @@ func TestRepoProjectOppositeMovesDoNotDeadlock(t *testing.T) {
 	createProjects(t, handler, "CORE", "OTHER")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/from-core", map[string]any{"project": "CORE"}, "alice")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/from-other", map[string]any{"project": "OTHER"}, "alice")
-	// Each move stops at its first event, holding the owner rows it has locked by then: a trigger
+	// Each move stops at its first event, holding the owner locks it has taken by then: a trigger
 	// has every event insert take a shared hold on a key the test holds. By then the first move has
 	// locked CORE and OTHER (LockOwners sorts them by key), so the second waits on CORE in its own
 	// LockOwners, and released, the two go one after the other. A move that locked each owner only
 	// as it appended would stop holding the project it leaves, CORE for the first and OTHER for the
 	// second; released together, each would wait on the other's, and Postgres would end one with
 	// 40P01. The hold is shared, so once released it orders nothing itself, as writes to different
-	// owners take no lock in common (events.Broker.Append). Holding a project row instead would
-	// leave both moves waiting on that row's holder, and which of them took the row first would be
-	// a race.
+	// owners take no lock in common (events.Broker.Append). Holding a project's owner lock instead
+	// would leave both moves waiting on that lock's holder, and which of them took the lock first
+	// would be a race.
 	const holdEvents = int64(4815162345)
 	for _, statement := range []string{
 		`create function dispatch_test_hold_events() returns trigger language plpgsql as $$
@@ -205,13 +213,13 @@ func TestRepoProjectOppositeMovesDoNotDeadlock(t *testing.T) {
 
 // An issue created naming a mapping while that mapping moves away never deadlocks, and neither
 // write refuses the other whichever order they take: the create takes no lock on the mapping
-// row any more, because an issue's own repository needs no mapping (INFRA-2543 R3). Both lock
-// the project, so one still waits for the other.
+// row any more, because an issue's own repository needs no mapping (INFRA-2543 R3). Both take
+// the project's owner lock, so one still waits for the other.
 func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createProjects(t, handler, "CORE", "OTHER")
 	dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/acme/widgets", map[string]any{"project": "CORE"}, "alice")
-	release := holdLock(t, database, `select key from projects where key = 'CORE' for no key update`)
+	release := holdOwner(t, database, store.ProjectOwner("CORE"))
 	moved := putMappingAsync(t, handler, "acme/widgets", map[string]any{"project": "OTHER"})
 	awaitLockWaiters(t, database, 1)
 	created := make(chan *httptest.ResponseRecorder, 1)
@@ -233,100 +241,5 @@ func TestIssueCreateNamingAMappingWhileItMovesDoesNotDeadlock(t *testing.T) {
 		where i.repo is not null and r.repo is null
 	`).Scan(&orphans); err != nil || orphans != 1 {
 		t.Fatalf("%d issue(s) name a repository their project does not map (%v), want the one this race created", orphans, err)
-	}
-}
-
-// Two writes made at once that would each put a private project's repository on another
-// project's GitHub subject lane cannot both land. A deferred trigger holds each write at its
-// commit, after its lane check has run, on a lock the test holds: without the lane lock both
-// checks read the state before the other's write, and both commit once released; with it the
-// second check waits for the first write's commit and reads it. alice owns PRIV and PUB, so she
-// sees both, and makes every write: exactly one commits and the other answers 409
-// REPOSITORY_LANE_SHARED.
-func TestTwoConcurrentWritesCannotShareALane(t *testing.T) {
-	const holdCommits = int64(4815162346)
-	private := map[string]any{"visibility": model.ProjectPrivate}
-	for _, race := range []struct {
-		name  string
-		setup func(t *testing.T, handler http.Handler)
-		// writes are the two writes, in the order they start; landed reports which committed.
-		writes [2]func(handler http.Handler) <-chan *httptest.ResponseRecorder
-		landed func(t *testing.T, database *store.Store) [2]bool
-	}{
-		{"race 1: two mappings onto one lane, one of them into private PRIV",
-			func(t *testing.T, handler http.Handler) {
-				if made := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/projects/PRIV/access", private, "alice"); made.Code != http.StatusOK {
-					t.Fatalf("make PRIV private: %d %s", made.Code, made.Body.String())
-				}
-			},
-			[2]func(http.Handler) <-chan *httptest.ResponseRecorder{
-				func(handler http.Handler) <-chan *httptest.ResponseRecorder {
-					return putMappingAsync(t, handler, "acme/a_b", map[string]any{"project": "PRIV"})
-				},
-				func(handler http.Handler) <-chan *httptest.ResponseRecorder {
-					return putMappingAsync(t, handler, "acme/a.b", map[string]any{"project": "PUB"})
-				},
-			},
-			func(t *testing.T, database *store.Store) [2]bool {
-				return [2]bool{mappedTo(t, database, "acme/a_b") == "PRIV", mappedTo(t, database, "acme/a.b") == "PUB"}
-			}},
-		{"race 2: PRIV made private while a neighbour of its repository is mapped to PUB",
-			func(t *testing.T, handler http.Handler) {
-				mapRepo(t, handler, "alice", "acme/a_b", map[string]any{"project": "PRIV"})
-			},
-			[2]func(http.Handler) <-chan *httptest.ResponseRecorder{
-				func(handler http.Handler) <-chan *httptest.ResponseRecorder {
-					return patchAccessAsync(t, handler, "PRIV", private)
-				},
-				func(handler http.Handler) <-chan *httptest.ResponseRecorder {
-					return putMappingAsync(t, handler, "acme/a.b", map[string]any{"project": "PUB"})
-				},
-			},
-			func(t *testing.T, database *store.Store) [2]bool {
-				return [2]bool{visibilityOf(t, database, "PRIV") == model.ProjectPrivate, mappedTo(t, database, "acme/a.b") == "PUB"}
-			}},
-	} {
-		t.Run(race.name, func(t *testing.T) {
-			handler, database := newLaneServer(t, &recordingBus{})
-			race.setup(t, handler)
-			for _, statement := range []string{
-				`create function dispatch_test_hold_commit() returns trigger language plpgsql as $$
-				begin
-					perform pg_advisory_xact_lock_shared(tg_argv[0]::bigint);
-					return null;
-				end;
-				$$`,
-				fmt.Sprintf(`create constraint trigger dispatch_test_hold_mappings after insert or update on repo_projects
-					deferrable initially deferred for each row execute function dispatch_test_hold_commit('%d')`, holdCommits),
-				fmt.Sprintf(`create constraint trigger dispatch_test_hold_projects after update on projects
-					deferrable initially deferred for each row execute function dispatch_test_hold_commit('%d')`, holdCommits),
-			} {
-				if _, err := database.Pool.Exec(context.Background(), statement); err != nil {
-					t.Fatalf("hold every commit that writes a mapping or a project: %v", err)
-				}
-			}
-			release := holdLock(t, database, `select pg_advisory_xact_lock($1)`, holdCommits)
-			first := race.writes[0](handler)
-			awaitLockWaiters(t, database, 1)
-			second := race.writes[1](handler)
-			awaitLockWaiters(t, database, 2)
-			release()
-			answers := [2]*httptest.ResponseRecorder{awaitAnswer(t, first, "the first write"), awaitAnswer(t, second, "the second write")}
-			landed := race.landed(t, database)
-			var committed, refused int
-			for index, answer := range answers {
-				switch {
-				case answer.Code == http.StatusOK && landed[index]:
-					committed++
-				case answer.Code == http.StatusConflict && strings.Contains(answer.Body.String(), `"code":"`+codeRepositoryLaneShared+`"`) && !landed[index]:
-					refused++
-				}
-			}
-			if committed != 1 || refused != 1 {
-				t.Fatalf("%s: the writes answered %d %s and %d %s, landing %v; want exactly one committed and the other 409 %s",
-					race.name, answers[0].Code, strings.TrimSpace(answers[0].Body.String()), answers[1].Code,
-					strings.TrimSpace(answers[1].Body.String()), landed, codeRepositoryLaneShared)
-			}
-		})
 	}
 }

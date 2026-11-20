@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,8 +49,8 @@ var projectOwnedRead = regexp.MustCompile(`(?i)\b(?:from|join)\s+(` + strings.Jo
 // entry no statement of the walk matches fails the census, so the list holds only statements the
 // server still makes.
 var readsOfNoProject = map[string]string{
-	// events.Horizon's statement.
-	"from (select coalesce(max(id), 0) as id from events) m left join events e on e.id = m.id": "the event log's " +
+	// events.Horizon's statement, whose FROM clause stands on a line of its own (horizon.go).
+	"from (select coalesce(max(id), 0) as id from events) m\n\tleft join events e on e.id = m.id": "the event log's " +
 		"horizon (events.Horizon): the newest event id and the time it was written, beside the snapshot's xmin, the " +
 		"bound below which every reader's page of the log is final. It answers no event's owner, type or payload, and " +
 		"a horizon read for one viewer would let a page pass an event a transaction still holds back",
@@ -234,6 +235,9 @@ type censusObjects struct {
 	// nearCopyCheck is the near-copy gate's row of the project's own create (advancing the
 	// priority), which GET /api/v1/near-copy-checks/{id} reads under the project's rule.
 	nearCopyCheck string
+	// deliveryRun is a deploy run of the deploy repository, one for each walk, which GET
+	// /api/v1/delivery/runs/{id} reads under the timeline's rule.
+	deliveryRun string
 }
 
 // wildcard matches one wildcard of a route pattern.
@@ -258,7 +262,7 @@ func (o censusObjects) fill(t *testing.T, pattern string, probe readProbe) strin
 			probeDocumentVersion: "1", probeBlock: o.block, probeAsk: o.ask, probeComment: o.comment,
 			probeMessage: o.message, probeHandoff: o.handoff, probeHandoffPhase: "plan", probeSession: o.session,
 			probePerson: o.person, probePriority: o.priority, probeBroadcast: o.broadcast, probeGoingRun: o.goingRun,
-			probeNearCopyCheck: o.nearCopyCheck,
+			probeNearCopyCheck: o.nearCopyCheck, probeDeliveryRun: o.deliveryRun,
 			// The repository seedDocumentObjects maps to the project.
 			probeRepositoryOwner: "acme", probeRepositoryName: strings.ToLower(o.project) + "-app",
 		}[object]
@@ -443,6 +447,27 @@ func seedFragmentCensus(t *testing.T, census *fragmentCensus) fragmentCensusFixt
 		}); err != nil {
 			t.Fatalf("store %s#%d: %v", repo, number+1, err)
 		}
+	}
+	// A deploy run of the deploy repository for each walk, which ships none of the pull requests
+	// above: they are of other repositories.
+	for index, objects := range []*censusObjects{&fixture.public, &fixture.private} {
+		started := merged.Add(time.Duration(index+1) * 10 * time.Minute)
+		run := delivery.DeliveryRun{
+			Repo: "acme/deploy", RunID: int64(900 + index), Kind: delivery.DeliveryRunKindDeploy, HeadSHA: fmt.Sprintf("census%d", index),
+			HeadCommitAt: started, StartedAt: started, CompletedAt: new(started.Add(5 * time.Minute)),
+			Conclusion: new(delivery.DeliveryRunConclusionSuccess), URL: fmt.Sprintf("https://github.com/acme/deploy/actions/runs/%d", 900+index),
+			HeadBranch: new("main"), Event: new("push"),
+		}
+		if err := delivery.UpsertRun(ctx, seed.database.Pool, run); err != nil {
+			t.Fatalf("store deploy run %d: %v", run.RunID, err)
+		}
+		if err := delivery.UpsertRunJobs(ctx, seed.database.Pool, run.Repo, run.RunID, []delivery.DeliveryRunJob{{
+			Repo: run.Repo, RunID: run.RunID, Name: "release / release", StartedAt: new(started), CompletedAt: new(started.Add(4 * time.Minute)),
+			Conclusion: new(delivery.DeliveryJobConclusionSuccess),
+		}}, true); err != nil {
+			t.Fatalf("store the jobs of deploy run %d: %v", run.RunID, err)
+		}
+		objects.deliveryRun = strconv.FormatInt(run.RunID, 10)
 	}
 	endedCIPass(t, seed.database, seedServerProcess(t, seed.database, 0), time.Hour, "complete")
 

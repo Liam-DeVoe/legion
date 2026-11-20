@@ -60,6 +60,11 @@ func workspaceDomainALabels(domains []string) []string {
 	return labels
 }
 
+// iapAudienceShape is the start every audience Identity-Aware Proxy signs for shares,
+// /projects/<project number>/ (https://cloud.google.com/iap/docs/signed-headers-howto): a load
+// balancer's backend service, an App Engine app or a Cloud Run service follows it.
+var iapAudienceShape = regexp.MustCompile(`^/projects/[0-9]+/\S+$`)
+
 // signInClientSettings are the three settings every Google sign-in takes, each with boot's value:
 // the issuer and Dispatch's confidential client there.
 func signInClientSettings(boot bootConfig) []struct{ name, value string } {
@@ -103,14 +108,14 @@ func signInSettingNames() string {
 
 // checkSignInSettings refuses the sign-in settings identityMode (DISPATCH_IDENTITY) cannot take.
 // Any of them beside header identity, which is only for tests and local harnesses, is refused
-// first. Then the first of these refuses: outside sign-in without a domain, whose Google sign-in
-// it widens; the Workspace's other domains without the domain they are listed beside; a group and
-// a domain both set; some of the settings but not the issuer, client ID, client secret and one of
-// the group or domain; a domain under an issuer other than Google's, whose tokens carry no `hd`,
-// unless the test hooks put the dev OIDC issuer in Google's place
-// (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a domain that is not a lowercase DNS name; an entry of the
-// Workspace's other domains that is empty or not a lowercase domain name IDNA lookup takes
-// (workspaceDomainALabel), named by its position;
+// first. IAP identity takes DISPATCH_SIGNIN_DOMAIN alone (checkIAPSignInSettings). Then the first
+// of these refuses: outside sign-in without a domain, whose Google sign-in it widens; the
+// Workspace's other domains without the domain they are listed beside; a group and a domain both
+// set; some of the settings but not the issuer, client ID, client secret and one of the group or
+// domain; a domain under an issuer other than Google's, whose tokens carry no `hd`, unless the
+// test hooks put the dev OIDC issuer in Google's place (DISPATCH_TEST_SIGNIN_DOMAIN_ISSUER); a
+// domain that is not a lowercase DNS name; an entry of the Workspace's other domains that is empty
+// or not a lowercase domain name IDNA lookup takes (workspaceDomainALabel), named by its position;
 // under Google's issuer, an outside origin whose host Google refuses in an OAuth redirect URI,
 // since the Google client must list `<origin>/auth/callback` (weborigin.GoogleRedirectHost, the
 // rule gcp:Dispatch holds its outsideOrigin input to with sign-in on); a group under Google's
@@ -125,6 +130,9 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	}
 	if strings.HasPrefix(identityMode, "header:") && len(set) > 0 {
 		return fmt.Errorf("%s must be unset because header identity and Google sign-in cannot share a deployment: header identity is only for tests and local harnesses", strings.Join(set, ", "))
+	}
+	if identityMode == "iap" {
+		return checkIAPSignInSettings(boot)
 	}
 	if boot.SignInOutside && boot.SignInDomain == "" {
 		return errors.New("DISPATCH_SIGNIN_OUTSIDE needs DISPATCH_SIGNIN_DOMAIN: it admits Google accounts outside the Workspace domain Dispatch signs people in for with Google, so set DISPATCH_SIGNIN_DOMAIN under DISPATCH_SIGNIN_ISSUER https://accounts.google.com, or unset DISPATCH_SIGNIN_OUTSIDE")
@@ -156,8 +164,8 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 		if boot.SignInIssuer != googleIssuer && !boot.TestSignInDomainIssuer {
 			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN needs DISPATCH_SIGNIN_ISSUER %s, since only Google's tokens carry hd; DISPATCH_SIGNIN_ISSUER is %s", googleIssuer, boot.SignInIssuer)
 		}
-		if len(boot.SignInDomain) > maxDomainLength || !domainShape.MatchString(boot.SignInDomain) {
-			return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(boot.SignInDomain))
+		if err := checkDomainShape(boot.SignInDomain); err != nil {
+			return err
 		}
 		for index, domain := range boot.SignInWorkspaceDomains {
 			if domain == "" {
@@ -181,14 +189,53 @@ func checkSignInSettings(boot bootConfig, identityMode string) error {
 	return nil
 }
 
+// checkIAPSignInSettings refuses the sign-in settings IAP identity cannot take. Identity-Aware
+// Proxy signs people in, so Dispatch runs no sign-in of its own: the issuer, client ID, client
+// secret and group are refused, each by name, and so are outside sign-in and the Workspace's
+// other domains, which widen Dispatch's own Google sign-in. DISPATCH_SIGNIN_DOMAIN is required, a
+// lowercase DNS name, since it is who may use Dispatch: an account whose assertion's hd is that
+// domain.
+func checkIAPSignInSettings(boot bootConfig) error {
+	var refused []string
+	for _, setting := range append(signInClientSettings(boot), struct{ name, value string }{"DISPATCH_SIGNIN_GROUP", boot.SignInGroup}) {
+		if setting.value != "" {
+			refused = append(refused, setting.name)
+		}
+	}
+	if boot.SignInOutside {
+		refused = append(refused, "DISPATCH_SIGNIN_OUTSIDE")
+	}
+	if len(boot.SignInWorkspaceDomains) > 0 {
+		refused = append(refused, "DISPATCH_SIGNIN_WORKSPACE_DOMAINS")
+	}
+	if len(refused) > 0 {
+		return fmt.Errorf("%s must be unset under DISPATCH_IDENTITY=iap: Identity-Aware Proxy signs people in, so Dispatch runs no sign-in of its own and admits the people of DISPATCH_SIGNIN_DOMAIN", strings.Join(refused, ", "))
+	}
+	if boot.SignInDomain == "" {
+		return errors.New("DISPATCH_IDENTITY=iap needs DISPATCH_SIGNIN_DOMAIN: the Google Workspace domain whose accounts may use Dispatch, which each assertion's hd must name")
+	}
+	return checkDomainShape(boot.SignInDomain)
+}
+
+// checkDomainShape refuses a DISPATCH_SIGNIN_DOMAIN that is not a lowercase DNS name, naming its
+// length and never its value.
+func checkDomainShape(domain string) error {
+	if len(domain) > maxDomainLength || !domainShape.MatchString(domain) {
+		return fmt.Errorf("DISPATCH_SIGNIN_DOMAIN must be a lowercase domain name such as example.com; got a value of %d characters", utf8.RuneCountInString(domain))
+	}
+	return nil
+}
+
 // signInRule is who boot's sign-in admits: the members of a Cognito pool's group; the people of a
-// Google Workspace domain; or, with DISPATCH_SIGNIN_OUTSIDE=1, those people and the verified
-// Google accounts outside the domain that lister says a project names directly, at an address on
-// no domain the Workspace owns (the domain and DISPATCH_SIGNIN_WORKSPACE_DOMAINS, which only this
-// rule reads, each entry as its A-label: workspaceDomainALabels). It is nil when boot configures
-// neither a group nor a domain (header identity, dev sign-in, or a cookie server with no
-// DISPATCH_SIGNIN_* setting, which admits nobody at all), matching signInFlow. Outside sign-in
-// with no lister is refused, so no path builds a rule that cannot read the access lists.
+// Google Workspace domain, whether Google signs them in to Dispatch or Identity-Aware Proxy signs
+// them in to the load balancer in front of it; or, with DISPATCH_SIGNIN_OUTSIDE=1 (which IAP
+// identity refuses), those people and the verified Google accounts outside the domain that lister
+// says a project names directly, at an address on no domain the Workspace owns (the domain and
+// DISPATCH_SIGNIN_WORKSPACE_DOMAINS, which only this rule reads, each entry as its A-label:
+// workspaceDomainALabels). It is nil when boot configures neither a group nor a domain (header
+// identity, dev sign-in, or a cookie server with no DISPATCH_SIGNIN_* setting, which admits nobody
+// at all), matching signInFlow. Outside sign-in with no lister is refused, so no path builds a rule
+// that cannot read the access lists.
 func signInRule(boot bootConfig, lister identity.Lister) (identity.SignInRule, error) {
 	switch {
 	case boot.SignInDomain != "" && boot.SignInOutside:
@@ -334,8 +381,10 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 }
 
 // requestIdentityFor is how a browser request names its person under boot: a header-identity
-// server takes the header's email; a cookie server verifies its signed session cookie and, with
-// sign-in configured, confirms at least hourly that rule, boot's sign-in rule (signInRule), still
+// server takes the header's email; an IAP server verifies the assertion Identity-Aware Proxy signs
+// for each request, against IAP's key set at boot.IAPKeySetURL, and admits the people of
+// DISPATCH_SIGNIN_DOMAIN (rule, boot's sign-in rule: signInRule); a cookie server verifies its
+// signed session cookie and, with sign-in configured, confirms at least hourly that rule still
 // admits the person: still in DISPATCH_SIGNIN_GROUP or DISPATCH_SIGNIN_DOMAIN, or, from outside
 // the domain, still named by a project. A cookie server with no sign-in setting names nobody
 // (identity.NoBrowserIdentity): nobody can sign in there, and a cookie minted while sign-in was on
@@ -346,6 +395,13 @@ func retirePlainRefreshTokens(ctx context.Context, people *store.PgPeopleStore, 
 func requestIdentityFor(boot bootConfig, signingKey auth.SigningKeys, people auth.PeopleStore, sessions auth.SessionStore, signIn *oidc.CodeFlow, rule identity.SignInRule) identity.Identity {
 	if boot.IdentityHeader != "" {
 		return identity.HeaderIdentity{Header: boot.IdentityHeader, People: people}
+	}
+	if boot.IAPAudience != "" {
+		return identity.IAPIdentity{
+			Verifier: oidc.NewIAPVerifier(boot.IAPAudience, oidc.NewKeysAt(boot.IAPKeySetURL)),
+			Rule:     rule,
+			People:   people,
+		}
 	}
 	if boot.SignInIssuer == "" && !boot.DevSignIn {
 		return identity.NoBrowserIdentity{}

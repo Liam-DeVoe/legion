@@ -58,7 +58,7 @@ var probeObjects = []probeObject{
 	probePriority, probeDeliveryRun, probeBroadcast, probeGoingRun, probeRepositoryOwner,
 	probeRepositoryName, probeLivePause, probeNearCopyCheck,
 	probeResult, probeThread, probeAttempt, probeEmail, probeGroup, probeAgentToken, probeSessionGroup,
-	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository,
+	probeCredentialRequest, probeCredentialGrant, probeMachineLogin, probeSignin, probeMappedRepository, probeStep,
 }
 
 // reads is one entry of readClasses.
@@ -88,6 +88,8 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/going/capability":         reads("whether the deployment configured a text model, which names no row", nil, readclass.None),
 	"GET /api/v1/dashboard/builds":         reads("the dashboard builds the server processes serve, which name no row of a project", nil, readclass.None),
 	"GET /api/v1/credentials/capabilities": reads("the secrets broker's own metadata, relayed whole", nil, readclass.None),
+	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, asked of GitHub and read from no row: a repository's name is no project's content",
+		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.None),
 
 	// The caller's own rows, keyed on its credential or its person.
 	"GET /api/v1/whoami":                 reads("who the caller's own credential names", nil, readclass.Caller),
@@ -112,20 +114,18 @@ var readClasses = map[string]readEntry{
 		readProbe{"session_id": probeSession, "slug": probeDocumentSlug, "number": probeDocumentVersion}, readclass.Project),
 
 	// Projects, and what each holds.
-	"GET /api/v1/projects":                            reads("the projects, each a row of its own project", nil, readclass.Project),
-	"GET /api/v1/projects/{key}/artifacts":            reads("one project's documents", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/related":              reads("the related-item check over one project's issues, documents and asks", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/architecture-sources": reads("one project's architecture sources", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/architecture-source":  reads("one project's first architecture source", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/architecture":         reads("one project's components and the issues attached to them", byProject, readclass.Project),
-	"GET /api/v1/projects/{key}/access":               reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
-	"GET /api/v1/projects/{key}/legion/daemon":        reads("which Legion daemon the deployment reads one project's state from: the deployment's setting, as its writes are, under a project the caller must see", byProject, readclass.Deployment, readclass.Project),
-	"GET /api/v1/projects/{key}/legion/board":         reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
-	"GET /api/v1/near-copy-checks":                    reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),
-	"GET /api/v1/near-copy-checks/{id}":               reads("one near-copy gate answer, of one project", readProbe{"id": probeNearCopyCheck}, readclass.Project),
-	"GET /api/v1/settings/repo-projects":              reads("the repository mappings, each a row of the project it maps to", nil, readclass.Project),
-	"GET /api/v1/github/app-installation/{owner}/{repo}": reads("whether the GitHub App is installed on a repository, held to the projects its mapping names (access.RepositoryClause): one the caller may not see answers as one the App is not installed on",
-		readProbe{"owner": probeRepositoryOwner, "repo": probeRepositoryName}, readclass.Project),
+	"GET /api/v1/projects":                                reads("the projects, each a row of its own project", nil, readclass.Project),
+	"GET /api/v1/projects/{key}/artifacts":                reads("one project's documents", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/related":                  reads("the related-item check over one project's issues, documents and asks", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/architecture-sources":     reads("one project's architecture sources", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/architecture-source":      reads("one project's first architecture source", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/architecture":             reads("one project's components and the issues attached to them", byProject, readclass.Project),
+	"GET /api/v1/projects/{key}/access":                   reads("one project's access list, which names people", byProject, readclass.Project, readclass.People),
+	"GET /api/v1/projects/{key}/legion/daemon":            reads("which Legion daemon the deployment reads one project's state from: the deployment's setting, as its writes are, under a project the caller must see", byProject, readclass.Deployment, readclass.Project),
+	"GET /api/v1/projects/{key}/legion/board":             reads("one project's Legion board: its issues, as its daemon reports them, and the issues a blocker link holds each on", byProject, readclass.Project),
+	"GET /api/v1/near-copy-checks":                        reads("one project's near-copy gate answers, each naming issues of that project", nil, readclass.Project),
+	"GET /api/v1/near-copy-checks/{id}":                   reads("one near-copy gate answer, of one project", readProbe{"id": probeNearCopyCheck}, readclass.Project),
+	"GET /api/v1/settings/repo-projects":                  reads("the repository mappings, each a row of the project it maps to", nil, readclass.Project),
 	"GET /api/v1/settings/architecture-sources":           reads("every project's architecture sources, each a row of its project", nil, readclass.Project),
 	"GET /api/v1/settings/project-default-assignees":      reads("every project's default assignee, each a row of its project", nil, readclass.Project),
 	"GET /api/v1/related-checks":                          reads("the related-item checks recorded, each of the project it searched", nil, readclass.Project),
@@ -146,6 +146,7 @@ var readClasses = map[string]readEntry{
 	"GET /api/v1/issues/{key}/collaborators":           reads("everyone who worked one issue: its people and its agent sessions", byIssue, readclass.Project, readclass.People, readclass.Agents),
 	"GET /api/v1/issues/{key}/subscribers":             reads("the sessions subscribed to one issue's topics", byIssue, readclass.Project, readclass.Agents),
 	"GET /api/v1/issues/{key}/role-holders":            reads("the sessions that hold one issue's Legion roles", byIssue, readclass.Project, readclass.Agents),
+	"GET /api/v1/issues/{key}/steps":                   reads("the runs of each step of one issue's workflow, rows of its project", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/artifacts":               reads("one issue's documents and files", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/results":                 reads("the checks of one issue's Verification document and their results", byIssue, readclass.Project),
 	"GET /api/v1/issues/{key}/coverage":                reads("what each requirement of one issue's spec lacks", byIssue, readclass.Project),
@@ -205,13 +206,13 @@ var readClasses = map[string]readEntry{
 	// The deployment's own rows, beside the project rows some of them count.
 	"GET /api/v1/priorities":              reads("the deployment's priorities, which belong to no project, with the work of projects counted under each", nil, readclass.Deployment, readclass.Project),
 	"GET /api/v1/priorities/{id}/history": reads("one priority's history, which belongs to no project, with the issues of projects it names", readProbe{"id": probePriority}, readclass.Deployment, readclass.Project),
-	"GET /api/v1/delivery/timeline":       reads("the deployment's delivery timeline, with each pull request's issue of a project", nil, readclass.Deployment, readclass.Project),
-	"GET /api/v1/delivery/measures":       reads("the deployment's delivery measures, with the issues of projects they count", nil, readclass.Deployment, readclass.Project),
-	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over the repositories projects map", nil, readclass.Deployment, readclass.Project),
+	"GET /api/v1/delivery/timeline":       reads("the delivery timeline of the pull requests whose issue the caller sees, with the runs and counts of them", nil, readclass.Project),
+	"GET /api/v1/delivery/measures":       reads("the delivery measures of the pull requests whose issue the caller sees, with the issues of projects they count", nil, readclass.Project),
+	"GET /api/v1/ci-reconcile/passes":     reads("the deployment's CI reconcile passes, each over repositories of many projects and naming no issue", nil, readclass.Deployment),
 	"GET /api/v1/broadcasts":              reads("the deployment's broadcasts, each to sessions, with their replies", nil, readclass.Deployment, readclass.Agents, readclass.Project),
 	"GET /api/v1/broadcasts/{id}":         reads("one broadcast, to sessions, with its replies", readProbe{"id": probeBroadcast}, readclass.Deployment, readclass.Agents, readclass.Project),
-	"GET /api/v1/delivery/pipeline":       reads("the deployment's Pipeline page, read from its deploy repository's runs", nil, readclass.Deployment),
-	"GET /api/v1/delivery/runs/{id}":      reads("one run of the deployment's deploy repository", readProbe{"id": probeDeliveryRun}, readclass.Deployment),
+	"GET /api/v1/delivery/pipeline":       reads("the deployment's Pipeline page, read from its deploy repository's runs and the pull requests the timeline's rule shows the caller", nil, readclass.Deployment, readclass.Project),
+	"GET /api/v1/delivery/runs/{id}":      reads("one run of the deployment's deploy repository, answered as missing where the timeline's rule does not show it", readProbe{"id": probeDeliveryRun}, readclass.Deployment, readclass.Project),
 	"GET /api/v1/settings/delivery":       reads("the deployment's delivery configuration", nil, readclass.Deployment),
 	"GET /api/v1/settings/new-issue":      reads("the deployment's new-issue label and session", nil, readclass.Deployment),
 	"GET /api/v1/credential-requests":     reads("the deployment's pending credential requests a signed-in person decides", nil, readclass.Deployment),
@@ -220,8 +221,9 @@ var readClasses = map[string]readEntry{
 	"GET /metrics":                        reads("the process's counters of the whole deployment's work, which name no project, issue, person or session (readclass's TestMetricsNameNoProject)", nil, readclass.Deployment),
 
 	// The membership answer the secrets broker reads.
-	"GET /api/v1/access/projects/{key}": reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
-	"GET /api/v1/access/person":         reads("one person's member kind, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/projects/{key}":   reads("the membership answer for one project and person, read by the broker's service account alone", byProject, readclass.AccessAccount),
+	"GET /api/v1/access/person":           reads("one person's member kind, read by the broker's service account alone", nil, readclass.AccessAccount),
+	"GET /api/v1/access/private-projects": reads("every private project's Slack channels and when each list changed, read by the broker's service account alone", nil, readclass.AccessAccount),
 
 	// The test hooks, mounted only where a deployment turns them on.
 	"GET /api/v1/artifacts/_test/rooms":              reads("the document rooms this process holds", nil, readclass.TestHook),
