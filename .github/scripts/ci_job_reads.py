@@ -1727,7 +1727,36 @@ UNIT_TEST_TIMEOUT = "9m"
 # streams: the step's go test is one of envoy-go's, so it writes its stream as a job artifact as
 # the others do, and every broker test's name and result are in the artifact (dispatch://INFRA-1075).
 DATABASE_SKIPS_STREAM = "broker.json"
+
+# The tests envoy-go's step "Count the store-form rows on each backend" runs through
+# packages/envoy/scripts/backend-count.sh, by package, counting each one's `aws` and `gcp` passes
+# (the verification's check c8). It runs them in the same job, on the same runner and env, with
+# no -tags and no -race, as the unit step's package list runs cmd/agent-secrets and the
+# database-skips step runs internal/broker/api, so a second run in either asked nothing the count
+# does not: each skips them by name, and the count is their one run (O15 of
+# dispatch://INFRA-1408, which go-test-step-expansion.py's duplicate verdict reads; its
+# BACKEND_COUNT_TESTS is this list).
+BACKEND_COUNT_AGENT_SECRETS = "cmd/agent-secrets"
+BACKEND_COUNT_BROKER_API = f"{DATABASE_SKIPS_TREE}/api"
+BACKEND_COUNT_TESTS = {
+    BACKEND_COUNT_AGENT_SECRETS: ["TestEverySecretFormNamesTheSourceItUses", "TestNoSecretFormAsksTheBrokerForACredential",
+                                  "TestUseCommandOutsideASessionReachesTheMachineSource",
+                                  "TestTheChainSkipsAbsenceAndStopsOnABrokenSource"],
+    BACKEND_COUNT_BROKER_API: ["TestSettingsNameTheGoogleExchangeAudienceOnEitherStore"],
+}
+if DATABASE_SKIPS_PATTERN and re.search(DATABASE_SKIPS_PATTERN, f"/{BACKEND_COUNT_BROKER_API}"):
+    raise ValueError(f"{BACKEND_COUNT_BROKER_API} is out of the database-skips step, so its --skip below skips "
+                     "nothing; name the step that runs that package now and move the skip to it")
+
+
+def names_pattern(names):
+    """The anchored alternation of whole test names a step's -run or -skip writes, quoted for the
+    shell: `'^(Name|Name|…)$'`, the names sorted."""
+    return f"'^({'|'.join(sorted(names))})$'"
+
+
 DATABASE_SKIPS_RUN = (f"{DATABASE_SKIPS_SCRIPT} --timeout {UNIT_TEST_TIMEOUT} "
+                      f"--skip {names_pattern(BACKEND_COUNT_TESTS[BACKEND_COUNT_BROKER_API])} "
                       f'--keep "$RUNNER_TEMP/go-test-json/{DATABASE_SKIPS_STREAM}"')
 # The counter's own test, which envoy-go runs before the count: its five controls run the counter
 # on these three packages, one at a time, each narrowed to its planted and expected tests.
@@ -1818,7 +1847,7 @@ WEB_FIXTURE_TESTS = ["TestWebDisplayFixture", "TestTheWebFixtureFindsItsFilesFro
 WEB_FIXTURE_PACKAGE = "internal/dispatch/pmdoc"
 WEB_FIXTURE_SOURCE = f"{ENVOY}/{WEB_FIXTURE_PACKAGE}"
 FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
-WEB_FIXTURE_PATTERN = f"'^({'|'.join(sorted(WEB_FIXTURE_TESTS))})$'"
+WEB_FIXTURE_PATTERN = names_pattern(WEB_FIXTURE_TESTS)
 # The fixture check writes a `go test -json` stream (json_stream_script), and its `-run` and its
 # `-args --check` are not flags the simple form reduces either. None of them moves the closure:
 # the whole pmdoc package compiles, whichever test the run selects. Its -timeout is the call's
@@ -1837,6 +1866,13 @@ if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
     raise ValueError(f"the display-tree fixture tests are in {WEB_FIXTURE_PACKAGE}, which the unit step's "
                      f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
+# The backend count's tests of cmd/agent-secrets (BACKEND_COUNT_TESTS above) are skipped by the
+# package list, the one call of the unit step that runs that package, by the same rule, and held
+# to that call the same way.
+if re.search(UNIT_TEST_PATTERN, f"/{BACKEND_COUNT_AGENT_SECRETS}"):
+    raise ValueError(f"the backend count's tests of {BACKEND_COUNT_AGENT_SECRETS} are skipped by the unit step's "
+                     f"package list, whose `grep -Ev` takes that package out, so the -skip below skips nothing; "
+                     f"name the call that runs that package now and move the skip to it")
 # UNIT_TEST_SCRIPT, the step's whole text, is built further down, below the walk the
 # race-impossible call's -run comes from.
 
@@ -1932,10 +1968,12 @@ PGMIGRATE_DSN = service_dsn(5435)
 EVENTS_DSN = service_dsn(5436)
 # The package list's one -skip, which go test reads once and so must name every test the list
 # leaves to another run: the shutdown feed test, which the shutdown call runs on a service of
-# its own, and WEB_FIXTURE_TESTS, which the fixture step of envoy-go-checks runs under
-# `--check`. Each name is built from its own list, so the -skip cannot drift from the -run of the
-# call or the step that runs the test.
-UNIT_TEST_SKIP = "^(" + "|".join(sorted(SHUTDOWN_TESTS + WEB_FIXTURE_TESTS)) + ")$"
+# its own, WEB_FIXTURE_TESTS, which the fixture step of envoy-go-checks runs under `--check`,
+# and the backend count's tests of cmd/agent-secrets (BACKEND_COUNT_TESTS), which the count step
+# runs in this same job and env as their one run. Each name is built from its own list, so the
+# -skip cannot drift from the -run of the call or the step that runs the test. The package list
+# is the one call of the step that runs cmd/agent-secrets, so it is the one that skips them.
+UNIT_TEST_SKIP = names_pattern(SHUTDOWN_TESTS + WEB_FIXTURE_TESTS + BACKEND_COUNT_TESTS[BACKEND_COUNT_AGENT_SECRETS])
 # -p 8 and -parallel 12, the nine calls the step starts in the background, and the streams
 # and logs they write, are ci-job-envoy-go.yaml's own comments' to explain. The text itself is
 # UNIT_TEST_SCRIPT, built below the walk the race-impossible call's -run comes from.
@@ -2405,7 +2443,7 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
-printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{UNIT_TEST_SKIP}' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip {UNIT_TEST_SKIP} -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
 unit=$!
 # The tests the race detector makes impossible, which the race job of each of these
 # packages therefore cannot make, so envoy-go keeps a plain run of them:
@@ -3048,7 +3086,7 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("go_test_step_expansion_test", "Test the go test step expansion",
             f"{SCRIPTS}/go-test-step-expansion.test.sh", [
-        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:40)"),
+        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:42)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
         (f"{SCRIPTS}/go_build_tags.py", "the Go build-tag module that engine imports"),
@@ -3056,7 +3094,13 @@ SCRIPT_TEST_GATES = [
         (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its two-steps case reads this file's own go test line, the GODEBUG one"),
         (".github/workflows/ci-job-envoy-go.yaml", "its audited-step case reads this file's step that runs database-skips.sh"),
         (".github/workflows/ci-job-envoy-go-race-api.yaml", "its audited-step case reads this file's step that runs database-skips.sh with arguments"),
+        (".github/workflows/ci-job-*.yaml", "its step-reader case reads every go test step of each workflow a job of ci.yaml calls, as the module's documents() loads them"),
+        (".github/workflows/browser-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/dispatch-browser.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/docs-site.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
+        (".github/workflows/worker-image.yaml", "its step-reader case reads it, a workflow a job of ci.yaml calls"),
         ("packages/envoy/scripts/database-skips.sh", "its last case hashes this script, the one AUDITED_SCRIPTS reads"),
+        ("packages/envoy/scripts/backend-count.sh", "its last case hashes this script, which AUDITED_SCRIPTS reads too"),
         (f"{SCRIPTS}/ci_job_reads.py", "its last case imports this file for the reads this gate declares"),
     ]),
 ]
@@ -3670,8 +3714,11 @@ GATES = [
         #     committed web display fixture rather than checking it, so a second run here asks
         #     nothing and can only pass, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats
         #     that same file, a read this job need not carry; the fixture step of envoy-go-checks
-        #     runs both, with the check that makes the first a requirement. The tests stay
-        #     compiled into the list's binaries, which is what a skipped test is;
+        #     runs both, with the check that makes the first a requirement. It also takes the
+        #     backend count's tests of cmd/agent-secrets out (BACKEND_COUNT_TESTS), which the
+        #     count step runs in this same job and environment; the list is the one call of the
+        #     step that runs that package. The tests stay compiled into the list's binaries, which
+        #     is what a skipped test is;
         #   * the race-impossible call is one go test over every package of the plain run the
         #     race lane cannot make, the tests that run alone apart (RACE_IMPOSSIBLE_*,
         #     alone_split), selecting their tests with one -run, so it gets a Run per package of
@@ -3719,7 +3766,8 @@ GATES = [
         # DEFAULT_EXCEPT, which hold_database_skips_packages() holds to DATABASE_SKIPS_PATTERN); the
         # unit step leaves the whole table out. The Run names the tree's packages that pattern
         # keeps (packages_kept), as the unit step's does, so a lane package's files do not reach
-        # this step's reads.
+        # this step's reads. Its --skip takes the backend count's test of internal/broker/api out,
+        # as the unit step's -skip takes that count's other tests out of it.
         pinned_step("envoy-go", DATABASE_SKIPS_STEP, ".", DATABASE_SKIPS_RUN, [
             (ENVOY, packages_kept(ENVOY, DATABASE_SKIPS_PATTERN, DATABASE_SKIPS_TREE) + [f"./{DATABASE_SKIPS_COMMAND}/"],
              f"packages/envoy/scripts/database-skips.sh's go test -json -timeout {UNIT_TEST_TIMEOUT} of the broker's "

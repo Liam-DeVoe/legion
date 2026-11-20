@@ -449,13 +449,16 @@ jobs:
       # What is left is the rest of the module less the routes package, internal/dispatch/events
       # and internal/pgmigrate, each of which has a call and a service of its own, and less the two
       # longest packages it held (the API's and the documents service's), which the lane runs
-      # now. Its own -timeout is below, with the call. Its one -skip names three tests: the
-      # shutdown feed test, which the shutdown call runs on a service of its own, and the two
-      # tests of the web app's display-tree fixture. Without `--check` TestWebDisplayFixture
-      # writes the committed fixture rather than checking it, so a run here would ask nothing of
-      # it, and TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would
-      # make it a read of this job; envoy-go-checks runs both, the first with the check, and both
-      # texts are built from the same list.
+      # now. Its own -timeout is below, with the call. Its one -skip names seven tests: the
+      # shutdown feed test, which the shutdown call runs on a service of its own, the two tests
+      # of the web app's display-tree fixture, and the backend count's four tests of
+      # cmd/agent-secrets. Without `--check` TestWebDisplayFixture writes the committed fixture
+      # rather than checking it, so a run here would ask nothing of it, and
+      # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it a
+      # read of this job; envoy-go-checks runs both, the first with the check, and both texts are
+      # built from the same list. So are the backend count's four tests of cmd/agent-secrets,
+      # which the count step below runs in this same job and env (BACKEND_COUNT_TESTS); the
+      # package list is the one call of this step that runs cmd/agent-secrets.
       # The long poles lead the list. `go test` starts the packages in the order its arguments
       # name, so a package that starts late ends the call late however little it is waiting for:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
@@ -504,7 +507,7 @@ jobs:
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/agent-secrets"
           rest=$(go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/architecture/notes$|/internal/runnerlog$|/internal/dispatch/specgraph$|/cmd/architecture-check$|/cmd/spec-check$|/listenerwire$|/internal/wirecheck$|/internal/broker($|/)|/cmd/broker$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/natscred$|/internal/broker/natscallout$|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/pgmigrate$|/internal/dispatch/events$' | grep -vxF "$lead")
-          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
+          printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '^(TestEverySecretFormNamesTheSourceItUses|TestNoSecretFormAsksTheBrokerForACredential|TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument|TestTheChainSkipsAbsenceAndStopsOnABrokenSource|TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestUseCommandOutsideASessionReachesTheMachineSource|TestWebDisplayFixture)$' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
           unit=$!
           # The tests the race detector makes impossible, which the race job of each of these
           # packages therefore cannot make, so envoy-go keeps a plain run of them:
@@ -728,7 +731,8 @@ jobs:
       # ./internal/broker/api/. This step runs only those tests in only those two packages (-run,
       # under backend-count.sh's own 5-minute -timeout, which the job's measured time holds) and counts
       # the passes of each, so a test whose AWS half was skipped or removed, or that lives in
-      # neither package, reads aws=0 and fails, as the verification's check c8 requires.
+      # neither package, reads aws=0 and fails, as the verification's check c8 requires. It is
+      # their one run: the unit step and the database-skips step skip them by name.
       - name: Count the store-form rows on each backend
         run: packages/envoy/scripts/backend-count.sh ./cmd/agent-secrets/ ./internal/broker/api/ -- TestEverySecretFormNamesTheSourceItUses TestNoSecretFormAsksTheBrokerForACredential TestUseCommandOutsideASessionReachesTheMachineSource TestTheChainSkipsAbsenceAndStopsOnABrokenSource TestSettingsNameTheGoogleExchangeAudienceOnEitherStore
       # The step below is the one skip counter of the module's database-backed packages, which
@@ -766,9 +770,11 @@ jobs:
       # $RUNNER_TEMP/go-test-json, which the upload step below uploads with the unit step's
       # streams: this step's go test is one of the job's, so its stream is a job artifact as the
       # others are, and each broker test's name and result can be read there (dispatch://INFRA-1075).
+      # Its --skip leaves out the backend count's test of ./internal/broker/api/, which the count
+      # step above runs.
       - name: Count the database broker suites' skips
         timeout-minutes: 19
-        run: packages/envoy/scripts/database-skips.sh --timeout 9m --keep "$RUNNER_TEMP/go-test-json/broker.json"
+        run: packages/envoy/scripts/database-skips.sh --timeout 9m --skip '^(TestSettingsNameTheGoogleExchangeAudienceOnEitherStore)$' --keep "$RUNNER_TEMP/go-test-json/broker.json"
       # The run of the built agent-secrets against moto needs moto, so it sits behind a build tag
       # and packages/envoy/scripts/aws-moto-check.sh runs it. Vetting it keeps it compiling.
       - name: Vet agent-secrets' moto run (no moto)
