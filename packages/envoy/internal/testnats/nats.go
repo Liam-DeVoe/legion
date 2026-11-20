@@ -239,9 +239,13 @@ func (s *Server) Freeze(t testing.TB) func() {
 // or not, so a direct get on a connection the relay does not hold, such as one to the server's own
 // port, is ordered too when the server has finished it before Connz takes that client's lock; one
 // the server reads after that runs during the reload unordered, and the race detector reports it.
-// TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace holds the lock step to its place: its
-// gets are in flight through the relay as each reload starts, so a lock step anywhere but after
-// the last PONG, or none, fails it under the race detector, which envoy-go-race runs it under.
+// Two tests hold the lock step to its place. The barrier is what holds a reload back in real time;
+// the lock step adds an order only the race detector sees, so no timing shows where it is.
+// TestReloadTakesTheLockStepAfterTheBarrierAndBeforeTheReload reads where Reload calls it
+// (lockStep), every run: a hold in force, every PONG of the barrier in, the server not yet
+// reloaded. TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace, under the race detector,
+// which envoy-go-race runs it under, sees what the first cannot: a lock step in its place that
+// takes no client's lock.
 //
 // Reload refuses a server the package's tests share (URL): it would hold every test's clients still,
 // and the account server that hands those servers out starts a new one instead. A test that
@@ -282,7 +286,7 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("hold the NATS server's clients still for its reload: %v", err)
 	}
 	// The barrier's order, in the client locks the race detector sees (above).
-	if _, err := srv.Connz(&natsserver.ConnzOptions{}); err != nil {
+	if err := lockStep(srv); err != nil {
 		release()
 		t.Fatalf("take each client's lock after the barrier: %v", err)
 	}
@@ -299,6 +303,14 @@ func (s *Server) Reload(t testing.TB, config string) error {
 		t.Fatalf("keep the configuration the server took: %v", err)
 	}
 	return nil
+}
+
+// lockStep is Reload's lock step: it takes each open client's lock through Connz. It is a variable
+// so that TestReloadTakesTheLockStepAfterTheBarrierAndBeforeTheReload can see where Reload calls
+// it; nothing else replaces it, and this package's tests run one at a time.
+var lockStep = func(srv *natsserver.Server) error {
+	_, err := srv.Connz(&natsserver.ConnzOptions{})
+	return err
 }
 
 // barrierPoll is how often hold and barrier look again at the connections they wait for.

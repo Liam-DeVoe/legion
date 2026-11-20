@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	natsgo "github.com/nats-io/nats.go"
 )
 
@@ -96,9 +97,11 @@ const (
 // the clients is still being served; the barrier waits for it, and only the lock step after the
 // barrier orders it before the reload in locks the race detector sees (Server.Reload). With the lock
 // step before the hold, between the hold and the barrier, after the reload, or gone, the race
-// detector reports the pair and fails this test. Each get counts whether a reload began while it
-// was outstanding, so a run in which no get was in flight at a reload fails rather than passing on
-// a case it never made.
+// detector reports the pair when its record of that read still holds it, which is a chance per run;
+// TestReloadTakesTheLockStepAfterTheBarrierAndBeforeTheReload decides those four by a fact every
+// run, and this test stays for the one only the race detector can see: a lock step in its place
+// that takes no client's lock. Each get counts whether a reload began while it was outstanding, so
+// a run in which no get was in flight at a reload fails rather than passing on a case it never made.
 func TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace(t *testing.T) {
 	server, uri := Start(t)
 	setup := Connect(t, uri)
@@ -171,6 +174,69 @@ func TestAReloadWithDirectGetsInFlightOnTheSameServerIsNoRace(t *testing.T) {
 		t.Fatalf("no direct get was in flight when a reload began (%d gets across %d reloads), so this test says nothing about the order", served.Load(), reloadRounds)
 	}
 	t.Logf("%d direct gets across %d reloads, %d of them in flight when a reload began", served.Load(), reloadRounds, inFlight.Load())
+}
+
+// Reload's lock step comes after the barrier and before the reload, read where Reload calls it.
+// The barrier is what holds a reload back in real time: Reload waits for the server's PONG to the
+// relay's own PING on every connection, which the server sends only after everything before it.
+// The lock step adds an order only the race detector sees (Server.Reload), so moving it changes no
+// timing a test could measure, and the race detector's report of a misplaced one is a chance per
+// run. So this test replaces lockStep with a wrapper that reads, as Reload calls it, three facts: a
+// hold is in force, the server has answered every PING the relay sent (the barrier is done), and
+// the server has not reloaded (its configuration time is the one before Reload). A lock step before
+// the hold, between the hold and the barrier, after the reload, or none fails it by name every run.
+func TestReloadTakesTheLockStepAfterTheBarrierAndBeforeTheReload(t *testing.T) {
+	server, uri := Start(t)
+	conn := Connect(t, uri)
+	defer conn.Close()
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the client through the relay: %v", err)
+	}
+	server.mu.Lock()
+	srv := server.srv
+	server.mu.Unlock()
+	loaded := srv.ConfigTime()
+	type moment struct{ held, answered, pinged, reloaded bool }
+	var calls []moment
+	original := lockStep
+	t.Cleanup(func() { lockStep = original })
+	lockStep = func(called *natsserver.Server) error {
+		r := server.relay
+		r.mu.Lock()
+		m := moment{held: r.holds > 0, answered: true}
+		for j := range r.joins {
+			if !j.sent.connected {
+				continue
+			}
+			m.pinged = m.pinged || j.injected > 0
+			if j.injected == 0 || len(j.drop) > 0 {
+				m.answered = false
+			}
+		}
+		r.mu.Unlock()
+		m.reloaded = !called.ConfigTime().Equal(loaded)
+		calls = append(calls, m)
+		return original(called)
+	}
+	if err := server.Reload(t, hostOnlyConfig); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if srv.ConfigTime().Equal(loaded) {
+		t.Fatal("the server's configuration time did not move across the reload, so this test cannot tell a reloaded server from one that is not")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("Reload took its lock step %d times, want once", len(calls))
+	}
+	at := calls[0]
+	if !at.held {
+		t.Error("Reload took its lock step with no hold in force: before the hold, or after its release")
+	}
+	if !at.pinged || !at.answered {
+		t.Errorf("Reload took its lock step before the server had answered every PING of the barrier (a PING sent: %t, every one answered: %t)", at.pinged, at.answered)
+	}
+	if at.reloaded {
+		t.Error("Reload took its lock step after the server had reloaded")
+	}
 }
 
 // StartNkeyAuthorized's readiness wait refuses a server that admits a client with no credential:
