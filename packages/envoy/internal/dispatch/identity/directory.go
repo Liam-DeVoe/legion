@@ -101,10 +101,12 @@ func (e *DirectoryError) Unwrap() error { return e.cause }
 //
 // A check's Directory read runs under the check's own context. Its token comes from the shared
 // token, or from the one mint every check that finds no valid token waits on (sharedMint), each
-// only within its own context. The impersonate package carries no context into its two requests
-// (signJwt and the token exchange), so each mint builds its token source on a client of that mint
-// alone (flight), whose transport puts the mint's context on every request the package sends; no
-// context of a finished mint is kept.
+// only within its own context. The mint runs within the deadline of the check that started it,
+// so each signJwt and token exchange ends inside the 15 seconds of a check (DirectoryFlight), and
+// no check's cancel ends it for the others. The impersonate package carries no context into its
+// two requests, so each mint builds its token source on a client of that mint alone (flight),
+// whose transport puts the mint's context on every request the package sends; no context of a
+// finished mint is kept.
 type DirectoryReader struct {
 	signer, admin string
 	// opts are the caller's options, given again to each mint's token source.
@@ -114,7 +116,8 @@ type DirectoryReader struct {
 	// reading is the client the Directory read goes through, with no credential of its own: the
 	// read carries the minted token.
 	reading *http.Client
-	// mintTimeout bounds a shared mint, which runs under no caller's context: DirectoryFlight.
+	// mintTimeout bounds a shared mint started by a check whose context has no deadline:
+	// DirectoryFlight.
 	mintTimeout time.Duration
 
 	mu    sync.Mutex
@@ -171,8 +174,8 @@ func NewDirectoryReader(ctx context.Context, signer, admin string, opts ...optio
 // a renamed person, whose old address is now an alias of their own account, keeps their id and is
 // Active, and an address made an alias of a colleague's account, or deleted and created again,
 // answers with another id and is Held. A Failed outcome comes with a *DirectoryError. Check
-// returns when ctx ends, at each of its steps; a shared mint it waited on goes on for the checks
-// still waiting on it.
+// returns when ctx ends, at each of its steps. A shared mint it started runs to ctx's deadline at
+// most, and goes on after ctx is canceled for the checks still waiting on it.
 func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (DirectoryOutcome, string, error) {
 	token, err := d.accessToken(ctx)
 	if err != nil {
@@ -248,8 +251,10 @@ func (d *DirectoryReader) ProbeScope(ctx context.Context, scope string) (granted
 // accessToken is the shared token while it is valid. A caller that finds none waits on the one
 // mint in flight, and starts it when none is, so concurrent checks send one signJwt and one token
 // exchange. Each caller waits only within its own ctx: one whose ctx ends fails alone, on the step
-// the mint had reached, and the mint goes on for the others. A caller whose ctx is still live when
-// the mint's own deadline passed waits on a new mint.
+// the mint had reached, and the mint goes on for the others until its own deadline. When the
+// mint's deadline passed - the deadline of the check that started it - a caller that can outlive
+// it (no deadline, or a later one) waits on a new mint, which runs within that caller's deadline;
+// any other caller's deadline has passed too, and it fails on the step the mint had reached.
 func (d *DirectoryReader) accessToken(ctx context.Context) (string, error) {
 	for {
 		d.mu.Lock()
@@ -265,7 +270,7 @@ func (d *DirectoryReader) accessToken(ctx context.Context) (string, error) {
 		d.mu.Unlock()
 		select {
 		case <-ctx.Done():
-			return "", mint.flight.abandoned(ctx)
+			return "", mint.flight.abandoned(ctx.Err())
 		case <-mint.done:
 		}
 		switch {
@@ -274,18 +279,31 @@ func (d *DirectoryReader) accessToken(ctx context.Context) (string, error) {
 		case !mint.lapsed:
 			return "", mint.err
 		case ctx.Err() != nil:
-			return "", mint.flight.abandoned(ctx)
+			return "", mint.flight.abandoned(ctx.Err())
+		case !outlives(ctx, mint.deadline):
+			// The caller's deadline is the lapsed mint's or earlier, so it has passed, though the
+			// caller's own timer may not have fired yet: a new mint could not answer within it.
+			return "", mint.flight.abandoned(context.DeadlineExceeded)
 		}
 	}
 }
 
+// outlives reports whether ctx can still be live after deadline: it has no deadline, or a later one.
+func outlives(ctx context.Context, deadline time.Time) bool {
+	own, ok := ctx.Deadline()
+	return !ok || own.After(deadline)
+}
+
 // sharedMint is one mint of the Directory scope's token, which every check that finds no valid
-// token waits on. It runs under a context of its own: the values of the caller that started it,
-// none of that caller's cancellation or deadline, and mintTimeout. So no caller's end fails it for
-// the others, and it ends within the deadline a check has.
+// token waits on. Its context keeps the values and the deadline of the check that started it, and
+// none of that check's cancellation, so a check that hangs up fails no other check, and each of
+// the mint's requests ends inside the 15 seconds of the check that started it. A check whose
+// context has no deadline gives the mint mintTimeout.
 type sharedMint struct {
 	flight *flight
 	done   chan struct{}
+	// deadline is the mint's context's deadline.
+	deadline time.Time
 	// token, err and lapsed are set before done closes.
 	token *oauth2.Token
 	err   error
@@ -295,8 +313,12 @@ type sharedMint struct {
 
 // startMint starts the shared mint, with d.mu held.
 func (d *DirectoryReader) startMint(ctx context.Context) *sharedMint {
-	mintCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), d.mintTimeout)
-	mint := &sharedMint{flight: &flight{ctx: mintCtx, base: d.signing}, done: make(chan struct{})}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(d.mintTimeout)
+	}
+	mintCtx, cancel := context.WithDeadline(context.WithoutCancel(ctx), deadline)
+	mint := &sharedMint{flight: &flight{ctx: mintCtx, base: d.signing}, done: make(chan struct{}), deadline: deadline}
 	d.minting = mint
 	go func() {
 		defer cancel()
@@ -409,15 +431,16 @@ func (f *flight) RoundTrip(request *http.Request) (*http.Response, error) {
 	return response, nil
 }
 
-// abandoned is the failure of a caller whose own ctx ended while it waited on f's mint: the step
-// the mint had reached, which had not answered within that caller's context.
-func (f *flight) abandoned(ctx context.Context) *DirectoryError {
+// abandoned is the failure of a caller whose own context ended, by cause, while it waited on f's
+// mint: the step the mint had reached, which had not answered within that caller's context.
+func (f *flight) abandoned(cause error) *DirectoryError {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	step := "signJwt"
 	if f.exchange.sent {
-		return unanswered(ctx, "the token exchange")
+		step = "the token exchange"
 	}
-	return unanswered(ctx, "signJwt")
+	return &DirectoryError{Class: step + " did not answer before the check's context ended", cause: cause}
 }
 
 // exchanged is what the token exchange got.

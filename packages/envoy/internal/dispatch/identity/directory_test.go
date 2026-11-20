@@ -268,7 +268,8 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
 		release := google.HoldSigner()
 		defer release()
-		hangsUp, hangUp := context.WithCancel(t.Context())
+		// The first caller has a check's deadline, which the mint keeps, and hangs up before it.
+		hangsUp, hangUp := context.WithTimeout(t.Context(), DirectoryFlight)
 		defer hangUp()
 		first := goCheck(nil, reader, hangsUp)
 		waitFor(t, "the first caller's signJwt", func() bool { return len(google.Signs()) == 1 })
@@ -297,18 +298,71 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		}
 	})
 
-	t.Run("a caller still waiting when the shared mint's own deadline passes waits on a new mint", func(t *testing.T) {
+	t.Run("the shared mint's requests end at the deadline of the check that started it", func(t *testing.T) {
+		for host, stall := range map[string]func(*directorytest.Google){
+			directorytest.SignerHost: func(g *directorytest.Google) { g.AnswerSigner(&stalled) },
+			directorytest.TokenHost:  func(g *directorytest.Google) { g.AnswerScope(directorytest.DirectoryScope, &stalled) },
+		} {
+			t.Run(host, func(t *testing.T) {
+				google, reader := newDirectoryRig(t)
+				google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
+				stall(google)
+				ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+				defer cancel()
+				deadline, _ := ctx.Deadline()
+				result := goCheck(nil, reader, ctx)
+				// The counter sees the stalled request open before the deadline: an Open that never
+				// counted it would read 0 below for any mint.
+				waitFor(t, "the stalled request to "+host+" open at the fake", func() bool { return google.Open(host) == 1 })
+				if r := receive(t, result); r.err == nil || !errors.Is(r.err, context.DeadlineExceeded) {
+					t.Fatalf("Check = %v, %v; want Failed on its own deadline", r.outcome, r.err)
+				}
+				// A second after the deadline is room for the server to see the client hang up; a
+				// mint on a deadline of its own keeps the request open for that deadline's 15 seconds.
+				if !within(time.Until(deadline)+time.Second, func() bool { return google.Open(host) == 0 }) {
+					t.Errorf("the mint's request to %s was still open %s after the deadline of the check that started it",
+						host, time.Since(deadline).Round(time.Millisecond))
+				}
+			})
+		}
+	})
+
+	t.Run("a caller with more time than the check that started the shared mint gets its token from a second mint", func(t *testing.T) {
+		google, reader := newDirectoryRig(t)
+		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
+		google.AnswerSigner(&stalled)
+		short, endShort := context.WithTimeout(t.Context(), time.Second)
+		defer endShort()
+		first := goCheck(nil, reader, short)
+		waitFor(t, "the first caller's signJwt", func() bool { return len(google.Signs()) == 1 })
+		long, endLong := context.WithTimeout(t.Context(), 5*time.Second)
+		defer endLong()
+		second := goCheck(nil, reader, long)
+		// The stalled signJwt stays stalled; the next one is answered.
+		google.AnswerSigner(nil)
+		if r := receive(t, first); r.err == nil || !errors.Is(r.err, context.DeadlineExceeded) {
+			t.Errorf("the first caller: Check = %v, %v; want Failed on its own deadline", r.outcome, r.err)
+		}
+		if r := receive(t, second); r.outcome != DirectoryActive || r.userID != "u-ada" || r.err != nil {
+			t.Errorf("the caller with more time: Check = %v, %q, %v; want Active from a second mint within its own deadline", r.outcome, r.userID, r.err)
+		}
+		if signs := len(google.Signs()); signs != 2 {
+			t.Errorf("%d signJwt, want 2: the first caller's mint, which ended at its deadline, and the second caller's", signs)
+		}
+	})
+
+	t.Run("a mint started by a check with no deadline ends at mintTimeout, and that check waits on a new mint", func(t *testing.T) {
 		google, reader := newDirectoryRig(t)
 		reader.mintTimeout = 300 * time.Millisecond
 		google.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: directoryAda})
 		google.AnswerSigner(&stalled)
-		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		result := goCheck(nil, reader, ctx)
 		waitFor(t, "the stalled signJwt", func() bool { return len(google.Signs()) == 1 })
 		google.AnswerSigner(nil)
 		if r := receive(t, result); r.outcome != DirectoryActive || r.userID != "u-ada" || r.err != nil {
-			t.Errorf("Check = %v, %q, %v; want Active from a second mint within the caller's own context", r.outcome, r.userID, r.err)
+			t.Errorf("Check = %v, %q, %v; want Active from a second mint", r.outcome, r.userID, r.err)
 		}
 		if signs := len(google.Signs()); signs != 2 {
 			t.Errorf("%d signJwt, want 2: the lapsed mint and the one after it", signs)
