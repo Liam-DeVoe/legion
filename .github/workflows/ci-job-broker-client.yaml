@@ -48,10 +48,10 @@ jobs:
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Typecheck the broker client
         run: bun run typecheck
-        working-directory: packages/broker-client
+        working-directory: packages/cipher-client
       - name: Test the broker client
         run: bun run test
-        working-directory: packages/broker-client
+        working-directory: packages/cipher-client
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

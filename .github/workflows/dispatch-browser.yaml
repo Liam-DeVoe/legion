@@ -64,7 +64,8 @@ jobs:
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
-          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/broker" ./cmd/cipherd
         working-directory: packages/envoy
       # The shard and alone jobs' containers have no Go, so e2e/harness-postgres.ts reads the
       # stacks' connection limit from this output (DISPATCH_E2E_PG_CONNECTIONS) instead.
@@ -563,7 +564,8 @@ jobs:
         run: |
           mkdir -p out/dispatch-e2e-broker
           go build -o ./dispatch-e2e ./cmd/dispatch
-          go build -o out/dispatch-e2e-broker/ ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
+          go build -o out/dispatch-e2e-broker/ ./cmd/dev-oidc-issuer ./internal/cipher/ciphertest/requestseed
+          go build -o out/dispatch-e2e-broker/broker ./cmd/cipherd
         working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
         id: visual-normal
