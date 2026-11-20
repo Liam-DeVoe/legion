@@ -151,8 +151,8 @@ type Tokens interface {
 	// a controller, which works no repository and holds one for every owner the App is
 	// installed on (ControllerCredential), the Kubernetes runtime's provisioning token for the
 	// issue's own owner, which every issue pod's workspace-fetch and every repository cache
-	// clones with (implementTokens, internal/daemon), and every read the daemon makes of GitHub
-	// itself. A workflow role's directories hold that owner's own lease at the role's
+	// clones with (implementTokens, internal/daemon), and the daemon's own reads of an issue's
+	// repository and its pull requests. A workflow role's directories hold that owner's own lease at the role's
 	// permissions instead (Token, GitHubCredential). An App on token_command gets what its
 	// command's release of the read profile holds instead, which the deployment's profiles file
 	// decides and the broker cuts to what the installation holds; the read profile

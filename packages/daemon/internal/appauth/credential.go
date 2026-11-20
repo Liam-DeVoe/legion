@@ -112,7 +112,7 @@ func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames g
 		if err != nil {
 			return ghconfig.Bundle{}, err
 		}
-		return mintBundle(ctx, source, SetFor(role), role, false, layout.dflt, layout, left, log)
+		return mintBundle(ctx, source, role, false, layout.dflt, layout, left, log)
 	}
 }
 
@@ -124,9 +124,9 @@ func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames g
 // role's token holds (SetFor) and the repository it is built for. A walk that asks twice for one
 // role's bundle of one repository is handed the first build.
 //
-// It also holds the walk's one read of the owners the App is installed on (walkInstallations),
-// which every bundle build opens with (GitHubCredential): the App is one, so its installations
-// are the same for every bundle of the walk, where each build reading them anew is a live read of
+// It also holds the walk's one read of the owners the App is installed on (installed,
+// walkInstallationsKey), which every bundle build opens with (GitHubCredential): the App is one,
+// so its installations are the same for every bundle of the walk, where each build reading them anew is a live read of
 // every page under a fresh JWT, or in token mode a release of every installation — six of them
 // for the six roles of one issue pod, and as many more for every other pod of the walk.
 //
@@ -140,7 +140,10 @@ func GitHubCredential(source Source, repos func() []ghrepo.Repository, renames g
 type Bundles struct {
 	credential runtime.GitHubCredential
 	built      map[bundleKey]ghconfig.Bundle
-	installed  walkInstallations
+	// installed is the walk's one read of the owners the App is installed on, which a build
+	// reaches through its context (walkInstallationsKey), so a bundle function that is not
+	// GitHubCredential's reads nothing of it.
+	installed Installed
 }
 
 // bundleKey is what one bundle of a walk is held under: the set its leases are minted with and
@@ -148,15 +151,6 @@ type Bundles struct {
 type bundleKey struct {
 	set  TokenSet
 	repo string
-}
-
-// walkInstallations is one walk's read of the owners the App is installed on (Bundles): owners,
-// lowercased and sorted, once read is set. A build reaches it through its context
-// (walkInstallationsKey), which Bundle hands the runtime's bundle function, so a bundle function
-// that is not GitHubCredential's reads nothing of it.
-type walkInstallations struct {
-	owners []string
-	read   bool
 }
 
 // walkInstallationsKey is the context key Bundle hands a build its walk's read under.
@@ -220,30 +214,25 @@ func ControllerCredential(source Source, repos func() []ghrepo.Repository, renam
 		if owner != "" && slices.Contains(layout.refused, owner) {
 			return ghconfig.Bundle{}, noDirectoryName(owner)
 		}
-		return mintBundle(ctx, source, SetController, claim.RoleController, true, owner, layout, left, log)
+		return mintBundle(ctx, source, claim.RoleController, true, owner, layout, left, log)
 	}
 }
 
 // installedLayout is how both credentials open: it reads the owners the App is installed on,
 // GitHub asked each time — once per walk, for a build a walk's Bundles asks for
-// (walkInstallations) — records them in installed for the drift check (Installed), and describes
-// the bundle those owners make for repo (bundleDirs). A read that fails fails the bundle, naming
-// the role the bundle is for.
+// (walkInstallationsKey) — records them in installed for the drift check (Installed), and
+// describes the bundle those owners make for repo (bundleDirs). A read that fails fails the
+// bundle, naming the role the bundle is for.
 func installedLayout(ctx context.Context, installations OwnerInstallations, role claim.Role,
 	repos func() []ghrepo.Repository, renames ghrepo.Renames, installed *Installed, repo ghrepo.Repository) (bundleLayout, error) {
-	walk, _ := ctx.Value(walkInstallationsKey{}).(*walkInstallations)
-	var owners []string
-	if walk != nil && walk.read {
-		owners = slices.Clone(walk.owners)
-	} else {
-		read, err := installations.InstalledOwners(ctx)
-		if err != nil {
+	walk, _ := ctx.Value(walkInstallationsKey{}).(*Installed)
+	owners, read := walk.Owners()
+	if !read {
+		var err error
+		if owners, err = installations.InstalledOwners(ctx); err != nil {
 			return bundleLayout{}, fmt.Errorf("read the owners the App is installed on for %s: %w", role, err)
 		}
-		owners = read
-		if walk != nil {
-			walk.owners, walk.read = slices.Clone(read), true
-		}
+		walk.record(owners)
 	}
 	installed.record(owners)
 	return bundleDirs(owners, repos, renames, repo)
@@ -716,9 +705,10 @@ func leaveOutReason(err error) string {
 //
 // A layout with no owner at all is an App installed nowhere, and no configured rename's owner
 // beside it: runtime.ErrNoGitHubOwner, for both credentials.
-func mintBundle(ctx context.Context, tokens Tokens, set TokenSet, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
+func mintBundle(ctx context.Context, tokens Tokens, role claim.Role, read bool, dflt string, layout bundleLayout, left *LeftOut, log *slog.Logger) (ghconfig.Bundle, error) {
+	set := SetFor(role)
 	if len(layout.owners) == 0 {
-		return ghconfig.Bundle{}, fmt.Errorf("the %s gh bundle for %s: %w", set, role, runtime.ErrNoGitHubOwner)
+		return ghconfig.Bundle{}, fmt.Errorf("the %s's gh bundle: %w", role, runtime.ErrNoGitHubOwner)
 	}
 	// The pairs are the layout's, whatever the mints answer: a pair whose `to` owner is left out
 	// of the bundle stays in the file and is refused where a request routes to that missing
@@ -748,7 +738,7 @@ func mintBundle(ctx context.Context, tokens Tokens, set TokenSet, role claim.Rol
 		if _, done := minted[key]; !done && failed[key] == nil {
 			rendered, err := dirEntry(ctx, tokens, set, hold)
 			if err != nil {
-				named := fmt.Errorf("mint the %s%s lease for %s on %s: %w", how, set, role, hold.owner, err)
+				named := fmt.Errorf("mint the %slease of the %s on %s: %w", how, role, hold.owner, err)
 				if (dflt != "" && key == own) || ctx.Err() != nil || leaveOutReason(err) == "" {
 					return ghconfig.Bundle{}, named
 				}
@@ -762,7 +752,7 @@ func mintBundle(ctx context.Context, tokens Tokens, set TokenSet, role claim.Rol
 			bundle.Dirs[dir.name] = entry
 		}
 	}
-	dflt, err := bundleDefault(bundle, set, role, dflt, layout, failures)
+	dflt, err := bundleDefault(bundle, role, dflt, layout, failures)
 	if err != nil {
 		return ghconfig.Bundle{}, err
 	}
@@ -791,7 +781,7 @@ func mintBundle(ctx context.Context, tokens Tokens, set TokenSet, role claim.Rol
 // later as one whose default holds no gh files (ghconfig.Bundle.Validate), long after the asks
 // that could say why. Where every one of those was GitHub refusing the lease, the refusal is
 // ErrNarrowingRefused, as each of them is.
-func bundleDefault(bundle ghconfig.Bundle, set TokenSet, role claim.Role, dflt string, layout bundleLayout, failures []error) (string, error) {
+func bundleDefault(bundle ghconfig.Bundle, role claim.Role, dflt string, layout bundleLayout, failures []error) (string, error) {
 	if dflt != "" {
 		return dflt, nil
 	}
@@ -800,8 +790,8 @@ func bundleDefault(bundle ghconfig.Bundle, set TokenSet, role claim.Role, dflt s
 			return dir.name, nil
 		}
 	}
-	return "", fmt.Errorf("the %s gh bundle for %s holds no owner the App is installed on (%s): %w",
-		set, role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
+	return "", fmt.Errorf("the %s's gh bundle holds no owner the App is installed on (%s): %w",
+		role, strings.Join(slices.Sorted(maps.Keys(layout.owners)), ", "), errors.Join(failures...))
 }
 
 // dirEntry is the directory's lease, rendered as gh's two files. A lease is the owner's whole
