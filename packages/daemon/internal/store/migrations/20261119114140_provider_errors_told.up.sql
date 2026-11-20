@@ -33,7 +33,10 @@
 -- notice for a claim, which names each of the claim's owed runs, and in the same transaction it
 -- moves the claim's told mark to the newest of them and deletes their rows. Each reader and the
 -- claim's write lock the claim's row before they touch its owed rows, so the notice of one run is
--- written once. The pass reads the owed rows of its project, which are almost always none.
+-- written once. The pass reads the owed rows of its project, which are almost always none. A
+-- claim with no issue, the project controller's own, owes no row: the notice names a worker's
+-- issue, and every reader of the owed rows reads claims with an issue alone, so such a row would be
+-- read by nothing and deleted by nothing.
 --
 -- The machine moves the run's number as the run's first turn ends in a provider error (supervise's
 -- providerErrored). An earlier release names none of these columns, so its claim write leaves each
@@ -48,24 +51,28 @@
 -- An earlier release writes no owed row either, so a run it takes to six, after a rollback, would
 -- owe nothing: if its next turn after the roll forward were a clean one, no turn of the run would
 -- be left to owe it, and it would never be told. claims_provider_error_run_owed adds the owed row
--- for such a write, whichever release makes it: a write of a live claim, neither retired nor
--- failed, whose run stands at six or more and is numbered above the told mark, adds that run's row
--- if the claim owes none for it. Its words are the backfill's below. This release's own write adds
+-- for such a write, whichever release makes it: a write of a claim with an issue, whatever its
+-- state, whose run stands at six or more and is numbered above the told mark, adds that run's row
+-- if the claim owes none for it. A retired or a failed claim owes it as a live one does, for the
+-- reason the backfill below gives. Its words are the backfill's. This release's own write adds
 -- or rewrites the same row with the model and the status in the same statement (the claim store's
 -- upsertClaim), so its words are the ones kept; a run already told stands at or below the told
 -- mark, so the trigger owes it nothing. It runs after the write, and claims_provider_error_run_begun
 -- before it, so the owed row names the number that trigger gave the run.
 --
 -- Every claim that is in a run at this migration gets the number 1, so the run it stands in is
--- numbered above the told mark's 0. A claim that is live at the upgrade, neither retired nor
--- failed, and whose run already stands at six or more, owes run 1's notice at once: the earlier
--- release told such a run at exactly its sixth turn, and only while a controller was registered,
--- which this database does not record, and the run's next turn can be a clean one, after which no
--- turn of the run is left to owe it. The notice names the run and the error, a provider error, and
--- says that the earlier release did not keep its model or its HTTP status, which that release kept
--- nowhere. So such a run can be told once more after the upgrade, but no run goes untold. A
--- retired or a failed claim owes nothing at the upgrade: no turn of it runs, so a notice of it
--- would tell the controller of nothing it can act on.
+-- numbered above the told mark's 0. A claim with an issue whose run already stands at six or more
+-- owes run 1's notice at once, whatever its state: the earlier release told such a run at exactly
+-- its sixth turn, and only while a controller was registered, which this database does not record,
+-- and the run's next turn can be a clean one, after which no turn of the run is left to owe it. A
+-- retired or a failed claim owes it too, since either can run again: its architect's retry, the
+-- next start of its role and an operator's retry each reach both (supervise's RequestRetry and
+-- RequestOperatorRetry), and the retry of a claim that a run of refused turns failed starts a
+-- fresh session (supervise's freshSession), whose write puts the run back to zero, so a run of six
+-- that the upgrade did not owe would never be told. The notice names the run and the error, a
+-- provider error, and says that the earlier release did not keep its model or its HTTP status,
+-- which that release kept nowhere. So such a run can be told once more after the upgrade, but no
+-- run goes untold.
 --
 -- Rolling the image back needs no statement. The earlier release names none of these columns and
 -- this table, and reads none of them. The triggers change only provider_error_run_id and the owed
@@ -90,7 +97,7 @@ update claims set provider_error_run_id = 1 where provider_error_run > 0;
 insert into provider_errors_owed (claim_token, run, reason)
   select token, 1, provider_error_run || ' turns in a row ended in a provider error, whose model and HTTP status the earlier release did not keep; the daemon keeps the task and sends it again every 10m0s at most'
   from claims
-  where provider_error_run >= 6 and state not in ('retired', 'failed');
+  where provider_error_run >= 6 and issue <> '';
 
 create function claims_provider_error_run_begun() returns trigger language plpgsql as $$
 begin
@@ -117,5 +124,5 @@ create trigger claims_provider_error_run_owed after update on claims
   for each row
   when (new.provider_error_run >= 6
     and new.provider_error_run_id > new.provider_errors_told_run
-    and new.state not in ('retired', 'failed'))
+    and new.issue <> '')
   execute function claims_provider_error_run_owed();

@@ -241,3 +241,49 @@ func TestReadSessionRegistrationTellsARefusalFromAnEntry(t *testing.T) {
 		})
 	}
 }
+
+// FollowsTopic reads the session's full registry entry (no view selector, which answers the
+// registration alone and no topics) with include=unresponsive and the listener's bearer, and
+// answers whether its topics hold the topic. A 404 is a session that follows nothing, with no
+// error; any other refusal is an error naming the listener's answer, which the outbox retries.
+func TestFollowsTopicReadsTheTopicsOfTheSessionsEntry(t *testing.T) {
+	const lane = "notifications.legion.demo.controller"
+	for _, tc := range []struct {
+		name    string
+		status  int
+		body    string
+		follows bool
+		wantErr string
+	}{
+		{"an entry whose topics hold the lane", http.StatusOK, `{"session_id":"ses_c","topics":["notifications.agent.ses_c","` + lane + `"]}`, true, ""},
+		{"an entry whose topics do not", http.StatusOK, `{"session_id":"ses_c","topics":["notifications.agent.ses_c"]}`, false, ""},
+		{"an entry with no topics at all", http.StatusOK, `{"session_id":"ses_c"}`, false, ""},
+		{"no live session of that id", http.StatusNotFound, `{"error":"no live session ses_c"}`, false, ""},
+		{"a bus that does not answer", http.StatusServiceUnavailable, `{"error":"bus unavailable"}`, false, "503"},
+		{"an answer that does not decode", http.StatusOK, `not json`, false, "read the topics session ses_c follows"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var path, query, bearer string
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				path, query, bearer = r.URL.Path, r.URL.RawQuery, r.Header.Get("Authorization")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			follows, err := New(server.URL, "envoy-bearer").FollowsTopic(context.Background(), "ses_c", lane)
+			if path != "/v1/registry/ses_c" || query != "include=unresponsive" || bearer != "Bearer envoy-bearer" {
+				t.Fatalf("asked %s?%s with %q, want the session's full entry with the unresponsive record and the bearer", path, query, bearer)
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("FollowsTopic = %t, %v, want a failure naming %q", follows, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil || follows != tc.follows {
+				t.Fatalf("FollowsTopic = %t, %v, want %t", follows, err, tc.follows)
+			}
+		})
+	}
+}

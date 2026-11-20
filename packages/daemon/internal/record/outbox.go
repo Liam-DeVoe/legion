@@ -902,7 +902,10 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // admission writes the claim's owed runs while a controller is registered, in one notice that
 // names each of them, and marks each run told in the same transaction
 // (admit.Admission.TellOfProviderErrors, TellOwedProviderErrors). A later run's notice is written
-// while an earlier run's still waits unsent. Nothing is held and nothing is bounded, because a
+// while an earlier run's still waits unsent. Its row is published only once the session that holds
+// the controller registration follows the controller topic at the Envoy listener, and waits on the
+// outbox's backoff until then (the daemon's outbox.controllerFollows), since the row is the run's
+// only keeper once its run is marked told. Nothing is held and nothing is bounded, because a
 // chain's bottom refusing deterministically costs one request every ten minutes. A tree-stalled
 // notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than

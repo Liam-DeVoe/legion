@@ -525,15 +525,22 @@ default an operator launches the controller, so a run can reach six with none re
 controller is then told when it registers, and when two runs or more of one claim reached six
 meanwhile, one notice names each of them, oldest first. A notice whose write failed is written at
 the next of those moments. Each run is told once, so a later run is told while an earlier run's
-notice still waits to be published. Nothing is held and nothing is stopped by that count: the task
-is still kept and still sent again. The run goes back to zero three ways: at a turn of that claim
-that ends with no provider error, at a compaction of its session that ran (`legion claims
-compact`, or the controller's `compact`; one Oh My Pi refused or skipped resets nothing, since the
-session is as it was), and when the claim's recorded session is forgotten, by `legion claims
-retry --fresh-session`, the controller's `fresh_session`, or `legion claims forget-session`. Only
-after one of those can a new run begin and owe a notice of its own. The notice is the claim's own —
-the issue and the role that names it — so two claims of one issue each get a notice of their own,
-and in a provider outage every claim that reaches six is told.
+notice still waits to be published. The notice is published only once the session registered as
+the controller follows the controller topic at the Envoy listener: a controller registers with the
+daemon before it claims its role and follows the topic, and a notice published in between reaches
+no session. Until then the notice's outbox row waits on its backoff, read again at most 64 s
+apart, and holds no other row of the issue back; `outbox row waits` with `the provider-errors
+notice for <KEY> waits for controller session <session> to follow <topic>`, at WARN from its
+seventh attempt, means a registered controller does not follow its topic. Nothing is held and
+nothing is stopped by that count: the task is still kept and still sent again. The run goes back
+to zero three ways: at a turn of that claim that ends with no provider error, at a compaction of
+its session that ran (`legion claims compact`, or the controller's `compact`; one Oh My Pi refused
+or skipped resets nothing, since the session is as it was), and when the claim's recorded session
+is forgotten, by `legion claims retry --fresh-session`, the controller's `fresh_session`, or
+`legion claims forget-session`. Only after one of those can a new run begin and owe a notice of
+its own. The notice is the claim's own — the issue and the role that names it — so two claims of
+one issue each get a notice of their own, and in a provider outage every claim that reaches six is
+told.
 
 When an agent's budget runs out (launches that failed, deaths with work outstanding, prompts it
 never took a turn on) the daemon stops relaunching it and holds the issue. The daemon logs JSON

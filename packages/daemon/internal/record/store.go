@@ -2251,6 +2251,22 @@ func (s *Postgres) ControllerRegistered(ctx context.Context, tx pgx.Tx, project 
 	return registered, nil
 }
 
+func (s *Postgres) ControllerSession(ctx context.Context, tx pgx.Tx, project string) (string, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return "", err
+	}
+	var session string
+	err = tx.QueryRow(ctx, "select session from controllers where project = $1", token).Scan(&session)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the session of %s's registered controller: %w", project, err)
+	}
+	return session, nil
+}
+
 // ControllerNoticePending reads the project's unpublished notices of this kind, narrowed to one
 // issue when the caller named one: the same read either way, with the issue as one more term that
 // an empty string leaves out, so a project-wide wake's answer is what it always was.

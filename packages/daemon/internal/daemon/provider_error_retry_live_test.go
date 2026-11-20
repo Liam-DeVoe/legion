@@ -256,7 +256,13 @@ func (r *providerErrorLive) registerController() {
 	}, false); status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
 	}
-	r.note("the project's controller is registered as %s, so a notice for it is published rather than dropped", session)
+	// A controller's start registers its session's interest in the controller topic once its
+	// registration answers, and the daemon publishes a provider-errors notice only to a session
+	// whose registration follows that topic (outbox.controllerFollows), so the listener answers
+	// this session as one that does.
+	r.notices.follow(session, notify.ControllerTopic(r.project))
+	r.note("the project's controller is registered as %s and follows %s, so a notice for it is published rather than dropped",
+		session, notify.ControllerTopic(r.project))
 }
 
 // overrides is the daemon this proof boots: the local runtime over the real worker stream, the
@@ -422,6 +428,13 @@ func (r *providerErrorLive) ladderWalks() {
 		gap := next.at.Sub(sent[attempt-1])
 		sent = append(sent, next.at)
 		if driven, ok := ladderDriven(delay); ok {
+			// A driven rung's wait ends on the daemon's clock after driven, so its send is late
+			// past driven and the tolerance, as a waited-out rung's is past its delay and the
+			// tolerance.
+			if gap > driven+ladderTolerance {
+				t.Fatalf("send %d of the ladder came %s after send %d, whose %s wait was driven on the daemon's clock to %s, want at most %s",
+					attempt+1, gap.Round(time.Second), attempt, delay, driven, driven+ladderTolerance)
+			}
 			r.note("send %d came %s after send %d; its %s wait was driven on the daemon's clock to %s",
 				attempt+1, gap.Round(time.Second), attempt, delay, driven)
 			continue
@@ -550,8 +563,9 @@ func (r *providerErrorLive) refusalGoesAgain() {
 
 	again := r.awaitLogFrom("the refused task sent again", from, ladderDelays[0]+ladderTolerance+time.Minute, sendOf(token, 1))
 	gap := again.at.Sub(first.at)
-	if gap < ladderDelays[0] {
-		t.Fatalf("the refused task went again %s after it was first sent, want at least %s", gap.Round(time.Second), ladderDelays[0])
+	if gap < ladderDelays[0] || gap > ladderDelays[0]+ladderTolerance {
+		t.Fatalf("the refused task went again %s after it was first sent, want between %s and %s",
+			gap.Round(time.Second), ladderDelays[0], ladderDelays[0]+ladderTolerance)
 	}
 	held := r.claim(token)
 	if held.Pending == nil || held.Pending.Task != task {

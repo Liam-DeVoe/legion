@@ -308,8 +308,13 @@ func (r *claimCompactionLive) registerController() {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
 	r.controllerSecret = registered.Secret
-	r.note("the project's controller is registered as %s (claim %s), and its registration secret mints the grant its own door takes",
-		r.controllerSession, registered.ClaimToken)
+	// A controller's start registers its session's interest in the controller topic once its
+	// registration answers, and the daemon publishes a provider-errors notice only to a session
+	// whose registration follows that topic (outbox.controllerFollows), so the listener answers
+	// this session as one that does.
+	r.notices.follow(r.controllerSession, notify.ControllerTopic(r.project))
+	r.note("the project's controller is registered as %s (claim %s) and follows %s, and its registration secret mints the grant its own door takes",
+		r.controllerSession, registered.ClaimToken, notify.ControllerTopic(r.project))
 }
 
 // overrides is the daemon this proof boots: the local runtime over the real worker stream, the

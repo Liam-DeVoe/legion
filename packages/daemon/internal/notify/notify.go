@@ -1,6 +1,6 @@
 // Package notify is the daemon's client for the Envoy listener: it publishes persisted workflow
-// notices through its publish route, reads a role's holder through its role route, and ends a
-// session's registration through its session route.
+// notices through its publish route, reads a role's holder through its role route, reads the
+// topics a session follows and ends a session's registration through its session routes.
 package notify
 
 import (
@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -401,6 +402,52 @@ func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session str
 	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
 	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
 		session, response.Status, strings.TrimSpace(string(body)))
+}
+
+// FollowsTopic reads whether session's registration at the listener follows topic (GET
+// /v1/registry/<session_id>?include=unresponsive, sessionEntryHandler in
+// packages/envoy/cmd/listener/api.go, whose answer carries the topics of the session's interest
+// row). The listener sets the filter of a session's own consumer to the topics its registration
+// is about to store before it stores them (registerSession), so a session whose row follows topic
+// has a consumer that keeps every message published to topic from then on, for the session to
+// read live or when it comes back; a message published before that is kept for it only while its
+// consumer has not looked past it. A session past its live window and not gone answers too, since
+// its consumer keeps what it is published while it is away. A 404 — no session of that id, or one
+// past the gone horizon — follows nothing and is no error. Every other answer is an error naming
+// what the listener said, which the caller retries.
+func (p *HTTPPublisher) FollowsTopic(ctx context.Context, session, topic string) (bool, error) {
+	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive", p.baseURL, url.PathEscape(session))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false, fmt.Errorf("build the registration read for %s: %w", session, err)
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return false, fmt.Errorf("read the topics session %s follows: %w", session, err)
+	}
+	defer response.Body.Close()
+	switch response.StatusCode {
+	case http.StatusOK:
+		body, err := io.ReadAll(io.LimitReader(response.Body, answerBodyLimit))
+		if err != nil {
+			return false, unreadAnswer("read the topics session "+session+" follows", response.Status, err)
+		}
+		var entry struct {
+			Topics []string `json:"topics"`
+		}
+		if err := json.Unmarshal(body, &entry); err != nil {
+			return false, fmt.Errorf("read the topics session %s follows: %w", session, err)
+		}
+		return slices.Contains(entry.Topics, topic), nil
+	case http.StatusNotFound:
+		return false, nil
+	}
+	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	return false, fmt.Errorf("read the topics session %s follows: listener returned %s: %s",
+		session, response.Status, excerpt(body))
 }
 
 // RoleHolder reads the session the listener names as role's holder, with that holder's state (GET

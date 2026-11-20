@@ -47,33 +47,37 @@ func earlierReleaseReason(run int) string {
 // 20261119114140 keeps the notice each run of six provider-error turns owes the project's
 // controller. The migration runs over a database with claims in it, one at every run from 0 to 8:
 // a claim in a run at the upgrade gets the first run number, so the run it stands in is numbered
-// above the told mark; a live claim whose run already stands at six or more owes run 1's notice at
-// once, since its next turn can be a clean one and the earlier release kept no mark of whether it
-// was told, and the notice names the error and says the earlier release kept no model and no
-// status of it; a claim in no run keeps 0. Each run is seeded, so a bound of the backfill that
-// moves by one fails here, naming the run. A retired and a failed claim at a run of 7 owe nothing:
-// no turn of either runs, and a notice of them would tell the controller of nothing it can act on.
-// The negative control is the column itself, which a write refuses before the migration.
+// above the told mark; a claim with an issue whose run already stands at six or more owes run 1's
+// notice at once, since its next turn can be a clean one and the earlier release kept no mark of
+// whether it was told, and the notice names the error and says the earlier release kept no model
+// and no status of it; a claim in no run keeps 0. Each run is seeded, so a bound of the backfill
+// that moves by one fails here, naming the run. A retired and a failed claim at a run of 7 owe it
+// too: either can run again, in a fresh session whose write puts the run back to zero
+// (TestAFailedClaimInARunOfSevenAtTheUpgradeIsToldWhenItRunsAgainInAFreshSession). The project
+// controller's own claim, which has no issue, owes nothing at a run of 7: no notice names it and
+// no reader reads its rows. The negative control is the column itself, which a write refuses
+// before the migration.
 func TestAClaimInARunAtTheUpgradeGetsTheFirstRunNumberWith20261119114140(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, providerErrorsToldVersion-1)
 	type seed struct {
-		token, state string
-		run          int
+		token, issue, role, state string
+		run                       int
 	}
 	var seeds []seed
 	for run := 0; run <= 8; run++ {
-		seeds = append(seeds, seed{fmt.Sprintf("legion-LEGION-%d-implementer", 300+run), "idle", run})
+		seeds = append(seeds, seed{fmt.Sprintf("legion-LEGION-%d-implementer", 300+run), fmt.Sprintf("LEGION-%d", 300+run), "implementer", "idle", run})
 	}
-	seeds = append(seeds, seed{"legion-LEGION-320-implementer", "retired", 7}, seed{"legion-LEGION-321-implementer", "failed", 7})
+	seeds = append(seeds, seed{"legion-LEGION-320-implementer", "LEGION-320", "implementer", "retired", 7},
+		seed{"legion-LEGION-321-implementer", "LEGION-321", "implementer", "failed", 7},
+		seed{"legion-legion-controller", "", "controller", "idle", 7})
 	for _, s := range seeds {
-		issue := strings.TrimSuffix(strings.TrimPrefix(s.token, "legion-"), "-implementer")
 		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,
 			session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, provider_error_run)
-			values ($1, 'legion', $2, $2, 'implementer', 1, '', '', $3, 0, 0, 0, 0, $4)`,
-			s.token, issue, s.state, s.run); err != nil {
-			t.Fatalf("record the %s claim in a run of %d before the migration: %v", s.state, s.run, err)
+			values ($1, 'legion', $2, $2, $3, 1, '', '', $4, 0, 0, 0, 0, $5)`,
+			s.token, s.issue, s.role, s.state, s.run); err != nil {
+			t.Fatalf("record the %s claim %s in a run of %d before the migration: %v", s.state, s.token, s.run, err)
 		}
 	}
 	if _, err := store.Pool().Exec(ctx, "update claims set provider_error_run_id = 1"); err == nil || !strings.Contains(err.Error(), "provider_error_run_id") {
@@ -89,13 +93,59 @@ func TestAClaimInARunAtTheUpgradeGetsTheFirstRunNumberWith20261119114140(t *test
 		if s.run > 0 {
 			want.runID = 1
 		}
-		if s.run >= 6 && s.state == "idle" {
+		if s.run >= 6 && s.issue != "" {
 			want.owed = "1: " + earlierReleaseReason(s.run)
 		}
 		if got := readRunColumns(t, store, s.token); got != want {
-			t.Errorf("the %s claim in a run of %d reads %+v after the migration, want %+v", s.state, s.run, got, want)
+			t.Errorf("the %s claim %s in a run of %d reads %+v after the migration, want %+v", s.state, s.token, s.run, got, want)
 		}
 	}
+}
+
+// A claim that the earlier release failed in a run of 7 turns, whose notice was lost because no
+// controller was registered at its sixth turn, is retried after the upgrade. The retry of a claim
+// that a run of refused turns failed starts a fresh session (supervise's freshSession), and the
+// retry's own writes put the run back to zero: the admission's write while the claim still reads
+// failed, then the launch's. The run of seven is owed by the upgrade, and still owed once after
+// those writes, so a controller that registers is told of it. The controls: a live claim in the
+// same run owes it, and a failed claim retried in its recorded session, whose run stands at 7
+// again, owes it once and no more.
+func TestAFailedClaimInARunOfSevenAtTheUpgradeIsToldWhenItRunsAgainInAFreshSession(t *testing.T) {
+	ctx := context.Background()
+	store := emptyStore(t)
+	migrateThrough(t, store, providerErrorsToldVersion-1)
+	for issue, state := range map[string]string{"LEGION-340": "failed", "LEGION-341": "idle", "LEGION-342": "failed"} {
+		if _, err := store.Pool().Exec(ctx, `insert into claims (token, project, tree, issue, role, generation,
+			session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, provider_error_run)
+			values ($1, 'legion', $2, $2, 'implementer', 1, 'ses', '', $3, 0, 0, 0, 0, 7)`,
+			"legion-"+issue+"-implementer", issue, state); err != nil {
+			t.Fatalf("record the %s claim of %s in a run of 7 before the migration: %v", state, issue, err)
+		}
+	}
+	if _, err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate through the told mark: %v", err)
+	}
+	runAgain := func(issue string, turns int) supervise.Claim {
+		c := tmuxClaim(claim.Token("legion-" + issue + "-implementer"))
+		c.Tree, c.Issue = issue, issue
+		c.ProviderErrorRun, c.ProviderErrorRunID = turns, 1
+		for _, state := range []supervise.ClaimState{supervise.StateFailed, supervise.StateLaunching} {
+			c.State = state
+			if err := store.PutClaim(ctx, c); err != nil {
+				t.Fatalf("put the retried claim of %s as %s: %v", issue, state, err)
+			}
+		}
+		return c
+	}
+	wantRunOfSeven := func(what string, c supervise.Claim) {
+		t.Helper()
+		if owed := owedOf(t, store, c); len(owed) != 1 || owed[0].Run != 1 || owed[0].Reason != earlierReleaseReason(7) {
+			t.Errorf("%s owes %+v, want its run of seven owed once, in the upgrade's words", what, owed)
+		}
+	}
+	wantRunOfSeven("the control, a live claim in a run of 7 at the upgrade,", tmuxClaim("legion-LEGION-341-implementer"))
+	wantRunOfSeven("the control, a failed claim in a run of 7 retried in its recorded session,", runAgain("LEGION-342", 7))
+	wantRunOfSeven("a failed claim in a run of 7 at the upgrade retried in a fresh session", runAgain("LEGION-340", 0))
 }
 
 // An earlier release names none of the columns and the table, so its claim write leaves each of
@@ -168,13 +218,35 @@ func TestARunAnEarlierReleaseBeginsReadsAsANewRunWith20261119114140(t *testing.T
 	}
 }
 
+// earlierReleaseTakes puts the claim of token, of issue, and then writes its run up to upTo turns
+// and its state as the earlier release writes them: that release's upsert sets provider_error_run
+// and the state and no column of 20261119114140, so a write here that sets those two alone is its
+// write, as the row's triggers see it. An issue of "" is the project controller's own claim.
+func earlierReleaseTakes(t *testing.T, store *Store, token, issue, state string, upTo int) {
+	t.Helper()
+	ctx := context.Background()
+	c := tmuxClaim(claim.Token(token))
+	c.Issue = issue
+	if issue == "" {
+		c.Role, c.Tree = claim.RoleController, ""
+	}
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put %s: %v", token, err)
+	}
+	for run := 1; run <= upTo; run++ {
+		if _, err := store.Pool().Exec(ctx, "update claims set provider_error_run = $2, state = $3 where token = $1", token, run, state); err != nil {
+			t.Fatalf("write the run %d of %s as the earlier release does: %v", run, token, err)
+		}
+	}
+}
+
 // A run that an earlier release takes to six writes no owed row of that release's own, and after
 // a roll forward its next turn can be a clean one, after which no turn of the run is left to owe
 // it. The second trigger owes it at the earlier release's write: the run of six reads owed, under
 // the number the first trigger gave it, with the earlier release's words, before this release
-// writes anything of it. This release's next write of the run keeps that one row and writes its own
-// words into it, and once the run is told no write of it owes it again. The control: the same
-// writes that stop at five owe nothing, and so does the same run of a retired claim.
+// writes anything of it. This release's next write of the run keeps that one row and writes its
+// own words into it, and once the run is told no write of it owes it again. The control: the same
+// writes that stop at five owe nothing.
 //
 // The cost the migration's header states is here too: such a run that the earlier release told at
 // its sixth turn is owed once more, because that release kept no mark that it told it.
@@ -182,29 +254,20 @@ func TestARunAnEarlierReleaseTakesToSixIsOwedWith20261119114140(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
 	for _, seed := range []struct {
-		token, state string
+		token, issue string
 		upTo         int
+		owed         bool
 	}{
-		{"legion-LEGION-212-implementer", "idle", 6},
-		{"legion-LEGION-213-implementer", "idle", 5},
-		{"legion-LEGION-214-implementer", "retired", 7},
+		{"legion-LEGION-212-implementer", "LEGION-212", 6, true},
+		{"legion-LEGION-213-implementer", "LEGION-213", 5, false},
 	} {
-		c := tmuxClaim(claim.Token(seed.token))
-		c.Issue = strings.TrimSuffix(strings.TrimPrefix(seed.token, "legion-"), "-implementer")
-		if err := store.PutClaim(ctx, c); err != nil {
-			t.Fatalf("put %s: %v", seed.token, err)
-		}
-		for run := 1; run <= seed.upTo; run++ {
-			if _, err := store.Pool().Exec(ctx, "update claims set provider_error_run = $2, state = $3 where token = $1", seed.token, run, seed.state); err != nil {
-				t.Fatalf("write the run %d of %s as the earlier release does: %v", run, seed.token, err)
-			}
-		}
+		earlierReleaseTakes(t, store, seed.token, seed.issue, "idle", seed.upTo)
 		want := runColumns{run: int64(seed.upTo), runID: 1}
-		if seed.upTo >= 6 && seed.state == "idle" {
+		if seed.owed {
 			want.owed = "1: " + earlierReleaseReason(6)
 		}
 		if got := readRunColumns(t, store, seed.token); got != want {
-			t.Errorf("after the earlier release took the %s claim %s to %d turns the row reads %+v, want %+v", seed.state, seed.token, seed.upTo, got, want)
+			t.Errorf("after the earlier release took the idle claim %s to %d turns the row reads %+v, want %+v", seed.token, seed.upTo, got, want)
 		}
 	}
 
@@ -230,6 +293,70 @@ func TestARunAnEarlierReleaseTakesToSixIsOwedWith20261119114140(t *testing.T) {
 	}
 	if got := readRunColumns(t, store, string(restored.Token)); got != (runColumns{run: 9, runID: 1, told: 1}) {
 		t.Fatalf("after the run was told, an eighth and a ninth turn of it leave the row %+v, want it told and nothing owed", got)
+	}
+}
+
+// The owed trigger's filter: a run an earlier release takes to six on a claim it fails or retires
+// in the same writes is owed as a live claim's is, since either can run again, and the retry of a
+// claim a run of refused turns failed starts a fresh session whose write puts the run back to zero
+// (TestAFailedClaimInARunOfSevenAtTheUpgradeIsToldWhenItRunsAgainInAFreshSession says the same of
+// the backfill). The project controller's own claim, which has no issue, owes nothing at a run of
+// seven: no notice names it and no reader reads its rows. The control is the idle claim of
+// TestARunAnEarlierReleaseTakesToSixIsOwedWith20261119114140.
+func TestTheOwedTriggerOwesAFailedOrRetiredClaimAndNotTheControllers(t *testing.T) {
+	store := migratedStore(t)
+	for _, seed := range []struct {
+		token, issue, state string
+		upTo                int
+		owed                bool
+	}{
+		{"legion-LEGION-215-implementer", "LEGION-215", "failed", 6, true},
+		{"legion-LEGION-214-implementer", "LEGION-214", "retired", 7, true},
+		{"legion-legion-controller", "", "idle", 7, false},
+	} {
+		earlierReleaseTakes(t, store, seed.token, seed.issue, seed.state, seed.upTo)
+		want := runColumns{run: int64(seed.upTo), runID: 1}
+		if seed.owed {
+			want.owed = "1: " + earlierReleaseReason(6)
+		}
+		if got := readRunColumns(t, store, seed.token); got != want {
+			t.Errorf("after the earlier release took the %s claim %s to %d turns the row reads %+v, want %+v", seed.state, seed.token, seed.upTo, got, want)
+		}
+	}
+}
+
+// The project controller's own claim has no issue, and no reader of the owed rows reads a claim
+// with none (record.Store.ProviderErrorsOwed, ProjectProviderErrorsOwed), so a row of it would be
+// told by nothing and deleted by nothing. Its claim writes at a run of six, two runs of it, owe no
+// row. The control: a worker's claim written the same way owes one row for each run.
+func TestTheControllersOwnRunsOfSixOweNoRow(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	controller := supervise.Claim{Token: "legion-legion-controller", Project: "legion", Role: claim.RoleController,
+		Generation: 1, State: supervise.StateIdle}
+	worker := tmuxClaim("legion-LEGION-350-implementer")
+	worker.Issue = "LEGION-350"
+	for _, c := range []supervise.Claim{controller, worker} {
+		for run := uint64(1); run <= 2; run++ {
+			c.ProviderErrorRun, c.ProviderErrorRunID = 6, run
+			c.ProviderErrorsOwed = supervise.OwedNotice{Run: run, Reason: "6 turns in a row ended in a provider error (HTTP 529)"}
+			if err := store.PutClaim(ctx, c); err != nil {
+				t.Fatalf("put run %d of %s: %v", run, c.Token, err)
+			}
+		}
+	}
+	rows := func(token claim.Token) int {
+		var n int
+		if err := store.Pool().QueryRow(ctx, "select count(*) from provider_errors_owed where claim_token = $1", string(token)).Scan(&n); err != nil {
+			t.Fatalf("count the owed rows of %s: %v", token, err)
+		}
+		return n
+	}
+	if n := rows(worker.Token); n != 2 {
+		t.Fatalf("the control: the worker's claim holds %d owed rows after two runs of six, want 2", n)
+	}
+	if n := rows(controller.Token); n != 0 {
+		t.Fatalf("the controller's own claim holds %d owed rows after two runs of six, want none: no reader tells or deletes them", n)
 	}
 }
 

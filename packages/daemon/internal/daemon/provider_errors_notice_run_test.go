@@ -194,7 +194,8 @@ func TestASecondRunOfSixIsToldWhileTheFirstRunsNoticeWaitsUnsent(t *testing.T) {
 // second run's owed notice stands beside the first's rather than in its place (the gates' case of
 // the second round: the claim kept one owed notice, and the second run's replaced the first's).
 // The first run is seven turns long and the second six, so the words of each notice say which
-// run it tells.
+// run it tells, and the notice names them oldest first. Once that notice is published, the next
+// admission pass tells neither run again.
 func TestEachRunOfSixBeforeAControllerRegistersIsToldOnce(t *testing.T) {
 	r := newErrorRunRig(t)
 	for range 7 {
@@ -212,6 +213,12 @@ func TestEachRunOfSixBeforeAControllerRegistersIsToldOnce(t *testing.T) {
 	r.registerController()
 	r.wantEachRunToldOnce("after two runs of six, each ended by a clean turn while no controller was registered, and then a controller's registration,",
 		"7 turns in a row", "6 turns in a row")
+	r.publish()
+	r.admissionPass("boot:after-the-notice")
+	if notices := r.notices(); len(notices) != 0 {
+		t.Fatalf("after both runs were told and their notice published, the next admission pass wrote %d provider-errors notices, want none: %+v",
+			len(notices), notices)
+	}
 }
 
 // The same two runs, with the second still going when the controller registers: both runs are
@@ -590,7 +597,8 @@ func (r *errorRunRig) wantOneNotice(when string, run int) {
 
 // wantEachRunToldOnce fails the case unless the outbox's provider-errors notices name the
 // implementer of the issue and the error, and the words of each run, runs, stand in them exactly
-// once in all: each run is told, and none twice.
+// once in all, in the order runs gives them, the oldest run first: each run is told, none twice,
+// and the notice names the runs oldest first, as admission writes them (admit's toldRunsReason).
 func (r *errorRunRig) wantEachRunToldOnce(when string, runs ...string) {
 	r.t.Helper()
 	notices := r.notices()
@@ -605,9 +613,26 @@ func (r *errorRunRig) wantEachRunToldOnce(when string, runs ...string) {
 		}
 		told.WriteString(notice.reason + "\n")
 	}
+	last := -1
 	for _, run := range runs {
 		if n := strings.Count(told.String(), run); n != 1 {
 			r.t.Errorf("%s the run of %q is told %d times in the outbox's provider-errors notices, want once: %+v", when, run, n, notices)
+			continue
 		}
+		at := strings.Index(told.String(), run)
+		if at < last {
+			r.t.Errorf("%s the run of %q is told before a run older than it, want the runs oldest first, %q: %+v", when, run, runs, notices)
+		}
+		last = at
+	}
+}
+
+// admissionPass applies a fact, as the daemon's boot applies one, so admission's pass runs over
+// what the claim owes (admit's TellOwedProviderErrors in its pass), on the caller's goroutine.
+func (r *errorRunRig) admissionPass(key string) {
+	r.t.Helper()
+	r.settled()
+	if _, err := intake.ApplyFact(r.ctx, r.runtime.pool, "daemon", key, intake.DaemonBooted{Boot: 2}, r.runtime.handlers...); err != nil {
+		r.t.Fatalf("apply the fact %s: %v", key, err)
 	}
 }

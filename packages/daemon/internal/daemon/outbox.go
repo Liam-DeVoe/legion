@@ -2280,12 +2280,19 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
 // project, the one its controller subscribes to, and to nothing else: the Notice it is, under the
-// row's own key.
+// row's own key. A provider-errors notice is published only once the controller's session follows
+// that topic (controllerFollows).
 func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, payload record.ControllerNotice) error {
 	if r.notices == nil {
 		return errors.New("controller notice executor has no Envoy publisher")
 	}
-	err := r.publish(ctx, notify.ControllerTopic(r.project), noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
+	topic := notify.ControllerTopic(r.project)
+	if payload.Kind == record.ProviderErrorsNotice {
+		if err := r.controllerFollows(ctx, row, topic); err != nil {
+			return err
+		}
+	}
+	err := r.publish(ctx, topic, noticeSummary(payload.Kind, row.Issue), record.Notice(payload), record.OutboxKey(row.ID))
 	if errors.Is(err, notify.ErrNoHolder) {
 		// A wait, not a failure, as a merge-queue removal's is: settle logs a wait at INFO, then
 		// DEBUG, and at WARN from attempt waitWarnAttempts on, rather than an Error at every
@@ -2295,6 +2302,73 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 	}
 	if err != nil {
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// topicFollower is the listener read controllerFollows makes (notify.HTTPPublisher.FollowsTopic).
+type topicFollower interface {
+	FollowsTopic(ctx context.Context, session, topic string) (bool, error)
+}
+
+// controllerFollows is nil once the session that holds the project's controller registration
+// follows topic at the Envoy listener, and a wait until then: no session registered, or one whose
+// registration does not follow the topic yet.
+//
+// A provider-errors notice is the one controller notice told once for each run, and the write
+// that queued its row marked the run told (admit's tellProviderErrors), so this row is the only
+// keeper of the run's notice and must not finish on a publish no session can read. The controller
+// topic reaches a session only through its own consumer, whose filter takes the topic once the
+// session, holding the controller role, registers it; a message the stream stores before that is
+// delivered only while the consumer has not looked past it, and a consumer looks at every message
+// stored for it and at every pull it makes. A controller registers with the daemon before it
+// claims its role and follows the topic (packages/pi-legion's controller-session.ts), and the
+// registration queues the notice at once, so without this read its publish could come first, be
+// accepted, and reach nobody. The listener sets a session's filter before it stores the topics it
+// answers for (notify.HTTPPublisher.FollowsTopic), so a publish made after this read is kept for
+// the session whether it is live or away. A session that follows the topic and then is gone for
+// good takes the notice with it, as it takes every controller notice published to it.
+//
+// While no controller session follows the topic — none registered, one that never claims its role
+// or registers the topic, or one gone past the listener's gone horizon — the row stays in the
+// outbox holding the run's notice, and nothing is published. It retries on the outbox's own
+// backoff (outbox.retry, record.RetryBackoff: one second, doubling to RetryBackoffMost, 64 s), and
+// that cadence comes from what it waits on. A controller follows the topic within the seconds its
+// own start takes after its registration answers (the role's claim, then the topic's
+// registration), which the first short retries catch; past that, a follower comes only when an
+// operator starts or restarts a controller, which the 64 s cap waits for at one row read and at
+// most one listener read a minute, so the notice reaches such a controller at most 64 s after it
+// follows, and a row no controller follows never spins. settle logs the wait at INFO, then DEBUG,
+// and at WARN from attempt waitWarnAttempts on, which is the operator's sign that a registered
+// controller does not follow its topic. The wait holds nothing else of the issue behind it: a
+// controller notice is a board row, and the outbox holds a due row back only behind an older
+// status write or branch of its issue (record's outboxInOrder) or a running lifecycle row
+// (outboxLaneFree), so the issue's status writes, messages, other notices and lifecycle rows run as
+// they come due.
+//
+// A publisher with no listener read, a test's, publishes at once.
+func (r *outbox) controllerFollows(ctx context.Context, row record.OutboxRow, topic string) error {
+	follower, ok := r.notices.(topicFollower)
+	if !ok {
+		return nil
+	}
+	var session string
+	if err := pgx.BeginTxFunc(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var err error
+		session, err = r.records.ControllerSession(ctx, tx, r.dispatchProject)
+		return err
+	}); err != nil {
+		return fmt.Errorf("read the controller session the provider-errors notice for %s is for: %w", row.Issue, err)
+	}
+	if session == "" {
+		return wait.Errorf("the provider-errors notice for %s waits for a controller to register", row.Issue)
+	}
+	follows, err := follower.FollowsTopic(ctx, session, topic)
+	if err != nil {
+		return fmt.Errorf("read whether controller session %s follows %s before the provider-errors notice for %s: %w", session, topic, row.Issue, err)
+	}
+	if !follows {
+		return wait.Errorf("the provider-errors notice for %s waits for controller session %s to follow %s: published before then, it reaches no session", row.Issue, session, topic)
 	}
 	return nil
 }
