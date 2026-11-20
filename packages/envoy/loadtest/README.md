@@ -100,7 +100,7 @@ same step before and after its change, and compares the two rows.
 | `run-step.test.sh` | The test of the run lock. It fakes `go` and `uv` and needs no stack: `cd packages/envoy && bash loadtest/run-step.test.sh` |
 | `common.test.sh` | The test of `lock_root`: a series step keeps the lock after its parent dies, a refusal names the live holder, a token without the holder's descriptor is refused, a lock held by a process that this PID namespace cannot see is refused as held (never as free), a caller takes the lock once its holder has ended, two callers waiting at once never name each other as the holder, and a record of another PID namespace whose pid runs here is refused without naming that pid. And of `test-lib.sh`'s `end_tree`: it sees each process stopped before it reads its children, reads on past a zombie child, names a process it cannot see stopped and still ends it and the rest of the tree, and refuses a token that is no pid. It needs no stack: `cd packages/envoy && bash loadtest/common.test.sh` |
 | `restart-step.test.sh` | The test of `restart-step.sh`'s `kill_and_restart` and `end_step`: the listener is started again only once the killed one has ended, every thread of it, not once its main thread is a zombie; a failed script sends its SIGTERM to its step's own `loadgen run` alone, never to one of the same command line in another session, and returns once that loadgen has ended, every thread of it, its socket closed; and a step that has already ended, a zombie nothing has reaped, is sent nothing. It runs a stand-in listener, which picks and holds its own port, a step and a loadgen, and needs no stack: `cd packages/envoy && bash loadtest/restart-step.test.sh` |
-| `test-lib.sh` | What `common.test.sh`, `restart-step.test.sh`, `cluster/cluster.test.sh` and `vm/vm.test.sh` share about a process a case started and has to see end or hold still: `process_ended` (its `/proc` entry is gone, or its main thread is a zombie and no other thread of it is left), `wait_gone`, `end_process`, `stop_process` (every thread of it stopped, or a zombie: `common.sh`'s `proc_threads_stopped`, the drivers' own reading, which is why it sources `common.sh`), `process_start`, `process_state`, `socket_inodes` and `socket_held` (a socket told by its inode in `/proc/net/tcp`, never by a connect to its port number, which the machine can give to another program), and `record_pid` and `end_recorded`, by which a suite's exit ends every process its cases recorded, with the processes below it (`end_tree`), and no process it did not record. The four suites source it; it runs nothing of its own. |
+| `test-lib.sh` | What `common.test.sh`, `restart-step.test.sh`, `cluster/cluster.test.sh` and `vm/vm.test.sh` share about a process a case started and has to see end or hold still: `process_ended` (its `/proc` entry is gone, its main thread is a zombie and no other thread of it is left, or it reads dead, its parent reaping it), `wait_gone`, `end_process`, `stop_process` (every thread of it stopped, or a zombie: `common.sh`'s `proc_threads_stopped`, the drivers' own reading, which is why it sources `common.sh`), `process_start`, `process_state`, `socket_inodes` and `socket_held` (a socket told by its inode in `/proc/net/tcp`, never by a connect to its port number, which the machine can give to another program), and `record_pid` and `end_recorded`, by which a suite's exit ends every process its cases recorded, with the processes below it (`end_tree`), and no process it did not record. The four suites source it; it runs nothing of its own. |
 | `cluster/cluster.sh` | The load test on a full-size copy in a Kubernetes namespace (Running on a cluster copy, below) |
 | `cluster/manifests/` | The copy's templates: `postgres.yaml`, `dispatch.yaml`, `listener.yaml`, `runner.yaml`, `secrets.yaml.tmpl`, and `nats.yaml`, the committed render of chart `nats/nats` 2.15.1 |
 | `cluster/render-nats.sh`, `cluster/nats-values.yaml`, `cluster/nats-2.15.1.tgz` | The render of `manifests/nats.yaml` from the chart's archive, vendored here so that no render downloads it and checked against its published sha256 before helm reads it, and from its values, with every image pinned by digest |
@@ -3031,7 +3031,8 @@ ends the watcher. One record (`PG_DISK_FROZEN`, each pid with its start) holds e
 stop sent `SIGSTOP`, from before that signal until the wait after the `SIGKILL` is over, so a stop
 cut short anywhere in between kills them rather than leave them stopped, and no pid that the
 machine gave another process since is signalled. A process has ended once its `/proc` entry is
-gone, or its main thread is a zombie and no other thread of it is left: `SIGKILL` often ends the
+gone, its main thread is a zombie and no other thread of it is left, or it reads dead (X), its
+parent reaping it: `SIGKILL` often ends the
 main thread first, and the other threads of a `kubectl` still hold its connections until they too
 have gone.
 
@@ -4015,8 +4016,9 @@ leaves half:
   load. The load is started through a small `sh` that records the pid of the `loadgen run`
   itself on the load machine before it `exec`s it, and the step's stop kills that pid over a
   connection of its own — `TERM`, then `KILL` after 10 s — waits until that process has ended,
-  and removes the file. A process has ended when its `/proc` entry is gone, or when it is a zombie
-  with no thread left but its main one, which holds no port: a machine whose PID 1 reaps nothing
+  and removes the file. A process has ended when its `/proc` entry is gone, when it is a zombie
+  with no thread left but its main one, which holds no port, or when it reads dead (X), its parent
+  reaping it: a machine whose PID 1 reaps nothing
   keeps such a zombie in its table for ever. A kill that cannot show its process ended — still
   running 10 s after its `KILL`, or an `ssh` that did not reach the machine or timed out —
   names it and keeps the file, and the kill needs no file on this pod to do any of it. A kill

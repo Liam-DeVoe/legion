@@ -1,8 +1,9 @@
 kind: Fixed
 body: |-
   The load test's stops wait for what they end, and say what they could not end. An end is the
-  process's state: its `/proc` entry gone, or a zombie with no thread but its main one, which
-  holds no port and which a machine whose PID 1 reaps nothing keeps in its table for ever.
+  process's state: its `/proc` entry gone, a zombie with no thread but its main one, which
+  holds no port and which a machine whose PID 1 reaps nothing keeps in its table for ever, or a
+  process that reads dead (X), which its parent is reaping.
   `vm/vm.sh`'s kills on the load machine -- a step's profiling tunnel, its `loadgen run` and the
   stub embedder -- return only once the process has ended there, waiting up to
   `REMOTE_GONE_SECONDS` after the SIGKILL, where they returned as soon as the signal was sent; a
