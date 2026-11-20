@@ -1245,21 +1245,24 @@ func (s *server) serviceTokenActor(r *http.Request, token string) (model.Actor, 
 	return model.Actor{Service: &claims.Subject, Credential: scopelessCredential}, false, nil
 }
 
-// actorFrom is the actor a write records: the caller optionalActor resolved, or, for a bearer
-// that proves no session of its own, the session its body names. The request's credential stops
-// here (model.Actor.Recorded): a handler stores this actor and compares it with a stored one,
-// which carries none.
-func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor, error) {
+// actorFrom is the actor a write records, and the request's credential beside it. The actor is
+// the caller optionalActor resolved, or, for a bearer that proves no session of its own, the
+// session its body names. The actor carries no credential (model.Actor.Recorded): a handler
+// stores this actor and compares it with a stored one, which carries none. The credential is the
+// one optionalActor resolved, read before Recorded drops it, and never comes from the body.
+// requireActor drops it, and requireActorAndCredential answers it.
+func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor, *model.Credential, error) {
 	actor, present, err := s.optionalActor(r)
 	if err != nil {
-		return model.Actor{}, err
+		return model.Actor{}, nil, err
 	}
+	credential := actor.Credential
 	if !present {
 		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
-			return model.Actor{}, err
+			return model.Actor{}, nil, err
 		}
 	}
-	return actor.Recorded(), nil
+	return actor.Recorded(), credential, nil
 }
 
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
@@ -1333,12 +1336,22 @@ func (s *server) requireAuthenticated(w http.ResponseWriter, r *http.Request) bo
 }
 
 func (s *server) requireActor(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, bool) {
-	actor, err := s.actorFrom(r, supplied)
+	actor, _, ok := s.requireActorAndCredential(w, r, supplied)
+	return actor, ok
+}
+
+// requireActorAndCredential is requireActor with the request's credential beside the actor, for a
+// handler that judges a write by the credential: the PATCH of an issue (refuseLegionStatusWrite).
+// Both come from one optionalActor call (actorFrom). A second call is not free: optionalActor
+// keeps the caller it resolved only on some paths (a keyed write, a broker token, a route's scope
+// gate), and the lookup of a personal token can write the token's last_used_at (agent_tokens.go).
+func (s *server) requireActorAndCredential(w http.ResponseWriter, r *http.Request, supplied *model.Actor) (model.Actor, *model.Credential, bool) {
+	actor, credential, err := s.actorFrom(r, supplied)
 	if err != nil {
 		s.writeAuthenticationError(w, err)
-		return model.Actor{}, false
+		return model.Actor{}, nil, false
 	}
-	return actor, true
+	return actor, credential, true
 }
 
 // decodeOptionalJSON decodes the request body into dst when the request carries one, so a route

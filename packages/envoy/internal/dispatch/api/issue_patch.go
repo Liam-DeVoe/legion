@@ -59,7 +59,7 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
+	actor, credential, ok := s.requireActorAndCredential(w, r, input.Actor)
 	if !ok {
 		return
 	}
@@ -267,6 +267,38 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The issue's parent and labels as this write leaves them. The labels_add merge runs once,
+	// here: R26's refusal below judges the list that the update sets, and the advice reads it too.
+	afterParent := before.Parent
+	if parentProvided {
+		afterParent = parent
+	}
+	afterLabels := before.Labels
+	switch {
+	case input.Labels != nil:
+		afterLabels = labels
+	case input.LabelsAdd != nil:
+		if afterLabels, err = mergeIssueLabels(before.Labels, labelsAdd); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	// R26 (legion_status_scope.go). It comes after the input's 400s, ISSUE_CHANGED, PARENT_INPUT
+	// and ISSUE_CLOSED. It comes before the first write, the close's and the reopen's document
+	// work and the advice, so a refused write changes nothing. It judges the credential that
+	// resolved the actor, never the body's actor.
+	if err := refuseLegionStatusWrite(r.Context(), tx, s.deps.LegionStatusScope, legionStatusWriter{credential: credential}, legionStatusStep{
+		key:           key,
+		writesStatus:  input.Status != nil,
+		parentBefore:  before.Parent,
+		parentAfter:   afterParent,
+		parentChanged: parentProvided,
+		labelsBefore:  before.Labels,
+		labelsAfter:   afterLabels,
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The `advances` revision rule is decided here, beside the other refusals of this handler
 	// and before the first row is written: a refused write leaves the issue exactly as it was.
 	// The held set and the revision are the issue as this write read it under its owner lock,
@@ -345,16 +377,8 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		set("parent_key", parentValue)
 	}
-	if input.LabelsAdd != nil {
-		labels, err = mergeIssueLabels(before.Labels, labelsAdd)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		set("labels", labels)
-	}
-	if input.Labels != nil {
-		set("labels", labels)
+	if input.Labels != nil || input.LabelsAdd != nil {
+		set("labels", afterLabels)
 	}
 	if input.Route != nil {
 		var route any
@@ -396,16 +420,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	// and its parent (writeAdviceBefore), and the open asks the close withdraws or the reopen
 	// restores, whose rows the patch writes afterwards (adviceAsks). Nothing else the patch writes
 	// changes what it reads.
-	afterRow := adviceIssueRow{parent: before.Parent, labels: before.Labels}
+	afterRow := adviceIssueRow{parent: afterParent, labels: afterLabels}
 	afterStatus := before.Status
 	if input.Status != nil {
 		afterStatus = status
-	}
-	if parentProvided {
-		afterRow.parent = parent
-	}
-	if input.Labels != nil || input.LabelsAdd != nil {
-		afterRow.labels = labels
 	}
 	advice := s.writeAdviceBefore(r.Context(), tx, "PATCH /api/v1/issues/{key}", key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
@@ -499,10 +517,6 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	statusChanged := input.Status != nil && before.Status != status
-	afterParent := before.Parent
-	if parentProvided {
-		afterParent = parent
-	}
 	parentChanged := parentProvided && !stringPointersEqual(before.Parent, afterParent)
 	// Every owner this transaction appends to must be in one LockOwners call before the
 	// first append: the issue itself, the status-change parent, and both ends of a reparent.

@@ -55,9 +55,13 @@ var parentDepthCapSQL = strconv.Itoa(parentDepthCap)
 // legionLabel is the label that hands an issue's status to the Legion daemon. The daemon holds
 // its own copy of the spelling (packages/daemon/internal/dispatch/types.go, LegionLabel): the two
 // are separate constants in separate Go modules that have to be changed together, not one shared
-// value. packages/envoy knows two Legion-specific rules in all, and this is one: the other is the
-// design-gate record the daemon publishes onto an issue (design_gates, issue_design_gates.go),
-// which the superseded-approval advice reads to name the gates a document write made stale.
+// value. packages/envoy knows three Legion-specific rules in all, and this is one. The second is
+// the design-gate record the daemon publishes onto an issue (design_gates,
+// issue_design_gates.go), which the superseded-approval advice reads to name the gates a document
+// write made stale. The third is R26's refusal (legion_status_scope.go). Where
+// DISPATCH_LEGION_STATUS_SCOPE is on, a credential needs the person scope or the legion-status
+// scope to write the status of an issue that this label makes a Legion issue, to take this label
+// off an issue, or to move a Legion issue out from under every labelled issue.
 const legionLabel = "legion"
 
 // legionManagedStatusSQL answers whether the Legion daemon owns the status of the issue keyed by
@@ -95,10 +99,12 @@ func legionWalkSQL(start string) string {
 
 // legionManagedStatus runs legionManagedStatusSQL inside the caller's transaction. That keeps the
 // issue's own row as the caller locked it, and nothing more: an ancestor's labels, and a reparent
-// above the issue, are read as they stand and are not held still by any lock the caller takes. The
-// answer is advisory in both callers, so a chain that moves under the walk costs a sentence of
-// guidance and never a write. Both claim routes (issue_claim.go) and a session's write advice
-// (write_advice.go) read it.
+// above the issue, are read as they stand and are not held still by any lock the caller takes.
+// Both claim routes (issue_claim.go) and a session's write advice (write_advice.go) read it. There
+// the answer is advice, so a chain that moves under the walk costs a sentence of guidance and
+// never a write. The same walk also gates a write: R26's refusal reads it from a given row
+// (legionManagedStatusOfRow), and legion_status_scope.go says why that walk needs no lock on an
+// ancestor either.
 func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusSQL, key).Scan(&managed); err != nil {
@@ -107,8 +113,10 @@ func legionManagedStatus(ctx context.Context, tx pgx.Tx, key string) (bool, erro
 	return managed, nil
 }
 
-// legionManagedStatusOfRow is legionManagedStatus for key's row as a write leaves it, parent and
-// labels, which the write has not written yet (legionManagedStatusOfRowSQL).
+// legionManagedStatusOfRow is legionManagedStatus for key's row with its parent and labels given
+// rather than read (legionManagedStatusOfRowSQL): the row as a write leaves it, before the write
+// writes it (writeAdviceBefore), or the row before and after a call that R26's refusal judges
+// (legion_status_scope.go).
 func legionManagedStatusOfRow(ctx context.Context, tx pgx.Tx, key string, parent *string, labels []string) (bool, error) {
 	var managed bool
 	if err := tx.QueryRow(ctx, legionManagedStatusOfRowSQL, parent, labels).Scan(&managed); err != nil {
