@@ -942,7 +942,8 @@ func (s *server) editAskV2(w http.ResponseWriter, r *http.Request) {
 // dispatch://INFRA-4071/spec R8 has found the body is a change, answered with the ask read on the
 // write's transaction (writtenAskV2). An equal state from the caller who set it answers the ask
 // and writes nothing (putChangesNothing): the answer by the person who gave it, the resolution or
-// the decline by the actor who wrote it.
+// the decline by the actor who wrote it. An approval request's answer from a credential that does
+// not hold approve is refused before that compare, as every answer of its is (approvalAnswerRefusal).
 func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -964,6 +965,12 @@ func (s *server) putAskStateV2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if ask.State == "answered" && ask.Answer != nil {
+			// Before the compare, as recordAnswer holds every answer to it: an answer actor may not
+			// make is refused, never answered as it stands.
+			if err := approvalAnswerRefusal(ask, actor); err != nil {
+				s.writeHandlerError(w, r, err)
+				return
+			}
 			sent, current := body, body
 			if sent.Text != nil {
 				lined := pmdoc.LineFeeds(*sent.Text)

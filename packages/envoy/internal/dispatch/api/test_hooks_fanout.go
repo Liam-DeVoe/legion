@@ -49,7 +49,7 @@ const (
 	// "LOOP"), the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the owner locks'
 	// (store.OwnerLockNamespace, "OWNR"), the owner lock gate's (store.OwnerLockGateNamespace,
 	// "OWNG"), a conditional edit's admission's (docs.conditionalEditQueueLockNamespace, "QUEU"),
-	// the issue dependencies'
+	// a person's marks' (personMarksLockNamespace, "MARK"), the issue dependencies'
 	// (lockProjectIssueDependencies), the deployment's own issue dependencies'
 	// (lockDeploymentIssueDependencies), one repository mapping's write (lockRepoProjectWrite) and
 	// the rename graph's own (refuseRepoRenameChain). The second key is the listening connection's

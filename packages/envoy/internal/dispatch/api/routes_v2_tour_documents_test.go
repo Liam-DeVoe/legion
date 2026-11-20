@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -850,6 +851,46 @@ func TestEachV2ArtifactRowCarriesTheFactsOfItsNewestVersion(t *testing.T) {
 	}
 	if edges != 1 {
 		t.Errorf("the /api/v1 references of the citation answer %d edges to the artifact with no version, want one", edges)
+	}
+}
+
+// TestAV2ArtifactListWithItsTextTakesAPageOfTwenty: include=text answers each document's text, up
+// to a MiB each, so a page of an issue's or a project's artifacts that carries it holds at most 20
+// (artifactTextPageMax). limit=21 with include=text is 400 INVALID_LIMIT naming 20 before anything
+// is read, a missing owner's list too; limit=20 with it is 200, and so is limit=21 without it or
+// with include=blocks alone; include=text naming no limit reads a page of 20, and a list naming
+// neither a page of 50.
+func TestAV2ArtifactListWithItsTextTakesAPageOfTwenty(t *testing.T) {
+	handler, _ := newTestHandlerWithStore(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	for _, list := range []string{"/api/v2/issues/" + issue.Key + "/artifacts", "/api/v2/projects/CORE/artifacts"} {
+		read := func(target string) *httptest.ResponseRecorder {
+			return dispatchRequest(t, handler, http.MethodGet, target, nil, "alice")
+		}
+		for _, target := range []string{list + "?limit=21&include=text", list + "?limit=200&include=text,blocks"} {
+			refused := read(target)
+			if code, text := refusalOf(t, refused); refused.Code != http.StatusBadRequest || code != "INVALID_LIMIT" || !strings.Contains(text, "1 to 20") {
+				t.Errorf("GET %s answered %d %s, want 400 INVALID_LIMIT naming 20", target, refused.Code, refused.Body.String())
+			}
+		}
+		for query, limit := range map[string]int{
+			"limit=20&include=text": 20, "limit=21": 21, "limit=21&include=blocks": 21, "include=text": 20, "": 50,
+		} {
+			answered := read(list + "?" + query)
+			if answered.Code != http.StatusOK {
+				t.Errorf("GET %s?%s answered %d %s, want 200", list, query, answered.Code, answered.Body.String())
+				continue
+			}
+			if got := decodeBody[page[json.RawMessage]](t, answered); got.Limit != limit {
+				t.Errorf("GET %s?%s read a page of %d, want %d", list, query, got.Limit, limit)
+			}
+		}
+	}
+	for _, missing := range []string{"/api/v2/issues/CORE-404/artifacts", "/api/v2/projects/NOPE/artifacts"} {
+		if code, _ := refusalOf(t, dispatchRequest(t, handler, http.MethodGet, missing+"?limit=21&include=text", nil, "alice")); code != "INVALID_LIMIT" {
+			t.Errorf("GET %s?limit=21&include=text answered %s, want INVALID_LIMIT before the owner is read", missing, code)
+		}
 	}
 }
 

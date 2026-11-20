@@ -868,9 +868,11 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a route whose id the prefix layer cannot decide: " + strings.Join(undecided, "; "))
 	}
 	if undecodable := undecodableRoutes(routes); len(undecodable) > 0 {
-		// A /api/v2 route whose query or body the decoder cannot read, or an authority rule that
-		// could never hold, would refuse or admit requests by a declaration nothing reads as
-		// written, so the table is refused rather than mounted (decode_v2.go).
+		// A /api/v2 route whose query or body the decoder cannot read, an authority rule that
+		// could never hold, or a /api/v1 mount of a routeRow that declares a query or a body,
+		// which reaches a handler that reads them from a decoder /api/v1 does not mount, would
+		// refuse, admit or drop requests by a declaration nothing reads as written, so the table
+		// is refused rather than mounted (decode_v2.go).
 		panic("api.Register: the route table holds a route whose request declarations the /api/v2 decoder cannot read: " + strings.Join(undecodable, "; "))
 	}
 	s.routeIndex = routeIndexEntries(servedAt(apiV1, routes))

@@ -214,10 +214,19 @@ func (s *server) createIssueFrom(w http.ResponseWriter, r *http.Request, input c
 	if usingDefaultProject {
 		// The repo: label is Dispatch's record of the repository the issue came from, not a label
 		// of the caller's, so it joins once the caller's labels have met their limits and neither
-		// the 40 units nor the 20 bind it: a repository name of any length imports (R14). A caller
-		// label of the same name, in any case, is the same label. externalRepo is lower-case
-		// (canonicalRepo).
+		// the 40 units nor the 20 bind it: every GitHub repository's name imports (R14). It is held
+		// to the bound a repo: filter is (labelFilterLimit), an owner of 39 characters and a name of
+		// 100, so the label keeps its repository filterable; a name past it is no GitHub
+		// repository's and is refused as a label past its limit always was, before anything is
+		// written. A caller label of the same name, in any case, is the same label. externalRepo is
+		// lower-case (canonicalRepo).
 		generated := repoLabelPrefix + externalRepo
+		if units, _ := labelFilterLimit(generated); itemblocks.Units16(generated) > units {
+			writeError(w, r, apicode.LabelsInput, fmt.Sprintf(
+				"the repository %s is no GitHub repository's name: its %s label would run past %d characters (%s, an owner of up to 39, / and a name of up to 100)",
+				externalRepo, repoLabelPrefix, units, repoLabelPrefix))
+			return
+		}
 		if !slices.ContainsFunc(labels, func(label string) bool { return strings.ToLower(label) == generated }) {
 			labels = append(labels, generated)
 		}

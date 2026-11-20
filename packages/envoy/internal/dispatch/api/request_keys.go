@@ -366,7 +366,7 @@ func (s *server) keyedWrites(route apiRoute, handler http.HandlerFunc) http.Hand
 		// answer released and holds a repeat at KEY_IN_FLIGHT for a lease it no longer has.
 		stopRenewing()
 		running.Store(false)
-		s.settleRequestKey(detached, claim, answer, keepsAnswer)
+		s.settleRequestKey(detached, r, claim, answer, keepsAnswer)
 		settled = true
 		answer.deliver()
 	}
@@ -1015,7 +1015,9 @@ func writeKeyCommitted(w http.ResponseWriter, r *http.Request, key string, held 
 }
 
 // replayStoredAnswer answers a repeat with the first request's stored answer: its status, every
-// header its handler set, and its body. held is keyAnswered, so its status is set.
+// header its handler set, and its body; on /api/v1, with the Link the first answer carried, from
+// the values its handler recorded for it (recordStoredSuccessorValues). held is keyAnswered, so its
+// status is set.
 func replayStoredAnswer(w http.ResponseWriter, r *http.Request, held heldRequestKey) {
 	w.Header().Set(contracts.IdempotencyReplayedHeader, "?1")
 	if !held.kept {
@@ -1024,6 +1026,7 @@ func replayStoredAnswer(w http.ResponseWriter, r *http.Request, held heldRequest
 			*held.status, keyedAnswerKept))
 		return
 	}
+	recordStoredSuccessorValues(r, held.headers)
 	maps.Copy(w.Header(), held.headers)
 	w.WriteHeader(*held.status)
 	_, _ = w.Write(held.response)
@@ -1042,8 +1045,9 @@ func storedStatus(status int) bool {
 // the key (releaseRequestKey). A row another attempt has taken over is left as it is. A failure is
 // logged and the caller is still answered, since the handler has run: its row stays in flight, and
 // a repeat past the lease is answered KEY_COMMITTED (or from its recovery point) when the request
-// committed a write, and runs it again when it did not.
-func (s *server) settleRequestKey(ctx context.Context, claim requestKeyClaim, answer *keyedAnswer, keepsAnswer bool) {
+// committed a write, and runs it again when it did not. The answer is kept with the values the
+// handler recorded on r for a /api/v1 answer's Link (withSuccessorValues), which its replay links.
+func (s *server) settleRequestKey(ctx context.Context, r *http.Request, claim requestKeyClaim, answer *keyedAnswer, keepsAnswer bool) {
 	status := answer.finalStatus()
 	if !storedStatus(status) || !keepsAnswer {
 		s.releaseRequestKey(ctx, claim)
@@ -1059,7 +1063,7 @@ func (s *server) settleRequestKey(ctx context.Context, claim requestKeyClaim, an
 	if _, err := s.deps.Store.Pool.Exec(bookkeeping, `
 		update request_keys set status = $4, headers = $5, response = $6, leased_at = null
 		where login = $1 and idempotency_key = $2 and attempt = $3 and status is null
-	`, claim.login, claim.key, claim.attempt, status, answer.Header(), response); err != nil {
+	`, claim.login, claim.key, claim.attempt, status, withSuccessorValues(r, answer.Header()), response); err != nil {
 		slog.Error("dispatch: store a keyed request's answer", "status", status, "error", err)
 	}
 }

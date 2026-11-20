@@ -59,6 +59,34 @@ const artifactIncludeText = "include=text adds to each document its canonical ma
 	"reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown " +
 	"they index. A file or an image carries neither."
 
+// artifactTextPageMax is the largest page of documents a list of artifacts answers with include=text:
+// each document's text runs to pmdoc.MaxDocumentBytes, so a page of maxListLimit could hold 200
+// of them at once (textPageWithinBound).
+const artifactTextPageMax = 20
+
+// artifactListLimitText is what the description of each list of an owner's artifacts says of its
+// page, with include=text and without.
+var artifactListLimitText = fmt.Sprintf("limit 1 to %d (default %d), and 1 to %d (default %d) with include=text, and offset;",
+	maxListLimit, defaultListLimit, artifactTextPageMax, artifactTextPageMax)
+
+// textPageWithinBound holds page, the decoded page of a list of artifacts whose include is include,
+// to artifactTextPageMax where include names text: a limit the query names past it is refused 400
+// INVALID_LIMIT naming the bound, as the decoder refuses a limit past the row's bounds, and a query
+// that names none reads a page of that many. It writes the refusal and answers false, and runs
+// before the handler reads anything.
+func textPageWithinBound(w http.ResponseWriter, r *http.Request, page *pageQuery, include []string) bool {
+	if !artifactIncludeOf(include).text || page.Limit <= artifactTextPageMax {
+		return true
+	}
+	if v2QueryNames(r, "limit") {
+		writeError(w, r, apicode.InvalidLimit, fmt.Sprintf(
+			"limit must be one integer from 1 to %d with include=text, which answers each document's text", artifactTextPageMax))
+		return false
+	}
+	page.Limit = artifactTextPageMax
+	return true
+}
+
 // artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
 // slug=, which answers for the /api/v1 read by slug (J7).
 const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact " +
@@ -475,7 +503,7 @@ func (s *server) v2DocumentRows() []routeRow {
 		{
 			Method: http.MethodGet, Pattern: "/issues/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List an issue's documents, files and images, its spec among them, oldest first. " + artifactRowText +
-				" " + artifactSlugText + " " + artifactIncludeText + " limit 1 to 200 (default 50) and offset; {items, total, " +
+				" " + artifactSlugText + " " + artifactIncludeText + " " + artifactListLimitText + " {items, total, " +
 				"limit, offset}. 404 ISSUE_NOT_FOUND for an issue that does not exist.",
 			Handler:  s.listIssueArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
@@ -506,8 +534,8 @@ func (s *server) v2DocumentRows() []routeRow {
 			Method: http.MethodGet, Pattern: "/projects/{key}/artifacts", Auth: authAny, Versions: onlyV2,
 			Description: "List a project's documents, files and images, oldest first: its own and every one of its issues' " +
 				"but each issue's spec. issue=none keeps the project's own, which no issue holds, and issue=<key> one issue's. " +
-				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " limit 1 to 200 (default 50) and " +
-				"offset; {items, total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
+				artifactRowText + " " + artifactSlugText + " " + artifactIncludeText + " " + artifactListLimitText + " {items, " +
+				"total, limit, offset}. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 			Handler:  s.listProjectArtifactsV2,
 			Resource: "artifacts", Kind: kindCollection, Key: "{id}",
 			Query:         projectArtifactsV2Query{},
@@ -797,11 +825,14 @@ func (s *server) listIssueArtifactsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	query := v2Query[artifactListV2Query](r)
+	if !textPageWithinBound(w, r, &query.pageQuery, query.Include) {
+		return
+	}
 	key := r.PathValue("key")
 	if !s.requireIssueV2(w, r, key) {
 		return
 	}
-	query := v2Query[artifactListV2Query](r)
 	var list artifactList
 	list.where("issue_key = " + list.argument(key))
 	list.bySlugOrName(query.Slug)
@@ -815,12 +846,15 @@ func (s *server) listProjectArtifactsV2(w http.ResponseWriter, r *http.Request) 
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
+	query := v2Query[projectArtifactsV2Query](r)
+	if !textPageWithinBound(w, r, &query.pageQuery, query.Include) {
+		return
+	}
 	key := r.PathValue("key")
 	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, key); err != nil {
 		s.writeHandlerError(w, r, err)
 		return
 	}
-	query := v2Query[projectArtifactsV2Query](r)
 	var list artifactList
 	list.where("project_key = " + list.argument(key))
 	list.where("not is_primary")

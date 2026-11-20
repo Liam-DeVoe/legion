@@ -622,6 +622,58 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 	}
 }
 
+// An approval request its person answered with a credential that holds approve is answered as it
+// stands, writing nothing, to that credential sending the same answer again on PUT
+// /api/v2/asks/{id}/state (the no-op rule, putChangesNothing), and to no credential that may not
+// approve: a token of the same person narrowed to person is refused 403 OAUTH_SCOPE_REQUIRED
+// naming approve, with its challenge, as every answer of its to that ask is, rather than told its
+// approval stands.
+func TestTheV2NoOpAnswerOfAnApprovalAskNeedsTheApproveScope(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	issue := createInteractionIssue(t, handler, "ACT", "Approving again needs approve", "A spec")
+	approver := mintPersonalToken(t, handler, "alice", actingTokenName, []string{model.ScopePerson, model.ScopeApprove})
+	narrow := mintPersonalToken(t, handler, "alice", "planner", []string{model.ScopePerson})
+	requested := sessionRequest(t, handler, http.MethodPost,
+		"/api/v1/artifacts/"+issue.PrimaryArtifactID+"/approval-requests", map[string]any{"actor": sessionActor()})
+	if requested.Code != http.StatusCreated {
+		t.Fatalf("request approval: status=%d body=%s", requested.Code, requested.Body.String())
+	}
+	approvalAsk := decodeBody[struct {
+		Ask struct {
+			ID string `json:"id"`
+		} `json:"ask"`
+	}](t, requested).Ask.ID
+
+	target := "/api/v2/asks/" + approvalAsk + "/state?session=" + actingSession
+	answer := map[string]any{"state": "answered", "selected": []string{docs.ApprovalOptionApprove}, "expected_edited_at": nil}
+	if approved := agentRequest(t, handler, http.MethodPut, target, answer, approver.Token); approved.Code != http.StatusOK {
+		t.Fatalf("approve with a token holding approve: status=%d body=%s", approved.Code, approved.Body.String())
+	}
+	stored := storedAskAnswer(t, database, approvalAsk)
+	answered := func() int {
+		var count int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from events where issue_key = $1 and type = 'ask.answered'`, issue.Key).Scan(&count); err != nil {
+			t.Fatalf("count ask.answered events: %v", err)
+		}
+		return count
+	}
+	events := answered()
+
+	assertScopeRefused(t, "the same approval sent again by alice's token without approve",
+		agentRequest(t, handler, http.MethodPut, target, answer, narrow.Token), model.ScopeApprove)
+	again := agentRequest(t, handler, http.MethodPut, target, answer, approver.Token)
+	if again.Code != http.StatusOK {
+		t.Fatalf("the same approval sent again by the token that gave it: status=%d body=%s, want 200", again.Code, again.Body.String())
+	}
+	if after := answered(); after != events {
+		t.Fatalf("the approval sent again appended %d ask.answered events, want none", after-events)
+	}
+	if now := storedAskAnswer(t, database, approvalAsk); !now.At.Equal(stored.At) {
+		t.Fatalf("the approval sent again rewrote the answer at %v, want it kept at %v", now.At, stored.At)
+	}
+}
+
 // newestEventActor is the actor of the newest event of type on issueKey, read from the issue's
 // own event log as any reader of it would.
 func newestEventActor(t *testing.T, handler http.Handler, issueKey, eventType string) model.Actor {

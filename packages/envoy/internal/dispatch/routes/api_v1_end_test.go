@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -101,6 +102,28 @@ func TestAV1AnswerCarriesItsDeprecationSuccessorAndSunset(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A /api/v1 write that a layer answers before reading its body, whose body runs past the route's
+// limit, is answered 413 in place of that layer's answer (the drain, api/body_drain.go), and that
+// 413 is a /api/v1 answer like any other: it carries Deprecation, the Link to its successor and,
+// while the end is ahead, Sunset (R3.1, R3.4). The query's NUL is refused before any credential is
+// read, so the write needs no store.
+func TestAV1AnswerTheDrainReplacesCarriesItsDeprecationSuccessorAndSunset(t *testing.T) {
+	now := testAPIV1End.Add(-24 * time.Hour)
+	handler := apiV1EndRouter(t, testAPIV1End, &now)
+	request := httptest.NewRequest(http.MethodPost, "http://dispatch.test/api/v1/issues/CORE-1/comments?q=%00", bytes.NewReader(make([]byte, 2<<20)))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	requireCodedRefusal(t, "a /api/v1 write past its body limit", response, http.StatusRequestEntityTooLarge, "REQUEST_TOO_LARGE")
+	deprecation := "@" + strconv.FormatInt(apiV1DeprecatedAt.Unix(), 10)
+	link := []string{`</api/v2/issues/CORE-1/comments>; rel="successor-version"`}
+	if response.Header().Get("Deprecation") != deprecation || !slices.Equal(response.Header().Values("Link"), link) ||
+		!slices.Equal(response.Header().Values("Sunset"), []string{testSunset}) {
+		t.Errorf("the 413 carries Deprecation %q, Link %q, Sunset %q; want %q, %q and %q",
+			response.Header().Get("Deprecation"), response.Header().Values("Link"), response.Header().Values("Sunset"), deprecation, link, testSunset)
 	}
 }
 

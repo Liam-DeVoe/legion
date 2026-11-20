@@ -13,10 +13,10 @@ import (
 
 // An import through the default project labels its issue repo:<owner>/<repo>, Dispatch's record of
 // the repository the issue came from, not a label of the caller's (R14). A repository name of any
-// length is imported, the caller's own labels keep their limits, the issue's labels stay editable
-// with that label among them, and the label stays a filter. Every route runs on both versions,
-// each import a first import: a second import of one reference answers the issue it made before
-// any label is read.
+// length a GitHub repository's can have is imported, and one past it refused 400 LABELS_INPUT, the
+// caller's own labels keep their limits, the issue's labels stay editable with that label among
+// them, and the label stays a filter. Every route runs on both versions, each import a first
+// import: a second import of one reference answers the issue it made before any label is read.
 func TestADefaultProjectImportTakesALongRepositoryName(t *testing.T) {
 	// fitting's label is 40 characters, a caller's limit; long's is 43.
 	fitting := "o/" + strings.Repeat("r", 33)
@@ -86,6 +86,26 @@ func TestADefaultProjectImportTakesALongRepositoryName(t *testing.T) {
 			expectRefused(t, "an import with 21 caller labels", importIssue(t, handler, version, long+"#3", numbered(21)))
 			expectRefused(t, "an import with a caller label of 41 characters",
 				importIssue(t, handler, version, long+"#4", []string{"triage", tooLong}))
+
+			// A name no GitHub repository has, whose repo: label runs past the 145 characters of an
+			// owner of 39 and a name of 100 (labelFilterLimit), is refused as a label past its limit
+			// always was, naming the repository and the bound, never stored as a label no filter
+			// takes. The name of 2.7 KB is sent with a title of its own: the reference itself would be
+			// past a title's limit, which answers first, as it always has.
+			for _, name := range []struct{ what, repo, title string }{
+				{"a repository name of 200 characters", "o/" + strings.Repeat("r", 198), ""},
+				{"a repository name of 2.7 KB", "o/" + strings.Repeat("r", 2700), "An issue of a long repository"},
+			} {
+				body := map[string]any{"external": name.repo + "#1"}
+				if name.title != "" {
+					body["title"] = name.title
+				}
+				response := dispatchRequest(t, handler, http.MethodPost, "/api/"+version+"/issues", body, "alice")
+				expectRefused(t, "an import of "+name.what, response)
+				if _, text := refusalOf(t, response); !strings.Contains(text, name.repo) || !strings.Contains(text, fmt.Sprint(maxRepoLabel16)) {
+					t.Fatalf("the import of %s was refused %q, want the repository and the bound of %d named", name.what, text, maxRepoLabel16)
+				}
+			}
 
 			t.Run("a .git reference, a first import of its own", func(t *testing.T) {
 				expectImported(t, importIssue(t, defaultProject(t), version, long+".git#1", nil), long, 1)

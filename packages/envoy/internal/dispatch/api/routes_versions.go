@@ -16,7 +16,9 @@ package api
 //     with a version-free pattern, and every fact a wrapper of register or a reader of the route
 //     reads is one of its named columns. It is served at /api/v2 and, unless its Versions says
 //     otherwise, at /api/v1 too: a row a later change adds is served in both versions by one
-//     declaration (R2).
+//     declaration (R2). A row that declares a Query or a Body is served at /api/v2 alone
+//     (Versions: onlyV2), since its handler reads them from the decoder and /api/v1 mounts none;
+//     register refuses such a row served in both (undecodableRoutes).
 //   - A testHookRow (testHookRows) is a test hook, served at its /api/v1 path and at
 //     /api/v2/_test/<that path without /api/v1 and /_test>, both only when Deps.TestHooksEnabled.
 //     Its facts are its side-map entries, as a v1Row's are.
@@ -389,7 +391,8 @@ type routeRow struct {
 	Description string
 	// Handler answers the route.
 	Handler http.HandlerFunc
-	// Versions is which versions serve the row; its zero value is both.
+	// Versions is which versions serve the row; its zero value is both. A row that declares a
+	// Query or a Body names onlyV2, which register holds it to (undecodableRoutes).
 	Versions routeVersions
 
 	// Resource is the noun the route's path names what it serves by (R1.1): a plural for a

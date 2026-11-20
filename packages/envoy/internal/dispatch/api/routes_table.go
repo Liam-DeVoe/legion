@@ -668,9 +668,11 @@ const unsettledText = "unsettled is true when the markdown answered equals no st
 // otherwise, at /api/v1 (mountRow), and with Deps.TestHooksEnabled each test hook at its two paths.
 // Add a route as a routeRow of its group's v2_<group>.go, never as a v1Row and never as a
 // mux.HandleFunc line: /api/v1 alone serves a v1Row, and TestAV1OnlyRowOutsideTheFrozenListFails
-// refuses one testdata/v1-only-routes.txt does not hold. register mounts what this answers and
-// refuses a table whose facts it cannot decide (undecidableWrites, shapelessRoutes,
-// undecidedIDRoutes).
+// refuses one testdata/v1-only-routes.txt does not hold. A routeRow that declares a Query or a
+// Body is served at /api/v2 alone (Versions: onlyV2): /api/v1 mounts no decoder to read them, and
+// register refuses such a row served in both versions (undecodableRoutes). register mounts what
+// this answers and refuses a table whose facts it cannot decide (undecidableWrites,
+// shapelessRoutes, undecidedIDRoutes, undecodableRoutes).
 func (s *server) routes() []apiRoute {
 	replays := s.keyedReplays()
 	var routes []apiRoute

@@ -627,6 +627,16 @@ const (
 	marksBesideTheInbox
 )
 
+// personMarksLockNamespace is the first key of a person's marks lock ("MARK"), its second the
+// hashtext of the person's canonical login (lockPersonMarks), as an owner lock's are
+// (store.OwnerLockNamespace and the owner's key). It is the two-key form, which Postgres keeps
+// apart from the one-key locks - a document's room (docs' lockDocumentRoom) among them - and a
+// first key no other two-key lock of the server takes, so a person's mark writes wait on no lock
+// but another mark write of that person's. The lists of the server's two-key namespaces name it
+// beside the others (store.OwnerLockNamespace, docs.copiedAsksLockNamespace and lockProjectCopies,
+// duty.leaseNamespace, testHookLockNamespace), so the next namespace is chosen apart from it.
+const personMarksLockNamespace int32 = 0x4D41524B
+
 // lockPersonMarks takes, in tx, the advisory lock of the marks of the person login names, the
 // canonical login, as the first lock of every transaction that writes more than one of one
 // person's mark rows: the Inbox's mark-all (markInboxReadThreads) and its dismissal
@@ -645,9 +655,9 @@ const (
 func lockPersonMarks(ctx context.Context, tx pgx.Tx, login string, mode personMarksLock) error {
 	var err error
 	if mode == marksBesideTheInbox {
-		_, err = tx.Exec(ctx, `select pg_advisory_xact_lock_shared(hashtext('me-marks:' || $1))`, login)
+		_, err = tx.Exec(ctx, `select pg_advisory_xact_lock_shared($1, hashtext($2::text))`, personMarksLockNamespace, login)
 	} else {
-		_, err = tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('me-marks:' || $1))`, login)
+		_, err = tx.Exec(ctx, `select pg_advisory_xact_lock($1, hashtext($2::text))`, personMarksLockNamespace, login)
 	}
 	if err != nil {
 		return fmt.Errorf("take the person's marks lock: %w", err)

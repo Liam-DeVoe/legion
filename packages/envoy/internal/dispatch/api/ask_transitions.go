@@ -278,19 +278,16 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 			return s.deps.Docs.SetBlockAttributes(ctx, blockArtifact, *ask.BlockID, attributes, actor)
 		},
 	})
-	// Answering an approval request approves its document, so it needs the approve scope beside
-	// the person scope the table declares for this route. The check cannot sit at the gate: an
-	// ask's kind is known only once its row is read, and reading it before the transaction would
-	// decide on a row another writer could still move. It sits here instead, inside Apply, under
-	// the ask's owner lock (requireOpenOwner in transitionAskTx), which every writer of an ask
-	// takes first and which the transaction holds until Commit writes the queued answer, so the
-	// kind checked is the kind answered; the refusal is the gate's own (missingScopeError), which
-	// writeHandlerError gives the challenge header.
+	// The approve scope an approval request's answer needs (approvalAnswerRefusal) cannot be
+	// checked at the gate: an ask's kind is known only once its row is read, and reading it before
+	// the transaction would decide on a row another writer could still move. It sits here instead,
+	// inside Apply, under the ask's owner lock (requireOpenOwner in transitionAskTx), which every
+	// writer of an ask takes first and which the transaction holds until Commit writes the queued
+	// answer, so the kind checked is the kind answered.
 	applyAnswer := transition.Apply
 	transition.Apply = func(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, ask model.Ask) (model.Ask, error) {
-		if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
-			return model.Ask{}, missingScopeError(model.ScopeApprove,
-				"this request's credential does not hold the approve scope, which answering an approval request requires")
+		if err := approvalAnswerRefusal(ask, actor); err != nil {
+			return model.Ask{}, err
 		}
 		return applyAnswer(ctx, tx, ledger, ask)
 	}
@@ -325,6 +322,20 @@ func (s *server) recordAnswer(w http.ResponseWriter, r *http.Request, actor mode
 		return model.Ask{}, false
 	}
 	return ask, true
+}
+
+// approvalAnswerRefusal is the refusal of actor's answer to ask, and nil where actor may answer it:
+// answering an approval request approves its document, so it needs the approve scope beside the
+// person scope the answer's routes declare. The refusal is the gate's own (missingScopeError),
+// which writeHandlerError gives the challenge header. recordAnswer holds every answer to it, and
+// PUT /api/v2/asks/{id}/state holds the answer it would answer as it stands (putAskStateV2), so
+// the no-op tells no caller that may not approve that its approval stands.
+func approvalAnswerRefusal(ask model.Ask, actor model.Actor) error {
+	if ask.Kind == "approval" && !actor.Act.Holds(model.ScopeApprove) {
+		return missingScopeError(model.ScopeApprove,
+			"this request's credential does not hold the approve scope, which answering an approval request requires")
+	}
+	return nil
 }
 
 // resolveAskInput is the body of POST /api/v1/asks/{id}/resolve.

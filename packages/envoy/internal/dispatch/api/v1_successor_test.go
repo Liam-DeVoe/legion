@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/sjawhar/envoy/going"
 )
 
@@ -81,6 +83,33 @@ func TestASlugRowLinksTheValueItsHandlerResolved(t *testing.T) {
 	keep := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+plan.ID+"/blocks/b-heading/keep", map[string]string{}, "alice")
 	if want := unfilledLinkOf("PUT /api/v2/issues/{key}/decisions/{block_id}/state"); keep.Code != http.StatusBadRequest || keep.Header().Get("Link") != want {
 		t.Errorf("POST /api/v1/artifacts/%s/blocks/b-heading/keep {} answered %d %s with Link %q, want 400 and %q", plan.ID, keep.Code, keep.Body.String(), keep.Header().Get("Link"), want)
+	}
+}
+
+// A keyed write whose successor its handler resolves keeps that value with its stored answer, so
+// a replay under its key, which runs no handler, links what the first answer linked rather than
+// /api/v2 with the route in its title, and carries no other header than the first answer did.
+func TestAKeyedReplayOfASlugWriteLinksWhatItsFirstAnswerLinked(t *testing.T) {
+	handler := newTestHandler(t)
+	key := createTestIssue(t, handler, "REPLAY", "Replayed")
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+key, "rollout.md", "# Rollout\n\nOne.\n").Artifact
+	target := "/api/v1/issues/" + key + "/artifacts/" + plan.Slug + "/edits"
+	edit := map[string]any{"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": "Two."}}}
+	idempotencyKey := uuid.NewString()
+	first := keyedRequest(t, handler, http.MethodPost, target, edit, "alice", idempotencyKey)
+	again := keyedRequest(t, handler, http.MethodPost, target, edit, "alice", idempotencyKey)
+	want := []string{successorLinkOf("/api/v2/artifacts/" + plan.ID + "/edits")}
+	if first.Code != http.StatusOK || !slices.Equal(first.Header().Values("Link"), want) {
+		t.Fatalf("POST %s answered %d %s with Link %q, want 200 and %q", target, first.Code, first.Body.String(), first.Header().Values("Link"), want)
+	}
+	if !replayed(again) || again.Code != first.Code || again.Body.String() != first.Body.String() || !slices.Equal(again.Header().Values("Link"), want) {
+		t.Fatalf("the same POST under its key answered %d with Link %q (replayed %v), want the first answer replayed with Link %q",
+			again.Code, again.Header().Values("Link"), replayed(again), want)
+	}
+	for name := range again.Header() {
+		if strings.HasPrefix(name, storedSuccessorValue) {
+			t.Errorf("the replay carries the stored value %q, which no answer sends", name)
+		}
 	}
 }
 

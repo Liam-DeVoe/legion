@@ -790,7 +790,11 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, r, artifactKindMismatch(input.name, artifact, kind))
 			return
 		}
-		if _, err := tx.Exec(r.Context(), `update artifacts set kind = 'doc', role = $2 where id = $1 and kind <> 'doc'`, artifact.ID, *role); err != nil {
+		// The update is a write like every other this route makes: queued here, ahead of the
+		// version's, and run in the write phase, so the read phase - the seed's parse and render
+		// among it - holds no transaction id. The read phase reads the new kind and role off the
+		// row in hand, as it reads the role repair's below.
+		if err := queueExec(ledger, `update artifacts set kind = 'doc', role = $2 where id = $1 and kind <> 'doc'`, artifact.ID, *role); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}

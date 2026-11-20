@@ -53,8 +53,9 @@ package api
 // route (decodedSession), and from the raw query on every other.
 //
 // register refuses to mount a table whose /api/v2 rows declare a query or a body the decoder
-// cannot read (undecodableRoutes), so a wrong tag fails the server's start and every test, never
-// a request.
+// cannot read, or whose row served at /api/v1 too declares a query or a body at all, since /api/v1
+// mounts no decoder (undecodableRoutes), so a wrong tag or a wrong Versions fails the server's
+// start and every test, never a request.
 
 import (
 	"bytes"
@@ -233,6 +234,19 @@ func v2Upload(r *http.Request) *uploadFile {
 		panic(fmt.Sprintf("v2Upload: the decoder read no upload of %s %s", r.Method, r.Pattern))
 	}
 	return decoded.file
+}
+
+// v2QueryNames reports whether the query of r, a request to a /api/v2 route, names key, which
+// v2Query's value cannot tell for a key whose field a query that leaves it out holds at its
+// default: a list's limit (pageQuery). It panics, as v2Query does, on a route the decoder does not
+// read.
+func v2QueryNames(r *http.Request, key string) bool {
+	decoded, ok := decodedV2(r)
+	if !ok {
+		panic(fmt.Sprintf("v2QueryNames(%q): the decoder read no query of %s %s: only a /api/v2 route's handler reads one", key, r.Method, r.Pattern))
+	}
+	_, named := decoded.values[key]
+	return named
 }
 
 // decodedSession is the session the decoded query of r names (`session`, trimmed, "" where it names
@@ -1100,15 +1114,18 @@ func uploadFields(typ reflect.Type, values map[string][]string) ([]byte, error) 
 }
 
 // undecodableRoutes names every route whose request declarations the decoder cannot read, and
-// every row that declares authorities at a mount the authority gate does not run on: a /api/v2
-// route's query type or body type (newV2Decoder), its authority rules (authorityFaults), and a
-// row served at /api/v1 too that declares authorities, which /api/v1, reading no decoded request,
-// could not hold to them. register refuses to mount a table it names anything in.
+// every row that declares at a mount the decoder does not read what only the decoder holds a
+// request to: a /api/v2 route's query type or body type (newV2Decoder), its authority rules
+// (authorityFaults), a row served at /api/v1 too that declares authorities, which /api/v1, reading
+// no decoded request, could not hold to them, and a routeRow served at /api/v1 too that declares a
+// query or a body, which its handler reads through v2Query, v2Body or v2Upload, each of which
+// panics on a request the decoder did not read (v1DecodedDeclarations). register refuses to mount
+// a table it names anything in.
 func undecodableRoutes(routes []apiRoute) []string {
 	var faults []string
 	for _, route := range routes {
 		name := route.Method + " " + route.Pattern
-		switch {
+		switch declared := v1DecodedDeclarations(route); {
 		case route.v2Bound():
 			decoder, err := newV2Decoder(route)
 			if err != nil {
@@ -1120,8 +1137,28 @@ func undecodableRoutes(routes []apiRoute) []string {
 			}
 		case len(route.Authorities) > 0:
 			faults = append(faults, name+": declares Authorities, which only the /api/v2 decoder's gate holds a request to; serve the row at /api/v2 alone (Versions: onlyV2)")
+		case declared != "":
+			faults = append(faults, name+": declares "+declared+", which only the /api/v2 decoder reads, and /api/v1 mounts no decoder, so its handler's v2Query, v2Body or v2Upload would panic there; serve the row at /api/v2 alone (Versions: onlyV2), or declare neither")
 		}
 	}
 	slices.Sort(faults)
 	return faults
+}
+
+// v1DecodedDeclarations is what route, the /api/v1 mount of a routeRow, declares that only the
+// decoder reads - "a Query", "a Body" or both - and "" for any other route: a /api/v2 mount, a
+// route of the v1 table or a test hook, which declare neither, and a row of the INFRA-979 tree,
+// whose handler reads its request as /api/v1 wrote it (infra979Rows).
+func v1DecodedDeclarations(route apiRoute) string {
+	if route.Version != apiV1 || !route.columns || route.ofINFRA979() {
+		return ""
+	}
+	var declared []string
+	if route.Query != nil {
+		declared = append(declared, "a Query")
+	}
+	if route.Body.Kind != bodyNone {
+		declared = append(declared, "a Body")
+	}
+	return strings.Join(declared, " and ")
 }

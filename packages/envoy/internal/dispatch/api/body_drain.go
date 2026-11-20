@@ -74,6 +74,13 @@ var (
 	errJSONTooLarge   = errorf(apicode.RequestTooLarge, "request body exceeds %d bytes", maxJSONRequestBytes)
 )
 
+// versionHeaders are the headers a /api/v1 answer carries whichever layer writes it, and that the
+// drain keeps on the 413 it writes in place of a layer's answer: Deprecation, and Sunset while the
+// end is ahead, which the router sets before any route runs (routes/router.go, endAPIV1), and the
+// Link to the successor, which linkSuccessor sets again when the 413's status is written (R3.1,
+// R3.4 of dispatch://INFRA-4071/spec). A /api/v2 answer carries none of them.
+var versionHeaders = [...]string{"Deprecation", "Link", "Sunset"}
+
 // drainBeforeAnswer serves a route whose requests carry a body - every route but a GET - so that
 // whatever layer answers a request, and however little of its body that layer read, the answer
 // is written only once the rest of the body is read and discarded: at most the route's limit and
@@ -171,8 +178,19 @@ func (w *drainingWriter) begin(status int) {
 	case status == http.StatusUnauthorized:
 		return
 	}
-	// The body runs past the limit: the answer is the limit's.
-	clear(w.ResponseWriter.Header())
+	// The body runs past the limit: the answer is the limit's, which carries none of the headers
+	// the layer that answered set, but those of the version it answers in (versionHeaders).
+	header := w.ResponseWriter.Header()
+	var kept [len(versionHeaders)][]string
+	for index, name := range versionHeaders {
+		kept[index] = header[name]
+	}
+	clear(header)
+	for index, name := range versionHeaders {
+		if kept[index] != nil {
+			header[name] = kept[index]
+		}
+	}
 	writeVersionedError(w.ResponseWriter, w.version, w.tooLarge.code, 0, w.tooLarge.message)
 	w.replaced = true
 }

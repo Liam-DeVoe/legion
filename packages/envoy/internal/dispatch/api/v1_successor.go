@@ -11,7 +11,9 @@ package api
 // a value the v1 request does not carry - the artifact a slug names, the issue a document belongs
 // to - and row 178 one route per project its list holds (handlerResolvedSuccessors). Each of
 // their handlers records the value with successorValue once it has resolved it, into the holder
-// the wrapper put on the request, and the wrapper fills the Link from it. Where no holder is
+// the wrapper put on the request, and the wrapper fills the Link from it. A keyed write keeps
+// those values with its stored answer, and a replay of that answer, which runs no handler, records
+// them again (withSuccessorValues), so it links what the first answer linked. Where no holder is
 // there, a recording is nothing, so a handler records whichever route it answers and its answer
 // does not change. The Deprecation and Sunset headers and the end of /api/v1 are the router's,
 // which holds every path under /api/v1 to them, a route's or not (routes/router.go).
@@ -20,6 +22,7 @@ import (
 	"bufio"
 	"context"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -51,6 +54,46 @@ func successorValue(r *http.Request, name, value string) {
 	}
 	if !slices.Contains(holder.values[name], value) {
 		holder.values[name] = append(holder.values[name], value)
+	}
+}
+
+// storedSuccessorValue is the prefix of the names a keyed write's stored answer keeps the values
+// its handler recorded under (withSuccessorValues), one name per path value: a replay of that
+// answer runs no handler, so it records them again from there (recordStoredSuccessorValues), and
+// links what the first answer linked. It holds a space, so no header a handler sets is one of them,
+// and the replay takes them out before the stored headers reach the client.
+const storedSuccessorValue = "successor value "
+
+// withSuccessorValues is headers, the answer a keyed write is about to store, with the values its
+// handler recorded on r (successorValue), each under storedSuccessorValue and its name: headers
+// itself where it recorded none, else a copy, since headers is also the answer the client is
+// written.
+func withSuccessorValues(r *http.Request, headers http.Header) http.Header {
+	holder, held := r.Context().Value(successorValuesKey{}).(*successorValues)
+	if !held || len(holder.values) == 0 {
+		return headers
+	}
+	stored := make(http.Header, len(headers)+len(holder.values))
+	maps.Copy(stored, headers)
+	for name, values := range holder.values {
+		stored[storedSuccessorValue+name] = values
+	}
+	return stored
+}
+
+// recordStoredSuccessorValues records on r, a replay of a keyed write, each value the first
+// answer's handler recorded (withSuccessorValues), and takes them out of stored, the stored
+// answer's headers, which leaves the headers that answer carried.
+func recordStoredSuccessorValues(r *http.Request, stored http.Header) {
+	for key, values := range stored {
+		name, kept := strings.CutPrefix(key, storedSuccessorValue)
+		if !kept {
+			continue
+		}
+		delete(stored, key)
+		for _, value := range values {
+			successorValue(r, name, value)
+		}
 	}
 }
 
