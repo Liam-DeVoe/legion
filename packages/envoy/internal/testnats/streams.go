@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,19 @@ func (c *Cluster) JetStream(t testing.TB) natsgo.JetStreamContext {
 	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
+	}
+	return js
+}
+
+// MemberJetStream is a JetStream context on member i alone. Its requests use the same bound as
+// Cluster.JetStream, and its connection closes when t ends.
+func (c *Cluster) MemberJetStream(t testing.TB, i int) natsgo.JetStreamContext {
+	t.Helper()
+	conn := Connect(t, c.Servers[i].URL())
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
+	if err != nil {
+		t.Fatalf("open JetStream on member %s: %v", c.Name(i), err)
 	}
 	return js
 }
@@ -66,6 +80,71 @@ const (
 	updateMargin = 10 * time.Second
 )
 
+// LeaderlessStream is a three-copy stream after HoldStreamWithoutLeader stopped its leader and
+// one peer, and a copy that answered a read with no leader. Restart starts those members again.
+type LeaderlessStream struct {
+	cluster *Cluster
+	Info    *natsgo.StreamInfo
+	Stopped []int
+	Kept    int
+}
+
+// Restart starts the members HoldStreamWithoutLeader stopped. The caller waits for the particular
+// fact it needs after the recovery, rather than this helper deciding an election duration.
+func (h *LeaderlessStream) Restart(t testing.TB) {
+	t.Helper()
+	for _, member := range h.Stopped {
+		h.cluster.Servers[member].Start(t)
+	}
+}
+
+// HoldStreamWithoutLeader stops a stream's leader and one peer, and returns only after the copy
+// left running has answered a read naming no leader. A member can take leadership alone while the
+// others first stop; that attempt is restored and selected again. readWait is the caller's read
+// limit, so a test keeps the limit its behaviour asserts rather than duplicating election setup.
+func HoldStreamWithoutLeader(t testing.TB, cluster *Cluster, stream string, readWait time.Duration) *LeaderlessStream {
+	t.Helper()
+	for attempt := 1; attempt <= 8; attempt++ {
+		read := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
+		members := []int{cluster.Member(read.Cluster.Leader)}
+		for _, peer := range read.Cluster.Replicas {
+			members = append(members, cluster.Member(peer.Name))
+		}
+		if slices.Contains(members, -1) || len(slices.Compact(slices.Sorted(slices.Values(members)))) != 3 {
+			t.Fatalf("the read of %s names members %v, not three distinct members of the cluster", stream, members)
+		}
+		stopped, kept := members[:2], members[2]
+		for _, member := range stopped {
+			cluster.Servers[member].Stop(t)
+		}
+		js := cluster.MemberJetStream(t, kept)
+		var lost error
+		var answer *natsgo.StreamInfo
+		for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
+			answer, lost = js.StreamInfo(stream, natsgo.MaxWait(readWait))
+			if lost == nil {
+				break
+			}
+		}
+		if answer == nil {
+			t.Fatalf("no read of %s on member %d was answered within a minute; the last drew %v", stream, kept, lost)
+		}
+		if answer.Cluster == nil {
+			t.Fatalf("the read of %s on member %d names no cluster: %+v", stream, kept, answer)
+		}
+		t.Logf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", attempt, stopped, kept, answer.Cluster.Leader)
+		if answer.Cluster.Leader == "" {
+			return &LeaderlessStream{cluster: cluster, Info: answer, Stopped: stopped, Kept: kept}
+		}
+		for _, member := range stopped {
+			cluster.Servers[member].Start(t)
+		}
+		cluster.AwaitReady(t)
+	}
+	t.Fatalf("in 8 attempts the copy left running led %s after the stops each time, so no update went to a group with no leader", stream)
+	return nil
+}
+
 // UpdateStream is a test's own update of a stream: a change an operator or another program makes
 // for the code under test to find. config is a read of the stream with the test's changes made to
 // it. UpdateStream sends config once through js, and returns the stream's info as soon as the
@@ -87,16 +166,22 @@ const (
 // update), so a second send of config could write over a change that the code under test made
 // after the first send landed.
 //
-// An update that takes away a subject the stream holds and leaves no subject overlapping it is
-// refused before it is sent (refuseSubjectsTakenWithNothingInPlace), unless options holds
+// An update that takes away a subject the stream held before this test's first update, and leaves
+// no subject overlapping it, is refused before it is sent
+// (refuseSubjectsTakenWithNothingInPlace). Only the keeper's own restoration row may pass
 // ForTheKeeperToPutBack.
 //
 // The server's own metadata, the keys under "_nats.", is not compared: the server sets those keys
 // itself.
 func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig, options ...UpdateOption) *natsgo.StreamInfo {
 	t.Helper()
-	if !slices.Contains(options, ForTheKeeperToPutBack) {
-		refuseSubjectsTakenWithNothingInPlace(t, js, config)
+	until := updateDeadline(t)
+	if slices.Contains(options, ForTheKeeperToPutBack) {
+		if !allowsKeeperRestoration(t) {
+			t.Fatalf("testnats.ForTheKeeperToPutBack is reserved for TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject")
+		}
+	} else {
+		refuseSubjectsTakenWithNothingInPlace(t, until, js, config)
 	}
 	type answer struct {
 		info *natsgo.StreamInfo
@@ -108,12 +193,6 @@ func UpdateStream(t testing.TB, js natsgo.JetStreamContext, config natsgo.Stream
 		info, err := js.UpdateStream(&sent)
 		answered <- answer{info, err}
 	}()
-	var until time.Time
-	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
-		if deadline, bounded := test.Deadline(); bounded {
-			until = deadline.Add(-updateMargin)
-		}
-	}
 	var unanswered, lostRead error
 	var last *natsgo.StreamInfo
 	for {
@@ -162,26 +241,72 @@ type UpdateOption int
 // (TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject in internal/bus).
 const ForTheKeeperToPutBack UpdateOption = 1
 
-// refuseSubjectsTakenWithNothingInPlace fails t when config takes away a subject that the stream
-// holds and leaves no subject overlapping it (subjectsTakenWithNothingInPlace), before the update
-// is sent. A keeper of the code under test puts back each subject of its own build that no subject
-// the stream holds overlaps (bus's keptSubjects), at every pass, the first 30 s after its client's
-// start. So such a narrowing lasts only until then, and a test whose set-up outlasts it on a loaded
-// machine sends what the narrowing was to refuse into a stream that captures it again: the outbox's
-// own client's keeper had the session route of TestABackedOffEventHoldsBackOnlyItsDestination
-// published, not refused. A narrowing leaves KeptByEveryKeeper's subject in the place of what it
-// takes away. The stream is read once, under updateReadWait. When that read is not answered (a
-// stream that is electing its leader), or the stream does not exist (an update the server then
-// refuses itself), nothing is judged and the update goes as it is.
-func refuseSubjectsTakenWithNothingInPlace(t testing.TB, js natsgo.JetStreamContext, config natsgo.StreamConfig) {
-	t.Helper()
-	held, err := js.StreamInfo(config.Name, natsgo.MaxWait(updateReadWait))
-	if err != nil {
-		return
+// firstUpdateSubjects holds the subjects every test's first UpdateStream read found, keyed by the
+// test and stream. Later updates compare against that baseline, so widening a subject and then
+// narrowing it cannot make a keeper restoration look safe.
+var firstUpdateSubjects sync.Map
+
+type firstUpdateSubjectKey struct {
+	test, stream string
+}
+
+// allowsKeeperRestoration is true only for the keeper row whose assertion is that its own keeper
+// restores a bare narrowing.
+func allowsKeeperRestoration(t testing.TB) bool {
+	return strings.HasPrefix(t.Name(), "TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject")
+}
+
+// subjectsBeforeFirstUpdate returns the stream subjects read before t's first update of stream,
+// retaining that read for the test's later updates and dropping it when the test ends.
+func subjectsBeforeFirstUpdate(t testing.TB, stream string, subjects []string) []string {
+	key := firstUpdateSubjectKey{test: t.Name(), stream: stream}
+	saved := slices.Clone(subjects)
+	actual, loaded := firstUpdateSubjects.LoadOrStore(key, saved)
+	if !loaded {
+		t.Cleanup(func() { firstUpdateSubjects.Delete(key) })
 	}
-	if taken := subjectsTakenWithNothingInPlace(held.Config.Subjects, config.Subjects); len(taken) > 0 {
-		t.Fatalf("the update of stream %s takes away %s and leaves no subject overlapping it, so a keeper puts it back at its next pass: leave testnats.KeptByEveryKeeper(<its prefix>) in its place, or, in a row whose keeper is to put it back, pass testnats.ForTheKeeperToPutBack",
-			config.Name, strings.Join(taken, ", "))
+	return actual.([]string)
+}
+
+// updateDeadline is the test binary's deadline less updateMargin: the one bound on every read
+// UpdateStream makes, its narrowing guard's among them, so a failed update fails by name before go
+// test's own timeout. It is zero, no bound, when t reports no deadline, as a recorder that embeds
+// testing.TB does not. The test's Context is no such bound: the testing package cancels it before
+// the test's cleanups run, and a cleanup that puts a stream back updates it.
+func updateDeadline(t testing.TB) time.Time {
+	if test, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if deadline, bounded := test.Deadline(); bounded {
+			return deadline.Add(-updateMargin)
+		}
+	}
+	return time.Time{}
+}
+
+// refuseSubjectsTakenWithNothingInPlace fails t when config takes away a subject that the stream
+// held before the test's first update and leaves no subject overlapping it
+// (subjectsTakenWithNothingInPlace). A lost read says nothing of the stream, so it is tried again
+// until a read answers or the bound until, from updateDeadline, passes; an unchecked narrowing is
+// never sent.
+// Stream-not-found is an answered server refusal that UpdateStream reports itself.
+func refuseSubjectsTakenWithNothingInPlace(t testing.TB, until time.Time, js natsgo.JetStreamContext, config natsgo.StreamConfig) {
+	t.Helper()
+	for {
+		held, err := js.StreamInfo(config.Name, natsgo.MaxWait(updateReadWait))
+		switch {
+		case err == nil:
+			before := subjectsBeforeFirstUpdate(t, config.Name, held.Config.Subjects)
+			if taken := subjectsTakenWithNothingInPlace(before, config.Subjects); len(taken) > 0 {
+				t.Fatalf("the update of stream %s takes away %s and leaves no subject overlapping it, so a keeper puts it back at its next pass: leave testnats.KeptByEveryKeeper(<its prefix>) in its place",
+					config.Name, strings.Join(taken, ", "))
+			}
+			return
+		case errors.Is(err, natsgo.ErrStreamNotFound):
+			return
+		case !until.IsZero() && time.Now().After(until):
+			t.Fatalf("the update of stream %s was not sent: by %s before the test's deadline no read of its narrowing guard was answered; the last drew %v",
+				config.Name, updateMargin, err)
+		}
+		time.Sleep(updateReadInterval)
 	}
 }
 

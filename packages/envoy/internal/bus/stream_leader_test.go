@@ -266,67 +266,10 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t
 	if _, err := setupJS.CreateKeyValue(&nats.KeyValueConfig{Bucket: bucket, Storage: nats.FileStorage, Replicas: 3}); err != nil {
 		t.Fatalf("create the three-copy bucket: %v", err)
 	}
-	// choose reads the stream through readJS and names its leader and one other copy to stop and
-	// the copy to keep, or why it cannot: a read in the middle of an election can lack a leader or
-	// list the leader among its copies too, so a read is taken only when it names three distinct
-	// members. Each attempt reads on a connection of its own, since a member an earlier attempt
-	// stopped closed the connections it served.
-	var info *nats.StreamInfo
-	var stopped []int
-	var kept int
-	var readJS nats.JetStreamContext
-	choose := func() string {
-		read, err := readJS.StreamInfo(stream, nats.MaxWait(firstReadLimit))
-		switch {
-		case err != nil:
-			return err.Error()
-		case read.Cluster == nil || read.Cluster.Leader == "" || len(read.Cluster.Replicas) != 2:
-			return fmt.Sprintf("the read names no leader and two copies: %+v", read.Cluster)
-		}
-		members := []int{cluster.Member(read.Cluster.Leader)}
-		for _, peer := range read.Cluster.Replicas {
-			members = append(members, cluster.Member(peer.Name))
-		}
-		if slices.Contains(members, -1) || len(slices.Compact(slices.Sorted(slices.Values(members)))) != 3 {
-			return fmt.Sprintf("the read names members %v, not three distinct members", members)
-		}
-		info, stopped, kept = read, members[:2], members[2]
-		return ""
-	}
-	for attempt := 1; ; attempt++ {
-		_, readJS = memberJetStream(t, cluster, 0)
-		why := "not read yet"
-		for deadline := time.Now().Add(time.Minute); why != ""; {
-			if why = choose(); why != "" && time.Now().After(deadline) {
-				t.Fatalf("attempt %d: no read of %s named its leader and two other copies within a minute: %s", attempt, stream, why)
-			}
-			if why != "" {
-				time.Sleep(50 * time.Millisecond)
-			}
-		}
-		for _, member := range stopped {
-			cluster.Servers[member].Stop(t)
-		}
-		_, keptJS := memberJetStream(t, cluster, kept)
-		leader := answeredLeader(t, keptJS, stream)
-		t.Logf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", attempt, stopped, kept, leader)
-		if leader == "" {
-			break
-		}
-		// The leadership went to the copy left running: it answers the update alone.
-		for _, member := range stopped {
-			cluster.Servers[member].Start(t)
-		}
-		if attempt == 8 {
-			t.Fatalf("in %d attempts the copy left running led %s after the stops each time, so no update was sent to a group with no leader", attempt, stream)
-		}
-	}
-	client := slices.IndexFunc(cluster.Servers, func(server *testnats.Server) bool {
-		return !slices.Contains(stopped, cluster.Member(server.Name()))
-	})
-	conn, js := memberJetStream(t, cluster, client)
+	held := testnats.HoldStreamWithoutLeader(t, cluster, stream, firstReadLimit)
+	conn, js := memberJetStream(t, cluster, held.Kept)
 	done := make(chan error, 1)
-	timed := &updateWaitJetStream{JetStreamContext: js, stream: stream, answered: info}
+	timed := &updateWaitJetStream{JetStreamContext: js, stream: stream, answered: held.Info}
 	go func() {
 		age, err := SetKeyValueMaxAge(t.Context(), conn, timed, bucket, time.Hour)
 		if err == nil && age != time.Hour {
@@ -338,9 +281,7 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsReadBackWithinTheReadLimit(t
 		t.Errorf("the start did not stop waiting on its update within %s of a group with no leader", updateHoldBound)
 	}
 	restarted := time.Now().UnixNano()
-	for _, member := range stopped {
-		cluster.Servers[member].Start(t)
-	}
+	held.Restart(t)
 	if err := <-done; err != nil {
 		t.Fatalf("set the age of the bucket whose stream elects its leader = %v; want 1h0m0s and no error", err)
 	}

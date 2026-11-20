@@ -387,17 +387,24 @@ func readAgain[T any](ctx context.Context, request string, limit *readLimit, rea
 	var last T
 	var lastErr error
 	for sends := 1; ; sends++ {
+		send := read
 		if sends > 1 {
 			if ended := pause(ctx, bucketAppliedInterval); ended != nil {
 				return last, unansweredUntil(sends-1, lastErr, ended)
 			}
-			// Logged here, after the pause and just before the send it names, so that each line is
-			// followed by a further send: a wait that ends in the pause, or ends the send it would
-			// have announced, logs none.
-			slog.Warn("envoy nats stream request unanswered; sending it again",
-				slog.String("request", request), slog.Int("sent", sends-1), slog.String("error", lastErr.Error()))
+			// Bounded starts send only while ctx has not ended. Writing the line in send therefore
+			// makes each warning name a send that started, while a wait ending in the pause or
+			// before Bounded starts it logs none.
+			// A read limit can abandon send before it finishes logging. Keep its prior error
+			// apart from lastErr, which the caller then replaces for the next send.
+			previousErr := lastErr
+			send = func() (T, error) {
+				slog.Warn("envoy nats stream request unanswered; sending it again",
+					slog.String("request", request), slog.Int("sent", sends-1), slog.String("error", previousErr.Error()))
+				return read()
+			}
 		}
-		value, wait, answered, err := limitedRead(ctx, limit, read)
+		value, wait, answered, err := limitedRead(ctx, limit, send)
 		if !answered && ctx.Err() != nil {
 			// ctx ended this send, not its read limit: it is no send that drew no answer within a
 			// limit, so the error counts the sends before it and names what ended the wait.

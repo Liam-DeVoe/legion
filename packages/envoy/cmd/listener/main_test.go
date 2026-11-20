@@ -563,6 +563,17 @@ func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
 
 	select {
 	case <-published:
+		info, err := client.JS().StreamInfo(bus.Stream, &natsgo.StreamInfoRequest{SubjectsFilter: topic})
+		if err != nil {
+			t.Fatalf("read what the stream holds on %s: %v", topic, err)
+		}
+		var copies uint64
+		for _, count := range info.State.Subjects {
+			copies += count
+		}
+		if copies != 0 {
+			t.Fatalf("the stream holds %d copies of %s while its acknowledgement is unbound: a keeper restored the subject this row narrowed", copies, topic)
+		}
 		if !clock.Advance(5 * time.Second) {
 			t.Fatal("publish acknowledgement deadline exceeded 5s")
 		}

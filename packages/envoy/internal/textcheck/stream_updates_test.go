@@ -16,17 +16,20 @@ import (
 
 // testnatsImport is the package of the one function a test updates a stream through,
 // testnats.UpdateStream, and streamUpdateFixture is that function, by its file.
+// rawStreamUpdateSubject is the prefix of a raw JetStream stream-update request's subject.
 const (
-	testnatsImport      = envoyModule + "/internal/testnats"
-	streamUpdateFixture = "internal/testnats/streams.go"
+	testnatsImport         = envoyModule + "/internal/testnats"
+	streamUpdateFixture    = "internal/testnats/streams.go"
+	rawStreamUpdateSubject = "$JS.API.STREAM.UPDATE."
 )
 
 // streamUpdateMethods are the methods that send a stream update: the legacy JetStream context's
 // and the jetstream package's UpdateStream, and the jetstream package's CreateOrUpdateStream.
 var streamUpdateMethods = map[string]bool{"UpdateStream": true, "CreateOrUpdateStream": true}
 
-// directStreamUpdate is one call of a stream update method (streamUpdateMethods) that a test makes
-// itself: path and line of the call, and the top-level function that holds it.
+// directStreamUpdate is one reference to a stream update method (streamUpdateMethods), or one raw
+// JetStream stream-update request, that a test makes itself: path and line, and its top-level
+// function.
 type directStreamUpdate struct {
 	path     string
 	line     int
@@ -39,13 +42,14 @@ func (u directStreamUpdate) String() string {
 	return fmt.Sprintf("%s:%d %s", u.path, u.line, u.function)
 }
 
-// directStreamUpdates walks the Go files under root (packages/envoy) and returns every call of a
-// stream update method (streamUpdateMethods), the legacy JetStream context's and the jetstream
-// package's alike, in a test file or in a test helper (a non-test file of a package whose name
-// begins or ends with "test", as testnats and cmdtest do). It lets two kinds of call pass. One is
-// testnats.UpdateStream itself, in streamUpdateFixture, and every call to it. The other is a call
-// in a method named UpdateStream: such a method is a fake JetStream context that a test hands the
-// code under test, and it stands in for the server under that code's own update.
+// directStreamUpdates walks the Go files under root (packages/envoy) and returns every reference
+// to a stream update method (streamUpdateMethods), the legacy JetStream context's and the
+// jetstream package's alike, and every raw $JS.API.STREAM.UPDATE request, in a test file or in a
+// test helper (a non-test file of a package whose name begins or ends with "test", as testnats
+// and cmdtest do). It lets two kinds of reference pass. One is testnats.UpdateStream itself, in
+// streamUpdateFixture, and every call to it. The other is a reference in a method named
+// UpdateStream: such a method is a fake JetStream context that a test hands the code under test,
+// and it stands in for the server under that code's own update.
 func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 	fileSet := token.NewFileSet()
 	var found []directStreamUpdate
@@ -95,19 +99,24 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 					continue
 				}
 			}
+			record := func(pos token.Pos) {
+				found = append(found, directStreamUpdate{path: rel, line: fileSet.Position(pos).Line, function: function})
+			}
 			ast.Inspect(decl, func(node ast.Node) bool {
-				call, ok := node.(*ast.CallExpr)
-				if !ok {
-					return true
+				switch node := node.(type) {
+				case *ast.CallExpr:
+					if rawStreamUpdateRequest(node) {
+						record(node.Pos())
+					}
+				case *ast.SelectorExpr:
+					if !streamUpdateMethods[node.Sel.Name] {
+						return true
+					}
+					if pkg, ok := node.X.(*ast.Ident); ok && fixtureNames[pkg.Name] {
+						return true
+					}
+					record(node.Pos())
 				}
-				selector, ok := call.Fun.(*ast.SelectorExpr)
-				if !ok || !streamUpdateMethods[selector.Sel.Name] {
-					return true
-				}
-				if pkg, ok := selector.X.(*ast.Ident); ok && fixtureNames[pkg.Name] {
-					return true
-				}
-				found = append(found, directStreamUpdate{path: rel, line: fileSet.Position(call.Pos()).Line, function: function})
 				return true
 			})
 		}
@@ -117,6 +126,30 @@ func directStreamUpdates(root string) ([]directStreamUpdate, error) {
 		return nil, fmt.Errorf("walk %s: %w", root, err)
 	}
 	return found, nil
+}
+
+// rawSendMethods are nats.Conn's sends that take their subject as an argument.
+var rawSendMethods = map[string]bool{"Request": true, "RequestWithContext": true, "Publish": true, "PublishRequest": true}
+
+// rawStreamUpdateRequest reports whether call is a send (rawSendMethods) of a literal JetStream
+// stream-update subject. Every such request bypasses testnats.UpdateStream's read-back and its
+// narrowing guard. A watch of that subject, or a test of a string against it, sends nothing.
+func rawStreamUpdateRequest(call *ast.CallExpr) bool {
+	selector, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok || !rawSendMethods[selector.Sel.Name] {
+		return false
+	}
+	for _, argument := range call.Args {
+		literal, ok := argument.(*ast.BasicLit)
+		if !ok || literal.Kind != token.STRING {
+			continue
+		}
+		subject, err := strconv.Unquote(literal.Value)
+		if err == nil && strings.HasPrefix(subject, rawStreamUpdateSubject) {
+			return true
+		}
+	}
+	return false
 }
 
 // A test updates a stream only through testnats.UpdateStream. A test that sends the update itself
@@ -141,7 +174,8 @@ func TestNoTestUpdatesAStreamExceptThroughTestnatsUpdateStream(t *testing.T) {
 
 // plantedStreamUpdates is a tree under the envoy module's path for the control below: demo's tests
 // update a stream themselves in each shape the check names, and through the fixture and a fake
-// JetStream context, which it lets pass; stacktest is a test helper that updates one itself, and
+// JetStream context, which it lets pass, and one watches the update subject and one tests a string
+// against it, which send nothing; stacktest is a test helper that updates one itself, and
 // production a package that is neither a test nor a helper.
 var plantedStreamUpdates = map[string]string{
 	"internal/testnats/streams.go": `package testnats
@@ -158,6 +192,8 @@ func fixtureCaller(js natsgo.JetStreamContext, config natsgo.StreamConfig) { Upd
 
 import (
 	"context"
+	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -186,6 +222,17 @@ func newAPI(js jetstream.JetStream, cfg jetstream.StreamConfig) { js.UpdateStrea
 
 func createOrUpdate(js jetstream.JetStream, cfg jetstream.StreamConfig) { js.CreateOrUpdateStream(context.Background(), cfg) }
 
+func methodValue(js nats.JetStreamContext, cfg nats.StreamConfig) {
+	update := js.UpdateStream
+	update(&cfg)
+}
+
+func rawRequest(conn *nats.Conn) { _, _ = conn.Request("$JS.API.STREAM.UPDATE.RAW", nil, time.Second) }
+
+func watchesUpdates(conn *nats.Conn) { _, _ = conn.Subscribe("$JS.API.STREAM.UPDATE.>", func(*nats.Msg) {}) }
+
+func isUpdate(subject string) bool { return strings.HasPrefix(subject, "$JS.API.STREAM.UPDATE.") }
+
 func throughFixture(js nats.JetStreamContext, cfg nats.StreamConfig) { fixture.UpdateStream(js, cfg) }
 
 func readOnly(js nats.JetStreamContext) { js.StreamInfo("S") }
@@ -196,7 +243,8 @@ func readOnly(js nats.JetStreamContext) { js.StreamInfo("S") }
 
 // The control of the check above: in a planted tree it finds a stream update a test or a test
 // helper sends itself in every shape it names, and nothing in the fixture, in a call to it, in a
-// fake JetStream context's UpdateStream, or in a package that is neither a test nor a helper.
+// fake JetStream context's UpdateStream, in a watch of the update subject or a test of a string
+// against it, or in a package that is neither a test nor a helper.
 func TestTheStreamUpdateCheckFindsEveryShapeItNamesAndNothingElse(t *testing.T) {
 	root := t.TempDir()
 	for name, contents := range plantedStreamUpdates {
@@ -219,9 +267,11 @@ func TestTheStreamUpdateCheckFindsEveryShapeItNamesAndNothingElse(t *testing.T) 
 	slices.Sort(got)
 	want := []string{
 		"internal/demo/demo_test.go createOrUpdate",
+		"internal/demo/demo_test.go methodValue",
 		"internal/demo/demo_test.go narrow",
 		"internal/demo/demo_test.go newAPI",
 		"internal/demo/demo_test.go operator",
+		"internal/demo/demo_test.go rawRequest",
 		"internal/demo/demo_test.go refuse",
 		"internal/stacktest/stack.go Start",
 	}

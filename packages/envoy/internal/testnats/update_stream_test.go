@@ -9,101 +9,44 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 )
 
-// memberJetStream is a JetStream context on a connection to cluster member i alone, its requests
-// bounded by jetStreamWait as Cluster.JetStream's are, closed when the test ends.
-func memberJetStream(t *testing.T, cluster *Cluster, i int) natsgo.JetStreamContext {
-	t.Helper()
-	conn := Connect(t, cluster.Servers[i].URL())
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(natsgo.MaxWait(jetStreamWait))
-	if err != nil {
-		t.Fatalf("open JetStream on member %s: %v", cluster.Name(i), err)
-	}
-	return js
-}
-
-// answeredRead reads stream through js until a read is answered, each read cut at updateReadWait,
-// and returns that answer. A copy whose group has just lost its leader answers no read until it
-// knows the leader is gone, so a lost read says nothing. It fails the test when no read is
-// answered in a minute.
-func answeredRead(t *testing.T, js natsgo.JetStreamContext, stream string) *natsgo.StreamInfo {
-	t.Helper()
-	var lost error
-	for deadline := time.Now().Add(time.Minute); time.Now().Before(deadline); {
-		read, err := js.StreamInfo(stream, natsgo.MaxWait(updateReadWait))
-		if err == nil {
-			return read
-		}
-		lost = err
-	}
-	t.Fatalf("no read of %s was answered within a minute; the last drew %v", stream, lost)
-	return nil
-}
-
 // An update sent while the stream's group has no leader is answered by no one, and UpdateStream
-// still returns once a read holds it. The stream has three copies on a cluster of five, so the
-// metadata group keeps its quorum, and applies the update, when two members stop. The row stops
-// the stream's leader and one other copy, and goes on only once the copy left running answers a
-// read naming no leader; when that copy took the leadership instead, it starts both again and
-// chooses anew. It keeps the two stopped until UpdateStream has returned, or until Cluster
-// JetStream's wait for an answer, jetStreamWait, has passed with a margin, and then starts them
-// again. A test that waits for the update's answer instead fails here at jetStreamWait.
+// must return from its read-back before the stopped members are recovered. The stream has three
+// copies on a cluster of five, so the metadata group keeps its quorum, and applies the update,
+// when two members stop. The row stops the stream's leader and one other copy, and goes on only
+// once the copy left running answers a read naming no leader; when that copy took the leadership
+// instead, it starts both again and chooses anew. A helper that waits JetStream's fixed wait
+// reaches recovery before its read-back, so it fails this premise directly.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 	const stream = "ELECTING"
 	cluster := StartCluster(t, 5)
 	cluster.CreateStream(t, natsgo.StreamConfig{Name: stream, Subjects: []string{"electing.>"}, Replicas: 3, Storage: natsgo.FileStorage})
-	var stopped []int
-	var kept int
-	var held *natsgo.StreamInfo
-	for attempt := 1; held == nil; attempt++ {
-		if attempt > 8 {
-			t.Fatalf("in %d attempts the copy left running led %s after the stops each time, so no update went to a group with no leader", attempt-1, stream)
-		}
-		read := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
-		members := []int{cluster.Member(read.Cluster.Leader)}
-		for _, peer := range read.Cluster.Replicas {
-			members = append(members, cluster.Member(peer.Name))
-		}
-		if slices.Contains(members, -1) || len(slices.Compact(slices.Sorted(slices.Values(members)))) != 3 {
-			t.Fatalf("the read of %s names members %v, not three distinct members of the cluster", stream, members)
-		}
-		stopped, kept = members[:2], members[2]
-		for _, member := range stopped {
-			cluster.Servers[member].Stop(t)
-		}
-		read = answeredRead(t, memberJetStream(t, cluster, kept), stream)
-		t.Logf("attempt %d: stopped members %v; the copy left running, member %d, names leader %q", attempt, stopped, kept, read.Cluster.Leader)
-		if read.Cluster.Leader == "" {
-			held = read
-			break
-		}
-		for _, member := range stopped {
-			cluster.Servers[member].Start(t)
-		}
-		cluster.AwaitReady(t)
-	}
+	held := HoldStreamWithoutLeader(t, cluster, stream, updateReadWait)
 
-	config := held.Config
+	config := held.Info.Config
 	config.MaxAge = time.Hour
 	recorder := &fatalRecorder{TB: t}
-	js := memberJetStream(t, cluster, kept)
+	js := cluster.MemberJetStream(t, held.Kept)
 	var info *natsgo.StreamInfo
-	done := make(chan struct{})
+	returned := make(chan struct{})
 	go func() {
-		defer close(done)
+		defer close(returned)
 		info = UpdateStream(recorder, js, config)
 	}()
+	returnedBeforeRecovery := false
 	select {
-	case <-done:
+	case <-returned:
+		returnedBeforeRecovery = true
 	case <-time.After(jetStreamWait + 2*time.Second):
 	}
-	for _, member := range stopped {
-		cluster.Servers[member].Start(t)
-	}
-	select {
-	case <-done:
-	case <-time.After(2 * time.Minute):
-		t.Fatalf("UpdateStream did not return within 2m of the members' start again")
+	held.Restart(t)
+	settled := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3)
+	if !returnedBeforeRecovery {
+		select {
+		case <-returned:
+		case <-time.After(2 * time.Minute):
+			t.Fatalf("UpdateStream did not return within 2m of the members' start again")
+		}
+		t.Fatalf("UpdateStream did not read back stream %s before its stopped members recovered: it waited JetStream's fixed %s instead", stream, jetStreamWait)
 	}
 	if recorder.message != "" || info == nil {
 		t.Fatalf("the update sent while %s had no leader failed: %q", stream, recorder.message)
@@ -111,16 +54,20 @@ func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
 	if info.Config.MaxAge != time.Hour {
 		t.Fatalf("UpdateStream returned %s with age %s, want 1h0m0s", stream, info.Config.MaxAge)
 	}
-	if settled := AwaitStreamCopies(t, cluster.JetStream(t), stream, 3); settled.Config.MaxAge != time.Hour {
+	if settled.Config.MaxAge != time.Hour {
 		t.Fatalf("once it has a leader again, %s holds age %s, want 1h0m0s", stream, settled.Config.MaxAge)
 	}
 }
 
 // droppedUpdates sends no update of a stream at all and answers each with nats.go's timeout, as an
 // update the server never applies would draw. Every other request is js's own.
-type droppedUpdates struct{ natsgo.JetStreamContext }
+type droppedUpdates struct {
+	natsgo.JetStreamContext
+	sends int
+}
 
-func (droppedUpdates) UpdateStream(*natsgo.StreamConfig, ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+func (d *droppedUpdates) UpdateStream(*natsgo.StreamConfig, ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	d.sends++
 	return nil, natsgo.ErrTimeout
 }
 
@@ -148,12 +95,13 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 	}
 	config := info.Config
 	config.MaxAge = time.Hour
+	dropped := &droppedUpdates{JetStreamContext: js}
 	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + waited)}
 	began := time.Now()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		UpdateStream(recorder, droppedUpdates{js}, config)
+		UpdateStream(recorder, dropped, config)
 	}()
 	select {
 	case <-done:
@@ -169,6 +117,10 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 			t.Fatalf("UpdateStream failed with %q, want it to name %q", recorder.message, want)
 		}
 	}
+	if dropped.sends != 1 {
+		t.Fatalf("the update that never lands sent %d updates, want one", dropped.sends)
+	}
+
 }
 
 // A refused update fails the test at once with the server's answer, and an answered one returns
@@ -245,7 +197,153 @@ func TestANarrowingThatLeavesNothingInPlaceOfASubjectIsRefusedBeforeItIsSent(t *
 	}
 	forTheKeeper := kept
 	forTheKeeper.Subjects = []string{"narrowed.kept.>"}
-	if got := UpdateStream(t, js, forTheKeeper, ForTheKeeperToPutBack); !slices.Equal(got.Config.Subjects, forTheKeeper.Subjects) {
-		t.Fatalf("the narrowing marked ForTheKeeperToPutBack left %v, want %v", got.Config.Subjects, forTheKeeper.Subjects)
+	keeperRecorder := &fatalRecorder{TB: t}
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(keeperRecorder, js, forTheKeeper, ForTheKeeperToPutBack)
+	}()
+	<-done
+	if !strings.Contains(keeperRecorder.message, "ForTheKeeperToPutBack is reserved for TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject") {
+		t.Fatalf("the non-keeper narrowing marked ForTheKeeperToPutBack failed with %q, want it refused by the keeper-only option", keeperRecorder.message)
+	}
+}
+
+// lostGuardReadJetStream loses StreamInfo calls before it delegates them, as a read on a member
+// whose stream group has just lost its leader does. UpdateStream must not send a narrowing until
+// a guard read has answered.
+type lostGuardReadJetStream struct {
+	natsgo.JetStreamContext
+	lost, reads int
+}
+
+func (js *lostGuardReadJetStream) StreamInfo(stream string, options ...natsgo.JSOpt) (*natsgo.StreamInfo, error) {
+	js.reads++
+	if js.lost > 0 {
+		js.lost--
+		return nil, natsgo.ErrTimeout
+	}
+	return js.JetStreamContext.StreamInfo(stream, options...)
+}
+
+func TestANarrowingAfterALostGuardReadIsRefusedBeforeItIsSent(t *testing.T) {
+	const stream = "LOST_GUARD_READ"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"lost.kept.>", "lost.taken.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	bare := info.Config
+	bare.Subjects = []string{"lost.kept.>"}
+	recorder := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(recorder, &lostGuardReadJetStream{JetStreamContext: js, lost: 1}, bare)
+	}()
+	<-done
+	if !strings.Contains(recorder.message, "stream "+stream+" takes away lost.taken.> and leaves no subject overlapping it") {
+		t.Fatalf("the narrowing after a lost guard read failed with %q, want it refused naming lost.taken.>", recorder.message)
+	}
+	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, info.Config.Subjects) {
+		t.Fatalf("after the refused narrowing the stream reads %v (%v), want %v: it was sent", held, err, info.Config.Subjects)
+	}
+}
+
+func TestANonnarrowingUpdatePassesAfterOneGuardRead(t *testing.T) {
+	const stream = "ONE_GUARD_READ"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"one.guard.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	config := info.Config
+	config.MaxAge = time.Hour
+	// The guard is called on its own: UpdateStream's read-back after the send goes through the
+	// same js, so a count taken around UpdateStream would count those reads too.
+	guarded := &lostGuardReadJetStream{JetStreamContext: js}
+	refuseSubjectsTakenWithNothingInPlace(t, updateDeadline(t), guarded, config)
+	if guarded.reads != 1 {
+		t.Fatalf("the guard of the nonnarrowing update made %d reads, want one answered read", guarded.reads)
+	}
+	if got := UpdateStream(t, guarded, config); got.Config.MaxAge != time.Hour {
+		t.Fatalf("the nonnarrowing update returned age %s, want 1h0m0s", got.Config.MaxAge)
+	}
+}
+
+func TestANarrowingWhoseGuardReadNeverAnswersFailsByName(t *testing.T) {
+	const stream = "NEVER_GUARDED"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"never.kept.>", "never.taken.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	bare := info.Config
+	bare.Subjects = []string{"never.kept.>"}
+	recorder := deadlineRecorder{
+		fatalRecorder: &fatalRecorder{TB: t},
+		deadline:      time.Now().Add(updateMargin + 2*updateReadInterval),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(recorder, &lostGuardReadJetStream{JetStreamContext: js, lost: 100}, bare)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Minute):
+		t.Fatalf("the narrowing of stream %s did not fail at the test's deadline", stream)
+	}
+	if !strings.Contains(recorder.message, "stream "+stream) || !strings.Contains(recorder.message, natsgo.ErrTimeout.Error()) {
+		t.Fatalf("the narrowing whose guard read never answered failed with %q, want its stream and %v", recorder.message, natsgo.ErrTimeout)
+	}
+	if held, err := js.StreamInfo(stream); err != nil || !slices.Equal(held.Config.Subjects, info.Config.Subjects) {
+		t.Fatalf("after the unanswered guard read the stream reads %v (%v), want %v: it was sent", held, err, info.Config.Subjects)
+	}
+}
+
+func TestANarrowingAfterAWideningIsRefusedAgainstTheFirstSubjects(t *testing.T) {
+	const stream = "NET_NARROWING"
+	conn := Connect(t, URL(t))
+	t.Cleanup(conn.Close)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := js.AddStream(&natsgo.StreamConfig{Name: stream, Subjects: []string{"net.taken.>"}})
+	if err != nil {
+		t.Fatalf("add stream: %v", err)
+	}
+	widened := info.Config
+	widened.Subjects = []string{"net.>"}
+	if got := UpdateStream(t, js, widened); !slices.Equal(got.Config.Subjects, widened.Subjects) {
+		t.Fatalf("the widening left %v, want %v", got.Config.Subjects, widened.Subjects)
+	}
+	narrowed := widened
+	narrowed.Subjects = []string{"net.bound.>"}
+	recorder := &fatalRecorder{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		UpdateStream(recorder, js, narrowed)
+	}()
+	<-done
+	if !strings.Contains(recorder.message, "stream "+stream+" takes away net.taken.> and leaves no subject overlapping it") {
+		t.Fatalf("the net narrowing failed with %q, want it refused naming net.taken.>", recorder.message)
 	}
 }
