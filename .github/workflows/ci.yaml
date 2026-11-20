@@ -235,6 +235,7 @@ env:
       "envoy-infra-go": "envoy_infra_go",
       "text-checks": "text_checks",
       "envoy-go-claim-model": "envoy_go_claim_model",
+      "envoy-go-postgres16": "envoy_go_postgres16",
       "envoy-go-race": "envoy_go_race",
       "envoy-go-race-api": "envoy_go_race_api",
       "envoy-go-race-docs": "envoy_go_race_docs",
@@ -458,6 +459,9 @@ jobs:
       # The Lean model's own job, which is minutes rather than tens of them: no `full-ci` term,
       # so it comes back on every push that selects it, as the two suites above do.
       airlock_lean: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.airlock_lean }}
+      # The PostgreSQL 16 job, three tests of one package: no `full-ci` term, so it comes back on
+      # every push that selects it, as airlock_lean does.
+      envoy_go_postgres16: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter3.outputs.envoy_go_postgres16 }}
       # A slow suite, gated as the comment above `envoy_go` says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter3.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.envoy_e2e_local }}
@@ -4358,6 +4362,112 @@ jobs:
               - '!packages/envoy/roleholder/**/*_test.go'
               - '!packages/envoy/steprecord/**/*_test.go'
               # END generated
+            # The PostgreSQL 16 job: `go test -run` of three tests of ./internal/dispatch/delivery
+            # against a PostgreSQL 16 service. A -run moves no closure, so this is the closure of
+            # the package's plain test build (`go list -deps -test` in packages/envoy), one pattern
+            # per directory, with what those packages embed and the testdata of the package whose
+            # tests the job runs. The image row is .github/ci-images.yaml's, which the ci_images
+            # filter names: the job needs ci-images for order, as tool-fallback does.
+            envoy_go_postgres16:
+              - *ci_router
+              - '.github/workflows/ci-job-envoy-go-postgres16.yaml'
+              - *go_workspace
+              - 'packages/envoy/brokeraddr/*'
+              - 'packages/envoy/internal/broker/oauthwire/*'
+              - 'packages/envoy/internal/brokerclient/*'
+              - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/cistore/*'
+              - 'packages/envoy/internal/contracts/*'
+              - 'packages/envoy/internal/ctxlock/*'
+              - 'packages/envoy/internal/dispatch/architecture/notes/*'
+              - 'packages/envoy/internal/dispatch/auth/*'
+              - 'packages/envoy/internal/dispatch/bytelru/*'
+              - 'packages/envoy/internal/dispatch/delivery/*'
+              - 'packages/envoy/internal/dispatch/delivery/testdata/**'
+              - 'packages/envoy/internal/dispatch/duty/*'
+              - 'packages/envoy/internal/dispatch/events/*'
+              - 'packages/envoy/internal/dispatch/githubapp/*'
+              - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
+              - 'packages/envoy/internal/dispatch/githubapp/ratelimit/*'
+              - 'packages/envoy/internal/dispatch/githubreads/*'
+              - 'packages/envoy/internal/dispatch/itemblocks/*'
+              - 'packages/envoy/internal/dispatch/model/*'
+              - 'packages/envoy/internal/dispatch/pmdoc/*'
+              # The two schema files internal/dispatch/pmdoc embeds.
+              - 'packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json'
+              - 'packages/envoy/internal/dispatch/pmdoc/schema/blocks.json'
+              - 'packages/envoy/internal/dispatch/refs/*'
+              - 'packages/envoy/internal/dispatch/store/*'
+              # internal/dispatch/store embeds every migration, and attribution_locale_test.go
+              # reads migration 20261117111040 from disk as well.
+              - 'packages/envoy/internal/dispatch/store/migrations/**'
+              - 'packages/envoy/internal/dispatch/store/storetest/*'
+              - 'packages/envoy/internal/dispatch/text/*'
+              - 'packages/envoy/internal/docnumbers/*'
+              - 'packages/envoy/internal/explaintest/*'
+              - 'packages/envoy/internal/fold/*'
+              - 'packages/envoy/internal/githubappjwt/*'
+              - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/logging/*'
+              - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/metrics/*'
+              - 'packages/envoy/internal/ordertest/*'
+              - 'packages/envoy/internal/pglisten/*'
+              - 'packages/envoy/internal/pgmigrate/*'
+              - 'packages/envoy/internal/redact/*'
+              - 'packages/envoy/internal/redirects/*'
+              - 'packages/envoy/internal/serverwait/*'
+              - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testport/*'
+              - 'packages/envoy/internal/testwait/*'
+              - 'packages/envoy/listenerwire/*'
+              - 'packages/envoy/migrationid/*'
+              - 'packages/envoy/natscred/*'
+              - 'packages/envoy/natsversion/*'
+              # delivery's counts_in_documents_test.go holds the intake hold's lease, renewal and
+              # retry this README states to the constants that decide them (docnumbers.Check).
+              - 'packages/envoy/cmd/dispatch/README.md'
+              # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
+              # must not select it. An edit by hand is refused (rule 17 of that check), which writes these.
+              - '!packages/envoy/brokeraddr/**/*_test.go'
+              - '!packages/envoy/internal/broker/**/*_test.go'
+              - '!packages/envoy/internal/brokerclient/**/*_test.go'
+              - '!packages/envoy/internal/bus/**/*_test.go'
+              - '!packages/envoy/internal/cistore/**/*_test.go'
+              - '!packages/envoy/internal/contracts/**/*_test.go'
+              - '!packages/envoy/internal/ctxlock/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/architecture/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/auth/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/bytelru/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/duty/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/events/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubapp/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/githubreads/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/itemblocks/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/model/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/pmdoc/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/refs/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/store/**/*_test.go'
+              - '!packages/envoy/internal/dispatch/text/**/*_test.go'
+              - '!packages/envoy/internal/fold/**/*_test.go'
+              - '!packages/envoy/internal/googleidentity/**/*_test.go'
+              - '!packages/envoy/internal/kvwatch/**/*_test.go'
+              - '!packages/envoy/internal/logging/**/*_test.go'
+              - '!packages/envoy/internal/metrics/**/*_test.go'
+              - '!packages/envoy/internal/pglisten/**/*_test.go'
+              - '!packages/envoy/internal/pgmigrate/**/*_test.go'
+              - '!packages/envoy/internal/redact/**/*_test.go'
+              - '!packages/envoy/internal/serverwait/**/*_test.go'
+              - '!packages/envoy/internal/testnats/**/*_test.go'
+              - '!packages/envoy/internal/testport/**/*_test.go'
+              - '!packages/envoy/listenerwire/**/*_test.go'
+              - '!packages/envoy/migrationid/**/*_test.go'
+              - '!packages/envoy/natscred/**/*_test.go'
+              - '!packages/envoy/natsversion/**/*_test.go'
+              # END generated
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
             # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
@@ -5831,6 +5941,25 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # Three tests of the Dispatch delivery package against PostgreSQL 16, on a runner of their own:
+  # every other job runs PostgreSQL 18, where a read of a catalog column that 16 lacks and the
+  # places 16 keeps in a function's stored body both pass unseen. The steps' comment in
+  # ci-job-envoy-go-postgres16.yaml says which tests and why. The service is the PostgreSQL 16 row
+  # of .github/ci-images.yaml, so the job needs ci-images for order, as tool-fallback does: a row
+  # and its first consumer can land in one push, since the copy of that run lands before this job
+  # pulls it. It carries `!cancelled()` for the reason tool-fallback's comment gives: a run that
+  # selected this job and not ci-images still runs it.
+  envoy-go-postgres16:
+    needs: [changes, ci-images]
+    if: ${{ !cancelled() && needs.changes.outputs.envoy_go_postgres16 == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-envoy-go-postgres16.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # The document service alone, under the race detector, with a deadline of its own. It is by far
   # the slowest package of the race lane - 1773 s of the 1842 s the first step of envoy-go-race
   # spent on main at 14d907b6 (job 123461966609) - and sharing a 30-minute step with the other
@@ -6411,6 +6540,7 @@ jobs:
       - envoy-go-race
       - envoy-go-race-api
       - envoy-go-claim-model
+      - envoy-go-postgres16
       - envoy-go-race-docs
       - envoy-go-docs-finalizers
       - dispatch-memory
