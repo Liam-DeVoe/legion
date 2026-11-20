@@ -174,20 +174,28 @@ check "and prints the memory reading" \
 check "and the CPU reading, with its groups" \
   "$(contains "$out" '^::notice title=shard 1 CPU::the browser step used [0-9][0-9]* CPU-seconds over [0-9][0-9]* samples: browser .*everything else .*$')"
 
-echo "case: each browser step's own sampler lines, run under sh -e as the step runs them, end on the suite's status"
-# The trap and the stop of dispatch-browser.yaml's two browser steps, cut from the workflow, run
-# around a real sampler under `sh -e`, the steps' shell. A trap command that fails there (a kill of
-# the sampler the stop has already reaped, with no `|| true`) ends the step with 1 after a passing
-# suite, which is how run 44622560351 failed every browser leg.
-workflow="$script_dir/../workflows/dispatch-browser.yaml"
-mapfile -t traps < <(awk '/^ *trap .kill "\$sampler"/ { sub(/^ */, ""); print }' "$workflow")
-mapfile -t stops < <(awk '/^ *kill "\$sampler" / { sub(/^ */, ""); print }' "$workflow")
-check "the workflow's two browser steps each have one trap and one stop" "$(is "${#traps[@]}:${#stops[@]}" 2:2)"
+echo "case: each browser step's own sampler lines, run under the step script's shell options, end on the suite's status"
+# The trap and the stop of the two browser steps' scripts (dispatch-browser-shard-suite.sh and
+# dispatch-browser-alone-suite.sh, which dispatch-browser.yaml's shard and alone steps run), cut
+# from those scripts, run around a real sampler under `set -euo pipefail`, the scripts' own
+# options. A trap command that fails there (a kill of the sampler the stop has already reaped,
+# with no `|| true`) ends the step with 1 after a passing suite, which is how run 44622560351
+# failed every browser leg.
+suites=("$script_dir/dispatch-browser-shard-suite.sh" "$script_dir/dispatch-browser-alone-suite.sh")
+traps=() stops=()
+for suite in "${suites[@]}"; do
+  mapfile -t found < <(awk '/^ *trap .kill "\$sampler"/ { sub(/^ */, ""); print }' "$suite")
+  traps+=("${found[@]}")
+  mapfile -t found < <(awk '/^ *kill "\$sampler" / { sub(/^ */, ""); print }' "$suite")
+  stops+=("${found[@]}")
+done
+check "the two browser steps' scripts each have one trap and one stop" "$(is "${#traps[@]}:${#stops[@]}" 2:2)"
 for i in 0 1; do
   for want in 0 3; do
     dir=$(fixture "step-$i-$want")
     set +e
-    sh -e -c "\"\$1\" sample \"\$2\" & sampler=\$!
+    bash -c "set -euo pipefail
+\"\$1\" sample \"\$2\" & sampler=\$!
 ${traps[$i]}
 sleep 0.3
 ${stops[$i]}
@@ -203,7 +211,7 @@ echo "case: each browser step's stop leaves neither the sampler nor a command it
 # sampler (`wait "$sampler"`), and the sampler ends on SIGTERM only between its commands (its `trap
 # 'exit 0' TERM`): one killed in the middle of its 5 s sleep, its ps or its awk would leave that
 # command running, and writing, after the step's wait has returned. Each step's stop line, cut from
-# the workflow as above, runs against a real sampler caught in its sleep.
+# its script as above, runs against a real sampler caught in its sleep.
 for i in 0 1; do
   dir=$(fixture "stop-$i")
   "$samples_script" sample "$dir" &
