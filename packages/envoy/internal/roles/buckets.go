@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -61,12 +62,23 @@ func NewBuckets(client JetStream, windows Windows) *Buckets {
 	return &Buckets{Windows: windows, client: client}
 }
 
+// openBucketHook, when set, runs before each bucket open (bucket). It is nil outside tests.
+var openBucketHook atomic.Pointer[func()]
+
 // bucket returns the handle of bucket on the client's current connection, opening it under ctx, the
 // read's, when it is not open on that connection yet.
+//
+// b.mu guards the handles alone, and the open is made with it released: the open sends a
+// STREAM.INFO, which waits for nats.go's connection lock, and nats.go holds that lock through a
+// reconnect's dial and handshake. Held across the open, b.mu kept every other read of Buckets
+// waiting behind that handshake. The read that makes the open answers its caller at its own bound
+// (within); an open still waiting then goes on to ctx's end or the JetStream MaxWait, holding
+// nothing. Two reads that both find a handle missing each open one, and the first to finish keeps
+// its handle; an open reads the bucket's stream (two STREAM.INFO requests, the legacy handle's and
+// the jetstream handle's) and leaves nothing behind.
 func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error) {
 	js := b.client.JS()
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if js != b.js {
 		b.js, b.roles, b.sessions = js, nil, nil
 	}
@@ -75,22 +87,33 @@ func (b *Buckets) bucket(ctx context.Context, name string) (bus.KeyValue, error)
 		handle = &b.sessions
 	}
 	if *handle != nil {
-		return **handle, nil
+		kv := **handle
+		b.mu.Unlock()
+		return kv, nil
 	}
-	kv, err := bus.OpenKeyValue(ctx, b.client.Connection(), js, name)
+	b.mu.Unlock()
+	conn := b.client.Connection()
+	if hook := openBucketHook.Load(); hook != nil {
+		(*hook)()
+	}
+	kv, err := bus.OpenKeyValue(ctx, conn, js, name)
 	if err != nil {
 		return bus.KeyValue{}, err
 	}
-	*handle = &kv
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if js == b.js && *handle == nil {
+		*handle = &kv
+	}
 	return kv, nil
 }
 
 // within runs read under ctx bounded at readTimeout, waiting for it no longer than that bound
 // (bus.Bounded), and hands read that bounded context, which its requests are made under. A read
 // that did not answer in time is named by what. A read whose connection was lost
-// (bus.ErrConnectionLost) - the bucket open that bucket makes under b.mu, or the key read - is
-// read again once the connection is back, inside the same bound (bus.Reconnected); the failed
-// read has released b.mu by then, since bus.KeyValue and the bucket open answer the loss at once.
+// (bus.ErrConnectionLost) - the bucket open, which bucket makes with b.mu released, or the key read
+// - is read again once the connection is back, inside the same bound (bus.Reconnected); no read
+// holds b.mu across a request, so none waits for the reconnect with it held.
 func within[T any](ctx context.Context, what string, read func(context.Context) (T, error)) (T, error) {
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
