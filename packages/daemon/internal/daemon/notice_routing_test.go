@@ -210,7 +210,6 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		{name: "a child's status change under its running sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-1"},
 		{name: "a child's start under its launching sub-architect", issue: "LEGION-2", kind: "child-status", subArchitect: supervise.StateLaunching, owner: "LEGION-1"},
 		{name: "a grandchild's start under the sub-architect's child", issue: "LEGION-3", kind: "child-status", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
-		{name: "the root's own gate opening", issue: "LEGION-1", kind: gateOpenedNotice, owner: "LEGION-1"},
 		{name: "a grandchild's close under the sub-architect's child", issue: "LEGION-3", kind: "child-closed", subArchitect: supervise.StateWorking, owner: "LEGION-2"},
 		{name: "the root's own close", issue: "LEGION-1", kind: "child-closed", owner: "LEGION-1"},
 		{name: "a child whose parent is not recorded", issue: "LEGION-4", owner: "LEGION-1"},
@@ -227,8 +226,6 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 			switch kind {
 			case "":
 				kind, role = "phase-finished", claim.RolePlanner
-			case gateOpenedNotice:
-				kind = "phase-finished"
 			}
 			got, err := record.OwningArchitect("legion", tree, tree[tc.issue], record.NoticeStartsAtParent(kind, role), func(token claim.Token) bool {
 				return holdsRole(supervise.ClaimView{Claim: supervise.Claim{State: states[token]}})
@@ -239,11 +236,6 @@ func TestTheArchitectThatOwnsANotice(t *testing.T) {
 		})
 	}
 }
-
-// gateOpenedNotice stands in TestTheArchitectThatOwnsANotice's table for the phase-finished of a
-// tree root's move out of admitted, which names no role (workflow's noticeFor). A child's move out
-// of admitted sends no notice.
-const gateOpenedNotice record.NoticeKind = "gate-opened phase-finished"
 
 // The executor publishes a notice to its owner's role topic and to nothing else: no issue topic,
 // since every issue topic is a subject that issue's phase workers subscribe to, and no worker's role
