@@ -132,6 +132,7 @@ var referenceDispositions = map[string]referenceDisposition{
 	"document_search.artifact_id":               {ownColumn, "the searched document (searchProjectVisible)"},
 	"document_search_backfill.artifact_id":      {internalColumn, "a backfill's cursor"},
 	"embeddings.project_key":                    {ownColumn, "the embedded item's project"},
+	"embeddings_partitioned.project_key":        {ownColumn, "the embedded item's project, in the table embeddings is copied into until the swap"},
 	"events.artifact_id":                        {ownColumn, "the event's document"},
 	"events.issue_key":                          {ownColumn, "the event's issue"},
 	"events.project_key":                        {ownColumn, "the event's project"},
@@ -200,7 +201,8 @@ var referenceDispositions = map[string]referenceDisposition{
 
 // schemaReferenceColumns is every reference column of the migrated schema, as table.column: each
 // column a foreign key holds to one of the objects a read names by id, and each column named for a
-// session, a person or a route (referenceColumnNames).
+// session, a person or a route (referenceColumnNames). A partition's columns are its partitioned
+// table's, which a read names, so no partition is listed apart from it.
 func schemaReferenceColumns(t *testing.T, fixture fragmentCensusFixture) []string {
 	t.Helper()
 	rows, err := fixture.database.Pool.Query(context.Background(), `
@@ -218,6 +220,7 @@ func schemaReferenceColumns(t *testing.T, fixture fragmentCensusFixture) []strin
 			select table_name, column_name from information_schema.columns
 			where table_schema = 'public' and column_name ~ $1
 		) referencing
+		where not exists (select 1 from pg_class r where r.oid = to_regclass(referencing.t) and r.relispartition)
 		order by 1`, referenceColumnNames.String())
 	if err != nil {
 		t.Fatalf("read the schema's reference columns: %v", err)

@@ -21,7 +21,8 @@ import (
 // PRIV's partition too: that is what the meaning scan's plan_cache_mode is there to stop, and a
 // reading blind to a partition would fail there.
 func TestAMeaningStatementReadsOnlyThePartitionsItsReaderSees(t *testing.T) {
-	seed := hnswSeed(t, hnswAlice, 10, hnswPartitioned)
+	seed := hnswSeed(t, hnswAlice, hnswPartitioned)
+	hnswAddHidden(t, seed, hnswAlice, 0, 10)
 	alice := model.Actor{Kind: "user", ID: seedAlice, Viewer: &model.Viewer{
 		Person: seedAlice, Open: true, Sees: []string{seedPublic}, AnyPrivate: true,
 	}}
