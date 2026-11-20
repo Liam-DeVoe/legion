@@ -3869,14 +3869,14 @@ check "passes with limits that hold them" "$(is "$status" 0)"
 # spend all of it before the install after it starts.
 root=$(fixture network-limits-earlier)
 lint_steps "$root" \
-  "Build" "make build" \
+  "Compile everything" "make build" \
   "Install the workspace" ".github/scripts/network-install.sh bun -- bun install --frozen-lockfile"
-replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Build\n' \
-  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 12\n    steps:\n      - name: Build\n        timeout-minutes: 6\n'
+replace "$root/.github/workflows/ci.yaml" $'    runs-on: ubuntu-24.04\n    steps:\n      - name: Compile everything\n' \
+  $'    runs-on: ubuntu-24.04\n    timeout-minutes: 12\n    steps:\n      - name: Compile everything\n        timeout-minutes: 6\n'
 run_check "$root"
 check "counts an earlier step's own limit in full" \
   "$(contains "$out" "job lint of .github/workflows/ci.yaml has timeout-minutes 12, 720 s, and 785 s is what, up to step \"Install the workspace\"")"
-check "names that limit among what the job spent before the install" "$(contains "$out" "step \"Build\"'s limit 360 s before it")"
+check "names that limit among what the job spent before the install" "$(contains "$out" "step \"Compile everything\"'s limit 360 s before it")"
 
 # A builder pulls each FROM image no earlier step left on the runner with no bound of its own, at
 # PULL_SECONDS (180 s) each, and BuildKit builds the stages the last one needs side by side, so a
