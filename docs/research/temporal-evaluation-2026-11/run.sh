@@ -191,26 +191,42 @@ run_experiment() {
 	wait "$pid"
 }
 
-# stop_sessions ends every process of every session sessions records and waits for each
-# (stop_gone): what an experiment, a worker or a restate-server left. A session whose
-# leader's pid now names a process with another start time is another's, and a leader
-# that is gone is no other process's while its session has a member: the kernel hands
-# that pid to no new process meanwhile.
+# stop_sessions [DEADLINE] ends every process of every session sessions records and waits
+# for each (stop_gone): what an experiment, a worker or a restate-server left. A session
+# whose leader's pid now names a process with another start time is another's, and a
+# leader that is gone is no other process's while its session has a member: the kernel
+# hands that pid to no new process meanwhile. The walk of every process's stat and the
+# stop share one bound, DEADLINE (an absolute time, 15 s from the call unless the caller
+# names its own), so a stat that never answers its reader ends the walk there (read_until):
+# that is named, nothing is signalled, and it returns 1, as it does for a member still
+# there at the bound. It reads wait_gone_proc, the host's /proc unless a test points it at
+# a tree of its own.
 stop_sessions() {
-	local entry sid start now found p stat
-	local -a members=()
+	local began=$EPOCHSECONDS deadline=${1:-$((EPOCHSECONDS + 15))} entry sid start now found record path walk=0
+	local -a stats=() fields=() members=()
+	local -A sids=()
 	for entry in ${sessions[@]+"${sessions[@]}"}; do
 		sid=${entry%%:*} start=${entry#*:} now='' found=0
 		process_start "$sid" now || found=$?
 		((found != 2)) || continue
 		((found != 0)) || [[ "$now" == "$start" ]] || continue
-		for p in /proc/[0-9]*; do
-			{ read -r stat <"$p/stat"; } 2>/dev/null || continue
-			read -r -a stat <<<"${stat##*) }"
-			[[ "${stat[3]:-}" != "$sid" ]] || members+=("${p#/proc/}")
-		done
+		sids[$sid]=1
 	done
-	stop_gone 5 "$((EPOCHSECONDS + 15))" ${members[@]+"${members[@]}"}
+	((${#sids[@]} > 0)) || return 0
+	read_until "$deadline" stats '' "$wait_gone_proc"/[0-9]*/stat || walk=$?
+	if ((walk == 124)); then
+		echo "stop_sessions: the walk of every $wait_gone_proc/<pid>/stat had not ended at the stop's bound, $((deadline - began)) s after the stop began, so no session was stopped" >&2
+		return 1
+	elif ((walk != 0)); then
+		echo "stop_sessions: the walk of every $wait_gone_proc/<pid>/stat failed ($walk), so no session was stopped" >&2
+		return 1
+	fi
+	for record in ${stats[@]+"${stats[@]}"}; do
+		path=${record%%/stat:*}
+		read -r -a fields <<<"${record##*) }"
+		[[ -z "${sids[${fields[3]:-x}]:-}" ]] || members+=("${path##*/}")
+	done
+	stop_gone 5 "$deadline" ${members[@]+"${members[@]}"}
 }
 
 cleanup() {

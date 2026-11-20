@@ -79,30 +79,44 @@ case "$mode" in
     # would otherwise have its readings taken over two runs of the suite.
     : > "$memory"
     : > "$cpu"
-    # SIGTERM ends the loop between commands, once the awk, the ps or the sleep under way has
-    # ended, so the files hold only whole lines once this process is gone: the browser steps send
-    # it and wait for it before they read the files.
+    # SIGTERM ends the loop between commands, once the awk, the tick's reading or the sleep under
+    # way has ended, so the files hold only whole lines once this process is gone: the browser
+    # steps send it and wait for it before they read the files.
     trap 'exit 0' TERM
+    # One tick of the CPU reading: the machine's own busy total first, then one line per process
+    # of a named group, `<pid> <ticks> <group>`. The machine line is written by the BEGIN block,
+    # so it is always this tick's first line, and the reading below counts a tick by it.
+    cpu_tick='
+      function group(args) {
+        if (args ~ /ms-playwright/)     return "browser"
+        if (args ~ /(^|\/)bun( |$)/)    return "bun"
+        if (args ~ /playwright/)        return "runner"
+        if (args ~ /dispatch-e2e( |$)/) return "dispatch"
+        if (args ~ /postgres|psql/)     return "postgres"
+        return ""
+      }
+      BEGIN { while ((getline l < "/proc/stat") > 0) if (l ~ /^cpu /) { split(l, c); print "machine", c[2]+c[3]+c[4]+c[7]+c[8]+c[9]; break } }
+      { g = group($0); if (g == "") next
+        if ((getline l < ("/proc/" $1 "/stat")) <= 0) next
+        close("/proc/" $1 "/stat"); sub(/^[^ ]+ \(.*\) /, "", l); split(l, s)
+        print $1, s[12] + s[13], g }'
     while :; do
       awk '/^MemAvailable:/ { print $2 }' /proc/meminfo >> "$memory"
-      # One tick of the CPU reading: the machine's own busy total first, then one line per
-      # process of a named group, `<pid> <ticks> <group>`. The machine line is written by the
-      # BEGIN block, so it is always this tick's first line, and the reading below counts a tick
-      # by it.
-      ps -eo pid=,args= | awk '
-        function group(args) {
-          if (args ~ /ms-playwright/)     return "browser"
-          if (args ~ /(^|\/)bun( |$)/)    return "bun"
-          if (args ~ /playwright/)        return "runner"
-          if (args ~ /dispatch-e2e( |$)/) return "dispatch"
-          if (args ~ /postgres|psql/)     return "postgres"
-          return ""
-        }
-        BEGIN { while ((getline l < "/proc/stat") > 0) if (l ~ /^cpu /) { split(l, c); print "machine", c[2]+c[3]+c[4]+c[7]+c[8]+c[9]; break } }
-        { g = group($0); if (g == "") next
-          if ((getline l < ("/proc/" $1 "/stat")) <= 0) next
-          close("/proc/" $1 "/stat"); sub(/^[^ ]+ \(.*\) /, "", l); split(l, s)
-          print $1, s[12] + s[13], g }' >> "$cpu"
+      # The CPU reading walks every process of the machine (`ps -eo`), so it runs under timeout,
+      # held to the tick's own 5 s: a walk that has not ended by then (a machine whose load
+      # delays it) loses that tick's CPU reading, named on stderr, rather than holding the
+      # sampler, and the browser step's stop that waits for it after its SIGTERM, for as long as
+      # the walk takes. timeout ends ps and awk together (a process group of its own). The tick's
+      # lines are written only once both have ended, so the file holds whole ticks: a tick that
+      # lost processes would charge the next tick with their whole reading.
+      if tick=$(timeout -k 1 5 bash -c 'set -o pipefail; ps -eo pid=,args= | awk "$1"' tick "$cpu_tick"); then
+        printf '%s\n' "$tick" >> "$cpu"
+      else
+        status=$?
+        why="ended with $status"
+        [ "$status" != 124 ] && [ "$status" != 137 ] || why="had not ended within the tick's 5 s"
+        echo "dispatch-browser-samples.sh: this tick's CPU reading (ps -eo over every process, and its awk) $why, so the tick has no CPU line" >&2
+      fi
       sleep 5
     done
     ;;

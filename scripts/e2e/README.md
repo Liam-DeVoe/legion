@@ -3280,6 +3280,7 @@ The transcript records the duration of each wait.
   On the pinned build each service runs in a session of its own and ends when its broker ends.
   For each `broker.pid` there, each process of that broker's session is stopped when it carries that runtime directory in `OMP_DAEMON_RUNTIME_DIR` or is one of the run's processes.
   No process is stopped for its working directory alone.
+  Its walks of every process's stat and of each member's environment, and the stop, end at one bound, 40 s from the call: a `/proc` entry that never answers its reader ends the walk there, named, and the check fails.
   Every process of the run then ends within 600 s; a survivor fails the check, and the check first prints its `ps` line (pid, ppid, process group, session, start time and command line).
   The branch `legion/<tree>` of each tree is gone from `sjawhar/legion-smoke` (GitHub answers 404).
   The work directory is gone.
@@ -5768,7 +5769,8 @@ A DEADLINE that is no such time (a count of seconds from now) is refused with ex
   A TARGET is a pid, `-PGID` for every process of that group, `port:N` (gone once no socket listens on TCP port N, as `ss -Hltn` reads it, which is what a stage proof's `ports_free` reads) or `lock:FILE` (gone once FILE's flock can be taken, or FILE is not there).
   A pid is gone once `/proc` holds no process of that pid that started when the first read found it, so a pid the kernel hands a new process during the wait is not taken for the old one, or holds it only as a zombie whose task directory lists no thread but the main one: that zombie holds nothing but its pid, which is its parent's to reap, and a parent that is itself waiting on the caller, as a test runner's synchronous spawn is, would not reap it while the wait went on.
   A `/proc` entry that is there but cannot be read is not gone.
-  A group counts while `kill -0` finds any member, a zombie included.
+  A group is gone once `kill -0` finds no process in it, or each process in it is gone as a pid is: `kill -0` alone answers for a zombie member too, which holds nothing, so while it answers the group's processes are read from one walk of every process's stat, held to DEADLINE (`read_until`), and a walk that does not end by then leaves the group there.
+  Where `/proc` cannot be read at all, `kill -0` answers for a pid and a group, a zombie included.
   A port or a lock that cannot be read (no `ss`, a lock file that cannot be opened) is not gone.
   It prints nothing; the targets still there are left in the array `wait_gone_left`, for the caller to name.
   `wait_gone_proc` names the `/proc` it reads, which a test points at a tree of its own.
@@ -5791,6 +5793,11 @@ A DEADLINE that is no such time (a count of seconds from now) is refused with ex
 - `process_start PID VAR`
 
   Sets VAR to the start time `/proc/PID/stat` gives (field 22) and returns 0 while that process is there, 1 once it is gone by the rule above, and 2 when its entry cannot be read; a caller that records a pid with its start time tells by it whether the pid still names that process.
+
+- `read_until DEADLINE ARRAY PATTERN PATH…`
+
+  A walk held to its caller's bound: reads every PATH (each process's `/proc` stat, say) by one `grep` a batch under `timeout`, so the reads end at DEADLINE, and sets ARRAY to one `PATH:RECORD` element for each NUL-ended record that matches PATTERN (a stat is one record, read whole; an environment one record a variable).
+  It returns 0 once every PATH was read, and 124, with ARRAY empty, when DEADLINE came first, for the caller to name its bound: a `/proc` entry that never answers its reader holds the caller only until then.
 
 A caller whose next step needs a process gone fails when its wait returns 1, naming it; a teardown goes on, with `|| true` and a word on why.
 A signal that needs no wait says why on its own line, or in the comment block right above its command, as `# no-wait: <why>`: the end of a script with nothing after it that the process could disturb, a process another line already waits for, or a process whose end is itself what the check measures.

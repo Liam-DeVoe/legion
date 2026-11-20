@@ -55,10 +55,10 @@ function caseEnd() {
 
 // The stand-in, written once the suite's directory exists (temporaryDirectory makes it before the
 // first test).
-const holder = `import ctypes, fcntl, os, signal, socket, sys, threading, time
+const holder = `import ctypes, fcntl, os, random, signal, socket, sys, threading, time
 
-# holder.py KEY=VALUE...: a stand-in for a service a script stops. It listens on a loopback port
-# the kernel picks and writes the number to port=FILE once all of the below is set up.
+# holder.py KEY=VALUE...: a stand-in for a service a script stops. It listens on a loopback port of
+# its own choosing (below) and writes the number to port=FILE once all of the below is set up.
 #   term=default|ignore|slow:SECONDS  what SIGTERM does: end it, nothing, or end it SECONDS later
 #   write=DIR   with term=slow, it creates a file in DIR every 10 ms until it ends, as a server's
 #               drain writes (a few hundred files, never so many that removing them takes minutes)
@@ -95,9 +95,32 @@ elif term.startswith("slow:"):
         os._exit(0)
 
     signal.signal(signal.SIGTERM, on_term)
-listener = socket.socket()
-listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-listener.bind(("127.0.0.1", 0))
+# The port: one picked at random below the kernel's ephemeral range and taken by binding it, so a
+# port another program holds is never used. Both bounds are read at run time: the range from
+# ip_local_port_range, the lowest port this user may bind from ip_unprivileged_port_start. A port
+# the kernel picks for a bind of port 0 is one of the range, and once the stand-in frees it the
+# kernel hands it to the next program on the machine that binds port 0, so a case that reads the
+# port free after the stop (ports_free) can read that program's listener: Stage 4b's cleanup case
+# did, once in 20 runs beside the box's load. No bind of port 0 is handed a port below the range;
+# only a program that names this very port can take it.
+low = int(open("/proc/sys/net/ipv4/ip_local_port_range").read().split()[0])
+# Port 0 is no port: a bind of it is the kernel's pick from the range.
+first = max(1, int(open("/proc/sys/net/ipv4/ip_unprivileged_port_start").read()))
+if low <= first:
+    sys.exit("holder.py: the ephemeral range starts at %d, so no port from %d below it is free to pick" % (low, first))
+listener = None
+for _ in range(1000):
+    candidate = socket.socket()
+    candidate.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        candidate.bind(("127.0.0.1", random.randrange(first, low)))
+    except OSError:
+        candidate.close()
+        continue
+    listener = candidate
+    break
+if listener is None:
+    sys.exit("holder.py: no free port from %d to %d in 1000 tries" % (first, low - 1))
 listener.listen()
 if "lock" in args:
     lock = open(args["lock"], "a")
@@ -399,6 +422,44 @@ builtin kill -KILL -- "-$g" 2>/dev/null`);
         "m"
       )
     );
+  });
+
+  test("a process group whose one member left is a zombie its parent, outside the group, does not reap is gone, as a pid is", () => {
+    // kill -0 answers for a zombie member, which holds nothing, so a group is read process by
+    // process, each by the rule a pid is (_wait_gone_group_there). The member's parent works outside
+    // the group and is stopped, so nothing reaps the member once the SIGTERM ends it: a wait that
+    // read kill -0 alone would run to END and return 1.
+    const r = bash(`leader=$(mktemp -u "$DIR/leader.XXXXXX") member=$(mktemp -u "$DIR/member.XXXXXX")
+python3 -c 'import os, signal, sys, time
+os.setpgid(0, 0)
+signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+open(sys.argv[1] + ".new", "w").write(str(os.getpid())); os.rename(sys.argv[1] + ".new", sys.argv[1])
+time.sleep(600)' "$leader" & g=$!; started+=("$g")
+until [ -s "$leader" ]; do sleep 0.05; done
+python3 -c 'import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os.setpgid(0, int(sys.argv[1]))
+    open(sys.argv[2] + ".new", "w").write(str(os.getpid())); os.rename(sys.argv[2] + ".new", sys.argv[2])
+    time.sleep(600)
+    os._exit(0)
+os.waitpid(pid, 0)
+time.sleep(600)' "$g" "$member" & parent=$!; started+=("$parent")
+until [ -s "$member" ]; do sleep 0.05; done
+m=$(<"$member"); started+=("$m")
+echo "group_of_member=$(awk '{print $5}' "/proc/$m/stat")"; echo "group=$g"
+kill -STOP "$parent"
+start=$(now_ms)
+kill_gone TERM "$END" "-$g"; echo "rc=$?"
+echo "ms=$(($(now_ms) - start))"
+echo "state=$(awk '{print $3}' "/proc/$m/stat" 2>/dev/null)"
+kill -CONT "$parent"
+builtin kill -KILL "$parent" 2>/dev/null`);
+    const v = values(r.stdout);
+    expect(v.group_of_member).toBe(v.group);
+    expect(v.rc).toBe("0");
+    expect(v.state).toBe("Z");
+    expect(Number(v.ms)).toBeLessThan(5000);
   });
 
   test("a pid with no process is gone", () => {

@@ -7,8 +7,8 @@
 # dev-stack.test.sh; packages/envoy/deploy/scripts/autodeploy_test_env.sh;
 # packages/pi-envoy/scripts/smoke-registration-stall.sh and smoke-role-takeover.sh; and
 # docs/research/temporal-evaluation-2026-11/run.sh source it. Sourced, never run: it defines
-# wait_gone, kill_gone, stop_gone, wait_gone_name and process_start, and needs nothing of its
-# caller's but bash 5 (EPOCHSECONDS and EPOCHREALTIME).
+# wait_gone, kill_gone, stop_gone, wait_gone_name, process_start and read_until, and needs nothing
+# of its caller's but bash 5 (EPOCHSECONDS and EPOCHREALTIME), timeout, xargs and grep.
 #
 # A signal ends nothing by itself. A process given SIGTERM goes on until its handler has run, and a
 # server's handler drains first. One given SIGKILL ends the next time the kernel runs it, and until
@@ -43,18 +43,19 @@ wait_gone_proc=/proc
 # more at it. A TARGET is a pid, -PGID for every process of that group, `port:N` or `lock:FILE`. A
 # pid is gone as the top of this file says, and the start time the first read finds is held to: a
 # pid the kernel hands a new process during the wait is not taken for the one waited on. A pid whose
-# /proc entry is there but cannot be read is not gone. For a group, and where /proc cannot be read
-# at all, kill -0 answers, a zombie included. A port or a lock is gone once it is free as the top of
-# this file says; one that cannot be read (no ss, a lock file that cannot be opened, an flock that
-# fails for another reason) is not. It prints nothing: the targets still there are left in the array
-# wait_gone_left, for the caller to name in its own terms. A DEADLINE that is no time since the
-# epoch (a count of seconds from now, say) is refused with exit 2, naming it. The locals' names are
-# ones no caller passes.
+# /proc entry is there but cannot be read is not gone. A group is gone once kill -0 finds no process
+# in it, or each process in it is gone as a pid is (_wait_gone_group_there): kill -0 alone answers
+# for a zombie member too, which holds nothing. Where /proc cannot be read at all, kill -0 answers, a
+# zombie included. A port or a lock is gone once it is free as the top of this file says; one that
+# cannot be read (no ss, a lock file that cannot be opened, an flock that fails for another reason)
+# is not. It prints nothing: the targets still there are left in the array wait_gone_left, for the
+# caller to name in its own terms. A DEADLINE that is no time since the epoch (a count of seconds
+# from now, say) is refused with exit 2, naming it. The locals' names are ones no caller passes.
 wait_gone() {
   local _wg_deadline=$1 _wg_deadline_us _wg_target _wg_start _wg_read _wg_proc=1
   shift
   local -a _wg_targets=() _wg_still=()
-  local -A _wg_started=()
+  local -A _wg_started=() _wg_members=()
   _wait_gone_deadline wait_gone "$_wg_deadline" _wg_deadline_us || return 2
   [ -r "$wait_gone_proc/self/stat" ] || _wg_proc=
   for _wg_target in "$@"; do
@@ -77,9 +78,13 @@ wait_gone() {
           continue
           ;;
       esac
-      if [ "${_wg_target#-}" != "$_wg_target" ] || [ -z "$_wg_proc" ]; then
-        # A group, or no /proc: kill -0 answers, a zombie member or pid included.
+      if [ -z "$_wg_proc" ]; then
+        # No /proc: kill -0 answers, a zombie member or pid included.
         ! kill -0 -- "$_wg_target" 2>/dev/null || _wg_still+=("$_wg_target")
+        continue
+      fi
+      if [ "${_wg_target#-}" != "$_wg_target" ]; then
+        ! _wait_gone_group_there "${_wg_target#-}" "$_wg_deadline" || _wg_still+=("$_wg_target")
         continue
       fi
       _wg_start='' _wg_read=0
@@ -107,6 +112,40 @@ wait_gone() {
     [ "${EPOCHREALTIME//[!0-9]/}" -lt "$_wg_deadline_us" ] || return 1
     sleep 0.1
   done
+}
+
+# _wait_gone_group_there PGID DEADLINE returns 0 while the process group PGID has a process that is
+# not gone as a pid is (process_start), and 1 once it has none: kill -0 finds no process in it, or
+# each one in it is a zombie whose task directory lists no thread but the main one, as when its
+# parent, outside the group, is stopped or never waits. The group's processes are known from one walk
+# of every process's stat (field 5, the group) under wait_gone_proc, held to the wait's own DEADLINE
+# (read_until): a walk that did not end by then, or failed, leaves the group there, as an entry that
+# cannot be read leaves a pid there. wait_gone's _wg_members keeps what the walk found, so a group
+# with one of those still there is read with no walk; only a group whose known processes are all
+# gone while kill -0 still finds one is walked again.
+_wait_gone_group_there() {
+  local _wgg_group=$1 _wgg_deadline=$2 _wgg_pid _wgg_start _wgg_read _wgg_record
+  local -a _wgg_stats=() _wgg_fields=()
+  kill -0 -- "-$_wgg_group" 2>/dev/null || return 1
+  for _wgg_pid in ${_wg_members[$_wgg_group]-}; do
+    _wgg_read=0
+    process_start "$_wgg_pid" _wgg_start || _wgg_read=$?
+    [ "$_wgg_read" = 1 ] || return 0
+  done
+  read_until "$_wgg_deadline" _wgg_stats '' "$wait_gone_proc"/[0-9]*/stat || return 0
+  _wg_members[$_wgg_group]=
+  for _wgg_record in ${_wgg_stats[@]+"${_wgg_stats[@]}"}; do
+    read -r -a _wgg_fields <<<"${_wgg_record##*) }"
+    [ "${_wgg_fields[2]:-}" = "$_wgg_group" ] || continue
+    _wgg_pid=${_wgg_record%%/stat:*}
+    _wg_members[$_wgg_group]+=" ${_wgg_pid##*/}"
+  done
+  for _wgg_pid in ${_wg_members[$_wgg_group]}; do
+    _wgg_read=0
+    process_start "$_wgg_pid" _wgg_start || _wgg_read=$?
+    [ "$_wgg_read" = 1 ] || return 0
+  done
+  return 1
 }
 
 # _wait_gone_free TARGET returns 0 when TARGET, `port:N` or `lock:FILE`, is free as the top of this
@@ -175,6 +214,44 @@ process_start() {
     [ "${#_wgr_tasks[@]}" -gt 1 ] || return 1
   fi
   printf -v "$2" '%s' "${_wgr_stat[19]}"
+}
+
+# read_until DEADLINE ARRAY PATTERN PATH... is a walk held to its caller's bound: it reads every PATH
+# (every process's /proc stat, say, or the environment of a few) by one grep a batch of PATHs, under
+# timeout, so the reads end at DEADLINE (an absolute time, as wait_gone reads one), and assigns the
+# array ARRAY one element `PATH:RECORD` for each NUL-ended record of a PATH that matches the grep
+# pattern PATTERN (an empty one matches every record): a stat is one record, read whole, since a
+# process names itself and a name may hold a newline; an environment is one record a variable. It
+# reads in the C locale and as text, so a name that holds a byte that is no UTF-8 is read like any
+# other. A PATH that cannot be read, or whose process ended during the walk, gives no record. So a
+# /proc entry that never answers its reader (the stat of a process whose task is stuck) holds its
+# caller only until DEADLINE. Returns 0 once every PATH was read; 124 when DEADLINE came first, or
+# had passed, with ARRAY empty, for the caller to name its bound in its own terms; 2 for a DEADLINE
+# wait_gone would refuse; and the status of xargs for any other failure, with ARRAY empty too. The
+# locals' names are ones no caller passes.
+read_until() {
+  local _ru_deadline_us _ru_left _ru_status=0
+  _wait_gone_deadline read_until "$1" _ru_deadline_us || return 2
+  local -n _ru_records=$2
+  local _ru_pattern=$3
+  shift 3
+  _ru_records=()
+  [ "$#" -gt 0 ] || return 0
+  _ru_left=$((_ru_deadline_us - ${EPOCHREALTIME//[!0-9]/}))
+  [ "$_ru_left" -gt 0 ] || return 124
+  printf -v _ru_left '%d.%06d' "$((_ru_left / 1000000))" "$((_ru_left % 1000000))"
+  # timeout leads a process group of its own and ends xargs and every grep at DEADLINE: 124, or 137
+  # when one needed the SIGKILL a second later. xargs ends with 123 when a grep found no record or
+  # met a file it could not read, which is no failure of the walk.
+  mapfile -d '' -t _ru_records < <(printf '%s\0' "$@" |
+    LC_ALL=C timeout -k 1 "$_ru_left" xargs -0 grep -asHz -e "$_ru_pattern" -- || exit)
+  wait "$!" || _ru_status=$?
+  case $_ru_status in
+    0 | 123) return 0 ;;
+    124 | 137) _ru_status=124 ;;
+  esac
+  _ru_records=()
+  return "$_ru_status"
 }
 
 # wait_gone_signal names the command kill_gone and stop_gone send each signal with, as

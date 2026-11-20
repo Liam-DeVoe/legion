@@ -259,6 +259,44 @@ for i in 0 1; do
   check "and no sleep the sampler had started" "$(is "${state:-gone}" gone)"
 done
 
+echo "case: a tick whose process walk never ends is cut at the tick's 5 s, and holds neither the sampler nor its stop"
+# The CPU reading walks every process of the machine (ps -eo), which a loaded machine can hold for
+# longer than a tick. A ps that does not end for 60 s stands in for one here, first on PATH, writing
+# its own pid before it sleeps. The sampler must go on to its next tick, write no CPU line for the
+# tick it cut, name the cut, and end within moments of the stop's SIGTERM, the stand-in gone.
+dir=$(fixture slow-walk)
+mkdir -p "$dir/bin"
+printf '#!/bin/sh\necho "$$" >>"%s/ps-pids"\nexec sleep 60\n' "$dir" >"$dir/bin/ps"
+chmod +x "$dir/bin/ps"
+# Both files exist before the sampler starts, so no read below fails before it truncates its own.
+: >"$dir/memory-samples.txt"
+: >"$dir/ps-pids"
+PATH="$dir/bin:$PATH" "$samples_script" sample "$dir" 2>"$dir/stderr" &
+sampler=$!
+# The second memory sample is written only once the first tick's CPU reading has ended: at its cut
+# after 5 s, or after the stand-in's 60 s with no cut. Read with builtins, for up to 30 s.
+lines=()
+for ((i = 0; i < 300; i++)); do
+  mapfile -t lines <"$dir/memory-samples.txt"
+  [ "${#lines[@]}" -lt 2 ] || break
+  sleep 0.1
+done
+check "the sampler went on to its next tick within 30 s" "$(is "$((${#lines[@]} >= 2))" 1)"
+check "the cut tick wrote no CPU line" "$(is "$(wc -l <"$dir/cpu-samples.txt")" 0)"
+check "and the cut is named" "$(contains "$(<"$dir/stderr")" "had not ended within the tick's 5 s")"
+began=$EPOCHREALTIME
+kill "$sampler" 2>/dev/null || true
+wait "$sampler" 2>/dev/null || true
+took=$(awk -v a="$began" -v b="$EPOCHREALTIME" 'BEGIN { printf "%d", b - a }')
+check "the stop ends within the tick's bound, 8 s (it took ${took} s)" "$(is "$((took <= 8))" 1)"
+left=
+while read -r pid; do
+  # A zombie runs nothing: gone.
+  state=$(awk '{ sub(/.*\) /, ""); print $1 }' "/proc/$pid/stat" 2>/dev/null || true)
+  [ -z "$state" ] || [ "$state" = Z ] || left="$left $pid"
+done <"$dir/ps-pids"
+check "and no ps stand-in is left running" "$(is "${left:-none}" none)"
+
 echo "case: a call the script cannot read"
 set +e
 out=$("$samples_script" 2>&1); status=$?
