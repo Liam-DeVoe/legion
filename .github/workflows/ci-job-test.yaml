@@ -277,10 +277,11 @@ jobs:
     # fetch helper's 840 s, the tool copy filler's 400 s, the machine watch's 80 s, the browser
     # sampler's 60 s and the priorities seed check's 100 s, which counted as steps with no guarded
     # command before and now add their guards, 1,480 s: with the rest, 851 + 5 + 51 + 1,480 =
-    # 2,387 s, or 40 minutes, and the strace install's apt run. Forty minutes, 2,400 s, leaves
-    # 13 s past that sum for the apt run and a slow runner, and still fails a hung harness inside
-    # the hour.
-    timeout-minutes: 40
+    # 2,387 s, and the strace install's apt run, whose longest in this pull request's three newest
+    # green runs was 11 s (runs 44555685627, 44450080737 and 44408072380: 6 s, 11 s and 7 s).
+    # Forty-one minutes, 2,460 s, leaves 73 s past that sum for the apt run and a slow runner, and
+    # still fails a hung harness inside the hour.
+    timeout-minutes: 41
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
