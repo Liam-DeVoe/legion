@@ -214,7 +214,11 @@ const ENTRIES_ARCHITECT_LATER_FAIL: readonly Entry[] = [
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
     has: "A pass and a fail at any open head make the check not known",
-    cut: "Remove the architect rule.",
+    cut: "Restore the architect's old later-fail rule.",
+    // The old words of skills/legion-architect/SKILL.md at d2499ad82d, which the check's negative
+    // control restores: a label that only deletes the rule tells its architect no old rule.
+    restore:
+      "On a check with no `ci_check`, a fail recorded after a pass leaves that pass standing until someone retracts it",
   },
   {
     file: "packages/daemon/internal/prompts/roles/architect-root.md",
