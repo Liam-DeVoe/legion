@@ -78,6 +78,7 @@ import (
 	"github.com/sjawhar/envoy/brokeraddr"
 	"github.com/sjawhar/envoy/brokerclient"
 	"github.com/sjawhar/envoy/brokertest"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -1879,7 +1880,7 @@ func TestARoleWritesEveryKindWithItsOwnToken(t *testing.T) {
 	}
 	// The control's four records rows, and the code each is refused with: only a Legion daemon's
 	// session writes them, and other-project-worker is none.
-	refusedRecords := map[string]string{"PutStep": "STEP_WRITER", "PutStepRating": "STEP_WRITER", "PutPlan": "STEP_WRITER", "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
+	refusedRecords := map[string]string{"PutStep": steprecord.CodeWriter, "PutStepRating": steprecord.CodeWriter, "PutPlan": steprecord.CodeWriter, "PutRoleHolders": "ROLE_HOLDER_FORBIDDEN"}
 	for _, write := range withQ {
 		if write.read {
 			continue
