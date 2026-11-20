@@ -1454,12 +1454,15 @@ func (w *w5Rig) controllerGrant() string {
 	return grant.GrantID
 }
 
-// relaunchAnswer is the daemon's answer to a `relaunch`.
+// relaunchAnswer is the daemon's answer to a `relaunch`: at is when the request was sent, and
+// answered when the answer arrived, so a time the daemon read while it judged the request lies
+// between the two.
 type relaunchAnswer struct {
-	at     time.Time
-	status int
-	code   string
-	body   string
+	at       time.Time
+	answered time.Time
+	status   int
+	code     string
+	body     string
 }
 
 func (a relaunchAnswer) reached() bool { return a.status == http.StatusOK }
@@ -1474,7 +1477,7 @@ func (w *w5Rig) relaunch(token claim.Token) relaunchAnswer {
 	grant := w.controllerGrant()
 	at := time.Now()
 	status, body := w.apiCall(http.MethodPost, "/legion/v1/claims/relaunch", map[string]any{"grantId": grant, "claim": string(token)}, false, 5*time.Minute)
-	answer := relaunchAnswer{at: at, status: status, body: strings.TrimSpace(string(body))}
+	answer := relaunchAnswer{at: at, answered: time.Now(), status: status, body: strings.TrimSpace(string(body))}
 	var failure struct {
 		Code string `json:"code"`
 	}

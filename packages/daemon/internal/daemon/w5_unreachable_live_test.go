@@ -704,11 +704,22 @@ func (r *w5Run) guardRelaunches() {
 // mark, then lets its registrations through again.
 func (r *w5Run) twelfthRelaunch() {
 	c := r.c("twelfth")
+	var stepAt, started, ended *time.Time
+	var tool string
+	_ = r.st.Pool().QueryRow(context.Background(), "select step_at, step_tool, step_started_at, step_ended_at from claims where token = $1", string(c.token)).
+		Scan(&stepAt, &tool, &started, &ended)
+	mark := r.markOf(c.token, r.t0)
+	before := r.claim(c.token)
+	launch := r.runtime.current(c.token)
+	answer := r.relaunch(c.token)
+	r.noteRefusal(answer)
+	// What the run saw is read once the answer is in, so a step or a report the daemon stamped while
+	// the request was on its way is among them.
 	var steps []string
 	var stepTimes []time.Time
 	var turnAt time.Time
-	for _, launch := range r.runtime.launchesOf(c.token) {
-		for _, conn := range r.relay.connsOf(launch.spec.BootToken) {
+	for _, each := range r.runtime.launchesOf(c.token) {
+		for _, conn := range r.relay.connsOf(each.spec.BootToken) {
 			for _, f := range conn.toDaemon {
 				if f.typ == "agent_start" && f.at.After(turnAt) {
 					turnAt = f.at
@@ -720,19 +731,11 @@ func (r *w5Run) twelfthRelaunch() {
 			}
 		}
 	}
+	reportTimes := r.api.reportsFrom(c.token, turnAt)
 	var reports []string
-	for _, at := range r.api.reportsFrom(c.token, turnAt) {
+	for _, at := range reportTimes {
 		reports = append(reports, clockAt(at))
 	}
-	var stepAt, started, ended *time.Time
-	var tool string
-	_ = r.st.Pool().QueryRow(context.Background(), "select step_at, step_tool, step_started_at, step_ended_at from claims where token = $1", string(c.token)).
-		Scan(&stepAt, &tool, &started, &ended)
-	mark := r.markOf(c.token, r.t0)
-	before := r.claim(c.token)
-	launch := r.runtime.current(c.token)
-	answer := r.relaunch(c.token)
-	r.noteRefusal(answer)
 	time.Sleep(liveSettle)
 	after := r.claim(c.token)
 	r.record("twelfth (never stopped, in a live wait on its named service, registrations blocked at %s): its turn began at %s; %d activity reports in its turn: %v", clockAt(r.t0), clockAt(turnAt), len(reports), reports)
@@ -740,7 +743,8 @@ func (r *w5Run) twelfthRelaunch() {
 	r.record("twelfth: the daemon's step record: at %s, tool %q, started %s, ended %s; marked unreachable at %s",
 		clockAtPtr(stepAt), tool, clockAtPtr(started), clockAtPtr(ended), clockAtLine(mark))
 	r.check("at-25m-relaunch-refuses-the-twelfth-whose-process-still-runs-its-turn",
-		twelfthRefusedInItsTurn(answer.status, answer.code, answer.body, answer.at, stepTimes),
+		twelfthRefusedInItsTurn(twelfthAnswer{status: answer.status, code: answer.code, body: answer.body,
+			sent: answer.at, answered: answer.answered, steps: stepTimes, reports: reportTimes}),
 		"relaunch answered %s", answer)
 	r.check("twelfth-keeps-running", launch != nil && launch.running() && r.runtime.current(c.token) == launch,
 		"its process (generation %d) still runs: %t, the claim's current launch unchanged: %t", launch.spec.Generation, launch.running(), r.runtime.current(c.token) == launch)
