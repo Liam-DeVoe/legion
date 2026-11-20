@@ -258,9 +258,10 @@ refuses the nkey (`nats: nkeys not supported by the server`) instead of connecti
 ## Recreating a listener's durable
 
 Each listener reads the `ENVOY_NOTIFICATIONS` stream through one durable consumer of its machine,
-`listener-<machine id>` (`bus.ListenerDurable`). A machine id that holds a character NATS refuses
-in a consumer name gets that character escaped: `host.example.internal` names
-`listener-host%2Eexample%2Einternal`. Use the name that the listener's error gives.
+`listener-<machine id>` (`bus.ListenerDurable`). A space in the machine id becomes `-`. Each other
+character that NATS refuses in a consumer name is escaped as `%` and its byte in two upper-case hex
+digits: `host.example.internal` names `listener-host%2Eexample%2Einternal`. Use the name that the
+listener's error gives.
 
 The listener refuses to bind a durable that has an idle heartbeat, or an ack policy other than
 `explicit`, because NATS cannot change either in place. The start logs

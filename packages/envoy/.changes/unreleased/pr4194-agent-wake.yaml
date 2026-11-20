@@ -1,8 +1,11 @@
 kind: Fixed
 body: |-
   A message on an agent subject, in either form (`notifications.agent.<session>` or
-  `notifications.agent.<PROJECT or _>.<session>`), is the session's own consumer's alone. The
-  listener no longer defers it, tries it again or gives it up, and it logs no
+  `notifications.agent.<PROJECT or _>.<session>`), is the session's own consumer's alone, with one
+  exception: when a role message's claim names another session, or none, that consumer's relay
+  copies the message to the role's kept lane in place of sending it, and the kept lane's walk
+  forwards the copy to the role's holder (`takeOverFrame`, since cybermonklabs/legion#4387). The
+  listener no longer defers such a message, tries it again or gives it up, and it logs no
   `listener agent delivery deferred`, `given up` or `failed` line and sends no `no_holder` or
   `delivery_failed` notice for it. For a session with no record, or a record past the gone
   horizon, the listener that holds the session's interest row (each listener when none does)

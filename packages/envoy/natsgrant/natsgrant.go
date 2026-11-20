@@ -52,9 +52,12 @@ const inboxes = nats.InboxPrefix + ">"
 //
 // No other program publishes either lane. A listener without GitHub's webhook publishes neither,
 // and Dispatch asks GitHub to send a missed delivery again rather than publish it itself. So the
-// deny refuses a direct publish on either lane by a session on a host. It also refuses one by a
-// caller of a listener's /v1/messages/publish, but on the listener whose user publishes that
-// lane: the one beside envoy-dispatch, which shares Dispatch's user, and the webhook listener.
+// deny refuses a direct publish on either lane by a session on a host. A caller of a listener's
+// /v1/messages/publish publishes with the listener's user, so the deny covers that caller too,
+// except on the listener whose user publishes that lane: the one beside envoy-dispatch, which
+// shares Dispatch's user, and the webhook listener. No grant can refuse that caller there, so the
+// publish route refuses a topic under either lane by name on every listener, and publishes
+// nothing (cmd/listener/api.go, publisherLanes).
 // The deny is in PublishDeny, so a hub's static user (packages/envoy/infra/core renders it) and a
 // connection the auth service admits (internal/broker/natscallout encodes it) both carry it.
 //

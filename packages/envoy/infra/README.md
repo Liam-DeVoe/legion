@@ -3875,10 +3875,12 @@ server refuses both to every other set built on these entries:
 
 The Legion daemon trusts an event on Dispatch's lane as Dispatch's, and it applies a merge and a
 deciding review from an event on GitHub's lane. The deny refuses a direct publish on either lane by
-a session on a host. It also refuses one by a caller of a listener's `/v1/messages/publish`: the
-server refuses the publish, and the route answers `403`. The exceptions are the two listeners whose
-user publishes the lane: the listener beside `envoy-dispatch`, which shares Dispatch's user, and the
-webhook listener.
+a session on a host. A caller of a listener's `/v1/messages/publish` publishes with the listener's
+user, so the deny covers that caller too, except on the two listeners whose user publishes the
+lane: the listener beside `envoy-dispatch`, which shares Dispatch's user, and the webhook listener.
+No grant can refuse that caller there, so the route refuses a topic under `notifications.dispatch.`
+or `notifications.github.` on every listener: it answers `400` naming the lane and publishes
+nothing.
 
 The deny alone does not stop a session on a shared host user from posing as Dispatch or as
 GitHub. The base entries keep the stream's create and update,

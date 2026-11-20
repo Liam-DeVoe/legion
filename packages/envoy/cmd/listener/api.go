@@ -733,15 +733,17 @@ const senderStampReadTimeout = 1 * time.Second
 // record says, exactly where a 404 always raised it; one whose probe met no responders raises
 // none, as a lingering entry never did, and nor does a no_receiver target, which runs. The route
 // publishes that report off its answer, and again until the stream acknowledges it, the grant
-// refuses it, wakeReportBudget ends or the listener stops (reportAgentWake, publishWakeReport). A
-// message the route stores for a target with no entry is on the session's agent subject, so each
-// listener's durable reads it too. When the session still has no entry within the gone horizon
-// after the one wait, the listener the session's interest row names, or each listener when the
-// session has no row, stores one more wake report (noRecordAgentDelivery). The daemon takes the
-// first wake of a released role and no second one (TakePodWake). A target that cannot take the
-// payload's delivery mode (deliveryModeVerdict for a session with an entry,
-// stoppedDeliveryModeVerdict for one with only a record) is the 403 naming it. Every one of those
-// answers is written through record, so this route's one line per request is written with it.
+// refuses it, wakeReportBudget ends or the listener stops (reportAgentWake, publishWakeReport).
+// When wakeReportsInFlight reports are already retrying, the listener drops the report and logs
+// `legion wake report dropped` (wakeReporter.report). A message the route stores for a target
+// with no entry is on the session's agent subject, so each listener's durable reads it too. When
+// the session still has no entry within the gone horizon after the one wait, the listener the
+// session's interest row names, or each listener when the session has no row, stores one more
+// wake report (noRecordAgentDelivery). The daemon takes the first wake of a released role and no
+// second one (TakePodWake). A target that cannot take the payload's delivery mode
+// (deliveryModeVerdict for a session with an entry, stoppedDeliveryModeVerdict for one with only
+// a record) is the 403 naming it. Every one of those answers is written through record, so this
+// route's one line per request is written with it.
 //
 // Before any of them, a message of an agent session whose count under the operator's sender limit
 // is empty is the 429 refuseSenderRateLimited writes, with nothing read, reported or stored
@@ -1102,9 +1104,22 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 // to tell such a copy from one Dispatch's outbox kept under a key of its own.
 const publishDedupePrefix = "publish."
 
+// publisherLanes are the two lanes of notifications.> that one publisher alone writes, each with
+// the publisher the route's refusal names. The Legion daemon trusts an event on Dispatch's lane
+// as Dispatch's, and it applies a merge and a deciding review from an event on GitHub's lane.
+// The publish deny of every other user's grant refuses a direct publish there
+// (packages/envoy/natsgrant, dispatchLane and githubLane). No grant can refuse a caller of this
+// route on the two listeners whose own user holds a lane: the listener beside envoy-dispatch,
+// which shares Dispatch's user, and the webhook listener. Each publisher writes its lane straight
+// to NATS, so no caller of this route needs either lane.
+var publisherLanes = []struct{ prefix, publisher string }{
+	{bus.DispatchTopicPrefix, "Dispatch"},
+	{contracts.GithubTopicPrefix, "the listener that receives GitHub's webhook"},
+}
+
 // publishHandler rejects agent-targeted topics (must use /v1/messages/send
-// instead) and the listener's own lanes, the kept one and the session resume one, and sends the
-// envelope. A role
+// instead), Dispatch's lane and GitHub's lane (publisherLanes), and the listener's own lanes, the
+// kept one and the session resume one, and sends the envelope. A role
 // topic is forwarded to its holder, answered once confirmed or when
 // publishDeliveryWindow from the request's arrival has passed (sendToRole in
 // confirmed.go); a topic the stream captures is answered once the stream
@@ -1174,6 +1189,17 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if strings.HasPrefix(request.Topic, contracts.AgentTopicPrefix) {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to agent topics; use /v1/messages/send for direct agent messages")
 			return
+		}
+		// Dispatch's lane and GitHub's lane are refused by name, as the agent topics are: the Legion
+		// daemon acts on an event there as its publisher's own, and on the listener beside
+		// envoy-dispatch and on the webhook listener no grant refuses a caller of this route the
+		// lane (publisherLanes).
+		for _, lane := range publisherLanes {
+			if strings.HasPrefix(request.Topic, lane.prefix) {
+				record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest,
+					"cannot publish to "+lane.prefix+" topics; "+lane.publisher+" alone publishes that lane, straight to NATS", "topic")
+				return
+			}
 		}
 		// The wake subject is this listener's own report of a released Legion pod, and a Legion
 		// daemon acts on what it reads there: it wakes the pod a role token or a session names,

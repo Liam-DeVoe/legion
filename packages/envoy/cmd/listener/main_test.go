@@ -521,7 +521,7 @@ func TestPublishHandlerRefusesATopicOutsideNotifications(t *testing.T) {
 // JetStream publish by the acknowledgement deadline: the publish waits for an acknowledgement that
 // the core subscriber holding the subject never sends.
 func TestPublishHandlerReturnsWithinDeadline(t *testing.T) {
-	const topic = "notifications.github.acme.unbound"
+	const topic = "notifications.team.acme-unbound"
 	clock := &listenerAcknowledgementClock{}
 	client := setupPublishTestClient(t, bus.WithPublishAcknowledgementClock(clock))
 	info, err := client.JS().StreamInfo(bus.Stream)
@@ -868,42 +868,42 @@ func TestPublishHandler_SourceFieldWithNATS(t *testing.T) {
 	}{
 		{
 			name:       "defaults to agent when source omitted",
-			body:       `{"topic":"notifications.github.acme.widgets.source","message":"hello"}`,
+			body:       `{"topic":"notifications.team.acme-widgets.source","message":"hello"}`,
 			wantSource: "agent",
 		},
 		{
 			name:       "defaults to agent when source empty",
-			body:       `{"source":"","topic":"notifications.github.acme.widgets.source","message":"hello"}`,
+			body:       `{"source":"","topic":"notifications.team.acme-widgets.source","message":"hello"}`,
 			wantSource: "agent",
 		},
 		{
 			name:       "accepts human source",
-			body:       `{"source":"human","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"human","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "human",
 		},
 		{
 			name:       "accepts envoy source",
-			body:       `{"source":"envoy","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"envoy","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "envoy",
 		},
 		{
 			name:       "accepts slack source",
-			body:       `{"source":"slack","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"slack","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "slack",
 		},
 		{
 			name:       "accepts whatsapp source",
-			body:       `{"source":"whatsapp","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"whatsapp","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "whatsapp",
 		},
 		{
 			name:       "accepts ghostwispr source",
-			body:       `{"source":"ghostwispr","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"ghostwispr","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "ghostwispr",
 		},
 		{
 			name:       "accepts github source",
-			body:       `{"source":"github","topic":"notifications.github.acme.widgets.pr","message":"{}"}`,
+			body:       `{"source":"github","topic":"notifications.team.acme-widgets.pr","message":"{}"}`,
 			wantSource: "github",
 		},
 	}
@@ -2146,7 +2146,7 @@ func TestIdempotencyKey_Publish(t *testing.T) {
 
 	// Test: same idempotency_key produces same DedupeKey
 	rr1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
 	req1.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr1, req1)
 
@@ -2159,7 +2159,7 @@ func TestIdempotencyKey_Publish(t *testing.T) {
 	}
 
 	rr2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.publish","message":"hello","idempotency_key":"publish-xyz"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr2, req2)
 
@@ -2186,7 +2186,7 @@ func TestIdempotencyKey_BackwardsCompat(t *testing.T) {
 
 	// Test: no idempotency_key produces different DedupeKeys (existing behavior)
 	rr1 := httptest.NewRecorder()
-	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.backwards","message":"hello"}`))
+	req1 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.backwards","message":"hello"}`))
 	req1.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr1, req1)
 
@@ -2199,7 +2199,7 @@ func TestIdempotencyKey_BackwardsCompat(t *testing.T) {
 	}
 
 	rr2 := httptest.NewRecorder()
-	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.github.acme.widgets.backwards","message":"hello"}`))
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/messages/publish", strings.NewReader(`{"topic":"notifications.team.acme-widgets.backwards","message":"hello"}`))
 	req2.Header.Set("Content-Type", "application/json")
 	handler.ServeHTTP(rr2, req2)
 
