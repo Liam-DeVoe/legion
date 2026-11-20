@@ -3,7 +3,7 @@
 // (`../test/extension-harness`).
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { legacyDispatchIssueSubject } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, legacyDispatchIssueSubject } from "@legion/contracts";
 import * as consumerDeliveryModule from "@legion/envoy-client/consumer-delivery";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
@@ -113,8 +113,15 @@ describe("consumer delivery", () => {
     options: {
       /** The first consumer answer reports a gap: messages aged out before the consumer's start. */
       readonly gap?: boolean;
-      /** The listener refuses every registration with this status and reason until `accept()`. */
-      readonly refuse?: { readonly status: number; readonly reason: string };
+      /**
+       * The listener refuses every registration with this status and reason until `accept()`,
+       * with `error` as its message (`this session was given no durable consumer` without it).
+       */
+      readonly refuse?: {
+        readonly status: number;
+        readonly reason?: string;
+        readonly error?: string;
+      };
       readonly entries?: readonly unknown[];
       readonly turn?: "idle" | "streaming";
       readonly runEphemeralTurn?: SessionContext["runEphemeralTurn"];
@@ -171,7 +178,7 @@ describe("consumer delivery", () => {
         if (refusing !== undefined) {
           return new Response(
             JSON.stringify({
-              error: "this session was given no durable consumer",
+              error: refusing.error ?? "this session was given no durable consumer",
               reason: refusing.reason,
             }),
             { status: refusing.status }
@@ -284,7 +291,11 @@ describe("consumer delivery", () => {
         refusing = undefined;
       },
       /** The listener refuses every registration from here on, as `options.refuse` does. */
-      refuse: (refusal: { readonly status: number; readonly reason: string }) => {
+      refuse: (refusal: {
+        readonly status: number;
+        readonly reason?: string;
+        readonly error?: string;
+      }) => {
         refusing = refusal;
       },
       /** The listener holds each registration from here on on the wire, until `release`. */
@@ -786,6 +797,89 @@ describe("consumer delivery", () => {
         message.includes("inbound messages are unavailable (")
       )
     ).toHaveLength(1);
+  });
+
+  // Row (e) of check l23, for this plugin (R24 of dispatch://INFRA-3589, against R26): the
+  // listener answers its bus-outage 503 to a registration whose known-session record did not
+  // land, after it made the session's consumer, so what the stream stores still reaches the
+  // session. Such a refusal is held as the start race is: no notice inside the bound, and a
+  // registration accepted inside it clears it with none. Past the bound the session is told once
+  // that the listener did not record its registration, and never that it has no consumer.
+  const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`;
+
+  /** One heartbeat tick whose registration the listener refuses: envoy-client's transport sends
+   *  a 5xx once more, so the tick is done once both attempts reached the listener. */
+  async function refusedTick(session: {
+    readonly registrations: readonly Registration[];
+    readonly tick: () => Promise<void>;
+  }): Promise<void> {
+    const before = session.registrations.length;
+    await session.tick();
+    await until(() => session.registrations.length >= before + 2, "the tick's second attempt");
+    await settle();
+  }
+
+  test("(e) a registration answered with the bus-outage 503 shows no notice inside the bound, the session still receives, and an accepted registration clears it with none", async () => {
+    const session = await bootConsumer("consumer-unrecorded-in-bound", {
+      refuse: { status: 503, error: UNRECORDED },
+    });
+    const start = Date.now();
+    try {
+      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await settle();
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+      // The listener made the consumer before the record's write, so a stored message arrives.
+      const inbox = session.relay(1, peer("unrecorded"));
+      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      expect(session.cards("evt-unrecorded")).toHaveLength(1);
+
+      setSystemTime(new Date(start + 15_000));
+      await refusedTick(session);
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+
+      session.accept();
+      setSystemTime(new Date(start + 30_000));
+      await session.tick();
+      expect(session.cards("Envoy inbound unavailable")).toEqual([]);
+      expect(session.cards("Envoy inbound restored")).toEqual([]);
+      expect(
+        session.notifications.filter((message) => message.includes("inbound messages are"))
+      ).toEqual([]);
+    } finally {
+      setSystemTime();
+      await session.stop();
+    }
+  });
+
+  test("(e) past the bound a bus-outage 503 is told once, as a registration the listener did not record, and the accepted registration after it says inbound is back", async () => {
+    const session = await bootConsumer("consumer-unrecorded-past-bound", {
+      refuse: { status: 503, error: UNRECORDED },
+    });
+    const start = Date.now();
+    // A namespace read, so this file still loads at a commit whose module lacks the export.
+    const FIRST_OPEN_BOUND_MS = consumerDeliveryModule.INBOUND_FIRST_OPEN_BOUND_MS ?? 120_000;
+    try {
+      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await settle();
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 1_000));
+      await refusedTick(session);
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 16_000));
+      await refusedTick(session);
+      const told = session.cards("Envoy inbound unavailable");
+      expect(told).toHaveLength(1);
+      expect(told[0]?.content).toContain("write the known-session record");
+      expect(told[0]?.content).toMatch(/not record/i);
+      expect(told[0]?.content).not.toContain("no durable consumer");
+      expect(told[0]?.content).not.toContain("receives none");
+
+      session.accept();
+      setSystemTime(new Date(start + FIRST_OPEN_BOUND_MS + 31_000));
+      await session.tick();
+      expect(session.cards("Envoy inbound restored")).toHaveLength(1);
+    } finally {
+      setSystemTime();
+      await session.stop();
+    }
   });
 
   // Row (d) of check l23, for this plugin (R24 of dispatch://INFRA-3589): a session that stops

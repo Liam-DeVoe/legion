@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import {
   type ConsumerDeliveryOptions,
   type ConsumerDeliverySnapshot,
@@ -10,6 +11,7 @@ import {
   deliverSubject,
   FOLLOW_CLOCK_ALLOWANCE_MS,
   inboundUnavailable,
+  inboundUnavailableNoticeText,
   RELAY_PROGRESS_INTERVAL_MS,
   RelayHeader,
   type RelayMessage,
@@ -17,7 +19,7 @@ import {
   registerWithRelay,
 } from "../consumer-delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
-import type { DeliveryAnswer } from "../transport";
+import { type DeliveryAnswer, EnvoyApiError } from "../transport";
 
 const SESSION = "ses_a";
 const AGENT = "notifications.agent.ses_a";
@@ -1372,5 +1374,67 @@ describe("one registration", () => {
 
     expect(relay.followed).toEqual([[AGENT, TEAM]]);
     expect([answers, told]).toEqual([[], ["no_grant"]]);
+  });
+
+  // Row (e) of check l23 (R24 of dispatch://INFRA-3589, against R26): the listener answers its
+  // bus-outage 503 to a registration whose known-session record did not land, after it made the
+  // session's consumer, so the session still receives what the stream stores for it. Such a
+  // refusal is held as the start race is: no notice inside the bound, and a registration accepted
+  // inside it clears it with none. Past the bound the session is told once, that the listener did
+  // not record its registration, and never that it has no consumer.
+  const UNRECORDED = `${BUS_UNANSWERED_PREFIX}: write the known-session record of ${SESSION}: context deadline exceeded`;
+  const unrecorded = () =>
+    new EnvoyApiError({
+      method: "POST",
+      url: "http://listener/v1/interests/subscribe",
+      status: 503,
+      responseBody: JSON.stringify({ error: UNRECORDED }),
+    });
+
+  test("(e) a registration answered with the bus-outage 503 at the session's start is held for the bound, and one accepted inside it clears it with no notice", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND - 1);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([]);
+
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("(e) a registered session whose later registration meets the bus-outage 503 is held the same way, from that refusal", async () => {
+    const report = reportOnClock();
+
+    await report.withRelay(Promise.resolve("registered"));
+    report.at(1_000);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(1_000 + BOUND - 1);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([]);
+
+    await report.withRelay(Promise.resolve("registered"));
+    expect([report.told, report.restored]).toEqual([[], []]);
+  });
+
+  test("(e) past the bound a bus-outage 503 is told once, as a registration the listener did not record and not as a session with no consumer", async () => {
+    const report = reportOnClock();
+
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    report.at(BOUND + 15_000);
+    await expect(report.withRelay(Promise.reject(unrecorded()))).rejects.toThrow(UNRECORDED);
+    expect(report.told).toEqual([UNRECORDED]);
+
+    // Every host words what it was told with this one text.
+    const notice = inboundUnavailableNoticeText(report.told[0] ?? "");
+    expect(notice).toMatch(/not record/i);
+    expect(notice).not.toContain("no durable consumer");
+    expect(notice).not.toContain("receives none");
+
+    report.at(BOUND + 30_000);
+    await report.withRelay(Promise.resolve("registered"));
+    expect(report.restored).toEqual([BOUND + 30_000]);
   });
 });
