@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 	"unsafe"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -23,8 +24,10 @@ import (
 // the client and the client's CONNECT reaches the server; nothing more the server sends does, as at
 // a hub whose auth service has not answered the CONNECT. nats.go holds its connection lock through a
 // reconnect attempt's dial and handshake (v1.55.0 doReconnect, nats.go:3554-3581), so while a
-// handshake is held every read of the connection's state waits, until the client's connect timeout
-// ends the attempt; the next attempt is held in turn.
+// handshake is held every read of the connection's state waits. The client's own connect timeout
+// would end the attempt, and the next would be held in turn; HoldReconnect gives the client a
+// connect timeout of the test's own (OwnConnectTimeout), so a held attempt ends only when the row
+// ends it: Release lets the answer through, and Cut drops the connection.
 //
 // The proxy (Cut, Freeze, Restore) carries the client's connections, and the hold's own relay sits
 // between it and the server. Restore ends a Cut or a Freeze and leaves a hold in force; Release
@@ -84,15 +87,46 @@ func (h *HandshakeHold) Hold() <-chan struct{} {
 	return held
 }
 
-// HoldReconnect holds (Hold) and waits until conn's reconnect handshake is held: a client's
-// CONNECT has reached the server through the hold, and nats.go holds its connection lock for that
-// handshake (AwaitLockHeld). Both waits are testwait's, so a reconnect that never reaches the hold
-// fails the test naming what it waited for. A bus client reconnects about a second after its
-// connection drops (ReconnectWait).
+// HoldReconnect gives conn a connect timeout of the test's own (OwnConnectTimeout), holds (Hold)
+// and waits until conn's reconnect handshake is held: a client's CONNECT has reached the server
+// through the hold, and nats.go holds its connection lock for that handshake (AwaitLockHeld). Both
+// waits are testwait's, so a reconnect that never reaches the hold fails the test naming what it
+// waited for. A bus client reconnects about a second after its connection drops (ReconnectWait).
+// The attempt it holds ends only when the row ends it (Release, Cut).
 func (h *HandshakeHold) HoldReconnect(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
+	OwnConnectTimeout(t, conn)
 	testwait.Receive(t, "a reconnect's CONNECT to reach the server through the handshake hold", h.Hold())
 	AwaitLockHeld(t, conn)
+}
+
+// OwnConnectTimeout sets conn's connect timeout to what is left of the test binary's deadline less
+// testwait's margin, and with no deadline (-timeout 0) to no bound a test can reach, as
+// RequestTimeout bounds a JetStream request. nats.go's connect timeout (Options.Timeout, v1.55.0)
+// bounds two things. One is the TCP dial, through the net.Dialer that Options.Connect builds from it
+// once (nats.go:2017-2021); this leaves that dial's bound as Connect set it, since the proxy accepts
+// every dial at once. The other is each connect and reconnect attempt's whole handshake, read at each
+// attempt: processConnectInit sets the socket's deadline that far ahead (nats.go:2944) for the
+// server's INFO, any TLS handshake, and the CONNECT and PING through the server's PONG
+// (sendConnect). A hold keeps that PONG, so the handshake's deadline is what ends a held attempt, at
+// the client's own timeout: nats.go's DefaultTimeout (2 s), or a bus client's connectTimeout (5 s).
+// A row that reads a held attempt then turns on which of two real timers fires first, that one or
+// the bound under test (an intake stop's callNATS, bus.ConnLockWait, 100 ms), and a loaded runner
+// can reverse them. With the test's own timeout a held attempt ends only when the row ends it, so
+// the bound under test is the one bound in the row. nats.go reads the timeout with its connection
+// lock held (createConn and processConnectInit run under it), and its Conn.Opts doc calls a change
+// to a running connection's options a race, so the timeout is set with that lock taken (connLock),
+// as HoldWriteLock takes it.
+func OwnConnectTimeout(t testing.TB, conn *natsgo.Conn) {
+	t.Helper()
+	timeout := unbounded
+	if deadline, bounded := testwait.Context(t).Deadline(); bounded {
+		timeout = max(time.Until(deadline), time.Millisecond)
+	}
+	lock := connLock(t, conn)
+	testwait.Eventually(t, "nats.go to let its connection lock go, so the row can set the connect timeout under it", lock.TryLock)
+	conn.Opts.Timeout = timeout
+	lock.Unlock()
 }
 
 // AwaitLockHeld waits until nats.go holds its connection lock on conn (lockFree), as a held
@@ -186,10 +220,10 @@ func Answers(t testing.TB, what string, calls ...func() error) []error {
 	return got
 }
 
-// AwaitLockFree waits until nats.go lets conn's connection lock go (lockFree). With every
-// reconnect's handshake held (HoldReconnect), that is the end of an attempt, when nats.go reads the
-// connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus client) with
-// its lock free.
+// AwaitLockFree waits until nats.go lets conn's connection lock go (lockFree). A handshake held
+// through HoldReconnect ends only when the row ends it; once Cut has dropped its connection, nats.go
+// reads the connection as reconnecting and waits between attempts (ReconnectWait, 1 s for a bus
+// client) with its lock free, and each attempt it makes while the proxy is cut ends at once.
 func AwaitLockFree(t testing.TB, conn *natsgo.Conn) {
 	t.Helper()
 	testwait.Eventually(t, "nats.go to let its connection lock go: the held attempt to end", func() bool {
@@ -204,10 +238,12 @@ func (h *HandshakeHold) Attempts() int64 { return h.attempts.Load() }
 // AnswersWithinAttempt runs each call at once, each on a goroutine of its own, and returns their
 // answers in order. It fails the test, naming what, unless every call answered within the handshake
 // attempt the hold held when they began: no later attempt has reached the hold by the time all have
-// answered, and nats.go's lock is still held then (RequireLockHeld). A call that waits for nats.go's
-// lock answers only once that attempt has ended, at the client's connect timeout: in the gap after
-// it, with the lock free, or once the next attempt has begun. The row decides by those events, and
-// its waits are testwait's, with no bound of their own.
+// answered, and nats.go's lock is still held then (RequireLockHeld). The attempt ends only when the
+// row ends it (HoldReconnect's connect timeout is the test's own), so a call that waits for nats.go's
+// lock gives no answer while the hold holds, and the wait for its answer (Answers) fails the test,
+// naming the call; the attempt count and the lock catch an answer that came only once something
+// else had ended the attempt. The row decides by those events, and its waits are testwait's, with no
+// bound of their own.
 func (h *HandshakeHold) AnswersWithinAttempt(t testing.TB, conn *natsgo.Conn, what string, calls ...func() error) []error {
 	t.Helper()
 	began := h.Attempts()

@@ -53,6 +53,9 @@ func TestAConnectionsOwnCheckKeepsALifeAfterACleanReconnect(t *testing.T) {
 	t.Run("a drop between life and connected reads", func(t *testing.T) {
 		client, hold := heldHandshakeClient(t)
 		conn := client.Connection()
+		// The hook below holds a reconnect's handshake (Hold) until the pin has read its count; the
+		// attempt ends only when the row releases it, with a connect timeout of the test's own.
+		testnats.OwnConnectTimeout(t, conn)
 		w := client.WindowUntil(nil).(*window)
 		original := lifeOf(conn).current()
 		var once sync.Once

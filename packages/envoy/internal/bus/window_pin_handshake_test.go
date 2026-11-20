@@ -50,9 +50,12 @@ func heldHandshakeClient(t *testing.T) (*Client, *testnats.HandshakeHold) {
 //
 // The controls: each client pins a window before the hold, and once the hold is released and the
 // client has heard of its reconnect, a new window sends twice, so the answers are the hold's and not
-// a client that cannot connect. The negative control is the pin as it was (ensureConnWithContext,
-// Stats and current() under pinning): its answers come only once the attempt has ended, and its first
-// sends do not both reach their wait for a connection while the handshake is held.
+// a client that cannot connect. The held attempt ends only when the row ends it (HoldReconnect
+// gives the client a connect timeout of the test's own), so no timer of nats.go's ends a call the
+// row waits for. The negative control is the pin as it was (ensureConnWithContext, Stats and
+// current() under pinning): its answers do not come while the attempt is held, so the wait for them
+// gives up, and its first sends do not both reach their wait for a connection while the handshake
+// is held.
 func TestAWindowsPinIsNotHeldAcrossAHeldHandshake(t *testing.T) {
 	pinsAgain := func(t *testing.T, client *Client, hold *testnats.HandshakeHold) {
 		t.Helper()

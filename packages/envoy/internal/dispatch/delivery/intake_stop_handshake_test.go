@@ -203,12 +203,14 @@ func (r *stopRow) requireNoHandBack(t *testing.T, delivery *intakeDelivery, naks
 	}
 }
 
-// reconnect releases the row's hold and waits until the client has reconnected through it.
+// reconnect restores the row's link should the row have cut it, releases the row's hold, and waits
+// until the client has reconnected through it.
 func (r *stopRow) reconnect(t *testing.T) {
 	t.Helper()
 	for len(r.reconnected) > 0 {
 		<-r.reconnected
 	}
+	r.hold.Restore()
 	r.hold.Release()
 	testwait.Receive(t, "control: the client to reconnect once the hold is released", r.reconnected)
 }
@@ -222,9 +224,10 @@ func (r *stopRow) reconnect(t *testing.T) {
 // Every subtest decides by events, never by how long a call took. One that holds a handshake has
 // every StopDelivering it makes answer within the attempt held when it waits for them
 // (HandshakeHold.AnswersWithinAttempt): no later attempt has reached the hold, and nats.go's lock is
-// still held. One that holds a write has them answer while the write is still held; the write never
-// ends on its own. Each stop's context has already ended, or never ends, so no stop answers by its
-// own deadline:
+// still held. A held attempt ends only when the row ends it, since HoldReconnect gives the client a
+// connect timeout of the test's own. One that holds a write has them answer while the write is still
+// held; the write never ends on its own. Each stop's context has already ended, or never ends, so no
+// stop answers by its own deadline:
 //
 //   - a drain NATS has not taken: two calls at once during a held handshake, under contexts that
 //     never end; once the hold is released the subscription is drained all the same: the server
@@ -232,12 +235,14 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a given-up handler during a held handshake: the handler hands its message back as
 //     Intake.deliver does, and the stop holds a second message behind it; the server is sent no
 //     hand-back of either, even once the hold is released and the link moves;
-//   - a stop between reconnect attempts: the same, begun while nats.go waits between two held
-//     attempts with its lock free, so the drain answers at once on a link that is down; the stops'
-//     context ends once the next attempt is held;
-//   - a drain on a link that is down: the stop's drain answers at once between two attempts, the
-//     link then comes back, and only then is the handler given up: the server is sent no hand-back
-//     of either message, since nothing says the server had the subscription's interest gone;
+//   - a stop between reconnect attempts: the same, begun once the row has cut the held attempt's
+//     link, while nats.go waits between attempts with its lock free, so the drain answers at once on
+//     a link that is down; the link then comes back, and the stops' context ends once the next
+//     attempt is held;
+//   - a drain on a link that is down: once the row has cut the held attempt's link, the stop's drain
+//     answers at once between attempts, the link then comes back, and only then is the handler given
+//     up: the server is sent no hand-back of either message, since nothing says the server had the
+//     subscription's interest gone;
 //   - an acknowledgement, a head-write hand-back and a job acknowledgement begun before the stop:
 //     a handler begins its answer during a held handshake, and the stop begins once it has;
 //   - an unsubscribe while a write holds the lock: the stop drained on a moving link and its drain
@@ -289,14 +294,17 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		naks := watchHandBacks(t, row.uri)
 		delivery := row.delivery()
 		row.hold.HoldReconnect(t, row.conn)
-		// The held attempt ends at the client's connect timeout; nats.go then waits a second
-		// before the next, which the hold holds too.
+		// The row ends the held attempt: Cut drops its connection and ends each attempt at once until
+		// Restore, and nats.go waits a second between attempts with its lock free.
+		row.hold.Cut()
 		testnats.AwaitLockFree(t, row.conn)
 		between := row.hold.Attempts()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		first, second := row.stopUnder(ctx), row.stopUnder(ctx)
-		// The handler is given up, and hands its message back, once the next attempt is held.
+		// The link comes back and the hold holds the next attempt; the handler is given up, and
+		// hands its message back, once that attempt is held.
+		row.hold.Restore()
 		waitFor(t, func() bool { return row.hold.Attempts() > between }, func() string {
 			return "control: no next attempt reached the hold"
 		})
@@ -312,8 +320,10 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		naks := watchHandBacks(t, row.uri)
 		delivery := row.delivery()
 		row.hold.HoldReconnect(t, row.conn)
-		// Between two held attempts the link is down and nats.go's lock is free, so the drain
-		// answers at once: DrainSubscription reads the link down and unsubscribes on the client alone.
+		// The row cuts the held attempt's link: the link is down and nats.go's lock is free between
+		// attempts, so the drain answers at once: DrainSubscription reads the link down and
+		// unsubscribes on the client alone.
+		row.hold.Cut()
 		testnats.AwaitLockFree(t, row.conn)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
