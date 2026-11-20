@@ -160,8 +160,9 @@ type Reconciler struct {
 	// runs the pass on. A pass that has not covered every head by then ends where it stands,
 	// logs its one line and leaves the next pass the cursor it reached. Zero is unbounded. A
 	// rate limit GitHub answers as the bound falls is still written to the shared ledger after
-	// it, for up to githubapp's limitRecordTimeout (5 s), so a pass's last write can end that
-	// much past PassTimeout.
+	// it, for up to the wait GitHub named (githubapp's limitRecordContext), so a pass's last write
+	// can end that much past PassTimeout. The pass's attempt is then recorded within one
+	// PassTimeout more (githubreads.Finish).
 	PassTimeout time.Duration
 	// Instance answers this process's row in the registry of live server processes, the id
 	// processes.Register gave it, and "" while the process holds none yet. It is what each pass

@@ -472,13 +472,51 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 			"reason", string(end), "stopped", stopped.Format(time.RFC3339Nano),
 			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
 	}
-	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
-	defer cancel()
-	if err := hold.Release(release); err != nil {
+	if err := releaseHold(ctx, hold); err != nil {
 		// The renewal has stopped, and the row lapses on its own, TTL after the last renewal.
 		slog.Error("dispatch outbox: release the publisher hold", "instance", o.instance, "error", err)
 	}
 	return end
+}
+
+// releaseHold releases hold on ctx's values without its cancel, so a process that is stopping
+// still frees the name at once for a standby. The release waits until the hold's row lapses on its
+// own, the hold's loss deadline plus Margin (publisherHoldOptions), and no longer: until then it
+// is what lets a standby take the name before the lapse, and from then a standby takes it anyway,
+// at the lapse it armed its timer to (tryHold, duty.Expiry). The deadline is read before Release,
+// which closes Lost and so stops it moving.
+func releaseHold(ctx context.Context, hold *duty.Hold) error {
+	release, cancel := context.WithDeadline(context.WithoutCancel(ctx), hold.Deadline().Add(publisherHoldOptions.Margin))
+	defer cancel()
+	return hold.Release(release)
+}
+
+// untilTheHoldLapses is ctx's values without its cancel, for a statement only the publisher
+// hold's holder sends: a batch's record (recordBatch), a fallback pass's claim and its record
+// (claimFallbackCopies, recordFallbackCopies). It ends when the hold's row lapses at the earliest,
+// once hold has reported itself lost (duty.Hold.Lost): its loss deadline, which stops moving then,
+// plus Margin (publisherHoldOptions), since a renewal's loss deadline is Margin before the expiry
+// it bought. Until then the statement waits as long as the database takes: the renewal keeps the
+// hold this process's while the database answers it, and the records check on the database's
+// clock that the row still names this process. From then a standby may hold the row and read
+// again what the statement was to settle.
+func untilTheHoldLapses(ctx context.Context, hold fence) (context.Context, context.CancelFunc) {
+	live, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	go func() {
+		select {
+		case <-hold.Lost():
+		case <-live.Done():
+			return
+		}
+		lapse := time.NewTimer(time.Until(hold.Deadline().Add(publisherHoldOptions.Margin)))
+		defer lapse.Stop()
+		select {
+		case <-lapse.C:
+			cancel()
+		case <-live.Done():
+		}
+	}()
+	return live, cancel
 }
 
 // serve scans while this process holds hold: once at once, then on each wake, while the NATS

@@ -1004,6 +1004,7 @@ What the two processes share, and what each keeps to itself:
   Scope `app` holds the calls the App JWT signs (installation lookups, token mints, the webhook delivery endpoints) and `installation:<id>` the calls under that installation's token, each for the wait GitHub gave, by the database's clock.
   While one is in force a call under it fails at once with no request:
   the GitHub proxy answers `503 GITHUB_RATE_LIMITED` with `Retry-After` (Routes, below), a delivery intake read fails and is acknowledged as any failure is and the five-minute reconcile catches up once the limit ends, and the webhook redelivery sweep stops (Webhook redelivery, above).
+  The write of a limit GitHub answered runs past its caller's own end and waits for the database until the limit itself ends, and no longer (`githubapp`'s `limitRecordContext`); a limit GitHub names no wait for holds nothing and is not written.
   A database that cannot be read or written leaves each process to GitHub's own answers, with a log line.
   Installation tokens stay in each process:
   GitHub budgets the installation, not the token, and storing tokens would put live credentials in Postgres and its backups.
@@ -1502,7 +1503,7 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
 - The record of GitHub reads, which `/healthz` answers as `github` (Routes, below), is one copy per process (`githubreads.Copy`), read at start and again each time any process writes `github_read_attempts`:
   the table's row trigger notifies `dispatch_github_read_attempts` (`20261118020802`) with the read's name, and each of the four loops that read GitHub under a lease (the delivery reconcile, the architecture import, the webhook redelivery sweep and the CI reconcile, below) writes its read's row at the end of each pass that asked GitHub anything or met a failure, unless this process's shutdown cut the pass short.
   The copy is kept only where a GitHub App is configured and holds no timer, and the probe reads it alone, so `github` sends the database no statement;
-  a read that fails is logged at WARN and keeps the copy it had until the next wake, which is a write by any process or the hub's next successful LISTEN.
+  a read takes the process's context and no bound of its own, since nothing is due after it that it would delay, and one that fails is logged at WARN and keeps the copy it had until the next wake, which is a write by any process or the hub's next successful LISTEN.
 
 The two leased woken loops take their lease with no period.
 A process that finds it held tries again
@@ -3867,7 +3868,7 @@ Each item below names a path with its method and identity, then its purpose.
     It opens in the function the lease runs and in nothing a route or a command also calls, so `envoy-dispatch redeliver-webhooks`, the Settings Refresh of a source and `dispatch architecture-sync` record nothing.
     It is recorded when the pass ends (`githubreads.Finish`), in place of the attempt before it:
     nothing when the pass sent GitHub nothing and noted no failure (the sweep before NATS connects, a CI reconcile that binds no CI record writer or maps no repository, an architecture import with no enabled source, a delivery reconcile with no settings and no pull request head to re-read), nothing when this process's shutdown cut the pass short, `failed` when a failure was noted, and `succeeded` otherwise.
-    The write runs on a context of its own bounded at five seconds, so a CI reconcile pass that ends on its own bound is still recorded, and a failed write is logged at ERROR and changes nothing else of the pass.
+    The write runs on a context of its own, so a CI reconcile pass that ends on its own bound is still recorded; it waits up to one period of its loop, by when the next pass is due and writes the row again, and a failed write is logged at ERROR and changes nothing else of the pass.
     A CI reconcile pass can end `complete` in `ci_reconcile_passes` and record `failed` here: that row says how the pass ended, and this record says whether a GitHub read of it failed.
 
   - An attempt notes failures of two kinds, and both are listed here whole.

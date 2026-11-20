@@ -617,6 +617,9 @@ func (p *fenceAfterFirstSend) Deadline() time.Time {
 	return time.Now().Add(time.Hour)
 }
 
+// Lost never closes: what the test reads is the deadline the batch checks before each send.
+func (p *fenceAfterFirstSend) Lost() <-chan struct{} { return nil }
+
 // A batch checks the publisher hold's deadline before every send: once a send has met it the
 // batch sends nothing more, counts no attempt, writes nothing, and reports the hold lost. The
 // record is not checked against the in-process clock a second time - a batch whose sends all

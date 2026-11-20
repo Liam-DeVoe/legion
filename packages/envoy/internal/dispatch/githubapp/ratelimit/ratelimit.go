@@ -138,11 +138,16 @@ func (s *Store) Record(ctx context.Context, scope string, wait time.Duration) er
 // so a strike an hour after the last is treated as the first of a new run.
 const StrikeReset = time.Hour
 
-// strike is Strike's statement: one more strike, and the latest of now() plus GitHub's wait, one
-// minute doubled for each strike before this one (up to 64 minutes), and a limit already recorded.
+// LeastStrike is the shortest wait a strike records, whatever wait GitHub named: the first strike
+// of a run, which each strike after it doubles.
+const LeastStrike = time.Minute
+
+// strike is Strike's statement: one more strike, and the latest of now() plus GitHub's wait,
+// LeastStrike ($4) doubled for each strike before this one (up to 64 minutes), and a limit already
+// recorded.
 //
 // A scope whose last strike is older than StrikeReset starts again: its count goes to one and
-// its wait to a minute, exactly as the insert writes a scope that has no row at all. The clock
+// its wait to LeastStrike, exactly as the insert writes a scope that has no row at all. The clock
 // is struck_at (migration 20261110132532), which Strike alone writes, rather than updated_at,
 // which every write of the row moves. The two part on a scope that is both struck and recorded:
 // an installation's scope holds the secondary limits its queries meet, which are struck because
@@ -155,17 +160,17 @@ const StrikeReset = time.Hour
 // A null struck_at is a scope no strike has been recorded for: every row Record created and
 // nothing has struck -- an installation's scope that has met the ordinary REST limits alone --
 // and every row struck before the migration added the column, which nothing backfilled. The
-// first strike of such a scope begins its run at one minute, which is what '-infinity' says in
+// first strike of such a scope begins its run at LeastStrike, which is what '-infinity' says in
 // the reset condition below: a scope never struck is further back than any hour, so the one
 // condition reads the same in both the places it appears. For a row struck by the release
 // before the column, that costs one shorter wait, which the strike after it doubles again.
 const strike = `
 	insert into github_rate_limits as l (scope, until, strikes, struck_at, updated_at)
-	values ($1, now() + greatest(make_interval(secs => $2), interval '1 minute'), 1, now(), now())
+	values ($1, now() + greatest(make_interval(secs => $2), make_interval(secs => $4)), 1, now(), now())
 	on conflict (scope) do update set
 		strikes = case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 1 else l.strikes + 1 end,
 		until = greatest(l.until, now() + greatest(make_interval(secs => $2),
-			interval '1 minute' * power(2, case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
+			make_interval(secs => $4) * power(2, case when coalesce(l.struck_at, '-infinity') < now() - make_interval(secs => $3) then 0 else least(l.strikes, 6) end))),
 		struck_at = now(),
 		updated_at = now()
 	returning ` + columns
@@ -174,7 +179,7 @@ const strike = `
 // before a Clear or before StrikeReset of quiet, as GitHub asks of a request that keeps failing on
 // a secondary limit. It returns the row it wrote.
 func (s *Store) Strike(ctx context.Context, scope string, wait time.Duration) (Limit, error) {
-	limit, err := scan(s.pool.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
+	limit, err := scan(s.pool.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds(), LeastStrike.Seconds()))
 	if err != nil {
 		return Limit{}, fmt.Errorf("record the GitHub rate limit of %s: %w", scope, err)
 	}
@@ -189,7 +194,7 @@ func (s *Store) PreviewStrike(ctx context.Context, scope string, wait time.Durat
 		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
 	}
 	defer tx.Rollback(ctx)
-	limit, err := scan(tx.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds()))
+	limit, err := scan(tx.QueryRow(ctx, strike, scope, wait.Seconds(), StrikeReset.Seconds(), LeastStrike.Seconds()))
 	if err != nil {
 		return Limit{}, fmt.Errorf("preview the GitHub rate limit of %s: %w", scope, err)
 	}
