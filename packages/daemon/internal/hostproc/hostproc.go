@@ -25,7 +25,9 @@
 // none of the machine's (.github/scripts/private_proc.py, which ci.yaml's daemon steps and the e2e
 // proofs' scripts/e2e/lib/live-daemon-proof.sh run their binaries through), which is what holds
 // those routes. Each scan Check judges there goes to the binary's record (RecordEnv, record.go), from
-// which the wrapper lists the tests that read a process table.
+// which the wrapper lists the tests that read a process table. In CI a test binary of this module
+// that has no such record was started outside the wrapper, and ends before any of its tests runs
+// (refuseUnwrapped, record.go).
 package hostproc
 
 import (

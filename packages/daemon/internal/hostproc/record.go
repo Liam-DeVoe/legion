@@ -78,10 +78,55 @@ var recorder struct {
 	starter string
 }
 
-// A test binary opens its record as it starts, before any test runs, and writes its binary line,
+// CIEnv is the variable GitHub Actions sets to true in every step it runs.
+const CIEnv = "GITHUB_ACTIONS"
+
+// A test binary is refused before any test runs when CI started it outside the wrapper
+// (refuseUnwrapped), and otherwise opens its record as it starts and writes its binary line,
 // whether or not a test of it ever scans.
 func init() {
+	refuseUnwrapped()
 	openRecord()
+}
+
+// refuseUnwrapped ends a test binary that CI started with no record (RecordEnv unset), before any
+// of its tests runs, naming itself, with RefusalStatus. CI runs every test binary of this module
+// through .github/scripts/private_proc.py, which gives each one a record and a PID namespace of its
+// own, so a binary with no record was started some other way, on the runner's /proc, whatever
+// shell form started it: a script string handed to su -c or flock -c, a script file, a command a
+// variable holds, none of which rule 22 of check-ci-filters.sh can read in a workflow's text. A
+// child a test starts of its own binary inherits the record, or, given an environment of its own
+// (env -i), no CIEnv either; a test that sets RecordEnv to nothing has set it. A binary that only
+// lists its tests (-test.list) runs none and is let be. Outside CI nothing changes: a test run by
+// hand has no record and needs none.
+//
+// RefusalStatus is no status a test binary ends with otherwise: a failed test ends it with 1, and
+// a panic, a test's timeout or a fatal error of the runtime with 2; no code of this module but this
+// package's refusals ends one with 86. The refusal also comes before any test runs, so its output
+// holds no test's `--- FAIL` line.
+func refuseUnwrapped() {
+	if !inTest() || os.Getenv(CIEnv) != "true" || listsOnly(os.Args[1:]) {
+		return
+	}
+	if _, recorded := os.LookupEnv(RecordEnv); recorded {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s %s is a test binary that links internal/hostproc, started in CI (%s=true) with no %s: it "+
+		"runs outside .github/scripts/private_proc.py, on the runner's /proc, where its tests read every process of the "+
+		"machine; run it through the wrapper (docs/testing.md, \"A test that lists the machine's /proc\")\n",
+		Refusal, os.Args[0], CIEnv, RecordEnv)
+	exit(RefusalStatus)
+}
+
+// listsOnly says whether a test binary's arguments only list its tests (-test.list), which runs
+// none of them.
+func listsOnly(args []string) bool {
+	for _, arg := range args {
+		if name, _, _ := strings.Cut(strings.TrimLeft(arg, "-"), "="); name == "test.list" {
+			return true
+		}
+	}
+	return false
 }
 
 // openRecord opens the file RecordEnv names, in a test binary. The file is the wrapper's, made

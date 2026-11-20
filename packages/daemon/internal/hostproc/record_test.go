@@ -1,6 +1,7 @@
 package hostproc_test
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -281,4 +282,125 @@ func TestEachTestOfOneBinaryIsRecordedWithItsOwnScans(t *testing.T) {
 		{"scan", hostproc.ScanOwn, "TestScanPairSecond", "the pair's shared scanner", own, ""},
 		{"scan", hostproc.ScanOwn, "TestScanPairSecond", "the second's own scanner", own, ""},
 	})
+}
+
+// starterEnv is set in the child the test below starts as the binary go ran, the one process in
+// which TestRecordHelperStarter starts a helper of its own.
+const starterEnv = "HOSTPROC_RECORD_TEST_STARTER"
+
+// TestRecordHelperStarter is the binary go ran, for the test below: from a subtest, as the
+// launcher's tests start role-init, a stage or a PID-one helper, it starts its own binary again
+// with its whole environment and ChildEnv, and that helper scans (TestRecordHelperScans).
+func TestRecordHelperStarter(t *testing.T) {
+	if os.Getenv(starterEnv) == "" {
+		return
+	}
+	t.Run("a subtest", func(t *testing.T) {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		helper := exec.Command(self, "-test.run=^TestRecordHelperScans$", "-test.count=1")
+		helper.Env = append(os.Environ(), helperEnv+"=1", hostproc.ChildEnv(t))
+		if output, err := helper.CombinedOutput(); err != nil {
+			t.Fatalf("the helper failed: %v\n%s", err, output)
+		}
+	})
+}
+
+// A helper that the binary go ran starts of itself, from a subtest, with that binary's whole
+// environment, is recorded with the top-level test that started it: the binary took BinaryEnv out
+// of its own environment as it started, so its helper is known for a child, and ChildEnv named the
+// top-level test, not the subtest. The child here is started as the wrapper starts the binary go
+// ran, BinaryEnv set, which runChild with binary false would take out.
+func TestAHelperOfTheBinaryGoRanIsNamedByTheTopLevelTestThatStartedIt(t *testing.T) {
+	record := newRecord(t)
+	runChild(t, "^TestRecordHelperStarter$", true, starterEnv+"=1")
+	var scans [][]string
+	for _, line := range recordLines(t, record) {
+		if line[0] == "scan" {
+			scans = append(scans, line)
+		}
+	}
+	want := []string{"scan", hostproc.ScanOwn, "TestRecordHelperStarter", "the helper child's scanner", ownRoot(t), ""}
+	if len(scans) != 1 || !slices.Equal(scans[0], want) {
+		t.Fatalf("the record's scans are %q, want only %q", scans, want)
+	}
+}
+
+// ChildEnv names a test's top-level test, from the test itself, a subtest and a subtest of one:
+// the test the command ran, by which the wrapper lists a child's scans.
+func TestChildEnvNamesTheTopLevelTestFromAnySubtest(t *testing.T) {
+	want := hostproc.TestEnv + "=TestChildEnvNamesTheTopLevelTestFromAnySubtest"
+	if got := hostproc.ChildEnv(t); got != want {
+		t.Errorf("ChildEnv of the test is %q, want %q", got, want)
+	}
+	t.Run("a subtest", func(t *testing.T) {
+		if got := hostproc.ChildEnv(t); got != want {
+			t.Errorf("ChildEnv of %s is %q, want %q", t.Name(), got, want)
+		}
+		t.Run("a subtest of it", func(t *testing.T) {
+			if got := hostproc.ChildEnv(t); got != want {
+				t.Errorf("ChildEnv of %s is %q, want %q", t.Name(), got, want)
+			}
+		})
+	})
+}
+
+// A test binary CI starts with no record of the wrapper's ends before any of its tests runs, with
+// RefusalStatus, naming itself: however it was started (su -c, flock -c, a script file), it runs
+// outside private_proc.py, on the runner's /proc. The controls are the same binary with the
+// wrapper's record, with a record a test set to nothing, outside CI, and listing its tests in CI,
+// each of which runs as before.
+func TestATestBinaryCIStartsWithNoRecordIsRefusedBeforeAnyTestRuns(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outside []string
+	for _, entry := range os.Environ() {
+		switch name, _, _ := strings.Cut(entry, "="); name {
+		case hostproc.RecordEnv, hostproc.BinaryEnv, hostproc.TestEnv, hostproc.CIEnv:
+		default:
+			outside = append(outside, entry)
+		}
+	}
+	run := func(env []string, args ...string) (string, int) {
+		child := exec.Command(self, args...)
+		child.Env = append(append([]string{}, outside...), env...)
+		output, err := child.CombinedOutput()
+		var exit *exec.ExitError
+		switch {
+		case errors.As(err, &exit):
+			return string(output), exit.ExitCode()
+		case err != nil:
+			t.Fatal(err)
+		}
+		return string(output), 0
+	}
+	helper := []string{"-test.run=^TestRecordHelperScans$", "-test.count=1", "-test.v"}
+	ci := hostproc.CIEnv + "=true"
+	output, code := run([]string{ci}, helper...)
+	said := hostproc.Refusal + " " + self + " is a test binary that links internal/hostproc, started in CI"
+	if code != hostproc.RefusalStatus || !strings.Contains(output, said) || strings.Contains(output, "=== RUN") {
+		t.Fatalf("a test binary CI started with no record exited %d and said:\n%s\nwant exit %d, %q and no test run",
+			code, output, hostproc.RefusalStatus, said)
+	}
+	record := filepath.Join(t.TempDir(), "scans")
+	if err := os.WriteFile(record, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range []struct {
+		name, want string
+		env, args  []string
+	}{
+		{"the wrapper's record", "--- PASS: TestRecordHelperScans", []string{ci, hostproc.RecordEnv + "=" + record, hostproc.BinaryEnv + "=1"}, helper},
+		{"a record a test set to nothing", "--- PASS: TestRecordHelperScans", []string{ci, hostproc.RecordEnv + "="}, helper},
+		{"outside CI", "--- PASS: TestRecordHelperScans", nil, helper},
+		{"listing its tests in CI", "TestRecordHelperScans\n", []string{ci}, []string{"-test.list=^TestRecordHelperScans$"}},
+	} {
+		if output, code := run(control.env, control.args...); code != 0 || !strings.Contains(output, control.want) || strings.Contains(output, hostproc.Refusal) {
+			t.Errorf("with %s the binary exited %d and said:\n%s\nwant exit 0 and %q", control.name, code, output, control.want)
+		}
+	}
 }
