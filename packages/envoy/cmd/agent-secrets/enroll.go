@@ -52,7 +52,11 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 	// PrintDefaults, which -h and every usage error print, would print it, and it is the
 	// directory of key.pem, a file that holds a credential.
 	out := flags.String("out", "", "--pod: the directory holding key.pem and enrollment; AGENT_SECRETS_KEY_DIR when not given")
-	projectsFlag := flags.String("projects", "", "--helper: the Dispatch projects the session works on, project keys separated by spaces (\"PRIV CORE\"); default "+brokerclient.ProjectsVar)
+	// --projects names the Dispatch projects the session works on, defaulting to
+	// AGENT_SECRETS_PROJECTS, as register's does. --helper sends them for the box's session; --pod
+	// sends them for the pod, which the broker takes only from a person's pod, the one pod that
+	// acts for a person, and refuses from a service's pod (PROJECTS_NEED_A_PERSON).
+	projectsFlag := flags.String("projects", "", "the Dispatch projects the session or the person's pod works on, project keys separated by spaces (\"PRIV CORE\"); default "+brokerclient.ProjectsVar)
 	if err := flags.Parse(flagArgs); err != nil {
 		return exitUsage(err)
 	}
@@ -72,22 +76,25 @@ func cmdEnroll(args []string, stdout, stderr io.Writer) int {
 		// registers no agent session, so each of them given here asked for something this mode
 		// does not do. Refused by name, as --helper beside --pod is one line above, rather than
 		// silently ignored.
-		for _, name := range []string{"runtime-id", "thumbprint", "session-id", "projects"} {
+		for _, name := range []string{"runtime-id", "thumbprint", "session-id"} {
 			if flagGiven(flags, name) {
-				fmt.Fprintf(stderr, "agent-secrets enroll: --%s is --helper's and --pod takes none of it: a pod's runtime id is the pod UID of the token it presents, its thumbprint is the key this writes into --out, it registers no agent session, and its project is the one its operator's entry maps its account to\n", name)
+				fmt.Fprintf(stderr, "agent-secrets enroll: --%s is --helper's and --pod takes none of it: a pod's runtime id is the pod UID of the token it presents, its thumbprint is the key this writes into --out, and it registers no agent session\n", name)
 				return exitUsageError
 			}
 		}
-		return cmdEnrollPod(*service, *podTokenFile, *out, stdout, stderr)
-	}
-	if !*helperFlag {
+	} else if !*helperFlag {
 		fmt.Fprintln(stderr, "agent-secrets enroll: --helper is required (this CLI enrolls a session key only through the local agent-secrets-helper socket; a Kubernetes pod enrolls itself with --pod)")
 		return exitUsageError
 	}
+	// Read for either mode before it asks anyone, so a list that is no list is refused, naming the
+	// setting and never the value, before the helper or the broker is asked.
 	projects, err := sessionProjectsFlag(*projectsFlag, flags)
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets enroll: %v\n", err)
 		return exitUsageError
+	}
+	if *podFlag {
+		return cmdEnrollPod(*service, *podTokenFile, *out, projects, stdout, stderr)
 	}
 	return cmdEnrollHelper(*runtimeID, *thumbprint, *sessionID, projects, stdout, stderr)
 }

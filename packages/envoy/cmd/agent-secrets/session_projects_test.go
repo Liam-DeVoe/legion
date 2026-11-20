@@ -7,17 +7,17 @@ import (
 	"github.com/sjawhar/envoy/internal/brokerclient"
 )
 
-// TestTheRegisterAndEnrollSynopsesNameProjects: the usage line of register, and of enroll's
-// --helper half, names --projects, the option that names a session's Dispatch projects; enroll's
-// --pod half refuses the option, so its half names none.
+// TestTheRegisterAndEnrollSynopsesNameProjects: the usage line of register, and of each half of
+// enroll, names --projects, the option that names a session's Dispatch projects. A person's pod
+// names its projects as the person's session does, so enroll's --pod half names it too.
 func TestTheRegisterAndEnrollSynopsesNameProjects(t *testing.T) {
 	if synopsis := lookupCommand("register").synopsis; !strings.Contains(synopsis, "[--projects ") {
 		t.Errorf("register's synopsis %q names no --projects", synopsis)
 	}
 	synopsis := lookupCommand("enroll").synopsis
 	helperHalf, podHalf, found := strings.Cut(synopsis, " | ")
-	if !found || !strings.Contains(helperHalf, "[--projects ") || strings.Contains(podHalf, "--projects") {
-		t.Errorf("enroll's synopsis %q: want --projects in its --helper half and not in its --pod half", synopsis)
+	if !found || !strings.Contains(helperHalf, "[--projects ") || !strings.Contains(podHalf, "[--projects ") {
+		t.Errorf("enroll's synopsis %q: want --projects in its --helper half and in its --pod half", synopsis)
 	}
 }
 

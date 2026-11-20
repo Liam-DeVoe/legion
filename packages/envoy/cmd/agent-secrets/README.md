@@ -249,6 +249,12 @@ refused `ALREADY_ENROLLED` — and records what the broker said in `<out>/enroll
 every later `agent-secrets` call in that directory reads out to the caller. A run that succeeds
 removes it.
 
+A pod whose account the broker's `BROKER_POD_OPERATORS` maps to a person acts for that person, and
+names its Dispatch projects as that person's session does: `enroll --pod` sends the list
+`AGENT_SECRETS_PROJECTS` holds, or `--projects` over it. The broker takes the list only when
+Dispatch says the person may see every project on it, and a restricted member's pod must name at
+least one. Any other pod names no project: the broker refuses its list `PROJECTS_NEED_A_PERSON`.
+
 **Nothing in the pod ends its enrollment.** `unenroll` goes through the machine's
 `agent-secrets-helper`, which a pod has not, so a pod cannot end its own; and the broker is never
 told the pod is gone, so a pod that dies leaves its enrollment until its lease lapses —
@@ -361,7 +367,8 @@ for an identity nothing can use; upgrade the helper before the client.
 A session that works on a private Dispatch project names it when it starts, so the broker
 releases that project's secrets to it: set `AGENT_SECRETS_PROJECTS` to the project keys, separated
 by spaces (`AGENT_SECRETS_PROJECTS="PRIV CORE"`), or pass `register --projects` (and
-`enroll --helper --projects` for a box). The session's token trade reads the same variable. The
+`enroll --helper --projects` for a box, or `enroll --pod --projects` for a person's pod). The
+session's token trade reads the same variable. The
 broker takes the list only when Dispatch says your person may see every project on it, and the
 list is fixed for the session's life. `agent-secrets self` prints it as a `projects:` line. A
 request for a private project's secret from a session that does not name the project is denied

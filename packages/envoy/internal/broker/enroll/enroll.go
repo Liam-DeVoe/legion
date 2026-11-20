@@ -110,10 +110,11 @@ var (
 	// named twice.
 	ErrProjectsInvalid = errors.New("projects is a list of at most 16 Dispatch project keys, each once")
 	// ErrProjectsNeedAPerson refuses projects named by an enrollment that acts for no person: a
-	// pod, whose project is the one its operator's entry maps its account to
+	// service's pod, whose project is the one its operator's entry maps its account to
 	// (exchange.Set.MappedProjects), and a machine's own session. A list is what a person's
-	// session asks for, and only a person can be asked whether they may see a project.
-	ErrProjectsNeedAPerson = errors.New("only a session that acts for a person names projects")
+	// session asks for, and a person's pod (PersonPodLogin) too, which acts for its person; only a
+	// person can be asked whether they may see a project.
+	ErrProjectsNeedAPerson = errors.New("only a session or a pod that acts for a person names projects")
 	// ErrProjectsUnchecked refuses a session naming projects that the broker cannot check with
 	// Dispatch: it holds no client of Dispatch's project access (BROKER_PROJECT_ACCESS_URL), or
 	// Dispatch did not answer. A list taken unchecked could name a project its person may not see,
@@ -122,9 +123,11 @@ var (
 	// ErrProjectNotVisible refuses a session naming a project its person may not see, or one
 	// Dispatch does not hold: the two read alike, so a refusal never says whether a project exists.
 	ErrProjectNotVisible = errors.New("the session names a project its person cannot see")
-	// ErrProjectsRequired refuses a session of a restricted member that names no project: such a
-	// person sees only the projects that name them, so their session names which
-	// (projectaccess.ErrListRequired).
+	// ErrProjectsRequired refuses a session of a restricted member that names no project, a
+	// person's pod among them: such a person sees only the projects that name them, so their
+	// session names which (projectaccess.ErrListRequired). `agent-secrets register`,
+	// `enroll --helper` and `enroll --pod` each read AGENT_SECRETS_PROJECTS, so the one setting
+	// the refusal names is the one each of them reads.
 	ErrProjectsRequired = errors.New("a restricted member's session names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on")
 )
 
@@ -196,8 +199,9 @@ type Enrollment struct {
 	// Projects are the Dispatch projects the session names, sorted and each once
 	// (oauthwire.ParseProjects), nil for none: the projects whose private secrets the broker may
 	// release to it (requests.Machine). Create takes a list only from a session that acts for a
-	// person and only when Dispatch says that person may see every project on it; the list is
-	// fixed for the enrollment's life, and an adoption never carries it to a successor.
+	// person, or a person's pod (PersonPodLogin), and only when Dispatch says that person may see
+	// every project on it; the list is fixed for the enrollment's life, and an adoption never
+	// carries it to a successor.
 	Projects []string
 	// Claim is what a pod's launcher states the pod runs for, kept as enrollments.claim: for the
 	// Legion daemon, the role claim token (legion-<project>-<issue>-<role>), which every role
@@ -690,7 +694,8 @@ func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (
 // says why. A person's pod login enrols its own pod alone and states no session name. It never
 // reads BROKER_SERVICES, and a pod of any other account is ErrPodSelfEnrollOnly. It enrols no
 // other kind, and it enrols nothing once BROKER_POD_OPERATORS no longer maps its account to its
-// person (authorized, ErrOperatorMismatch). A machine whose
+// person (authorized, ErrOperatorMismatch). It names its projects as its person's session does
+// (checkProjects). A machine whose
 // Google identity token the exchange
 // accepted enrolls a session under the credential that exchange minted it, which is why it
 // needs no kind and no token of its own here: the credential is the proof. Such a session
@@ -803,7 +808,7 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 
 // checkProjects is Create's rule for the projects a session names, run before any transaction
 // begins so that no call to Dispatch holds a row lock or a pooled connection: the list must be a
-// credential's list (ErrProjectsInvalid); only a session acting for a person names one
+// credential's list (ErrProjectsInvalid); only an enrollment acting for a person names one
 // (ErrProjectsNeedAPerson); a list is taken only where the broker can check it with Dispatch
 // (ErrProjectsUnchecked); and then projectaccess.ListAllowed, the one statement of the rule the
 // token exchange applies too, decides: every project named must be one the person may see
@@ -818,11 +823,18 @@ func (s *Service) Create(ctx context.Context, cred Credential, in Enrollment) (E
 // does not know (projectaccess.ErrUnknownMemberKind), since the kind is what an empty list asks; a
 // list naming projects asks only whether the person may see each, and no kind. Each refusal wraps
 // the project-access error it met.
+//
+// A person's pod (PersonPodLogin) is held to this rule exactly as its person's session is: it acts
+// for its person, so it names its projects, and they are checked against that person. That is
+// what keeps a restricted member's pod to what the member's own session sees, and lets it enrol
+// at all, since such a member must name a project. Its operator is what says so: authorized has
+// already refused an operator to every pod but a live person's pod login's own, so a pod reaches
+// here with an operator only as that, and every other pod, a service's, names no project.
 func (s *Service) checkProjects(ctx context.Context, in Enrollment) error {
 	if err := oauthwire.ValidProjects(in.Projects); err != nil {
 		return fmt.Errorf("%w: %v", ErrProjectsInvalid, err)
 	}
-	if len(in.Projects) > 0 && (in.Kind == "pod" || in.Operator == nil) {
+	if len(in.Projects) > 0 && in.Operator == nil {
 		return ErrProjectsNeedAPerson
 	}
 	if s.Projects == nil || in.Operator == nil {

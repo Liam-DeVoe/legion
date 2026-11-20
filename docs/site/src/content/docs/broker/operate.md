@@ -587,7 +587,10 @@ entry, set `BROKER_POD_REGISTRATION_AUDIENCE` and hand the daemon the pod's toke
 which no other route accepts.
 
 The pod enrols itself with `agent-secrets enroll --pod --service <its login service>`, which names
-no session. Its login, made with its own projected token, carries the person, and so does its
+no session. It names its Dispatch projects as the person's session does, with
+`AGENT_SECRETS_PROJECTS` or `--projects`, and a restricted member's pod must name at least one
+([Concepts](/legion/broker/concepts/#a-persons-pod)). Its login, made with its own projected token,
+carries the person, and so does its
 enrollment: the person's agent-tier secrets go to it at once, the person's human-tier secrets wait
 for the person's approval, and another person's secret waits for its owner's. A token of the
 account that is bound to no pod, such as one `kubectl create token` mints, logs in for no person

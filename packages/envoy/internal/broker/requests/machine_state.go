@@ -481,7 +481,7 @@ type enrollmentRow struct {
 	// without a second query (grantLogEvent).
 	SessionID string
 	// Projects are the Dispatch projects a session's enrollment named (enrollments.projects),
-	// empty for none and for every pod.
+	// empty for none and for every pod but a person's pod, which names them as a session does.
 	Projects []string
 	// Claim is what a pod's launcher stated the pod runs for (enrollments.claim), "" for none:
 	// for the Legion daemon, the role claim token whose issue's assignee is asked for a shared

@@ -649,6 +649,8 @@ names that project** and whose person may still see it:
 - A **pod** names no list of its own: its project is the one its operator's entry in
   `BROKER_EXCHANGE_ACCOUNTS` maps its service account to, for that entry's person. A machine's own
   session likewise names the one `BROKER_VM_EXCHANGE_ACCOUNTS` maps its fleet's Google account to.
+  A [person's pod](#a-persons-pod) acts for its person, so it names its list as that person's
+  session does.
 
 Every other credential is denied the secret `project-not-named`: a session naming another project
 or none, a person on the project's access list whose session does not name it, and a pod whose
@@ -730,6 +732,22 @@ Its request for a shared human-tier secret waits in the person's Inbox, as a req
 person's box does. No service entry admits it, since its login service is no service the
 deployment registers, and it gets no service's secret.
 
+Such a pod names its Dispatch projects as its person's session does
+([a private project's secrets](#a-private-projects-secrets)): `agent-secrets enroll --pod` sends
+the list `AGENT_SECRETS_PROJECTS` holds, or `--projects` over it, and the broker takes it only when
+Dispatch says the person may see every project on it. That list, and not the project of any
+`BROKER_EXCHANGE_ACCOUNTS` entry of its account, is what the pod names for a private project's
+secret, and each release asks Dispatch again whether the person still sees the project. So the pod
+gets no secret that its person's own session naming the same list would not get. A restricted
+member sees only the projects whose access list names them, so their pod must name at least one,
+as their session must: a pod naming none is refused `403 PROJECTS_REQUIRED`, which says to set
+`AGENT_SECRETS_PROJECTS`. A pod naming a project its person may not see, or one Dispatch does not
+hold, is refused `403 PROJECT_NOT_VISIBLE`, with the same words for both. While Dispatch cannot be
+reached, or on a broker with no `BROKER_PROJECT_ACCESS_URL`, a pod naming a project is refused
+`503 PROJECTS_UNCHECKED` and nothing is enrolled; a pod naming none enrolls as the person's session
+does, and the broker's log says it enrolled unchecked. Only a person's pod names projects: any other
+pod naming one is refused `400 PROJECTS_NEED_A_PERSON`.
+
 The pod's login enrolls that pod alone and names no session, so it never takes over a session of
 the person's box. The routes that list and revoke the person's machine logins and grants refuse the
 login `PERSON_POD_LOGIN`, so the pod lists and revokes none of them. The routes a service calls as
@@ -741,10 +759,12 @@ The broker reads the setting at each decision about the pod, not only when the p
 (`requests.Machine.requester`). When the deployment takes the account out of the setting, or maps
 it to another person, the pod's enrollment acts for no person from its next call. A grant the pod
 got at once because it was the person stops releasing and is not reused, a grant a person approved
-still releases, and a grant of a secret whose `requesters` names the person ends for good. The
-enrollment's own record keeps the person it was made for, so the grant log and that person's
-**Live grants** still name them. [Operate](/legion/broker/operate/#what-to-run) says what else a
-removal or a move does.
+still releases, and a grant of a secret whose `requesters` names the person ends for good. It also
+names no list of its own from then on, only its account's `BROKER_EXCHANGE_ACCOUNTS` project, as
+any pod of no person does, so a grant of a private project's secret that its list named ends for
+good at its next release. The enrollment's own record keeps the person it was made for, so the
+grant log and that person's **Live grants** still name them.
+[Operate](/legion/broker/operate/#what-to-run) says what else a removal or a move does.
 
 ## Requests and grants
 

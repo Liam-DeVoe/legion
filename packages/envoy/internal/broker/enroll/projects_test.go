@@ -168,9 +168,11 @@ func TestAnEmptyListEnrollsWhenK3IsDownOrUnset(t *testing.T) {
 	})
 }
 
-// TestAPodNamesNoProjectOfItsOwn: a pod's project is the one its operator's entry maps its account
-// to, never one it names, so a pod enrollment naming projects is refused before Dispatch is asked;
-// so is a list that is no list (lower case, a key twice, more than sixteen).
+// TestAPodNamesNoProjectOfItsOwn: a service's pod's project is the one its operator's entry maps
+// its account to, never one it names, so a service's pod enrollment naming projects is refused
+// before Dispatch is asked; so is a list that is no list (lower case, a key twice, more than
+// sixteen). A person's pod names its projects as its person's session does
+// (person_pod_test.go).
 func TestAPodNamesNoProjectOfItsOwn(t *testing.T) {
 	svc := newService(t)
 	dispatch := withProjects(t, svc)

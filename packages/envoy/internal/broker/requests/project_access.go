@@ -126,13 +126,18 @@ func anyProjectTagged(set *policy.Set, granted []requestedSecret) bool {
 }
 
 // credentialProjects is the person a credential acts for and the projects it names: a person's
-// session names the projects its enrollment recorded; a pod names the one project its operator's
-// entry maps its service account to (exchange.Set.MappedProjects), checked against that entry's
-// person; a machine's own session the one its fleet's Google account maps to; anything else names
-// none.
+// session names the projects its enrollment recorded, and so does a person's pod while
+// BROKER_POD_OPERATORS still maps its account to its person (personPodGrant, unmappedPersonPod),
+// since it named them when it enrolled as that session does and was checked against that person
+// (enroll.Service.Create); a pod of no person names the one project its operator's entry maps its
+// service account to (exchange.Set.MappedProjects), checked against that entry's person, and so
+// does a person's pod the setting no longer maps, which acts for no person; a machine's own
+// session the one its fleet's Google account maps to; anything else names none.
 func (m *Machine) credentialProjects(e enrollmentRow) (person string, projects []string) {
 	switch {
 	case e.Kind == "session" && e.Operator != nil:
+		return *e.Operator, e.Projects
+	case personPodGrant(e) && !m.unmappedPersonPod(e):
 		return *e.Operator, e.Projects
 	case m.Exchange == nil || e.Subject == nil:
 		return "", nil
