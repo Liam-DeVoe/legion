@@ -56,9 +56,9 @@ func TestSettlingAnIssuesDocumentsRetriesASettlementThatStoppedShort(t *testing.
 	requireSettledAtLatestVersion(t, service, artifactID)
 }
 
-// A settlement that stops short every time is given up after issueSettleAttempts attempts, well
-// within issueSettleBudget, so the close waiting on it goes ahead; the document keeps its debt
-// for the room's next load or the resumption, and its block is no ask yet.
+// A settlement that stops short every time is given up after issueSettleAttempts attempts, so the
+// close waiting on it goes ahead; the document keeps its debt for the room's next load or the
+// resumption, and its block is no ask yet.
 func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
@@ -72,18 +72,13 @@ func TestSettlingAnIssuesDocumentsGivesUpOnASettlementThatNeverLands(t *testing.
 		}
 	}
 	stopSettlementShort(service, artifactID, func() bool { return true })
-	started := time.Now()
 	err := service.SettleIssueDocuments(store.WithTransactionTracking(context.Background()), "DOC-1")
-	elapsed := time.Since(started)
 	service.afterSettleVersionWrite, service.afterSettleWarm = nil, nil
 	if err == nil {
 		t.Fatal("settling a document whose settlement never lands succeeded")
 	}
 	if got := attempts.Load(); got != issueSettleAttempts {
 		t.Fatalf("the document's settlement ran %d times, want %d", got, issueSettleAttempts)
-	}
-	if limit := issueSettleBudget + 500*time.Millisecond; elapsed >= limit {
-		t.Fatalf("settling the issue's documents took %v, want less than %v", elapsed, limit)
 	}
 	owed, pendingErr := settlementPending(context.Background(), service.store.Pool, artifactID)
 	if pendingErr != nil || !owed {

@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  More of Dispatch's waits on Postgres end only when no answer can still come. The close of an
+  issue waits for its documents' durable appends as long as the close itself may run, where it
+  gave up after 3 s and left the asks those appends hold unwithdrawn; an unkeyed close gets the
+  bound a keyed one has. A leased loop's read and record of its last pass wait behind another
+  session's lock on `duty_passes` for up to the loop's own period, where they gave up after 5 s
+  and skipped the pass. The shared listener waits for its ping's and its LISTEN's answer for as
+  long as it already goes without a round trip, 30 s, where it gave up after 5 s and redialed a
+  connection whose answer was on its way; the close of a connection it gives up keeps 5 s.
+time: 2026-11-20T14:25:56Z
+custom:
+  Issue: fixed-docker-bounds

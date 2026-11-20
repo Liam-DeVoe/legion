@@ -177,7 +177,9 @@ func (f *testHookFanout) dial(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, pglisten.DefaultPingTimeout)
+	// The LISTEN and the lock's try wait behind no lock, so the wait the listener gives its own
+	// LISTEN bounds them (pglisten.DefaultListenIdle): a server that answers within it is waited for.
+	ctx, cancel := context.WithTimeout(ctx, pglisten.DefaultListenIdle)
 	defer cancel()
 	key := int32(conn.PgConn().PID())
 	var held bool
@@ -190,7 +192,7 @@ func (f *testHookFanout) dial(ctx context.Context) (*pgx.Conn, error) {
 	if err != nil {
 		// Bounded on its own, as pglisten bounds every close: the dial's context may be the one
 		// that ended, and a half-open connection's Terminate would otherwise hold the redial.
-		closeCtx, cancelClose := context.WithTimeout(context.Background(), pglisten.DefaultPingTimeout)
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), pglisten.DefaultCloseTimeout)
 		defer cancelClose()
 		_ = conn.Close(closeCtx)
 		return nil, fmt.Errorf("take the test-hook lock: %w", err)

@@ -1559,6 +1559,7 @@ A channel is registered only for a loop that will run:
 `dispatch_embeddings` only with an embedder, `dispatch_delivery_settings` only with NATS and the GitHub App, and `dispatch_github_read_attempts` only with a GitHub App configured.
 No loop waits for the listener: each runs its boot pass whether or not it has connected, and keeps its due-time timers while it has no connection.
 Postgres does not replay a notification sent while nothing listened, so the hub signals every loop after each successful LISTEN, the first included, and a change made while it was redialing (backing off 1 to 30 s) is caught up then.
+The hub pings its connection after 30 s with no notification (`pglisten.DefaultListenIdle`), and waits as long again for the answer, and for a new connection's LISTEN, before it redials: a server or network that answers late keeps the connection, and one that has gone half-open is replaced within a minute of its last round trip.
 
 **The GitHub intake** (`delivery.Intake`) checks each message's subject before it decodes anything:
 only `notifications.github.<owner>.<repo>.pr.<n>`, with nothing after the number, and `notifications.github.<owner>.<repo>.workflow.<file>.<action>` can carry a kind it handles, and every other subject

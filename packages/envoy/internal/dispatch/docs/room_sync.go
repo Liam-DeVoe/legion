@@ -435,13 +435,13 @@ func statementRefused(conn *pgx.Conn, err error) bool {
 	return errors.As(err, &refused) && refused.Severity == "ERROR" && !conn.IsClosed()
 }
 
-// drop closes the connection within pglisten's ping timeout, so a half-open socket's Terminate
-// cannot hold the turn.
+// drop closes the connection within pglisten.DefaultCloseTimeout, so a half-open socket's
+// Terminate cannot hold the turn.
 func (s *roomSyncSender) drop() {
 	if s.conn == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), pglisten.DefaultPingTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), pglisten.DefaultCloseTimeout)
 	defer cancel()
 	_ = s.conn.Close(ctx)
 	s.conn = nil

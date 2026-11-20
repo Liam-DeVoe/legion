@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/testdeadline"
 )
 
@@ -1050,8 +1052,10 @@ func TestRelatedCheckShowsAnOpenAsk(t *testing.T) {
 
 // A failure partway through reading the asks' states leaves no item an ask state. An ask answered
 // and then retracted keeps its answer only in its events, read after every row's state; with
-// events locked past the read's deadline, keeping the states already read would show that ask as
-// closed with no answer.
+// events locked, keeping the states already read would show that ask as closed with no answer.
+// The fill runs on the test's own deadline, and the test ends it only once the answers' read is
+// the one waiting on the lock, so the failure the fill logs names that read: a slow read of the
+// rows before it is waited for, and cannot pass in its place.
 func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	fixture := newAskStateFixture(t, "PARTIAL")
 	fixture.answer(t, "twice", "alice", map[string]any{"selected": []string{"Brass"}})
@@ -1080,9 +1084,12 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 			Kind: "ask", ID: fixture.asks[name], Owner: model.SearchOwner{Kind: "issue", Key: issueKey, Status: "todo"},
 		})
 	}
-	fill := func(ctx context.Context) (model.Suggestions, map[string]map[string]json.RawMessage) {
+	fill := func(ctx context.Context) model.Suggestions {
 		suggestions := model.Suggestions{}
 		fixture.srv.fillRelatedItems(ctx, relatedInput{project: "PARTIAL"}, slices.Clone(results), &suggestions)
+		return suggestions
+	}
+	wireOf := func(suggestions model.Suggestions) map[string]map[string]json.RawMessage {
 		encoded, err := json.Marshal(suggestions)
 		if err != nil {
 			t.Fatalf("encode the related items: %v", err)
@@ -1097,11 +1104,12 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 		for _, item := range wire.Related {
 			byID[rawString(t, item["id"])] = item
 		}
-		return suggestions, byID
+		return byID
 	}
 
 	t.Run("answers read", func(t *testing.T) {
-		suggestions, wire := fill(context.Background())
+		suggestions := fill(context.Background())
+		wire := wireOf(suggestions)
 		if _, ok := wire[fixture.asks["closed"]]["ask"]; !ok {
 			t.Fatalf("related = %v, want the retracted ask's state", wire)
 		}
@@ -1117,17 +1125,69 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 	})
 
 	t.Run("answers locked", func(t *testing.T) {
-		lockTx, err := fixture.database.Pool.Begin(context.Background())
+		logs := &logtest.Recorder{}
+		logtest.SetDefault(t, logs)
+		ctx, cancel := testdeadline.Answered(t, context.Background())
+		defer cancel()
+		lockTx, err := fixture.database.Pool.Begin(ctx)
 		if err != nil {
 			t.Fatalf("begin lock tx: %v", err)
 		}
-		t.Cleanup(func() { _ = lockTx.Rollback(context.Background()) })
-		if _, err := lockTx.Exec(context.Background(), "lock table events in access exclusive mode"); err != nil {
+		t.Cleanup(func() { _ = lockTx.Rollback(context.WithoutCancel(ctx)) })
+		if _, err := lockTx.Exec(ctx, "lock table events in access exclusive mode"); err != nil {
 			t.Fatalf("lock events: %v", err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		defer cancel()
-		suggestions, wire := fill(ctx)
+		fillCtx, endFill := context.WithCancel(ctx)
+		defer endFill()
+		filled := make(chan model.Suggestions, 1)
+		go func() { filled <- fill(fillCtx) }()
+		// The fill's two reads, as pg_stat_activity shows each: the asks' rows, then their
+		// answers' events. The first of them seen waiting on a lock is the read the fill is held
+		// at; the fill is ended there, and its failure must name that read.
+		reads := []struct{ name, fragment, logged string }{
+			{"the asks' rows", "from asks a where a.id = any(", "load search ask states"},
+			{"the asks' answers", "where e.type = 'ask.answered'", "load search ask answers"},
+		}
+		held := -1
+		for held < 0 {
+			for index, read := range reads {
+				var waiting int
+				if err := fixture.database.Pool.QueryRow(ctx, `
+					select count(*) from pg_stat_activity
+					where datname = current_database() and wait_event_type = 'Lock' and strpos(query, $1) > 0
+				`, read.fragment).Scan(&waiting); err != nil {
+					t.Fatalf("read whether the fill waits on a lock: %v", err)
+				}
+				if waiting > 0 {
+					held = index
+				}
+			}
+			select {
+			case <-filled:
+				t.Fatal("the fill returned before any of its reads waited on the events lock")
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+		if held != 1 {
+			t.Fatalf("the fill waits at %s, want it held at the answers' read behind the events lock", reads[held].name)
+		}
+		endFill()
+		suggestions := <-filled
+		var failure string
+		for _, record := range logs.Records() {
+			if record.Message != "dispatch: related items carry no ask state" {
+				continue
+			}
+			record.Attrs(func(attr slog.Attr) bool {
+				if attr.Key == "error" {
+					failure = attr.Value.String()
+				}
+				return true
+			})
+		}
+		if !strings.HasPrefix(failure, reads[1].logged+":") {
+			t.Fatalf("the fill logged the failure %q, want the answers' read (%s) to have failed", failure, reads[1].logged)
+		}
 		if len(suggestions.Related) != 2 {
 			t.Fatalf("related = %+v, want both asks listed", suggestions.Related)
 		}
@@ -1136,7 +1196,7 @@ func TestRelatedCheckCarriesNoAskStateWhenTheAnswersCannotBeRead(t *testing.T) {
 				t.Fatalf("ask %s state = %+v, want none once the answers could not be read", item.ID, item.Ask)
 			}
 		}
-		for id, item := range wire {
+		for id, item := range wireOf(suggestions) {
 			if _, ok := item["ask"]; ok {
 				t.Fatalf("related item %s = %v, want no ask key", id, item)
 			}
