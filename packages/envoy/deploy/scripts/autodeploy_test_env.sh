@@ -393,12 +393,15 @@ job=$!
 # children_of PID prints PID's children, read from the children file of each of its threads, which
 # the kernel keeps for PID's own children (CONFIG_PROC_CHILDREN): a read of PID's entries alone, where
 # pgrep -P reads every process of the machine, which a loaded box takes seconds over and which no
-# bound of this row could cut short.
+# bound of this row could cut short. The file ends with no newline, so read's status is 1 at its
+# end even when it read every child: the status is no error here (as in proc_children,
+# scripts/e2e/lib/process-tree.sh), and a thread whose file cannot be opened adds no child.
 children_of() {
   local list
   local -a kids
   for list in /proc/"$1"/task/*/children; do
-    { read -r -a kids <"$list"; } 2>/dev/null || continue
+    kids=()
+    { read -r -a kids <"$list"; } 2>/dev/null || :
     ((${#kids[@]} == 0)) || printf '%s\n' "${kids[@]}"
   done
 }
