@@ -828,14 +828,15 @@ export interface LabelShapes {
    * `planRatingRefusal`, engine.go's `handoff`, main's since #4488, a16c218ee3). False for main
    * `ff2a10ef`'s daemon, whose completion request carries no rating. */
   readonly refusesRating: boolean;
-  /** A request body any string of which, a member's name or a value, holds U+0000 is refused 400
-   * before its route reads it, naming the first such string's place and where the character stands
-   * in it (`NUL_REFUSAL`, claims.go's `decodeJSON` and `refuseBadBody`, storable_text.go's
-   * `unstorableJSON`, main's since #4488). False for main `ff2a10ef`'s daemon, whose decoder reads
-   * no string of a body and whose apply of a completion or a backward move it takes fails on such
-   * text where it writes it into a text or jsonb column, answered 500 `FACT_APPLY_FAILED`
-   * (`STORES_NUL`). */
-  readonly refusesNul: boolean;
+  /** The words of the decoder's error for a request body any string of which, a member's name or a
+   * value, holds U+0000, which is refused 400 before its route reads it, naming the first such
+   * string's place and where the character stands in it (claims.go's `decodeJSON` and
+   * `refuseBadBody`, storable_text.go's `unstorableJSON`): `NUL_REFUSAL.refused` for main's daemon
+   * since #4463, `NUL_REFUSAL.unstorable` for main's from #4488 until #4463, each read by its own
+   * words (`refusesNul`). Undefined for main `ff2a10ef`'s daemon, whose decoder reads no string of
+   * a body and whose apply of a completion or a backward move it takes fails on such text where it
+   * writes it into a text or jsonb column, answered 500 `FACT_APPLY_FAILED` (`STORES_NUL`). */
+  readonly nulRefusal: string | undefined;
   /** The state's pull request carries `fixAttempts`, the count of heads pushed onto a red check
    * verdict (api's `PullRequestView.FixAttempts`, main `ff2a10ef`'s), which that label's contract
    * requires. False for main's daemon since contract 59 (#2780, 7e7bcf212f), which keeps no such
@@ -1154,33 +1155,43 @@ const REQUEST_WITHOUT_RATING: Marker = {
   text: 'WakeAt         *time.Time `json:"wakeAt,omitempty"`\n}',
 };
 
-/** The refusal of a request body holding U+0000 in a string, as main's daemon since #4488 words
- * it: the sentence every undecodable body is refused 400 with (claims.go's `refuseBadBody`), around
- * the decoder's error, which names the first such string's place in the body and where the first
- * U+0000 stands in it, counted from 1 in code points (storable_text.go's `unstorableText`). */
+/** The refusal of a request body holding U+0000 in a string: the sentence every undecodable body
+ * is refused 400 with (claims.go's `refuseBadBody`), around the decoder's error, which names the
+ * first such string's place in the body and where the first U+0000 stands in it, counted from 1 in
+ * code points (storable_text.go's `unstorableText`), in the words of main's daemon since #4463
+ * (`refused`, 2d3d73331b) or of main's from #4488 until #4463 (`unstorable`). On every route the
+ * daemon stand-in models, #4463 changed those words alone: its store keeps U+FFFD for a U+0000 and
+ * for a byte that is not UTF-8 in the text it writes (storetext's `Text`), but its decoder still
+ * refuses a body holding U+0000 before any route reads it (claims.go's `decodeJSON`), and a byte
+ * that is not UTF-8 is decoded as U+FFFD before any store sees it, by every daemon the rig runs
+ * (Go's encoding/json) and by the stand-in (`request.json()`) alike. */
 export const NUL_REFUSAL = {
   prefix: "invalid request body: ",
-  format: "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store",
+  refused:
+    "%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD",
+  unstorable: "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store",
 } as const;
-/** What a daemon that refuses such a body holds: the decoder of every request body ending in the
- * walk of its strings (`decodeJSON`'s `unstorableJSON`, through Dispatch's own walk,
- * `dispatchbody.NulInJSON`), the error in the words `NUL_REFUSAL` restates, and the 400 it is
+/** What a daemon that refuses such a body in the words `format` holds: the decoder of every
+ * request body ending in the walk of its strings (`decodeJSON`'s `unstorableJSON`, through
+ * Dispatch's own walk, `dispatchbody.NulInJSON`), the error in those words, and the 400 it is
  * written in. */
-const REFUSES_NUL: readonly Marker[] = [
-  { file: "daemon/internal/api/claims.go", text: "\treturn body, unstorableJSON(body)\n}" },
-  {
-    file: "daemon/internal/api/storable_text.go",
-    text: "place, value, found := dispatchbody.NulInJSON(body)",
-  },
-  {
-    file: "daemon/internal/api/storable_text.go",
-    text: `return fmt.Errorf("${NUL_REFUSAL.format}", place, utf8.RuneCountInString(value[:at])+1)`,
-  },
-  {
-    file: "daemon/internal/api/claims.go",
-    text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
-  },
-];
+function refusesNul(format: string): readonly Marker[] {
+  return [
+    { file: "daemon/internal/api/claims.go", text: "\treturn body, unstorableJSON(body)\n}" },
+    {
+      file: "daemon/internal/api/storable_text.go",
+      text: "place, value, found := dispatchbody.NulInJSON(body)",
+    },
+    {
+      file: "daemon/internal/api/storable_text.go",
+      text: `return fmt.Errorf("${format}", place, utf8.RuneCountInString(value[:at])+1)`,
+    },
+    {
+      file: "daemon/internal/api/claims.go",
+      text: `writeJSON(w, http.StatusBadRequest, errorBody("${NUL_REFUSAL.prefix}"+err.Error()))`,
+    },
+  ];
+}
 /** What main `ff2a10ef`'s daemon answers a request whose apply fails, by route: a completion's and
  * any other fact's (its api's handoff.go and architect.go `applyFact`). */
 export const FACT_APPLY_FAILED = {
@@ -1279,10 +1290,12 @@ export function servesFixAttempts(checkout: string): boolean {
  * request, each read as one of two shapes: main's since the change that brought it, by its own
  * marker, or main `ff2a10ef`'s, which predates every one of those changes, by the code it has in
  * their place (`STATUS_WITHOUT_MESSAGE`, `OUTBOX_WITHOUT_HOLDERS`, `ROW_AS_QUEUED`,
- * `BY_ROW_SESSION`, `BY_COMMIT_ID`, `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`). The
- * completion refusals and the route's verdict rule have one shape, every daemon the rig runs
- * holding them. Throws, naming each marker and its file, for a source of no shape or of both
- * (`sourceShape`), which refuses the batch at rig.sh's label_facts and a stand-in's boot. */
+ * `BY_ROW_SESSION`, `BY_COMMIT_ID`, `REQUEST_WITHOUT_RATING`, `PULL_REQUEST_COUNTED`). The refusal
+ * of a body holding U+0000 has a third: main's words since #4463, #4488's before them, and main
+ * `ff2a10ef`'s store in their place (`STORES_NUL`). The completion refusals and the route's
+ * verdict rule have one shape, every daemon the rig runs holding them. Throws, naming each marker
+ * and its file, for a source of no shape or of more than one (`sourceShape`), which refuses the
+ * batch at rig.sh's label_facts and a stand-in's boot. */
 export function labelShapes(checkout: string): LabelShapes {
   for (const [code, file] of COMPLETION_REFUSALS)
     sourceShape(checkout, `the completion refusal ${code}`, [
@@ -1376,12 +1389,21 @@ export function labelShapes(checkout: string): LabelShapes {
         value: false,
       },
     ]),
-    refusesNul: sourceShape(checkout, "the refusal of a body holding U+0000", [
-      { name: "main's daemon since #4488", markers: REFUSES_NUL, value: true },
+    nulRefusal: sourceShape<string | undefined>(checkout, "the refusal of a body holding U+0000", [
+      {
+        name: "main's daemon since #4463",
+        markers: refusesNul(NUL_REFUSAL.refused),
+        value: NUL_REFUSAL.refused,
+      },
+      {
+        name: "main's daemon from #4488 until #4463",
+        markers: refusesNul(NUL_REFUSAL.unstorable),
+        value: NUL_REFUSAL.unstorable,
+      },
       {
         name: "main ff2a10ef's daemon, whose decoder reads no string of a body and whose store fails on U+0000",
         markers: STORES_NUL,
-        value: false,
+        value: undefined,
       },
     ]),
     servesFixAttempts: servesFixAttempts(checkout),

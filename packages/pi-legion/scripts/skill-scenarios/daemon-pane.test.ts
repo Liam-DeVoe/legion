@@ -1707,6 +1707,12 @@ describe("the shapes of a label's daemon source", () => {
     }
     return dir;
   }
+  // The words of the decoder's refusal of a body holding U+0000: main's since #4463, and #4488's
+  // before them (daemon-pane.ts's `NUL_REFUSAL`, read by `refusesNul`).
+  const NUL_REFUSED =
+    "%s holds a NUL character (U+0000) at character %d, which the daemon API refuses rather than store it as U+FFFD";
+  const NUL_UNSTORABLE =
+    "%s holds a NUL character (U+0000) at character %d, which the daemon cannot store";
   const MAIN = {
     postsBackward: true,
     refusesReason: true,
@@ -1716,7 +1722,7 @@ describe("the shapes of a label's daemon source", () => {
     decidesByFooterHead: true,
     writesSteps: true,
     refusesRating: true,
-    refusesNul: true,
+    nulRefusal: NUL_REFUSED,
     servesFixAttempts: false,
   };
   const OLDER = {
@@ -1728,7 +1734,7 @@ describe("the shapes of a label's daemon source", () => {
     decidesByFooterHead: false,
     writesSteps: false,
     refusesRating: false,
-    refusesNul: false,
+    nulRefusal: undefined,
     servesFixAttempts: true,
   };
   const olderHost = process.env.SKILL_SCENARIOS_OLDER_CHECKOUT;
@@ -1737,9 +1743,10 @@ describe("the shapes of a label's daemon source", () => {
   // daemon that lacks the behaviour, which the head label's runs met as no sentence, no refusal,
   // no publication, a reviewer's task with no sentence of its round, a review of the review App
   // taken from any session and one taken on its `commit_id`, no step record, a rating taken where
-  // the daemon refuses it, a body holding U+0000 taken, and a pull request counting fix attempts
-  // main's daemon keeps no count of; and a reader that needs a file the nineteen are not.
-  test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000, and counts no fix attempt", () => {
+  // the daemon refuses it, a body holding U+0000 taken or refused in #4488's words, and a pull
+  // request counting fix attempts main's daemon keeps no count of; and a reader that needs a file
+  // the nineteen are not.
+  test("this checkout's daemon source posts a backward move's sentence, refuses a reason, publishes the role holders, names the review round, takes the reviewer's session alone, holds a review to its footer's head, records each step, refuses an unasked rating and a body holding U+0000 in main's words since #4463, and counts no fix attempt", () => {
     expect(labelShapes(CHECKOUT)).toEqual(MAIN);
     expect(labelShapes(copyOf(CHECKOUT))).toEqual(MAIN);
   });
@@ -1889,12 +1896,13 @@ describe("the shapes of a label's daemon source", () => {
     "case !endsRetro && fact.PlanRating != nil:\n\t\treturn intake.PlanRatingUnexpected(what)";
   const RATING_WORDS =
     'func PlanRatingUnexpected(what string) *Refusal {\n\treturn &Refusal{Status: 400, Code: "PLAN_RATING_UNEXPECTED", Message: fmt.Sprintf(\n\t\t"%s names planRating or planReason, and only the completion that ends the retro rates the plan; send it again without both, and nothing was recorded", what)}';
-  // The refusal of a body holding U+0000, main's since #4488 (daemon-pane.ts's `REFUSES_NUL`).
+  // The refusal of a body holding U+0000, main's since #4488, in main's words since #4463 and in
+  // #4488's before them (daemon-pane.ts's `refusesNul`).
   const STORABLE = "daemon/internal/api/storable_text.go";
   const NUL_DECODED = "\treturn body, unstorableJSON(body)\n}";
   const NUL_WALK = "place, value, found := dispatchbody.NulInJSON(body)";
-  const NUL_WORDS =
-    'return fmt.Errorf("%s holds a NUL character (U+0000) at character %d, which the daemon cannot store", place, utf8.RuneCountInString(value[:at])+1)';
+  const NUL_WORDS = `return fmt.Errorf("${NUL_REFUSED}", place, utf8.RuneCountInString(value[:at])+1)`;
+  const UNSTORABLE_WORDS = NUL_WORDS.replace(NUL_REFUSED, NUL_UNSTORABLE);
   const BAD_BODY =
     'writeJSON(w, http.StatusBadRequest, errorBody("invalid request body: "+err.Error()))';
   // The state's pull request with no count of fix attempts, main's since contract 59
@@ -2011,6 +2019,26 @@ describe("the shapes of a label's daemon source", () => {
         `${JSON.stringify(marker)} in packages/${file}, and this source does not`
       );
     });
+
+  // Catches: a source in #4488's words, the base label's at main 724196ef, read as main's since
+  // #4463 or as no shape, so its stand-in answered a body holding U+0000 in words that daemon never
+  // gave or refused its batch; a source whose words are either's with one word edited read as that
+  // daemon all the same; and a source holding both read as one of them.
+  test("a daemon source refuses a body holding U+0000 in its own words, main's since #4463 or #4488's before them, and in no other", () => {
+    const unstorable = copyOf(CHECKOUT, STORABLE, NUL_WORDS, UNSTORABLE_WORDS);
+    expect(labelShapes(unstorable)).toEqual({ ...MAIN, nulRefusal: NUL_UNSTORABLE });
+    const neither = `main's daemon since #4463 holds ${JSON.stringify(NUL_WORDS)} in packages/${STORABLE}, and this source does not; main's daemon from #4488 until #4463 holds ${JSON.stringify(UNSTORABLE_WORDS)} in packages/${STORABLE}, and this source does not`;
+    const refusing = NUL_WORDS.replace("refuses rather than store", "refuses rather than keep");
+    expect(() => labelShapes(copyOf(CHECKOUT, STORABLE, NUL_WORDS, refusing))).toThrow(neither);
+    const unstoring = UNSTORABLE_WORDS.replace("cannot store", "cannot keep");
+    expect(() => labelShapes(copyOf(unstorable, STORABLE, UNSTORABLE_WORDS, unstoring))).toThrow(
+      neither
+    );
+    const both = copyOf(CHECKOUT, STORABLE, NUL_WORDS, `${NUL_WORDS}\n\t// ${UNSTORABLE_WORDS}`);
+    expect(() => labelShapes(both)).toThrow(
+      "it holds the markers of two shapes at once, main's daemon since #4463, and main's daemon from #4488 until #4463"
+    );
+  });
 
   // Catches: an older shape's marker renamed, read as that older daemon all the same, or as
   // this checkout's: the code main `ff2a10ef` has in the place of each sentence, of the

@@ -174,18 +174,22 @@
  *
  * A request body any string of which, a member's name or a value, holds U+0000 is refused 400
  * before any route reads it, where the label's daemon source holds that refusal (`NUL_REFUSED`,
- * main's since #4488), in that daemon's words, naming the first such string's place in the body
- * and where the character stands in it (daemon-pane.ts's `NUL_REFUSAL`, `nulRefusal` here): an
- * agent's own text, a completion's summary or a move's reason, can carry one, and the `legion` tool
- * sends it as the agent gave it. Where the source holds no such refusal, main `ff2a10ef`'s, whose
- * decoder reads no string of a body, the body is taken to its route, and the route answers it as
- * that daemon's store does (daemon-pane.ts's `STORES_NUL`): a completion the engine takes writes
- * its summary and its commit into the role's row, a text column, and a backward move it takes
- * writes its reason into the task of the role it starts, a jsonb payload; PostgreSQL refuses
- * U+0000 in both, the fact's apply fails, and the route answers 500 FACT_APPLY_FAILED in its own
- * words, writing nothing and leaving the fact unspent (`storeFails`). A completion or a move the
- * engine refuses writes nothing and is answered its refusal, and a ready keeps no character of
- * the kind (capabilities' `cleanDetail`), so each is taken as any other.
+ * main's since #4488), in that daemon's words, main's since #4463 or #4488's before them, naming
+ * the first such string's place in the body and where the character stands in it (daemon-pane.ts's
+ * `NUL_REFUSAL`, `nulRefusal` here): an agent's own text, a completion's summary or a move's
+ * reason, can carry one, and the `legion` tool sends it as the agent gave it. #4463's store keeps
+ * U+FFFD in the place of a U+0000 that reaches it, and no text of such a body reaches it, so its
+ * answer differs from #4488's in the words alone. A byte that is not UTF-8 is read as U+FFFD, as
+ * every daemon the rig runs decodes it, and taken as any other. Where the source holds no such
+ * refusal, main `ff2a10ef`'s, whose decoder reads no string of a body, the body is taken to its
+ * route, and the route answers it as that daemon's store does (daemon-pane.ts's `STORES_NUL`): a
+ * completion the engine takes writes its summary and its commit into the role's row, a text
+ * column, and a backward move it takes writes its reason into the task of the role it starts, a
+ * jsonb payload; PostgreSQL refuses U+0000 in both, the fact's apply fails, and the route answers
+ * 500 FACT_APPLY_FAILED in its own words, writing nothing and leaving the fact unspent
+ * (`storeFails`). A completion or a move the engine refuses writes nothing and is answered its
+ * refusal, and a ready keeps no character of the kind (capabilities' `cleanDetail`), so each is
+ * taken as any other.
  *
  * The session holding each live role of the issue is published to the run's own Dispatch as the
  * daemon publishes it (`PUT /api/v1/issues/{key}/role-holders`: packages/daemon/internal/daemon/
@@ -484,16 +488,17 @@ const POSTS_BACKWARD = bootRead(() =>
  * retro, PLAN_RATING_UNEXPECTED in the words daemon-pane.ts's `PLAN_RATING_UNEXPECTED` restates
  * (main's since #4488, held to the label's source by `labelShapes`). */
 const RATING_REFUSED = SHAPES.refusesRating;
-/** Whether the label's daemon refuses a request body a string of which holds U+0000, in the words
- * daemon-pane.ts's `NUL_REFUSAL` restates (main's since #4488, held to the label's source by
- * `labelShapes`). */
-const NUL_REFUSED = SHAPES.refusesNul;
+/** The words the label's daemon refuses a request body a string of which holds U+0000 with, a
+ * format of daemon-pane.ts's `NUL_REFUSAL`: main's since #4463 or #4488's before them. Undefined
+ * for a label whose decoder takes such a body, main `ff2a10ef`'s. Held to the label's source by
+ * `labelShapes`. */
+const NUL_REFUSED = SHAPES.nulRefusal;
 /** Whether the label's store fails the apply of a taken request that writes `texts`, the agent's
  * own, where one holds U+0000: the store of a label whose decoder takes such a body, main
  * `ff2a10ef`'s (daemon-pane.ts's `STORES_NUL`, whose evidence it names), and no store of a label
  * that refuses the body before it. */
 function storeFails(...texts: readonly (string | undefined)[]): boolean {
-  return !NUL_REFUSED && texts.some((text) => text?.includes("\0") === true);
+  return NUL_REFUSED === undefined && texts.some((text) => text?.includes("\0") === true);
 }
 /** The count of fix attempts the record's pull request carries: the world's, 0, where the label's
  * daemon serves the count (main `ff2a10ef`'s), and none where it serves none, main's since
@@ -2432,15 +2437,16 @@ if (opened !== undefined)
 await runOutbox();
 
 /** The daemon's refusal of a request body, `body` the JSON value it holds, a string of which, a
- * member's name or a value, holds U+0000, in its words (daemon-pane.ts's `NUL_REFUSAL`), or
- * undefined where none does: the first such string in the order the body writes them, named by
- * its place (`nulIn`), and where its first U+0000 stands, counted from 1 in code points
- * (storable_text.go's `unstorableJSON` and `unstorableText`, claims.go's `refuseBadBody`). */
-function nulRefusal(body: unknown): string | undefined {
+ * member's name or a value, holds U+0000, in the words `format` of the label's daemon
+ * (`NUL_REFUSED`, one of daemon-pane.ts's `NUL_REFUSAL`), or undefined where none does: the first
+ * such string in the order the body writes them, named by its place (`nulIn`), and where its first
+ * U+0000 stands, counted from 1 in code points (storable_text.go's `unstorableJSON` and
+ * `unstorableText`, claims.go's `refuseBadBody`). */
+function nulRefusal(format: string, body: unknown): string | undefined {
   const found = nulIn(body, "");
   if (found === undefined) return undefined;
   const at = [...found.text.slice(0, found.text.indexOf("\0"))].length + 1;
-  return `${NUL_REFUSAL.prefix}${filled(NUL_REFUSAL.format, found.place, at)}`;
+  return `${NUL_REFUSAL.prefix}${filled(format, found.place, at)}`;
 }
 /** The first string of `value`, standing at `place` in its body, that holds U+0000, and its place
  * as Dispatch's walk names it, the one the daemon reads a body with (dispatchbody's `NulInJSON`):
@@ -2485,7 +2491,10 @@ const server = Bun.serve({
     // A route the label's daemon registers none of is answered as its catch-all answers it, 404
     // `{"error":"no route"}`, whatever case `handle` has for it (`ROUTES`). Every route it registers
     // decodes a POST's body first, and refuses one holding U+0000 there (`nulRefusal`).
-    const nul = request.method === "POST" && NUL_REFUSED ? nulRefusal(body) : undefined;
+    const nul =
+      request.method === "POST" && NUL_REFUSED !== undefined
+        ? nulRefusal(NUL_REFUSED, body)
+        : undefined;
     const { response, mintedGrantId, phase } = !serves(ROUTES, request.method, path)
       ? { response: json(404, { error: "no route" }) }
       : nul !== undefined

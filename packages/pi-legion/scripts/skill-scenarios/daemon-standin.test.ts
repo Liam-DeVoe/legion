@@ -3147,23 +3147,55 @@ test.skipIf(skip)(
   600_000
 );
 
+/** How the daemon's refusal of a body holding U+0000 ends, after where the character stands: in
+ * main's words since #4463 (2d3d73331b, this checkout's), and in #4488's before them, main
+ * `724196ef`'s (daemon-pane.ts's `NUL_REFUSAL`). */
+const NUL_REFUSED = "which the daemon API refuses rather than store it as U+FFFD";
+const NUL_UNSTORABLE = "which the daemon cannot store";
+let unstorable: string | undefined;
+/** A copy of this checkout's daemon module whose decoder refuses a body holding U+0000 in #4488's
+ * words, as main `724196ef`'s does, and is this checkout's in all else. Made once for the file. */
+function unstorableCheckout(): string {
+  if (unstorable !== undefined) return unstorable;
+  const checkout = path.join(work, "unstorable-checkout");
+  const daemon = path.join(checkout, "packages", "daemon");
+  cpSync(path.join(CHECKOUT, "packages", "daemon"), daemon, { recursive: true });
+  // The module's go.mod replaces the envoy module with its sibling directory (`../envoy`).
+  symlinkSync(path.join(CHECKOUT, "packages", "envoy"), path.join(checkout, "packages", "envoy"));
+  const storable = path.join(daemon, "internal", "api", "storable_text.go");
+  const refusing = readFileSync(storable, "utf8");
+  const unstoring = refusing.replace(
+    `at character %d, ${NUL_REFUSED}"`,
+    `at character %d, ${NUL_UNSTORABLE}"`
+  );
+  expect(unstoring).not.toBe(refusing);
+  writeFileSync(storable, unstoring);
+  unstorable = checkout;
+  return checkout;
+}
+
 // Catches: a stand-in that takes a request body a string of which holds U+0000 for a label whose
 // daemon refuses one, main's since #4488, which refuses it 400 before any route reads it, the
 // claim's secret and the grant among them (claims.go's `decodeJSON`, storable_text.go's
-// `unstorableJSON`), in its words (daemon-pane.ts's `NUL_REFUSAL`): this checkout, and main
-// `724196ef` where SKILL_SCENARIOS_BASE_CHECKOUT names it; one that names a later string than the
-// first the body writes, or a nested one otherwise than Dispatch's walk names it, a member's name
-// among them; and one that counts where the character stands in UTF-16 units rather than code
-// points. An agent's summary or reason is its own text, which the `legion` tool sends as the agent
-// gave it.
+// `unstorableJSON`), in its words (daemon-pane.ts's `NUL_REFUSAL`): main's since #4463 for this
+// checkout, and #4488's for a copy of it in those words and for main `724196ef` where
+// SKILL_SCENARIOS_BASE_CHECKOUT names it; one that answers a label in another label's words; one
+// that names a later string than the first the body writes, or a nested one otherwise than
+// Dispatch's walk names it, a member's name among them; and one that counts where the character
+// stands in UTF-16 units rather than code points. An agent's summary or reason is its own text,
+// which the `legion` tool sends as the agent gave it.
 test.skipIf(skip)(
-  "a body holding U+0000 is refused before its route reads it, naming the first string that holds one",
+  "a body holding U+0000 is refused before its route reads it, naming the first string that holds one, in the label's own words",
   async () => {
-    for (const checkout of [CHECKOUT, ...(baseCheckout === undefined ? [] : [baseCheckout])]) {
+    for (const [checkout, words] of [
+      [CHECKOUT, NUL_REFUSED],
+      [unstorableCheckout(), NUL_UNSTORABLE],
+      ...(baseCheckout === undefined ? [] : [[baseCheckout, NUL_UNSTORABLE] as const]),
+    ] as const) {
       const daemon = await standin("reviewer", "", undefined, { checkout });
       try {
         const refusal = (place: string, at: number) => ({
-          error: `invalid request body: ${place} holds a NUL character (U+0000) at character ${at}, which the daemon cannot store`,
+          error: `invalid request body: ${place} holds a NUL character (U+0000) at character ${at}, ${words}`,
         });
         const summary = await daemon.complete(true, {
           summary: "the 🦀 round\u0000 is in",

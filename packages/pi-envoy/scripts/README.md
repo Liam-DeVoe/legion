@@ -1608,9 +1608,14 @@ A completion that rates the plan (`planRating` with `planReason`) is refused pas
 unspent, so the same completion without the rating is taken: only the completion that ends the
 retro rates the plan, and no run stands in `retro`. A request body a string of which holds U+0000
 is refused 400 before any route reads it, naming the first such string's place and where the
-character stands in it in code points, in the daemon's words. Both refusals are main's since
-#4488, read off the label's source (`labelShapes`' `refusesRating` and `refusesNul`). Where the
-source holds no refusal of such a body, main `ff2a10ef`'s, the body is taken to its route, and a
+character stands in it in code points, in the daemon's words: main's since #4463 (`which the daemon
+API refuses rather than store it as U+FFFD`) or #4488's before them (`which the daemon cannot
+store`). Both refusals are main's since #4488, read off the label's source (`labelShapes`'
+`refusesRating` and `nulRefusal`, which reads each wording by its own marker). #4463's store
+keeps U+FFFD in the place of a U+0000 that reaches it, and no text of such a body reaches it, so
+its answer differs from #4488's in the words alone; a byte that is not UTF-8 is read as U+FFFD by
+every daemon and by the stand-in, and taken. Where the source holds no refusal of such a body,
+main `ff2a10ef`'s, the body is taken to its route, and a
 completion or a backward move the engine takes is answered 500 `FACT_APPLY_FAILED` in that route's
 words, nothing written: that daemon writes a completion's summary and commit into text columns
 and a move's reason into the jsonb task of the role it starts, and PostgreSQL refuses U+0000 in
