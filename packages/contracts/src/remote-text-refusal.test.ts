@@ -104,8 +104,12 @@ test("a refusal through two refusalFetches is one record holding both requests' 
 test("interleaved refusals keep each error's own request record", async () => {
   const firstSecret = fixtureSecret("firstrec");
   const secondSecret = fixtureSecret("secondre");
-  const first = refusalFetch(async () => new Response("gateway preamble shared by every refusal", { status: 403 }));
-  const second = refusalFetch(async () => new Response("gateway preamble shared by every refusal", { status: 403 }));
+  const first = refusalFetch(
+    async () => new Response("gateway preamble shared by every refusal", { status: 403 })
+  );
+  const second = refusalFetch(
+    async () => new Response("gateway preamble shared by every refusal", { status: 403 })
+  );
   const later = refusalFetch(async () => new Response("Forbidden", { status: 403 }));
   const firstResponse = await first("https://idp.example/one", {
     headers: { authorization: `Bearer ${firstSecret}` },

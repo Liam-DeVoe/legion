@@ -49,20 +49,11 @@
         "strings.Contains",
         "strings.EqualFold"
       ],
-      "parses": [
-        "time.Parse",
-        "strconv.ParseInt"
-      ],
-      "ts_parses": [
-        "test",
-        "new Date"
-      ],
+      "parses": ["time.Parse", "strconv.ParseInt"],
+      "ts_parses": ["test", "new Date"],
       "ts_file": "packages/contracts/src/remote-text.ts",
       "ts_class": "RemoteText",
-      "ts_rule": [
-        "redactRemoteText",
-        "readRemoteText"
-      ]
+      "ts_rule": ["redactRemoteText", "readRemoteText"]
     },
     "holders": [
       {
@@ -195,10 +186,7 @@
       {
         "file": "packages/envoy/internal/dispatch/pmdoc/update.go",
         "function": "github.com/sjawhar/envoy/internal/dispatch/pmdoc.yTextStartField",
-        "operands": [
-          "*github.com/reearth/ygo/crdt.YXmlText",
-          "unsafe.Pointer"
-        ],
+        "operands": ["*github.com/reearth/ygo/crdt.YXmlText", "unsafe.Pointer"],
         "why": "the head of a ygo text's item list, at the offset reflect finds by name"
       },
       {
@@ -241,9 +229,7 @@
         "why": "the AWS configuration a seed store writes with, walked for an nkey seed"
       }
     ],
-    "external_errors": [
-      "golang.org/x/oauth2.RetrieveError"
-    ],
+    "external_errors": ["golang.org/x/oauth2.RetrieveError"],
     "row_timeout": "10m",
     "leaks": [
       {
@@ -267,25 +253,19 @@
       {
         "row": "site-ts-token-type-minted",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
-        ],
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-issuer-said",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
-        ],
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
         "row": "site-ts-signin-ended",
         "base": "87112a0b719fabfc6c6c44e0d7dc67c1ce8bfc3b",
-        "files": [
-          "packages/broker-client/src/__tests__/boundary-leaks.test.ts"
-        ],
+        "files": ["packages/broker-client/src/__tests__/boundary-leaks.test.ts"],
         "capture": "leak"
       },
       {
@@ -1583,9 +1563,7 @@
       {
         "row": "ts-request-echo-description",
         "base": "ee316f783d1491a3e17cc7ef6d292416cd59f4cf",
-        "files": [
-          "packages/broker-client/src/__tests__/request-echo.test.ts"
-        ],
+        "files": ["packages/broker-client/src/__tests__/request-echo.test.ts"],
         "capture": "ts.request-echo/description/message"
       },
       {
@@ -1748,10 +1726,7 @@
         "github.com/sjawhar/envoy/internal/redact.Field",
         "github.com/sjawhar/envoy/internal/redact.ruled"
       ],
-      "parses": [
-        "net/http.ParseTime",
-        "strconv.ParseInt"
-      ],
+      "parses": ["net/http.ParseTime", "strconv.ParseInt"],
       "held": [
         {
           "function": "github.com/sjawhar/envoy/internal/redact.newLibraryError",

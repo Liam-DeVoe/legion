@@ -365,7 +365,8 @@ func (c connectorDialer) Dial(ctx context.Context, instance string) (net.Conn, e
 }
 
 func (c connectorDialer) Close() error {
-	_, err := oauth2call.Call(struct{}{}, c.dialer.Close())
+	s := oauth2call.Scope[struct{}](context.Background())
+	_, err := oauth2call.Call(struct{}{}, s.Err(c.dialer.Close()))
 	return err
 }
 
