@@ -197,7 +197,7 @@ func TestAResumeWhoseSearchSkipsAFolderItCannotReadNamesItInAWarning(t *testing.
 					} else {
 						writeSession(t, filepath.Join(shut, name), time.Now())
 					}
-					readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets-legion-43--", name)
+					readable := filepath.Join(paneSessions(f), "--state-workspaces-acme-widgets--", name)
 					if elsewhere {
 						writeSession(t, readable, time.Now().Add(-time.Hour))
 					}
