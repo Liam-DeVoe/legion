@@ -76,7 +76,8 @@ const (
 	codeSessionScope = "SESSION_SCOPE"
 	// codeSessionNotFound answers a write to a session the caller may not see as one nobody holds.
 	codeSessionNotFound = "SESSION_NOT_FOUND"
-	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment.
+	// codeRestrictedMember refuses a restricted member a write that belongs to the deployment, and
+	// an issue write that names repo (refuseRepoOfRestrictedMember).
 	codeRestrictedMember = "RESTRICTED_MEMBER"
 )
 

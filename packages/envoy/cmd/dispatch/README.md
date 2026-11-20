@@ -295,6 +295,7 @@ A deployment-wide write is `403 PROJECT_SCOPE_DEPLOYMENT` to a credential whose 
 what it writes belongs to no project such a viewer could be held to.
 A restricted member still revokes their own credential grants and ends their own sign-ins (`POST /api/v1/credential-grants/{id}/revoke`, `POST /api/v1/signins/{id}/revoke`): the secrets broker decides whose each one is, as it does for a full member, and only a credential that lists projects is refused those two.
 `POST /api/v1/issues` and `POST /api/v1/going/requests` take their project from the body, so a credential that lists projects is refused one outside its list, `403 PROJECT_SCOPE`, naming its list and the project the body named, before anything is read.
+`POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` refuse a restricted member's `repo`, a string or `null`, with `403 RESTRICTED_MEMBER`: an issue's own repository makes its project own that repository (`refs.ProjectRepositoriesSQL`), which the GitHub proxy and the App-installation route then show the people of that project (`refs.RepositoryClause`), so only a full member names one.
 
 The session check holds the rows classed *the calling session's* whose path names a session
 — the `agents/{session_id}` writes and `PUT /api/v1/me/agents/{session_id}/state` — to the session the caller's credential proved:
@@ -4880,6 +4881,7 @@ Each item below names a path with its method and identity, then its purpose.
   Omitting or leaving `spec` blank gives an empty primary document at version 1.
   `repo` (`owner/name`) is the issue's own repository, any repository at all, one its project maps, one another project maps, or one no project maps:
   `400 INVALID_ISSUE` when it is not `owner/name`.
+  A restricted member, or a credential acting for one, names no `repo`: a create that names it, a string or `null`, is `403 RESTRICTED_MEMBER` (`a restricted member cannot set or clear an issue's repo; only a full member names an issue's own repository`) before the body's project, parent or external ref is read and before anything is written, so their issue takes the repository it resolves to, its nearest parent's or its project's default.
   A title over 1,000 characters (`contracts.IssueTitleMax`, UTF-16 units after trimming) is `400 CAP_EXCEEDED` before the duplicate check.
   Refuses a near copy of an open issue of the project, other than the new issue's ancestors, with `409 POSSIBLE_DUPLICATE` and candidates unless `force` is true, once the refusal's `near_copy_checks` row is known to be written;
   a refusal whose row cannot be written refuses nothing, and the create goes in with `advice.suggestions.near_copy_check` naming the candidate.
@@ -4894,6 +4896,7 @@ Each item below names a path with its method and identity, then its purpose.
 
   Update an issue's `title`, `status`, `priority`, `labels` (or `labels_add`, which adds to the labels the issue holds when the write commits;
   not with `labels`), `route`, `external_links`, `parent`, `rank`, `assignee`, `components` or `repo` (`null` clears it); `AGENTS.md` gives each field's rules.
+  A restricted member, or a credential acting for one, sets, changes and clears no issue's `repo`: a patch that names it, a string or `null`, is `403 RESTRICTED_MEMBER` in the create's words, before the issue is read and before anything is written, so it answers alike for an issue the caller does not see and for one nobody holds.
   A title is trimmed, and one over 1,000 characters is `400 CAP_EXCEEDED`, as on creation.
   `expected_sequence` makes the write conditional: `409 ISSUE_CHANGED` when the issue's last event is no longer that sequence.
   A close (`status: done`) withdraws every open ask of the issue, whoever's turn it is:

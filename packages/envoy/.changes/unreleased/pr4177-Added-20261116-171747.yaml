@@ -18,6 +18,8 @@ body: |-
 
     The dashboard reads its project list again when a project's visibility changes, and after every gap in its live feed, so a list never stays behind a change of which projects its reader sees.
 
+    A restricted member, or a credential acting for one, cannot set, change or clear an issue's own repository: `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` that name `repo`, a string or null, are 403 RESTRICTED_MEMBER before anything is written. Their issues take the repository they resolve to, their nearest parent's or their project's default, so naming a repository can no longer make it theirs to read through the GitHub proxy. A full member's `repo` is taken as before.
+
     On the Access tab, a refused switch to private says what the owner can do and offers no Retry, and a switch to public asks the owner to confirm it first.
 
     A repository is hidden from a reader when a private project the reader does not see owns it, through an issue of that project that resolves to it or a mapping, under any recorded rename, and a reader that is not an open viewer reads only a repository a project it sees owns. The GitHub proxy answers a hidden repository as one the App is not installed on before it asks GitHub anything; `GET /api/v1/github/app-installation/{owner}/{repo}` answers it `installed: false`; and the Delivery pages hold a pull request that names no issue, a deploy run that shipped none and a PR-checks run with no stored pull request to the same rule, a hidden run answering 404 as a run nobody holds does, with the statements a missing run costs.
