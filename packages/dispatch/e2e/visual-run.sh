@@ -210,6 +210,28 @@ IFS= read -r line <&4 || line=""
 # file the run writes - a new baseline, a diff, a trace - owned by the person who ran it, which
 # is also the owner of the relay's sockets, and `HOME=/tmp` gives that uid, which the image has
 # no home for, a writable one.
+
+# Playwright's output directory is `test-results` unless `--output` chooses another. Its
+# `.last-run.json` is written only once Playwright has actually started a run, so clear a stale
+# one before the container starts and require a new one after its zero exit: an older Node that
+# does not run e2e/visual-relay.ts's `import.meta.main` branch otherwise exits 0 having run no
+# browser and makes this whole command pass with no comparison. `--output VALUE` and
+# `--output=VALUE` are the two CLI spellings Playwright accepts.
+output_dir=test-results
+output_value=""
+for argument in "$@"; do
+  if [ -n "$output_value" ]; then
+    output_dir=$argument
+    output_value=""
+    continue
+  fi
+  case $argument in
+    --output) output_value=1 ;;
+    --output=*) output_dir=${argument#--output=} ;;
+  esac
+done
+rm -f "$output_dir/.last-run.json"
+
 status=0
 # shellcheck disable=SC2086
 docker run --rm --network none --ipc=host --user "$(id -u):$(id -g)" \
@@ -225,5 +247,10 @@ docker run --rm --network none --ipc=host --user "$(id -u):$(id -g)" \
   node e2e/visual-relay.ts container "$sockets_in_container" $ports -- \
   node node_modules/@playwright/test/cli.js test --config e2e/playwright.config.ts \
   --project=visual --project=visual-phone "$@" || status=$?
+
+if [ "$status" -eq 0 ] && [ ! -f "$output_dir/.last-run.json" ]; then
+  echo "e2e/visual-run.sh: Playwright exited 0 without writing $output_dir/.last-run.json." >&2
+  status=1
+fi
 
 exit "$status"
