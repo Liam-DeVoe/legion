@@ -57,8 +57,10 @@ body: |-
   exception, a dead letter's line and count, an expiry's count - as soon as the copy's cursor write
   lands, off the role's guard, so a slow read of the connection or a drop no longer drops the
   exception; a confirm it could not read back is settled once the guard is given back, by a token
-  of its own, and reported once. The listener's stop ends the handovers it started and waits for
-  them, within its existing stop budget, before it drains NATS.
+  of its own, and reported once, and the handover then goes on with the lane's later copies rather
+  than leaving them to the next sweep. The listener's stop ends the handovers it started and waits
+  for them, within its existing stop budget, before it drains NATS; a report still owed when that
+  wait ends is dropped with a warning rather than published into the draining connection.
 time: 2026-11-17T05:19:00Z
 custom:
     Issue: pr4278

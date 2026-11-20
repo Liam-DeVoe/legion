@@ -169,8 +169,8 @@ func TestNoContextMadeUnderALockIsFresh(t *testing.T) {
 			"var plantedContext = context.Background()\n\nfunc walkKeptRole(")
 		// A goroutine the sweep's handover starts runs outside the guard, so a fresh context in it
 		// is no context made under the lock, and the check must not name it.
-		plantContext(t, overlay, "role_keep_sweep.go", "\towed := newKeptRoleOwed(handoverCtx)\n",
-			"\tgo func() { _ = context.TODO() }()\n\towed := newKeptRoleOwed(handoverCtx)\n")
+		plantContext(t, overlay, "role_keep_sweep.go", "\towed := newKeptRoleOwed(handoverCtx, cfg, role)\n",
+			"\tgo func() { _ = context.TODO() }()\n\towed := newKeptRoleOwed(handoverCtx, cfg, role)\n")
 		found := freshContextsUnderLocks(t, overlay)
 		for _, want := range []struct{ what, caller string }{
 			{"the registration repair's record read, a plain call under the delete's lock", "(*" + listenerPackage + ".sessionDelivery).registeredTarget"},

@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -390,11 +391,22 @@ func roleKeepWriteFailed(err error) (roleKeepDrainEnd, error) {
 // the guard back and waited for the connection (settle), where under the mark the read would answer
 // the loss and the copy would go unreported, its write landed or not. The handover's caller makes
 // one (drainKeptRole, handOverSweptLane) and settles it after each release of the guard.
+//
+// A report the reporter reaches once the listener's stop has given up its wait for the handovers
+// (roleKeepGuards.await, gone) is not run: the stop drains the main client next, and a publish into
+// a draining client reaches nothing. It is dropped with a warning that names the stop, so the loss
+// is seen.
 type keptRoleOwed struct {
 	// ctx is the caller's context with its cancellation taken off, which every report and read-back
 	// runs under.
 	ctx context.Context
-	mu  sync.Mutex
+	// role is the role whose lane the handover walks, which a dropped report's line names; guards
+	// says when the listener's stop has given its wait up (nil for none, as in a test of a walk
+	// alone); logger writes the lines.
+	role   string
+	guards *roleKeepGuards
+	logger *logging.Logger
+	mu     sync.Mutex
 	// queue holds the reports owed and not yet run; reporting is the reporter running them, while
 	// running.
 	queue     []keptRoleReport
@@ -404,9 +416,9 @@ type keptRoleOwed struct {
 	unsettled []unsettledCursorWrite
 }
 
-// newKeptRoleOwed is what a handover made under ctx owes, empty.
-func newKeptRoleOwed(ctx context.Context) *keptRoleOwed {
-	return &keptRoleOwed{ctx: context.WithoutCancel(ctx)}
+// newKeptRoleOwed is what a handover of role made under ctx, with cfg, owes, empty.
+func newKeptRoleOwed(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string) *keptRoleOwed {
+	return &keptRoleOwed{ctx: context.WithoutCancel(ctx), role: role, guards: cfg.roleKeepDrains, logger: cfg.logger}
 }
 
 // unsettledCursorWrite is a copy's last cursor write that the walk could not confirm under the
@@ -441,7 +453,8 @@ func (o *keptRoleOwed) owe(report keptRoleReport) {
 	}
 }
 
-// report is the reporter: it runs the reports owed, in order, until none is left.
+// report is the reporter: it runs the reports owed, in order, until none is left, and drops each it
+// reaches once the listener's stop has given its wait up (roleKeepGuards.gone).
 func (o *keptRoleOwed) report() {
 	defer o.reporting.Done()
 	for {
@@ -455,20 +468,30 @@ func (o *keptRoleOwed) report() {
 		o.queue[0] = nil
 		o.queue = o.queue[1:]
 		o.mu.Unlock()
+		if o.guards != nil && o.guards.gone() {
+			o.logger.LogEvent(slog.LevelWarn, "listener kept role report dropped: the listener's stop gave up its wait for the role's handover before the report ran",
+				slog.String("role", o.role))
+			continue
+		}
 		next(o.ctx)
 	}
 }
 
-// settle settles each unsettled write, for a caller that has given the guard back, and waits for
-// every report owed so far to have run. A write is settled by the first message the role's cursor
-// subject holds after the walk's claim (landed): the write landed exactly when that message is the
-// write, token and all (bus.KeptRoleCursor.Confirm). The token is what tells it apart: after a claim
-// whose confirm did not land, the next write can be another walk's {kept} of the same copy - a
-// repeat this listener's attempt record ends without a claim, once the claim is no longer
-// outstanding - whose kept and claim are the confirm's own. A landed write's report is then owed. A
-// read that does not answer leaves the copy unreported, which a warning names, since the copy's
-// count, line or exception is then lost: what the stream holds is the next walk's to act on.
-func (o *keptRoleOwed) settle(cfg listenerDeliveryHandlerConfig) {
+// settle settles each unsettled write, for a caller that has given the guard back, waits for every
+// report owed so far to have run, and reports whether it settled any write. A write is settled by
+// the first message the role's cursor subject holds after the walk's claim (landed): the write
+// landed exactly when that message is the write, token and all (bus.KeptRoleCursor.Confirm). The
+// token is what tells it apart: after a claim whose confirm did not land, the next write can be
+// another walk's {kept} of the same copy - a repeat this listener's attempt record ends without a
+// claim, once the claim is no longer outstanding - whose kept and claim are the confirm's own. A
+// landed write's report is then owed. A read that does not answer leaves the copy unreported, which
+// a warning names, since the copy's count, line or exception is then lost: what the stream holds is
+// the next walk's to act on.
+//
+// A caller whose handover ended on such a write runs the handover again once it is settled
+// (drainKeptRole, handOverSweptLane), rather than leaving the lane's later copies to the next
+// sweep.
+func (o *keptRoleOwed) settle(cfg listenerDeliveryHandlerConfig) (settled bool) {
 	unsettled := o.unsettled
 	o.unsettled = nil
 	for _, write := range unsettled {
@@ -484,6 +507,7 @@ func (o *keptRoleOwed) settle(cfg listenerDeliveryHandlerConfig) {
 		}
 	}
 	o.reporting.Wait()
+	return len(unsettled) > 0
 }
 
 // landed reports whether the first message role's cursor subject holds after the walk's claim is
@@ -522,6 +546,8 @@ type roleKeepGuards struct {
 	// waits.
 	running int
 	idle    chan struct{}
+	// abandoned is set once the stop's wait (await) ended before every handover had returned.
+	abandoned atomic.Bool
 }
 
 func newRoleKeepGuards() *roleKeepGuards {
@@ -554,7 +580,9 @@ func (g *roleKeepGuards) done() {
 
 // await waits, within ctx, for every handover start ran to return, and reports whether each did. A
 // handover the shutdown ended (end) returns once its walk has ended and its reporter has run what
-// it owes (keptRoleOwed.settle), each report within its own publish's bound.
+// it owes (keptRoleOwed.settle), each report within its own publish's bound. A wait ctx ends first
+// marks the set gone, so a report a handover still owes is dropped rather than run into the main
+// client the stop drains next (keptRoleOwed.report).
 func (g *roleKeepGuards) await(ctx context.Context) bool {
 	g.mu.Lock()
 	if g.running == 0 {
@@ -570,8 +598,14 @@ func (g *roleKeepGuards) await(ctx context.Context) bool {
 	case <-idle:
 		return true
 	case <-ctx.Done():
+		g.abandoned.Store(true)
 		return false
 	}
+}
+
+// gone reports whether the stop's wait for the handovers has ended before they returned (await).
+func (g *roleKeepGuards) gone() bool {
+	return g.abandoned.Load()
 }
 
 // guard is role's own guard, made on the first handover of that role: a channel of one, which the
@@ -997,7 +1031,7 @@ func roleKeepDrainBackoff(last time.Duration) time.Duration {
 // being handed over here already without waiting for it (roleKeepGuards.tryHold). A handover
 // whose context ended while it waited gives that wait up and walks nothing (roleKeepGuards.hold).
 func drainKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, now func() time.Time) error {
-	owed := newKeptRoleOwed(ctx)
+	owed := newKeptRoleOwed(ctx, cfg, role)
 	for {
 		release, taken := cfg.roleKeepDrains.hold(ctx, role)
 		if !taken {
@@ -1009,9 +1043,13 @@ func drainKeptRole(ctx context.Context, cfg listenerDeliveryHandlerConfig, role 
 		// it (handOverKeptRole): the wait for the connection is made here, with the role's guard
 		// let go, and the handover is made again under the guard once the connection is back.
 		// What the handover owes is settled with the guard let go as well, once that wait is over
-		// (keptRoleOwed).
+		// (keptRoleOwed). A handover that ended on a cursor write it could not read back, whatever
+		// its error, is made again once that write is settled, so the lane's later copies do not
+		// wait for the next sweep.
 		again := bus.Reconnected(ctx, err)
-		owed.settle(cfg)
+		if owed.settle(cfg) && ctx.Err() == nil {
+			again = true
+		}
 		if !again {
 			return err
 		}

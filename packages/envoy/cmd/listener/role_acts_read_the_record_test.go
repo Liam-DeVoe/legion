@@ -237,7 +237,7 @@ func (r *roleActRig) walk(t *testing.T, role, holder string) (roleKeepDrainResul
 	if err != nil || !head.left {
 		t.Fatalf("read role %s's kept lane head: %+v, %v; want a copy left on it", role, head, err)
 	}
-	owed := newKeptRoleOwed(ctx)
+	owed := newKeptRoleOwed(ctx, r.cfg, role)
 	result, err := walkKeptRole(ctx, r.cfg, role, holder, liveRoleActEntry, head, time.Now, owed)
 	owed.settle(r.cfg)
 	return result, err

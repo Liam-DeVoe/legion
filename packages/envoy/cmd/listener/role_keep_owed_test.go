@@ -181,7 +181,7 @@ func TestAKeptForwardsConfirmWhoseReadBackTheLossCutIsSettledAndReportedOnce(t *
 // The control is owe with no reporter started, as the handover at 7eb4320b67 held its reports until
 // it ended: the first report never runs, and the row fails at its wait for it.
 func TestAHandoversReportsRunAsTheyAreOwedAndQueueNothing(t *testing.T) {
-	owed := newKeptRoleOwed(t.Context())
+	owed := newKeptRoleOwed(t.Context(), listenerDeliveryHandlerConfig{}, "kept-queue")
 	queued := func() int {
 		owed.mu.Lock()
 		defer owed.mu.Unlock()
@@ -224,7 +224,7 @@ func TestAnUnsettledConfirmIsNotTakenForAnotherWalksWriteAfterItsClaim(t *testin
 	settle := func(claim uint64, confirm bus.KeptRoleCursor) int32 {
 		t.Helper()
 		var reported atomic.Int32
-		owed := newKeptRoleOwed(ctx)
+		owed := newKeptRoleOwed(ctx, cfg, role)
 		owed.unsettled = append(owed.unsettled, unsettledCursorWrite{role: role, claim: claim, cursor: confirm,
 			report: func(context.Context) { reported.Add(1) }})
 		owed.settle(cfg)
