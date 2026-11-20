@@ -20,6 +20,7 @@ import {
   SKILL_COPIES_COLUMNS,
   searchTerms,
   skillFields,
+  TREE_JOBS,
   type TreeEntry,
   tsv,
 } from "./copies";
@@ -229,6 +230,11 @@ class World {
   /** When set, each owner's first search answer is held until this many owners have a search in
    *  flight: a run that searched the owners one after another would never release it. */
   holdFirstSearches = 0;
+  /** Each tree answer waits this many microtask turns (no timer), so reads made at once overlap;
+   *  the most tree reads in flight at once. */
+  treeTurns = 0;
+  maxTreeReads = 0;
+  private treeReads = 0;
   /** Each search call: the owner its scope names, the clock when it started, searches in flight. */
   readonly searchLog: { owner: string; at: number; inFlight: number; ownerInFlight: number }[] = [];
   private readonly inFlight = new Map<string, number>();
@@ -368,6 +374,10 @@ class World {
     }
     const tree = /^repos\/([^/]+\/[^/]+)\/git\/trees\/([0-9a-f]+)(\?recursive=1)?$/.exec(endpoint);
     if (tree !== null) {
+      this.treeReads++;
+      this.maxTreeReads = Math.max(this.maxTreeReads, this.treeReads);
+      for (let turn = 0; turn < this.treeTurns; turn++) await Promise.resolve();
+      this.treeReads--;
       const found = this.trees.get(`${tree[1]} ${tree[2]}${tree[3] ? " recursive" : ""}`);
       return found === undefined ? fail("gh: Not Found (HTTP 404)") : answer(found);
     }
@@ -472,6 +482,7 @@ const CONFIG = {
   stores: [{ name: "store_a", context: "devbox" }],
   psqlCommand: "/usr/bin/psql",
   gatewayBaseUrl: "http://127.0.0.1:4000",
+  servedModels: ["anthropic/claude-alpha", "openai/gpt-alpha"],
   excludePaths: [{ repo: "acme/skills", prefix: "pipeline/candidates/" }],
   targets: ["cybermonklabs/legion", "acme/skills"],
   cuts: [{ id: "skills-1", repo: "acme/skills", pr: 1 }],
@@ -1158,10 +1169,13 @@ describe("a truncated tree", () => {
     return w;
   }
 
-  test("it is read by directory into the same tree and the same copies", async () => {
+  test("it is read by directory into the same tree and the same copies, its subtrees at once under the cap", async () => {
     const whole = await run(world(), ["--only", "cybermonklabs/legion"]);
     const w = truncatedWorld();
+    w.treeTurns = 5;
     const byDirectory = await run(w, ["--only", "cybermonklabs/legion"]);
+    // skills/ is truncated and holds 17 skill directories, read at once up to the cap.
+    expect(w.maxTreeReads).toBe(TREE_JOBS);
     const legion = byDirectory.table("repositories.tsv")[0];
     expect(legion?.tree_read).toMatch(/^by directory, \d+ reads$/);
     expect(legion?.error).toBe("");

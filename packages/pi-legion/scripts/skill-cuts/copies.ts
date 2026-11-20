@@ -146,6 +146,9 @@ export interface CopiesIo {
 const RATE_LIMITED = /rate limit|HTTP 429/i;
 const MAX_RATE_RETRIES = 5;
 const REST_JOBS = 4;
+/** The most tree reads in flight at once, across a run: a truncated tree's subtrees are read at
+ *  once under this cap, which keeps a run under GitHub's 15,000 REST calls an hour per token. */
+export const TREE_JOBS = 8;
 /** The most blobs, and bytes of blobs, one GraphQL read asks for. */
 const BLOB_BATCH = 50;
 const BLOB_BATCH_BYTES = 2_000_000;
@@ -231,8 +234,28 @@ const BlobBatch = z.looseObject({
 /** gh's reads, with a blob cache and a sleep to the reset when the core limit is spent. */
 class Github {
   private readonly blobs = new Map<string, Promise<string>>();
+  private treeReads = 0;
+  private readonly treeReadQueue: (() => void)[] = [];
 
   constructor(readonly io: CopiesIo) {}
+
+  /** `read`, run once fewer than TREE_JOBS tree reads are in flight; a read that ends hands its
+   *  slot to the next one waiting. */
+  async treeRead<T>(read: () => Promise<T>): Promise<T> {
+    if (this.treeReads < TREE_JOBS) this.treeReads++;
+    else {
+      const slot = Promise.withResolvers<void>();
+      this.treeReadQueue.push(slot.resolve);
+      await slot.promise;
+    }
+    try {
+      return await read();
+    } finally {
+      const next = this.treeReadQueue.shift();
+      if (next === undefined) this.treeReads--;
+      else next();
+    }
+  }
 
   /** gh's answer to `args`, parsed by `schema`; throws gh's first error line, or the faults. */
   async json<T>(args: readonly string[], schema: z.ZodType<T>): Promise<T> {
@@ -430,7 +453,9 @@ export interface Repository {
 }
 
 /** The tree `sha` of `repository`, whole; a truncated answer is read again by directory: each
- *  subtree recursively, and one truncated too one level at a time. */
+ *  subtree recursively, and one truncated too one level at a time. A truncated tree's subtrees
+ *  are read at once, at most TREE_JOBS reads in flight across the run (a data repository's
+ *  directory of a hundred samples is a hundred reads). */
 export async function readTree(
   github: Github,
   repository: string,
@@ -440,7 +465,7 @@ export async function readTree(
   const read = async (treeSha: string, prefix: string, recursive: boolean) => {
     reads++;
     const endpoint = `repos/${repository}/git/trees/${treeSha}${recursive ? "?recursive=1" : ""}`;
-    const tree = await github.api(endpoint, GitTree);
+    const tree = await github.treeRead(() => github.api(endpoint, GitTree));
     const entries = tree.tree.map(
       (entry): TreeEntry => ({
         path: prefix === "" ? entry.path : `${prefix}/${entry.path}`,
@@ -461,11 +486,15 @@ export async function readTree(
     const level = await read(treeSha, prefix, false);
     if (level.truncated)
       throw new Error(`the tree of ${shown(prefix)} is truncated even one level at a time`);
+    const below = await Promise.all(
+      level.entries.map((entry) =>
+        entry.type === "tree" ? walk(entry.sha, entry.path) : undefined
+      )
+    );
     const entries: TreeEntry[] = [];
-    for (const entry of level.entries) {
-      entries.push(entry);
-      if (entry.type === "tree") entries.push(...(await walk(entry.sha, entry.path)).entries);
-    }
+    level.entries.forEach((entry, index) => {
+      entries.push(entry, ...(below[index]?.entries ?? []));
+    });
     return { entries, truncated: true };
   };
   const { entries, truncated } = await walk(sha, "");

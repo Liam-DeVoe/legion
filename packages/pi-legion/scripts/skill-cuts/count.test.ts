@@ -24,29 +24,31 @@ import { psqlRows, pullText } from "./psql-rows";
 // models.sql, and the pieces they stand on: countsql.ts's filling and fixturedb.ts's loading. The
 // proof needs the pod's test server (LEGION_TEST_PG_DSN) and psql, and runs each query with the
 // store command's own flags; without the server it is skipped with a printed line (the pi-legion
-// CI job has none). It makes four databases of its own on that server and drops them at the end:
+// CI job has none). It makes five databases of its own on that server and drops them at the end:
 // F1's session, its subagent and F4 in the first; F1b in the second; F1's session in the third,
 // cut into three parts inside its `alpha` read call line; and, for models.sql, in the fourth: F1c
 // (F1's subagent with its model_change line taken out, so its model is its session_init's) cut
-// after its session_init line, F4 cut after its first assistant message, and F1b cut inside its
-// first line, so that its model_change line is in its second part, which models.sql does not read.
-// Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the capture
-// commands of count.sql's), so a change to the SQL that changes a result fails here until F7 is
-// captured again.
+// after its session_init line, F1d (F1b's first two lines, with no model line) and F1b cut inside
+// its first line, so that its model_change line is in its second part; and in the fifth a file
+// made here, F4 with a long line before its first assistant message, whose head models.sql cuts
+// at 256 Ki. Each query's rows must equal those of its F7 capture (psql-rows.test.ts gives the
+// capture commands of count.sql's), so a change to the SQL that changes a result fails here until
+// F7 is captured again.
 //
-// F1c and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, with FIRST the first
-// database as psql-rows.test.ts loads it and MODELS a fourth made the same way:
+// F1c, F1d and models.sql's captures, from packages/pi-legion/scripts/skill-cuts, with FIRST the
+// first database as psql-rows.test.ts loads it and MODELS a fourth made the same way:
 //
 //   grep -v '"type":"model_change"' $F1/ProductiveChicken.jsonl > testdata/F1c.jsonl
+//   head -n 2 testdata/F1b.jsonl > testdata/F1d.jsonl
 //   bun fixturedb.ts --dsn "$MODELS" --line '"type":"thinking_level_change"' testdata/F1c.jsonl
-//   bun fixturedb.ts --dsn "$MODELS" --line 'Base directory for this skill' $F4
+//   bun fixturedb.ts --dsn "$MODELS" testdata/F1d.jsonl
 //   bun fixturedb.ts --dsn "$MODELS" --line '"type":"title"' testdata/F1b.jsonl
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
 //     --query models | $PSQL "$FIRST" > testdata/F7-models-first.txt
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-20 \
 //     --query models | $PSQL "$MODELS" > testdata/F7-models-second.txt
 //   bun countsql.ts --config testdata/F7-skill-cuts.json --store store_a --day 2026-11-21 \
-//     --query models | $PSQL "$MODELS" > testdata/F7-models-none.txt
+//     --query models | $PSQL "$MODELS" > testdata/F7-models-later.txt
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(TESTDATA, "F1/2026-11-20T01-59-41-780Z_01a1f6ae-51d4-715f-a2a6-59f275bdff80");
@@ -58,6 +60,7 @@ const F4_SESSION = path.join(
 );
 const F1B = path.join(TESTDATA, "F1b.jsonl");
 const F1C = path.join(TESTDATA, "F1c.jsonl");
+const F1D = path.join(TESTDATA, "F1d.jsonl");
 const CONFIG = loadConfig(path.join(TESTDATA, "F7-skill-cuts.json"));
 /** The text fixturedb cuts inside for the three-part file: F1's `alpha` read call line. */
 const ALPHA_CALL = '"path":"skill://alpha"';
@@ -260,6 +263,7 @@ describe.skipIf(serverDsn === undefined)(
       second: `skill_cuts_count_${stamp}_second`,
       third: `skill_cuts_count_${stamp}_third`,
       models: `skill_cuts_count_${stamp}_models`,
+      big: `skill_cuts_count_${stamp}_big`,
     };
     /** The DSN of one of this run's databases on the server LEGION_TEST_PG_DSN names. */
     const dsnOf = (name: string) => {
@@ -268,6 +272,10 @@ describe.skipIf(serverDsn === undefined)(
       return url.toString();
     };
     let threeParts: readonly number[] = [];
+    /** F4 with a 400,000-character line before its first assistant message, made in beforeAll. */
+    const scratch = mkdtempSync(path.join(process.env.TMPDIR ?? tmpdir(), "skill-cuts-models-"));
+    const BIG = path.join(scratch, "big.jsonl");
+    let bigParts: readonly number[] = [];
 
     /** The rows of `sql` run in the database `name` with the store command's psql flags. */
     function run(name: string, sql: string): unknown[] {
@@ -314,11 +322,17 @@ describe.skipIf(serverDsn === undefined)(
         parts: 2,
         line: '"type":"thinking_level_change"',
       });
-      await loadFixtures(dsnOf(names.models), [F4_SESSION], {
-        parts: 2,
-        line: "Base directory for this skill",
-      });
+      await loadFixtures(dsnOf(names.models), [F1D], { parts: 2 });
       await loadFixtures(dsnOf(names.models), [F1B], { parts: 2, line: '"type":"title"' });
+      const f4 = readFileSync(F4_SESSION, "utf8").split("\n");
+      const firstAssistant = f4.findIndex((line) => line.includes('"type":"assistant"'));
+      const pad = JSON.stringify({ type: "pad", pad: "x".repeat(400_000) });
+      writeFileSync(
+        BIG,
+        [...f4.slice(0, firstAssistant), pad, ...f4.slice(firstAssistant)].join("\n")
+      );
+      const [big] = await loadFixtures(dsnOf(names.big), [BIG], { parts: 3, line: '"type":"pad"' });
+      bigParts = big?.offsets ?? [];
     }, 60_000);
 
     afterAll(async () => {
@@ -328,6 +342,7 @@ describe.skipIf(serverDsn === undefined)(
           await server.unsafe(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
       } finally {
         await server.close();
+        rmSync(scratch, { recursive: true, force: true });
       }
     });
 
@@ -411,35 +426,62 @@ describe.skipIf(serverDsn === undefined)(
       summary: rows.at(-1),
     });
 
-    test("models.sql on the first database: Oh My Pi's model_change, in a subagent's file too, and Claude Code's model attachment", () => {
+    test("models.sql on the first database: Oh My Pi's model_change, in a subagent's file too, and F4's first assistant message from its second part", () => {
       const rows = run(names.first, modelsSql(CONFIG, "store_a", "2026-11-20"));
       expect(rows).toEqual(captured("F7-models-first.txt"));
+      // fixturedb cut F4 at its middle byte, before its first assistant message.
+      const f4 = readFileSync(F4_SESSION);
+      expect(f4.indexOf('"type":"assistant"')).toBeGreaterThan(
+        cutOffsets(f4, { parts: 2 })[0] ?? 0
+      );
       const sonnet = "anthropic/claude-sonnet-5-5";
       expect(models(rows)).toEqual({
         files: [
           [fileHash(storedPath(F1_SUBAGENT)), sonnet, "model_change"],
-          [fileHash(storedPath(F4_SESSION)), "claude-sonnet-5-5", "model attachment"],
+          [fileHash(storedPath(F4_SESSION)), "claude-sonnet-5-5", "assistant"],
           [fileHash(storedPath(F1_SESSION)), sonnet, "model_change"],
         ],
-        // The subagent's session_init line, its longest, is cut where its first part ends.
-        summary: expect.objectContaining({ row: "summary", files: 3, with_model: 3, bad_lines: 1 }),
+        // Each file is whole in its head: its every part starts below 262144.
+        summary: expect.objectContaining({ files: 3, with_model: 3, bytes: 185931, bad_lines: 0 }),
       });
     });
 
-    test("models.sql reads only each file's first part: a subagent's session_init, Claude Code's first assistant message, and none", () => {
+    test("models.sql: a subagent's session_init, none in a file with no model line, and F1b's model_change from its second part", () => {
       const rows = run(names.models, modelsSql(CONFIG, "store_a", "2026-11-20"));
       expect(rows).toEqual(captured("F7-models-second.txt"));
       expect(models(rows).files).toEqual([
-        [fileHash(storedPath(F4_SESSION)), "claude-sonnet-5-5", "assistant"],
+        [fileHash(storedPath(F1D)), null, null],
         [fileHash(storedPath(F1C)), "anthropic/claude-sonnet-5-5", "session_init"],
       ]);
-      // F1b's model_change line is in its second part.
-      const none = run(names.models, modelsSql(CONFIG, "store_a", "2026-11-21"));
-      expect(none).toEqual(captured("F7-models-none.txt"));
+      // F1b's first part is the first 127 bytes of its first line; its model_change line (its
+      // third) is in its second part.
+      const later = run(names.models, modelsSql(CONFIG, "store_a", "2026-11-21"));
+      expect(later).toEqual(captured("F7-models-later.txt"));
       expect(readFileSync(F1B, "utf8").split("\n")[2]).toContain('"type":"model_change"');
-      expect(models(none)).toEqual({
-        files: [[fileHash(storedPath(F1B)), null, null]],
-        summary: expect.objectContaining({ files: 1, with_model: 0, bytes: 127 }),
+      expect(models(later)).toEqual({
+        files: [[fileHash(storedPath(F1B)), "anthropic/claude-sonnet-5-5", "model_change"]],
+        summary: expect.objectContaining({ files: 1, with_model: 1, bytes: 19740 }),
+      });
+    });
+
+    test("models.sql cuts the head at 256 Ki and reads no part that starts at 262144 or after", () => {
+      // The long line's second cut starts a part past 262144; F4's first assistant message is
+      // after it, and its model attachment before.
+      expect(bigParts).toHaveLength(3);
+      expect(bigParts[1] ?? 0).toBeLessThan(262_144);
+      expect(bigParts[2] ?? 0).toBeGreaterThanOrEqual(262_144);
+      const rows = run(names.big, modelsSql(CONFIG, "store_a", "2026-11-20"));
+      // The head is the file's first 262144 characters (F4's lines hold a few that are not ASCII).
+      const head = Array.from(readFileSync(BIG, "utf8")).slice(0, 262_144).join("");
+      expect(head).not.toContain('"type":"assistant"');
+      expect(models(rows)).toEqual({
+        files: [[fileHash(storedPath(BIG)), "claude-sonnet-5-5", "model attachment"]],
+        summary: expect.objectContaining({
+          files: 1,
+          with_model: 1,
+          bytes: Buffer.byteLength(head),
+          bad_lines: 0,
+        }),
       });
     });
   }

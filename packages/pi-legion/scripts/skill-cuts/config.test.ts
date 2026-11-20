@@ -18,6 +18,7 @@ function valid(): Record<string, unknown> {
     ],
     psqlCommand: "/opt/acme/bin/read-store",
     gatewayBaseUrl: "http://127.0.0.1:4000",
+    servedModels: ["anthropic/claude-alpha", "openai/gpt-alpha"],
     excludePaths: [{ repo: "acme/skills", prefix: "pipeline/candidates/" }],
     targets: ["acme/skills", "acme-labs/tools"],
     cuts: [{ id: "skills-1", repo: "acme/skills", pr: 1 }],
@@ -82,6 +83,11 @@ test.each([
     "psqlCommand: an absolute path",
   ],
   ["a gateway that is no URL", { gatewayBaseUrl: "gateway:4000" }, "gatewayBaseUrl"],
+  [
+    "a served model that is not provider/model",
+    { servedModels: ["claude-alpha"] },
+    "servedModels[0]: a model as provider/model",
+  ],
   [
     "a cut whose pr is not a number",
     { cuts: [{ id: "skills-1", repo: "acme/skills", pr: "1" }] },

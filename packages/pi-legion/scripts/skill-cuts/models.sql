@@ -15,12 +15,21 @@ SET LOCAL statement_timeout = '15min';
 -- not here.)
 --
 -- What it reads. The files of public.omp_session_files whose mtime_ms is in [day_start, day_end),
--- and of each only its head: the file row's `content`, then the first part of
--- public.omp_session_files_parts (the lowest start_offset, read by the primary key), never the
--- rest of the file. The head's lines that hold `"type":"model_change"`, `"type":"session_init"`,
--- `"type":"assistant"` or `"attachment":{"type":"model"` are parsed as jsonb; one that is not one
--- JSON value (the head's last line, cut where the first part ends) is counted in bad_lines and
--- read no further.
+-- and of each only its head: the file row's `content`, then each part of
+-- public.omp_session_files_parts whose start_offset is below 262144, in start_offset order, each
+-- piece cut to its first 262144 characters and the head too (256 Ki). A file row can hold a whole
+-- older file of hundreds of MB, and a part can be large, so every piece is cut before it is
+-- joined; a Legion file's first part is often about 4 KB, which ends before its first model line,
+-- so the head takes the parts after it too. The head's lines that hold `"type":"model_change"`,
+-- `"type":"session_init"`, `"type":"assistant"` or `"attachment":{"type":"model"` are parsed as
+-- jsonb; one that is not one JSON value (the head's last line, cut where the head ends) is counted
+-- in bad_lines and read no further.
+--
+-- Memory. Each file's head is built, read and dropped inside one LATERAL, one file at a time, and
+-- only each file's result (its hash, model, source and counts) is materialized, so the query's
+-- temporary space does not grow with the heads (a version that materialized every head of a day
+-- passed the server's temp_file_limit on four devbox days of the 2026-11-20 run). A day that still
+-- passes the statement timeout is split into its hours with `--hour`, as count.sql's is.
 --
 -- The model of a file, from its head, the first of these sources that gives one (`source`):
 --   model_change      Oh My Pi: the first `model_change` line's `model` (`provider/modelId`),
@@ -28,14 +37,13 @@ SET LOCAL statement_timeout = '15min';
 --   session_init      Oh My Pi writes one only in a subagent's file: its `resolvedModel`, the
 --                     provider/model selector the subagent was given (a thinking suffix such as
 --                     `:low` kept as written). It follows the subagent's whole system prompt, at
---                     the end of the file's longest line, so a first part that ends inside that
---                     line gives none;
+--                     the end of the file's longest line, so a head that ends inside that line
+--                     gives none;
 --   assistant         Claude Code: the first assistant message's `message.model` that is not
 --                     `<synthetic>` (Claude Code's model id, which names no provider);
 --   model attachment  Claude Code: the `model` attachment's `identity.modelId`, which Claude Code
 --                     writes near the file's start, before its first assistant message;
--- else none: the model is null (the head holds no such line, as when the first part ends before
--- the session's first model line).
+-- else none: the model is null (the head holds no such line).
 --
 -- Rows: one JSON value per row (psql prints each on one line), the files in hash order, then the
 -- summary:
@@ -45,74 +53,74 @@ SET LOCAL statement_timeout = '15min';
 --    (files whose model is not null), "bytes" (bytes read: each head), "lines_parsed",
 --    "bad_lines"}
 -- No path or line text leaves the database.
--- Each head is cut to its first MiB (the file row's content, then the first part): a file row can
--- hold a whole older file of hundreds of MB, and the first model line is near the file's start; a
--- head left whole filled the server's temp_file_limit on four devbox days (2026-11-20 run).
 WITH
-heads AS MATERIALIZED (
-  SELECT f.path,
-    substr(coalesce(substr(f.content, 1, 1048576), '') || coalesce(substr(fp.content, 1, 1048576), ''), 1, 1048576) AS head
+per_file AS MATERIALIZED (
+  SELECT left(md5(f.path), 16) AS hash, octet_length(hd.head) AS bytes, pm.model, pm.source,
+    pm.lines_parsed, pm.bad_lines
   FROM public.omp_session_files f
-  LEFT JOIN LATERAL (
-    SELECT pt.content
-    FROM public.omp_session_files_parts pt
-    WHERE pt.path = f.path
-    ORDER BY pt.start_offset
-    LIMIT 1
-  ) fp ON true
-  WHERE f.mtime_ms >= {{day_start}} AND f.mtime_ms < {{day_end}}
-),
-parsed AS MATERIALIZED (
-  SELECT h.path, t.n, CASE WHEN pg_input_is_valid(t.ln, 'jsonb') THEN t.ln::jsonb END AS j
-  FROM heads h
-  CROSS JOIN LATERAL string_to_table(h.head, E'\n') WITH ORDINALITY AS t(ln, n)
-  WHERE strpos(t.ln, '"type":"model_change"') > 0
-    OR strpos(t.ln, '"type":"session_init"') > 0
-    OR strpos(t.ln, '"type":"assistant"') > 0
-    OR strpos(t.ln, '"attachment":{"type":"model"') > 0
-),
-found AS (
-  SELECT p.path, p.n, m.source, m.rank, m.model
-  FROM parsed p
   CROSS JOIN LATERAL (
-    SELECT 'model_change' AS source, 0 AS rank, p.j ->> 'model' AS model
-    WHERE p.j ->> 'type' = 'model_change'
-    UNION ALL
-    SELECT 'session_init', 1, p.j ->> 'resolvedModel'
-    WHERE p.j ->> 'type' = 'session_init'
-    UNION ALL
-    SELECT 'assistant', 2, p.j -> 'message' ->> 'model'
-    WHERE p.j ->> 'type' = 'assistant' AND p.j -> 'message' ->> 'model' <> '<synthetic>'
-    UNION ALL
-    SELECT 'model attachment', 3, p.j -> 'attachment' -> 'identity' ->> 'modelId'
-    WHERE p.j -> 'attachment' ->> 'type' = 'model'
-  ) m
-  WHERE p.j IS NOT NULL AND m.model <> ''
-),
-chosen AS (
-  SELECT DISTINCT ON (f.path) f.path, f.model, f.source
-  FROM found f
-  ORDER BY f.path, f.rank, f.n
+    SELECT substr(
+      coalesce(substr(f.content, 1, 262144), '') || coalesce((
+        SELECT string_agg(substr(pt.content, 1, 262144), '' ORDER BY pt.start_offset)
+        FROM public.omp_session_files_parts pt
+        WHERE pt.path = f.path AND pt.start_offset < 262144
+      ), ''),
+      1,
+      262144
+    ) AS head
+    OFFSET 0
+  ) hd
+  CROSS JOIN LATERAL (
+    SELECT
+      count(*) AS lines_parsed,
+      count(*) FILTER (WHERE p.j IS NULL) AS bad_lines,
+      (array_agg(m.model ORDER BY m.rank, p.n) FILTER (WHERE m.model IS NOT NULL))[1] AS model,
+      (array_agg(m.source ORDER BY m.rank, p.n) FILTER (WHERE m.model IS NOT NULL))[1] AS source
+    FROM (
+      SELECT t.n, CASE WHEN pg_input_is_valid(t.ln, 'jsonb') THEN t.ln::jsonb END AS j
+      FROM string_to_table(hd.head, E'\n') WITH ORDINALITY AS t(ln, n)
+      WHERE strpos(t.ln, '"type":"model_change"') > 0
+        OR strpos(t.ln, '"type":"session_init"') > 0
+        OR strpos(t.ln, '"type":"assistant"') > 0
+        OR strpos(t.ln, '"attachment":{"type":"model"') > 0
+    ) p
+    LEFT JOIN LATERAL (
+      SELECT x.source, x.rank, x.model
+      FROM (
+        SELECT 'model_change' AS source, 0 AS rank, p.j ->> 'model' AS model
+        WHERE p.j ->> 'type' = 'model_change'
+        UNION ALL
+        SELECT 'session_init', 1, p.j ->> 'resolvedModel'
+        WHERE p.j ->> 'type' = 'session_init'
+        UNION ALL
+        SELECT 'assistant', 2, p.j -> 'message' ->> 'model'
+        WHERE p.j ->> 'type' = 'assistant' AND p.j -> 'message' ->> 'model' <> '<synthetic>'
+        UNION ALL
+        SELECT 'model attachment', 3, p.j -> 'attachment' -> 'identity' ->> 'modelId'
+        WHERE p.j -> 'attachment' ->> 'type' = 'model'
+      ) x
+      WHERE x.model <> ''
+    ) m ON true
+  ) pm
+  WHERE f.mtime_ms >= {{day_start}} AND f.mtime_ms < {{day_end}}
 )
 SELECT o.total
 FROM (
-  SELECT 0 AS pos, left(md5(h.path), 16) AS hash,
+  SELECT 0 AS pos, pf.hash,
     json_build_object(
-      'row', 'model', 'store', {{store}}, 'hash', left(md5(h.path), 16), 'model', c.model,
-      'source', c.source
+      'row', 'model', 'store', {{store}}, 'hash', pf.hash, 'model', pf.model, 'source', pf.source
     )::text AS total
-  FROM heads h
-  LEFT JOIN chosen c ON c.path = h.path
+  FROM per_file pf
   UNION ALL
   SELECT 1, NULL,
     json_build_object(
       'row', 'summary', 'store', {{store}}, 'mtime_from', {{day_start}}::bigint,
       'mtime_to', {{day_end}}::bigint,
-      'files', (SELECT count(*) FROM heads),
-      'with_model', (SELECT count(*) FROM chosen),
-      'bytes', (SELECT coalesce(sum(octet_length(h.head)), 0) FROM heads h),
-      'lines_parsed', (SELECT count(*) FROM parsed),
-      'bad_lines', (SELECT count(*) FROM parsed WHERE j IS NULL)
+      'files', (SELECT count(*) FROM per_file),
+      'with_model', (SELECT count(*) FROM per_file WHERE model IS NOT NULL),
+      'bytes', (SELECT coalesce(sum(bytes), 0) FROM per_file),
+      'lines_parsed', (SELECT coalesce(sum(lines_parsed), 0) FROM per_file),
+      'bad_lines', (SELECT coalesce(sum(bad_lines), 0) FROM per_file)
     )::text
 ) o
 ORDER BY o.pos, o.hash COLLATE "C";

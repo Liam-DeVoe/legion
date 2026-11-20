@@ -13,6 +13,9 @@
  *   psqlCommand     absolute path of a program that runs the store's read command for the database
  *                   its first argument names, with the query on its standard input
  *   gatewayBaseUrl  the model gateway's base URL
+ *   servedModels    the models the gateway serves, each `provider/model` (`anthropic/claude-x`);
+ *                   the read count's models tables mark a session's model served when its id
+ *                   after the last `/` is one of these ids after theirs
  *   excludePaths    `{repo, prefix}`: the paths of a repository whose skills are left out
  *   targets         repositories (`owner/name`) the copy-prefix table may map a copy to
  *   cuts            `{id, repo, pr}`: each skill cut, the pull request that made it
@@ -55,6 +58,9 @@ export const SkillCutsConfig = z
       .string()
       .refine((value) => path.isAbsolute(value), { error: "an absolute path" }),
     gatewayBaseUrl: z.url({ protocol: /^https?$/, error: "an http or https URL" }),
+    servedModels: z.array(
+      z.string().regex(/^[^\s/]+(\/[^\s/]+)+$/, { error: "a model as provider/model" })
+    ),
     excludePaths: z.array(z.strictObject({ repo: Repository, prefix: z.string().min(1) })),
     targets: z.array(Repository),
     cuts: z.array(

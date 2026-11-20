@@ -74,7 +74,9 @@
  *   two queries takes the model one names; two models keep the first day's and are counted), the
  *   thinking suffix dropped and a Claude Code model id written `anthropic/<id>` (`sessionModel`).
  *   A session whose file's head names no model, and one in no models query's rows, are counted
- *   apart. A model's provider is the text before its first `/`.
+ *   apart. A model is an Anthropic model when its id (`modelId`, its text after the last `/`)
+ *   starts `claude-`, whatever gateway or provider names it; the gateway serves it when its id is
+ *   the id of one of the configuration's `servedModels`.
  *
  * Outputs under --out.
  *   skill-read-count.tsv   READ_COUNT_COLUMNS, one row per copy of skill-copies.tsv, in its order:
@@ -101,9 +103,11 @@
  *   models-by-skill.tsv    With --models: MODELS_BY_SKILL_COLUMNS, one row per copy, in
  *                          skill-copies.tsv's order: repository, path, name, sessions, by_model
  *                          (each `<model>=<sessions>`, most first, joined by `; `),
- *                          no_model_sessions, not_queried_sessions, not_anthropic_sessions and
+ *                          no_model_sessions, not_queried_sessions, not_anthropic_sessions,
  *                          not_anthropic_share (of the sessions with a model, to 3 places; empty
- *                          when none has one).
+ *                          when none has one), served_sessions, not_served_sessions and
+ *                          not_served_models (each model the gateway does not serve, as in
+ *                          by_model).
  *   models-by-cut.tsv      With --models: MODELS_BY_CUT_COLUMNS, each cut's ranked changed skills
  *                          in rank order: cut, rank, skill, path, then the same model columns.
  */
@@ -486,22 +490,32 @@ export function parseModelOutput(store: string, name: string, text: string): Mod
 /** The thinking selectors Oh My Pi may write after a model (`anthropic/claude-x:low`). */
 const THINKING_SUFFIX = /:(inherit|off|minimal|low|medium|high|xhigh|max|auto)$/;
 
-/** A session's model as the count groups it, `provider/model` without a thinking suffix, and its
- *  provider (the text before the first `/`). Claude Code's model id names no provider, and Claude
- *  Code calls Anthropic's Messages API, so a Claude Code model is written `anthropic/<id>`. */
+/** The model id of a `provider/model` (or a bare id): its text after the last `/`. */
+export const modelId = (model: string) => model.slice(model.lastIndexOf("/") + 1);
+
+/** A session's model as the count groups it: `provider/model` without a thinking suffix (Claude
+ *  Code's model id names no provider, and Claude Code calls Anthropic's Messages API, so a Claude
+ *  Code model is written `anthropic/<id>`); whether it is an Anthropic model, by its family (its id
+ *  starts `claude-`, whatever gateway or provider names it); and whether the gateway serves it
+ *  (its id is the id of one of the configuration's `servedModels`). */
 export interface SessionModel {
   readonly model: string;
-  readonly provider: string;
+  readonly anthropic: boolean;
+  readonly served: boolean;
 }
 
-/** The model of a models.sql row as the count groups it, or null for a row with none. */
-export function sessionModel(row: Pick<ModelRow, "model" | "source">): SessionModel | null {
+/** The model of a models.sql row as the count groups it, or null for a row with none; `served`
+ *  holds the ids (`modelId`) of the models the gateway serves. */
+export function sessionModel(
+  row: Pick<ModelRow, "model" | "source">,
+  served: ReadonlySet<string>
+): SessionModel | null {
   if (row.model === null) return null;
   const stripped = row.model.replace(THINKING_SUFFIX, "");
   const claudeCode = row.source === "assistant" || row.source === "model attachment";
   const model = claudeCode && !stripped.includes("/") ? `anthropic/${stripped}` : stripped;
-  const slash = model.indexOf("/");
-  return { model, provider: slash > 0 ? model.slice(0, slash) : model };
+  const id = modelId(model);
+  return { model, anthropic: id.startsWith("claude-"), served: served.has(id) };
 }
 
 /** Each session's model across the models queries: `sessionKey` → its model, or null when the
@@ -513,7 +527,13 @@ export interface SessionModels {
   readonly conflicts: number;
 }
 
-export function sessionModels(outputs: readonly ModelOutput[]): SessionModels {
+/** The sessions' models of `outputs`, each marked served when the gateway serves it
+ *  (`servedModels`, the configuration's). */
+export function sessionModels(
+  outputs: readonly ModelOutput[],
+  servedModels: readonly string[]
+): SessionModels {
+  const served = new Set(servedModels.map(modelId));
   const models = new Map<string, SessionModel | null>();
   const conflicting = new Set<string>();
   const ordered = outputs.toSorted(
@@ -522,7 +542,7 @@ export function sessionModels(outputs: readonly ModelOutput[]): SessionModels {
   for (const output of ordered) {
     for (const row of output.rows) {
       const key = sessionKey(row.store, row.hash);
-      const model = sessionModel(row);
+      const model = sessionModel(row, served);
       const known = models.get(key);
       if (known === undefined || known === null) models.set(key, model);
       else if (model !== null && model.model !== known.model) conflicting.add(key);
@@ -1262,34 +1282,34 @@ export function rankChanged(
 export interface ModelCount {
   readonly sessions: number;
   /** Each model with its sessions, most first, a tie by model. */
-  readonly byModel: readonly {
-    readonly model: string;
-    readonly provider: string;
-    readonly sessions: number;
-  }[];
+  readonly byModel: readonly (SessionModel & { readonly sessions: number })[];
   /** The sessions whose file's head names no model. */
   readonly noModel: number;
   /** The sessions that no models query's rows hold. */
   readonly notQueried: number;
-  /** The sessions with a model whose provider is not `anthropic`. */
+  /** The sessions with a model that is not an Anthropic model (its id does not start `claude-`). */
   readonly notAnthropic: number;
+  /** The sessions with a model the gateway serves. */
+  readonly served: number;
   /** The sessions with a model. */
   readonly withModel: number;
 }
 
 /** The read sessions `sessions` (each a `sessionKey`) by the model `models` gives each. */
 export function modelCount(sessions: ReadonlySet<string>, models: SessionModels): ModelCount {
-  const byModel = new Map<string, { model: string; provider: string; sessions: number }>();
+  const byModel = new Map<string, SessionModel & { sessions: number }>();
   let noModel = 0;
   let notQueried = 0;
   let notAnthropic = 0;
+  let served = 0;
   for (const session of sessions) {
     const model = models.models.get(session);
     if (model === undefined) notQueried++;
     else if (model === null) noModel++;
     else {
       entry(byModel, model.model, () => ({ ...model, sessions: 0 })).sessions++;
-      if (model.provider !== "anthropic") notAnthropic++;
+      if (!model.anthropic) notAnthropic++;
+      if (model.served) served++;
     }
   }
   return {
@@ -1300,12 +1320,13 @@ export function modelCount(sessions: ReadonlySet<string>, models: SessionModels)
     noModel,
     notQueried,
     notAnthropic,
+    served,
     withModel: sessions.size - noModel - notQueried,
   };
 }
 
-/** The share of `count`'s sessions with a model whose provider is not `anthropic`, to 3 places,
- *  or `""` when none of them has a model. */
+/** The share of `count`'s sessions with a model whose model is not an Anthropic model, to 3
+ *  places, or `""` when none of them has a model. */
 export function notAnthropicShare(count: ModelCount): string {
   return count.withModel === 0 ? "" : (count.notAnthropic / count.withModel).toFixed(3);
 }
@@ -1317,6 +1338,9 @@ export const MODEL_COUNT_COLUMNS = [
   "not_queried_sessions",
   "not_anthropic_sessions",
   "not_anthropic_share",
+  "served_sessions",
+  "not_served_sessions",
+  "not_served_models",
 ] as const;
 export const MODELS_BY_SKILL_COLUMNS = [
   "repository",
@@ -1332,16 +1356,23 @@ export const MODELS_BY_CUT_COLUMNS = [
   ...MODEL_COUNT_COLUMNS,
 ] as const;
 
-/** The cells of MODEL_COUNT_COLUMNS for `count`: `by_model` is each `<model>=<sessions>`, joined
- *  by `; `. */
+/** `<model>=<sessions>` of each of `items`, joined by `; `. */
+const modelList = (items: readonly { model: string; sessions: number }[]) =>
+  items.map((item) => `${item.model}=${item.sessions}`).join("; ");
+
+/** The cells of MODEL_COUNT_COLUMNS for `count`: `by_model` and `not_served_models` are each
+ *  `<model>=<sessions>`, joined by `; `. */
 function modelCells(count: ModelCount): (string | number)[] {
   return [
     count.sessions,
-    count.byModel.map((item) => `${item.model}=${item.sessions}`).join("; "),
+    modelList(count.byModel),
     count.noModel,
     count.notQueried,
     count.notAnthropic,
     notAnthropicShare(count),
+    count.served,
+    count.withModel - count.served,
+    modelList(count.byModel.filter((item) => !item.served)),
   ];
 }
 
@@ -1491,11 +1522,12 @@ export interface Report {
   readonly models: ModelsRead | undefined;
 }
 
-/** A count's models as a report names them: at most `most`, each `<model> (<sessions>)`. */
+/** A count's models as a report names them: at most `most`, each `<model> (<sessions>)`, with
+ *  `not served` beside a model the gateway does not serve. */
 function modelsSaid(count: ModelCount, most: number): string {
   const said = count.byModel
     .slice(0, most)
-    .map((item) => `${item.model} (${item.sessions})`)
+    .map((item) => `${item.model} (${item.sessions}${item.served ? "" : ", not served"})`)
     .join(", ");
   const more = count.byModel.length - most;
   return more > 0 ? `${said} and ${more} more` : said || "none";
@@ -1503,7 +1535,7 @@ function modelsSaid(count: ModelCount, most: number): string {
 
 /** The report's section on the models of the reading sessions. */
 function modelsMarkdown(report: Report): string[] {
-  const { attribution, rankings, models } = report;
+  const { attribution, rankings, models, config } = report;
   const lines = ["", "## Models of the reading sessions", ""];
   if (models === undefined) return [...lines, "Not counted: no --models directory was given."];
   const all = modelCount(
@@ -1513,7 +1545,8 @@ function modelsMarkdown(report: Report): string[] {
   const files = models.dir.outputs.reduce((sum, output) => sum + output.summary.files, 0);
   const named = models.dir.outputs.reduce((sum, output) => sum + output.summary.with_model, 0);
   lines.push(
-    "Each session's model is read from the head of its file, the file row's content and its first part (models.sql): Oh My Pi's first `model_change` line, else a subagent's `session_init` `resolvedModel`, else Claude Code's first assistant message's model, else its `model` attachment. A thinking suffix (`:low`) is dropped, and Claude Code's model id is written `anthropic/<id>`. A model's provider is the text before its first `/`.",
+    "Each session's model is read from the head of its file (models.sql): the file row's content, then each part that starts below byte 262144, cut to 262144 characters. The head's first `model_change` line of Oh My Pi gives it, else a subagent's `session_init` `resolvedModel`, else Claude Code's first assistant message's model, else its `model` attachment. A thinking suffix (`:low`) is dropped, and Claude Code's model id is written `anthropic/<id>`. A model is an Anthropic model when its id (its text after the last `/`) starts `claude-`, whichever gateway or provider names it. The gateway serves a model when its id is the id of one of the configuration's `servedModels`: " +
+      (config.servedModels.length === 0 ? "none." : `${config.servedModels.join(", ")}.`),
     "",
     `The models queries read ${counted(files, "file")}; the head of ${named} of them names a model. The ${counted(all.sessions, "read session")} of the copies: with a model ${all.withModel}; whose file's head names none ${all.noModel}; in no models query's rows ${all.notQueried}. Sessions two queries give two models for (the first day's is kept): ${models.sessions.conflicts}.`,
     "",
@@ -1530,17 +1563,19 @@ function modelsMarkdown(report: Report): string[] {
     "",
     "### The models of the copies' read sessions",
     "",
-    "| Model | Provider | Sessions |",
-    "| --- | --- | ---: |"
+    "| Model | Anthropic model | Served by the gateway | Sessions |",
+    "| --- | --- | --- | ---: |"
   );
   for (const item of all.byModel) {
-    lines.push(`| ${cell(item.model)} | ${cell(item.provider)} | ${item.sessions} |`);
+    lines.push(
+      `| ${cell(item.model)} | ${item.anthropic ? "yes" : "no"} | ${item.served ? "yes" : "no"} | ${item.sessions} |`
+    );
   }
   lines.push(
     "",
-    "### Each cut's ranked changed skills: the share of reading sessions on a model not from anthropic",
+    "### Each cut's ranked changed skills: the share of reading sessions on a model that is not Anthropic's, and the sessions on a model the gateway serves",
     "",
-    "The share is of the sessions with a model. models-by-cut.tsv holds each skill's every model.",
+    "The share is of the sessions with a model. models-by-cut.tsv holds each skill's every model, and the models the gateway does not serve.",
     ""
   );
   if (rankings.length === 0) lines.push("None: no --changed file was given.");
@@ -1548,13 +1583,13 @@ function modelsMarkdown(report: Report): string[] {
     lines.push(
       `#### ${ranking.cut} (${ranking.repository})`,
       "",
-      "| Rank | Skill | Sessions | With a model | Not anthropic | Share not anthropic | No model | Not queried | Models |",
-      "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
+      "| Rank | Skill | Sessions | With a model | Not Anthropic | Share not Anthropic | Served | Not served | No model | Not queried | Models |",
+      "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |"
     );
     for (const item of rankingModels(attribution, ranking, models.sessions)) {
       const count = item.count;
       lines.push(
-        `| ${item.rank} | ${cell(item.skill)} | ${count.sessions} | ${count.withModel} | ${count.notAnthropic} | ${notAnthropicShare(count) || "none"} | ${count.noModel} | ${count.notQueried} | ${cell(modelsSaid(count, 5))} |`
+        `| ${item.rank} | ${cell(item.skill)} | ${count.sessions} | ${count.withModel} | ${count.notAnthropic} | ${notAnthropicShare(count) || "none"} | ${count.served} | ${count.withModel - count.served} | ${count.noModel} | ${count.notQueried} | ${cell(modelsSaid(count, 5))} |`
       );
     }
     lines.push("");
@@ -1933,7 +1968,11 @@ export function main(argv: readonly string[], io: Output): number {
     let models: ModelsRead | undefined;
     if (modelsDir !== undefined) {
       const dir = readQueryDir(modelsDir, stores, parseModelOutput);
-      models = { dir, issues: queryIssues(config, dir), sessions: sessionModels(dir.outputs) };
+      models = {
+        dir,
+        issues: queryIssues(config, dir),
+        sessions: sessionModels(dir.outputs, config.servedModels),
+      };
     }
     const rankings = changed.map((item) =>
       rankChanged(

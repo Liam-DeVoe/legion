@@ -1,7 +1,7 @@
                                                                                           total                                                                                          
 -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
- {"row" : "model", "store" : "store_a", "hash" : "5ebda8a6e0707d07", "model" : "claude-sonnet-5-5", "source" : "assistant"}
+ {"row" : "model", "store" : "store_a", "hash" : "6bf367db484f59de", "model" : null, "source" : null}
  {"row" : "model", "store" : "store_a", "hash" : "cf863e47a559fcca", "model" : "anthropic/claude-sonnet-5-5", "source" : "session_init"}
- {"row" : "summary", "store" : "store_a", "mtime_from" : 1795132800000, "mtime_to" : 1795219200000, "files" : 2, "with_model" : 2, "bytes" : 98565, "lines_parsed" : 3, "bad_lines" : 0}
+ {"row" : "summary", "store" : "store_a", "mtime_from" : 1795132800000, "mtime_to" : 1795219200000, "files" : 2, "with_model" : 1, "bytes" : 20657, "lines_parsed" : 1, "bad_lines" : 0}
 (3 rows)
 

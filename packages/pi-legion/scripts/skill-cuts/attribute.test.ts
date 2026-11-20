@@ -13,6 +13,7 @@ import {
   MODELS_BY_SKILL_COLUMNS,
   main,
   modelCount,
+  modelId,
   notAnthropicShare,
   type PrefixTableRow,
   parseModelOutput,
@@ -27,6 +28,7 @@ import {
   type SkillCopiesRow,
   sessionFiles,
   sessionKey,
+  sessionModel,
   sessionModels,
 } from "./attribute";
 import { loadConfig, parseConfig } from "./config";
@@ -42,7 +44,7 @@ import {
 
 // attribute.ts on F7, count.sql's and models.sql's own output under the store command's flags
 // (testdata/F7-count-first.txt and F7-count-second.txt, whose capture commands psql-rows.test.ts's
-// header gives, and F7-models-first.txt, F7-models-second.txt and F7-models-none.txt, whose
+// header gives, and F7-models-first.txt, F7-models-second.txt and F7-models-later.txt, whose
 // count.test.ts's header gives), and on made-up R4 tables of made-up repositories (acme/skills,
 // acme/tools, acme/dotfiles, acme/cc, acme/kiln, ...), each in the columns copies.ts writes. Other
 // query outputs are made here in F7's shape: a psql table of rows, read back with the parsers.
@@ -53,9 +55,10 @@ import {
 //   and of beta at F3/config/plugins/cache/acme-market/acme-tools/0.1.0/skills/beta/SKILL.md;
 // - H3 (F1's subagent): a read of beta at F1_PROFILE/beta/SKILL.md.
 // F7-count-second.txt holds H1B (F1b's session) reading alpha at F1_PROFILE/alpha/SKILL.md.
-// F7-models-first.txt gives H1 and H3 their model_change model and H2 its model attachment's;
-// F7-models-second.txt gives F1c (F1's subagent without its model_change line) its session_init
-// model and H2 its first assistant message's; F7-models-none.txt gives H1B none.
+// F7-models-first.txt gives H1 and H3 their model_change model and H2 its first assistant
+// message's (from its second part); F7-models-second.txt gives F1c (F1's subagent without its
+// model_change line) its session_init model and F1d (F1b's first two lines) none;
+// F7-models-later.txt gives H1B the model_change model of its second part.
 //
 // The made-up world of those rows (`f7World`): alpha has one copy (acme/skills src/alpha) and
 // beta two (acme/skills src/beta, acme/tools plugins/acme-tools/skills/beta). An installer of
@@ -74,6 +77,7 @@ const H2 = "5ebda8a6e0707d07";
 const H3 = "0da7427e81182998";
 const H1B = "2e8fca5c3950db03";
 const H1C = "cf863e47a559fcca";
+const H1D = "6bf367db484f59de";
 const H4 = "4444444444444444";
 
 const CONFIG_FILE = path.join(TESTDATA, "F7-skill-cuts.json");
@@ -738,31 +742,54 @@ test("a session's model comes from its file's head: model_change, a subagent's s
   const outputs = [
     parseModelOutput("store_a", "2026-11-20", f7("F7-models-first.txt")),
     parseModelOutput("store_a", "2026-11-20", f7("F7-models-second.txt")),
-    parseModelOutput("store_a", "2026-11-21", f7("F7-models-none.txt")),
+    parseModelOutput("store_a", "2026-11-21", f7("F7-models-later.txt")),
   ];
   expect(
     outputs.flatMap((output) => output.rows.map((row) => [row.hash, row.model, row.source]))
   ).toEqual([
     [H3, "anthropic/claude-sonnet-5-5", "model_change"],
-    [H2, "claude-sonnet-5-5", "model attachment"],
-    [H1, "anthropic/claude-sonnet-5-5", "model_change"],
     [H2, "claude-sonnet-5-5", "assistant"],
+    [H1, "anthropic/claude-sonnet-5-5", "model_change"],
+    [H1D, null, null],
     [H1C, "anthropic/claude-sonnet-5-5", "session_init"],
-    [H1B, null, null],
+    [H1B, "anthropic/claude-sonnet-5-5", "model_change"],
   ]);
-  const { models, conflicts } = sessionModels(outputs);
-  const sonnet = { model: "anthropic/claude-sonnet-5-5", provider: "anthropic" };
+  const { models, conflicts } = sessionModels(outputs, CONFIG.servedModels);
+  const sonnet = { model: "anthropic/claude-sonnet-5-5", anthropic: true, served: true };
   expect(Object.fromEntries(models)).toEqual({
     [sessionKey("store_a", H1)]: sonnet,
     [sessionKey("store_a", H2)]: sonnet,
     [sessionKey("store_a", H3)]: sonnet,
     [sessionKey("store_a", H1C)]: sonnet,
-    [sessionKey("store_a", H1B)]: null,
+    [sessionKey("store_a", H1D)]: null,
+    [sessionKey("store_a", H1B)]: sonnet,
   });
   expect(conflicts).toBe(0);
 });
 
-test("sessions by model: the thinking suffix dropped, a file in two queries once, a model none names and a session no query holds apart", () => {
+test.each([
+  [
+    "a model of Anthropic's family under a gateway's name",
+    "acme-gateway/claude-sonnet-5-5",
+    true,
+    true,
+  ],
+  [
+    "a model of Anthropic's family the gateway does not serve",
+    "anthropic/claude-opus-5",
+    true,
+    false,
+  ],
+  ["Claude Code's bare model id", "claude-sonnet-5-5", true, true],
+  ["another family's model the gateway serves, by its id", "acme-gateway/gpt-6.1-sol", false, true],
+  ["another family's model the gateway does not serve", "openai/gpt-6.1:high", false, false],
+] as const)("%s: %s is Anthropic's %s, served %s", (_name, model, anthropic, served) => {
+  const ids = new Set(CONFIG.servedModels.map(modelId));
+  const source = model.includes("/") ? "model_change" : "assistant";
+  expect(sessionModel({ model, source }, ids)).toMatchObject({ anthropic, served });
+});
+
+test("sessions by model: the thinking suffix dropped, a file in two queries once, Anthropic's family and the gateway's models counted, a model none names and a session no query holds apart", () => {
   const outputs = [
     parseModelOutput(
       "store_a",
@@ -770,6 +797,7 @@ test("sessions by model: the thinking suffix dropped, a file in two queries once
       modelsText("store_a", [
         [H1, "openai/gpt-6.1:high", "model_change"],
         [H2, "anthropic/claude-sonnet-5-5", "session_init"],
+        [H3, "openai/gpt-6.1-sol", "model_change"],
         [H1B, null, null],
       ])
     ),
@@ -779,30 +807,38 @@ test("sessions by model: the thinking suffix dropped, a file in two queries once
       modelsText("store_a", [
         // H1 resumed and named another model: the first day's stays, and it is counted.
         [H1, "anthropic/claude-sonnet-5-5", "model_change"],
-        // H1B's head names a model on its second day.
-        [H1B, "anthropic/claude-opus-5", "model_change"],
+        // H1B's head names a model on its second day: Anthropic's, under a gateway's name.
+        [H1B, "acme-gateway/claude-opus-5", "model_change"],
       ])
     ),
   ];
-  const models = sessionModels(outputs);
+  const models = sessionModels(outputs, CONFIG.servedModels);
   expect(models.conflicts).toBe(1);
   const count = modelCount(
-    new Set([H1, H2, H1B, H4].map((hash) => sessionKey("store_a", hash))),
+    new Set([H1, H2, H3, H1B, H4].map((hash) => sessionKey("store_a", hash))),
     models
   );
+  const model = (name: string, anthropic: boolean, served: boolean) => ({
+    model: name,
+    anthropic,
+    served,
+    sessions: 1,
+  });
   expect(count).toEqual({
-    sessions: 4,
+    sessions: 5,
     byModel: [
-      { model: "anthropic/claude-opus-5", provider: "anthropic", sessions: 1 },
-      { model: "anthropic/claude-sonnet-5-5", provider: "anthropic", sessions: 1 },
-      { model: "openai/gpt-6.1", provider: "openai", sessions: 1 },
+      model("acme-gateway/claude-opus-5", true, false),
+      model("anthropic/claude-sonnet-5-5", true, true),
+      model("openai/gpt-6.1", false, false),
+      model("openai/gpt-6.1-sol", false, true),
     ],
     noModel: 0,
     notQueried: 1,
-    notAnthropic: 1,
-    withModel: 3,
+    notAnthropic: 2,
+    served: 2,
+    withModel: 4,
   });
-  expect(notAnthropicShare(count)).toBe("0.333");
+  expect(notAnthropicShare(count)).toBe("0.500");
   expect(notAnthropicShare(modelCount(new Set(), models))).toBe("");
 });
 
@@ -1023,7 +1059,10 @@ test("the command writes the count, its report, each cut's ranking and the model
   });
   const modelsDir = tree(path.join(root, "models"), {
     "store_a/2026-11-20.txt": f7("F7-models-first.txt"),
-    "store_a/2026-11-21.txt": f7("F7-models-none.txt"),
+    // H1B ran on another family's model, under a gateway's name, that the gateway does not serve.
+    "store_a/2026-11-21.txt": modelsText("store_a", [
+      [H1B, "acme-gateway/gpt-6.1", "model_change"],
+    ]),
     "run.log": runLog,
   });
   const copiesDir = r4Dir(path.join(root, "copies"), f7World());
@@ -1104,22 +1143,26 @@ test("the command writes the count, its report, each cut's ranking and the model
   expect([sessionsOf("beta"), sessionsOf("gone")]).toEqual(["", ""]);
   expect(result.out).toContain(`${path.join(out, "skills-1", "sessions")}/ (3 files)`);
 
-  // H1 (model_change) and H2 (Claude Code's model attachment) ran on one model; H1B's file's head
-  // names none.
+  // H1 (model_change) and H2 (Claude Code's first assistant message) ran on a served Anthropic
+  // model; H1B on another family's model the gateway does not serve.
   const sonnet = "anthropic/claude-sonnet-5-5";
+  const other = "acme-gateway/gpt-6.1";
   const bySkill = readFileSync(path.join(out, "models-by-skill.tsv"), "utf8");
   expect(bySkill.split("\n")[0]).toBe(MODELS_BY_SKILL_COLUMNS.join("\t"));
-  const zero = { not_queried_sessions: "0", not_anthropic_sessions: "0" };
+  const none = { no_model_sessions: "0", not_queried_sessions: "0" };
   expect(parseTsv(bySkill)).toEqual([
     {
       repository: "acme/skills",
       path: "src/alpha",
       name: "alpha",
       sessions: "3",
-      by_model: `${sonnet}=2`,
-      no_model_sessions: "1",
-      ...zero,
-      not_anthropic_share: "0.000",
+      by_model: `${sonnet}=2; ${other}=1`,
+      ...none,
+      not_anthropic_sessions: "1",
+      not_anthropic_share: "0.333",
+      served_sessions: "2",
+      not_served_sessions: "1",
+      not_served_models: `${other}=1`,
     },
     {
       repository: "acme/skills",
@@ -1127,9 +1170,12 @@ test("the command writes the count, its report, each cut's ranking and the model
       name: "beta",
       sessions: "0",
       by_model: "",
-      no_model_sessions: "0",
-      ...zero,
+      ...none,
+      not_anthropic_sessions: "0",
       not_anthropic_share: "",
+      served_sessions: "0",
+      not_served_sessions: "0",
+      not_served_models: "",
     },
     {
       repository: "acme/tools",
@@ -1137,19 +1183,30 @@ test("the command writes the count, its report, each cut's ranking and the model
       name: "beta",
       sessions: "1",
       by_model: `${sonnet}=1`,
-      no_model_sessions: "0",
-      ...zero,
+      ...none,
+      not_anthropic_sessions: "0",
       not_anthropic_share: "0.000",
+      served_sessions: "1",
+      not_served_sessions: "0",
+      not_served_models: "",
     },
   ]);
   const byCut = readFileSync(path.join(out, "models-by-cut.tsv"), "utf8");
   expect(byCut.split("\n")[0]).toBe(MODELS_BY_CUT_COLUMNS.join("\t"));
   expect(
-    parseTsv(byCut).map((row) => [row.cut, row.rank, row.skill, row.sessions, row.by_model])
+    parseTsv(byCut).map((row) => [
+      row.cut,
+      row.rank,
+      row.skill,
+      row.sessions,
+      row.by_model,
+      row.not_anthropic_share,
+      row.served_sessions,
+    ])
   ).toEqual([
-    ["skills-1", "1", "alpha", "3", `${sonnet}=2`],
-    ["skills-1", "2", "beta", "0", ""],
-    ["skills-1", "3", "gone", "0", ""],
+    ["skills-1", "1", "alpha", "3", `${sonnet}=2; ${other}=1`, "0.333", "2"],
+    ["skills-1", "2", "beta", "0", "", "", "0"],
+    ["skills-1", "3", "gone", "0", "", "", "0"],
   ]);
 
   const report = readFileSync(path.join(out, "skill-read-count.md"), "utf8");
@@ -1168,11 +1225,13 @@ test("the command writes the count, its report, each cut's ranking and the model
     "- beta (src/beta): no read; 1 session read beta unattributed",
     "| acme/skills | 0123456789abcdef0123456789abcdef01234567 | 2 | 9 | 40 | 49 |",
     "- skills-1 (acme/skills): 3 changed skills, in `skills-1/ranking.json`, with each one's reading sessions in `skills-1/sessions/<skill>.jsonl`; first: alpha (3), beta (0), gone (0). R4 read no copy at `skills/gone`: ranked with 0 sessions.",
-    "The models queries read 4 files; the head of 3 of them names a model. The 3 read sessions of the copies: with a model 2; whose file's head names none 1; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
-    `| ${sonnet} | anthropic | 2 |`,
+    "The models queries read 4 files; the head of 4 of them names a model. The 3 read sessions of the copies: with a model 3; whose file's head names none 0; in no models query's rows 0. Sessions two queries give two models for (the first day's is kept): 0.",
+    "The gateway serves a model when its id is the id of one of the configuration's `servedModels`: anthropic/claude-sonnet-5-5, openai/gpt-6.1-sol.",
+    `| ${sonnet} | yes | yes | 2 |`,
+    `| ${other} | no | no | 1 |`,
     "#### skills-1 (acme/skills)",
-    `| 1 | alpha | 3 | 2 | 0 | 0.000 | 1 | 0 | ${sonnet} (2) |`,
-    "| 2 | beta | 0 | 0 | 0 | none | 0 | 0 | none |",
+    `| 1 | alpha | 3 | 3 | 1 | 0.333 | 2 | 1 | 0 | 0 | ${sonnet} (2), ${other} (1, not served) |`,
+    "| 2 | beta | 0 | 0 | 0 | none | 0 | 0 | 0 | 0 | none |",
   ]) {
     expect(report).toContain(line);
   }
