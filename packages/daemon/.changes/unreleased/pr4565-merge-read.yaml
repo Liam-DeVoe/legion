@@ -8,6 +8,9 @@ body: |-
   in place of `git show --remerge-diff`, which can leave out a file git conflicts in. git rev-parse
   gives git the parents' full commit ids, as `legion merge` gives them, so git names a file it puts
   aside in a conflict as the merge names it. The daemon's messages, the refusal and
-  `legion merge --help` give `git merge-tree` the option list of `legion merge`
-  (`-c merge.renames=true` and the other merge options at git's defaults), so the configuration
-  of the machine does not change git's merge.
+  `legion merge --help` give `git merge-tree` the option list of `legion merge`. The list sets
+  git's merge options to their documented defaults and sets `merge.default` to git's built-in text
+  driver. It points `core.attributesFile` at `/dev/null`. So no global or repository merge option,
+  no default driver and no user's attributes file changes git's merge. The repository's own
+  attributes (`.gitattributes` and `$GIT_DIR/info/attributes`) and the machine's system attributes
+  file still apply.

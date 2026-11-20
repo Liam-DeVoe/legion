@@ -231,20 +231,17 @@ func (m *merger) marked(ctx context.Context, ours func(run string) bool) ([]stri
 // keep is each commit of set, a revset of a run's commits, that stays, with each commit of set
 // below it, since an abandon of a commit moves the commits above it. A commit of set stays when a
 // commit outside set stands on it, when it is any workspace's working-copy commit, when a local
-// bookmark names it that is none of carriers, the bookmarks of the runs the sweep takes, or when
+// bookmark names it that is none of swept, the bookmarks of the runs the sweep takes, or when
 // `::remote_bookmarks()` holds it (held). jj deletes each bookmark of a commit it abandons and
 // says nothing of it, and a tracked remote bookmark, as a push leaves it, keeps the commit it
 // holds mutable. keep names each commit that stays on stderr, one line each, with why it stays.
-func (m *merger) keep(ctx context.Context, set string, carriers []string) ([]string, error) {
-	held, err := m.held(ctx, set, carriers)
+func (m *merger) keep(ctx context.Context, set string, swept []string) ([]string, error) {
+	held, err := m.held(ctx, set, swept)
 	if err != nil {
 		return nil, err
 	}
-	standing := fmt.Sprintf("((children(%[1]s) ~ %[1]s) | working_copies()", set)
-	for _, id := range slices.Sorted(maps.Keys(held)) {
-		standing += " | " + id
-	}
-	standing += ")"
+	parts := append([]string{fmt.Sprintf("(children(%[1]s) ~ %[1]s)", set), "working_copies()"}, slices.Sorted(maps.Keys(held))...)
+	standing := "(" + strings.Join(parts, " | ") + ")"
 	kept, err := m.list(ctx, fmt.Sprintf("%s & ::%s", set, standing), "commit_id")
 	if err != nil {
 		return nil, err
@@ -269,11 +266,11 @@ func (m *merger) keep(ctx context.Context, set string, carriers []string) ([]str
 }
 
 // held is why each commit of set stays on its own, read with one jj log: it is a working-copy
-// commit, a local bookmark that is none of carriers names it, or `::remote_bookmarks()` holds it.
-// A commit of set with no such reason is not in the map. jj prints each commit's id, the two
-// answers, the count of its local bookmarks and their names, each ended by NUL, which no name
-// holds.
-func (m *merger) held(ctx context.Context, set string, carriers []string) (map[string][]string, error) {
+// commit, a local bookmark that is none of swept, the bookmarks of the runs the sweep takes, names
+// it, or `::remote_bookmarks()` holds it. A commit of set with no such reason is not in the map.
+// jj prints each commit's id, the two answers, the count of its local bookmarks and their names,
+// each ended by NUL, which no name holds.
+func (m *merger) held(ctx context.Context, set string, swept []string) (map[string][]string, error) {
 	out, err := m.jj(ctx, "log", "--no-graph", "-r", set+" & (working_copies() | bookmarks() | ::remote_bookmarks())", "-T",
 		`commit_id ++ "\0" ++ self.contained_in("working_copies()") ++ "\0" ++ self.contained_in("::remote_bookmarks()") ++ "\0" ++ local_bookmarks.len() ++ "\0" ++ local_bookmarks.map(|b| b.name() ++ "\0").join("")`)
 	if err != nil {
@@ -290,7 +287,7 @@ func (m *merger) held(ctx context.Context, set string, carriers []string) (map[s
 			return nil, fmt.Errorf("jj log printed %q, not a commit, two answers and a count of bookmarks", fields)
 		}
 		id, workingCopy, remote := fields[0], fields[1] == "true", fields[2] == "true"
-		names := slices.DeleteFunc(fields[4:4+count], func(name string) bool { return slices.Contains(carriers, name) })
+		names := slices.DeleteFunc(fields[4:4+count], func(name string) bool { return slices.Contains(swept, name) })
 		fields = fields[4+count:]
 		var why []string
 		if workingCopy {

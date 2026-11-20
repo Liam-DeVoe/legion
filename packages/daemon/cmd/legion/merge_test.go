@@ -342,15 +342,15 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 	}
 }
 
-// B12: the merge's option list closes each setting of the machine's and the repository's
-// configuration that changes git's merge: git's merge options, the default merge driver
-// (merge.default) and the user's attributes file (core.attributesFile). B4's history with
-// merge.renames=false and merge.conflictStyle=diff3 in the repository's configuration gives B4's
-// result. B3's history with merge.default=union and an attributes file of `* merge=union` gives
-// B3's jj conflict at f, where git's own merge under either setting alone is clean. The list does
-// not close the repository's own attributes, as for any git merge in it: a .gitattributes that git
-// reads in a git worktree, $GIT_DIR/info/attributes and the system attributes file still choose a
-// path's merge driver.
+// B12: the merge's option list sets git's merge options to their documented defaults, sets
+// merge.default to git's built-in text driver, and points core.attributesFile at /dev/null, so
+// neither a global or repository merge option, nor a default driver, nor the user's attributes
+// file changes the merge. B4's history with merge.renames=false and merge.conflictStyle=diff3 in
+// the repository's configuration gives B4's result. B3's history with merge.default=union and an
+// attributes file of `* merge=union` gives B3's jj conflict at f, where git's own merge under
+// either setting alone is clean. What still chooses a path's merge driver is the repository's own
+// attributes (the .gitattributes of the working copy or of git's index when git runs in a git
+// worktree, and $GIT_DIR/info/attributes) and the machine's system attributes file.
 func TestLegionMergeReadsNoMergeConfiguration(t *testing.T) {
 	t.Run("git's merge options", func(t *testing.T) {
 		r := newMergeRepo(t)

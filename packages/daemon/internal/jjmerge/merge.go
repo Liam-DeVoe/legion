@@ -18,20 +18,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// mergeTreeOptions closes the configuration of the machine that changes the result of a git
-// merge: it sets each such option to git's documented default (git v2.47.3,
-// Documentation/config/merge.txt and gitattributes(5)). merge.renames "Defaults to the value of
-// diff.renames", which defaults to true; merge.directoryRenames "Defaults to conflict";
-// merge.renameLimit "currently defaults to 7000"; merge.conflictStyle "The default is merge";
-// merge.renormalize is off unless a configuration sets it. merge.default names the merge driver
-// of each path that no attribute gives one, and git's built-in driver there is text.
-// core.attributesFile names the user's attributes file, which can give a path a merge driver, and
-// /dev/null gives none. A `merge.default = union` in a global or a repository's configuration, or
-// a user's attributes file with `f merge=union`, makes git merge a content conflict cleanly. The
-// repository's own attributes still apply, as they do to any git merge in it: the .gitattributes
-// of the working copy or of git's index when git runs in a git worktree,
-// $GIT_DIR/info/attributes, and the system attributes file. The merge (mergeTree) and the reading
-// command (Comparison) both give git this list. A caller outside the package reads it through
+// mergeTreeOptions sets git's merge options to their documented defaults (git v2.47.3,
+// Documentation/config/merge.txt and gitattributes(5)), sets merge.default to git's built-in text
+// driver, and points core.attributesFile at /dev/null, so neither a global or repository merge
+// option, nor a default driver, nor the user's attributes file changes the merge. merge.renames
+// "Defaults to the value of diff.renames", which defaults to true; merge.directoryRenames
+// "Defaults to conflict"; merge.renameLimit "currently defaults to 7000"; merge.conflictStyle
+// "The default is merge"; merge.renormalize is off unless a configuration sets it. merge.default
+// names the merge driver of each path that no attribute gives one. core.attributesFile names the
+// user's attributes file, which can give a path a merge driver, and /dev/null gives none. A
+// `merge.default = union` in a global or a repository's configuration, or a user's attributes
+// file with `f merge=union`, makes git merge a content conflict cleanly. What still applies is
+// the repository's own attributes (the .gitattributes of the working copy or of git's index when
+// git runs in a git worktree, and $GIT_DIR/info/attributes) and the machine's system attributes
+// file, as for any git merge in the repository. The merge (mergeTree) and the reading command
+// (Comparison) both give git this list. A caller outside the package reads it through
 // MergeTreeOptions, which answers a copy, so no caller changes the list the merge gets.
 var mergeTreeOptions = [...]string{
 	"-c", "merge.renames=true",
