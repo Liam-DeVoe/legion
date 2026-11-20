@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess/projectaccesstest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 const (
@@ -104,8 +105,8 @@ func answerWith(status int, body string) http.HandlerFunc {
 // newPrivacyServer is the broker's test server reading Dispatch at stub through a projectaccess
 // client on httpClient (nil for the client's own default), with privacyServices as its
 // BROKER_NATS_SERVICES and a Google issuer of its own for the VM listener's and the operator's
-// identity tokens.
-func newPrivacyServer(t *testing.T, stub *privacyStub, httpClient *http.Client) *googleCallers {
+// identity tokens, and each of adjust applied after.
+func newPrivacyServer(t *testing.T, stub *privacyStub, httpClient *http.Client, adjust ...func(*api.Deps)) *googleCallers {
 	t.Helper()
 	services, err := natscallout.ParseServices(privacyServices)
 	if err != nil {
@@ -114,6 +115,9 @@ func newPrivacyServer(t *testing.T, stub *privacyStub, httpClient *http.Client) 
 	return newPrivacyServerWith(t, func(d *api.Deps) {
 		d.ServiceKinds = natscallout.ServiceKinds(services)
 		d.ProjectPrivacy = projectaccess.New(stub.url, projectaccesstest.StaticAccount(privacyStubToken), httpClient)
+		for _, a := range adjust {
+			a(d)
+		}
 	})
 }
 
@@ -191,7 +195,8 @@ func sameJSON(t *testing.T, got []byte, want string) bool {
 // hub's, Dispatch's listener Deployment's, and a VM's presenting a Google identity token) is
 // answered Dispatch's rows unchanged. Every other caller whose platform identity verifies is refused
 // 403 not_listener before Dispatch is asked: Dispatch's app account, a session pod's own token, a
-// daemon's identity and the operator's Google identity.
+// daemon's identity and the operator's Google identity. A listener's token that does not verify,
+// and no token at all, are refused 401, Dispatch not asked either.
 func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 	const body = `{"projects":[` +
 		`{"project":"ALPHA","slack_channels":["C0A","C0B"],"slack_channels_changed_at":"2026-11-19T10:00:00Z"},` +
@@ -218,15 +223,23 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 		t.Errorf("three listeners' calls asked Dispatch %d times, want 3", asked)
 	}
 
-	for _, row := range []struct{ name, token string }{
-		{"Dispatch's app account", g.uiToken},
-		{"a session token", g.podToken(t, workerAccount, uuid.NewString())},
-		{"a daemon's identity", g.accountToken(t, daemonAccount, "", time.Hour)},
-		{"the operator's identity", g.live(t, testApprover)},
+	for _, row := range []struct {
+		name, token string
+		status      int
+		code        string
+	}{
+		{"Dispatch's app account", g.uiToken, http.StatusForbidden, "not_listener"},
+		{"a session token", g.podToken(t, workerAccount, uuid.NewString()), http.StatusForbidden, "not_listener"},
+		{"a daemon's identity", g.accountToken(t, daemonAccount, "", time.Hour), http.StatusForbidden, "not_listener"},
+		{"the operator's identity", g.live(t, testApprover), http.StatusForbidden, "not_listener"},
+		// A listener's account with a token that does not verify is refused as on every route
+		// that takes an identity token, before its account is looked up.
+		{"the hub's listener's expired token", g.accountToken(t, privacyListenerAccount, "", -time.Minute), http.StatusUnauthorized, "ACCOUNT_TOKEN_EXPIRED"},
+		{"no token", "", http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID"},
 	} {
 		got := g.privacy(t, row.token)
-		if got.status != http.StatusForbidden || got.code != "not_listener" {
-			t.Errorf("%s: GET %s = %d %s, want 403 not_listener", row.name, privacyPath, got.status, got.body)
+		if got.status != row.status || got.code != row.code {
+			t.Errorf("%s: GET %s = %d %s, want %d %s", row.name, privacyPath, got.status, got.body, row.status, row.code)
 		}
 	}
 	if after := stub.calls.Load(); after != asked {
@@ -235,7 +248,8 @@ func TestOnlyAListenerReadsProjectPrivacy(t *testing.T) {
 }
 
 // TestProjectPrivacyIsBounded: with 64 calls held open at the stub, the 65th is answered 503 busy at
-// once and makes no request of the stub; once one held call returns, the next call is served.
+// once, while all 64 are still held, and makes no request of the stub; once one held call
+// returns, the next call is served.
 func TestProjectPrivacyIsBounded(t *testing.T) {
 	const body = `{"projects":[]}`
 	release := make(chan struct{})
@@ -277,7 +291,6 @@ func TestProjectPrivacyIsBounded(t *testing.T) {
 		}
 	}
 
-	start := time.Now()
 	next := make(chan privacyAnswer, 1)
 	go func() {
 		answer, err := privacyCall(g.URL, token)
@@ -286,10 +299,13 @@ func TestProjectPrivacyIsBounded(t *testing.T) {
 		}
 		next <- answer
 	}()
+	// "At once" is "while every one of the 64 is still held": a call that waited for a slot would
+	// be answered only after a held call returned, and then it would reach the stub. The wait
+	// itself is generous, so a loaded machine fails nothing that is right.
 	var got privacyAnswer
 	select {
 	case got = <-next:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 	}
 	if n := stub.calls.Load(); n != 64 {
 		t.Fatalf("with 64 calls held open, the stub counted %d requests, want 64: the 65th call reached it", n)
@@ -297,12 +313,16 @@ func TestProjectPrivacyIsBounded(t *testing.T) {
 	if got.status != http.StatusServiceUnavailable || got.code != "busy" {
 		t.Fatalf("the 65th call = %d %s, want 503 busy", got.status, got.body)
 	}
-	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Fatalf("the 65th call was answered busy after %s, want at once", elapsed)
+	if returned := len(held); returned != 0 {
+		t.Fatalf("%d held calls had returned when the 65th was answered busy, want none: the broker's read of the stub gives up after 10 s, so this run was too slow to say the busy answer did not wait", returned)
 	}
 
 	holding.Store(false)
-	release <- struct{}{}
+	select {
+	case release <- struct{}{}:
+	case <-time.After(30 * time.Second):
+		t.Fatal("no held call was left at the stub to release: the held reads ended first")
+	}
 	select {
 	case returned := <-held:
 		if returned.status != http.StatusOK {
@@ -360,39 +380,64 @@ func TestProjectPrivacyIsAFreshRead(t *testing.T) {
 // TestProjectPrivacyFailsClosed: whenever the fresh read fails (Dispatch answering 500 or refusing
 // the broker's token, timing out, dropping the connection, answering a project without
 // slack_channels, no projects key, or no JSON at all) and on a broker with no project-access URL, a
-// listener is answered 502 dispatch_unavailable, never 200 and never a list.
+// listener is answered 502 dispatch_unavailable, never 200 and never a list. Each failure is a read
+// of the stub of its own, and the next call once Dispatch answers again is served: the route keeps
+// no failure, as it keeps no answer.
 func TestProjectPrivacyFailsClosed(t *testing.T) {
-	stub := newPrivacyStub(t, answerWith(http.StatusOK, `{"projects":[]}`))
-	// The broker's client gives up on Dispatch after a second here rather than its own ten.
-	g := newPrivacyServer(t, stub, &http.Client{Timeout: time.Second})
+	healthy := answerWith(http.StatusOK, `{"projects":[]}`)
+	failsClosed := func(t *testing.T, name string, got privacyAnswer) {
+		t.Helper()
+		if got.status != http.StatusBadGateway || got.code != "dispatch_unavailable" || strings.Contains(string(got.body), `"projects"`) {
+			t.Errorf("%s: GET %s = %d %s, want 502 dispatch_unavailable", name, privacyPath, got.status, got.body)
+		}
+	}
+	fails := func(t *testing.T, g *googleCallers, stub *privacyStub, token, name string, answer http.HandlerFunc) {
+		t.Helper()
+		stub.set(answer)
+		before := stub.calls.Load()
+		failsClosed(t, name, g.privacy(t, token))
+		if stub.calls.Load() == before {
+			t.Errorf("%s: the call asked Dispatch nothing", name)
+		}
+		stub.set(healthy)
+		if got := g.privacy(t, token); got.status != http.StatusOK {
+			t.Errorf("after %s, with Dispatch answering again, GET %s = %d %s, want 200", name, privacyPath, got.status, got.body)
+		}
+	}
+
+	stub := newPrivacyStub(t, healthy)
+	g := newPrivacyServer(t, stub, nil)
 	token := g.accountToken(t, privacyListenerAccount, "", time.Hour)
 	if got := g.privacy(t, token); got.status != http.StatusOK {
 		t.Fatalf("with Dispatch answering, GET %s = %d %s, want 200", privacyPath, got.status, got.body)
 	}
-
 	for _, row := range []struct {
 		name   string
 		answer http.HandlerFunc
 	}{
 		{"Dispatch answers 500", answerWith(http.StatusInternalServerError, `{"code":"INTERNAL","error":"internal error"}`)},
 		{"Dispatch refuses the broker's token", answerWith(http.StatusForbidden, `{"code":"ACCESS_ACCOUNT_REQUIRED","error":"refused"}`)},
-		{"Dispatch times out", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }},
 		{"Dispatch drops the connection", func(w http.ResponseWriter, _ *http.Request) {
 			conn, _, err := http.NewResponseController(w).Hijack()
-			if err == nil {
-				conn.Close()
+			if err != nil {
+				t.Errorf("the stub could not take the connection to drop it: %v", err)
+				return
 			}
+			conn.Close()
 		}},
 		{"Dispatch answers a project without slack_channels", answerWith(http.StatusOK, `{"projects":[{"project":"ALPHA","slack_channels_changed_at":null}]}`)},
 		{"Dispatch answers no projects key", answerWith(http.StatusOK, `{}`)},
 		{"Dispatch answers no JSON", answerWith(http.StatusOK, `projects`)},
 	} {
-		stub.set(row.answer)
-		got := g.privacy(t, token)
-		if got.status != http.StatusBadGateway || got.code != "dispatch_unavailable" || strings.Contains(string(got.body), `"projects"`) {
-			t.Errorf("%s: GET %s = %d %s, want 502 dispatch_unavailable", row.name, privacyPath, got.status, got.body)
-		}
+		fails(t, g, stub, token, row.name, row.answer)
 	}
+
+	// The broker's client gives up on Dispatch after a second here rather than its own ten, on a
+	// rig of its own, so that no other row can time out instead of failing as it says.
+	slowStub := newPrivacyStub(t, healthy)
+	slow := newPrivacyServer(t, slowStub, &http.Client{Timeout: time.Second})
+	fails(t, slow, slowStub, slow.accountToken(t, privacyListenerAccount, "", time.Hour), "Dispatch times out",
+		func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 
 	unset := newPrivacyServerWith(t, func(d *api.Deps) {
 		services, err := natscallout.ParseServices(privacyServices)
@@ -401,8 +446,25 @@ func TestProjectPrivacyFailsClosed(t *testing.T) {
 		}
 		d.ServiceKinds = natscallout.ServiceKinds(services)
 	})
-	got := unset.privacy(t, unset.accountToken(t, privacyListenerAccount, "", time.Hour))
-	if got.status != http.StatusBadGateway || got.code != "dispatch_unavailable" || strings.Contains(string(got.body), `"projects"`) {
-		t.Errorf("a broker with no project-access URL: GET %s = %d %s, want 502 dispatch_unavailable", privacyPath, got.status, got.body)
+	failsClosed(t, "a broker with no project-access URL", unset.privacy(t, unset.accountToken(t, privacyListenerAccount, "", time.Hour)))
+}
+
+// TestProjectPrivacySpendsTheAddressBucket: the route spends its caller's source address's bucket
+// before the token is verified, as every route that takes an identity token does, so a listener
+// past it is answered 429 RATE_LIMITED and Dispatch is not asked.
+func TestProjectPrivacySpendsTheAddressBucket(t *testing.T) {
+	stub := newPrivacyStub(t, answerWith(http.StatusOK, `{"projects":[]}`))
+	g := newPrivacyServer(t, stub, nil, func(d *api.Deps) {
+		d.AccountLimit = &ratelimit.Limit{Every: time.Hour, Burst: 1}
+	})
+	token := g.accountToken(t, privacyListenerAccount, "", time.Hour)
+	if got := g.privacy(t, token); got.status != http.StatusOK {
+		t.Fatalf("the first call = %d %s, want 200", got.status, got.body)
+	}
+	if got := g.privacy(t, token); got.status != http.StatusTooManyRequests || got.code != "RATE_LIMITED" {
+		t.Fatalf("the second call past a bucket of one = %d %s, want 429 RATE_LIMITED", got.status, got.body)
+	}
+	if n := stub.calls.Load(); n != 1 {
+		t.Fatalf("the stub counted %d requests, want 1: the refused call asked Dispatch", n)
 	}
 }

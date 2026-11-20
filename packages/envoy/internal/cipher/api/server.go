@@ -62,8 +62,8 @@ type Deps struct {
 	// ServiceKinds is BROKER_NATS_SERVICES as GET /v1/project-privacy reads it: the kind of service
 	// each account the setting lists is bound to (natscallout.ServiceKinds). That route answers an
 	// account bound to a listener alone, whose identity token AccountTokens or GoogleAccountTokens
-	// verifies. The zero value lists no account, so the route answers every caller 403
-	// not_listener, as a broker that runs no NATS auth service does.
+	// verifies. The zero value lists no account, so the route answers every caller whose token
+	// verifies 403 not_listener, as a broker that runs no NATS auth service does.
 	ServiceKinds ServiceKinds
 	// ProjectPrivacy is Dispatch's list of every private project, read afresh on each call
 	// (projectaccess.Client.PrivateProjectsFresh), which GET /v1/project-privacy answers a

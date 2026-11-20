@@ -75,6 +75,9 @@ func TestTheBrokerAnswersItsListenersProjectPrivacy(t *testing.T) {
 		"BROKER_NATS_SERVICES=listener/example-hub/*=" + listenerAccount + " dispatch/example-dispatch/*=" + apiAccount,
 		"BROKER_NATS_K8S_AUDIENCE=envoy-nats",
 		"BROKER_DRAIN_SECONDS=0",
+		// Unset here whatever the test process holds; the first subtest sets both after these.
+		"BROKER_PROJECT_ACCESS_URL=",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE=",
 	}
 	listenerToken := accountToken(t, cluster, clusterKey, listenerAccount)
 	privacy := func(t *testing.T, addr, token string) (int, []byte) {

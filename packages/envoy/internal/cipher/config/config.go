@@ -758,7 +758,8 @@ type Config struct {
 	// carry, verified against BROKER_GOOGLE_OIDC_ISSUER; a service entry whose kind of token has
 	// no audience is refused at start naming it. A session presents its broker access token and
 	// needs neither. All unset, the broker runs no auth service, and GET /v1/project-privacy
-	// answers every caller 403 not_listener; any set needs the URLs and the three seed files.
+	// answers every caller whose identity token verifies 403 not_listener; any set needs the URLs
+	// and the three seed files.
 	NATS NATSCallout
 	// BROKER_LEASE_SECONDS: an enrollment's lease. A session renews it while it runs; one whose
 	// lease runs out is no longer enrolled and its calls are refused. Time while no broker was
