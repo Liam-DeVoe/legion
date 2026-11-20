@@ -25,10 +25,10 @@ import {
   stringArg,
   type ToolArguments,
 } from "./context";
+import { dispatchRefFromUrl } from "./links";
 import {
   askIdProblem,
   commentIdProblem,
-  dispatchRefFromUrl,
   innerRefProblem,
   itemRefProblem,
   messageIdOf,
@@ -51,6 +51,7 @@ const issueFreeTools: Readonly<Record<string, true>> = {
   dispatch_search: true,
   dispatch_related: true,
   dispatch_issues: true,
+  dispatch_plans: true,
   dispatch_project: true,
   dispatch_projects: true,
   dispatch_priorities: true,
@@ -533,12 +534,12 @@ export async function resolveOwnerArguments(
   // A retraction names one stored result by its id, and the server reads that result's issue for
   // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
   // retraction that carried one would be refused as a record mixed with a retraction.
-  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
+  if (tool === "dispatch_result" && typeof args.retract === "string") {
     return { args, ref, owner: null };
   }
   // A walk of a root names the issues it reads by the root alone. LEGION_ISSUE must not fill an
   // issue in here: the schema refuses any argument that names a document beside root.
-  if (tool === "dispatch_spec_form" && typeof args["root"] === "string") {
+  if (tool === "dispatch_spec_form" && typeof args.root === "string") {
     return { args, ref, owner: null };
   }
   const legionIssue = env.LEGION_ISSUE;

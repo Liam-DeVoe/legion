@@ -33,7 +33,7 @@ import (
 // under one root take turns. A move into a root changes the list too, and takes the same lock
 // before it appends its event (lockSpecTermsOfMove), and the list reads that event. Two calls read
 // findings and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen
-// and of the repair pass (restoreIssueAsksTx), which leaves a broken approval request resolved
+// and of the repair pass (prepareRestoration), which leaves a broken approval request resolved
 // rather than open it again. Every route that opens an approval request or answers one reaches
 // one of these calls;
 // TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census.

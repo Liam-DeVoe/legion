@@ -133,6 +133,14 @@ var brokerModules = []string{
 	"github.com/jackc/pgservicefile",
 	"github.com/jackc/pgx/v5",
 	"github.com/jackc/puddle/v2",
+	// The NATS client and the auth callout's keys and claims: the broker runs the hub's NATS
+	// auth service (internal/broker/natscallout), which connects to the hub as a NATS client and
+	// signs each answer. klauspost/compress and nuid come in under nats.go.
+	"github.com/klauspost/compress",
+	"github.com/nats-io/jwt/v2",
+	"github.com/nats-io/nats.go",
+	"github.com/nats-io/nkeys",
+	"github.com/nats-io/nuid",
 	"github.com/openai/openai-go/v3",
 	"github.com/pb33f/go-yaml",
 	"github.com/pb33f/ordered-map/v2",
@@ -178,6 +186,17 @@ func TestTheAgentSecretsBinaryLinksItsListedModules(t *testing.T) {
 		t.Run(goos, func(t *testing.T) {
 			binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+goos)})
 			requireModules(t, binary, agentSecretsModules)
+		})
+	}
+}
+
+// TestTheAgentSecretsBinaryBuildsWithoutThePrompt builds agent-secrets for targets the release does
+// not ship and the README says build without the value prompt, a value piped in standing for it:
+// Windows, FreeBSD, and a 32-bit Linux architecture.
+func TestTheAgentSecretsBinaryBuildsWithoutThePrompt(t *testing.T) {
+	for _, target := range []struct{ goos, goarch string }{{"windows", "amd64"}, {"freebsd", "amd64"}, {"linux", "386"}} {
+		t.Run(target.goos+"/"+target.goarch, func(t *testing.T) {
+			cmdtest.BuildCommand(t, cmdtest.Command{Name: "agent-secrets", Env: append(os.Environ(), "CGO_ENABLED=0", "GOOS="+target.goos, "GOARCH="+target.goarch)})
 		})
 	}
 }

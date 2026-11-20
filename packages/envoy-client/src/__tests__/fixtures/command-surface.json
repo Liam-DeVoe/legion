@@ -1,5 +1,5 @@
 {
-  "commands": 36,
+  "commands": 38,
   "refusals": 29,
   "runs": [
     {
@@ -1161,6 +1161,29 @@
       ]
     },
     {
+      "tool": "dispatch_plans",
+      "call": "valid",
+      "args": {
+        "project": "INFRA"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/projects/INFRA/plans",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "INFRA: 1 finished issues",
+        "INFRA-1 closed 2026-01-02T03:04:05Z plan default (1 tasks: planner implementer tester reviewer acceptance:owner) ratings 4/5 \"The plan fit the work.\" time 1h30m failed steps 1"
+      ]
+    },
+    {
       "tool": "dispatch_priorities",
       "call": "valid",
       "args": {},
@@ -1814,6 +1837,30 @@
         "spec.md version 1:",
         "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it.",
         "Before you request approval, have a fresh reviewer read it with skill://spec-statement-review."
+      ]
+    },
+    {
+      "tool": "dispatch_steps",
+      "call": "valid",
+      "args": {
+        "issue": "DSP-1"
+      },
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/api/v1/issues/DSP-1/steps",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret"
+          },
+          "body": null
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "DSP-1: 2 steps in 1 tasks",
+        "default 2 step implementer implementation attempt 1 legion-dsp-dsp-1-implementer anthropic/claude-opus-5 2026-01-02T03:04:05Z 2026-01-02T03:04:05Z passed",
+        "default 3 step tester testing attempt 1 legion-dsp-dsp-1-tester - 2026-01-02T03:04:05Z running running"
       ]
     },
     {

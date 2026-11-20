@@ -195,6 +195,12 @@ mkdir -p "$evidence/logs" "$evidence/transcripts"
 # shellcheck source-path=SCRIPTDIR source=lib/transcript.sh
 . "$root/scripts/e2e/lib/transcript.sh"
 transcript_to "$evidence/transcript.log"
+# Every program the run execs from here on carries its mark, and the sweep in cleanup ends what
+# carries it and nothing else (marked_processes, lib/process-tree.sh); a fork of this shell that
+# execs nothing, such as the token refresher or the bridge watchdog, carries none and is stopped by
+# its pid (run_marks' comment there). The transcript's tee, started above, carries none, so it
+# outlives the sweep and writes the run's last line.
+export LEGION_E2E_RUN=$work
 # fd 7 keeps the transcript for cleanup: a signal runs the EXIT trap under the redirections of the
 # command it interrupted, whose output may be /dev/null or an evidence file.
 exec 7>&1
@@ -986,6 +992,7 @@ start_daemon() {
     env "${daemon_env_unset[@]}" "$work/legion" start --config "$work/legion.yaml" >>"$daemon_log" 2>&1 7>&- &
   fi
   daemon_pid=$!
+  record_start "$daemon_pid" || true
   timeout_hook=report_boot
   # The boot runs the worker image's probe pod, so the bound is the cluster's, not a local process's.
   until_true 900 "the Go daemon to boot and answer /healthz" daemon_answers_or_exited
@@ -1085,7 +1092,7 @@ remove_app_tokens() {
 }
 
 cleanup() {
-  local status=$? p
+  local status=$?
   # A second signal must not cut the teardown short, and a closed output must not end it.
   trap '' HUP INT TERM PIPE
   exec >&7 2>&7
@@ -1116,7 +1123,7 @@ cleanup() {
   bridge_stop
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
-  for p in $(run_processes); do kill -KILL "$p" 2>/dev/null || true; done
+  stop_marked_processes "$work" || true
   docker rm -f "$pg_container" "$nats_container" "$session_db_container" >/dev/null 2>&1 || true
   [ -z "$snapshotted" ] || teardown
   remove_run_branch
@@ -1288,7 +1295,7 @@ case "$pod_reachability" in
   aws-private-ip)
     imds=$(curl -sf -m 5 -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') ||
       fail "instance metadata is unreachable; the run's services bind the devbox's private address, read from it, since every pod dials them there"
-    host=$(curl -sf -m 5 -H "X-aws-ec2-metadata-token: $imds" http://169.254.169.254/latest/meta-data/local-ipv4) ||
+    host=$(printf 'X-aws-ec2-metadata-token: %s' "$imds" | curl -sf -m 5 -H @- http://169.254.169.254/latest/meta-data/local-ipv4) ||
       fail "instance metadata has no local-ipv4"
     unset imds
     bind_host=$host
@@ -1359,7 +1366,9 @@ until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" p
 docker exec "$pg_container" createdb -U legion legion
 # NATS binds bind_host on the run's port: every pod's agent dials it there, directly or through the
 # bridge.
-docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" nats:2.10 -js >/dev/null
+# shellcheck source-path=SCRIPTDIR source=lib/nats-image.sh
+. "$root/scripts/e2e/lib/nats-image.sh"
+docker run -d --name "$nats_container" -p "$bind_host:$port_nats:4222" "$nats_image" -js >/dev/null
 until_true 60 "NATS to be ready" sh -c "docker logs '$nats_container' 2>&1 | grep -q 'Server is ready'"
 # The run's session database (lib/session-db.sh's session_db_start): every pod keeps its sessions in
 # it (session_store postgres, which the daemon requires, since an issue pod's disk dies with the
@@ -1375,8 +1384,9 @@ dispatch_human PUT "settings/repo-projects/$repo" "$(jq -cn --arg project "$proj
 cat >"$work/instructions.md" <<'EOF'
 # Claude Code sandbox backend proof instructions
 
-This is a throwaway workflow proof. A tree's root architect starts its tree from the daemon's
-`catch-up` notice as its role says: it writes the spec in the issue's own primary document and
+This is a throwaway workflow proof. A tree's root architect starts its tree from the task its
+start carries and the daemon's `catch-up` notice, as its role says: it writes the spec in the
+issue's own primary document and
 registers the gate, then waits. Apart from that, do not act until a human Dispatch message targeted
 at your own session gives the next exact proof operation; it arrives in your session as a message to
 you. Any other notice is not an instruction. Follow your instruction precisely, use the Go-daemon

@@ -101,8 +101,7 @@ no run shares a port with another and
 none empties the database behind a server it did not start. Set, a port is
 used as given, and an occupied one fails with `address already in use`.
 `DISPATCH_E2E_REUSE_SERVERS=1` says the ports name a harness you started
-yourself, and the hook then starts nothing. `AGENTS.md`'s end-to-end section
-states that
+yourself, and the hook then starts nothing. `e2e/harness-ports.ts` states that
 rule in full — the accepted values and what a bad or duplicated port does. The
 harness starts `e2e/fake-envoy.ts` and that listener is the only Envoy the
 server ever talks to; tests seed its
@@ -114,7 +113,8 @@ Dispatch records the attempt `queued`), and say what a send answers it was with
 credential-request feature is on, and tests seed its pending requests with
 `setPendingCredentialRequests` from `e2e/fake-broker-helpers.ts`; an empty
 `DISPATCH_E2E_AGENT_SECRETS_URL` runs the suite with no broker instead, as a
-deployment that configures none (`AGENTS.md` has the switch). It also starts
+deployment that configures none (`e2e/run-server.sh` and `e2e/harness-broker.ts` have the
+switch). It also starts
 `e2e/plain-http-proxy.ts` for the plain-HTTP project.
 
 `DISPATCH_E2E_EMBEDDER=fake` starts one listener more, `e2e/fake-embedder.ts`, and points the
@@ -191,19 +191,58 @@ the hook wrote, for the ports and for psql's database alike.
 A stack's Postgres comes from one of two variables, and a run of more than one
 stack that sets neither is refused. On a machine with Docker and no Postgres
 binaries, `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest you
-name; CI's visual job uses it too, since it runs on the runner with only its
-Playwright command in a container. On a machine with a Postgres installation
-and no Docker, such as an issue pod or CI's shard and alone jobs, which run in
-a container carrying PostgreSQL 18 with `vector`, `DISPATCH_E2E_PG_BIN` is a
-directory holding `initdb` and `pg_ctl`.
+name; CI's visual, multiprocess and embedder jobs and the two-build job's
+browser half use it too, since they run on the runner. On a machine with a
+Postgres installation and no Docker, such as an issue pod or CI's shard and
+alone jobs, which run in a container carrying PostgreSQL 18 with `vector`,
+`DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`.
 Each stack's data lives in its own `worker-<i>` directory under the run's own
-temporary directory and goes with the run.
+temporary directory and goes with the run. Either way the server runs with
+crash safety off (`fsync`, `full_page_writes`, `synchronous_commit`), so no
+commit waits for the disk: a database you name in `DATABASE_URL` keeps its
+own settings, and where its commits wait for a disk that stalls, a write a
+closed page left in flight can hold a table past the reset's 5 s.
 
 ```bash
 cd packages/dispatch
 DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin \
   bun run e2e -- --workers 4
 ```
+
+`DISPATCH_E2E_PG_STALL_DIR`, an absolute directory that is empty or does not
+exist yet, makes either provider build `e2e/fsync-stall.c` into it with `cc`
+and start the server with that library preloaded: while `stalled` exists in the
+directory, every `fsync` and `fdatasync` of the server waits, as on a disk that
+has stopped answering. The harness makes the directory readable by every user
+and mounts all of it into a container, so it refuses one that holds anything
+but an earlier build's files, and one whose path holds any whitespace or a
+colon: the loader's `LD_PRELOAD` splits on a space and a colon.
+`e2e/read-marker-disk-stall.multiprocess.e2e.ts` stalls it so. Without the
+variable it is skipped, in an agent's shell too, which sets `CI`; on GitHub
+Actions (`GITHUB_ACTIONS=true`) it fails naming the variable
+(`e2e/disk-stall.ts`). A server you start yourself, one a run reaches
+through `DATABASE_URL`, takes part once you build the library for it, since
+the harness builds it only for a server it starts:
+
+```bash
+cd packages/dispatch
+cc -shared -fPIC -O2 -o <dir>/fsync-stall.so e2e/fsync-stall.c
+```
+
+Start that server with `LD_PRELOAD=<dir>/fsync-stall.so` and
+`PG_STALL_FILE=<dir>/stalled` in its environment, where it sees `<dir>` at the
+same path, and make the directory and the library readable by the user the
+server runs as (a container's `postgres`, for instance), or its loader skips
+the library with a warning. The run then sets `DISPATCH_E2E_PG_STALL_DIR=<dir>`
+beside `DATABASE_URL`, so the row stalls the disk through the same file. As it
+stalls the disk, the row reads on the server, as the superuser the suite
+connects as, that the stall holds it: a `wal_sync_method` of `fsync` or
+`fdatasync`, that very call made by the server (`COPY ... TO PROGRAM` of
+`timeout 1 sync --data /dev/null` for `fdatasync`, `sync /dev/null` for
+`fsync`, so `timeout` and coreutils `sync` must be on the server's `PATH`)
+going through before the stall and waiting during it, and `<dir>`'s library in
+its memory map. A server short of any of them fails the row, naming what it
+lacks.
 
 A run of more than one worker is one stack per worker, each with a Postgres, a
 file-store bucket and ports of its own, so five variables that name one of
@@ -233,7 +272,7 @@ the rule reaches no job of this repository and only a run by hand.
 Every other mode runs on the default one worker, and so one stack: the deployed
 run, two-process mode,
 a run against servers you started (`DISPATCH_E2E_REUSE_SERVERS=1`) and
-`bun run dispatch:local`. `AGENTS.md`'s end-to-end section has the whole model.
+`bun run dispatch:local`. `e2e/harness-pool.ts` and `e2e/harness-ports.ts` hold the whole model.
 
 `e2e/run-server.sh` on its own is the server for a shell caller: with
 `DATABASE_URL`, `FAKE_ENVOY_PORT`, `FAKE_GITHUB_PORT` and the broker switch's
@@ -253,6 +292,15 @@ the way a rolling release serves a browser from two builds at once:
 cd packages/dispatch
 DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslmode=disable' \
   bun run e2e:multiprocess
+```
+
+CI's multiprocess job runs it on the harness's own Postgres instead, with the disk stall the
+read-mark row needs, which a run by hand can do the same way:
+
+```bash
+cd packages/dispatch
+DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11 \
+  DISPATCH_E2E_PG_STALL_DIR="$(mktemp -d)" bun run e2e:multiprocess
 ```
 
 It builds the dashboard twice (`web/dist`, and `web/dist-b` under another build id), then runs
@@ -277,7 +325,8 @@ pins a request to one process with the `X-Dispatch-E2E-Process: a|b` header or a
 context with the `dispatch-e2e-process` cookie, or splits a context with the `dispatch-e2e-page`
 and `dispatch-e2e-api` cookies (its page from one process, its API, sockets and `/auth` from the
 other), and reads which process served what from the proxy's `/_proxy/requests` and
-`/_proxy/sockets`; `AGENTS.md`'s end-to-end section has the whole contract. Any
+`/_proxy/sockets`; `e2e/harness-processes.ts` and `e2e/round-robin-proxy.ts` hold the whole
+contract. Any
 `DISPATCH_E2E_PROCESSES` other than `1`, `2` or unset is refused.
 
 To run one build's page against another build's server, give B a previous release, as CI's
@@ -310,6 +359,18 @@ DATABASE_URL='postgres://postgres:dispatch@127.0.0.1:55432/dispatch_<issue>?sslm
 
 It needs `DISPATCH_E2E_PROCESSES=2`, which `e2e:multiprocess` sets; any value other than `oidc`
 or unset is refused.
+
+Three rules the code does not show:
+
+- In an Inbox test, move focus and the pointer off a row before you expect it to leave the list:
+  the Inbox keeps the row under the reader's hand drawn (`ViewportAnchor`, `heldRow`), and
+  `.check()` and `.click()` leave the pointer on it.
+- In the windowed Agents list, role queries skip a hidden row where CSS locators, `getByText` and
+  counts do not (`shownAgentRows` and `agentRow` in `e2e/agents.ts`), and `toBeHidden()` passes
+  when nothing matches, so put `toHaveCount(1)` beside it where the row must be mounted.
+- Apply the nightly job's re-recorded set by replacing `e2e/__recordings__` with its artifact
+  (`dispatch-browser-recordings-<attempt>`), never by copying it over the directory: a copy keeps
+  every recording no row writes any more.
 
 ## Local instance
 
@@ -623,6 +684,97 @@ All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an u
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
+`e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`
+(dispatch://INFRA-3862): a person from outside runs it on their own device, over the path they
+were given to Dispatch, to measure which of our listed addresses that device reaches. What it
+measures is TCP connects from that device to the listed addresses and ports, nothing more: it
+cannot see a service the origin itself forwards by path or by Host on its own host and port, and
+it must run on the device itself, not in a VM, a container or a remote shell, whose network is
+another one. It is handed to that person as the one file with its target list, so it sources
+nothing and needs only bash (3.2, as macOS ships it, or later), curl 7.40 or later and sleep, all
+three on a stock macOS or Linux; curl's own `--connect-timeout` and `--max-time` bound every
+probe, so it needs no GNU `timeout`. A run takes about 29 seconds. Started by a shell that is not
+bash, such as dash, busybox `sh` or zsh, it prints `UNKNOWN: run this with bash` and stops; the
+`sh` of macOS is bash, and runs it. Its inputs:
+
+- `OUTSIDE_ORIGIN`, the path's origin, `https://<host>[:<port>]`, an IPv6 host in brackets, its
+  host on the rule a target's host follows;
+- `OUTSIDE_PATH_TARGETS`, a file, or a pipe such as `/dev/stdin`, of `name host port` lines, one
+  per internal target (the hub, the listeners, the secrets broker, the other Dispatch origin),
+  ending in LF or CRLF. `#` starts a comment, and comments are ASCII like the rest of the list.
+  `host` is a name or a literal address; a name has no empty label (`a..b`, `.example`); an IPv4
+  address must be four numbers of 0 to 255 with no leading zero (curl reads `172.020.000.021` in
+  octal, another host); an IPv6 address must be hexadecimal digits and colons alone, so curl reads
+  none as a URL range (it reads `[1-1:1]` as one), and must not be IPv4-mapped however it is
+  written: its text must not start with `ffff:` once its leading zeros and colons are dropped, as
+  `::ffff:a00:1` and `0:0::ffff:a00:1` do (write `10.0.0.1`), since a v6-only device reaches no
+  mapped address; and a `svc:` selector, which resolves nowhere, is refused. **The list must hold
+  each of our services' addresses on the path as lines of their own, not names alone**: a name
+  line proves only where that name resolves on the person's device, so a name that resolves
+  elsewhere there says nothing of the address behind it. A list of names alone prints a warning.
+  **The list is ASCII**: every byte must be printable ASCII, a tab or LF, but a CR that comes
+  directly before an LF and a UTF-8 byte-order mark at offset 0, which the script drops before
+  anything parses the list. Any other byte, a NUL, a control character or any byte above 0x7E (so
+  any non-ASCII text, in a comment too), refuses the run, naming the byte and its offset counted
+  from 0: `read` splits only on LF, and a reader that split on that byte would put the next target
+  in the line's comment, where it would be lost. The script reads the list once, to its end, with
+  the device's `TMOUT` unset, since bash's `read` takes it as a timeout; a read that stops before
+  the end refuses the run.
+
+```bash
+OUTSIDE_ORIGIN=https://dispatch-outside.example OUTSIDE_PATH_TARGETS=targets.txt \
+  bash outside-path-reach.sh
+```
+
+It asks the origin for `/healthz` (200) and for `/api/v1/projects` with no credential (401, with
+Dispatch's own `NO_IDENTITY` refusal), then probes the origin's own host and port and every target
+in five rounds started 6 s apart (0, 6, 12, 18 and 24 s), every host of a round at once. The
+rounds are 6 s apart because a tunnel whose first handshake packet was lost stays down until
+WireGuard sends it again, after its `RekeyTimeout` of 5 s plus up to 334 ms; probes started
+together would all fall inside that.
+Its curls ignore the device's `~/.curlrc` and any proxy, and read no URL as a pattern (`-g`), so
+the run measures what that device itself reaches. Each probe is judged by whether TCP connected,
+not by curl's exit code alone, since our services accept a connection and then wait for the
+client:
+
+| curl's answer | Class |
+|---|---|
+| a completed connect (`time_connect` above zero), whatever the exit | `REACHED` |
+| no connect, in a round in which the origin did not connect either | `uncounted` |
+| exit 7, refused | `unreachable` |
+| exit 28, timed out, with no lookup completed | `unresolved (lookup timed out)` |
+| exit 28 after a lookup of under a second | `unreachable` |
+| exit 28 after a lookup of a second or more, too little of the 3 s left to connect | `UNKNOWN`, naming the lookup time |
+| exit 6, the name does not resolve | `unresolved` |
+| anything else | `UNKNOWN` |
+
+A target's round counts only when the probe connected to the origin in that same round: a round
+in which the device reached not even the origin proves nothing of a target, which reads
+`uncounted` there unless it connected, so `PASS` needs the origin reached in every round. A
+target is `REACHED` when any of its five rounds connected and `unreachable` only when all five
+counted and were, so a network that loses packets does not hide one easily. Measured with a
+reachable listener whose incoming packets were dropped at random, 120 runs per row: at 70% loss
+no run printed `PASS` under bash 3.2 or 5.2 (194 and 201 of 600 rounds missed), where the same
+rig with three rounds printed `PASS` in 8 of 240; at 50% loss three rounds already printed none
+in 240. Heavier or longer loss can still miss all five. `PASS` (exit 0) needs Dispatch's
+answers, a connect to the origin itself in every round and every target unreachable; `FAIL`
+(exit 1) names each target reached, or an origin that served a read with no credential; every
+run that proved nothing is `UNKNOWN` (exit 2), never a pass. Its classify mode,
+`OUTSIDE_PATH_CLASSIFY="<exit> <namelookup> <connect>"`, classifies one recorded probe, and five
+of them separated by `;` are judged as one target's rounds in order; that mode exits 4, never
+`PASS`'s 0. The script's own header has every rule. A path that puts a sign-in of its own in front
+of Dispatch, such as an identity-aware proxy, answers a request with no credential with that
+sign-in, not Dispatch's, so the run reads `UNKNOWN` there.
+`cd packages/dispatch && bun test e2e/__tests__/outside-path-reach` drives it against real
+listeners, from four files: `outside-path-reach-input.test.ts` for what it decides before any
+probe (the inputs it refuses, the origin's two answers and its classifier),
+`outside-path-reach.test.ts` for the runs that probe, `outside-path-reach-blackhole.test.ts` for
+the two runs that need a network dropping TEST-NET-1, which skip with the reason printed where the
+network refuses that address at once, and `outside-path-reach-tmout.test.ts` for a list on a pipe,
+a named pipe or a process substitution under an inherited `TMOUT`. Each row carries its own
+timeout. The row of `outside-path-reach-input.test.ts` that runs the script under zsh skips where
+zsh is missing, so a local run needs zsh for that row; CI's `dispatch-ui` job installs it.
+
 ## Acceptance run against the deployed image
 
 The `dispatch.acceptance.compose.yml` Compose file builds a Dispatch image from this tree and runs
@@ -678,8 +830,9 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has fifteen projects. `chromium` runs every spec except the two plain-HTTP specs, the
-three the `-alone` projects below take and the stubbed layer's own (`packages/dispatch/AGENTS.md`,
-"The stubbed layer", which the last two projects of the list run).
+three the `-alone` projects below take (`aloneProjects` in `e2e/playwright.config.ts`) and the
+stubbed layer's own (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two
+projects of the list run).
 `iphone` runs, from those same specs, only the tests tagged `@phone` (written at the end of the
 test's or its `test.describe`'s title); a test takes the tag when the phone viewport can change
 what it

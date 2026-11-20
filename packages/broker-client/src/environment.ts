@@ -4,6 +4,8 @@
 // set of values and the Go client (`packages/envoy/internal/brokerclient/environment.go`) and this
 // one are told the same things the same way.
 
+import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts/dispatch-tools";
+import { isHttpUrl } from "@legion/contracts/log-text";
 import { importDpopKey, newDpopKey } from "./dpop";
 import { metadataIdentity } from "./metadata-identity";
 import { personIdentity } from "./person-identity";
@@ -38,6 +40,12 @@ export const MACHINE_AUDIENCE_VAR = "AGENT_SECRETS_MACHINE_AUDIENCE";
 /** The session a trade writes under for a caller that acts as no session of its own, which a
  *  daemon, a command and a helper are ({@link tradeSession}). */
 export const SESSION_VAR = "AGENT_SECRETS_SESSION";
+/** The projects a session works on, project keys separated by white space, which a person's
+ *  trade asks the broker to name in its token ({@link tradeProjects}; Go's `ProjectsVar`). The
+ *  broker names only projects the person may see. */
+export const PROJECTS_VAR = "AGENT_SECRETS_PROJECTS";
+/** The most projects one token names (`oauthwire.MaxProjects`). */
+export const MAX_PROJECTS = 16;
 /** The workload identity pool provider an external credential is traded at, the full
  *  `//iam.googleapis.com/projects/…` resource name (Go's `PoolAudienceVar`). */
 export const POOL_AUDIENCE_VAR = "AGENT_SECRETS_POOL_AUDIENCE";
@@ -69,6 +77,7 @@ export const BROKER_VARIABLES = [
   MACHINE_TOKEN_FILE_VAR,
   MACHINE_AUDIENCE_VAR,
   SESSION_VAR,
+  PROJECTS_VAR,
   POOL_AUDIENCE_VAR,
   POOL_ACCOUNT_VAR,
   SIGNIN_DIR_VAR,
@@ -115,7 +124,7 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
     case "":
       return undefined;
     case IDENTITY_KUBERNETES:
-      return projectedToken(required(env, MACHINE_TOKEN_FILE_VAR, kind));
+      return projectedToken(required(env, MACHINE_TOKEN_FILE_VAR, kind), MACHINE_TOKEN_FILE_VAR);
     case IDENTITY_METADATA:
       return metadataIdentity(required(env, MACHINE_AUDIENCE_VAR, kind));
     case IDENTITY_POOL: {
@@ -124,15 +133,16 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
       const audience = required(env, POOL_AUDIENCE_VAR, kind);
       const serviceAccount = required(env, POOL_ACCOUNT_VAR, kind);
       return poolIdentity({
-        subject: projectedToken(subject),
+        subject: projectedToken(subject, MACHINE_TOKEN_FILE_VAR),
         audience,
         serviceAccount,
         tokenAudience,
       });
     }
     default:
+      // Its value is not quoted: a secret pasted into the wrong variable would be printed.
       throw new Error(
-        `${IDENTITY_VAR}="${kind}" names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA} or ${IDENTITY_POOL}`
+        `${IDENTITY_VAR} names no identity this machine can prove; it takes ${IDENTITY_KUBERNETES}, ${IDENTITY_METADATA} or ${IDENTITY_POOL}`
       );
   }
 }
@@ -155,6 +165,40 @@ export function machineIdentity(env: BrokerEnvironment): TokenSource | undefined
 export function tradeSession(env: BrokerEnvironment, own = ""): string {
   const acting = own.trim();
   return acting !== "" ? acting : value(env, SESSION_VAR);
+}
+
+/**
+ * The projects a person's trade asks for: {@link PROJECTS_VAR}, project keys separated by white
+ * space, answered sorted and each once, and empty when it is blank. A value that is no list — a
+ * key that is not a project key, a key named twice, more than {@link MAX_PROJECTS} — throws
+ * naming the variable, so a session never trades for fewer projects than it was started with.
+ * The Go client reads the same variable by the same grammar
+ * (`packages/envoy/internal/brokerclient/environment.go`, `TradeProjects`, through
+ * `oauthwire.ParseProjects`).
+ */
+export function tradeProjects(env: BrokerEnvironment): string[] {
+  const keys = value(env, PROJECTS_VAR)
+    .split(/\s+/)
+    .filter((key) => key !== "");
+  if (keys.length > MAX_PROJECTS) {
+    throw new Error(
+      `${PROJECTS_VAR}: ${keys.length} projects are named, and a token names at most ${MAX_PROJECTS}`
+    );
+  }
+  for (const key of keys) {
+    if (!PROJECT_KEY_PATTERN.test(key)) {
+      throw new Error(`${PROJECTS_VAR}: "${key}" is not a project key: ${PROJECT_KEY_RULE}`);
+    }
+  }
+  const sorted = keys.sort();
+  for (let at = 1; at < sorted.length; at += 1) {
+    if (sorted[at] === sorted[at - 1]) {
+      throw new Error(
+        `${PROJECTS_VAR}: ${sorted[at]} is named twice, and a list names each project once`
+      );
+    }
+  }
+  return sorted;
 }
 
 /** A client {@link brokerTokenClient} made, and the sign-in it trades. */
@@ -188,7 +232,10 @@ export interface MadeBrokerClient {
  * the Envoy listener holds a session's writes to the session its token names
  * (`packages/envoy/cmd/listener/brokerauth.go`, `sessionNotBound`). It leaves
  * `launcherCredential` unset, because the broker refuses a person's trade that declines
- * (`personDeclinesNothing`, `packages/envoy/internal/broker/oauth/exchange.go`). Every error
+ * (`personDeclinesNothing`, `packages/envoy/internal/broker/oauth/exchange.go`). It names the
+ * projects {@link PROJECTS_VAR} lists ({@link tradeProjects}), which the broker names in the token
+ * only when Dispatch says that person may see each one; the machine's own client below names
+ * none, since its entry decides its project and the broker refuses one it is told. Every error
  * while it chooses the sign-in, reads it or builds this client is thrown: nothing here answers
  * the machine's own client while a sign-in record is on the machine, so a session never writes
  * as the machine where a person signed in to act. The answer names the sign-in the client trades
@@ -217,6 +264,9 @@ export async function brokerTokenClient(
   const brokerUrl = value(env, BROKER_URL_VAR);
   const machine = machineIdentity(env);
   if (brokerUrl === "" || machine === undefined) return undefined;
+  // Not quoted: every trade's text names this URL, and a value that is none may be a token pasted
+  // into the variable.
+  if (!isHttpUrl(brokerUrl)) throw new Error(`${BROKER_URL_VAR} is not an http or https URL`);
   const record = await chooseSignIn(env);
   if (record === undefined) {
     const client = new BrokerTokenClient({
@@ -240,6 +290,7 @@ export async function brokerTokenClient(
     subject: personIdentity(record, flow),
     actor: machine,
     session: own.trim() || signInSessionName(record),
+    projects: tradeProjects(env),
   });
   return { client, signIn: { person: record.person, thumbprint: record.thumbprint } };
 }

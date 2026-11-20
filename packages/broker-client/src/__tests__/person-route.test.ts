@@ -12,6 +12,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { calculateJwkThumbprint, type JWK } from "jose";
 import { signedIn, stubIssuer, writeSignIn } from "../../test/sign-ins";
@@ -21,6 +22,7 @@ import {
   brokerTokenClient,
   IDENTITY_VAR,
   MACHINE_AUDIENCE_VAR,
+  PROJECTS_VAR,
   SESSION_VAR,
 } from "../environment";
 import { METADATA_HOST_VAR } from "../metadata-identity";
@@ -40,6 +42,7 @@ import {
   ACTOR_TOKEN_TYPE_MACHINE,
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
+  FORM_PROJECTS,
   FORM_SESSION,
   SUBJECT_TOKEN_TYPE_GOOGLE,
   SUBJECT_TOKEN_TYPE_PERSON,
@@ -48,8 +51,8 @@ import { accepted, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
-const CLIENT_SECRET = "example-device-client-not-a-secret";
-const MACHINE_TOKEN = "machine.identity.token";
+const CLIENT_SECRET = fixtureSecret("client");
+const MACHINE_TOKEN = fixtureSecret("machine");
 /** The name the machine trades under for a caller that acts as no session of its own. */
 const MACHINE_SESSION = "legion-demo-controller";
 
@@ -149,6 +152,17 @@ test("with a sign-in, the trade is the person's: their subject, the machine's ac
   // The broker refuses a person's trade that declines, so the parameter is left out.
   expect(form?.has(FORM_LAUNCHER_CREDENTIAL)).toBe(false);
   expect(form?.get(FORM_SESSION)).toBe("ses_01a9");
+});
+
+test("a person's trade names the projects AGENT_SECRETS_PROJECTS lists, sorted, and names none when it lists none", async () => {
+  const { broker, issuer } = await stubs();
+  const env = await box(broker.url, issuer.url, [await signedIn(PERSON, { client_id: CLIENT_ID })]);
+  await (await clientOf({ ...env, [PROJECTS_VAR]: " PUB  PRIV " }, "ses_01a9")).token();
+  await (await clientOf(env, "ses_01a9")).token();
+  expect(broker.trades.map((trade) => trade.form.get(FORM_PROJECTS))).toEqual(["PRIV PUB", null]);
+  // A list that is no list stops the factory, naming the variable, rather than trading for fewer
+  // projects than the session was started with.
+  expect((await refusalOf({ ...env, [PROJECTS_VAR]: "priv" }))?.message).toContain(PROJECTS_VAR);
 });
 
 test("with no session of its own, the person trades under the sign-in's name, never AGENT_SECRETS_SESSION", async () => {

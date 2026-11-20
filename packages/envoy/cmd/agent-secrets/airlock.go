@@ -19,8 +19,9 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/fileowner"
 )
 
 // The slots of an airlock name, spelled as the broker's answer spells them
@@ -77,10 +78,12 @@ var systemTrustFiles = []string{
 // bundle variable points at, and the wgetrc that carries that bundle to wget, which reads no
 // bundle variable at all.
 //
-// Neither file holds a credential — the bundle is the public roots plus the proxy's public
-// certificate, and the wgetrc is the inherited one plus a path — so the tidying in
-// tidyAirlockDirs is hygiene, not containment: nothing is disclosed by a directory that outlives
-// its grant.
+// Neither file holds a credential of the grant's — the bundle is the public roots plus the
+// proxy's public certificate, and the wgetrc is the inherited one plus a path, so it holds no
+// more than the WGETRC the command already had (an http_password among it, where that one has
+// one), mode 0600 in a directory this user alone reads — so the tidying in tidyAirlockDirs is
+// hygiene, not containment: a directory that outlives its grant holds nothing its user could not
+// already read.
 type airlockFiles struct {
 	bundle string // the trust bundle: the inherited or system roots, plus the proxy's certificate
 	wgetrc string // a wgetrc naming that bundle, after the lines of an inherited one
@@ -185,6 +188,14 @@ const airlockBuildLifetime = time.Hour
 // Every element of the root this CLI makes is checked before any of this (makeAirlockRoot): a
 // directory another user holds is one the command's trust bundle may not be written in or read
 // from, and the run answers an error rather than writing one.
+//
+// An error here names the path it failed on, as checkAirlockRoot's do: every such path is the
+// root (airlockRootParts: XDG_RUNTIME_DIR, else TMPDIR, else the system's temporary directory)
+// with names this CLI made below it and the grant's id, which this CLI prints wherever it names
+// the grant, and none of those is a setting a person points at a secret's file. The files a
+// person's own settings name are another matter: WGETRC's can hold http_password, so no error
+// names the file WGETRC or a bundle variable names or quotes what it holds - readTrustFile and
+// wgetrcFor skip a file they cannot read, and print nothing of it.
 func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
 	// The grant id becomes one path element, so it must be one: the broker's ids are opaque, and
 	// a "." or a ".." would make this run tidy or write somewhere else entirely.
@@ -266,8 +277,8 @@ func checkAirlockRoot(root string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("the airlock directory %s is not a directory, so the grant's files have nowhere to go; remove it", root)
 	}
-	if st, ok := info.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
-		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, st.Uid, os.Getuid())
+	if uid, ok := fileowner.Of(info); ok && uid != os.Getuid() {
+		return fmt.Errorf("the airlock directory %s is owned by uid %d, not this user (uid %d), so the trust bundle written there is one its owner can replace; remove it, or run as its owner", root, uid, os.Getuid())
 	}
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
 		return fmt.Errorf("the airlock directory %s is mode %04o, which lets other users write the trust bundle this command verifies its direct calls against; run: chmod 700 %s", root, perm, root)
@@ -346,9 +357,13 @@ func airlockDirWorthKeeping(dir string, now time.Time) bool {
 // variables airlockVars will point at this one file) whose value names a file this process can
 // read, each file's bytes once and in the variables' own order, with the first system bundle
 // that exists standing behind an SSL_CERT_FILE that names nothing readable. A command whose
-// environment puts a private authority in NODE_EXTRA_CA_CERTS or REQUESTS_CA_BUNDLE rather than
-// in SSL_CERT_FILE keeps it: NO_PROXY sends its calls to that authority's hosts direct, and
-// those calls are verified against this bundle and nothing else.
+// environment puts a private authority in NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE or
+// GRPC_DEFAULT_SSL_ROOTS_FILE_PATH rather than in SSL_CERT_FILE keeps it: NO_PROXY sends its calls
+// to that authority's hosts direct, and those calls are verified against this bundle and nothing
+// else. The cost of one bundle is that a client whose variable replaces its own roots (all but
+// Node's) trusts the whole of it, the system roots and every other variable's file beside its
+// own, where it trusted its own file alone: each authority in it is one the command trusted for
+// some of its calls already.
 //
 // When nothing is readable at all the bundle is the proxy's certificate alone, and that costs
 // the command every other certificate authority: a request the proxy tunnels rather than carries
@@ -426,7 +441,10 @@ func wgetrcFor(environ []string, bundle string) []byte {
 }
 
 // airlockBundleVars are the variables that each name the trust bundle: one per client family that
-// reads its own. Every one of them takes a file holding a concatenation of PEM certificates.
+// reads its own. Every one of them takes a file holding a concatenation of PEM certificates. All
+// but NODE_EXTRA_CA_CERTS replace their client's own roots rather than add to them, and each is
+// read the same way: what an inherited one names joins the one bundle (trustBundle), and every one
+// of them names that bundle in the command's environment.
 var airlockBundleVars = []string{
 	"SSL_CERT_FILE",                      // OpenSSL, and everything that links it
 	"CURL_CA_BUNDLE",                     // curl
@@ -435,6 +453,10 @@ var airlockBundleVars = []string{
 	"GIT_SSL_CAINFO",                     // git over HTTPS
 	"CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", // gcloud
 	"AWS_CA_BUNDLE",                      // the AWS CLI and SDKs
+	// gRPC's C core, under its Python, Ruby, C++ and PHP clients, which reads its roots from
+	// this file in place of its own (https://github.com/grpc/grpc/blob/master/doc/environment_variables.md).
+	// grpc-go reads the system roots, which SSL_CERT_FILE names.
+	"GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
 }
 
 // airlockVars are the environment variables an airlock release adds to the command's
@@ -487,14 +509,16 @@ func airlockVars(environ []string, release *AirlockRelease, files airlockFiles) 
 // airlockProxyURL is the proxy URL the command gets: the broker's own, with this grant's proxy
 // password as the password of its credential. net/url writes the credential, so a password
 // holding a character that must be percent-encoded is encoded once and exactly, and the URL
-// parses back into the same password.
+// parses back into the same password. A proxy URL it cannot use is refused without the URL, and
+// without net/url's words, which quote it whole: it is the broker's answer, and beside an
+// AGENT_SECRETS_URL that is not clean whoever answers can put that address's credential in it.
 func airlockProxyURL(release *AirlockRelease) (string, error) {
 	parsed, err := url.Parse(release.ProxyURL)
 	if err != nil {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q cannot be read: %w", release.ProxyURL, err)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) is not a URL")
 	}
 	if parsed.Host == "" {
-		return "", fmt.Errorf("the broker's airlock proxy URL %q names no host", release.ProxyURL)
+		return "", errors.New("the broker's airlock proxy URL (proxy_url) names no host")
 	}
 	parsed.User = url.UserPassword(airlockProxyUser, release.ProxyPassword)
 	return parsed.String(), nil

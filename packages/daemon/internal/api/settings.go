@@ -6,6 +6,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -170,11 +171,6 @@ type KubernetesSettings struct {
 	// Setup is the argv every role runs before each start of its Oh My Pi, `[]` while the
 	// file sets none: every pod runs it, so every pod knows it, as with `omp_launch_prefix`.
 	Setup []string `json:"setup"`
-	// SkillsRepository is the skills marketplace every issue pod's roles install from
-	// (`runtime.kubernetes.skills_repository`), as `<owner>/<name>`; empty while the file names
-	// none. It is a public repository name, not a credential, and every pod's init container
-	// carries it on its command line already.
-	SkillsRepository string `json:"skills_repository"`
 	// TestPostgres is whether every issue pod serves its own PostgreSQL for tests, which every
 	// role of such a pod is told as LEGION_TEST_PG_DSN, so every pod may read it.
 	TestPostgres    bool                    `json:"test_postgres"`
@@ -190,6 +186,41 @@ type KubernetesSettings struct {
 	// credential, and a role reads it to know when a process of its own may be ended under it, so
 	// every pod may read it.
 	MemoryGuard MemoryGuardSettings `json:"memory_guard"`
+	// VolumeTrim is the settled `runtime.kubernetes.volume_trim`: whether each issue pod's
+	// launcher runs a cache trimmer, and the marks, age and period it runs by. None of it is a
+	// credential, and a role reads it to know whether a cache on its pod's volume may be swept
+	// out from under a build it left running, so every pod may read it.
+	VolumeTrim VolumeTrimSettings `json:"volume_trim"`
+	// Sandbox is the settled `runtime.kubernetes.sandbox`: the sandbox of the project's issue
+	// pods, the issues whose pods run in the other one, and where a microVM pod runs. Every
+	// member is a word, an issue key, a class name, or the cluster's Workload Identity pool and
+	// identity provider, which name the cluster and grant nothing, so no member is a credential.
+	Sandbox SandboxSettings `json:"sandbox"`
+}
+
+// SandboxSettings is the settled `runtime.kubernetes.sandbox`: `type` is gvisor when the file
+// names none, `canary_issues` is `[]` when it names none, and `microvm` is absent when the file
+// names no such block.
+type SandboxSettings struct {
+	Type         string           `json:"type"`
+	CanaryIssues []string         `json:"canary_issues"`
+	MicroVM      *MicroVMSettings `json:"microvm,omitempty"`
+}
+
+// MicroVMSettings is `runtime.kubernetes.sandbox.microvm`: the ComputeClass of the microVM pods'
+// nodes, absent in a block no issue pod uses that names none; their workspace volume's class,
+// `runtime.kubernetes.storage_class` when the block names none; and the metadata endpoint's two
+// members, absent while the block names none.
+type MicroVMSettings struct {
+	ComputeClass string            `json:"compute_class,omitempty"`
+	StorageClass string            `json:"storage_class"`
+	Metadata     *MetadataSettings `json:"metadata,omitempty"`
+}
+
+// MetadataSettings is `runtime.kubernetes.sandbox.microvm.metadata`.
+type MetadataSettings struct {
+	WorkloadPool     string `json:"workload_pool"`
+	IdentityProvider string `json:"identity_provider"`
 }
 
 // IdleReleaseSettings is the settled `runtime.kubernetes.idle_release`. Zero `idle_minutes` is
@@ -213,6 +244,16 @@ type MemoryGuardPodSettings struct {
 	FloorPercent         int  `json:"floor_percent"`
 	WaitSeconds          int  `json:"wait_seconds"`
 	IntervalMilliseconds int  `json:"interval_milliseconds"`
+}
+
+// VolumeTrimSettings is the settled `runtime.kubernetes.volume_trim`. `enabled` false is the
+// trimmer switched off, and the pod's launcher is then handed no settings at all.
+type VolumeTrimSettings struct {
+	Enabled         bool `json:"enabled"`
+	HighPercent     int  `json:"high_percent"`
+	LowPercent      int  `json:"low_percent"`
+	MinAgeMinutes   int  `json:"min_age_minutes"`
+	IntervalSeconds int  `json:"interval_seconds"`
 }
 
 // SchedulingSettings is `runtime.kubernetes.scheduling`; the selector and the tolerations are `{}`
@@ -259,11 +300,13 @@ type RepositoryCacheSettings struct {
 }
 
 // AgentSecretsSettings is `runtime.kubernetes.agent_secrets` without `token_file`, the path of the
-// daemon's own login token.
+// daemon's own login token. ExchangeAudience is absent where the block names none, so a deployment
+// that never set it reads exactly as before the key existed.
 type AgentSecretsSettings struct {
 	URL                string `json:"url"`
 	Audience           string `json:"audience"`
 	TokenExpirySeconds int    `json:"token_expiry_seconds"`
+	ExchangeAudience   string `json:"exchange_audience,omitempty"`
 }
 
 // PluginsSettings is `runtime.kubernetes.plugins`.
@@ -272,8 +315,8 @@ type PluginsSettings struct {
 	PiEnvoy  string `json:"pi_envoy"`
 }
 
-// ProjectSettings is one `projects.<KEY>` entry; its repositories are Dispatch's mapping, which
-// the state's `repositories` shows, never this file's.
+// ProjectSettings is one `projects.<KEY>` entry. Dispatch holds the project's repository mapping,
+// which the state's `repositories` shows, and this file holds none of it.
 type ProjectSettings struct {
 	SlackChannels []string       `json:"slack_channels"`
 	Memory        MemorySettings `json:"memory"`
@@ -330,7 +373,7 @@ func (p ProjectSettings) DeclaredExperiments(key string) []config.Experiment {
 	}
 	for _, experiment := range p.Experiments {
 		declared := config.Experiment{
-			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: experiment.Roles, OnVariant: experiment.OnVariant,
 			Variants: make([]config.Variant, 0, len(experiment.Variants)),
 		}
 		for _, variant := range experiment.Variants {
@@ -356,21 +399,24 @@ type MemorySettings struct {
 
 // ExperimentSettings is one `projects.<KEY>.experiments.<name>` block as the file writes it: the
 // name it is declared under, the mode each new unit it covers is drawn under, the unit one draw
-// covers, the arm `on` gives every unit (absent where the block names none), and the arms it
-// draws among in the file's order.
+// covers, the issue roles whose launches load its arms (absent where the block names none, which
+// is every issue role), the arm `on` gives every unit (absent where the block names none), and the
+// arms it draws among in the file's order.
 type ExperimentSettings struct {
 	Name      string                `json:"name"`
 	Mode      config.ExperimentMode `json:"mode"`
 	Unit      config.ExperimentUnit `json:"unit"`
+	Roles     []claim.Role          `json:"roles,omitempty"`
 	OnVariant string                `json:"on_variant,omitempty"`
 	Variants  []VariantSettings     `json:"variants"`
 }
 
 // VariantSettings is one arm of an experiment as the file writes it: its name, the weight a
-// random draw gives it against its siblings, the Oh My Pi overlays every role of a unit drawn
-// into it names, `[]` for an arm that names none, and the one instructions file such a role's
-// system prompt takes, absent where the arm names none. The paths are the operator's own file
-// names, which no credential rides in, as the `memory` block's are.
+// random draw gives it against its siblings, the Oh My Pi overlays each role its experiment
+// reaches of a unit drawn into it names, `[]` for an arm that names none, and the one
+// instructions file such a role's system prompt takes, absent where the arm names none. The
+// paths are the operator's own file names, which no credential rides in, as the `memory` block's
+// are.
 type VariantSettings struct {
 	Name         string   `json:"name"`
 	Weight       int      `json:"weight"`
@@ -602,10 +648,9 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			Issue:      reservationSettingsOf(block.Resources.Issue),
 			Controller: reservationSettingsOf(block.Resources.Controller),
 		},
-		SessionStore:     string(block.SessionStore.Kind),
-		Setup:            stringsOf(block.Setup),
-		SkillsRepository: skillsRepositorySetting(block.SkillsRepository),
-		TestPostgres:     block.TestPostgres,
+		SessionStore: string(block.SessionStore.Kind),
+		Setup:        stringsOf(block.Setup),
+		TestPostgres: block.TestPostgres,
 		RepositoryCache: RepositoryCacheSettings{
 			Volume:         block.RepositoryCache.Volume,
 			RefreshMinutes: block.RepositoryCache.RefreshMinutes,
@@ -616,6 +661,10 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			IdleMinutes:     block.IdleRelease.IdleMinutes,
 			BackstopMinutes: block.IdleRelease.BackstopMinutes,
 		},
+		Sandbox: SandboxSettings{
+			Type:         string(block.Sandbox.Type),
+			CanaryIssues: stringsOf(block.Sandbox.CanaryIssues),
+		},
 		MemoryGuard: MemoryGuardSettings{IssuePods: MemoryGuardPodSettings{
 			Enabled:              block.MemoryGuard.IssuePods.Enabled,
 			ActPercent:           block.MemoryGuard.IssuePods.ActPercent,
@@ -623,16 +672,29 @@ func kubernetesSettingsOf(block *config.Kubernetes) *KubernetesSettings {
 			WaitSeconds:          block.MemoryGuard.IssuePods.WaitSeconds,
 			IntervalMilliseconds: block.MemoryGuard.IssuePods.IntervalMilliseconds,
 		}},
+		VolumeTrim: VolumeTrimSettings{
+			Enabled:         block.VolumeTrim.Enabled,
+			HighPercent:     block.VolumeTrim.HighPercent,
+			LowPercent:      block.VolumeTrim.LowPercent,
+			MinAgeMinutes:   block.VolumeTrim.MinAgeMinutes,
+			IntervalSeconds: block.VolumeTrim.IntervalSeconds,
+		},
 	}
 	maps.Copy(settings.Scheduling.NodeSelector, block.Scheduling.NodeSelector)
 	for i, toleration := range block.Scheduling.Tolerations {
 		settings.Scheduling.Tolerations[i] = TolerationSettings{Key: toleration.Key, Operator: toleration.Operator, Value: toleration.Value, Effect: toleration.Effect}
 	}
 	if broker := block.AgentSecrets; broker != nil {
-		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds}
+		settings.AgentSecrets = &AgentSecretsSettings{URL: broker.URL, Audience: broker.Audience, TokenExpirySeconds: broker.TokenExpirySeconds, ExchangeAudience: broker.ExchangeAudience}
 	}
 	if plugins := block.Plugins; plugins != nil {
 		settings.Plugins = &PluginsSettings{PiLegion: pluginSourceOf(plugins.PiLegion), PiEnvoy: pluginSourceOf(plugins.PiEnvoy)}
+	}
+	if microVM := block.Sandbox.MicroVM; microVM != nil {
+		settings.Sandbox.MicroVM = &MicroVMSettings{ComputeClass: microVM.ComputeClass, StorageClass: microVM.StorageClass}
+		if metadata := microVM.Metadata; metadata != nil {
+			settings.Sandbox.MicroVM.Metadata = &MetadataSettings{WorkloadPool: metadata.WorkloadPool, IdentityProvider: metadata.IdentityProvider}
+		}
 	}
 	return settings
 }
@@ -671,7 +733,7 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 	declared := make([]ExperimentSettings, 0, len(experiments))
 	for _, experiment := range experiments {
 		entry := ExperimentSettings{
-			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, OnVariant: experiment.OnVariant,
+			Name: experiment.Name, Mode: experiment.Mode, Unit: experiment.Unit, Roles: slices.Clone(experiment.Roles), OnVariant: experiment.OnVariant,
 			Variants: make([]VariantSettings, 0, len(experiment.Variants)),
 		}
 		for _, variant := range experiment.Variants {
@@ -681,16 +743,6 @@ func experimentsOf(experiments []config.Experiment) []ExperimentSettings {
 		declared = append(declared, entry)
 	}
 	return declared
-}
-
-// skillsRepositorySetting is repository as `<owner>/<name>`, and "" for the zero repository, which
-// is what a file naming no skills marketplace leaves: ghrepo's own String() of the zero value is
-// not the empty string.
-func skillsRepositorySetting(repository ghrepo.Repository) string {
-	if repository.IsZero() {
-		return ""
-	}
-	return repository.String()
 }
 
 // endpointOf is one address key's value as the state shows it: the scheme, the host and the path,
