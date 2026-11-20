@@ -703,7 +703,7 @@ func TestAnUploadsFullReleaseClearsTheDurableRowOfAPendingAuthorItWasNeverCredit
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 	var nextNumber int
@@ -748,7 +748,7 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(gated(t, service, ctx, artifactID), tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, uploaded.\n", uploader, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the replacement text: %v", err)
 	}
 

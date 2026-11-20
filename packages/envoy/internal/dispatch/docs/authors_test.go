@@ -531,7 +531,11 @@ func TestAServiceWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAuthor(t *te
 	agentAsk := "\n:::ask{#agent-ask urgency=\"high\" multiple=\"false\"}\nWhich database?\n:::\n"
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {
 		return joinedWrite(service, artifactID, func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, current+agentAsk, session)
+			precondition, err := replacementPrecondition(ctx, service, artifactID)
+			if err != nil {
+				return err
+			}
+			_, err = service.ReplaceText(ctx, artifactID, current+agentAsk, session, precondition)
 			return err
 		})
 	})
@@ -572,7 +576,7 @@ func TestAPublishedAgentWriteAndABrowserEditLandTogetherEachAskGoesToItsOwnAutho
 	defer tx.Rollback(context.Background())
 	joined, ledger := service.Join(gated(t, service, context.Background(), artifactID), tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, current+agentAsk, session, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("agent joined edit: %v", err)
 	}
 	release := holdObserver(t, service, artifactID, &service.beforeObserveUpdate, func() error {

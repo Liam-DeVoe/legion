@@ -21,7 +21,7 @@ const (
 	kindAnchored = "anchored" // the same with anchor {artifact: "spec", quote: <requirement cell>}
 	kindReply    = "reply"    // the same with reply_to <seeded root comment id>
 	kindEdit     = "edit"     // POST /api/v1/artifacts/{id}/edits: one replace of the revision token, with a summary
-	kindUpload   = "upload"   // GET /api/v1/artifacts/{id}/text, then POST /api/v1/issues/{key}/artifacts {name, content, summary}
+	kindUpload   = "upload"   // GET /api/v1/artifacts/{id}/text, then POST /api/v1/issues/{key}/artifacts {name, content, summary, precondition}
 )
 
 // The three write kinds of the Verified Linux spec loop, which a step sends against its own seed
@@ -571,7 +571,7 @@ func (w *writer) do(ctx context.Context, p eventPlan) writeRec {
 	case kindUpload:
 		w.locks[p.issue].Lock()
 		defer w.locks[p.issue].Unlock()
-		text, markdown := w.specText(ctx, p.issue, id)
+		text, markdown, token := w.specText(ctx, p.issue, id)
 		old, found := currentRevision(markdown)
 		switch {
 		case text.err == nil && (text.status == http.StatusTooManyRequests || text.status == http.StatusServiceUnavailable):
@@ -581,16 +581,21 @@ func (w *writer) do(ctx context.Context, p eventPlan) writeRec {
 			rec.Code, rec.Conn = text.code, text.conn
 			w.lg.Printf("write %s %s: read %s before upload: %d %s", p.kind, is.Key, specName, text.status, trunc(text.body))
 			return rec
-		case !found:
+		case !found || token == "":
 			rec.Sent, rec.Arrival, rec.Response, rec.Status = text.start, text.start, text.end, text.status
-			rec.TransportErr = fmt.Sprintf("read %s before upload: status %d, revision token found %t, %v", specName, text.status, found, text.err)
+			rec.TransportErr = fmt.Sprintf("read %s before upload: status %d, revision token found %t, document token found %t, %v", specName, text.status, found, token != "", text.err)
 			rec.ConnFailure, rec.Conn = text.connFailure, text.conn
 			w.lg.Printf("write %s %s: %s on %s", p.kind, is.Key, rec.TransportErr, text.conn)
 			return rec
 		}
 		content := strings.Replace(markdown, revisionToken(old), revisionToken(old+1), 1)
 		path = "/api/v1/issues/" + is.Key + "/artifacts"
-		body = map[string]any{"name": specName, "content": content, "summary": fmt.Sprintf("%s upload revision %d", tag, old+1)}
+		// The upload replaces a document that exists, so it names the base it read above; the
+		// issue's lock above holds every other upload of this spec off until this one answers.
+		body = map[string]any{
+			"name": specName, "content": content, "summary": fmt.Sprintf("%s upload revision %d", tag, old+1),
+			"precondition": map[string]any{"document": token},
+		}
 		w.revs[p.issue] = old
 	case kindVerdict:
 		// A verdict rewrites the page it lands on, as the loop's does: the op replaces the page's
@@ -786,29 +791,31 @@ func (w *writer) resolveThread(ctx context.Context, p eventPlan, id who) {
 	}
 }
 
-// specText reads the issue's spec text: the GET's result and the document's markdown, "" when
-// the read failed or its body did not decode.
-func (w *writer) specText(ctx context.Context, issue int, id who) (callResult, string) {
+// specText reads the issue's spec text: the GET's result, the document's markdown and its
+// document token, both "" when the read failed or its body did not decode. The token is the base
+// an upload of a new version of that document names (its `precondition`).
+func (w *writer) specText(ctx context.Context, issue int, id who) (callResult, string, string) {
 	return w.artifactText(ctx, w.sf.Issues[issue].ArtifactID, id)
 }
 
-// artifactText reads one document's text: the GET's result and the document's markdown, "" when
-// the read failed or its body did not decode.
-func (w *writer) artifactText(ctx context.Context, artifact string, id who) (callResult, string) {
+// artifactText reads one document's text: the GET's result, the document's markdown and its
+// document token, both "" when the read failed or its body did not decode.
+func (w *writer) artifactText(ctx context.Context, artifact string, id who) (callResult, string, string) {
 	res := w.a.call(ctx, "GET", "/api/v1/artifacts/"+artifact+"/text", id, nil)
 	var doc struct {
 		Markdown string `json:"markdown"`
+		Token    string `json:"token"`
 	}
 	if res.ok() {
 		_ = json.Unmarshal(res.body, &doc)
 	}
-	return res, doc.Markdown
+	return res, doc.Markdown, doc.Token
 }
 
 // resync reads the spec's current revision token after an edit or upload whose outcome the
 // generator did not see (a client timeout on a write the server went on to commit).
 func (w *writer) resync(ctx context.Context, issue int) {
-	_, markdown := w.specText(ctx, issue, who{})
+	_, markdown, _ := w.specText(ctx, issue, who{})
 	if n, ok := currentRevision(markdown); ok {
 		w.revs[issue] = n
 	}
@@ -844,7 +851,7 @@ func (w *writer) readPageGeneration(ctx context.Context, pg *loopPage, p eventPl
 // find. The page's lock is the caller's.
 func (w *writer) readPage(ctx context.Context, pg *loopPage, p eventPlan) {
 	page := w.loop.Proposals[p.issue].ReviewPages[p.page]
-	res, markdown := w.artifactText(ctx, page.ArtifactID, who{})
+	res, markdown, _ := w.artifactText(ctx, page.ArtifactID, who{})
 	n, ok := loopPageGeneration(markdown)
 	if !ok {
 		w.lg.Printf("write %s %s: read review page %s for its generation: %d %s %v",

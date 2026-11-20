@@ -307,6 +307,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -9522,6 +9526,10 @@
                     "description": "the artifact's name, trimmed",
                     "type": "string"
                   },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
+                    "type": "string"
+                  },
                   "summary": {
                     "description": "what this version changed, trimmed",
                     "type": "string"
@@ -17875,6 +17883,10 @@
                   },
                   "name": {
                     "description": "the artifact's name, trimmed",
+                    "type": "string"
+                  },
+                  "precondition": {
+                    "description": "the base this upload replaces as one JSON object, as the JSON body's `precondition` field",
                     "type": "string"
                   },
                   "summary": {
@@ -29449,6 +29461,9 @@
           },
           "document": {
             "type": "string"
+          },
+          "version": {
+            "type": "integer"
           }
         },
         "required": [
@@ -32495,6 +32510,16 @@
           },
           "name": {
             "type": "string"
+          },
+          "precondition": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EditPrecondition"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "primary": {
             "description": "refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload",
@@ -36290,6 +36315,36 @@
         ],
         "type": "object"
       },
+      "StandingReview": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "by": {
+            "type": "string"
+          },
+          "carried_from_version": {
+            "type": "integer"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "by",
+          "at",
+          "state",
+          "version"
+        ],
+        "type": "object"
+      },
       "StateResponse": {
         "properties": {
           "state": {
@@ -37603,6 +37658,9 @@
           },
           "session_writes_since_human": {
             "type": "integer"
+          },
+          "standing_review": {
+            "$ref": "#/components/schemas/StandingReview"
           },
           "suggestions": {
             "$ref": "#/components/schemas/Suggestions"

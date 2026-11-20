@@ -138,7 +138,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 	rolledBackCtx, release := gatedContext(t, service, ctx, artifactID)
 	joined, ledger := service.Join(rolledBackCtx, tx)
 	rolledBack := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("replace text in the transaction: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
