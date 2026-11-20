@@ -56,7 +56,8 @@ test("a refusal echoing the request prints none of its credentials, and keeps it
   expect(body).toBe(answer);
   const thrown = Object.assign(
     new Error(`server responded with an error: ${body}`),
-    JSON.parse(body)
+    JSON.parse(body),
+    { response }
   );
   const error = new LibraryError(thrown);
   for (const text of [error.message, String(error.code), String(error.description)]) {
@@ -87,9 +88,35 @@ test("a refusal through two refusalFetches is one record holding both requests' 
     headers: { "content-type": "application/x-www-form-urlencoded" },
   });
   const body = JSON.parse(await response.text());
-  const error = new LibraryError(Object.assign(new Error("server responded with an error"), body));
+  const error = new LibraryError(
+    Object.assign(new Error("server responded with an error"), body, { response })
+  );
   for (const text of [error.message, String(error.description)]) {
     expect(text.includes(proof), `REDACT-ASSERT ts.refusal-fetch-nested: ${text}`).toBe(false);
   }
   expect(error.code.equals("invalid_dpop_proof")).toBe(true);
+});
+
+// The record is the Response the error came from, never the newest answer whose words happen to
+// occur in a message. Two gateways can share a preamble and a later short "Forbidden" answer can
+// occur before the first error reaches the boundary; only the first request's credential is
+// redacted from that error.
+test("interleaved refusals keep each error's own request record", async () => {
+  const firstSecret = fixtureSecret("firstrec");
+  const secondSecret = fixtureSecret("secondre");
+  const first = refusalFetch(async () => new Response("gateway preamble shared by every refusal", { status: 403 }));
+  const second = refusalFetch(async () => new Response("gateway preamble shared by every refusal", { status: 403 }));
+  const later = refusalFetch(async () => new Response("Forbidden", { status: 403 }));
+  const firstResponse = await first("https://idp.example/one", {
+    headers: { authorization: `Bearer ${firstSecret}` },
+  });
+  await second("https://idp.example/two", { headers: { authorization: `Bearer ${secondSecret}` } });
+  await later("https://idp.example/three", {});
+  const error = new LibraryError(
+    Object.assign(new Error(`Forbidden: ${firstSecret}; unrelated ${secondSecret}`), {
+      response: firstResponse,
+    })
+  );
+  expect(error.message.includes(firstSecret), `first request leaked: ${error.message}`).toBe(false);
+  expect(error.message).toContain(secondSecret);
 });

@@ -326,14 +326,17 @@ export class LibraryError extends Error {
     const message = error === undefined ? String(thrown) : error.message;
     const code = stringMember(thrown, "error");
     const description = stringMember(thrown, "error_description");
-    // The credentials of the refusal the error came from: a library builds its requests'
-    // credentials itself, and its error's words can echo any of them.
-    const carried = refusedCredentials(message, code, description);
-    super(redactRemoteText(message, carried));
+    // A refusal's record travels with the Response openid-client keeps on its error. It is never
+    // selected by words an unrelated refusal happens to share with this one.
+    const refusal = responseOfThrown(thrown);
+    const carried = refusal === undefined ? undefined : recordedOf.get(refusal)?.credentials;
+    const covered = carried !== undefined;
+    const status = statusOfThrown(thrown);
+    super(covered ? redactRemoteText(message, carried) : withheldClass(thrown, status));
     this.name = error !== undefined && /^\w+$/.test(error.name) ? error.name : "Error";
-    this.status = statusOfThrown(thrown);
-    this.code = new RemoteText(code, carried);
-    this.description = new RemoteText(description, carried);
+    this.status = status;
+    this.code = new RemoteText(covered ? code : "", carried);
+    this.description = new RemoteText(covered ? description : "", carried);
     this.thrownClass = errorClass(thrown);
     const cause = error?.cause;
     this.causeClass = cause instanceof Error ? errorClass(cause) : "";
@@ -635,51 +638,36 @@ export function tokens(text: string, limit: number, ...credentials: string[]): s
   return limit < 0 ? out : Array.from(out).slice(0, read).join("");
 }
 
-/** How many refusals {@link refusalFetch} keeps, the newest: more than a process makes between a
- *  library's refused request and {@link LibraryError}'s reading of the error it throws. Go's
- *  `refusedKept`. */
-const REFUSED_KEPT = 1024;
+/** What {@link refusalFetch} records of one answer: the credentials its request carried, as each
+ * refusalFetch it passed through saw them. The record is keyed by the Response itself, so it
+ * travels with an openid-client error's `response`; nothing matches it by a body or a message. */
+type Refusal = { readonly credentials: string[] };
 
-/** How much of a refused answer's body, trimmed, an error's message must quote to be read with
- *  that refusal's credentials. Go's `quotedLength`. */
-const QUOTED_LENGTH = 64;
-
-/** What {@link refusalFetch} records of a refused answer: the credentials its request carried, as
- *  each refusalFetch it passed through saw them, and the answer's body. */
-type Refusal = { readonly credentials: string[]; readonly body: string };
-
-/** The latest refusals a {@link refusalFetch} saw, newest last. */
-const refused: Refusal[] = [];
-
-/** The refusal recorded of each refused answer, which a refusalFetch above the one that recorded
- *  it joins: one answer is one refusal. */
+/** The record of each answer refusalFetch saw, including a successful or empty one: parsing a
+ * successful answer can still fail with the request in its error, and a status line can echo it. */
 const recordedOf = new WeakMap<Response, Refusal>();
 
-/**
- * The credentials of the refusal the library's error came from: the newest whose answer the
- * error's message quotes, else the newest whose body holds the error's description
- * (`error_description`), or its code where it has no description. Only that request's
- * credentials can be echoed in the error, so no other request's values touch it, and the work is
- * one request's however many refusals came before. Go's `refusals.quotedBy`, which reads
- * text-only errors; this half also reads openid-client's errors of a parsed body, whose message
- * quotes none of it.
- */
-function refusedCredentials(message: string, code: string, description: string): string[] {
-  const inBody = (text: string, body: string): boolean =>
-    text !== "" && (body.includes(text) || body.includes(JSON.stringify(text).slice(1, -1)));
-  const newest = (matches: (refusal: Refusal) => boolean): Refusal | undefined => {
-    for (let i = refused.length - 1; i >= 0; i--) {
-      const refusal = refused[i] as Refusal;
-      if (matches(refusal)) return refusal;
-    }
-    return undefined;
-  };
-  const from =
-    newest((refusal) => {
-      const quote = refusal.body.trim().slice(0, QUOTED_LENGTH);
-      return quote !== "" && message.includes(quote);
-    }) ?? newest((refusal) => inBody(description === "" ? code : description, refusal.body));
-  return [...(from?.credentials ?? [])];
+/** The Response an openid-client or oauth4webapi error carries, itself or in its cause chain, or
+ * undefined where it carries none. ResponseBodyError has `response`; an error can itself be a
+ * Response in a test or a wrapper. */
+function responseOfThrown(thrown: unknown): Response | undefined {
+  let value = thrown;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (value instanceof Response) return value;
+    if (typeof value !== "object" || value === null) return undefined;
+    const response = Reflect.get(value, "response");
+    if (response instanceof Response) return response;
+    if (!("cause" in value)) return undefined;
+    value = Reflect.get(value, "cause");
+  }
+  return undefined;
+}
+
+/** The fail-closed reading of an error whose response carries no refusalFetch record: its class
+ * and status alone, never a word of the message, code or description. Go's `redact.withheld`. */
+function withheldClass(thrown: unknown, status: number): string {
+  const suffix = status === 0 ? "" : `, status ${status}`;
+  return `${errorClass(thrown)}${suffix}`;
 }
 
 /** The request a fetch sends: the options it is sent with, a header record or a `Headers`. */
@@ -687,13 +675,13 @@ type FetchOptions = { body?: unknown; headers?: ConstructorParameters<typeof Hea
 
 /**
  * `base`, a fetch openid-client is given (its `customFetch`) or one beneath it, which records the
- * credentials each request carried ({@link requestCredentials}) and the answer's body when the
- * answer is outside 2xx, and changes nothing of any answer: it reads a clone of the body, so the
- * library parses the answer as it came, and its code and every decision made on it are the
- * answer's own. {@link LibraryError} prints the error the library throws over it with the
- * credentials of the refusal it came from redacted. It is the one wrapper on every fetch this
- * workspace hands openid-client; the census in `cmd/redact-gate` fails on one without it. Go's
- * `redact.RefusalClient`.
+ * credentials each request carried ({@link requestCredentials}) against the Response it returns,
+ * and changes nothing of any answer. A fetch underneath one can set another credential (a DPoP
+ * proof); the wrapper above joins it into the same response-keyed record. {@link LibraryError}
+ * reads an error from that response with those credentials redacted. A Response without a record
+ * fails closed, as does a fetch failure with no Response. It is the one wrapper on every fetch
+ * this workspace hands openid-client; the census in `cmd/redact-gate` fails on one without it.
+ * Go's `redact.RefusalClient`.
  */
 export function refusalFetch<Options extends FetchOptions>(
   base: (url: string, options: Options) => Promise<Response>
@@ -701,22 +689,13 @@ export function refusalFetch<Options extends FetchOptions>(
   return async (url, options) => {
     const credentials = requestCredentials(url, options);
     const response = await base(url, options);
-    if (response.status < 200 || response.status >= 300) {
-      // A refusalFetch beneath this one recorded the answer already, with the credentials its own
-      // request carried (a proof set between the two among them): this request's join it.
-      const recorded = recordedOf.get(response);
-      if (recorded !== undefined) {
-        recorded.credentials.push(...credentials);
-        return response;
-      }
-      const body = await response
-        .clone()
-        .text()
-        .catch(() => "");
-      const refusal: Refusal = { credentials, body };
-      recordedOf.set(response, refusal);
-      refused.push(refusal);
-      if (refused.length > REFUSED_KEPT) refused.splice(0, refused.length - REFUSED_KEPT);
+    // An answer need not be a refusal: parsing a 2xx answer can still return an error whose text
+    // quotes it, and an empty answer's status can quote the request.
+    const recorded = recordedOf.get(response);
+    if (recorded !== undefined) {
+      recorded.credentials.push(...credentials);
+    } else {
+      recordedOf.set(response, { credentials });
     }
     return response;
   };
