@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/fold"
@@ -479,7 +480,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 // serveProxy is the whole of the outer server: a proxy request, a credential that proves a live
-// grant, and then either a tunnel or a bound host.
+// grant of a person Dispatch does not hold, and then either a tunnel or a bound host.
 func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 	// A request that is neither CONNECT nor an absolute-URL proxy request is somebody treating
 	// this port as an ordinary web server. It serves nothing of its own, not even a health
@@ -511,6 +512,13 @@ func (s *Server) serveProxy(w http.ResponseWriter, r *http.Request) {
 			// The broker's own refusal of this grant, in its own words (grantRefusal).
 			s.refuse(w, r, call{host: requestHost(r)}, status, code, why)
 		}
+		return
+	}
+	// The person the grant's session acts for, asked of the hold before anything else of the
+	// request is read: a connection a held person opens is refused, a tunnel no less than a bound
+	// host, and so is each of their plain requests (holdRefusal).
+	if status, code, why := s.holdRefusal(r.Context(), grant.Operator); status != 0 {
+		s.refuse(w, r, call{grant: grant, host: requestHost(r)}, status, code, why)
 		return
 	}
 	// Every dial below this point is made for this grant, and the lines it writes name it
@@ -637,6 +645,60 @@ func (s *Server) grantRefusal(read string, err error) (int, string, string) {
 	}
 	s.log.Error("airlock proxy: a grant could not be read", "read", read, "error", err)
 	return http.StatusServiceUnavailable, codeGrantUnreadable, grantUnreadable
+}
+
+// holdUnreadable is the message of the line a check of the hold that decided nothing logs, with
+// the gate's own error, which no answer carries (holdRefusal, carryRefusal).
+const holdUnreadable = "airlock proxy: whether Dispatch holds a person could not be read"
+
+// holdRefusal is the status, the code and the words a request is refused with when the person
+// its grant's session acts for (requests.AirlockConnection's Operator) is one the hold refuses
+// (hold.Gate.Check), and zero for a person it serves and for a grant whose enrollment names no
+// person - a pod's own, a machine's own session. A held person is 403 MEMBERSHIP_HELD. A check
+// that decides nothing is 503 HOLD_UNCHECKABLE, and it is read first, since a held answer the
+// broker could not keep matches both, and the broker could serve that person in a later outage
+// of Dispatch. A request reads it after the connection read and before any value of the grant,
+// so a held person's request reaches neither the values this pod holds nor the store's.
+//
+// The 503 names the failure by its kind (uncheckableReason) and never in the gate's own words,
+// which hold a Postgres error's database user, name and address when the broker could not read
+// or keep an answer, as grantRefusal's 503 holds none of the read's: those words go to the log.
+func (s *Server) holdRefusal(ctx context.Context, person string) (int, string, string) {
+	if person == "" {
+		return 0, "", ""
+	}
+	err := s.hold.Check(ctx, person)
+	switch {
+	case err == nil:
+		return 0, "", ""
+	case errors.Is(err, hold.ErrUncheckable):
+		// Refused below, with any other error of the check, which decides nothing either.
+	case errors.Is(err, hold.ErrHeld):
+		return http.StatusForbidden, "MEMBERSHIP_HELD", heldWords(person)
+	}
+	s.log.Error(holdUnreadable, "person", person, "error", err)
+	return http.StatusServiceUnavailable, "HOLD_UNCHECKABLE", "whether Dispatch holds " + person + " cannot be read: " + uncheckableReason(err)
+}
+
+// heldWords is what a held person's request is refused with and a held person's carried call is
+// ended with: who is held, and what ends the hold.
+func heldWords(person string) string {
+	return person + "'s credentials are held by Dispatch; they work again when " + person +
+		" signs in to Dispatch, or when Dispatch can confirm " + person + " with Google again"
+}
+
+// uncheckableReason is the failure a 503 HOLD_UNCHECKABLE names, by its kind: Dispatch refusing
+// the broker's own account, which is the deployment's to fix; a held answer the broker could not
+// keep; and otherwise a Dispatch the broker could not ask while it could not read the last
+// answer Dispatch gave either.
+func uncheckableReason(err error) string {
+	switch {
+	case errors.Is(err, projectaccess.ErrBrokerRefused):
+		return "Dispatch refused the broker's own account"
+	case errors.Is(err, hold.ErrHeld):
+		return "the broker could not keep Dispatch's answer that holds them"
+	}
+	return "the broker could not ask Dispatch, nor read the last answer Dispatch gave"
 }
 
 // serveConnect answers one CONNECT: a host one of the grant's names is bound to is decrypted

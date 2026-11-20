@@ -518,6 +518,11 @@ type AirlockConnection struct {
 	Issue                string // the first Dispatch issue key in the request's own signed reason, "" when it names none
 	Expires              *time.Time
 	Names                map[string]AirlockGrantName
+	// Operator is the enrollment's operator, the person its session acts for, whose hold the
+	// proxy asks about (airlockproxy's holdRefusal), and "" for an enrollment that names none: a
+	// pod's own, or a machine's own session. It costs nothing either: the read below joins the
+	// enrollment row already.
+	Operator string
 }
 
 // AirlockGrantName is one name a connection may carry: the placeholder of each of its slots, and
@@ -544,7 +549,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 	var reason string
 	var live bool
 	err := m.Store.Pool.QueryRow(ctx, `select p.grant_id, g.enrollment_id, g.request_id, g.expires_at, r.reason,
-		e.runtime_id, coalesce(e.session_id, ''),
+		e.runtime_id, coalesce(e.session_id, ''), coalesce(e.operator, ''),
 		g.revoked_at is null and `+grantUnexpired("g")+` and e.revoked_at is null and enrollment_lease_live(e.lease_expires_at)
 		from airlock_placeholders p
 		join grants g on g.id = p.grant_id
@@ -552,7 +557,7 @@ func (m *Machine) AirlockConnection(ctx context.Context, placeholder string) (Ai
 		join requests r on r.id = g.request_id
 		where p.placeholder_sha256 = $1`, placeholderHash(placeholder)).
 		Scan(&conn.GrantID, &conn.EnrollmentID, &conn.RequestID, &conn.Expires, &reason,
-			&conn.RuntimeID, &conn.SessionID, &live)
+			&conn.RuntimeID, &conn.SessionID, &conn.Operator, &live)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AirlockConnection{}, ErrGrantNotLive
 	}
