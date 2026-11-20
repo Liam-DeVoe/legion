@@ -52,6 +52,11 @@ const ENTRIES_TWO_ROLES: readonly Entry[] = [
   },
   {
     file: "packages/daemon/internal/prompts/go/worker-common.md",
+    has: "It does not end early while a role is in a turn or reports background work",
+    keep: "An update round's end, not a Dispatch check.",
+  },
+  {
+    file: "packages/daemon/internal/prompts/go/worker-common.md",
     has: "It keeps nothing else of the disk",
     keep: "A released pod's disk, not a Dispatch check.",
   },
