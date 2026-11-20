@@ -7,7 +7,10 @@ body: |-
   sent (an earlier draft of this change wrote `not sent: the post was deleted`, which no release
   carried). A targeted message deleted while its last send was out, whose send then found no live
   session, is no longer queued for that session: Dispatch re-checks the attempt before it stores a
-  copy, so the deleted body is not kept for the session to read when it registers again.
+  copy, so the deleted body is not kept for the session to read when it registers again. The
+  listener's dead letter for a kept role copy that Dispatch published names the comment or the
+  message by its id and its dispatch:// reference, and quotes none of its body, since its author
+  can have edited or deleted it by then; a copy from any other source keeps its first line.
 time: 2026-11-19T06:03:49.147617612Z
 custom:
     Issue: pr3512
