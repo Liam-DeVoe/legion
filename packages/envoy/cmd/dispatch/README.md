@@ -3823,6 +3823,46 @@ the `403` a cookie request from another origin gets, the `421` a request for ano
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
+## Handler error lines
+
+A request whose handler fails with a fault of the server's writes one more line beside its access-log line, at ERROR: `dispatch: API handler failed`, for a `500 INTERNAL` and for a `500` the handler named, whose line carries that answer's `code`.
+A document the server cannot serve writes one too, at WARN: `dispatch: API document outside Proof schema` for a stored tree outside the schema (`409 DOC_SCHEMA`; at ERROR for a tree a write produced, which answers `500`), `dispatch: API document history cannot load` (`409 DOCUMENT_UNLOADABLE`) and `dispatch: API refused a document too large to store` (`413 CAP_EXCEEDED`).
+A document holding an element this build cannot read writes `dispatch: API document holds an element this build cannot read`, which names those elements alone (`409 DOC_NEWER_CONTENT`).
+
+```
+time=2026-11-20T10:02:41.118Z level=ERROR msg="dispatch: API handler failed" error.sqlstate=23505 error.constraint=comments_pkey error.types="[*fmt.wrapError *pgconn.PgError]" site=api.(*server).createComment:412 route=/api/v1/issues/{key}/comments
+```
+
+The line carries no text of the error's message.
+A document's text, which can hold a person's address, travels in the messages of the refusals that quote it, and no wrapper can be trusted to keep the chain that would let the line tell such a refusal apart: one wrapped with `%v`, or quoted in a message a handler wrote, reads as any other error.
+So the line names the error by words of the server's own code, each only where the error has it, and says where the error came from:
+
+- `error.refusal`
+
+  The class of the document refusal the error is, such as `outside Proof schema`.
+
+- `error.sentinel`
+
+  The message of each known error the error is, such as `context canceled` or `document service unavailable`, joined by `; `.
+
+- `error.sqlstate` and `error.constraint`
+
+  A Postgres error's SQLSTATE and the name of the constraint it names: the schema's words, never a row's values.
+
+- `error.types`
+
+  The Go type of each error in the error's chain, the outermost first.
+
+- `site`
+
+  The function and line that answered the error, past the helpers that only pass it on, so two failures of one route are told apart.
+
+- `route`
+
+  The route's own pattern, the `route` of the request's access-log line.
+
+The request itself, with its caller, path, status and time, is that access-log line's (Access log), which the `route` and the time find.
+
 ## Routes
 
 `GET /api/v1` (no credential) is the authoritative list:
