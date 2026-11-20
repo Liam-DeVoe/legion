@@ -811,7 +811,7 @@ func requireBlockRefsTargetIndex(t *testing.T, q Queryer) {
 		name, definition := index[0], index[1]
 		if name == "block_refs_to_source" {
 			found = true
-			if !strings.HasSuffix(definition, " block_refs USING btree (to_kind, to_id, ((artifact_id)::text))") {
+			if !strings.HasSuffix(definition, ".block_refs USING btree (to_kind, to_id, ((artifact_id)::text))") {
 				t.Errorf("block_refs_to_source is %q; want the B-tree on (to_kind, to_id, ((artifact_id)::text))", definition)
 			}
 			continue
