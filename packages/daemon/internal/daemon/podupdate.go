@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 )
@@ -871,7 +872,9 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		if ctx.Err() == nil {
 			s.log.Error("supervise: replace the pod of a finished update round; retrying at the next sweep",
 				"issue", issue, "round", round, "pod", pod, "error", err)
-			s.tellLateRound(ctx, issue, live, round, pod, reasons, texts.HoldsRuntimeRefused, err.Error(), clock)
+			// The notice is stored and read by the controller, so the runtime's refusal is
+			// kept in it as any far side's error text is; the line above logs it whole.
+			s.tellLateRound(ctx, issue, live, round, pod, reasons, texts.HoldsRuntimeRefused, storetext.FarSideError(err.Error()), clock)
 		}
 		return
 	}
