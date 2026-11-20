@@ -357,7 +357,39 @@ cat >> "$root/.github/workflows/ci.yaml" <<YAML
 YAML
 run_check tree "$root"
 check "the gate rejects a scalar job container" "$(is "$status" 1)"
-check "the gate names the scalar job container" "$(contains "$out" "this job's container is $REGISTRY@$BROWSER, not a mapping")"
+check "the gate names the scalar job container" \
+  "$(contains "$out" "this job's container is $REGISTRY@$BROWSER, a bare image, which cannot set credentials:")"
+check "and does not say it cannot read the image it prints" "$(is "$(contains "$out" 'cannot read')" false)"
+
+echo "case: one service written as a bare image, which has no credentials to set"
+root=$(fixture scalar-service)
+sed -i "/^      nats:/,/^        credentials:/c\\      nats: $REGISTRY@$NATS" "$root/.github/workflows/ci.yaml"
+run_check tree "$root"
+check "the gate rejects one service written as a bare image" "$(is "$status" 1)"
+check "and names it, a bare image" \
+  "$(contains "$out" "ci.yaml:7: the nats service is $REGISTRY@$NATS, a bare image, which cannot set credentials:")"
+check "and does not say it cannot read the image it prints" "$(is "$(contains "$out" 'cannot read')" false)"
+
+echo "case: services, or a container, that is neither a mapping nor an expression"
+root=$(fixture services-scalar)
+sed -i "/^    services:/,/^        credentials:/c\\    services: $REGISTRY@$NATS" "$root/.github/workflows/ci.yaml"
+run_check tree "$root"
+check "the gate rejects services: as one plain string" "$(is "$status" 1)"
+check "and says it names no image this check can read" \
+  "$(contains "$out" "ci.yaml:6: this job's services are $REGISTRY@$NATS, neither a mapping nor an expression, so it names no image this check can read")"
+root=$(fixture container-list)
+browser_row "$root"
+cat >> "$root/.github/workflows/ci.yaml" <<YAML
+  listed:
+    runs-on: ubuntu-24.04
+    container: ["$REGISTRY@$BROWSER"]
+    steps:
+      - run: bun test
+YAML
+run_check tree "$root"
+check "the gate rejects a container written as a list" "$(is "$status" 1)"
+check "and says it names no image this check can read" \
+  "$(contains "$out" "this job's container is .*, neither a mapping nor an expression, so it names no image this check can read")"
 
 echo "case: services, or one service, written as one expression"
 # The runner's workflow schema admits an expression for a job's whole services: and for one
@@ -370,13 +402,15 @@ for image in "$REGISTRY@$NATS" docker.io/library/nats:2.10 "$REGISTRY:nats-2.10-
   sed -i "/^    services:/,/^        credentials:/c\\    services: \${{ fromJSON('{\"nats\":{\"image\":\"$image\"}}') }}" "$root/.github/workflows/ci.yaml"
   run_check tree "$root"
   check "the gate rejects services: as one expression naming $image" "$(is "$status" 1)"
-  check "and names them" "$(contains "$out" "ci.yaml:6: this job's services are .*not a mapping")"
+  check "and names them, an expression" \
+    "$(contains "$out" "ci.yaml:6: this job's services are .*, an expression, which the runner evaluates and this check cannot")"
 done
 root=$(fixture service-expression)
 sed -i "/^      nats:/,/^        credentials:/c\\      nats: \${{ fromJSON('{\"image\":\"docker.io/library/nats:2.10\"}') }}" "$root/.github/workflows/ci.yaml"
 run_check tree "$root"
 check "the gate rejects one service written as an expression" "$(is "$status" 1)"
-check "and names that service" "$(contains "$out" "ci.yaml:7: the nats service is .*not a mapping")"
+check "and names that service, an expression" \
+  "$(contains "$out" "ci.yaml:7: the nats service is .*, an expression, which the runner evaluates and this check cannot")"
 
 echo "case: a docker action can restore the pre-checkout pull"
 root=$(fixture docker-action)

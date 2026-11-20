@@ -1482,7 +1482,7 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-ci-images.test.sh'
               - '.github/scripts/check-ci-images.sh'
-              # :90-91 symlink in the path model its sweep walks the tree with and the grammar
+              # :108-109 symlink in the path model its sweep walks the tree with and the grammar
               # it reads a reference with.
               - '.github/scripts/workflow_paths.py'
               - '.github/scripts/ci_images.py'

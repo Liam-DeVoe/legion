@@ -97,10 +97,16 @@
 # 44661259584 showed. A later runner that logs in with a username alone brings the login back,
 # and its job log shows `docker login` before checkout again. The form gives no access to a
 # private image. A job's `services:`, one of its services or its `container:` that is not a
-# mapping written in the workflow (an expression, or a bare image) is refused: this check cannot
-# read its image or its credentials, so neither this rule nor rules 4 to 6 could hold it. A
+# mapping written in the workflow is refused by name, so neither this rule nor rules 4 to 6 passes
+# it unread: an expression, because the runner evaluates it and this check cannot, so this check
+# cannot read the image the runner pulls or its credentials; a bare image, because it cannot set
+# `credentials:`; any other value, because it names no image this check can read. A
 # `uses: docker://` action is refused: it can add the same pre-checkout pull without a
-# credentials field.
+# credentials field. A job that calls another repository's workflow
+# (`jobs.<id>.uses: <owner>/<repo>/.github/workflows/<file>@<ref>`) runs the services and
+# containers of a file this check does not read; .github/scripts/check-image-trigger-paths.sh,
+# a step of the same lint job, refuses by name every job-level `uses:` that is not a
+# `./.github/workflows/` call, and this rule relies on that refusal.
 #
 # IN PACKAGE MODE:
 #
@@ -1189,18 +1195,27 @@ def scan_source(path: Path, lines: list[str]) -> None:
                 note(path, number, value, "this string")
 
 
-def not_a_mapping(path: Path, line: int, what: str, value: object) -> None:
+def not_a_mapping(path: Path, line: int, what: str, value: object, image_slot: bool) -> None:
     """A job's `container:`, its `services:` or one of its services that is not a mapping written
-    in the workflow: an expression, which the runner evaluates and this check cannot, or a bare
-    image, which has no `credentials:` to set. The runner pulls each such image before checkout,
-    and logs in to ghcr.io with the job's token for one with no credentials, so this is refused by
-    name rather than passed unread: rules 4 to 6 and the credentials rule read only the images of
-    a mapping."""
+    in the workflow. The runner pulls each image of it before checkout, and logs in to ghcr.io
+    with the job's token for one with no credentials, so it is refused by name rather than passed
+    unread: rules 4 to 6 and the credentials rule read only the images of a mapping. The message
+    gives the reason true for its shape: an expression is a value the runner evaluates and this
+    check cannot; a bare image, in a slot that takes one (`image_slot`: the container, or one
+    service), is a value that cannot set `credentials:`; anything else names no image at all."""
+    if isinstance(value, str) and "${{" in value:
+        reason = (
+            "an expression, which the runner evaluates and this check cannot, so this check "
+            "cannot read the image the runner pulls before checkout or its credentials"
+        )
+    elif isinstance(value, str) and image_slot:
+        reason = "a bare image, which cannot set credentials:"
+    else:
+        reason = "neither a mapping nor an expression, so it names no image this check can read"
     problems.append(
-        f"{path}:{line}: {what} {one_line(value)}, not a mapping written in the workflow, so this "
-        f"check cannot read the image the runner pulls before checkout or its credentials. Write "
-        f"a mapping, with image: {REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds, and "
-        f"credentials: {ANONYMOUS_CREDENTIALS} for each image."
+        f"{path}:{line}: {what} {one_line(value)}, {reason}. Write a mapping, with image: "
+        f"{REGISTRY}@<digest>, naming a digest {CI_IMAGES} holds, and credentials: "
+        f"{ANONYMOUS_CREDENTIALS} for each image."
     )
 
 
@@ -1228,7 +1243,10 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
         if isinstance(container, dict):
             images.append((key_line(container, "image"), container.get("image"), how, container))
         elif container is not None:
-            not_a_mapping(path, key_line(holder, "container"), "this job's container is", container)
+            not_a_mapping(
+                path, key_line(holder, "container"), "this job's container is", container,
+                image_slot=True,
+            )
         services = holder.get("services")
         if isinstance(services, dict):
             for name, service in services.items():
@@ -1236,9 +1254,15 @@ def scan_workflow(path: Path, lines: list[str]) -> None:
                 if isinstance(service, dict):
                     images.append((key_line(service, "image"), service.get("image"), how, service))
                 else:
-                    not_a_mapping(path, key_line(services, name), f"the {name} service is", service)
+                    not_a_mapping(
+                        path, key_line(services, name), f"the {name} service is", service,
+                        image_slot=True,
+                    )
         elif services is not None:
-            not_a_mapping(path, key_line(holder, "services"), "this job's services are", services)
+            not_a_mapping(
+                path, key_line(holder, "services"), "this job's services are", services,
+                image_slot=False,
+            )
         for line, image, how, definition in images:
             if not isinstance(image, str) or "${{" in image:
                 problems.append(
