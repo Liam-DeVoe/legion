@@ -140,6 +140,7 @@ import {
   newSeed,
 } from "./judge";
 import { Host, LOAD_MODEL, LOAD_THINKING, LoadRefused, LoadStopped, runLoad } from "./load";
+import { procPeakRssBytes, startPeakRssSampling } from "./memory";
 import {
   ATTACK_PLANTED_LINE,
   type Control,
@@ -199,39 +200,10 @@ export interface CliIo {
   peakRssBytes(): number;
 }
 
-/** The largest `VmRSS` read so far, for a kernel whose `/proc/self/status` gives no `VmHWM`. */
-let sampledPeakBytes = 0;
-/** How often the resident memory is read where the kernel keeps no peak of its own. */
-const RSS_SAMPLE_MS = 1_000;
-
-/** A field of `/proc/self/status` counted in kB, in bytes, or undefined when it holds none. */
-function statusBytes(status: string, name: "VmHWM" | "VmRSS"): number | undefined {
-  const kib = new RegExp(`^${name}:\\s+(\\d+) kB$`, "m").exec(status)?.[1];
-  return kib === undefined ? undefined : Number(kib) * 1024;
-}
-
-/** The peak resident memory of this process, in bytes: `VmHWM` of `/proc/self/status`, or, on a
- *  kernel that keeps none (gVisor gives `VmRSS` only), the largest `VmRSS` read so far, which
- *  `processIo` reads every RSS_SAMPLE_MS. Throws where the file holds neither. */
-export function procPeakRssBytes(): number {
-  const status = readFileSync("/proc/self/status", "utf8");
-  const peak = statusBytes(status, "VmHWM");
-  if (peak !== undefined) return peak;
-  const resident = statusBytes(status, "VmRSS");
-  if (resident === undefined) throw new Error("/proc/self/status holds neither VmHWM nor VmRSS");
-  sampledPeakBytes = Math.max(sampledPeakBytes, resident);
-  return sampledPeakBytes;
-}
-
 /** The io of a real run. Where the kernel keeps no `VmHWM`, the resident memory is read every
- *  RSS_SAMPLE_MS from now on, so that the peak misses little between the ends of cases. */
+ *  second from now on (memory.ts), so that the peak misses little between the ends of cases. */
 export function processIo(): CliIo {
-  const status = existsSync("/proc/self/status")
-    ? readFileSync("/proc/self/status", "utf8")
-    : undefined;
-  if (status !== undefined && statusBytes(status, "VmHWM") === undefined) {
-    setInterval(procPeakRssBytes, RSS_SAMPLE_MS).unref();
-  }
+  startPeakRssSampling();
   return {
     out: (text) => process.stdout.write(text),
     err: (line) => process.stderr.write(`${line}\n`),
@@ -1727,7 +1699,8 @@ const USAGE = [
   "  load --config <skill-cuts.json> --key-file <file> --skill <dir> [--name <name>] --tasks <file> --host <omp|claude> --profile <file> --out <dir> ...",
   "  copies --config <skill-cuts.json> --at <ISO instant> --out <dir> [--only <owner/repo>]... [--max-search-calls <n>]",
   "  attribute --config <skill-cuts.json> --count <dir> --copies <dir> --spans <file> --out <dir> [--changed <cut id>=<file>]... [--models <dir>]",
-  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]",
+  "  build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>",
   "  build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>",
 ].join("\n");
 

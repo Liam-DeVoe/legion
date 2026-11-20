@@ -9,7 +9,11 @@
  *
  *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --key-file <file>
  *       --cut <id> --skill <name> --old <skill dir at the cut's base> --sessions <file>
- *       --seed <n> --copies <R4 out dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
+ *       --seed <n> --copies <R4 out dir> --count <count dir> --out <cases.jsonl> [--max <n>]
+ *       [--budget-usd <n>]
+ *   bun scripts/skill-cuts/build.ts build-cases --config <skill-cuts.json> --old <skill dir at
+ *       the cut's base> --copies <R4 out dir> --count <count dir> --reprofile <cases.jsonl>
+ *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
  *       --skill <dir> --store <db>... --out <tasks.jsonl>
  *
@@ -31,7 +35,10 @@
  *    `branch_summary` as a `branchSummary` message. A string `content` is made one text block.
  * 3. The first successful read of a file of the skill (`read` of a `skill://<skill>` URL, as
  *    cases.ts's `skillReadFile` reads one) is found, and the copy its `[Skill file: <path>]` line
- *    names must map, by the prefix table of `--copies`, to the cut repository's copy of the skill.
+ *    names is placed by attribute.ts's own rules (`placer`: the prefix table, then a checkout,
+ *    then the store's context), from `--count` and `--copies`, the two attribute.ts made the
+ *    sessions file from. The session is kept only when they place the read at a copy of the cut's
+ *    repository; one they place at another copy, or at none, is dropped with the rule named.
  * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's base
  *    text (`--old`) that a case may name: those of each file that the session's own successful
  *    reads of that file hold whole (the text after its `[Skill file: …]` line, each line trimmed,
@@ -144,17 +151,29 @@
  * gave the role.
  *
  * **The profile** (plan, "The case context"), from the files of R4's `copies --out` directory
- * (prefix-table.tsv, installers.tsv, manifests.tsv, repositories.tsv) and the session's own reads,
- * each part with its evidence in the case:
+ * (prefix-table.tsv, installers.tsv, manifests.tsv, repositories.tsv), the session's own reads and
+ * each unit's repositories at the session's start, each part with its evidence in the case:
  * - The units installed: each unit (`via`) of each prefix row that a `[Skill file: <path>]` of a
- *   read result before the step is under; and, for a Legion context, each Oh My Pi unit with a
- *   prefix row under `/opt/legion/` (a package the worker image carries) and each unit an
- *   `omp-plugins` manifest installs. A read path no row maps is listed as left out.
- * - Skills: each copy a unit ships, stages, links or installs (installers.tsv), by name, the first
- *   unit's copy winning. Plugins: an Oh My Pi package's directory (the `omp-package` manifest's), or
- *   a Claude Code plugin's directory (its skills' parent), named by its last part.
+ *   read result before the step is under; for a path no row maps, each unit of the prefix rows of
+ *   the copy attribute.ts's rules place the read at (a checkout, the store's context); and, for a
+ *   Legion context, each Oh My Pi unit with a prefix row under `/opt/legion/` (a package the
+ *   worker image carries) and each unit an `omp-plugins` manifest installs. A read no rule
+ *   places is listed as left out; a copy a read is placed at that no prefix row names a unit for
+ *   is installed alone.
  * - Commits: each repository at the last commit of its default branch (repositories.tsv, else
- *   GitHub's) at or before the session's start, read with `gh api` GET calls (io.gh).
+ *   GitHub's) at or before the session's start. Every GitHub read goes through `gh api`
+ *   (io.gh): GET calls, and GraphQL queries that read a repository's files in batches.
+ * - Skills: what each unit ships at that commit, not what installers.tsv lists, which is what it
+ *   ships at the later commit R4 read. Each repository of a unit (its manifest's, and those of
+ *   the copies installers.tsv lists for it) is read at its commit as copies.ts reads one: its
+ *   tree, each `SKILL.md` outside the configuration's `excludePaths`, and each manifest file by
+ *   its path; copies.ts's `resolveInstallers` then gives each unit's skills (the prepack script's
+ *   list for a package, a plugin's `skills/`, an installer's linked directory), by name, the first
+ *   unit's copy winning. So every skill of a profile is in its repository at the commit the
+ *   profile names; the evidence names each skill installers.tsv lists that the unit did not ship
+ *   then, and each it shipped then that installers.tsv does not list. Plugins: an Oh My Pi
+ *   package's directory (the `omp-package` manifest's, at that commit), or a Claude Code plugin's
+ *   directory (its skills' parent), named by its last part.
  * - Context files: for a Legion context, the `AGENTS.md` of the repository of the session's
  *   working directory (`/legion/workspaces/<owner>/<name>/…`) when it has one at that commit, and
  *   the project's instructions file named by its project file (a `legion-project` manifest of
@@ -167,6 +186,16 @@
  * the order, the sessions tried, each session's outcome, model and the reader's dollars on it, the
  * cases built, the drops by reason, the sessions tried and the drops of each model (`byModel`), the
  * bounds, the pulls, the gateway's spend, and why the build stopped, if it did.
+ *
+ * **build-cases --reprofile** builds the profile of each case of a case file again, from the
+ * case alone: its store, the `[Skill file: …]` lines of its messages, its start, and whether it
+ * carries a recorded prompt. It reads no session and calls no reader. The session's working
+ * directory is not in a case; it is taken as the workspace of the repository whose `AGENTS.md`
+ * the old profile holds, and a case whose old profile holds none keeps its old evidence of why.
+ * The new file's cases differ from the old ones only in `profile` (its skills, plugins and context
+ * files; a recorded prompt and its tools stay) and in the profile's part of `evidence`.
+ * `<out>.summary.json` lists, per case, the skills added and removed. A case whose profile cannot
+ * be built, or no longer installs its skill, is left out and named, and the command exits 1.
  *
  * **build-tasks** (plan, R6 "Load test"): the tasks reader reads the skill's name and description
  * (`--skill`'s SKILL.md frontmatter) with no messages and proposes search terms; tasks.sql runs
@@ -194,7 +223,7 @@ import {
   skillHeaderPath,
   stripSkillHeader,
 } from "../skill-scenarios/transcript";
-import { modelId, sessionModel } from "./attribute";
+import { modelId, type Placer, placer, readCount, readR4, sessionModel } from "./attribute";
 import {
   Case,
   loadCases,
@@ -206,7 +235,21 @@ import {
   textLines,
 } from "./cases";
 import { loadConfig, type SkillCutsConfig, storeNamed } from "./config";
-import { frontmatter, type Gh, parseTsv, prefixMatches, spawnGh } from "./copies";
+import {
+  CopyIndex,
+  frontmatter,
+  type Gh,
+  type Manifest,
+  manifestKind,
+  parseManifest,
+  parseTsv,
+  prefixMatches,
+  resolveInstallers,
+  type SkillCopy,
+  skillFields,
+  spawnGh,
+  type TreeEntry,
+} from "./copies";
 import { mtimeRange, PULL_PAGE, pullSql, sessionsSql, tasksSql } from "./countsql";
 import { BudgetSpent, createGateway, type Gateway, type Spent } from "./gateway";
 import {
@@ -269,7 +312,7 @@ export const DROP_REASONS = {
   "no-header": "the transcript has no session header with a start time",
   "no-read": "no read of a skill:// file of the skill succeeded",
   "not-cut-copy":
-    "the skill's first read is not of the cut repository's copy (by the prefix table)",
+    "attribute.ts's rules (the prefix table, a checkout, the store's context) do not place the skill's first read at the cut repository's copy, or the profile installs no copy of it",
   "no-role":
     "a Legion session's role is in none of the forms the builder reads (module comment, The role)",
   "bad-session-init":
@@ -628,6 +671,28 @@ function skillReads(messages: readonly SessionMessage[], skill: string): SkillRe
     });
   }
   return reads;
+}
+
+/** A successful read result whose first line is `[Skill file: <path>]`: its index in the
+ *  messages, that path, and the skill its call names (`skill://<skill>`), when it names one. */
+interface ShownRead {
+  readonly index: number;
+  readonly header: string;
+  readonly skill: string | undefined;
+}
+
+/** Each successful read result of `messages` that shows a skill file's path, any skill's. */
+function shownReads(messages: readonly SessionMessage[]): ShownRead[] {
+  const targets = readTargets(messages);
+  return messages.flatMap((message, index) => {
+    if (message.role !== "toolResult" || message.toolName !== "read" || message.isError === true) {
+      return [];
+    }
+    const header = skillHeaderPath(message.content?.[0]?.text ?? "");
+    if (header === undefined) return [];
+    const target = targets.get(message.toolCallId ?? "") ?? "";
+    return [{ index, header, skill: /^skill:\/\/([^/:?#]+)/.exec(target)?.[1] }];
+  });
 }
 
 /** The lines of each base file in `files` that a successful read of it in `reads` holds whole
@@ -1168,12 +1233,85 @@ function repoPath(shown: string): string {
   return shown === "." ? "" : shown;
 }
 
+/** The most GitHub reads of one repository's files in flight at once. */
+const GITHUB_JOBS = 6;
+/** The most blobs, and bytes of blobs, one GraphQL read asks for (copies.ts's bounds). */
+const BLOB_BATCH = 50;
+const BLOB_BATCH_BYTES = 2_000_000;
+
+// GitHub's answers, as copies.ts reads them: only the fields this file reads.
+const GitTree = z.looseObject({
+  tree: z.array(
+    z.looseObject({
+      path: z.string(),
+      mode: z.string(),
+      type: z.string(),
+      sha: z.string(),
+      size: z.number().optional(),
+    })
+  ),
+  truncated: z.boolean().optional(),
+});
+const GitBlob = z.looseObject({ content: z.string(), encoding: z.string() });
+const BlobBatch = z.looseObject({
+  data: z.looseObject({
+    repository: z
+      .record(
+        z.string(),
+        z
+          .looseObject({
+            isBinary: z.boolean().nullable(),
+            isTruncated: z.boolean(),
+            text: z.string().nullable(),
+          })
+          .nullable()
+      )
+      .nullable(),
+  }),
+});
+
+/** `text` as JSON, or undefined when it is none. */
+function jsonOf(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+/** `fn` of each of `items`, at most `limit` at once, in their order. */
+async function mapLimit<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (let index = next++; index < items.length; index = next++) {
+      results[index] = await fn(items[index] as T);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
+/** What a repository holds at a commit, as copies.ts reads one: its skill copies, its manifest
+ *  files parsed, and each file of those that could not be read or parsed, with why. */
+interface RepositoryAt {
+  readonly copies: readonly SkillCopy[];
+  readonly manifests: readonly Manifest[];
+  readonly faults: readonly { readonly file: string; readonly why: string }[];
+}
+
 /** The GitHub reads the profile makes, each made once. */
 class GithubReads {
   private readonly made = new Map<
     string,
     Promise<{ code: number; stdout: string; stderr: string }>
   >();
+  private readonly held = new Map<string, Promise<RepositoryAt>>();
+  private readonly blobs = new Map<string, Promise<string>>();
 
   constructor(
     private readonly gh: Gh,
@@ -1248,49 +1386,286 @@ class GithubReads {
     if (/\b404\b|Not Found/.test(result.stderr)) return undefined;
     return this.ok(args);
   }
+
+  /** Every entry of the tree of `repo` at `commit`. The answer is not kept (a large repository's
+   *  tree is megabytes); `at` keeps what it reads from it. Throws on a tree GitHub cuts short. */
+  private async tree(repo: string, commit: string): Promise<TreeEntry[]> {
+    const args = ["api", `repos/${repo}/git/trees/${commit}?recursive=1`];
+    const result = await this.gh(args);
+    if (result.code !== 0) {
+      const line = result.stderr.split("\n").find((each) => each.trim() !== "") ?? "";
+      throw new Error(`gh ${args.join(" ")} failed: ${line}`);
+    }
+    const tree = GitTree.safeParse(jsonOf(result.stdout));
+    if (!tree.success) throw new Error(`gh ${args.join(" ")} gave no git tree`);
+    if (tree.data.truncated === true) {
+      throw new Error(`GitHub cuts the tree of ${repo} at ${commit} short, so it is not read`);
+    }
+    return tree.data.tree;
+  }
+
+  /** The text of the blob `sha` of `repo`, read once: a blob's id is its content, so a file that
+   *  two commits share is read for the first. */
+  private blob(repo: string, sha: string): Promise<string> {
+    let text = this.blobs.get(sha);
+    if (text === undefined) {
+      text = this.ok(["api", `repos/${repo}/git/blobs/${sha}`]).then((answer) => {
+        const blob = GitBlob.safeParse(jsonOf(answer));
+        if (!blob.success || blob.data.encoding !== "base64") {
+          throw new Error(`gh api repos/${repo}/git/blobs/${sha} gave no base64 blob`);
+        }
+        return Buffer.from(blob.data.content, "base64").toString("utf8");
+      });
+      this.blobs.set(sha, text);
+    }
+    return text;
+  }
+
+  /** Reads the blobs `entries` of `repo` that are not read yet, in GraphQL batches of up to
+   *  BLOB_BATCH blobs and BLOB_BATCH_BYTES bytes, one call a batch where each blob alone would
+   *  take one (copies.ts's `prefetch`, whose query this is: the owner and name go in as the
+   *  fields `owner` and `name`, by which the pod's gh picks the owner's token). A blob a batch
+   *  does not give whole (binary, cut short, missing, or in a batch that fails) is left to
+   *  `blob`, which reads it alone. */
+  private async prefetch(repo: string, entries: readonly TreeEntry[]): Promise<void> {
+    const [owner = "", name = ""] = repo.split("/");
+    const wanted = new Map<string, TreeEntry>();
+    for (const entry of entries) {
+      if (!this.blobs.has(entry.sha) && /^[0-9a-f]{40}$/.test(entry.sha)) {
+        wanted.set(entry.sha, entry);
+      }
+    }
+    const batches: TreeEntry[][] = [];
+    let bytes = 0;
+    for (const entry of wanted.values()) {
+      const last = batches.at(-1);
+      if (
+        last === undefined ||
+        last.length >= BLOB_BATCH ||
+        bytes + (entry.size ?? 0) > BLOB_BATCH_BYTES
+      ) {
+        batches.push([entry]);
+        bytes = entry.size ?? 0;
+      } else {
+        last.push(entry);
+        bytes += entry.size ?? 0;
+      }
+    }
+    for (const batch of batches) {
+      const fields = batch
+        .map(
+          (entry, index) =>
+            `b${index}: object(oid: "${entry.sha}") { ... on Blob { isBinary isTruncated text } }`
+        )
+        .join(" ");
+      const query = `query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ${fields} } }`;
+      const result = await this.gh([
+        "api",
+        "graphql",
+        "-f",
+        `owner=${owner}`,
+        "-f",
+        `name=${name}`,
+        "-f",
+        `query=${query}`,
+      ]);
+      const parsed = BlobBatch.safeParse(result.code === 0 ? jsonOf(result.stdout) : undefined);
+      if (!parsed.success) continue;
+      for (const [index, entry] of batch.entries()) {
+        const blob = parsed.data.data.repository?.[`b${index}`];
+        if (blob?.isBinary === false && !blob.isTruncated && blob.text !== null) {
+          this.blobs.set(entry.sha, Promise.resolve(blob.text));
+        }
+      }
+    }
+  }
+
+  /** What `repo` holds at `commit`, read as copies.ts's `listCopies` reads a repository (its
+   *  steps 2 and 4): each `SKILL.md` outside `excludePaths` as a skill copy, and each manifest
+   *  file by its path (`manifestKind`), parsed (`parseManifest`). Read once for each commit. */
+  at(
+    repo: string,
+    commit: string,
+    excludePaths: SkillCutsConfig["excludePaths"]
+  ): Promise<RepositoryAt> {
+    const key = `${repo}\0${commit}`;
+    let held = this.held.get(key);
+    if (held === undefined) {
+      held = this.readAt(repo, commit, excludePaths);
+      this.held.set(key, held);
+    }
+    return held;
+  }
+
+  private async readAt(
+    repo: string,
+    commit: string,
+    excludePaths: SkillCutsConfig["excludePaths"]
+  ): Promise<RepositoryAt> {
+    const entries = await this.tree(repo, commit);
+    const faults: { file: string; why: string }[] = [];
+    const dirOf = (file: string) => {
+      const dir = path.posix.dirname(file);
+      return dir === "." ? "" : dir;
+    };
+    const skillEntries = entries.filter(
+      (entry) =>
+        entry.type === "blob" &&
+        path.posix.basename(entry.path) === "SKILL.md" &&
+        !excludePaths.some(
+          (exclude) =>
+            exclude.repo.toLowerCase() === repo.toLowerCase() &&
+            entry.path.startsWith(exclude.prefix)
+        )
+    );
+    const withSkill = entries.some((entry) => path.posix.basename(entry.path) === "SKILL.md");
+    const insideSkill = (file: string) =>
+      skillEntries.some((entry) => {
+        const dir = dirOf(entry.path);
+        return dir === "" ? file === entry.path : file.startsWith(`${dir}/`);
+      });
+    const candidates = entries.flatMap((entry) => {
+      const kind = manifestKind(entry);
+      if (kind === undefined || (kind === "omp-package" && !withSkill)) return [];
+      if (kind !== "skill-link" && insideSkill(entry.path)) return [];
+      return [{ entry, kind }];
+    });
+    await this.prefetch(repo, [...skillEntries, ...candidates.map(({ entry }) => entry)]);
+    const copies = await mapLimit(skillEntries, GITHUB_JOBS, async (entry): Promise<SkillCopy> => {
+      const dir = dirOf(entry.path);
+      const base = {
+        repository: repo,
+        path: dir,
+        file: entry.path,
+        blob: entry.sha,
+        fork: false,
+        archived: false,
+        parent: "",
+      };
+      try {
+        return { ...base, ...skillFields(dir, repo, await this.blob(repo, entry.sha)) };
+      } catch (error) {
+        const fault = `SKILL.md read failed: ${messageFor(error)}`;
+        faults.push({ file: entry.path, why: fault });
+        return {
+          ...base,
+          name: dir === "" ? (repo.split("/")[1] ?? "") : path.posix.basename(dir),
+          nameFrom: "directory",
+          description: "",
+          descriptionBytes: 0,
+          fault,
+        };
+      }
+    });
+    copies.sort((a, b) => a.path.localeCompare(b.path));
+    const manifests = await mapLimit(
+      candidates,
+      GITHUB_JOBS,
+      async ({ entry, kind }): Promise<Manifest> => {
+        const base = { repository: repo, path: entry.path, kind, source: "tree" as const, rows: 0 };
+        try {
+          return {
+            ...base,
+            ...parseManifest(kind, entry.path, await this.blob(repo, entry.sha)),
+            error: "",
+          };
+        } catch (error) {
+          faults.push({ file: entry.path, why: `${kind}: ${messageFor(error)}` });
+          return { ...base, facts: [], ofKind: true, says: "", error: messageFor(error) };
+        }
+      }
+    );
+    return { copies, manifests, faults };
+  }
 }
 
-/** What the profile of one case is built from: its context (the store's, for a subagent) and
- *  project, each successful read result of its messages whose first line is `[Skill file:
- *  <path>]` (any skill's), the session's start, its working directory, and whether its session
- *  recorded its own system prompt (a subagent's), which holds its context files. */
+/** What the profile of one case is built from: its store, its context (the store's, for a
+ *  subagent) and project, each successful read result of its messages whose first line is
+ *  `[Skill file: <path>]` (any skill's), the session's start, its working directory, and whether
+ *  its session recorded its own system prompt (a subagent's), which holds its context files. */
 interface ProfileInput {
+  readonly store: string;
   readonly context: string;
   readonly project: string | undefined;
-  readonly reads: readonly { readonly index: number; readonly header: string }[];
+  readonly reads: readonly ShownRead[];
   readonly sessionStart: string;
   readonly cwd: string | undefined;
   readonly recordedPrompt: boolean;
 }
 
+/** What every profile of one build reads. */
+type ProfileRun = Pick<CaseRun, "config" | "copies" | "github" | "placer">;
+
+/** The installers.tsv actions by which a unit's own manifest ships a skill. */
+const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
+  ships: true,
+  stages: true,
+  links: true,
+  installs: true,
+};
+
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
 async function caseProfile(
-  copies: Copies,
-  github: GithubReads,
+  run: ProfileRun,
   input: ProfileInput
 ): Promise<{ profile: Profile; evidence: Evidence[] }> {
+  const { copies, github } = run;
   const evidence: Evidence[] = [];
+  const commits = new Map<string, string>();
+  const commitOf = async (repo: string): Promise<string> => {
+    const known = commits.get(repo);
+    if (known !== undefined) return known;
+    const { branch, from } = await github.branch(repo);
+    const sha = await github.commitAt(repo, branch, input.sessionStart);
+    commits.set(repo, sha);
+    evidence.push({
+      item: `commit ${sha} of ${repo}`,
+      source: `the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
+    });
+    return sha;
+  };
+
   // Units by their `via` text: one unit id (`user-skills:omp`) can come from many manifests.
   const units = new Map<string, { via: Via; why: string }>();
   const viaKey = (via: Via) => `${via.unit} (${via.repository}:${via.manifest})`;
+  // A copy a read is placed at that no prefix row names a unit for: it is installed alone.
+  const alone = new Map<string, { repo: string; path: string; why: string }>();
   const shown = new Set<string>();
   for (const read of input.reads) {
     if (shown.has(read.header)) continue;
     shown.add(read.header);
-    const rows = copies.prefixes.filter((row) => prefixMatches(row.prefix ?? "", read.header));
+    const reading = `message ${read.index} reads [Skill file: ${read.header}]`;
+    let rows = copies.prefixes.filter((row) => prefixMatches(row.prefix ?? "", read.header));
+    let under = (row: Record<string, string>) =>
+      `${reading}, under the prefix-table.tsv row ${row.prefix}`;
     if (rows.length === 0) {
-      evidence.push({
-        item: `left out: the copy read at ${read.header}`,
-        source: `message ${read.index}: no row of prefix-table.tsv maps that path`,
-      });
+      // No prefix row maps the path, so attribute.ts's rules place it, as they placed the read in
+      // the count: its units are those whose prefix rows name the copy it is placed at.
+      const placed =
+        read.skill === undefined
+          ? undefined
+          : run.placer.place(input.store, read.header, read.skill);
+      if (placed?.copy === undefined) {
+        evidence.push({
+          item: `left out: the copy read at ${read.header}`,
+          source: `message ${read.index}: no row of prefix-table.tsv maps that path${placed === undefined ? "" : `, and attribute.ts places it at no copy (${placed.outcome})`}`,
+        });
+        continue;
+      }
+      const [repository = "", dir = ""] = placed.copy.split("\t");
+      const placing = `${reading}, which attribute.ts's ${placed.rule} rule places at ${repository} ${dir} (${placed.outcome})`;
+      rows = copies.prefixes.filter((row) => row.repository === repository && row.path === dir);
+      if (rows.length === 0) {
+        alone.set(placed.copy, { repo: repository, path: repoPath(dir), why: placing });
+        continue;
+      }
+      under = (row) =>
+        `${placing}; the prefix-table.tsv row ${row.prefix} names a unit that ships that copy`;
     }
     for (const row of rows) {
       for (const via of vias(row.via ?? "")) {
         if (units.has(viaKey(via))) continue;
-        units.set(viaKey(via), {
-          via,
-          why: `message ${read.index} reads [Skill file: ${read.header}], under the prefix-table.tsv row ${row.prefix}`,
-        });
+        units.set(viaKey(via), { via, why: under(row) });
       }
     }
   }
@@ -1332,60 +1707,117 @@ async function caseProfile(
     }
   }
 
-  // The skills and plugins of each unit; each repository's commit is read once.
-  const skills = new Map<string, Omit<ProfileSkill, "commit">>();
-  const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
-  const memberActions = new Set(["ships", "stages", "links", "installs"]);
-  for (const [key, { via, why }] of units) {
-    const id = via.unit;
-    const members = copies.installers.filter(
+  // What each unit ships at the session's start. installers.tsv says what it ships at the commit
+  // R4 read, which is later; so each repository of a unit is read at its commit of the session's
+  // start (its tree, its SKILL.md files and its manifests) and resolved by copies.ts's own rules
+  // (`resolveInstallers`). A skill the unit did not ship yet is left out, one it shipped then and
+  // not since is installed, and every skill of the profile is in its repository at its commit.
+  const listed = (via: Via) =>
+    copies.installers.filter(
       (row) =>
-        row.unit === id &&
+        row.unit === via.unit &&
         row.manifest_repository === via.repository &&
         row.manifest_path === via.manifest &&
         (row.copy_path ?? "") !== "" &&
-        memberActions.has(row.action ?? "")
+        Object.hasOwn(MEMBER_ACTIONS, row.action ?? "")
     );
-    evidence.push({ item: `unit ${key}`, source: why });
-    for (const row of members) {
-      const name = row.skill ?? "";
-      const copy = { repo: row.copy_repository ?? "", path: repoPath(row.copy_path ?? ""), name };
-      const known = skills.get(name);
-      if (known !== undefined) {
-        if (known.repo !== copy.repo || known.path !== copy.path) {
-          evidence.push({
-            item: `left out: skill ${name} from ${copy.repo} ${copy.path}`,
-            source: `installers.tsv: ${id} ${row.action} it too; the copy of ${known.repo} ${known.path} came first`,
-          });
-        }
-        continue;
-      }
-      skills.set(name, copy);
+  const repositories = new Set<string>();
+  for (const { via } of units.values()) {
+    repositories.add(via.repository);
+    for (const row of listed(via)) repositories.add(row.copy_repository ?? "");
+  }
+  for (const copy of alone.values()) repositories.add(copy.repo);
+  const held = new Map<string, RepositoryAt>();
+  for (const repo of [...repositories].sort()) {
+    const commit = await commitOf(repo);
+    const at = await github.at(repo, commit, run.config.excludePaths);
+    held.set(repo, at);
+    evidence.push({
+      item: `the skills and manifests of ${repo} at ${commit}`,
+      source: `gh api repos/${repo}/git/trees/${commit}?recursive=1: its ${at.copies.length} SKILL.md files and ${at.manifests.length} manifest files, read at that commit and resolved by copies.ts's rules (resolveInstallers), give what each unit ships then`,
+    });
+    for (const fault of at.faults) {
+      evidence.push({ item: `left out: ${repo} ${fault.file} at ${commit}`, source: fault.why });
+    }
+  }
+  const resolved = resolveInstallers(
+    [...held.values()].flatMap((at) => at.manifests),
+    new CopyIndex([...held.values()].flatMap((at) => at.copies))
+  );
+
+  const skills = new Map<string, Omit<ProfileSkill, "commit">>();
+  const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
+  /** Adds `copy` to the profile's skills, or says why not: a copy of its name came first. */
+  const install = (copy: Omit<ProfileSkill, "commit">, how: string): boolean => {
+    const known = skills.get(copy.name);
+    if (known === undefined) {
+      skills.set(copy.name, copy);
+      return true;
+    }
+    if (known.repo !== copy.repo || known.path !== copy.path) {
       evidence.push({
-        item: `skill ${name} (${copy.repo} ${copy.path})`,
-        source: `installers.tsv: ${id} ${row.action} it (${row.manifest_repository}:${row.manifest_path})`,
+        item: `left out: skill ${copy.name} from ${copy.repo} ${copy.path}`,
+        source: `${how} too; the copy of ${known.repo} ${known.path} came first`,
+      });
+    }
+    return false;
+  };
+  for (const [key, { via, why }] of units) {
+    const id = via.unit;
+    const start = `${via.repository} at ${commits.get(via.repository)}`;
+    const members = resolved.rows.filter(
+      (row) =>
+        row.unit === id &&
+        row.manifestRepository === via.repository &&
+        row.manifestPath === via.manifest &&
+        row.copyPath !== undefined &&
+        Object.hasOwn(MEMBER_ACTIONS, row.action)
+    );
+    const later = listed(via);
+    evidence.push({ item: `unit ${key}`, source: why });
+    if (members.length === 0) {
+      evidence.push({
+        item: `left out: the skills of ${key}`,
+        source: `${start}: by copies.ts's rules ${via.manifest} ships no skill there`,
+      });
+    }
+    for (const row of members) {
+      const copy = { repo: row.copyRepository, path: row.copyPath ?? "", name: row.skill };
+      const how = `${id} ${row.action} it (${row.manifestRepository}:${row.manifestPath})`;
+      if (!install(copy, how)) continue;
+      const inR4 = later.some(
+        (each) => each.copy_repository === copy.repo && repoPath(each.copy_path ?? "") === copy.path
+      );
+      evidence.push({
+        item: `skill ${copy.name} (${copy.repo} ${copy.path})`,
+        source: `${copy.repo} at ${commits.get(copy.repo)}: ${how}${inR4 ? "" : "; installers.tsv, which R4 read later, does not list it"}`,
+      });
+    }
+    for (const row of later) {
+      const copy = { repo: row.copy_repository ?? "", path: repoPath(row.copy_path ?? "") };
+      const shipped = members.some(
+        (member) => member.copyRepository === copy.repo && member.copyPath === copy.path
+      );
+      if (shipped) continue;
+      evidence.push({
+        item: `left out: skill ${row.skill} (${copy.repo} ${copy.path})`,
+        source: `installers.tsv, which R4 read later, lists it for ${id}; ${id} does not ship it at the session's start (${start})`,
       });
     }
     const pluginOf = (): { repo: string; path: string; name: string } | undefined => {
       if (id.startsWith("package:")) {
-        const manifest = copies.installers.find(
-          (row) => row.unit === id && row.kind === "omp-package"
-        );
+        const manifest = resolved.rows.find((row) => row.unit === id && row.kind === "omp-package");
         if (manifest === undefined) return undefined;
-        const dir = path.posix.dirname(manifest.manifest_path ?? "");
-        return {
-          repo: manifest.manifest_repository ?? "",
-          path: dir,
-          name: path.posix.basename(dir),
-        };
+        const dir = path.posix.dirname(manifest.manifestPath);
+        return { repo: manifest.manifestRepository, path: dir, name: path.posix.basename(dir) };
       }
       if (id.startsWith("plugin:")) {
         const roots = new Set(
           members.map((row) => {
-            const copyPath = repoPath(row.copy_path ?? "");
+            const copyPath = row.copyPath ?? "";
             const tail = `/skills/${path.posix.basename(copyPath)}`;
             return copyPath.endsWith(tail)
-              ? `${row.copy_repository}\0${copyPath.slice(0, -tail.length)}`
+              ? `${row.copyRepository}\0${copyPath.slice(0, -tail.length)}`
               : "";
           })
         );
@@ -1401,13 +1833,29 @@ async function caseProfile(
       if (!id.startsWith("user-skills:")) {
         evidence.push({
           item: `left out: a plugin directory of ${id}`,
-          source:
-            "installers.tsv names no Oh My Pi package manifest of it, and its skills share no plugin directory",
+          source: `${start}: no Oh My Pi package manifest ships it there, and its skills share no plugin directory`,
         });
       }
     } else if (!plugins.has(plugin.name)) {
       plugins.set(plugin.name, { ...plugin, why: `the directory of ${id}` });
     }
+  }
+  for (const copy of alone.values()) {
+    const start = `${copy.repo} at ${commits.get(copy.repo)}`;
+    const found = held.get(copy.repo)?.copies.find((each) => each.path === copy.path);
+    if (found === undefined) {
+      evidence.push({
+        item: `left out: the copy ${copy.repo} ${copy.path}`,
+        source: `${copy.why}; ${start} holds no SKILL.md there`,
+      });
+      continue;
+    }
+    const how = `${copy.why}; no row of prefix-table.tsv names a unit that ships that copy, so the profile installs it alone`;
+    if (!install({ repo: copy.repo, path: copy.path, name: found.name }, how)) continue;
+    evidence.push({
+      item: `skill ${found.name} (${copy.repo} ${copy.path})`,
+      source: `${start}: ${how}`,
+    });
   }
 
   // Context files: the session repository's AGENTS.md and the project's instructions file, which
@@ -1424,7 +1872,7 @@ async function caseProfile(
     const workspace = LEGION_WORKSPACE.exec(input.cwd ?? "");
     if (workspace === null) {
       evidence.push({
-        item: "left out: the session repository's AGENTS.md",
+        item: NO_WORKSPACE,
         source: `the session's working directory ${input.cwd ?? "(none)"} is no Legion workspace /legion/workspaces/<owner>/<name>/`,
       });
     } else {
@@ -1448,20 +1896,6 @@ async function caseProfile(
       source: "a devbox session's working directory names no repository",
     });
   }
-
-  const commits = new Map<string, string>();
-  const commitOf = async (repo: string): Promise<string> => {
-    const known = commits.get(repo);
-    if (known !== undefined) return known;
-    const { branch, from } = await github.branch(repo);
-    const sha = await github.commitAt(repo, branch, input.sessionStart);
-    commits.set(repo, sha);
-    evidence.push({
-      item: `commit ${sha} of ${repo}`,
-      source: `the last commit of ${branch} (from ${from}) at or before the session's start ${input.sessionStart}: gh api repos/${repo}/commits?sha=${branch}&until=${input.sessionStart}`,
-    });
-    return sha;
-  };
 
   const profileSkills: ProfileSkill[] = [];
   for (const skill of [...skills.values()].sort((a, b) =>
@@ -1528,7 +1962,7 @@ async function caseProfile(
 // build-cases
 
 const BUILD_CASES_USAGE =
-  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]";
+  "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
   "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>";
 
@@ -1660,6 +2094,8 @@ interface CaseRun {
   readonly copies: Copies;
   readonly github: GithubReads;
   readonly gateway: Gateway;
+  /** attribute.ts's placing of reads, for the build's `--count` and `--copies`. */
+  readonly placer: Placer;
   /** The ids (attribute.ts's `modelId`) of the configuration's `servedModels`. */
   readonly servedIds: ReadonlySet<string>;
 }
@@ -1723,15 +2159,19 @@ async function caseOf(
   }
   const firstAt = t.items[first.index]?.at ?? 0;
   record.model = lastBefore(t.branch, firstAt, modelChange);
-  const copyRows = run.copies.prefixes.filter(
-    (row) => row.name === run.skill && prefixMatches(row.prefix ?? "", first.header ?? "")
-  );
-  if (!copyRows.some((row) => row.repository === run.cut.repo)) {
+  // The copy the session read, placed by attribute.ts's own rules from the same count and R4
+  // output as the sessions file, so the builder keeps what attribute.ts counted for the cut's
+  // copy: a read in a checkout or one the store's context places, as well as one the prefix table
+  // maps.
+  const placed = run.placer.place(store.name, first.header ?? "", run.skill);
+  const [placedRepository = "", placedPath = ""] = (placed.copy ?? "").split("\t");
+  if (placed.copy === undefined) {
+    return drop("not-cut-copy", `no rule places ${first.header} at a copy: ${placed.outcome}`);
+  }
+  if (placedRepository !== run.cut.repo) {
     return drop(
       "not-cut-copy",
-      copyRows.length === 0
-        ? `no prefix row of ${run.skill} maps ${first.header}`
-        : `${first.header} maps to ${copyRows.map((row) => `${row.repository} ${row.path}`).join(", ")}`
+      `the ${placed.rule} rule places ${first.header} at ${placedRepository} ${placedPath}${placed.outcome === undefined ? "" : ` (${placed.outcome})`}`
     );
   }
 
@@ -1969,20 +2409,11 @@ async function caseOf(
   // The profile.
   let profiled: { profile: Profile; evidence: Evidence[] };
   try {
-    profiled = await caseProfile(run.copies, run.github, {
+    profiled = await caseProfile(run, {
+      store: store.name,
       context: store.context,
       project,
-      reads: messages.flatMap((message, index) => {
-        if (
-          message.role !== "toolResult" ||
-          message.toolName !== "read" ||
-          message.isError === true
-        ) {
-          return [];
-        }
-        const shownPath = skillHeaderPath(message.content?.[0]?.text ?? "");
-        return shownPath === undefined ? [] : [{ index, header: shownPath }];
-      }),
+      reads: shownReads(messages),
       sessionStart,
       cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
       recordedPrompt: init !== undefined,
@@ -1995,7 +2426,7 @@ async function caseOf(
   ) {
     return drop(
       "not-cut-copy",
-      `the units the session's context installs ship no ${run.skill} of ${run.cut.repo}`
+      `the profile installs no ${run.skill} of ${run.cut.repo} at the session's start`
     );
   }
 
@@ -2128,7 +2559,7 @@ async function caseOf(
       ...evidence,
       ...profiled.evidence,
       {
-        item: `audit of the real step: ${audit.verdict}`,
+        item: `${AUDIT_EVIDENCE}${audit.verdict}`,
         source: `the audit reader, given the line, the messages before the step as the judge reads them and the real step, and no criterion: ${audit.reason}`,
       },
     ],
@@ -2158,6 +2589,183 @@ function byModel(sessions: readonly SessionRecord[]): Record<string, ModelCounts
   return counts;
 }
 
+/** attribute.ts's placing of reads for the count under `countDir` and R4's output under
+ *  `copiesDir`, the two attribute.ts made the sessions files from. Throws a refusal when either
+ *  cannot be read as attribute.ts reads it, or the count holds no query of a configured store. */
+function readPlacer(config: SkillCutsConfig, countDir: string, copiesDir: string): Placer {
+  let placing: Placer;
+  let outputs: number;
+  try {
+    const count = readCount(
+      countDir,
+      config.stores.map((store) => store.name)
+    );
+    outputs = count.outputs.length;
+    placing = placer(count.outputs, readR4(copiesDir));
+  } catch (error) {
+    throw new Refused(
+      `--count ${countDir} and --copies ${copiesDir} do not place reads as attribute.ts does: ${messageFor(error)}`
+    );
+  }
+  if (outputs === 0) {
+    throw new Refused(`--count ${countDir} holds no query output of a store of the configuration`);
+  }
+  return placing;
+}
+
+/** The evidence a case's context gives (caseOf), which comes before its profile's. */
+const CONTEXT_EVIDENCE = /^(subagent |role |no role$|the recorded system prompt and tools$)/;
+/** The start of the item of a case's audit evidence, which comes after its profile's. */
+const AUDIT_EVIDENCE = "audit of the real step: ";
+/** The item of the profile's evidence for a Legion session whose working directory is no
+ *  workspace, so its repository's AGENTS.md is left out. */
+const NO_WORKSPACE = "left out: the session repository's AGENTS.md";
+
+/**
+ * `build-cases --reprofile`: the cases of a case file, each with its profile built again from the
+ * case itself, with no session read and no reader call. A case holds what the profile is built
+ * from but the session's working directory: its store, its messages (their `[Skill file: …]`
+ * lines), its start and whether it carries a recorded prompt. The working directory is taken as
+ * the workspace of the repository whose AGENTS.md the old profile holds; a case whose old profile
+ * holds none keeps the old evidence of why. Only `profile` (its skills, plugins and context files)
+ * and the profile's part of `evidence` change. A case whose profile cannot be built, or no longer
+ * installs its skill, is left out and named, and the command fails.
+ */
+async function reprofileCases(
+  values: Readonly<Record<string, string | undefined>>,
+  io: BuildIo
+): Promise<number> {
+  const given = required(
+    values,
+    ["config", "old", "copies", "count", "reprofile", "out"],
+    BUILD_CASES_USAGE
+  );
+  for (const flag of ["key-file", "cut", "skill", "sessions", "seed", "max", "budget-usd"]) {
+    if (values[flag] !== undefined) {
+      throw new Refused(
+        `--reprofile reads no session and calls no reader, so it takes no --${flag}`
+      );
+    }
+  }
+  if (path.resolve(given.reprofile) === path.resolve(given.out)) {
+    throw new Refused(`--out ${given.out} is the file --reprofile reads; give a new file`);
+  }
+  const config = configFrom(given.config);
+  mustBeFile(path.join(given.old, "SKILL.md"), "--old's SKILL.md");
+  mustBeFile(given.reprofile, "--reprofile");
+  let cases: Case[];
+  try {
+    cases = loadCases(given.reprofile, given.old);
+  } catch (error) {
+    throw new Refused(`--reprofile ${given.reprofile}: ${messageFor(error)}`);
+  }
+  const copies = readCopies(given.copies);
+  const run: ProfileRun = {
+    config,
+    copies,
+    github: new GithubReads(io.gh, copies.branches),
+    placer: readPlacer(config, given.count, given.copies),
+  };
+  const rebuilt: Case[] = [];
+  const records: Record<string, unknown>[] = [];
+  const leftOut: { id: string; why: string }[] = [];
+  for (const c of cases) {
+    const leave = (why: string) => {
+      leftOut.push({ id: c.id, why });
+      io.out(`build-cases: ${c.id}: left out: ${why}\n`);
+    };
+    const store = config.stores.find((each) => each.name === c.source.store);
+    const cut = config.cuts.find((each) => each.id === c.cut);
+    if (store === undefined || cut === undefined) {
+      leave(
+        store === undefined
+          ? `its store ${c.source.store} is no store of the configuration`
+          : `its cut ${c.cut} is no cut of the configuration`
+      );
+      continue;
+    }
+    const agents = c.profile.contextFiles.find((file) => file.path === "AGENTS.md");
+    let profiled: { profile: Profile; evidence: Evidence[] };
+    try {
+      profiled = await caseProfile(run, {
+        store: store.name,
+        context: store.context,
+        project: store.context.startsWith("legion:")
+          ? store.context.slice("legion:".length)
+          : undefined,
+        reads: shownReads(c.messages),
+        sessionStart: c.sessionStart,
+        cwd: agents === undefined ? undefined : `/legion/workspaces/${agents.repo}/`,
+        recordedPrompt: c.profile.systemPrompt !== undefined,
+      });
+    } catch (error) {
+      leave(`${DROP_REASONS["profile-failed"]}: ${messageFor(error)}`);
+      continue;
+    }
+    if (!profiled.profile.skills.some((each) => each.name === c.skill && each.repo === cut.repo)) {
+      leave(`the profile installs no ${c.skill} of ${cut.repo} at the session's start`);
+      continue;
+    }
+    const old = c.evidence ?? [];
+    const profileStart = old.findIndex((each) => !CONTEXT_EVIDENCE.test(each.item));
+    // Without the old profile's AGENTS.md the working directory is not known, so the old evidence
+    // of why it is left out stands in for the new one's.
+    const why = agents === undefined ? old.filter((each) => /AGENTS\.md$/.test(each.item)) : [];
+    const evidence = [
+      ...old.slice(0, profileStart < 0 ? old.length : profileStart),
+      ...profiled.evidence.flatMap((each) =>
+        each.item === NO_WORKSPACE && why.length > 0 ? why : [each]
+      ),
+      ...old.filter((each) => each.item.startsWith(AUDIT_EVIDENCE)),
+    ];
+    const built = Case.parse({ ...c, profile: { ...c.profile, ...profiled.profile }, evidence });
+    rebuilt.push(built);
+    const names = (profile: Profile) => profile.skills.map((skill) => skill.name);
+    const before = names(c.profile);
+    const after = names(built.profile);
+    records.push({
+      id: c.id,
+      skills: after.length,
+      added: after.filter((name) => !before.includes(name)),
+      removed: before.filter((name) => !after.includes(name)),
+      plugins: built.profile.plugins.map((plugin) => plugin.name),
+      contextFiles: built.profile.contextFiles.map((file) => `${file.repo} ${file.path}`),
+    });
+    io.out(
+      `build-cases: ${c.id}: profile of ${after.length} skills (${before.length} before), each in its repository at its commit\n`
+    );
+  }
+  writeWhole(given.out, rebuilt.map((each) => `${JSON.stringify(each)}\n`).join(""));
+  const summaryFile = `${given.out}.summary.json`;
+  writeWhole(
+    summaryFile,
+    `${JSON.stringify(
+      {
+        command: "build-cases --reprofile",
+        from: given.reprofile,
+        casesRead: cases.length,
+        casesWritten: rebuilt.length,
+        cases: records,
+        leftOut,
+      },
+      null,
+      2
+    )}\n`
+  );
+  // The file must load as the behaviour commands load it.
+  if (rebuilt.length > 0) loadCases(given.out, given.old);
+  io.out(
+    `build-cases: ${rebuilt.length} of ${cases.length} cases written with their profiles built again, to ${given.out} and ${summaryFile}\n`
+  );
+  if (leftOut.length > 0) {
+    io.err(
+      `build-cases: failed: ${leftOut.length} cases left out: ${leftOut.map((each) => each.id).join(", ")}`
+    );
+    return EXIT.failed;
+  }
+  return EXIT.ok;
+}
+
 /** `skill-cuts build-cases`. */
 async function buildCases(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -2171,15 +2779,18 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
       sessions: { type: "string" },
       seed: { type: "string" },
       copies: { type: "string" },
+      count: { type: "string" },
+      reprofile: { type: "string" },
       out: { type: "string" },
       max: { type: "string" },
       "budget-usd": { type: "string" },
     },
     BUILD_CASES_USAGE
   );
+  if (values.reprofile !== undefined) return reprofileCases(values, io);
   const given = required(
     values,
-    ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "out"],
+    ["config", "key-file", "cut", "skill", "old", "sessions", "seed", "copies", "count", "out"],
     BUILD_CASES_USAGE
   );
   if (!/^\d+$/.test(given.seed)) throw new Refused(`--seed ${given.seed} is not a whole number`);
@@ -2203,6 +2814,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
   mustBeFile(given["key-file"], "--key-file");
   const files = skillFiles(given.old);
   const copies = readCopies(given.copies);
+  const placing = readPlacer(config, given.count, given.copies);
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
 
@@ -2228,6 +2840,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
     copies,
     github: new GithubReads(io.gh, copies.branches),
     gateway: readerGateway(config, given["key-file"], budgetUsd),
+    placer: placing,
     servedIds: new Set(config.servedModels.map(modelId)),
   };
   const summaryFile = `${given.out}.summary.json`;

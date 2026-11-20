@@ -9,7 +9,8 @@ repositories copies map to) comes from the `--config <skill-cuts.json>` file at 
 reads the skill texts from two directories, the cases from a file outside the repository, the
 repositories a case's context needs from local clones (`--repos`), and the gateway key from
 `--key-file`, inside the process that uses it, never printed, logged or written. `copies`,
-`build-cases` and `build-tasks` read GitHub through `gh`, with GET calls only.
+`build-cases` and `build-tasks` only read GitHub, through `gh`: GET calls, and, in `copies` and
+`build-cases`, GraphQL queries that read file contents in batches.
 
 ## Commands
 
@@ -179,7 +180,9 @@ copy's reading sessions by model.
 ```
 bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> \
   --skill <name> --old <skill dir at the cut's base> --sessions <sessions.jsonl> --seed <n> \
-  --copies <copies out dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
+  --copies <copies out dir> --count <count dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>]
+bun scripts/skill-cuts/cli.ts build-cases --config <skill-cuts.json> --old <skill dir at the cut's base> \
+  --copies <copies out dir> --count <count dir> --reprofile <cases.jsonl> --out <new cases.jsonl>
 bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file <file> \
   --skill <skill dir> --store <db>... --out <tasks.jsonl>
 ```
@@ -188,12 +191,24 @@ bun scripts/skill-cuts/cli.ts build-tasks --config <skill-cuts.json> --key-file 
 the `case` reader propose the step the skill governs, reading the session from the skill's read
 on in windows of at most 40 messages, at most 6 windows a session, and writes the cases
 `loadCases` reads, each with the evidence for its rebuilt context; `build-tasks` writes the need
-and near-miss tasks of a load test from the first requests of real sessions. A session is a
+and near-miss tasks of a load test from the first requests of real sessions. `--count` and
+`--copies` are the count directory and the copies output that `attribute` read to make the
+sessions file: `build-cases` places each session's read of the skill with `attribute.ts`'s own
+rules (the prefix table, then a checkout, then the store's context), and keeps a session only
+when they place it at the cut repository's copy; a read they place at another copy, or at none, is
+`not-cut-copy`, with the rule named. A session is a
 candidate only on a model the gateway serves (`servedModels`: its id after the last `/`, so a
 `claude-*` model behind any gateway's prefix counts); a session on any other model is counted as
 `model-not-served` and never run on another model. The `case` reader is offered only the base
 text's lines that the session's own read of that file held (a session whose reads hold none is
-`no-common-line`, before any reader call). A Legion session's
+`no-common-line`, before any reader call). A case's profile lists what each installing unit
+shipped at the session's start: each repository of a unit is read at its last commit at or before
+that start (its tree, its `SKILL.md` files and its manifests) and resolved by `copies.ts`'s rules,
+so every skill of the profile is in its repository at the commit the case names, and the case's
+evidence says which skills the later copies output lists that the unit did not ship then.
+`--reprofile` builds the profiles of an existing case file again that way, from the cases alone
+(no session read, no reader call), and writes a new file in which only `profile` and the
+profile's part of `evidence` differ. A Legion session's
 role comes from the daemon's first message to it, its catch-up notice, or the claim it holds
 beside its workspace; a subagent's session (`subagent:<agent>`) keeps the system prompt and tools
 its `session_init` line recorded, and its capture sends that prompt with only the skill's

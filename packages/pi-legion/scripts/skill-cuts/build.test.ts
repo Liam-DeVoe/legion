@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -17,9 +18,11 @@ import {
 import { type Case, loadCases, pathHash } from "./cases";
 import {
   INSTALLERS_COLUMNS,
+  LOADERS_COLUMNS,
   MANIFESTS_COLUMNS,
   PREFIX_TABLE_COLUMNS,
   REPOSITORIES_COLUMNS,
+  SKILL_COPIES_COLUMNS,
   tsv,
 } from "./copies";
 import { mtimeRange } from "./countsql";
@@ -44,8 +47,11 @@ import {
 // The store is a stand-in for the configuration's psqlCommand: a program that reads the query on
 // its standard input and prints psql's aligned table of one JSON value per row (F7's shape) from
 // a made-up store file, each transcript stored in parts of PART_CHARS characters, so a pull pages.
-// The gateway is a stand-in built on recorder.ts; GitHub is a stand-in gh. Every skill,
-// repository, store and path here is made up, and nothing reaches a network.
+// The gateway is a stand-in built on recorder.ts; GitHub is a stand-in gh over made-up
+// repositories (REPOSITORIES), each as it was at the one commit SHA. The copies output (R4's) is
+// of a later read: it lists a skill `newer` that no repository held at SHA, and not `older`,
+// which acme/skills held then. The count is three made-up query outputs, one per store. Every
+// skill, repository, store and path here is made up, and nothing reaches a network.
 
 const TESTDATA = path.join(import.meta.dir, "testdata");
 const F1 = path.join(
@@ -131,6 +137,16 @@ function setModel(lines: Record<string, unknown>[], model: string) {
   const change = lines.find((line) => line.type === "model_change");
   if (change === undefined) throw new Error("F1 has no model_change line");
   change.model = model;
+}
+
+/** Moves F1's reads of alpha to the skill directory `dir`: the `[Skill file: …]` line of each of
+ *  its two read results. */
+function readFrom(dir: string) {
+  return (lines: Record<string, unknown>[]) => {
+    for (const index of [2, 4]) {
+      setText(lines, index, (text) => text.replace(`${F1_SKILLS}/alpha`, dir));
+    }
+  };
 }
 
 const SECRET_TOKEN = fixtureSecret("tok");
@@ -237,6 +253,15 @@ const SESSIONS: Record<
         );
     },
   },
+  // A read in a checkout of the cut's repository: no prefix row maps it, and the path names
+  // acme/skills before the skill's directory.
+  checkout: { store: "store_a", change: readFrom("/home/dev/acme/skills/skills/alpha") },
+  // The same skill directory in a checkout of a fork: the path names forker/skills.
+  "checkout-fork": { store: "store_a", change: readFrom("/home/dev/forker/skills/skills/alpha") },
+  // A path no prefix row maps and no copy's directory ends: the store's context places it. The
+  // count's reads of store_a come from a unit of acme/skills, those of store_c from acme/other's.
+  context: { store: "store_a", change: readFrom("/mnt/loaded/alpha") },
+  "context-other": { store: "store_c", change: readFrom("/mnt/loaded/alpha") },
   secret: {
     store: "store_a",
     change: (lines) =>
@@ -602,10 +627,61 @@ function readerAnswer(body: {
 }
 
 let recorder: Recorder;
+
+/** A made-up skill's SKILL.md. */
+const skillMd = (name: string) =>
+  `---\nname: ${name}\ndescription: Use when a task asks for ${name}.\n---\n\n# ${name}\n`;
+
+/** The made-up repositories as each was at the commit SHA: every file's path and text. acme/skills
+ *  holds `older` and no `newer`; its installer links each skill of skills/ into Oh My Pi's user
+ *  skills, and its prepack script stages alpha and beta for the package @acme/pi-acme. */
+const REPOSITORIES: Record<string, Record<string, string>> = {
+  "acme/skills": {
+    "skills/alpha/SKILL.md": skillMd("alpha"),
+    "skills/alpha/references/x.md": "Step notes.\n",
+    "skills/beta/SKILL.md": skillMd("beta"),
+    "skills/older/SKILL.md": skillMd("older"),
+    "installers/skills.sh": [
+      "#!/usr/bin/env bash",
+      'for skill in "$REPO"/skills/*/; do',
+      '  ln -sfn "$skill" "$HOME/.omp/agent/skills/$(basename "$skill")"',
+      "done",
+      "",
+    ].join("\n"),
+    "packages/pi-acme/package.json": JSON.stringify({
+      name: "@acme/pi-acme",
+      omp: { skills: ["dist/skills"] },
+    }),
+    "scripts/pi-plugin-prepack.sh": [
+      "#!/usr/bin/env bash",
+      "plugin() {",
+      '  case "$1" in',
+      "  @acme/pi-acme)",
+      "    skills=( alpha beta )",
+      "    ;;",
+      "  esac",
+      "}",
+      'cp -R "$root/skills/$skill" "$dest/$skill"',
+      "stage_skills dist/skills",
+      "",
+    ].join("\n"),
+    "docker/omp-plugins/package.json": JSON.stringify({
+      name: "omp-plugins",
+      dependencies: { "@acme/codegraph": "1.0.0" },
+    }),
+  },
+};
+
+/** The blob id the stand-in gives a file's text. */
+const blobId = (text: string) => createHash("sha1").update(text).digest("hex");
+/** The one file a batch of blobs gives cut short, so it is read alone. */
+const CUT_SHORT = REPOSITORIES["acme/skills"]?.["docker/omp-plugins/package.json"] ?? "";
+
 /** The gh calls the stand-in took. */
 const ghCalls: string[][] = [];
 
-/** The stand-in gh: GET reads of commits, default branches and two files. */
+/** The stand-in gh: GET reads of commits, default branches, two files, and the tree and the
+ *  blobs of each made-up repository at SHA; and GraphQL reads of blobs in a batch. */
 const io = (lines: string[]): BuildIo => ({
   out: (text) => lines.push(text),
   err: (line) => lines.push(line),
@@ -613,11 +689,50 @@ const io = (lines: string[]): BuildIo => ({
     ghCalls.push([...args]);
     const route = args.find((arg) => arg.startsWith("repos/")) ?? "";
     const ok = (stdout: string) => ({ code: 0, stdout, stderr: "" });
+    if (args[1] === "graphql") {
+      const field = (name: string) =>
+        args.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
+      const texts = Object.values(REPOSITORIES[`${field("owner")}/${field("name")}`] ?? {});
+      const blobs = [...field("query").matchAll(/(b\d+): object\(oid: "([0-9a-f]{40})"\)/g)].map(
+        ([, alias, id]) => {
+          const text = texts.find((each) => blobId(each) === id);
+          if (text === undefined) return [alias, null];
+          const cut = text === CUT_SHORT;
+          return [alias, { isBinary: false, isTruncated: cut, text: cut ? null : text }];
+        }
+      );
+      return ok(JSON.stringify({ data: { repository: Object.fromEntries(blobs) } }));
+    }
     if (/^repos\/[^/]+\/[^/]+$/.test(route)) return ok("main\n");
     if (route.endsWith("/commits")) return ok(`${SHA}\n`);
     if (route === "repos/acme/widgets/contents/AGENTS.md") return ok("# Widgets\n");
     if (route === "repos/acme/infra/contents/legion/projects/10-ACME.yaml") {
       return ok("key: ACME\ninstructions: acme.md\n");
+    }
+    const [, repository = "", kind = "", id = ""] =
+      /^repos\/([^/]+\/[^/]+)\/git\/(trees|blobs)\/([0-9a-f]{40})(?:\?recursive=1)?$/.exec(route) ??
+      [];
+    const files = Object.entries(REPOSITORIES[repository] ?? {});
+    if (kind === "trees" && id === SHA && files.length > 0) {
+      return ok(
+        JSON.stringify({
+          sha: SHA,
+          truncated: false,
+          tree: files.map(([file, text]) => ({
+            path: file,
+            mode: "100644",
+            type: "blob",
+            sha: blobId(text),
+            size: text.length,
+          })),
+        })
+      );
+    }
+    const blob = files.find(([, text]) => blobId(text) === id);
+    if (kind === "blobs" && blob !== undefined) {
+      return ok(
+        JSON.stringify({ encoding: "base64", content: Buffer.from(blob[1]).toString("base64") })
+      );
     }
     return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)\n" };
   },
@@ -628,6 +743,7 @@ const config = path.join(setupDir, "skill-cuts.json");
 const keyFile = path.join(setupDir, "key");
 const old = path.join(setupDir, "old", "alpha");
 const copiesDir = path.join(setupDir, "copies");
+const countDir = path.join(setupDir, "count");
 const psqlLog = path.join(setupDir, "psql.log");
 
 beforeAll(() => {
@@ -659,7 +775,7 @@ beforeAll(() => {
     `${stripSkillHeader(messages[4]?.content?.[0]?.text ?? "")}\n`
   );
 
-  const files: Record<string, Record<string, string>> = { store_a: {}, store_b: {} };
+  const files: Record<string, Record<string, string>> = { store_a: {}, store_b: {}, store_c: {} };
   for (const [name, session] of Object.entries(SESSIONS)) {
     const store = files[session.store] ?? {};
     store[sessionPath(name)] = sessionText(name);
@@ -669,6 +785,7 @@ beforeAll(() => {
     JSON.stringify({
       store_a: { files: files.store_a, tasks: TASK_ROWS },
       store_b: { files: files.store_b, tasks: [] },
+      store_c: { files: files.store_c, tasks: [] },
     })
   );
   writeFileSync(
@@ -687,7 +804,11 @@ beforeAll(() => {
     config,
     JSON.stringify({
       ...fixture,
-      stores: [...fixture.stores, { name: "store_b", context: "legion:ACME" }],
+      stores: [
+        ...fixture.stores,
+        { name: "store_b", context: "legion:ACME" },
+        { name: "store_c", context: "devbox" },
+      ],
       servedModels: [...fixture.servedModels, "anthropic/claude-opus-5-5"],
       psqlCommand: psql,
       gatewayBaseUrl: recorder.url,
@@ -704,9 +825,11 @@ beforeAll(() => {
     tsv(PREFIX_TABLE_COLUMNS, [
       ["**/agent/skills/alpha/", "acme/skills", "skills/alpha", "alpha", userSkills],
       ["**/agent/skills/beta/", "acme/skills", "skills/beta", "beta", userSkills],
+      ["**/agent/skills/newer/", "acme/skills", "skills/newer", "newer", userSkills],
       ["/elsewhere/other-skills/alpha/", "acme/other", "skills/alpha", "alpha", otherSkills],
       ["/opt/legion/pi-acme/dist/skills/alpha/", "acme/skills", "skills/alpha", "alpha", pkg],
       ["/opt/legion/pi-acme/dist/skills/beta/", "acme/skills", "skills/beta", "beta", pkg],
+      ["/opt/legion/pi-acme/dist/skills/newer/", "acme/skills", "skills/newer", "newer", pkg],
     ])
   );
   const installer = (
@@ -739,6 +862,24 @@ beforeAll(() => {
         "user-skills:omp",
         "beta",
         "skills/beta"
+      ),
+      installer(
+        "acme/skills",
+        "installers/skills.sh",
+        "installer-script",
+        "links",
+        "user-skills:omp",
+        "newer",
+        "skills/newer"
+      ),
+      installer(
+        "acme/skills",
+        "packages/pi-acme/package.json",
+        "omp-package",
+        "ships",
+        "package:@acme/pi-acme",
+        "newer",
+        "skills/newer"
       ),
       installer(
         "acme/other",
@@ -796,10 +937,70 @@ beforeAll(() => {
   writeFileSync(
     path.join(copiesDir, "repositories.tsv"),
     tsv(REPOSITORIES_COLUMNS, [
-      ["acme/skills", "main", SHA, "no", "no", "", 10, "recursive", 2, ""],
+      ["acme/skills", "main", SHA, "no", "no", "", 10, "recursive", 3, ""],
       ["acme/other", "main", SHA, "no", "no", "", 10, "recursive", 1, ""],
+      ["forker/skills", "main", SHA, "yes", "no", "acme/skills", 10, "recursive", 1, ""],
     ])
   );
+  writeFileSync(
+    path.join(copiesDir, "skill-copies.tsv"),
+    tsv(SKILL_COPIES_COLUMNS, [
+      ["acme/other", "skills/alpha", "alpha", 10, "no", "no", "", "", ""],
+      ["acme/skills", "skills/alpha", "alpha", 10, "no", "no", "", "", ""],
+      ["acme/skills", "skills/beta", "beta", 10, "no", "no", "", "", ""],
+      ["acme/skills", "skills/newer", "newer", 10, "no", "no", "", "", ""],
+      ["forker/skills", "skills/alpha", "alpha", 10, "yes", "no", "acme/skills", "", ""],
+    ])
+  );
+  writeFileSync(path.join(copiesDir, "loaders.tsv"), tsv(LOADERS_COLUMNS, []));
+
+  // The count: each store's reads of alpha, by the copy path the count gives them. store_a's come
+  // from acme/skills's user skills, store_b's from the package the image carries, store_c's from
+  // acme/other's user skills; so the context of store_a and store_b installs acme/skills's alpha,
+  // and that of store_c acme/other's.
+  for (const [store, copy] of [
+    ["store_a", `${F1_SKILLS}/alpha/SKILL.md`],
+    ["store_b", "/opt/legion/pi-acme/dist/skills/alpha/SKILL.md"],
+    ["store_c", "/elsewhere/other-skills/alpha/SKILL.md"],
+  ] as const) {
+    const rows = [
+      {
+        row: "count",
+        store,
+        day: "2026-11-20",
+        skill: "alpha",
+        copy,
+        kind: "read",
+        files: 1,
+        hashes: ["0123456789abcdef"],
+        unpaired: 0,
+        unpaired_hashes: [],
+      },
+      {
+        row: "summary",
+        store,
+        mtime_from: 0,
+        mtime_to: 0,
+        files: 1,
+        parts: 1,
+        bytes: 1,
+        lines_parsed: 1,
+        bad_lines: 0,
+        shared_call_ids: 0,
+      },
+    ];
+    mkdirSync(path.join(countDir, store), { recursive: true });
+    writeFileSync(
+      path.join(countDir, store, "2026-11-20.txt"),
+      [
+        " total",
+        "-".repeat(40),
+        ...rows.map((row) => ` ${JSON.stringify(row)}`),
+        `(${rows.length} rows)`,
+        "",
+      ].join("\n")
+    );
+  }
 });
 afterAll(async () => {
   await recorder.close();
@@ -844,6 +1045,8 @@ function buildArgs(sessions: string, out: string, seed: string, ...extra: string
     seed,
     "--copies",
     copiesDir,
+    "--count",
+    countDir,
     "--out",
     out,
     ...extra,
@@ -911,6 +1114,8 @@ describe("build-cases over every made-up session", () => {
         "openai",
         "gateway-model",
         "skill-md-only",
+        "checkout",
+        "context",
       ]
         .map((name) => pathHash(sessionPath(name)))
         .sort()
@@ -1050,27 +1255,183 @@ describe("build-cases over every made-up session", () => {
     }
   });
 
-  test("the profile is the skills the read's unit installs, at the commit of the session's start, each with its evidence", () => {
+  test("the profile is what the read's unit shipped at the commit of the session's start, not what the later copies output lists, each skill with its evidence", () => {
     const c = byName("good");
     expect(c?.profile).toEqual({
       skills: [
         { repo: "acme/skills", commit: SHA, path: "skills/alpha", name: "alpha" },
         { repo: "acme/skills", commit: SHA, path: "skills/beta", name: "beta" },
+        { repo: "acme/skills", commit: SHA, path: "skills/older", name: "older" },
       ],
       plugins: [],
       contextFiles: [],
     });
-    const items = c?.evidence?.map((each) => each.item) ?? [];
-    expect(items).toContain("unit user-skills:omp (acme/skills:installers/skills.sh)");
-    expect(items).toContain("skill alpha (acme/skills skills/alpha)");
-    expect(items).toContain(`commit ${SHA} of acme/skills`);
-    expect(c?.evidence?.find((each) => each.item.startsWith("unit "))?.source).toContain(
+    const evidence = Object.fromEntries(c?.evidence?.map((each) => [each.item, each.source]) ?? []);
+    expect(evidence["unit user-skills:omp (acme/skills:installers/skills.sh)"]).toContain(
       `message 2 reads [Skill file: ${F1_SKILLS}/alpha/SKILL.md]`
     );
+    expect(evidence[`commit ${SHA} of acme/skills`]).toContain("at or before the session's start");
+    expect(evidence[`the skills and manifests of acme/skills at ${SHA}`]).toContain(
+      "its 3 SKILL.md files and 4 manifest files"
+    );
+    expect(evidence["skill alpha (acme/skills skills/alpha)"]).toBe(
+      `acme/skills at ${SHA}: user-skills:omp links it (acme/skills:installers/skills.sh)`
+    );
+    // The copies output lists `newer`, which acme/skills did not hold at the commit, and not
+    // `older`, which it held.
+    expect(evidence["left out: skill newer (acme/skills skills/newer)"]).toContain(
+      "user-skills:omp does not ship it at the session's start"
+    );
+    expect(evidence["skill older (acme/skills skills/older)"]).toContain(
+      "installers.tsv, which R4 read later, does not list it"
+    );
+    // A package ships what its prepack script lists at the commit.
+    expect(byName("legion")?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
+    // Every skill of every profile is in its repository at the profile's commit.
+    for (const each of cases) {
+      for (const skill of each.profile.skills) {
+        expect(skill.commit).toBe(SHA);
+        expect(REPOSITORIES[skill.repo]?.[`${skill.path}/SKILL.md`]).toBeDefined();
+      }
+    }
     const commitCall = ghCalls.find((args) => args.includes("repos/acme/skills/commits"));
     expect(commitCall).toContain("until=2026-11-20T01:59:41.780Z");
     expect(ghCalls.every((args) => args[0] === "api" && !args.includes("POST"))).toBe(true);
+    // A repository's files are read in one batch; the one the batch gives cut short is read alone.
+    expect(ghCalls.some((args) => args[1] === "graphql")).toBe(true);
+    const alone = ghCalls.flatMap((args) => args.filter((arg) => arg.includes("/git/blobs/")));
+    expect([...new Set(alone)]).toEqual([`repos/acme/skills/git/blobs/${blobId(CUT_SHORT)}`]);
   });
+
+  test("a read is placed as attribute.ts places it: a read in a checkout of the cut's repository and one the store's context puts at its copy are kept; a checkout of a fork and a read the store's context puts at another copy drop, with the rule named", () => {
+    const record = (name: string) =>
+      summaryOf(out).sessions.find((each) => each.hash === fileHash(sessionPath(name)));
+    const unit = (name: string) =>
+      byName(name)?.evidence?.find(
+        (each) => each.item === "unit user-skills:omp (acme/skills:installers/skills.sh)"
+      )?.source;
+    const checkout = (repository: string) =>
+      `checkout: to ${repository} skills/alpha: the path ends with skills/alpha/, the skill directory of 3 repositories, and the path names ${repository}`;
+    const context = (repository: string) =>
+      `context: to ${repository} skills/alpha, the one copy of alpha its context installs`;
+    expect(unit("checkout")).toContain(
+      `message 2 reads [Skill file: /home/dev/acme/skills/skills/alpha/SKILL.md], which attribute.ts's checkout rule places at acme/skills skills/alpha (${checkout("acme/skills")})`
+    );
+    expect(unit("context")).toContain(
+      `message 2 reads [Skill file: /mnt/loaded/alpha/SKILL.md], which attribute.ts's context rule places at acme/skills skills/alpha (${context("acme/skills")})`
+    );
+    // The profile of a read no prefix row maps is what the units that ship its copy shipped.
+    for (const name of ["checkout", "context"]) {
+      expect(byName(name)?.profile.skills.map((skill) => skill.name)).toEqual([
+        "alpha",
+        "beta",
+        "older",
+      ]);
+    }
+    expect(record("checkout-fork")).toMatchObject({
+      reason: "not-cut-copy",
+      detail: `the checkout rule places /home/dev/forker/skills/skills/alpha/SKILL.md at forker/skills skills/alpha (${checkout("forker/skills")})`,
+    });
+    expect(record("context-other")).toMatchObject({
+      reason: "not-cut-copy",
+      detail: `the context rule places /mnt/loaded/alpha/SKILL.md at acme/other skills/alpha (${context("acme/other")})`,
+    });
+    expect(record("other-copy")).toMatchObject({
+      reason: "not-cut-copy",
+      detail:
+        "the prefix table rule places /elsewhere/other-skills/alpha/SKILL.md at acme/other skills/alpha",
+    });
+    for (const name of ["checkout-fork", "context-other", "other-copy"]) {
+      expect(record(name)?.windows).toBeUndefined();
+    }
+  });
+
+  test("--reprofile builds each profile again from the case alone: the new cases differ from the old ones only in profile and evidence, and no session is read and no reader called", async () => {
+    // The case file as a builder that took the copies output's list wrote it: each profile holds
+    // `newer`, which acme/skills did not hold at the commit, and not `older`.
+    const stale = cases.map((c) => ({
+      ...c,
+      profile: {
+        ...c.profile,
+        skills: [
+          ...c.profile.skills.filter((skill) => skill.name !== "older"),
+          { repo: "acme/skills", commit: SHA, path: "skills/newer", name: "newer" },
+        ],
+      },
+      evidence: (c.evidence ?? []).map((each) =>
+        each.item === "skill older (acme/skills skills/older)"
+          ? { item: "skill newer (acme/skills skills/newer)", source: "installers.tsv lists it" }
+          : each
+      ),
+    }));
+    const staleFile = path.join(scratch, "all", "stale.jsonl");
+    writeFileSync(staleFile, stale.map((c) => `${JSON.stringify(c)}\n`).join(""));
+    const fresh = path.join(scratch, "all", "reprofiled.jsonl");
+    const args = (from: string, to: string) => [
+      "build-cases",
+      "--config",
+      config,
+      "--old",
+      old,
+      "--copies",
+      copiesDir,
+      "--count",
+      countDir,
+      "--reprofile",
+      from,
+      "--out",
+      to,
+    ];
+    const lines: string[] = [];
+    const requestsBefore = recorder.requests.length;
+    const logBefore = statSync(psqlLog).size;
+    expect(await main(args(staleFile, fresh), io(lines))).toBe(0);
+    expect(lines.join("")).not.toContain("left out");
+    expect(recorder.requests.length).toBe(requestsBefore);
+    expect(statSync(psqlLog).size).toBe(logBefore);
+
+    const rebuilt = loadCases(fresh, old);
+    expect(rebuilt.map((c) => c.id)).toEqual(cases.map((c) => c.id));
+    const rest = (c: Case) => ({ ...c, profile: undefined, evidence: undefined });
+    for (const [index, c] of rebuilt.entries()) {
+      const built = cases[index] as Case;
+      // Its messages, line, steps and every other field are the old file's.
+      expect(rest(c)).toEqual(rest(stale[index] as Case));
+      // Its profile is the one the builder gives the session: no `newer`.
+      expect(c.profile).toEqual(built.profile);
+      expect(c.evidence?.map((each) => each.item)).toEqual(
+        built.evidence?.map((each) => each.item)
+      );
+      // The working directory is not in a case, so only a workspace's AGENTS.md is said otherwise.
+      const differing = (c.evidence ?? []).filter(
+        (each, at) => each.source !== built.evidence?.[at]?.source
+      );
+      expect(differing.map((each) => each.item)).toEqual(
+        c.profile.contextFiles.some((file) => file.path === "AGENTS.md")
+          ? ["context file acme/widgets AGENTS.md"]
+          : []
+      );
+    }
+    const summary = JSON.parse(readFileSync(`${fresh}.summary.json`, "utf8")) as {
+      casesRead: number;
+      casesWritten: number;
+      leftOut: unknown[];
+      cases: { id: string; added: string[]; removed: string[] }[];
+    };
+    expect(summary).toMatchObject({
+      casesRead: cases.length,
+      casesWritten: cases.length,
+      leftOut: [],
+    });
+    expect(summary.cases.every((each) => each.removed.join() === "newer")).toBe(true);
+    expect(summary.cases.find((each) => each.id === byName("good")?.id)?.added).toEqual(["older"]);
+
+    // It takes no session and no reader, and writes a new file.
+    expect(await main([...args(staleFile, fresh), "--sessions", staleFile], io(lines))).toBe(2);
+    expect(lines.join("\n")).toContain("so it takes no --sessions");
+    expect(await main(args(staleFile, staleFile), io(lines))).toBe(2);
+    expect(lines.join("\n")).toContain("is the file --reprofile reads");
+  }, 60_000);
 
   test("a Legion session's role comes from its first user message, and its profile adds the image's plugin and the context files", () => {
     const c = byName("legion");
@@ -1117,7 +1478,7 @@ describe("build-cases over every made-up session", () => {
     expect(c?.profile.systemPrompt).toEqual(SUBAGENT_PROMPT);
     expect(c?.profile.tools).toEqual(SUBAGENT_TOOLS);
     expect(c?.profile.contextFiles).toEqual([]);
-    expect(c?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
+    expect(c?.profile.skills.map((skill) => skill.name)).toEqual(["alpha", "beta", "older"]);
     const items = c?.evidence?.map((each) => each.item) ?? [];
     expect(items).toContain("subagent task");
     expect(items).toContain("the recorded system prompt and tools");
@@ -1297,7 +1658,7 @@ describe("build-cases over every made-up session", () => {
       "no-read": 1,
       "no-step": 1,
       "no-common-line": 1,
-      "not-cut-copy": 1,
+      "not-cut-copy": 3,
       "no-role": 1,
       "bad-session-init": 1,
       unparseable: 1,
@@ -1305,7 +1666,7 @@ describe("build-cases over every made-up session", () => {
     });
     expect(Object.keys(summary.drops).every((reason) => reason in DROP_REASONS)).toBe(true);
     expect(summary.sessionsTried).toBe(Object.keys(SESSIONS).length + 1);
-    expect(summary.casesBuilt).toBe(12);
+    expect(summary.casesBuilt).toBe(14);
     const reasonOf = (name: string) =>
       summary.sessions.find((each) => each.hash === fileHash(sessionPath(name)))?.reason;
     expect(reasonOf("quoted")).toBe("line-quoted");
@@ -1399,6 +1760,18 @@ test("build-cases refuses an unknown cut and a sessions line whose path is not i
   );
   expect(await main(unknownCut, io(lines))).toBe(2);
   expect(lines.join("\n")).toContain("--cut skills-9 is no cut of the configuration");
+  const noCount = buildArgs(sessions, out, "1").filter(
+    (arg, at, args) => arg !== "--count" && args[at - 1] !== "--count"
+  );
+  expect(await main(noCount, io(lines))).toBe(2);
+  expect(lines.join("\n")).toContain("--count required");
+  const emptyCount = path.join(scratch, "refused", "count");
+  mkdirSync(emptyCount, { recursive: true });
+  const noOutputs = buildArgs(sessions, out, "1").map((arg, at, args) =>
+    args[at - 1] === "--count" ? emptyCount : arg
+  );
+  expect(await main(noOutputs, io(lines))).toBe(2);
+  expect(lines.join("\n")).toContain("holds no query output of a store of the configuration");
   const wrongHash = sessionsFile(
     "wrong.jsonl",
     [],

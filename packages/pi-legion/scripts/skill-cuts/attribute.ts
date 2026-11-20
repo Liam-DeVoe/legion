@@ -54,6 +54,9 @@
  *      prefix rows' own copies. When they hold exactly one copy of the row's skill name, the row
  *      goes to that copy. A store with no step-1 read installs no unit.
  *   4. Otherwise the row is unattributed for its skill name.
+ *   `placer` is these four steps, and the one place a read's copy is decided: `attribute` counts
+ *   each row where it puts it, and build.ts's `build-cases` keeps a session only when it puts the
+ *   session's read at the cut's copy, given the same `--count` and `--copies`.
  *   Each distinct copy-path prefix (`copyPrefix`: the path up to the skill's directory) that step 1
  *   does not map is listed with its sessions, where they went and the rule that placed them; each
  *   one step 1 maps is listed with its copy. No prefix is dropped.
@@ -920,13 +923,39 @@ export function checkoutRule(
   };
 }
 
-/** The attribution of the count's rows `outputs` to R4's copies, by the rules of this file's
- *  header. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
-export function attribute(
-  config: SkillCutsConfig,
-  outputs: readonly QueryOutput[],
-  r4: R4Tables
-): Attribution {
+/** The rule that placed a read at a copy (the header's steps 1 to 3). */
+export type PlacementRule = "prefix table" | "checkout" | "context";
+
+/** Where one read goes: `copy` its copy (`<repository>\t<skill directory>`, as skill-copies.tsv
+ *  writes the two) and `rule` the rule that placed it, or neither when no rule places it.
+ *  `prefix` is the copy-path prefix of its path (`copyPrefix`).
+ *  `outcome`, for a read the prefix table does not place, says where it went and why, as the
+ *  report writes it after the store's name (`checkout: to …`, `context: to …`,
+ *  `unattributed: …`). */
+export interface Placement {
+  readonly prefix: string;
+  readonly copy: string | undefined;
+  readonly rule: PlacementRule | undefined;
+  readonly outcome: string | undefined;
+}
+
+/** The placing of reads by the rules of this file's header, for one count and one R4 output. */
+export interface Placer {
+  /** Where a read of the copy path `copyPath` of the skill `skill` in the store `store` goes. */
+  place(store: string, copyPath: string, skill: string): Placement;
+  /** Step 3's units: for each store, each unit its prefix-table reads come from, with their
+   *  sessions (file hashes). */
+  readonly storeUnits: ReadonlyMap<string, ReadonlyMap<string, ReadonlySet<string>>>;
+  /** Each unit's copies: its installer rows, and the copies its prefix rows map to. */
+  readonly members: ReadonlyMap<string, ReadonlySet<string>>;
+  /** The copies some store's context installs. */
+  readonly installedInContext: ReadonlySet<string>;
+}
+
+/** The one place a read's copy is decided (the header's steps 1 to 4): `attribute` counts each
+ *  row where this puts it, and build.ts keeps a session only when this puts its read at the cut's
+ *  copy. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
+export function placer(outputs: readonly QueryOutput[], r4: R4Tables): Placer {
   const copies = new Map<string, SkillCopiesRow>();
   for (const row of r4.copies) copies.set(copyKey(row.repository, row.path), row);
   const known = (key: string, where: string) => {
@@ -965,7 +994,7 @@ export function attribute(
   );
   const checkout = checkoutRule(r4.copies);
 
-  // Step 2's units: those each store's own mapped reads come from, with their sessions.
+  // Step 3's units: those each store's own mapped reads come from, with their sessions.
   const storeUnits = new Map<string, Map<string, Set<string>>>();
   for (const output of outputs) {
     for (const row of output.rows) {
@@ -991,6 +1020,66 @@ export function attribute(
     }
     contextCopies.set(store, byName);
   }
+
+  const place = (store: string, copyPath: string, skill: string): Placement => {
+    const prefix = copyPrefix(copyPath, skill);
+    const decision = decide(copyPath);
+    if (decision.copy !== undefined) {
+      return { prefix, copy: decision.copy, rule: "prefix table", outcome: undefined };
+    }
+    const byCheckout = checkout(prefix);
+    const context = [...(contextCopies.get(store)?.get(skill) ?? [])];
+    const table =
+      decision.copies.length > 1
+        ? `prefix rows match ${decision.copies.length} copies (${decision.copies.map(shown).join(", ")}), and `
+        : "";
+    if (byCheckout?.copy !== undefined) {
+      return {
+        prefix,
+        copy: byCheckout.copy,
+        rule: "checkout",
+        outcome: `checkout: ${byCheckout.why}`,
+      };
+    }
+    if (byCheckout !== undefined) {
+      return {
+        prefix,
+        copy: undefined,
+        rule: undefined,
+        outcome: `unattributed: ${table}${byCheckout.why}`,
+      };
+    }
+    const [only] = context;
+    if (context.length === 1 && only !== undefined) {
+      return {
+        prefix,
+        copy: only,
+        rule: "context",
+        outcome: `context: to ${shown(only)}, the one copy of ${skill} its context installs`,
+      };
+    }
+    return {
+      prefix,
+      copy: undefined,
+      rule: undefined,
+      outcome:
+        `unattributed: ${table}no copy's skill directory ends the path, and its context installs ` +
+        (context.length === 0
+          ? `no copy of ${skill}`
+          : `${context.length} copies of ${skill} (${context.map(shown).join(", ")})`),
+    };
+  };
+  return { place, storeUnits, members, installedInContext };
+}
+
+/** The attribution of the count's rows `outputs` to R4's copies, by the rules of this file's
+ *  header. Throws when R4's tables name a copy that skill-copies.tsv does not hold. */
+export function attribute(
+  config: SkillCutsConfig,
+  outputs: readonly QueryOutput[],
+  r4: R4Tables
+): Attribution {
+  const { place, storeUnits, members, installedInContext } = placer(outputs, r4);
 
   const reads = new Map<string, Set<string>>();
   const references = new Map<string, Set<string>>();
@@ -1045,43 +1134,24 @@ export function attribute(
         for (const session of sessions) allReads.add(session);
         if (store.earliest === undefined || row.day < store.earliest) store.earliest = row.day;
       }
-      const prefix = copyPrefix(row.copy, row.skill);
-      const decision = decide(row.copy);
-      let copy: string | undefined;
-      if (decision.copy !== undefined) {
-        copy = decision.copy;
-        entry(mappedPrefixes, prefix, () => new Set()).add(shown(copy));
+      const placed = place(row.store, row.copy, row.skill);
+      const copy = placed.copy;
+      if (placed.outcome === undefined) {
+        if (copy !== undefined)
+          entry(mappedPrefixes, placed.prefix, () => new Set()).add(shown(copy));
       } else {
-        const byCheckout = checkout(prefix);
-        const context = [...(contextCopies.get(row.store)?.get(row.skill) ?? [])];
-        const table =
-          decision.copies.length > 1
-            ? `prefix rows match ${decision.copies.length} copies (${decision.copies.map(shown).join(", ")}), and `
-            : "";
-        let outcome: string;
-        if (byCheckout?.copy !== undefined) {
-          copy = byCheckout.copy;
-          outcome = `${row.store}: checkout: ${byCheckout.why}`;
-        } else if (byCheckout !== undefined) {
-          outcome = `${row.store}: unattributed: ${table}${byCheckout.why}`;
-        } else if (context.length === 1 && context[0] !== undefined) {
-          copy = context[0];
-          outcome = `${row.store}: context: to ${shown(copy)}, the one copy of ${row.skill} its context installs`;
-        } else {
-          outcome =
-            `${row.store}: unattributed: ${table}no copy's skill directory ends the path, and its context installs ` +
-            (context.length === 0
-              ? `no copy of ${row.skill}`
-              : `${context.length} copies of ${row.skill} (${context.map(shown).join(", ")})`);
-        }
-        const item = entry(unmapped, prefix, () => ({
+        const item = entry(unmapped, placed.prefix, () => ({
           skills: new Set<string>(),
           read: new Set<string>(),
           reference: new Set<string>(),
           outcomes: new Map<string, Set<string>>(),
         }));
         item.skills.add(row.skill);
-        const went = entry(item.outcomes, outcome, () => new Set<string>());
+        const went = entry(
+          item.outcomes,
+          `${row.store}: ${placed.outcome}`,
+          () => new Set<string>()
+        );
         for (const session of sessions) {
           (row.kind === "read" ? item.read : item.reference).add(session);
           went.add(session);
