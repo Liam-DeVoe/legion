@@ -55,11 +55,13 @@ type privateProject struct {
 const maxProjectPrivacyReads = 64
 
 // projectPrivacy answers a listener every private project as Dispatch answers it to this call
-// (projectaccess.Client.PrivateProjectsFresh), in key order. The read keeps nothing between
-// calls, and any failure of it is 502 dispatch_unavailable, never a list: an empty list is the
-// one answer a listener cannot tell from the truth, and a listener reads a 502 as unknown and
-// fails closed. A broker with no BROKER_PROJECT_ACCESS_URL has no read to make and answers the
-// same 502. A call past maxProjectPrivacyReads is 503 busy.
+// (projectaccess.Client.PrivateProjectsFresh), in key order. A listener reads which projects are
+// private only through this route, so the rule is here: one fresh PrivateProjectsFresh read per
+// call, never PrivateProjects' cache, and never a list for a read that failed. The read keeps
+// nothing between calls, and any failure of it is 502 dispatch_unavailable, never a list: an empty
+// list is the one answer a listener cannot tell from the truth, and a listener reads a 502 as
+// unknown and fails closed. A broker with no BROKER_PROJECT_ACCESS_URL has no read to make and
+// answers the same 502. A call past maxProjectPrivacyReads is 503 busy.
 func (s *server) projectPrivacy(w http.ResponseWriter, r *http.Request) {
 	if s.deps.ProjectPrivacy == nil {
 		writeError(w, http.StatusBadGateway, "dispatch_unavailable", "this broker has no BROKER_PROJECT_ACCESS_URL, so it cannot ask Dispatch which projects are private")

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -466,5 +467,33 @@ func TestProjectPrivacySpendsTheAddressBucket(t *testing.T) {
 	}
 	if n := stub.calls.Load(); n != 1 {
 		t.Fatalf("the stub counted %d requests, want 1: the refused call asked Dispatch", n)
+	}
+}
+
+// TestEveryListenerKindReadsProjectPrivacy: every kind the NATS auth service admits for a listener
+// (natscallout.Kinds, each kind named listener or ending in -listener) is one GET
+// /v1/project-privacy answers (api.ListenerKinds), so a listener kind the auth service gains cannot
+// leave that listener refused 403 not_listener on every privacy read; and the route answers no
+// kind the auth service does not admit.
+func TestEveryListenerKindReadsProjectPrivacy(t *testing.T) {
+	answered := api.ListenerKinds()
+	listeners := 0
+	for _, kind := range natscallout.Kinds {
+		name := string(kind)
+		if name != "listener" && !strings.HasSuffix(name, "-listener") {
+			continue
+		}
+		listeners++
+		if !slices.Contains(answered, name) {
+			t.Errorf("the NATS auth service admits the listener kind %q, which GET %s does not answer: add it to listenerKinds (internal/cipher/api/routes_table.go)", name, privacyPath)
+		}
+	}
+	if listeners == 0 {
+		t.Fatalf("natscallout.Kinds (%v) declares no listener kind: this test walked nothing", natscallout.Kinds)
+	}
+	for _, name := range answered {
+		if !slices.Contains(natscallout.Kinds, natscallout.Kind(name)) {
+			t.Errorf("GET %s answers the kind %q, which the NATS auth service does not admit (natscallout.Kinds)", privacyPath, name)
+		}
 	}
 }

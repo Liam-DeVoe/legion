@@ -3,6 +3,7 @@ package natscallout
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
@@ -24,6 +25,12 @@ const (
 	KindDaemon   Kind = "daemon"
 	KindMeasure  Kind = "measure"
 )
+
+// Kinds is every kind the auth service admits, the one list ParseServices reads: an entry of any
+// other kind is refused. A listener's kind, its name listener or ending in -listener, is also a
+// kind the broker's GET /v1/project-privacy answers, which api.ListenerKinds must hold
+// (TestEveryListenerKindReadsProjectPrivacy, in internal/cipher/api).
+var Kinds = []Kind{KindDispatch, KindListener, KindDaemon, KindMeasure}
 
 // ServiceEntry is one service the auth service admits by its platform identity.
 type ServiceEntry struct {
@@ -113,6 +120,9 @@ func parseService(text string) (ServiceEntry, error) {
 		return ServiceEntry{}, form()
 	}
 	entry := ServiceEntry{Kind: Kind(parts[0])}
+	if !slices.Contains(Kinds, entry.Kind) {
+		return ServiceEntry{}, form()
+	}
 	machineID, scope := parts[1], parts[2]
 	switch entry.Kind {
 	case KindDispatch, KindListener:

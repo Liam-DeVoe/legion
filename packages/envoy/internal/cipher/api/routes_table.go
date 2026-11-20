@@ -247,9 +247,16 @@ func listenerAuth(h func(*server, http.ResponseWriter, *http.Request)) routeHand
 	}}
 }
 
-// listenerKinds are the BROKER_NATS_SERVICES kinds listenerAuth's routes answer. A kind the auth
-// service gains for Dispatch's own listener joins it.
+// listenerKinds are the BROKER_NATS_SERVICES kinds listenerAuth's routes answer: every kind
+// natscallout.Kinds declares for a listener, its name listener or ending in -listener. When the
+// auth service gains a listener kind, add it here in the same change, or that listener's privacy
+// read is refused 403 not_listener and it fails closed on every decision;
+// TestEveryListenerKindReadsProjectPrivacy fails until it is here.
 var listenerKinds = []string{"listener"}
+
+// ListenerKinds is a copy of listenerKinds, for that test, which reads natscallout's own list of
+// kinds: natscallout imports this package, so no test inside this package can import it.
+func ListenerKinds() []string { return slices.Clone(listenerKinds) }
 
 type apiRoute struct {
 	Method  string
