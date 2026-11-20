@@ -19,7 +19,7 @@ import (
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5/pgconn"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -182,7 +182,7 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 	limiter := admission.New(admission.DefaultLimits())
 	var ahead atomic.Int64
 	rig := newBrokerTokenRigOn(t, testServerOptions{streamHeartbeat: heartbeat, requestPoolSize: 2, admission: limiter},
-		func(options *brokertoken.Options) {
+		func(options *ciphertoken.Options) {
 			options.Now = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
 		})
 	caller := newBrokerCaller(t)
@@ -198,8 +198,8 @@ func TestARevokedBrokerTokenClosesTheLiveSocketWhateverTheRequestPoolHolds(t *te
 	release := holdTheShareOutsideAdmission(t, limiter.Outside())
 	defer release()
 
-	rig.broker.Says(token, brokertoken.Introspection{Active: false})
-	ahead.Store(int64(brokertoken.AffirmativeCacheTTL + time.Second))
+	rig.broker.Says(token, ciphertoken.Introspection{Active: false})
+	ahead.Store(int64(ciphertoken.AffirmativeCacheTTL + time.Second))
 	revoked := time.Now()
 	if closed := client.closeError(t, heartbeat+heartbeat/2); closed.Code != gws.ClosePolicyViolation {
 		t.Fatalf("the live socket closed with %d %q once the broker stopped holding its token live, want 1008", closed.Code, closed.Text)
@@ -328,7 +328,7 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 	broker := &heldIntrospections{release: make(chan struct{})}
 	answer := sync.OnceFunc(func() { close(broker.release) })
 	now := time.Now()
-	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *brokertoken.Options) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *ciphertoken.Options) {
 		options.HTTP = &http.Client{Transport: broker}
 		options.Now = func() time.Time { return now }
 	})
@@ -400,14 +400,14 @@ func TestABrokerSlowToAnswerHoldsNoPlaceOfTheShareOutsideAdmission(t *testing.T)
 // A DPoP presentation's decision asks the broker about its token once, and never under the place
 // it takes of the request pool's share outside admission: its proof is checked against the answer
 // the broker gave before the decision waited for that place (decidedBrokerToken,
-// brokertoken.Verifier.Prove). Every place is held as the presentation arrives, the verifier's
-// clock moves past the answer's cache entry (brokertoken.AffirmativeCacheTTL) while the decision
+// ciphertoken.Verifier.Prove). Every place is held as the presentation arrives, the verifier's
+// clock moves past the answer's cache entry (ciphertoken.AffirmativeCacheTTL) while the decision
 // waits, and a place is given back: the presentation is served, and the broker was asked once,
 // where the proof's check asked it again, under the place, for the answer the cache no longer held.
 func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T) {
 	limiter := admission.New(admission.DefaultLimits())
 	var ahead atomic.Int64
-	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *brokertoken.Options) {
+	rig := newBrokerTokenRigOn(t, testServerOptions{admission: limiter}, func(options *ciphertoken.Options) {
 		options.Now = func() time.Time { return time.Now().Add(time.Duration(ahead.Load())) }
 	})
 	caller := newBrokerCaller(t)
@@ -422,7 +422,7 @@ func TestADPoPDecisionAsksTheBrokerOnceHoweverLongItWaitsForAPlace(t *testing.T)
 	pollUntil(t, 10*time.Second, "the presentation's decision waiting for a place", func() bool {
 		return limiter.Outside().Stats().Queued == 1
 	})
-	ahead.Store(int64(brokertoken.AffirmativeCacheTTL + time.Second))
+	ahead.Store(int64(ciphertoken.AffirmativeCacheTTL + time.Second))
 	release()
 
 	var response *httptest.ResponseRecorder

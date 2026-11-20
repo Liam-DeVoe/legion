@@ -25,7 +25,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/reearth/ygo/persistence"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/admission"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
@@ -86,7 +86,7 @@ type testServerOptions struct {
 	// is, because the verifier's DPoP replay store is a table of it (store.NewDPoPProofs); nil
 	// is the deployment with no broker, which is every test but broker_token_test.go's and
 	// project_scope_test.go's, and answers such a presentation 401 UNAUTHORIZED.
-	brokerTokens func(*store.Store) *brokertoken.Verifier
+	brokerTokens func(*store.Store) *ciphertoken.Verifier
 	// identity resolves a cookie caller; nil is headerIdentity, which names the person the
 	// X-Dispatch-User header names.
 	identity identity.Identity
@@ -318,7 +318,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.persistence != nil {
 		documentPersistence = options.persistence(database)
 	}
-	var brokerTokens *brokertoken.Verifier
+	var brokerTokens *ciphertoken.Verifier
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
