@@ -100,6 +100,8 @@ note() { echo "   $*"; }
 fail() { echo "FAIL $check: $*" >&2; exit 1; }
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 
 # stop_omp PID ends one Oh My Pi the driver started, and only while it still carries the run's mark
 # (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process since
@@ -125,6 +127,7 @@ cleanup() {
   fi
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$holder_pid"
   stop_pid "$nats_pid"
   if [ -n "$database_created" ]; then
@@ -230,14 +233,16 @@ database_created=1
   printf 'Authorization: Bearer %s\n' "$(cat "$work/envoy-token")" >"$work/envoy-auth-header")
 listener() { curl -fsS -H "@$work/envoy-auth-header" "$@"; }
 # Neither service inherits this shell (dispatch-user-turns.sh's reasoning): a HOME or XDG directory
-# holding legion/envoy.json would hand Dispatch a production configuration. Each serves on a socket
-# held from the choice of its port until it serves (rig.sh's start_held), and under `env -i` names
-# its descriptor variable itself. A held socket queues a connection until its service serves, so
-# each readiness poll carries a timeout of its own.
+# holding legion/envoy.json would hand Dispatch a production configuration. Dispatch has an identity
+# of its own at the listener (lib/dispatch-identity.sh), as a deployment gives it. Each serves on a
+# socket held from the choice of its port until it serves (rig.sh's start_held), and under `env -i`
+# names its descriptor variable itself. A held socket queues a connection until its service serves,
+# so each readiness poll carries a timeout of its own.
+dispatch_identity_start
 start_held listener envoy_port ENVOY_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 PORT='{port}' \
   ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-session-settings-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener"
+  "${dispatch_identity_listener_env[@]}" "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener --max-time 5 "http://127.0.0.1:$envoy_port/v1/sessions"
 start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
@@ -246,7 +251,7 @@ start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
   DISPATCH_LISTEN_FD=3 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
   DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
   DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
+  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
   "$work/dispatch"
 until_true 120 "Dispatch to serve, with NATS" sh -c "curl -fsS --max-time 5 http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 
