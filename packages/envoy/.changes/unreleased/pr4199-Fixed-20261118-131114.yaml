@@ -19,9 +19,9 @@ body: |-
   answers `superseded` (`superseded_by` names the applied generation), where before it could
   restore the older refusal and lift the newer one. When Dispatch's own loop gets that answer
   the two databases disagree, so it leaves the revocation owed, logs an error and counts it on
-  `envoy_dispatch_broker_revocations_superseded_total` (alert on it above 0); the runbook gives
-  the recovery, which starts with a sweep of every address below the broker's generation and
-  leaves the broker's refusal of a restored stale holder in place.
+  `envoy_dispatch_broker_revocations_superseded_total` (alert on it above 0); a lone Dispatch
+  restore requires the runbook's deployment reset, which ends every credential and settles every
+  restored revocation before Dispatch starts again.
   The guards on recorded times compare with the later of the statement's and the database's
   clock, so a backward clock step refuses no writer's own stamp, and run under a search_path of
   their own taken from the schema the migration ran in. Restore or reset Dispatch's and the

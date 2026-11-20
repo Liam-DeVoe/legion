@@ -199,6 +199,17 @@ func TestAccessWritesRefuseWhatTheRuleCannotHold(t *testing.T) {
 			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "alice\x07@example.com", by)
 			return err
 		}, ErrPrincipalInput, "control"},
+		// fold.ASCII lowers A-Z alone, and the people table holds only lower(email), so a capital
+		// beyond A-Z names nobody who could sign in: it is refused as input, not left to the
+		// column's check, which would answer 500.
+		{"an email with a capital letter beyond A-Z", func(tx pgx.Tx) error {
+			_, _, err := AddPrincipal(ctx, tx, broker, "PUB", PrincipalPerson, "\u00c4@example.com", by)
+			return err
+		}, ErrPrincipalInput, "lowercase"},
+		{"a group member with a capital letter beyond A-Z", func(tx pgx.Tx) error {
+			_, _, err := PutGroup(ctx, tx, broker, "accents", olga, []string{dave, "\u00c4@example.com"}, by)
+			return err
+		}, ErrPrincipalInput, "lowercase"},
 		{"a group member who is restricted", func(tx pgx.Tx) error {
 			_, _, err := PutGroup(ctx, tx, broker, "mixed", olga, []string{dave, bob}, by)
 			return err

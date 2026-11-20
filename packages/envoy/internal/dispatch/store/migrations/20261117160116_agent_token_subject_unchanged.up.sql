@@ -10,7 +10,7 @@
 -- (`before update of`), so a write that names neither (a token's revoke, its last use, its
 -- scopes) costs nothing, and one that restates them passes. The function's name is Dispatch's
 -- own: the broker's migrations may share this schema (CI runs both sets on one database), and
--- broker migration 0038 has a function of its own for the same refusal
+-- broker migration 0041 has a function of its own for the same refusal
 -- (TestTheBrokerAndDispatchSchemasShareOneDatabase).
 create function refuse_agent_token_account_change() returns trigger language plpgsql as $$
 begin

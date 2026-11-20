@@ -80,7 +80,7 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 // existed. The node arm upserts `do nothing`, which locks no row that is already there, and
 // ask_followers carries no key into the store, so which of the two arms Postgres runs first moves
 // no lock of the store's order. A session id past the store's address bound is no node the store
-// can key, and the follow then writes the follower row alone, as graphstore.SessionRecorded
+// can key, and the follow then writes the follower row alone, as graphstore.QueueSessionRecorded
 // writes nothing for such a session.
 //
 // A follow whose cause comes later states no base attribute in that statement and holds the
@@ -148,6 +148,22 @@ func QueueFollowAuthor(b *store.WriteBatch, askID string, author model.Actor, at
 		return graphstore.Uncaused{}, nil
 	}
 	return queueFollow(b, askID, author.ID, author, at, event, nil)
+}
+
+// Follows reports whether sessionID already follows askID: the read a route that queues its follow
+// (QueueFollowAuthor) makes in its read phase, since no statement's result is read before the
+// write phase sends the next.
+func Follows(ctx context.Context, db Queryer, askID, sessionID string) (bool, error) {
+	rows, err := db.Query(ctx, `select 1 from ask_followers where ask_id = $1 and session_id = $2`, askID, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+	}
+	defer rows.Close()
+	follows := rows.Next()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("read whether %q follows ask %q: %w", sessionID, askID, err)
+	}
+	return follows, nil
 }
 
 // Unfollow removes sessionID from askID's followers and reports whether a row went.

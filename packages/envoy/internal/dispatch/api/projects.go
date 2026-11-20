@@ -98,13 +98,38 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The person the call acts for, if any, owns what it creates. A restricted member creates no
-	// project: this route is a write of the deployment (scopeDeployment, routes_table.go), which
+	// The person the call acts for, if any, owns what it creates, and a restricted member creates
+	// no project: this route is a write of the deployment (scopeDeployment, routes_table.go), which
 	// withinProjectScope refuses to every viewer that is not open, a restricted member with 403
-	// RESTRICTED_MEMBER, before this handler runs. No person: the owner is left to the insert,
-	// which gives a project with none its default assignee (projects_owner_from_default).
+	// RESTRICTED_MEMBER, before this handler runs; the check below holds the same rule for a caller
+	// the gate reads as open, before anything is checked or written.
+	creator, acts := actorPerson(actor)
+	// owns says whether the creator owns what they create: an owner is a full member who has
+	// signed in, as access.SetOwner holds every later owner to. A person no people row holds, whom
+	// only a broker token can act for, owns nothing; the create then reads as one by a credential
+	// acting for nobody, below, and the project goes to its default assignee.
+	owns := false
+	if acts {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, creator)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind == model.MemberRestricted {
+			writeError(w, "RESTRICTED_MEMBER", http.StatusForbidden, "a restricted member cannot create a project")
+			return
+		}
+		owns = kind == model.MemberFull
+	}
+	// Otherwise the owner is left to the insert, which gives a project with none its default
+	// assignee (projects_owner_from_default).
 	var owner *string
-	if creator, acts := actorPerson(actor); acts {
+	if owns {
 		owner = new(model.CanonicalLogin(creator))
 	}
 	input.Key = strings.TrimSpace(input.Key)
@@ -159,13 +184,24 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// A call that acts for nobody leaves the owner to the insert, which takes the default assignee
-	// (projects_owner_from_default), so that person is held to the rule every owner is: a full
-	// member, as a transfer holds one (access.OwnerAllowed), else 400 OWNER_NOT_ALLOWED. The default
-	// assignee keeps allowedLogin's rule.
-	if owner == nil {
-		if _, err := access.OwnerAllowed(r.Context(), s.deps.Store.Pool, projectDefault); err != nil {
-			s.writeAccessError(w, err)
+	// A create the creator does not own leaves the owner to the insert, which makes the project
+	// its default assignee's (projects_owner_from_default). An owner is a full member, as access
+	// SetOwner holds every later owner to, so a default the insert would make a restricted member's
+	// owner is refused before anything is written.
+	if !owns {
+		pool, err := s.readyPool()
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		kind, err := access.MemberKind(r.Context(), pool, projectDefault)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if kind != model.MemberFull {
+			writeError(w, "OWNER_NOT_ALLOWED", http.StatusBadRequest,
+				"the project's owner is its default_assignee, since this credential acts for no full member who has signed in, and an owner is a full member")
 			return
 		}
 	}

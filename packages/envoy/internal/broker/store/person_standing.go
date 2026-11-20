@@ -9,7 +9,7 @@ import (
 )
 
 // The broker keeps the last answer Dispatch gave it for each person, whether Dispatch holds them,
-// in 0040's person_standing, so that while Dispatch cannot be asked the hold gate
+// in 0043's person_standing, so that while Dispatch cannot be asked the hold gate
 // (internal/broker/hold) answers from it: a person last answered held stays held, and a restart or
 // a second broker process answers as this one does. Every process writes the answers its own asks
 // fetched, so the row keeps the latest by Dispatch's own clock, the answer's as_of, and never by

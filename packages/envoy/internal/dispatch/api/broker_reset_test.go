@@ -175,13 +175,18 @@ type directoryUser struct {
 	PrimaryEmail string `json:"primaryEmail"`
 }
 
+// directoryAnswer is one response of the directory stand-in. A zero Status is 200, and a missing
+// address is 404 as users.get answers an account the organization does not hold.
+type directoryAnswer struct {
+	User   directoryUser
+	Status int
+}
+
 // clearHoldersRefusals runs the reset's third block itself, through bash, psql and jq, against the
 // broker's database: the runbook's step that makes the libpq URL, then the block. A stand-in for
-// curl answers each address from directory, the Workspace directory's users.get, or 404 for an
-// address directory leaves out, as the directory answers someone from outside the domain and a
-// deleted user. It answers the block's output. It skips the test where bash, psql or jq is not
-// installed, since nothing else shows what the shell does with the block.
-func (r *recoveryRig) clearHoldersRefusals(t *testing.T, directory map[string]directoryUser) string {
+// curl answers each address from directory. It returns the block's output and its status so tests
+// hold both a 404 that leaves a refusal and a non-404 failure that makes the block fail.
+func (r *recoveryRig) clearHoldersRefusals(t *testing.T, directory map[string]directoryAnswer) (string, error) {
 	t.Helper()
 	for _, tool := range []string{"bash", "psql", "jq"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -190,15 +195,26 @@ func (r *recoveryRig) clearHoldersRefusals(t *testing.T, directory map[string]di
 	}
 	dir := t.TempDir()
 	answers := filepath.Join(dir, "directory")
+	statuses := filepath.Join(dir, "status")
 	if err := os.Mkdir(answers, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for address, user := range directory {
-		raw, err := json.Marshal(user)
+	if err := os.Mkdir(statuses, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for address, answer := range directory {
+		raw, err := json.Marshal(answer.User)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(answers, address), raw, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		status := answer.Status
+		if status == 0 {
+			status = 200
+		}
+		if err := os.WriteFile(filepath.Join(statuses, address), []byte(strconv.Itoa(status)), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -206,14 +222,26 @@ func (r *recoveryRig) clearHoldersRefusals(t *testing.T, directory map[string]di
 	if err := os.Mkdir(stubs, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	// The stand-in for the directory's users.get: the address from the URL's path, the answer from
-	// the test's directory, 404 and exit 22 (curl's --fail-with-body) for an address it holds none for.
+	// The stand-in for users.get writes its JSON body and, when curl asked for it, the status
+	// trailer curl's -w '%{http_code}' prints. A missing address is a 404 and curl exits 22 for
+	// every non-200, as --fail-with-body does.
 	curl := `#!/bin/sh
-for arg; do url=$arg; done
+write=
+for arg; do
+  case "$arg" in *'%{http_code}'*) write=1;; esac
+  url=$arg
+done
 address=${url#*/users/}
 address=${address%%\?*}
-if [ -f "$DIRECTORY_ANSWERS/$address" ]; then cat "$DIRECTORY_ANSWERS/$address"; exit 0; fi
-echo '{"error":{"code":404,"message":"Resource Not Found: userKey"}}'
+status=404
+body='{"error":{"code":404,"message":"Resource Not Found: userKey"}}'
+if [ -f "$DIRECTORY_ANSWERS/$address" ]; then
+  body=$(cat "$DIRECTORY_ANSWERS/$address")
+  status=$(cat "$DIRECTORY_STATUSES/$address")
+fi
+printf '%s' "$body"
+[ -z "$write" ] || printf '\n%s' "$status"
+[ "$status" = 200 ] && exit 0
 exit 22
 `
 	if err := os.WriteFile(filepath.Join(stubs, "curl"), []byte(curl), 0o700); err != nil {
@@ -231,12 +259,10 @@ exit 22
 		"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"BROKER_DATABASE_URL="+psqlURL(t, r.rig.Store.Pool),
 		"DIRECTORY_TOKEN=not-a-secret",
-		"DIRECTORY_ANSWERS="+answers)
+		"DIRECTORY_ANSWERS="+answers,
+		"DIRECTORY_STATUSES="+statuses)
 	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("the reset's directory block: %v\n%s", err, output)
-	}
-	return string(output)
+	return string(output), err
 }
 
 // approveAs asks the broker to approve a new machine login of email, naming account as the
@@ -304,27 +330,33 @@ func (r *recoveryRig) personalToken(t *testing.T, email, account string) string 
 //   - takeback@ (F3): the take-back the lost database still owed leaves the broker refusing H,
 //     Google's holder, and N, an account that held the address once; Dispatch, restored, records
 //     the stale S. The directory names H.
+//   - owedrow@: the restored database still owes X's revoke though the broker already applied it;
+//     X took the address back after the backup, and the directory names X. The reset settles its
+//     restored debt before clearing X, so the first pass after the reset cannot refuse X again.
 //   - alias@: the directory answers users.get of the address with another user, whose
 //     primaryEmail is not the address (users.get answers an alias), and that user's id is an
 //     account the broker refuses here.
 //   - outside@: the directory answers 404, as it does for someone from outside the domain and a
 //     deleted user; the broker refuses O.
 //
-// After the reset's first block every session is raised and every personal token revoked (the
-// store test holds the cookies), after its second no person credential is live at the broker and
-// its read says so, and after its third the broker no longer refuses the directory's holder at
-// takeback@ and refuses every other account it refused. Then each holder signs in to Dispatch:
-// the sign-in replaces the restored account at the raised generation, the loop pays that
-// revocation, and the broker refuses A and S. Each holder's approve is approved; an approve by A,
-// S, X, N and the alias's account is refused APPROVER_REPLACED.
+// After the reset's first block every session is raised, every personal token revoked and every
+// restored debt settled (the store test holds the cookies), after its second no person credential is
+// live at the broker and its read says so, and after its third the broker no longer refuses the
+// directory's holder at takeback@ or owedrow@ and refuses every other account it refused. Then each
+// holder signs in to Dispatch: the sign-in replaces the restored account at the raised generation,
+// the loop pays that revocation, and the broker refuses A and S. The directory's owedrow@ holder
+// can make a broker sign-in and approve before Dispatch starts and stays live after its first pass.
+// Each holder's approve is approved; an approve by A, S, X, N and the alias's account is refused
+// APPROVER_REPLACED.
 //
 // Controls, each a break of the runbook restored by checksum: the credentials block without its
 // call that revokes a sign-in (STILL LIVE names it); the directory block without its primaryEmail
-// comparison (the alias's account is cleared and approves).
+// comparison (the alias's account is cleared and approves); and the first block without its
+// settlement (the owedrow@ holder is refused again and its sign-in ends).
 func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T) {
 	ctx := context.Background()
 	r := newRecoveryRig(t)
-	const unapplied, noAccount, takeback, alias, outside = "unapplied@example.com", "noaccount@example.com", "takeback@example.com", "alias@example.com", "outside@example.com"
+	const unapplied, noAccount, takeback, owed, kept, alias, outside = "unapplied@example.com", "noaccount@example.com", "takeback@example.com", "owedrow@example.com", "kept@example.com", "alias@example.com", "outside@example.com"
 
 	// unapplied@: Dispatch, restored, records A; A's credentials at the broker are live.
 	if err := r.people.SignInSubject(ctx, unapplied, "a-unapplied", "refresh-a", "", model.MemberFull); err != nil {
@@ -346,23 +378,62 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	}
 	r.revoke(t, takeback, "h-takeback", "s-takeback", 4)
 	r.revoke(t, takeback, "n-takeback", "s-takeback", 5)
+	// owedrow@: the broker applied X's revoke before the backup, but restored Dispatch still owes
+	// it. X then took the address back without that history reaching the broker, so the directory
+	// clears X. The first block must settle the restored row before Dispatch starts again.
+	if err := r.people.SignInSubject(ctx, owed, "x-owed", "refresh-x", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.people.SignInSubject(ctx, owed, "y-owed", "refresh-y", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	owedRows, err := r.revocations.Owing(ctx, owed)
+	if err != nil || len(owedRows) != 1 || owedRows[0].SessionGeneration == nil {
+		t.Fatalf("the restored database owes %+v at %s, %v; want X's one revocation carrying a generation", owedRows, owed, err)
+	}
+	r.revoke(t, owed, owedRows[0].Subject, owedRows[0].HolderSubject, *owedRows[0].SessionGeneration)
+	// kept@: broker T is refused already, while restored Dispatch still owes S's revoke naming T.
+	// The directory names H, so it keeps T's refusal. A stale first pass would apply S's revoke
+	// and delete T's refusal; the reset's settlement makes that impossible.
+	if err := r.people.SignInSubject(ctx, kept, "s-kept", "refresh-s", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.people.SignInSubject(ctx, kept, "t-kept", "refresh-t", "", model.MemberFull); err != nil {
+		t.Fatal(err)
+	}
+	keptRows, err := r.revocations.Owing(ctx, kept)
+	if err != nil || len(keptRows) != 1 || keptRows[0].SessionGeneration == nil {
+		t.Fatalf("the restored database owes %+v at %s, %v; want S's one revocation carrying a generation", keptRows, kept, err)
+	}
+	r.revoke(t, kept, "t-kept", "u-kept", 1)
 	// alias@ and outside@: refusals the directory gives no holder for.
 	r.revoke(t, alias, "n-alias", "h-alias", 2)
 	r.revoke(t, outside, "o-outside", "h-outside", 2)
-	directory := map[string]directoryUser{
-		unapplied: {ID: "b-unapplied", PrimaryEmail: unapplied},
-		noAccount: {ID: "h-noaccount", PrimaryEmail: noAccount},
-		takeback:  {ID: "h-takeback", PrimaryEmail: strings.ToUpper(takeback)},
-		alias:     {ID: "n-alias", PrimaryEmail: "someone-else@example.com"},
+	directory := map[string]directoryAnswer{
+		unapplied: {User: directoryUser{ID: "b-unapplied", PrimaryEmail: unapplied}},
+		noAccount: {User: directoryUser{ID: "h-noaccount", PrimaryEmail: noAccount}},
+		takeback:  {User: directoryUser{ID: "h-takeback", PrimaryEmail: strings.ToUpper(takeback)}},
+		owed:      {User: directoryUser{ID: "x-owed", PrimaryEmail: owed}},
+		kept:      {User: directoryUser{ID: "h-kept", PrimaryEmail: kept}},
+		alias:     {User: directoryUser{ID: "n-alias", PrimaryEmail: "someone-else@example.com"}},
 	}
 	if live := readCredentialsBlock(t).live(t, r); len(live) == 0 {
 		t.Fatal("control: before the reset no person credential is live at the broker; the test would show nothing")
 	}
 
 	raised := r.resetSessions(t)
+	if reset := strings.Join(runbookBlockAfter(t, resetSessionsLead).lines, "\n"); !strings.Contains(reset, "lock table session_generation_floors, user_sessions, agent_tokens, broker_revocations in exclusive mode") {
+		t.Errorf("the reset's transaction does not lock broker_revocations beside its other rows:\n%s", reset)
+	}
 	var revoked bool
 	if err := r.dispatch.Pool.QueryRow(ctx, `select revoked_at is not null from agent_tokens where id = $1::uuid`, token).Scan(&revoked); err != nil || !revoked {
 		t.Errorf("after the reset A's personal token at %s is revoked %t, %v; want revoked", unapplied, revoked, err)
+	}
+	if owing, err := r.revocations.Owing(ctx, owed); err != nil || len(owing) != 0 {
+		t.Errorf("after the reset's first block %s owes %+v, %v; want its restored revocation settled before the directory clears its holder", owed, owing, err)
+	}
+	if owing, err := r.revocations.Owing(ctx, kept); err != nil || len(owing) != 0 {
+		t.Errorf("after the reset's first block %s owes %+v, %v; want its restored revocation settled before the directory keeps T's refusal", kept, owing, err)
 	}
 	if left := r.endBrokerCredentials(t); len(left) != 0 {
 		t.Errorf("STILL LIVE after the reset's credentials block:\n%s", strings.Join(left, "\n"))
@@ -374,8 +445,15 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 	if err := r.rig.Store.Pool.QueryRow(ctx, `select revoked_at is null from launcher_credentials where id = $1::uuid`, machineLogin).Scan(&loginLive); err != nil || loginLive {
 		t.Errorf("after the reset A's machine login at %s is live %t, %v; want it revoked", unapplied, loginLive, err)
 	}
-	output := r.clearHoldersRefusals(t, directory)
-	for _, want := range []string{"HOLDER " + takeback + " h-takeback", "NO ACCOUNT " + alias, "NO ACCOUNT " + outside} {
+	var pageSessionsLive int
+	if err := r.rig.Store.Pool.QueryRow(ctx, `select count(*) from browser_sessions where login = $1 and expires_at > now()`, unapplied).Scan(&pageSessionsLive); err != nil || pageSessionsLive != 0 {
+		t.Errorf("after the reset A's approval-page sessions at %s are live %d (%v); want none", unapplied, pageSessionsLive, err)
+	}
+	output, err := r.clearHoldersRefusals(t, directory)
+	if err != nil {
+		t.Fatalf("the reset's directory block: %v\n%s", err, output)
+	}
+	for _, want := range []string{"HOLDER " + takeback + " h-takeback", "HOLDER " + owed + " x-owed", "HOLDER " + kept + " h-kept", "NO ACCOUNT " + alias, "NO ACCOUNT " + outside} {
 		if !strings.Contains(output, want) {
 			t.Errorf("the directory block printed:\n%s\nwant a line %q", output, want)
 		}
@@ -387,6 +465,8 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 		{noAccount, "x-noaccount", true},
 		{takeback, "h-takeback", false},
 		{takeback, "n-takeback", true},
+		{owed, "x-owed", false},
+		{kept, "t-kept", true},
 		{alias, "n-alias", true},
 		{outside, "o-outside", true},
 	} {
@@ -394,8 +474,25 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 			t.Errorf("after the directory block the broker refuses %s at %s %t, want %t", refusal.account, refusal.email, got, refusal.want)
 		}
 	}
+	// X can sign in and approve at the broker after the directory clears X and before Dispatch
+	// starts. A restored row the first block did not settle would re-refuse X and end this sign-in.
+	owedSignIn := r.signInMachine(t, owed, "x-owed", strings.Repeat("o", 43))
+	owedGeneration, found, err := store.NewPgSessionStore(r.dispatch.Pool).CurrentSessionGeneration(ctx, owed)
+	if err != nil || !found || owedGeneration < raised {
+		t.Fatalf("%s's session generation after the reset is %d (found %t, %v); want at least the reset's %d", owed, owedGeneration, found, err, raised)
+	}
+	if err := r.approveAs(t, owed, "x-owed", owedGeneration); err != nil {
+		t.Errorf("the directory's owedrow@ holder X approves after the reset: %v; want it approved", err)
+	}
+	// This is Dispatch's first pass, before anyone signs in again. A restored owed S→T row that
+	// step 1 left owed would apply here and lift T's directory-kept refusal.
+	r.ageClaims(t)
+	r.served.revokeOwedBrokerCredentials(ctx)
+	if !r.refused(t, kept, "t-kept") {
+		t.Errorf("after the first pass, the broker does not refuse T at %s; want the directory-kept refusal unchanged", kept)
+	}
 
-	// Dispatch is started again, and each holder signs in.
+	// Dispatch is started again, and each holder signs in only after that first pass.
 	for _, holder := range []struct{ email, account string }{
 		{unapplied, "b-unapplied"}, {noAccount, "h-noaccount"}, {takeback, "h-takeback"},
 	} {
@@ -409,6 +506,9 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 		if !r.refused(t, replaced.email, replaced.account) {
 			t.Errorf("after the holder's sign-in and a pass, the broker does not refuse %s at %s; want it refused", replaced.account, replaced.email)
 		}
+	}
+	if r.refused(t, owed, "x-owed") || !r.machineSignInLive(t, owedSignIn) {
+		t.Errorf("after Dispatch's first pass, the directory's owedrow@ holder X is refused %t and its sign-in live %t; want not refused and live", r.refused(t, owed, "x-owed"), r.machineSignInLive(t, owedSignIn))
 	}
 	for _, holder := range []struct{ email, account string }{
 		{unapplied, "b-unapplied"}, {noAccount, "h-noaccount"}, {takeback, "h-takeback"},
@@ -429,5 +529,110 @@ func TestTheResetEndsEveryCredentialAndClearsOnlyTheHoldersRefusal(t *testing.T)
 		if !errors.As(err, &refusal) || refusal.Status != 403 || refusal.Code != "APPROVER_REPLACED" {
 			t.Errorf("an approve by %s at %s answered %v (%+v); want it refused 403 APPROVER_REPLACED", other.account, other.email, err, refusal)
 		}
+	}
+}
+
+// TestTheResetDirectoryBlockReportsEveryUnusableStatus gives each non-200, non-404 directory
+// answer a refusal to leave alone. The block must say that the read is unknown, name its status
+// and fail, rather than call an unavailable directory account no account.
+func TestTheResetDirectoryBlockReportsEveryUnusableStatus(t *testing.T) {
+	r := newRecoveryRig(t)
+	cases := []struct {
+		email  string
+		status int
+	}{
+		{"directory-401@example.com", 401},
+		{"directory-403@example.com", 403},
+		{"directory-429@example.com", 429},
+		{"directory-503@example.com", 503},
+	}
+	for _, test := range cases {
+		r.revoke(t, test.email, "refused-"+strconv.Itoa(test.status), "holder-"+strconv.Itoa(test.status), int64(test.status))
+	}
+	r.revoke(t, "directory-404@example.com", "refused-404", "holder-404", 404)
+
+	directory := map[string]directoryAnswer{}
+	for _, test := range cases {
+		directory[test.email] = directoryAnswer{Status: test.status}
+	}
+	output, err := r.clearHoldersRefusals(t, directory)
+	if err == nil {
+		t.Fatalf("the directory block answered success:\n%s\nwant failure after its unavailable directory reads", output)
+	}
+	for _, test := range cases {
+		want := "UNKNOWN " + test.email + ": the directory read failed (" + strconv.Itoa(test.status) + ")"
+		if !strings.Contains(output, want) {
+			t.Errorf("the directory block printed:\n%s\nwant %q", output, want)
+		}
+		if !r.refused(t, test.email, "refused-"+strconv.Itoa(test.status)) {
+			t.Errorf("the directory block cleared the refusal after its %d read at %s; want it left", test.status, test.email)
+		}
+	}
+	if !strings.Contains(output, "NO ACCOUNT directory-404@example.com") {
+		t.Errorf("the directory block printed:\n%s\nwant its 404 as NO ACCOUNT", output)
+	}
+	if !r.refused(t, "directory-404@example.com", "refused-404") {
+		t.Error("the directory block cleared the refusal after its 404; want it left")
+	}
+}
+
+// TestTheResetCredentialsPageLoopGivesBrokerRunNoStdin runs the page-session loop itself. Its
+// broker_run stand-in reads stdin, as kubectl run -i, docker run -i or ssh can. With stdin from
+// /dev/null it ends every listed login; without the redirect its first run consumes the remaining
+// logins from the loop.
+func TestTheResetCredentialsPageLoopGivesBrokerRunNoStdin(t *testing.T) {
+	for _, tool := range []string{"bash"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed, so the page-session loop cannot be run here: %v", tool, err)
+		}
+	}
+	block := readCredentialsBlock(t)
+	const runner = `broker_run() { '<the command that runs its arguments where your deployment runs a broker subcommand>' "$@"; }`
+	const standIn = `broker_run() { cat >/dev/null; printf 'ENDED %s\n' "$3"; }`
+	text := strings.Replace(block.text, runner, standIn, 1)
+	if text == block.text {
+		t.Fatalf("the runbook's page-session loop has no broker_run declaration %q:\n%s", runner, block.text)
+	}
+	dir := t.TempDir()
+	stubs := filepath.Join(dir, "bin")
+	if err := os.Mkdir(stubs, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	kubectl := "#!/bin/sh\nprintf token\n"
+	if err := os.WriteFile(filepath.Join(stubs, "kubectl"), []byte(kubectl), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	psql := `#!/bin/sh
+case "$*" in
+  *"browser_sessions"*)
+    if [ ! -e "$PAGES_SEEN" ]; then
+      printf 'a@example.com\nb@example.com\nc@example.com\n'
+      : >"$PAGES_SEEN"
+    fi
+    ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(stubs, "psql"), []byte(psql), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(dir, "credentials.sh")
+	if err := os.WriteFile(script, []byte(text+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", script)
+	command.Env = append(os.Environ(),
+		"PATH="+stubs+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PAGES_SEEN="+filepath.Join(dir, "pages-seen"))
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the credentials block: %v\n%s", err, output)
+	}
+	for _, login := range []string{"a@example.com", "b@example.com", "c@example.com"} {
+		if !strings.Contains(string(output), "ENDED "+login) {
+			t.Errorf("a broker_run stand-in that reads stdin ended no %s:\n%s", login, output)
+		}
+	}
+	if !strings.Contains(block.text, `broker_run envoy-broker end-sessions "$login" </dev/null`) {
+		t.Errorf("the runbook's page-session loop is missing </dev/null:\n%s", block.text)
 	}
 }
