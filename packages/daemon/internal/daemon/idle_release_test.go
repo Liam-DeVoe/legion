@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -65,6 +66,13 @@ type releaseRuntime struct {
 	// Sandbox suspended, waiting its pod out and deleting it, with the pod lock held and no read
 	// of the store left. A test sets it before the drain.
 	afterAuthorize func()
+	// failAfterAuthorize, when set, is the error the teardown returns once the last read has
+	// answered that the pod goes, without counting a teardown: the runtime failed there, a
+	// runtime.PodUntouchedError before it touched the pod (the Sandbox's read failed) and any other
+	// error after. A teardown whose context ended there — the daemon stopped between its last read
+	// and its first call to the cluster — fails as production's read of the Sandbox then fails, with
+	// a runtime.PodUntouchedError of the context's error.
+	failAfterAuthorize error
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -112,10 +120,16 @@ func (r *releaseRuntime) teardown(ctx context.Context, method string, authorize 
 		return err
 	}
 	r.mu.Lock()
-	after := r.afterAuthorize
+	after, failure := r.afterAuthorize, r.failAfterAuthorize
 	r.mu.Unlock()
 	if act && after != nil {
 		after()
+	}
+	if act && ctx.Err() != nil {
+		return &runtime.PodUntouchedError{Err: fmt.Errorf("release issue: read Sandbox: %w", ctx.Err())}
+	}
+	if act && failure != nil {
+		return failure
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

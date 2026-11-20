@@ -42,15 +42,7 @@ func TestTheTeardownOfAReleaseThatSuspendsNoRoleReadsTheOperatorsSuspension(t *t
 			st := migratedStore(t)
 			ctx := context.Background()
 			openRunningTree(t, st)
-			role, suspended := "", []string{}
-			if tc.kind == releaseKindIdle {
-				role, suspended = string(claim.RoleArchitect), []string{string(claim.RoleArchitect)}
-			}
-			if _, err := st.Pool().Exec(ctx, `insert into issue_releases
-				(project, issue, generation, first_row, boundary_row, last_row, started_row, role, kind, suspended, marked_at)
-				values ('legion', $1, 1, 10, 10, 10, 0, $2, $3, $4, now())`, rootIssue, role, tc.kind, suspended); err != nil {
-				t.Fatalf("mark the %s release: %v", tc.kind, err)
-			}
+			markOfKind(t, st, rootIssue, tc.kind)
 			tokenOf := func(role claim.Role) claim.Token {
 				t.Helper()
 				token, err := claim.NewToken("legion", rootIssue, role)

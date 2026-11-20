@@ -63,11 +63,13 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
 // the store through AdmitClaim, which binds it to its tree's open lifecycle first; PutClaim alone
 // writes historical state in migrations and test fixtures. A write that can queue a role-holder
-// publication, and a write of an operator's suspension, which putClaim's guard reads against the
-// release of the claim's issue pod (refuseOperatorTakeOver), is one transaction with what goes
-// with it (putClaim); any other write is one statement on the pool, with no transaction around it.
+// publication is one transaction with the publication it queues (putClaim); a write that can queue
+// none (queuesRoleHolders) is one statement on the pool, with no transaction around it. Every
+// statement that writes a claim meets the database's refusal of a write past a release's take of
+// the claim's issue pod (the trigger claims_refused_past_a_release_take), which upsertClaim answers
+// by name (takeRefusal).
 func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
-	if !s.queuesRoleHolders(c) && !operatorSuspension(c) {
+	if !s.queuesRoleHolders(c) {
 		return upsertClaim(ctx, s.pool, c)
 	}
 	var queued bool
@@ -302,9 +304,6 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // and its publication together, or neither; PutClaim alone writes on the pool when it can queue
 // none, since then nothing goes with the write.
 func (s *Store) putClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) (bool, error) {
-	if err := refuseOperatorTakeOver(ctx, tx, c); err != nil {
-		return false, err
-	}
 	if !s.queuesRoleHolders(c) {
 		return false, upsertClaim(ctx, tx, c)
 	}
@@ -517,6 +516,9 @@ func upsertClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.Handshake.Entry, int64(c.Handshake.Generation), instant(c.Handshake.QueuedAt), instant(c.Handshake.ConfirmedAt),
 	)
 	if err != nil {
+		if refused := takeRefusal(err, c); refused != nil {
+			return refused
+		}
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
 	}
 	return nil

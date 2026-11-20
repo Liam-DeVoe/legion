@@ -269,13 +269,13 @@ func suspendedAgain(m *Machine, ctx context.Context, ev Event) error {
 	return m.persist(ctx)
 }
 
-// PodTakenError is a write of an operator's suspension of a stopped claim that the store refused
-// because the release of the claim's issue pod has taken that pod (the store's claim write guards
-// every such write): the release's teardown read the store for the last time, found no
-// operator's suspension, and the runtime is deleting the pod on that read. A suspension made now
-// would keep no pod. Release is the release's id (issue_releases.id) and Sandbox the Sandbox its
-// teardown takes, "" where the runtime named none. No write it refused is owed (writeOwed): the
-// same write is refused until the release ends.
+// PodTakenError is a write of an operator's suspension of a claim that the store refused because
+// the release of the claim's issue pod has taken that pod (the database refuses every such
+// write): the release's teardown read the store for the last time,
+// found no operator's suspension, and the runtime is deleting the pod on that read. A suspension
+// made now would keep no pod. Release is the release's id (issue_releases.id) and Sandbox the
+// Sandbox its teardown takes, "" where the runtime named none. No write it refused is owed
+// (writeOwed): the same write is refused until the release ends.
 type PodTakenError struct {
 	Issue   string
 	Release int64
@@ -283,12 +283,37 @@ type PodTakenError struct {
 }
 
 func (e *PodTakenError) Error() string {
-	pod := "the issue's pod"
-	if e.Sandbox != "" {
-		pod += " (Sandbox " + e.Sandbox + ")"
-	}
 	return fmt.Sprintf("release %d of %s is deleting %s: its last read found no operator's suspension, so a suspension now would keep no pod; the claim is left as it was, and it can be suspended again once the release ends",
-		e.Release, e.Issue, pod)
+		e.Release, e.Issue, takenPod(e.Sandbox))
+}
+
+// PodTakenLaunchError is a launch of a claim that the store would not start, because the release
+// of the claim's issue pod has taken that pod, as for PodTakenError: the store's launch check
+// gives it first (Store.CheckLaunch), and the claim write gives it to a launch that came after
+// that check. A claim launched now would be live while that pod is deleted, and an operator's
+// suspension of it would hold nothing. It is a wait (errors.Is(err, wait.ErrWaiting)), the named
+// wait of a reserved cleanup's kind: the launch changes nothing and charges nothing, and the
+// caller's retry starts it once the release ends, in a new pod. No write it refused is owed
+// (writeOwed).
+type PodTakenLaunchError struct {
+	Issue   string
+	Release int64
+	Sandbox string
+}
+
+func (e *PodTakenLaunchError) Error() string {
+	return fmt.Sprintf("the launch waits for release %d of %s, which is deleting %s: a claim launched now would stand in a pod that is going; the launch runs once the release ends, in a new pod",
+		e.Release, e.Issue, takenPod(e.Sandbox))
+}
+
+func (e *PodTakenLaunchError) Is(target error) bool { return target == wait.ErrWaiting }
+
+// takenPod names the pod a release's take is of: its Sandbox, where the runtime named one.
+func takenPod(sandbox string) string {
+	if sandbox == "" {
+		return "the issue's pod"
+	}
+	return "the issue's pod (Sandbox " + sandbox + ")"
 }
 
 // takeOverForOperator writes the operator's take-over of the suspended claim, and keeps it in

@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -24,8 +26,9 @@ import (
 // Takes says the read is the teardown's last, the one the runtime asks under its pod lock and
 // takes the pod on (runtime.IssueReleaser), and Sandbox names the Sandbox it takes, "" where the
 // runtime names none. A last read that answers ReleaseActs records the take on the mark
-// (issue_releases.taken_pod), which refuses an operator's take-over of a suspended claim of the
-// issue from then until the release ends (refuseOperatorTakeOver, which every claim write runs).
+// (issue_releases.taken_pod), which refuses an operator's suspension of a claim of the issue,
+// and the start of a claim's launch there, from then until the release ends or its teardown
+// fails before it touches the pod (takeRefusal, ClearIssuePodTakeTx).
 type IssueReleased struct {
 	Issue, Tree                     string
 	IssueGeneration, TreeGeneration uint64
@@ -395,12 +398,14 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 //
 // The runtime reads the store no more after that last read, so a suspension an operator made
 // after it would land on a claim whose pod is going. A last read that answers ReleaseActs
-// therefore records the take on the mark (IssueReleased.Takes, issue_releases.taken_pod), and an
-// operator's take-over of a suspended claim of the issue is refused from then until the release
-// ends (refuseOperatorTakeOver). The two are ordered by the shared serializer this transaction takes
-// first and the take-over takes too: a take-over committed before this read is a claim it reads,
-// and one after it reads the take. That holds for both kinds of release, since both act on the
-// same read.
+// therefore records the take on the mark (IssueReleased.Takes, issue_releases.taken_pod), and
+// from then until the release ends an operator's suspension of a claim of the issue is refused,
+// and so is the start of a claim's launch there, which waits for the release to end
+// (takeRefusal, CheckLaunch). The take and each of those writes are ordered by the
+// shared serializer this transaction takes first and the write takes too: a write committed
+// before this read is a claim it reads, and one after it reads the take. That holds for both
+// kinds of release, since both act on the same read. A teardown that fails before it touches
+// the pod ends the take (ClearIssuePodTakeTx), and the row's next run reads the claims again.
 //
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
@@ -505,9 +510,9 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		}
 		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
 		// The runtime takes the pod on this answer when it is the last read, and reads the store
-		// no more: the take goes on the mark in this same transaction, so an operator's take-over
-		// that comes after it is refused rather than landing on a claim whose pod is going
-		// (refuseOperatorTakeOver).
+		// no more: the take goes on the mark in this same transaction, so an operator's
+		// suspension or a launch of a claim of the issue that comes after it is refused rather
+		// than landing on a claim whose pod is going (takeRefusal).
 		if release.Takes {
 			if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = $3 where project = $1 and issue = $2`,
 				project, release.Issue, release.Sandbox); err != nil {
@@ -522,62 +527,89 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 	return decision, nil
 }
 
-// operatorSuspension is whether c, as a write hands it, is suspended by the operator: the one
-// write the take of a pod can refuse (refuseOperatorTakeOver).
-func operatorSuspension(c supervise.Claim) bool {
-	return c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator
+// readTake is the take of issue's pod by the release in flight, when its teardown's last read
+// recorded one (IssueRelease, issue_releases.taken_pod): the release's id and the Sandbox it
+// takes. taken is false where no release of issue has taken the pod.
+func readTake(ctx context.Context, tx pgx.Tx, project, issue string) (release int64, sandbox string, taken bool, err error) {
+	err = tx.QueryRow(ctx, `select id, taken_pod from issue_releases
+		where project = $1 and issue = $2 and taken_pod is not null`, project, issue).Scan(&release, &sandbox)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	return release, sandbox, err == nil, err
 }
 
-// refuseOperatorTakeOver is the guard every claim write runs inside its own transaction before it
-// writes (putClaim): a write that turns a stopped claim — suspended by another source, failed or
-// retired — into an operator's suspension is refused while the release of the claim's issue pod
-// has taken that pod. Its teardown's last read answered that the pod goes and recorded the take
-// on the mark (IssueRelease, issue_releases.taken_pod); the runtime acts on that read and reads
-// the store no more, so such a suspension would keep no pod. The refusal is a
-// *supervise.PodTakenError naming the release and the Sandbox, and the write's transaction rolls
-// back; once the release ends, its mark and the take go, and the same write lands.
+// The SQLSTATEs the trigger claims_refused_past_a_release_take raises its two refusals with
+// (20261120084333_issue_release_taken_pod.up.sql), whose detail names the take in JSON.
+const (
+	takenPodSuspensionCode = "LR001"
+	takenPodLaunchCode     = "LR002"
+)
+
+// takeRefusal is err as the store answers it when it is the database's refusal of a write of c
+// past a release's take: the trigger claims_refused_past_a_release_take, which every statement
+// that writes claims meets, upsertClaim's included. While the release of the claim's issue pod has
+// taken that pod — its teardown's last read answered that the pod goes and recorded the take on
+// the mark (IssueRelease, issue_releases.taken_pod), and the runtime acts on that read and reads
+// the store no more — the trigger refuses two writes of a claim of that issue, and the write's
+// transaction rolls back:
 //
-// It is in the claim write itself, and not in one caller of it, because upsertClaim is the one
-// statement that writes claims.suspended_by: whichever decision takes a stopped claim over for
-// the operator, now or later, meets it. A live claim suspended by the operator passes: no claim
-// of the issue is live while the teardown holds the pod past its last read, since that read acts
-// only when none is (releaseOvertaken, issueStopFences) and a launch waits for the runtime's pod
-// lock, and a claim that launched after a teardown that failed is one the teardown's next read
-// reads as overtaken, so its pod stays.
+//   - one that makes the claim the operator's suspension, unless the claim already is. Such a
+//     suspension would keep no pod. It answers a *supervise.PodTakenError, which the operator's
+//     route answers with a 409;
+//   - one that starts the claim's launch: the claim written launching where it was not. A claim
+//     launched now would stand live while the pod it is launched for is deleted, and an operator's
+//     suspension of it would then hold nothing. It answers a *supervise.PodTakenLaunchError, the
+//     wait the store's launch check gives a launch first (CheckLaunch): the launch runs once the
+//     release ends, in a new pod.
 //
-// The read of the take and the claim's write are one transaction under the shared serializer,
-// which the teardown's reads take first too: a take-over that commits before the last read is a
-// claim that read sees, and the release is cancelled and keeps the pod
-// (ReleaseCauseOperatorSuspended, or overtaken for a claim the idle release suspended); one that
-// comes after it reads the take.
-func refuseOperatorTakeOver(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
-	if !operatorSuspension(c) {
+// So no claim of the issue becomes live in that window, and every claim of it is processless
+// there, since the last read answers that the pod goes only when no claim holds a process
+// (releaseOvertaken, issueStopFences); every operator's suspension of a claim of the issue meets
+// the refusal. Once the release ends, its mark and the take go, and the same write lands. A
+// teardown that failed before it touched the pod ends the take too (ClearIssuePodTakeTx). The
+// trigger reads the take under the shared serializer, which the teardown's reads take first too:
+// a write that commits before the last read is a claim that read sees — an operator's suspension
+// cancels the release and keeps the pod (ReleaseCauseOperatorSuspended, or overtaken for a claim
+// the idle release suspended), and a launch overtakes it — and one after it reads the take. An
+// upsert meets the trigger as an insert before it locks the claim's row, so the trigger takes the
+// serializer before any row lock of the store's own writes, the order a fact takes them in.
+//
+// The refusal names the release and the Sandbox from the trigger's detail. Any other error is
+// nil.
+func takeRefusal(err error, c supervise.Claim) error {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || (pgErr.Code != takenPodSuspensionCode && pgErr.Code != takenPodLaunchCode) {
 		return nil
 	}
-	var state, by string
-	err := tx.QueryRow(ctx, `select state, suspended_by from claims where token = $1`, string(c.Token)).Scan(&state, &by)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
+	var take struct {
+		Release int64  `json:"release"`
+		Sandbox string `json:"sandbox"`
 	}
-	if err != nil {
-		return err
+	if jsonErr := json.Unmarshal([]byte(pgErr.Detail), &take); jsonErr != nil {
+		return fmt.Errorf("put claim %s: read the refusal's detail %q: %w (%w)", c.Token, pgErr.Detail, jsonErr, err)
 	}
-	stopped := state == string(supervise.StateSuspended) || state == string(supervise.StateFailed) || state == string(supervise.StateRetired)
-	if !stopped || (state == string(supervise.StateSuspended) && by == string(supervise.SuspendedByOperator)) {
-		return nil
+	if pgErr.Code == takenPodLaunchCode {
+		return &supervise.PodTakenLaunchError{Issue: c.Issue, Release: take.Release, Sandbox: take.Sandbox}
 	}
+	return &supervise.PodTakenError{Issue: c.Issue, Release: take.Release, Sandbox: take.Sandbox}
+}
+
+// ClearIssuePodTakeTx ends the take of issue's pod that release recorded (IssueRelease,
+// issue_releases.taken_pod), inside tx: the transaction that records the failure of the
+// teardown's row (the daemon's outbox), when the runtime failed after its last read and before it
+// touched the pod (runtime.PodUntouchedError). The pod then stands as it stood and no teardown
+// holds it, so the writes the take refuses are taken again (takeRefusal), and the row's
+// next run reads the issue's claims again, its last read recording the take anew if the pod
+// still goes. A take of another release, or none, is left alone. It takes the shared serializer,
+// as every read and write of the take does.
+func (s *Store) ClearIssuePodTakeTx(ctx context.Context, tx pgx.Tx, project, issue string, release int64) error {
 	if err := treelifecycle.Serialize(ctx, tx); err != nil {
 		return err
 	}
-	var release int64
-	var sandbox string
-	err = tx.QueryRow(ctx, `select id, taken_pod from issue_releases
-		where project = $1 and issue = $2 and taken_pod is not null`, c.Project, c.Issue).Scan(&release, &sandbox)
-	switch {
-	case err == nil:
-		return &supervise.PodTakenError{Issue: c.Issue, Release: release, Sandbox: sandbox}
-	case errors.Is(err, pgx.ErrNoRows):
-		return nil
+	if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = null where project = $1 and issue = $2 and id = $3`,
+		project, issue, release); err != nil {
+		return fmt.Errorf("end the take of %s's pod by release %d: %w", issue, release, err)
 	}
-	return err
+	return nil
 }

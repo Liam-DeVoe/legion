@@ -4,12 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	goruntime "runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -331,4 +336,231 @@ func TestAnOperatorsSuspensionAfterTheTeardownsLastReadIsRefused(t *testing.T) {
 			t.Fatalf("Sandbox teardowns = %d, want the one", teardowns)
 		}
 	})
+}
+
+// A start of a claim of the issue after the teardown's last read would stand live in the pod that
+// is going, and an operator's suspension of it would then answer success while the pod is deleted.
+// So the launch waits for the release instead, by name (supervise.PodTakenLaunchError, the store's
+// launch check), with nothing of the claim changed and nothing started, and the operator's
+// suspension that follows meets the release's refusal, as it does for a claim no start touched.
+// Both a resume an operator asks for and the resume a wake's rule makes wait. Once the release has
+// ended, the same resume launches the claim, in the issue's next pod.
+func TestALaunchAfterTheTeardownsLastReadWaitsForTheRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		resume func(claim.Token) supervise.Event
+	}{
+		{"the operator's resume", func(token claim.Token) supervise.Event { return supervise.RequestResume{Claim: token} }},
+		{"a wake's rule resume", func(token claim.Token) supervise.Event {
+			return supervise.RequestRuleResume{Claim: token, Reason: "a notice for the role"}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, architect := stoppedPodForTakeover(t)
+			queueUnownedRelease(t, rig)
+			release := rig.releaseID(t)
+			token := architect.Claim().Token
+			hooked, startsInWindow, startsBefore := false, 0, len(rig.rt.CallsOf("Resume"))+len(rig.rt.CallsOf("Spawn"))
+			var resumed, suspended error
+			var storedState, storedBy string
+			rig.rt.afterAuthorize = func() {
+				hooked = true
+				resumed = architect.Handle(context.Background(), tc.resume(token))
+				startsInWindow = len(rig.rt.CallsOf("Resume")) + len(rig.rt.CallsOf("Spawn")) - startsBefore
+				storedState, storedBy = rig.storedSuspension(t, architect)
+				suspended = suspendAsOperator(architect)
+			}
+
+			rig.drain(t)
+
+			if !hooked {
+				t.Fatal("the runtime's last read never answered that the pod goes, so the window was not reached")
+			}
+			var waits *supervise.PodTakenLaunchError
+			if !errors.As(resumed, &waits) || !errors.Is(resumed, wait.ErrWaiting) || waits.Release != release ||
+				waits.Sandbox != rig.rt.sandboxName {
+				t.Fatalf("the resume after the last read = %v, want the launch's wait naming release %d and the Sandbox %s",
+					resumed, release, rig.rt.sandboxName)
+			}
+			if startsInWindow != 0 || storedState != "suspended" || storedBy != "released" {
+				t.Fatalf("in the window the runtime was asked %d starts and the stored architect is %s by %s; want none, and it released",
+					startsInWindow, storedState, storedBy)
+			}
+			refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+			if state, by := rig.storedSuspension(t, architect); state != "suspended" || by != "released" || !architect.Claim().Released() {
+				t.Fatalf("the stored architect is %s by %s (in memory %s by %s), want it left released",
+					state, by, architect.Claim().State, architect.Claim().SuspendedBy)
+			}
+			if _, teardowns := rig.rt.reads(); teardowns != 1 || rig.marked(t) {
+				t.Fatalf("Sandbox teardowns = %d, marked %t; want the one the last read answered, and the release over", teardowns, rig.marked(t))
+			}
+
+			if err := architect.Handle(context.Background(), tc.resume(token)); err != nil {
+				t.Fatalf("the resume once the release ended = %v, want it to launch", err)
+			}
+			if starts := len(rig.rt.CallsOf("Resume")) + len(rig.rt.CallsOf("Spawn")) - startsBefore; starts != 1 || architect.Claim().Released() {
+				t.Fatalf("once the release ended the runtime was asked %d starts and the architect is %s; want one launch",
+					starts, architect.Claim().State)
+			}
+		})
+	}
+}
+
+// takenPod is the Sandbox the rig's release mark records its teardown took, or "" for none.
+func (r *idleRig) takenPod(t *testing.T) string {
+	t.Helper()
+	var taken *string
+	err := r.pool.QueryRow(context.Background(), `select taken_pod from issue_releases where issue = $1`, r.issue.Key).Scan(&taken)
+	if err != nil || taken == nil {
+		return ""
+	}
+	return *taken
+}
+
+// A teardown that fails after its last read and before the runtime touched the pod (a Sandbox
+// read the cluster did not answer, runtime.PodUntouchedError) leaves the pod standing with no
+// teardown holding it, so the take that read recorded ends in the transaction that records the
+// row's failure. An operator's suspension made then is taken, and the row's next run reads it and
+// keeps the pod, for both release rules. The control is a teardown that failed after it touched
+// the pod: the take stands, the suspension meets the refusal, and the row's next run deletes the
+// pod.
+func TestATeardownThatFailsBeforeTouchingThePodEndsItsTake(t *testing.T) {
+	untouched := &runtime.PodUntouchedError{Err: errors.New("release issue: read Sandbox: the API did not answer")}
+	touched := errors.New("release issue: wait the pod out: the API did not answer")
+	for _, tc := range []struct {
+		name    string
+		idle    bool
+		failure error
+	}{
+		{name: "the release of a pod no claim owns", failure: untouched},
+		{name: "an idle release", idle: true, failure: untouched},
+		{name: "control: a teardown that touched the pod", failure: touched},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var rig *idleRig
+			var m *supervise.Machine
+			if tc.idle {
+				rig = newIdleRig(t)
+				queued := rig.queuedBy(t, func() { rig.w.releaseIdlePods(context.Background()) })
+				if want := []string{"issue_bundle", "supervise:release", "issue_release"}; !slices.Equal(queued, want) {
+					t.Fatalf("queued rows = %v, want the save, then the role stop, then the teardown", queued)
+				}
+				m = rig.machine
+			} else {
+				rig, m = stoppedPodForTakeover(t)
+				queueUnownedRelease(t, rig)
+			}
+			release := rig.releaseID(t)
+			rig.rt.failAfterAuthorize = tc.failure
+
+			rig.drain(t)
+
+			taken := rig.takenPod(t)
+			if _, teardowns := rig.rt.reads(); teardowns != 0 || !rig.marked(t) {
+				t.Fatalf("after the failed teardown: teardowns %d, marked %t; want the pod standing and the release in flight", teardowns, rig.marked(t))
+			}
+			suspended := suspendAsOperator(m)
+			rig.rt.failAfterAuthorize = nil
+			rig.runner.now = func() time.Time { return time.Now().Add(time.Hour) }
+			rig.drain(t)
+
+			_, teardowns := rig.rt.reads()
+			state, by := rig.storedSuspension(t, m)
+			if tc.failure == touched {
+				if taken != rig.rt.sandboxName {
+					t.Fatalf("after a teardown that touched the pod the mark records the take %q, want %q", taken, rig.rt.sandboxName)
+				}
+				refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+				if teardowns != 1 || by != "released" {
+					t.Fatalf("the row's next run: teardowns %d, the claim %s by %s; want the pod deleted and the claim released", teardowns, state, by)
+				}
+				return
+			}
+			if taken != "" || suspended != nil {
+				t.Fatalf("after a teardown that did not touch the pod the mark records the take %q and the operator's suspension = %v; want no take and the suspension taken",
+					taken, suspended)
+			}
+			if records := rig.records(t); teardowns != 0 || state != "suspended" || by != "operator" || len(records.Releases) != 0 || len(records.Holds) != 1 {
+				t.Fatalf("the row's next run: teardowns %d, the claim %s by %s, %d releases and holds %+v; want the pod kept for the operator's suspension",
+					teardowns, state, by, len(records.Releases), records.Holds)
+			}
+		})
+	}
+}
+
+// A daemon that stops between the teardown's last read and the runtime's first call to the
+// cluster leaves no take behind it. A stop the outbox settles — its context ended, so the
+// runtime's read of the Sandbox fails before it touches the pod — ends the take with the row's
+// failure, which the outbox records on a context of its own. A daemon that dies there records
+// nothing: the take stands, and the row's next run, once its lease has lapsed, ends it whichever
+// way its own teardown goes: it deletes the pod and the release ends, or it fails before it touches
+// the pod and the take is cleared with its failure. While that run's teardown holds the pod, past
+// its own last read, the take stands and an operator's suspension is refused.
+func TestATeardownStoppedAfterItsLastReadLeavesNoTakeBehind(t *testing.T) {
+	t.Run("a stop the outbox settles ends the take with the run", func(t *testing.T) {
+		rig, architect := stoppedPodForTakeover(t)
+		queueUnownedRelease(t, rig)
+		ctx, stop := context.WithCancel(context.Background())
+		rig.rt.afterAuthorize = stop
+		if err := rig.runner.RunOnce(ctx); err != nil {
+			t.Fatalf("the run the daemon's stop cut short: %v", err)
+		}
+		if taken := rig.takenPod(t); taken != "" || !rig.marked(t) {
+			t.Fatalf("after the stop the mark records the take %q (marked %t), want no take and the release in flight", taken, rig.marked(t))
+		}
+		if err := suspendAsOperator(architect); err != nil {
+			t.Fatalf("the operator's suspension after the stop = %v, want it taken: the pod stands and no teardown holds it", err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		failure error
+	}{
+		{name: "a daemon that dies there, whose next run deletes the pod"},
+		{name: "a daemon that dies there, whose next run fails before it touches the pod",
+			failure: &runtime.PodUntouchedError{Err: errors.New("release issue: read Sandbox: the API did not answer")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig, architect := stoppedPodForTakeover(t)
+			queueUnownedRelease(t, rig)
+			release := rig.releaseID(t)
+			// The run's goroutine ends inside the runtime, past the last read: nothing after that
+			// point of the run is made, its settle included, as a process killed there makes none.
+			var died sync.WaitGroup
+			died.Add(1)
+			rig.rt.afterAuthorize = goruntime.Goexit
+			go func() {
+				defer died.Done()
+				_ = rig.runner.RunOnce(context.Background())
+			}()
+			died.Wait()
+			if taken := rig.takenPod(t); taken != rig.rt.sandboxName || !rig.marked(t) {
+				t.Fatalf("after the daemon died the mark records the take %q (marked %t), want %q: nothing ended it", taken, rig.marked(t), rig.rt.sandboxName)
+			}
+
+			var suspended error
+			rig.rt.afterAuthorize = func() { suspended = suspendAsOperator(architect) }
+			rig.rt.failAfterAuthorize = tc.failure
+			rig.runner.now = func() time.Time { return time.Now().Add(time.Hour) }
+			if err := rig.runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("the row's next run: %v", err)
+			}
+			refusedWhileTheReleaseTakesThePod(t, suspended, rig, release)
+			_, teardowns := rig.rt.reads()
+			if tc.failure == nil {
+				if teardowns != 1 || rig.marked(t) {
+					t.Fatalf("the next run: teardowns %d, marked %t; want the pod deleted and the release, with its take, over", teardowns, rig.marked(t))
+				}
+				return
+			}
+			if taken := rig.takenPod(t); teardowns != 0 || taken != "" || !rig.marked(t) {
+				t.Fatalf("the next run that failed before touching the pod: teardowns %d, take %q, marked %t; want the pod standing and no take",
+					teardowns, taken, rig.marked(t))
+			}
+			if err := suspendAsOperator(architect); err != nil {
+				t.Fatalf("the operator's suspension once the take ended = %v, want it taken", err)
+			}
+		})
+	}
 }
