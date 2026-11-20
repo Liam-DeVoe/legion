@@ -1100,6 +1100,25 @@ type Deps struct {
 	// does its write on a goroutine of its own, as the durable-state report's podResume does in
 	// internal/daemon. nil stamps nothing.
 	WakeLetOut func(token claim.Token, issue string, role claim.Role, at time.Time)
+	// CopyTurnEnd starts the copy of the issue workspace's unpushed work that the end of c's turn
+	// owes (R1 of dispatch://INFRA-1117), at every turn's end the machine records (copyTurnEnd):
+	// the turn's agent_end, the sweep's word that the turn is over, a turn that ends under a
+	// compaction and one the daemon never saw begin, whatever the claim goes to from there —
+	// idle, or straight on to a stop held for that end. c is the claim whose turn ended, its role
+	// and the locator of the process it ran in among it, so the copy asks that role's shim
+	// rather than reading the claims again after the fact, when a stop may already have taken
+	// the role.
+	//
+	// It is called inside the machine's decision, so it returns at once: the copy runs on a
+	// goroutine of the daemon's, and no turn waits for it (R2). Once that copy has ended, whatever
+	// it came to — stored, refused, failed or abandoned at its budget — the daemon hands copied
+	// back to the machine's Handle, as it hands every other runtime fact, and never from inside
+	// this call. budget is the most the copy takes, which bounds how long a stop held for the
+	// turn's end waits for it (waitForTurnCopy); started is false where no copy was started — a
+	// controller's claim, a claim of no issue, a daemon that bundles no workspace or one that is
+	// stopping — and copied is then never handed back. nil starts no copy, and no stop waits for
+	// one.
+	CopyTurnEnd func(c Claim, copied TurnEndCopied) (budget time.Duration, started bool)
 	// Worker is the context a goroutine the machine starts applies its decision on: a timer that
 	// fires (arm) and a prompt's send (startSend) each call Handle from a goroutine of their own,
 	// beside whatever goroutine feeds the machine its events, and the decision writes the claim
@@ -1429,8 +1448,20 @@ type Machine struct {
 	// reads the claim in this state rather than as a turn cut off (endState, recordEnd). The
 	// claim's own state stays working through the stop, as it always has: the stop publishes the
 	// claim while the runtime stops it (stoppingProcess), and the end gives the claim its state
-	// back only once the hold's outcome is known (turnEnded, compactEnded).
+	// back only once the hold's outcome is known (turnEnded, compactEnded). A stop that waits for
+	// the copy its turn's end started (waitForTurnCopy) is the one exception: the end gives the
+	// claim its state back first, and the stop runs later from that state, which reads as it
+	// stands.
 	heldStopBack ClaimState
+	// turnCopy is the copy of the issue's workspace that the end of the claim's last turn started
+	// (Deps.CopyTurnEnd, copyTurnEnd), while the machine has not heard it end: nil once its end
+	// has come back (TurnEndCopied), once a held stop's wait for it has run out (TimerTurnCopy),
+	// and once the process whose turn it copies is let go (letGo). A stop held for a turn's end
+	// waits for it (waitForTurnCopy). turnCopies numbers the copies the machine has started, so
+	// the end of an earlier one decides nothing about a later one (fence). Both are memory only,
+	// as the held suspension is: a restart forgets the wait with the hold it was for.
+	turnCopy   *turnCopy
+	turnCopies uint64
 	// processGone is what the runtime's last report of the process the claim records found
 	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
 	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict
@@ -2262,12 +2293,14 @@ func (m *Machine) unlock() {
 	m.mu.Unlock()
 }
 
-// OnDurableState installs the daemon callback for the durable transitions it acts on: ready,
-// working, idle and failed. Two of them are terminal for the workflow, and two are not: the
-// daemon reads a turn starting to stamp a woken pod's first turn, and a turn ending to take a
-// copy of the issue workspace's unpushed work. The callback runs after the transition's claim
-// write has succeeded, and a machine keeps one, so a daemon that observes more than one of them
-// observes them in that one callback.
+// OnDurableState installs the daemon callback for the durable transitions it reports: ready,
+// working, idle and failed. Two of them are terminal for the workflow, and the daemon reads a
+// turn starting to stamp a woken pod's first turn. A turn ending is reported idle as well, but the
+// copy of the issue workspace's unpushed work that the turn's end owes is not taken from that
+// report: a turn that ends straight into a stop held for it never goes durably idle, so the
+// machine starts that copy from the turn's end itself (Deps.CopyTurnEnd, copyTurnEnd). The
+// callback runs after the transition's claim write has succeeded, and a machine keeps one, so a
+// daemon that observes more than one of them observes them in that one callback.
 func (m *Machine) OnDurableState(callback func(Claim, ClaimState)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2487,6 +2520,17 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			m.log.Warn("supervise: the compaction's end reached a claim that no longer holds it; the claim was not given back and sent nothing",
 				"generation", ev.Generation, "claimGeneration", m.claim.Generation, "state", m.claim.State)
 			return false, ErrCompactProcessGone
+		}
+	case TurnEndCopied:
+		// Only the end of the copy the machine still waits to hear of decides anything: the end
+		// of an earlier turn's copy, one whose wait ran out at its bound, and one of a process
+		// the claim has let go are each a copy no stop waits for (turnCopy). They are the
+		// ordinary outcome of a copy that outlived its process or its turn rather than a stale
+		// fact a far side repeats, so they go at Debug and leave no mark (dropStale): every copy
+		// ends once, under a number of its own.
+		if c := m.turnCopy; c == nil || c.seq != ev.Copy {
+			m.log.Debug("supervise: the end of a copy of the issue's workspace that nothing waits for decides nothing", "copy", ev.Copy)
+			return false, nil
 		}
 	}
 	return true, nil
@@ -3516,6 +3560,10 @@ func (m *Machine) retire(ctx context.Context, cause string) error {
 // the suspension, the retirement, the failure — so no stored charge ever outlives the process it
 // was made for.
 //
+// The wait for the copy the process's last turn's end started goes with the process as well
+// (turnCopy): the stop that waited for it has run, or the process it would have stopped is gone,
+// and the copy's end when it comes is of no process the claim records (fence).
+//
 // Before any of that, what the process ended is recorded for cause, the caller's reading of why
 // it lets the process go (recordEnd): the turn it was in, whether that turn was the pending
 // task's, and the background work its own activity report named. It is read here, first,
@@ -3535,6 +3583,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil
+	m.turnCopy = nil
 	m.processGone, m.goneDeath, m.claim.DeathCharged = false, runtime.Observation{}, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
@@ -4106,6 +4155,8 @@ func claimOf(ev Event) claim.Token {
 	case RequestCompact:
 		return ev.Claim
 	case CompactEnded:
+		return ev.Claim
+	case TurnEndCopied:
 		return ev.Claim
 	case ResumePause:
 		return ev.Claim

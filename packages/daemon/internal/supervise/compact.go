@@ -403,6 +403,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // CompactResponse) — would be false of both. The hold that runs here stops a process in no
 // turn, so what its let-go records reads the claim in the state the compaction gives it back
 // in (compacting.back, suspendHeldAtEnd), and the next process is not told a turn was cut off.
+// It is a stop held for an end, so it waits first for the copy a turn's end started that is
+// still being taken — the turn that ended under this compaction above all, whose copy turnEnded
+// started — at most the copy's budget and never past the hold's own deadline (waitForTurnCopy):
+// the claim is given back meanwhile holding the stop and handed nothing, which is the same
+// answer.
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(CompactEnded)
 	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
@@ -428,6 +433,13 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if m.held != nil {
 		// A suspension that arrived while the compaction ran was held for it, as one that
 		// arrives in a turn is (holdSuspension); it runs now, exactly as the turn's end runs it.
+		if m.waitForTurnCopy() {
+			m.claim.State = run.back
+			if err := m.durableWrite(ctx, run.back, m.persist); err != nil {
+				return err
+			}
+			return ErrCompactSuspended
+		}
 		if err := m.suspendHeldAtEnd(ctx, run.back); err != nil {
 			if m.held == nil {
 				return err
@@ -441,11 +453,10 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	// The state the claim goes back to is reported to the daemon as a durable transition, as
 	// turnEnded reports the idle it writes (durableWrite, OnDurableState). A turn that ends while
 	// the session is being compacted is left working by turnEnded and reaches its idle here
-	// instead (run.back is Idle for it), and the daemon takes the copy of the issue's workspace
-	// that ends each turn from that report (internal/daemon's copyWorkspaceAtTurnEnd): without it
-	// the work of that turn is held by no copy until some later turn ends. The report follows the
-	// claim write, so a write the database did not take owes the report instead and makes it when
-	// the write lands (oweDurableState, makeOwedReports).
+	// instead (run.back is Idle for it); the copy of the issue's workspace that turn's end owes
+	// was started at the turn's end itself (copyTurnEnd), not from this report. The report
+	// follows the claim write, so a write the database did not take owes the report instead and
+	// makes it when the write lands (oweDurableState, makeOwedReports).
 	if err := m.durableWrite(ctx, run.back, m.persist); err != nil {
 		return err
 	}

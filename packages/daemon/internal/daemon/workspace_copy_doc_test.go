@@ -51,9 +51,9 @@ const (
 )
 
 // The cadence paragraphs state the period from runningCopyPeriod, the bound on two starts from it
-// and the daemon's tick, the budget from runningCopyBudget, and the line from
-// runningCopyUnsavedLine, and the bullet for an end the cluster made states how far behind the
-// restored copy can be, which is the same period.
+// and the daemon's tick, the budget from runningCopyBudget, the bound of a held stop's wait for its
+// turn's copy from the same budget, and the line from runningCopyUnsavedLine, and the bullet for an
+// end the cluster made states how far behind the restored copy can be, which is the same period.
 func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 	period := docMinutes(t, runningCopyPeriod)
 
@@ -64,6 +64,7 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 		{Fact: "the bound on a cadence copy's start after the copy before it, whatever took that one, runningCopyPeriod less idleTickInterval at the least",
 			Phrase: "a cadence copy starts no less than " + docMinutes(t, runningCopyPeriod-idleTickInterval) + " and no more than " + period + " after the copy before it, whatever took that one"},
 		{Fact: "the budget a copy is given, runningCopyBudget", Phrase: "still building after " + docMinutes(t, runningCopyBudget)},
+		{Fact: "the bound of a held stop's wait for its turn's copy, runningCopyBudget", Phrase: "for at most the copy's budget of " + docMinutes(t, runningCopyBudget)},
 		{Fact: "the line a copy that was not stored is logged with, runningCopyUnsavedLine", Phrase: runningCopyUnsavedLine},
 	})
 
@@ -77,8 +78,9 @@ func TestKubernetesDocStatesTheRunningCopysConstants(t *testing.T) {
 }
 
 // The copy's cadence: its first trigger and where its period runs from, one copy of an issue in
-// flight, no turn waiting for one, the role it is asked of, where it is stored, what a copy that
-// fails costs, its retry between turns, and the shim's own refusal of a workspace over the bound.
+// flight, no turn waiting for one, a stop held for a turn's end waiting for that end's copy, the
+// role each copy is asked of, where it is stored, what a copy that fails costs, its retry between
+// turns, and the shim's own refusal of a workspace over the bound.
 // Its 5-minute bound and the line a copy that was not stored writes are this package's constants,
 // checked against them (TestKubernetesDocStatesTheRunningCopysConstants).
 func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
@@ -89,7 +91,10 @@ func TestKubernetesDocStatesTheWorkspaceCopyCadence(t *testing.T) {
 		{Fact: "that the period runs from the start of the copy before it", Phrase: "from the start of the copy before it"},
 		{Fact: "that one copy of an issue is in flight at a time", Phrase: "One copy of an issue is in flight at a time"},
 		{Fact: "that no turn waits for a copy", Phrase: "No turn waits for a copy"},
-		{Fact: "the role the copy is asked of", Phrase: "the first live role of the issue that has a running process"},
+		{Fact: "that a stop held for a turn's end waits for that turn's copy", Phrase: "A stop held for a turn's end waits for that turn's end copy"},
+		{Fact: "that a copy that fails or times out lets the stop go", Phrase: "a copy that fails or times out lets the stop go"},
+		{Fact: "the role a turn's end copy is asked of", Phrase: "asked of the role whose turn ended"},
+		{Fact: "the role the cadence's and a push's copies are asked of", Phrase: "the first live role of the issue that has a running process"},
 		{Fact: "the call it is taken through, which an idle release makes too", Phrase: "`BundleWorkspace`"},
 		{Fact: "the table it is stored in", Phrase: "workspace_running_copies"},
 		{Fact: "that it is never stored in the idle release's row", Phrase: "never in the `workspace_bundles` row"},

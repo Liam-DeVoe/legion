@@ -8,9 +8,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
-// ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn: the
-// machine holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller
-// that keeps the request durably asks again, and the claim answers nil once it is suspended.
+// ErrSuspendHeld answers a suspension that arrived while the claim's agent is in a turn, or while
+// a stop held for a turn's end waits for the copy that end started (waitForTurnCopy): the machine
+// holds it and suspends the claim itself (holdSuspension). It is not a refusal. A caller that
+// keeps the request durably asks again, and the claim answers nil once it is suspended.
 var ErrSuspendHeld = wait.New("the suspension is held for the agent's turn to end")
 
 // ErrPauseEnded answers a project pause's stop (RequestSuspend.Pause) that reaches its claim once
@@ -29,10 +30,21 @@ var ErrPauseEnded = errors.New("the pause this stop names has ended, so nothing 
 // not the workflow's to end, and neither is the phase task of a claim whose idle pod was released:
 // that suspension ends no phase, and the wake that brings the pod back resumes the claim with the
 // task it kept (SuspendSource.RetiresPhaseTask).
+//
+// A claim whose held stop waits for the copy its turn's end started (waitForTurnCopy) is idle or
+// ready, and a suspension reaching it — the outbox asking its row again, an operator's own — is
+// held with that stop rather than run (holdRequest): stopped now, it would take the process the
+// copy is asking, which is the stop the wait is for. It joins the held stop as a suspension
+// arriving in a turn does, its deadline moving the stop earlier, and it is answered ErrSuspendHeld.
+// A suspension that may not be held (RequestSuspend.NeverHold) is decided now, as it always was
+// for a claim in no turn: its asker read the claim in no turn and is owed the stop at once.
 func suspend(m *Machine, ctx context.Context, ev Event) error {
 	request, err := suspendRequest(m, ev)
 	if err != nil {
 		return err
+	}
+	if asked := ev.(RequestSuspend); m.stopWaitsForTurnCopy() && !asked.NeverHold {
+		return m.holdRequest(request, asked)
 	}
 	return m.suspendNow(ctx, request, false)
 }
@@ -118,8 +130,18 @@ func holdSuspension(m *Machine, ctx context.Context, ev Event) error {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
 			Reason: "the claim's agent is in a turn, and this suspension is not one that is held for the turn's end"}
 	}
-	deadline := ev.(RequestSuspend).Deadline
-	if ev.(RequestSuspend).By == SuspendedByOperator {
+	return m.holdRequest(request, ev.(RequestSuspend))
+}
+
+// holdRequest holds request, which is asked as its row decided it (suspendRequest), for the end
+// the machine holds its stop for: the turn's end (holdSuspension), or the end of the copy a held
+// stop waits for (suspend, waitForTurnCopy). It records the hold, or takes a standing one over,
+// moves its deadline earlier, and answers ErrSuspendHeld. The flag and the deadline are the
+// asker's own, read from asked: suspendRequest hands a daemon's request under the operator's hold
+// the operator's source, which must not give it the operator's stop timeout too.
+func (m *Machine) holdRequest(request, asked RequestSuspend) error {
+	deadline := asked.Deadline
+	if asked.By == SuspendedByOperator {
 		deadline = m.deps.Clock.Now().Add(m.deps.Timeouts.Stop)
 	}
 	switch {
@@ -283,9 +305,12 @@ func suspensionRank(source SuspendSource) int {
 }
 
 // suspendAtTimeout is the held suspension's timer: the turn did not end by the hold's deadline, so
-// the process is stopped mid-turn; or an earlier stop failed, and it is tried again. A project
-// pause's hold whose pause has ended by then is dropped at the start of the decision, and this
-// timer with it (dropEndedPauseHold, dropHeld), so the fence drops the timer and the turn runs on.
+// the process is stopped mid-turn; or the turn ended and its stop waits for the copy the end
+// started (waitForTurnCopy), and the deadline is the earlier of that wait's two bounds, so the
+// stop goes now and the copy's end, when it comes, decides nothing (letGo); or an earlier stop
+// failed, and it is tried again. A project pause's hold whose pause has ended by then is dropped
+// at the start of the decision, and this timer with it (dropEndedPauseHold, dropHeld), so the
+// fence drops the timer and the turn runs on.
 //
 // A stop forced mid-turn is not the turn's end: the confirmed task did not finish, so it goes back
 // interrupted, as a death in a turn takes it back. The task is taken back before the stop, as died
@@ -307,6 +332,9 @@ func suspendAtTimeout(m *Machine, ctx context.Context, _ Event) error {
 			m.arm(TimerSuspend, m.deps.Timeouts.Probe, "")
 			return fmt.Errorf("take back the task of %s before its forced stop: %w", m.claim.Token, err)
 		}
+	} else if m.stopWaitsForTurnCopy() {
+		m.log.Warn("supervise: the held suspension's deadline came before the copy of the turn's end ended; stopping the agent without it",
+			"by", m.held.By, "deadline", m.held.Deadline, "copy", m.turnCopy.seq)
 	} else {
 		m.log.Info("supervise: trying the held suspension's stop again")
 	}
@@ -459,10 +487,15 @@ func (m *Machine) suspendHeldAtEnd(ctx context.Context, back ClaimState) error {
 	return m.suspendHeld(ctx)
 }
 
-// dropHeld ends the held suspension without running it.
+// dropHeld ends the held suspension without running it, and with it a wait of that stop's for
+// the copy its turn's end started (waitForTurnCopy): the copy goes on and its end runs nothing.
 func (m *Machine) dropHeld() {
 	m.held, m.heldLaunch = nil, false
 	m.disarm(TimerSuspend)
+	m.disarm(TimerTurnCopy)
+	if m.turnCopy != nil {
+		m.turnCopy.stopWaits = false
+	}
 }
 
 // endHeld is the claim's process found dead, or alive holding an address a process launched now is

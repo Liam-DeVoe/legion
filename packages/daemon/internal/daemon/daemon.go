@@ -1696,6 +1696,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PluginContract:     api.DaemonAPIVersion,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
+		// Every turn's end starts the copy it owes through the supervisor, which hands it to the
+		// workflow's running copy once that attaches (copyTurnEndsWith).
+		CopyTurnEnd: sup.copyTurnEnd,
 	}
 	// A registration in an issue pod is recorded against that pod before it is answered, which is
 	// what spends a saved workspace copy sent to the pod (store.Store.RecordPodRegistration); the

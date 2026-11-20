@@ -122,7 +122,7 @@ func TestTheCadenceStoresTheShimsBundleOfARealWorkspaceAtATurnsEndAndFiveMinutes
 	workspace := shimtest.New(t, rig.issue.Key)
 	bundler := &shimCopyBundler{workspace: workspace}
 	rig.w.copyBundler = bundler
-	rig.sup.OnDurableState(rig.w.claimDurableState)
+	rig.copiesTurnEnds()
 	rig.clock.advance(0)
 	ctx := context.Background()
 

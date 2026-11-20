@@ -187,6 +187,10 @@ const (
 	// no process of its own waits launching until it fires; one whose process runs waits as the
 	// gate found it.
 	TimerPause TimerKind = "pause"
+	// TimerTurnCopy is the bound of a held stop's wait for the copy its turn's end started
+	// (waitForTurnCopy): the copy's own budget, counted from the turn's end. The held
+	// suspension's own deadline stays on TimerSuspend, so the stop runs at the earlier of the two.
+	TimerTurnCopy TimerKind = "turn_copy"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -660,6 +664,17 @@ type CompactEnded struct {
 	Compacted  bool
 }
 
+// TurnEndCopied is the copy of the issue workspace's unpushed work that the end of one of this
+// claim's turns started (Deps.CopyTurnEnd, copyTurnEnd) having ended, whatever it came to:
+// stored, refused, failed or abandoned at its budget. The daemon hands it back once the copy is
+// over, as it hands every other runtime fact. Copy is the number the machine gave that copy as it
+// started it, so the end of an earlier turn's copy decides nothing about a later one (fence). It is
+// what a stop held for that turn's end waits on (waitForTurnCopy).
+type TurnEndCopied struct {
+	Claim claim.Token
+	Copy  uint64
+}
+
 func (RuntimeObservation) isEvent()   {}
 func (StreamHello) isEvent()          {}
 func (StreamTurnStart) isEvent()      {}
@@ -696,6 +711,7 @@ func (RequestExit) isEvent()          {}
 func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
+func (TurnEndCopied) isEvent()        {}
 func (ResumePause) isEvent()          {}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
@@ -726,6 +742,8 @@ const (
 	onPromptRetryTimer eventKind = timerPrefix + eventKind(TimerPromptRetry)
 	// The gate's own stop of a launch it held while the project is paused (pauseGate).
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
+	// The bound of a held stop's wait for the copy its turn's end started (waitForTurnCopy).
+	onTurnCopyTimer eventKind = timerPrefix + eventKind(TimerTurnCopy)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -746,6 +764,7 @@ const (
 	onCompact       eventKind = "request_compact"
 
 	onCompactEnded eventKind = "compact_ended"
+	onTurnCopied   eventKind = "turn_end_copied"
 
 	onStalePlugin   eventKind = "stale_plugin"
 	onStallBackstop eventKind = "stall_backstop"
@@ -833,6 +852,8 @@ func kindOf(ev Event) eventKind {
 		return onCompact
 	case CompactEnded:
 		return onCompactEnded
+	case TurnEndCopied:
+		return onTurnCopied
 	case ResumePause:
 		return onResumePause
 	}
@@ -1268,6 +1289,23 @@ func fillTable(t *builder) {
 	t.ignore(onCompactEnded, "the claim is not in a compaction: the process it ran on was let go first", prompted...)
 	t.ignore(onCompactEnded, "the agent is not ready, so the compaction's process is gone", unready...)
 	t.ignore(onCompactEnded, "no process of this claim is running, so the compaction's own is gone", gone...)
+
+	// The end of the copy of the issue's workspace that a turn's end started (TurnEndCopied), and
+	// the bound of a held stop's wait for it (TimerTurnCopy). A stop held for that turn's end
+	// waits for the copy in the state the end gave the claim back in, ready or idle, and runs at
+	// whichever of the two comes first (waitForTurnCopy); a claim in a turn again leaves its held
+	// stop to that turn's end, and the copy no stop waits for ends with nothing run. Every other
+	// state holds no process whose turn the copy was of: the let-go that left the claim there
+	// dropped the wait with the process (letGo), so the fence drops the copy's end and the timer
+	// before either reaches a row (Machine.fence); each is still the table's word for the state.
+	t.row(onTurnCopied, "the copy the turn's end started is over: run the held stop that waited for it", turnCopyEnded,
+		[]ClaimState{StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.ignore(onTurnCopied, "no turn of the process this claim runs now has ended, so no stop waits for a copy of one", StateLaunching, StateShimConnected, StateRegistered)
+	t.ignore(onTurnCopied, noProcess, processless...)
+	t.row(onTurnCopyTimer, "the copy the turn's end started did not end within its budget: run the held stop without it", turnCopyBound,
+		[]ClaimState{StateSuspended}, StateReady, StateIdle, StateWorking)
+	t.ignore(onTurnCopyTimer, "no turn of the process this claim runs now has ended, so no stop waits for a copy of one", StateLaunching, StateShimConnected, StateRegistered)
+	t.ignore(onTurnCopyTimer, noProcess, processless...)
 
 	// The project's resume, which the daemon posts to every machine of the project (ResumePause),
 	// so every state takes it. A claim that holds nothing of the pause it names is changed by
@@ -2067,29 +2105,40 @@ func (m *Machine) busyTurnBegun(delivery string) {
 // says in its own words what became of the turn, and the pair of turn lines is the turn the
 // worker ran.
 //
+// Every turn's end starts the copy of the issue workspace's unpushed work that the end owes (R1
+// of dispatch://INFRA-1117), here, from the end itself (copyTurnEnd, Deps.CopyTurnEnd): the work
+// of a turn is in the workspace from the moment the turn ends, whatever the claim goes to next,
+// and a turn that ends straight into a stop held for it never goes durably idle. The copy is
+// handed this claim, its role and the process it ran in, before anything of the end can stop
+// that process, so it asks that role's shim rather than looking for a live role after the fact.
+// It runs on the daemon's goroutine, and no turn waits for it (R2): a turn with no stop held goes
+// idle and is sent its next task while the copy is built. A turn that ends under a compaction
+// starts its copy here too, though the claim stays working until the compaction ends.
+//
 // The claim going idle is reported to the daemon as a durable transition of its own
-// (durableWrite, OnDurableState), as the turn's start is: the daemon takes the copy of the
-// issue's workspace that ends each turn from it (internal/daemon's copyWorkspaceAtTurnEnd), and
-// the work of a turn is in the workspace from the moment the turn ends. The report follows the
-// claim write, so a turn whose write the database did not take owes the report instead and makes
-// it when the write lands (oweDurableState, makeOwedReports); a copy taken of a turn the row
-// never recorded would tell the daemon a claim fact its store cannot say. Both writes of this
-// function that leave the claim idle go through it — the ordinary one and the fallback of a held
-// suspension whose stop the runtime refused, which leaves the claim idle holding that suspension
-// — because the claim is durably idle either way and the copy is owed either way.
+// (durableWrite, OnDurableState), as the turn's start is. The report follows the claim write, so a
+// turn whose write the database did not take owes the report instead and makes it when the write
+// lands (oweDurableState, makeOwedReports). Every write of this function that leaves the claim
+// idle goes through it — the ordinary one, the one of a held stop waiting for the turn's copy,
+// and the fallback of a held suspension whose stop the runtime refused, which leaves the claim
+// idle holding that suspension — because the claim is durably idle in each.
 //
 // The question a restart armed goes with the turn (askFirst), and so does the record a busy
 // answer made of the turn (busyTurn): the turn it stood for is over, however its end came — its
 // agent_end, or the agent's answer to the sweep that it is in no prompt (askTurnOver).
 //
-// A suspension held for the turn runs here, now that the turn is over (holdSuspension). Its stop
-// cuts off no turn, so what the let-go records reads the claim as idle, the state this end gives
-// it (suspendHeldAtEnd): the next process is told it was in no turn, and the task the turn
-// confirmed is no task cut off in its turn (recordEnd). A project pause's hold waits instead for
-// the result of the turn's prompt where Oh My Pi has not written it yet (stopWaitsForResult), and
-// runs from that result (promptResulted, stopAtResult): only the result says whether the turn
-// finished its task or a provider refused it, and a stop made first would retire a refused task
-// the role is still owed.
+// A suspension held for the turn runs here, now that the turn is over (holdSuspension), once the
+// copy the end started has ended: the stop takes the process the copy asks, so the stop waits
+// for that copy, at most the copy's budget and never past the hold's own deadline, and a copy that
+// fails or runs out of its budget lets the stop go (waitForTurnCopy). The claim waits idle
+// meanwhile, handed nothing (sendPending), and the stop runs from that idle; a turn's end that
+// started no copy runs it at once. Its stop cuts off no turn, so what the let-go records reads
+// the claim as idle, the state this end gives it (suspendHeldAtEnd): the next process is told it
+// was in no turn, and the task the turn confirmed is no task cut off in its turn (recordEnd). A
+// project pause's hold waits instead for the result of the turn's prompt where Oh My Pi has not
+// written it yet (stopWaitsForResult), and runs from that result (promptResulted, stopAtResult),
+// after the turn's copy as well: only the result says whether the turn finished its task or a
+// provider refused it, and a stop made first would retire a refused task the role is still owed.
 //
 // Every end this records is counted (TurnsEnded), the compaction's below included, so the daemon
 // can post it to the issue's other claims once this decision is published (its wakeIssue): a phase
@@ -2110,6 +2159,7 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.turnsEnded.Add(1)
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
 	m.claim.Budgets.Deaths = 0
+	m.copyTurnEnd()
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -2117,6 +2167,10 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.askFirst, m.busyTurn = false, false
 	if m.held != nil && !m.stopWaitsForResult() {
+		if m.waitForTurnCopy() {
+			m.claim.State = StateIdle
+			return m.durableWrite(ctx, StateIdle, m.persist)
+		}
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
 				// The stop landed and let the process go; only its write failed, and the claim is
@@ -2184,7 +2238,13 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 // never read, is a send that has not reached the agent — one waiting for the shim's hello, one held
 // for another claim's turn on the issue, one lost on the way — and this end is the first word that
 // the agent can take it.
+//
+// The turn's end starts the copy of the issue's workspace as every turn's end does (copyTurnEnd):
+// the agent's own turn may have written work as any other, and the cadence inside a turn copies
+// only a claim it reads working, which this one never was. A stop already waiting for an earlier
+// turn's copy waits for this one instead, which holds the later end.
 func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
+	m.copyTurnEnd()
 	p := m.claim.Pending
 	if p == nil || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
 		return nil
@@ -2250,8 +2310,9 @@ func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.s
 // round's end and the stale-plugin relaunch read a worker whose hands are empty. A result that
 // beat its turn's end leaves both to that end. A project pause's hold that waited for this result
 // (stopWaitsForResult) stops the claim here instead (stopAtResult), once the result has decided
-// the task: a refused task taken back is one the stop owes the role a launch for, and a finished
-// one is retired by the settle that follows every decision (Handle).
+// the task and once the copy the turn's end started has ended, or its wait has run out
+// (waitForTurnCopy): a refused task taken back is one the stop owes the role a launch for, and a
+// finished one is retired by the settle that follows every decision (Handle).
 func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(StreamPromptResult)
 	if !r.AgentInvoked {
@@ -2304,7 +2365,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 		return m.sendPending(ctx)
 	}
 	if m.pauseHoldAtResult() {
-		return m.suspendHeld(ctx)
+		return m.stopAtResult(ctx)
 	}
 	if err := m.settle(ctx); err != nil {
 		return err

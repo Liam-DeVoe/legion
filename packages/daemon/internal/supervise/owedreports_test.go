@@ -369,10 +369,10 @@ func TestTheOwedReportsAreMadeWhenTheWriteLandsAndNotBefore(t *testing.T) {
 
 // A turn that ends while the session is being compacted leaves the claim working (turnEnded),
 // so the claim reaches its idle at the compaction's end instead — and that idle is reported to
-// the daemon exactly as the turn's own end reports one (durableWrite, OnDurableState). The
-// daemon takes the copy of the issue workspace's unpushed work that ends each turn from that
-// report (internal/daemon's copyWorkspaceAtTurnEnd), so a transition reported by nothing leaves
-// the work of that turn held by no copy until some later turn ends.
+// the daemon exactly as the turn's own end reports one (durableWrite, OnDurableState): the claim
+// is durably idle from then on, and a daemon that reads its durable states reads it so. The copy
+// of the issue workspace's unpushed work that the turn's end owes is not taken from this report:
+// the machine starts it from the turn's end itself (copyTurnEnd).
 func TestATurnEndingUnderACompactionReportsItsIdleWhenTheCompactionEnds(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices)

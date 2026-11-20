@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -190,9 +189,11 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 // the pod its role's process is recorded in — the pod the runtime's bundler names the copy by —
 // before it takes the issue's place in flight, so no bundle is built in a workspace whose release
 // is about to stop its roles. Every way a copy is asked for meets that read: a push, a turn's end
-// and the cadence inside a turn, each logged at Info and none as a failure. A pod the bundle did
-// not come off is asked as before: the pod that replaces the released one, once it has asked for
-// the bundle, is copied while it works.
+// and the cadence inside a turn, each logged at Info and none as a failure. A turn's end hands its
+// copy the claim whose turn ended, as the machine holds it, so it is handed here the claim the
+// store records, its process in the released pod. A pod the bundle did not come off is asked as
+// before: the pod that replaces the released one, once it has asked for the bundle, is copied
+// while it works.
 func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
@@ -202,7 +203,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 
 	apply("c0", "c2")
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 1)
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.w.copyWorkspaceAtTurnEnd(rig.storedClaim(t), nil)
 	rig.awaitUnsaved(t, runningCopyReleaseBundled, 2)
 	// The release's save started the issue's period as it gave the issue's place back, so the
 	// cadence finds the issue due only once that period has passed.
@@ -233,7 +234,7 @@ func TestNoShimIsAskedForACopyOfThePodAnIdleReleaseSavedItsBundleOff(t *testing.
 	next := copyRigBundle
 	next.Bundle, next.PodUID = []byte("PACK the next pod's work"), "pod-that-replaces-it"
 	rig.bundler.answers(next, nil)
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.w.copyWorkspaceAtTurnEnd(rig.storedClaim(t), nil)
 	rig.awaitCopy(t, len(next.Bundle))
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the bundler was asked %v, want the one copy of the next pod", asked)

@@ -1453,6 +1453,10 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 		// gives the place back, and the outbox that runs the save starts it through the cadence's
 		// own start (runningCopies.hold).
 		w.copies.startsOwedWith(w.startOwedCopy)
+		// Every machine's turn's end starts the copy it owes through the supervisor
+		// (supervise.Deps.CopyTurnEnd, supervisor.copyTurnEnd), which hands it to this runtime's
+		// copy from now on, machines built before this attach included.
+		supervision.supervisor.copyTurnEndsWith(w.copyWorkspaceAtTurnEnd)
 	} else {
 		w.log.Info("running copy: the runtime bundles no workspace, so no copy is kept of a running pod's work")
 	}
@@ -1674,19 +1678,22 @@ func (w *workflowRuntime) terminal(c supervise.Claim, state supervise.ClaimState
 }
 
 // claimDurableState is the daemon's one durable-state callback, because a supervisor keeps one
-// (supervisor.OnDurableState). It reads four transitions:
+// (supervisor.OnDurableState). It reads three transitions:
 //
 //   - ready and failed are workflow facts (terminal);
 //   - ready and working measure a released pod's resume — its replacement pod is up at the first
-//     ready, and the woken role took its work at the first turn (podResume);
-//   - idle is a turn that ended, which is where a copy of the issue's workspace is taken
-//     (copyWorkspaceAtTurnEnd).
+//     ready, and the woken role took its work at the first turn (podResume).
+//
+// A turn that ended is reported idle, and the copy of the issue's workspace it owes is not taken
+// from that report: a turn that ends straight into a stop held for it never goes durably idle, so
+// every machine starts that copy from the turn's end itself (copyWorkspaceAtTurnEnd,
+// supervise.Deps.CopyTurnEnd), and a copy taken here as well would be the same turn's end copied
+// twice.
 //
 // It runs on the machine's own goroutine, so what it does with a transition is either a write of
 // its own (terminal, whose fact the daemon's boot replays when it fails) or a goroutine's.
 func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.ClaimState) {
 	w.podResume(c, state)
-	w.copyWorkspaceAtTurnEnd(c, state)
 	if state == supervise.StateReady || state == supervise.StateFailed {
 		w.terminal(c, state)
 	}

@@ -135,7 +135,8 @@ func (r *copyRig) turnStart(t *testing.T) {
 	}
 }
 
-// turnEnd ends that turn, which is where the daemon is told the claim is durably idle.
+// turnEnd ends that turn, which is where the machine starts the copy the turn's end owes, through
+// the supervisor, once a test has handed it the daemon's copy (copiesTurnEnds).
 func (r *copyRig) turnEnd(t *testing.T) {
 	t.Helper()
 	if err := r.machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: r.token}); err != nil {
@@ -276,18 +277,25 @@ func (r *copyRig) awaitLine(t *testing.T, msg string) map[string]any {
 	return found[len(found)-1]
 }
 
-// A turn that ends stores a copy of the issue's workspace. The claim's idle is reported through
-// the daemon's one durable-state callback (supervise's turnEnded, claimDurableState), the daemon
-// asks the first live role of the issue with a process for the bundle of its unpushed work, and
-// stores it as the issue's running copy. The line it writes carries the issue, the bytes, when
-// the copy's take began by the store's clock, which is the copy's own time and stands close to the
-// start of the cadence's period (runningCopy.started, the cadence's own clock), and how long the
-// bundler took, which is what a deployment reads the cadence by.
+// copiesTurnEnds hands the rig's supervisor the daemon's copy of a turn's end, as attach does
+// (supervisor.copyTurnEndsWith): the rig's machine was built before the rig's workflow runtime,
+// and reads the copy through the supervisor all the same.
+func (r *copyRig) copiesTurnEnds() {
+	r.sup.copyTurnEndsWith(r.w.copyWorkspaceAtTurnEnd)
+}
+
+// A turn that ends stores a copy of the issue's workspace. The machine starts the copy from the
+// turn's end itself (supervise's turnEnded, copyTurnEnd), handing it the claim whose turn ended,
+// and the daemon asks that role for the bundle of its unpushed work and stores it as the issue's
+// running copy. The line it writes carries the issue, the bytes, when the copy's take began by the
+// store's clock, which is the copy's own time and stands close to the start of the cadence's
+// period (runningCopy.started, the cadence's own clock), and how long the bundler took, which is
+// what a deployment reads the cadence by.
 func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.sup.OnDurableState(rig.w.claimDurableState)
-	// An architect an earlier release left suspended holds no process, so the copy is asked of
-	// the implementer although the architect's token sorts first.
+	rig.copiesTurnEnds()
+	// An architect an earlier release left suspended holds no process, and the copy is asked of
+	// the implementer whose turn ended although the architect's token sorts first.
 	rig.releasedArchitect(t)
 
 	rig.turnStart(t)
@@ -298,7 +306,7 @@ func TestATurnThatEndsBundlesACopyOfTheIssueWorkspace(t *testing.T) {
 		t.Fatalf("the stored copy %+v carries no time", facts)
 	}
 	if asked := rig.bundler.reads(); len(asked) != 1 || asked[0] != claim.RoleImplementer {
-		t.Fatalf("the bundle was asked of %v, want the issue's one live role with a process", asked)
+		t.Fatalf("the bundle was asked of %v, want the role whose turn ended", asked)
 	}
 	line := rig.awaitLine(t, runningCopyStoredLine)
 	if got := line["issue"]; got != rig.issue.Key {
@@ -428,7 +436,7 @@ func TestACopyStillRunningStartsNoSecondWorkspaceBundleAndOwesTheRefusedOne(t *t
 	rig.w.copyWorkingWorkspaces(ctx)
 	rig.w.copyWorkingWorkspaces(ctx)
 	// The turn's end asks for one, which the mark refuses and the issue owes.
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), nil)
 	if asked := rig.bundler.reads(); len(asked) != 1 {
 		t.Fatalf("the bundler was asked %v while one copy was still running, want the one in flight", asked)
 	}
@@ -448,13 +456,13 @@ func TestACopyStillRunningStartsNoSecondWorkspaceBundleAndOwesTheRefusedOne(t *t
 	}
 }
 
-// A bundler that blocks past its budget delays nothing of the turn: the callback hands the copy
-// to a goroutine of its own, so the turn's end returns, the claim's state write lands and the
+// A bundler that blocks past its budget delays nothing of the turn: the machine hands the copy
+// to a goroutine of the daemon's, so the turn's end returns, the claim's state write lands and the
 // next task is sent while the bundler is still holding. The copy itself is abandoned at its
 // budget and logged under that reason, rather than running into the next period.
 func TestABlockingBundlerDelaysNoTurnEndAndItsWorkspaceCopyIsAbandonedAtItsBudget(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.sup.OnDurableState(rig.w.claimDurableState)
+	rig.copiesTurnEnds()
 	rig.w.copyBudget = 2 * time.Second
 	held := make(chan struct{})
 	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
@@ -518,11 +526,11 @@ func TestABlockingBundlerDelaysNoTurnEndAndItsWorkspaceCopyIsAbandonedAtItsBudge
 // issue holding the copy it had, and leaves the issue free to be copied again: the cadence is a
 // saving against an eviction, so a copy that failed costs the issue nothing but the period.
 //
-// They are driven through the one function every path runs (takeRunningCopy) rather than
-// through the tick, because the tick reaches one of them only on its retry: an issue the tick
-// copies inside a turn has a claim in a turn, which is a claim with a process. The role goes where
-// the process does — a death between the report of the turn's end and the read of the claims —
-// which is the turn's end path. A workspace over the bound a copy carries is refused by the shim
+// They are driven through the one function the cadence and a push run (takeRunningCopy) rather
+// than through the tick, because the tick reaches one of them only on its retry: an issue the
+// tick copies inside a turn has a claim in a turn, which is a claim with a process. The role goes
+// where the process does — a stop or a death between the push's record and its read of the claims
+// — which is the push's path. A workspace over the bound a copy carries is refused by the shim
 // with its size, and reaches the daemon as the fake connection answers it, as production's does.
 func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsItWas(t *testing.T) {
 	for _, tc := range []struct {
@@ -716,7 +724,7 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	clock.advance(0)
 	copies := runningCopies{now: clock.Now}
 	for _, issue := range []string{"INFRA-1", "INFRA-2", "INFRA-4"} {
-		if !copies.begin(issue) {
+		if !copies.begin(supervise.Claim{Issue: issue}) {
 			t.Fatalf("the cadence refused the first copy of %s", issue)
 		}
 	}
@@ -724,7 +732,7 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	copies.done("INFRA-2", false)
 	copies.done("INFRA-4", true)
 	clock.advance(2 * runningCopyPeriod)
-	if !copies.begin("INFRA-3") {
+	if !copies.begin(supervise.Claim{Issue: "INFRA-3"}) {
 		t.Fatal("the cadence refused the first copy of INFRA-3")
 	}
 
@@ -783,7 +791,7 @@ func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
 // flight at a time; the turn's end is owed, not dropped.
 func TestATurnThatEndsWhileACopyIsInFlightIsCopiedAgainOnceThatCopyEnds(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.sup.OnDurableState(rig.w.claimDurableState)
+	rig.copiesTurnEnds()
 	ctx := context.Background()
 	midTurn := copyRigBundle
 	midTurn.At = time.Now().UTC()

@@ -25,7 +25,7 @@ import (
 // holds the turn's end.
 func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.sup.OnDurableState(rig.w.claimDurableState)
+	rig.copiesTurnEnds()
 	ctx := context.Background()
 	rig.clock.advance(0)
 	rig.bundler.answers(runtime.WorkspaceBundle{}, errors.New("the shim answered nothing"))
@@ -63,15 +63,17 @@ func TestACopyThatFailedAtATurnsEndIsTakenAgainBetweenTurnsUntilOneIsStored(t *t
 // retry waits for a live role: an issue whose roles were released or stopped has no running pod
 // whose work a copy could hold, so each due tick skips it, asks no shim and writes no line, and
 // the issue keeps its retry. Once a resumed or relaunched pod's role is live, the first due tick
-// takes the copy and stores it, and the stored copy pays the retry.
+// takes the copy and stores it, and the stored copy pays the retry. The copy that finds no role
+// here is a push's, the one copy that reads the claims for a role after the fact: a turn's end
+// hands its copy the claim whose turn ended.
 func TestTheCadencesRetryWaitsForALiveRoleAndWritesNoLineWithoutOne(t *testing.T) {
 	rig := newCopyRig(t)
 	ctx := context.Background()
 	rig.clock.advance(0)
 	rig.setClaimState(t, "suspended")
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
-	if lines := rig.awaitUnsaved(t, runningCopyNoRole, 1); lines[0]["level"] != "WARN" {
-		t.Fatalf("the turn's end that found no role is logged as %v, want it at WARN", lines[0])
+	rig.w.copyWorkspaceAtPush(rig.issue.Key)
+	if lines := rig.awaitUnsaved(t, runningCopyNoRole, 1); lines[0]["level"] != "DEBUG" {
+		t.Fatalf("the push that found no role is logged as %v, want it at DEBUG", lines[0])
 	}
 
 	// Two due ticks while no role is live ask nothing and log nothing.
@@ -106,7 +108,7 @@ func TestTheCadenceForgetsTheRetryOfAnIssueNoClaimNamesAndKeepsAClaimedIssues(t 
 	const unclaimed = "LEGION-404"
 	rig.setClaimState(t, "suspended")
 	rig.w.copyWorkspaceAtPush(unclaimed)
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.w.copyWorkspaceAtPush(rig.issue.Key)
 	for _, line := range rig.awaitUnsaved(t, runningCopyNoRole, 2) {
 		if line["issue"] == unclaimed && line["level"] != "DEBUG" {
 			t.Fatalf("the push's copy of an issue no claim names is logged as %v, want it at DEBUG", line)
@@ -147,7 +149,7 @@ func TestACopyRefusedForItsSizeOwesNoRetryAndIsAskedAgainOnlyInsideATurn(t *test
 		return shimBundle(ctx, rig.conn, rig.issue.Key)
 	})
 
-	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), nil)
 	rig.awaitUnsaved(t, runningCopyTooLarge, 1)
 	rig.awaitQuiet(t)
 	if owed := rig.w.copies.retries(); len(owed) != 0 {

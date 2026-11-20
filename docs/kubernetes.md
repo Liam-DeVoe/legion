@@ -7096,8 +7096,15 @@ the copy in flight read the workspace before the turn's last work was written, a
 A push's copy would hold that work too, but a pod whose roles are idle may see no push at all.
 No turn waits for a copy:
 the daemon hands each copy to a goroutine of its own, and the turn's end, the next task and the claim's own state write all go on while the copy is built.
+A stop held for a turn's end waits for that turn's end copy, for at most the copy's budget of 4 minutes and never past the stop's own deadline, and a copy that fails or times out lets the stop go.
+That stop is one asked while the turn ran, such as an operator's suspend, a project's pause or a tree's linger, which the daemon holds until the turn is over rather than cut the turn off; a turn with no stop held goes idle at once and takes its next task while its copy is built.
+The budget runs from the turn's end, and the stop's own deadline is the operator's stop timeout or a deadline the daemon names, such as the linger expiry of a carried child's old tree; a pause's stop names none.
+While the stop waits, the role whose turn ended is idle, takes no task, and holds the stop, and a suspension asked of it again in that time is held with that stop.
+A stop that waits for the result of the turn's prompt, as a pause's does, waits for the copy once that result has come.
 
-The copy is asked of the first live role of the issue that has a running process, through the same `BundleWorkspace` call an idle release's save makes and under the same 40 MiB bound ([Idle release](#idle-release)).
+The copy a turn's end takes is asked of the role whose turn ended, in the process that turn ran in, which the daemon hands the copy before anything can stop that role, and a copy owed behind one in flight is asked of the role of the last turn's end that owed it.
+The cadence and a push ask the first live role of the issue that has a running process.
+Every copy goes through the same `BundleWorkspace` call an idle release's save makes and under the same 40 MiB bound ([Idle release](#idle-release)).
 Only a shim can build it, in the workspace its own role already works in.
 The daemon stores it in its own database, in the `workspace_running_copies` table, one row per issue, and never in the `workspace_bundles` row an idle release writes.
 A stored copy is logged at Info as `running copy: stored a copy of an issue workspace's unpushed work`, with the issue, the role, `bytes`, `taken` and `took`.
@@ -7133,7 +7140,7 @@ A copy whose take began before the take of the issue's stored running copy is no
 
 A project's pause stops none of these copies ([Pausing a project](#pausing-a-project)).
 While the project is paused, the cadence still copies each turn that runs, and each turn's end is still copied, as at any other time: a pause stops a role in a turn only when that turn ends, so a pause that took no copy would leave exactly that turn's end in none.
-Each copy is still asked of a live role of its issue with a running process, so a turn's end is in no copy where the pause has stopped every role of the issue before a copy read the workspace, and a copy that comes to nothing so owes a retry, which runs once a role of the issue is live again.
+A pause stops a role in a turn with a stop held for that turn's end, and a stop held for a turn's end waits for that turn's end copy, for at most the copy's budget of 4 minutes and never past the stop's own deadline, which a pause's stop does not name; a copy that fails or times out lets the stop go, and owes a retry, which runs once a role of the issue is live again.
 A pod that ends during the pause, at a close, a park or an end from outside it, loses the work done since its last copy, as at any other time: the next pod restores that copy.
 Only an end from outside the pod leaves a kept volume standing with that work on it; a park or a linger deletes the kept volume too, and a close ends the issue's work.
 
@@ -7375,6 +7382,7 @@ The stops themselves run in the outbox, so a pause of several hundred roles does
 
 - A role in a turn stops when that turn ends, with no deadline.
   The stop waits for the result of the turn's prompt, so a role whose turn a provider refused keeps its task and is owed a launch for it.
+  It then waits for the copy of the issue's workspace that the turn's end started, for at most 4 minutes, and a copy that fails or times out lets it go ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
 
 - A start still in flight is cancelled, and its claim is stopped at once.
   A launch whose start has finished is stopped when its agent is ready, before it gets a task.
