@@ -5309,4 +5309,4 @@ go test -timeout 60m $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep
 go vet ./...
 ```
 
-`internal/dispatch/api` runs first and on its own. These are the commands `AGENTS.md` ("Checks") gives; each `-timeout` and its reading are in `docs/testing.md` ("Go's package deadline").
+`internal/dispatch/api` runs first and on its own. `docs/testing.md` ("Go's package deadline") gives the two `go test` commands, each `-timeout` and its reading.

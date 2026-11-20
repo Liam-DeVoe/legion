@@ -301,7 +301,13 @@ func TestAnEventByTheActorOnTheSuggestedIssueWakesTheSweepAndMarksActedOn(t *tes
 // a gap later (suggestionOutcomePass), so "nothing judged" alone does not say settle held it. The
 // row's gap is a second, under settle, so the pass the settle holds is told apart by what it arms:
 // its due time past the gap and within settle of the pass (now+settlesIn). A pass that arms the
-// gap is a horizon's re-ask, and the row runs it in turn until one holds for settle.
+// gap is the wake's, held to the gap, or a horizon's re-ask, and the row runs it in turn until one
+// holds for settle. Each move to such a pass moves the fake that judges settle a gap on, so the
+// row makes it only once the server's horizon is proven past every event committed before it
+// (safeHorizon): the pass it runs then reads the comment's event, and a re-ask comes only from a
+// write committed while a pass ran. A row that ran each re-ask at once would move the fake a gap
+// for each pass the horizon stood behind in real time, and once nine had passed the comment would
+// be past settle, judged alone, before any pass had read it.
 func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 	const settle = 10 * time.Second
 	fake := clocktest.New(time.Now().Truncate(time.Microsecond))
@@ -358,7 +364,10 @@ func TestWritesMomentsApartAreJudgedTogetherAsActedOn(t *testing.T) {
 		if armed[0].After(sweep.clock.Now().Add(sweep.schedule.minGap)) {
 			return armed[0], true
 		}
-		// The wake's pass, held to the gap, or a horizon's re-ask a gap later: run it.
+		// The wake's pass, held to the gap, or a horizon's re-ask a gap later: run it once the horizon
+		// has passed every event committed so far, so the move does not age the comment for a pass
+		// that cannot read it.
+		safeHorizon(t, sweep.server)
 		sweep.clock.Set(armed[0])
 		return armed[0], false
 	})

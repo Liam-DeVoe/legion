@@ -312,10 +312,11 @@ func triesWithin(elapsed time.Duration) int {
 // of a held send reads the rule alone (TestAHeldMentionSendIsCountedAndReportedOnce counts that on
 // the database), so N lanes held behind a stuck topic family read the rule at most N times each
 // mentionOrderRetryMax once their waits have ramped up - here 200 lanes over eight seconds of the
-// fake, which the test moves to the next park's deadline only once every lane has parked again,
-// every try counted: each lane is tried exactly as often as triesWithin says, and once the lanes
-// have parked no goroutine serves any. A park that held its goroutine (slept its wait out on it)
-// would keep one on every lane it serves, and the count would never reach 0.
+// fake, which the test moves to the next park's deadline only once every lane whose park ended
+// has been tried again and every lane has parked again, its timer armed on the fake: each lane is
+// tried exactly as often as triesWithin says, and once the lanes have parked no goroutine serves
+// any. A park that held its goroutine (slept its wait out on it) would keep one on every lane it
+// serves, and the count would never reach 0.
 func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	const lanes = 200
 	const window = 8 * time.Second
@@ -332,23 +333,53 @@ func TestManyParkedLanesTryAtMostOncePerRetryMax(t *testing.T) {
 	for index := range lanes {
 		rig.enqueue(fmt.Sprintf("held-%d", index), fmt.Sprintf("session:held-%d", index))
 	}
-	allParked := func(what string) {
+	triesSoFar := func() int {
+		triesMu.Lock()
+		defer triesMu.Unlock()
+		total := 0
+		for _, count := range tries {
+			total += count
+		}
+		return total
+	}
+	// allParked waits until the lanes have made tried tries in all and every lane has parked again,
+	// its timer armed on the fake past at: no goroutine serves any, every park is counted
+	// (pending), and the fake holds one timer per lane, none due by at. The rig counts a park
+	// before the sender's AfterFunc arms its timer, and a lane whose goroutine gives it up has left
+	// the goroutines serving before that (serve, next), so pending and serving alone can read every
+	// lane parked while one park's timer is still to be armed; a move made then arms that timer from
+	// the moved fake, and its lane is tried a park later than its waits say. Every timer on the fake
+	// is a lane's park: the sender reads the fake for its parks alone (newParkRig), and its claim
+	// refreshes tick on the real clock (newMentionSender's refreshes, nil here).
+	allParked := func(what string, tried int, at time.Time) {
 		t.Helper()
 		testwait.Until(t, what, func() (string, bool) {
 			serving, _, _, queued := rig.state()
 			pending := rig.pending.Load()
-			return fmt.Sprintf("%d parks pending, %d goroutines serving, %d sends queued", pending, serving, queued),
-				pending == lanes && serving == 0
+			armed := rig.clock.Armed()
+			total := triesSoFar()
+			return fmt.Sprintf("%d tries of %d, %d parks pending, %d timers armed, %d goroutines serving, %d sends queued",
+					total, tried, pending, len(armed), serving, queued),
+				total == tried && pending == lanes && serving == 0 && len(armed) == lanes && armed[0].After(at)
 		})
 	}
-	allParked("every lane parked after its first try, with no goroutine serving any")
+	allParked("every lane parked after its first try, with no goroutine serving any", lanes, started)
 	for {
-		next := rig.clock.Armed()[0]
+		armed := rig.clock.Armed()
+		next := armed[0]
 		if next.Sub(started) > window {
 			break
 		}
+		// Each lane whose park ends by next is tried once more as the fake reaches it.
+		due := 0
+		for _, at := range armed {
+			if !at.After(next) {
+				due++
+			}
+		}
+		tried := triesSoFar() + due
 		rig.clock.Set(next)
-		allParked(fmt.Sprintf("every lane parked again once the fake reached %v, with no goroutine serving any", next.Sub(started)))
+		allParked(fmt.Sprintf("every lane parked again once the fake reached %v, with no goroutine serving any", next.Sub(started)), tried, next)
 	}
 	elapsed := rig.clock.Now().Sub(started)
 	serving, _, _, queued := rig.state()

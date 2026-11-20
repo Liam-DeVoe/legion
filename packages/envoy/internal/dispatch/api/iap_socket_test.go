@@ -34,20 +34,25 @@ const iapSocketAudience = "/projects/123456789012/global/backendServices/9876543
 
 // iapSocketKeys is a key set served on this machine in IAP's place, so no test calls Google, and
 // the identity a Dispatch behind IAP names its people with: the people of example.com, recorded in
-// database.
+// database. Its verifier judges an assertion's times on clock (oidc.NewIAPVerifierOn), and every
+// assertion it mints is stamped from that clock's present too.
 type iapSocketKeys struct {
 	keys     *oidctest.Issuer
 	signing  *oidctest.Key
 	identity identity.IAPIdentity
+	clock    clock.Clock
 }
 
-func newIAPSocketKeys(t *testing.T, database *store.Store) iapSocketKeys {
+// newIAPSocketKeys serves a key set whose verifier judges an assertion's times on judged: a row
+// that waits out an assertion's age on real heartbeats passes clock.Real(), and a row that moves
+// the age itself passes a fake.
+func newIAPSocketKeys(t *testing.T, database *store.Store, judged clock.Clock) iapSocketKeys {
 	t.Helper()
 	keys := oidctest.New(t)
 	signing := oidctest.NewES256Key(t, "iap-key")
 	keys.Publish(signing)
-	return iapSocketKeys{keys: keys, signing: signing, identity: identity.IAPIdentity{
-		Verifier: oidc.NewIAPVerifier(iapSocketAudience, oidc.NewKeysAt(keys.URL()+"/keys")),
+	return iapSocketKeys{keys: keys, signing: signing, clock: judged, identity: identity.IAPIdentity{
+		Verifier: oidc.NewIAPVerifierOn(iapSocketAudience, oidc.NewKeysAt(keys.URL()+"/keys"), judged),
 		Rule:     identity.DomainRule{Domain: "example.com"},
 		People:   store.NewPgPeopleStore(database.Pool, testSigningKey, nil),
 	}}
@@ -63,16 +68,16 @@ func (k iapSocketKeys) assertion(t *testing.T, exp time.Time) http.Header {
 	header.Set(identity.IAPAssertionHeader, k.keys.Mint(t, k.signing, map[string]any{
 		"iss": oidc.IAPIssuer, "aud": iapSocketAudience, "sub": "accounts.google.com:118000000000000000001",
 		"email": "a.person@example.com", "hd": "example.com",
-		"iat": time.Now().Add(-10 * time.Minute).Unix(), "exp": exp.Unix(),
+		"iat": k.clock.Now().Add(-10 * time.Minute).Unix(), "exp": exp.Unix(),
 	}))
 	return header
 }
 
-// expiring is an assertion that stays valid about lifetime more: its exp is already past, and the
-// skew is what still admits it.
+// expiring is an assertion that stays valid about lifetime more on the verifier's clock: its exp is
+// already past, and the skew is what still admits it.
 func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Header {
 	t.Helper()
-	return k.assertion(t, time.Now().Add(-oidc.IAPClockSkew+lifetime))
+	return k.assertion(t, k.clock.Now().Add(-oidc.IAPClockSkew+lifetime))
 }
 
 // IAP signs an assertion for every request and Google gives one at most ten minutes, but a live
@@ -83,14 +88,16 @@ func (k iapSocketKeys) expiring(t *testing.T, lifetime time.Duration) http.Heade
 // The control, the same person on a nine-minute assertion, stays open throughout.
 //
 // The heartbeats are the server's, on its clock (whileCallerResolves), a fake the row moves to each
-// one. The assertion's expiry is the IAP verifier's, which reads the wall clock and has no seam, so
-// the row waits for that clock to pass the short assertion's exp before it moves the fake to the
-// heartbeat that re-checks it, and opens the short socket on a fresh assertion again should its
-// upgrade come after one expired (dialExpiring). The sockets' read deadlines run on a fake no one
-// moves (liveSocketClock), so no pong the runner holds back ends a socket.
+// one. The assertion's expiry is the IAP verifier's, judged on a fake of its own
+// (oidc.NewIAPVerifierOn) that stands still while the sockets open, so no upgrade comes after the
+// short assertion expired however slow the machine is. The row moves that fake a second past the
+// short assertion's exp and skew before it moves the heartbeats' fake to the heartbeat that
+// re-checks it, and no wall clock decides when the assertion expires. The sockets' read deadlines
+// run on a fake no one moves (liveSocketClock), so no pong the runner holds back ends a socket.
 func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T) {
 	database := storetest.Open(t)
-	iap := newIAPSocketKeys(t, database)
+	judged := clocktest.New(time.Now())
+	iap := newIAPSocketKeys(t, database, judged)
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
@@ -99,11 +106,14 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	}, nil)
 
 	const lifetime = 2 * time.Second
-	short, expiring, admittedUntil := dialExpiring(t, rig, iap, lifetime)
-	long := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
+	expiring := iap.expiring(t, lifetime)
+	short := rig.dial(t, expiring)
+	long := rig.dial(t, iap.assertion(t, judged.Now().Add(9*time.Minute)))
 
-	testwait.Eventually(t, "the wall clock, which the IAP verifier judges an assertion's exp by, to pass the short assertion's",
-		func() bool { return time.Now().After(admittedUntil) })
+	// The short assertion's exp is lifetime less the skew past judged's present, cut to a whole
+	// second, and the verifier admits it until that exp plus the skew: at most lifetime past
+	// judged's present. A second past that, it has expired.
+	judged.Advance(lifetime + time.Second)
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	closed := short.closeError(t)
 	if closed.Code != contracts.LiveSocketMaxAgeClose || closed.Text != liveSocketCredentialExpiredReason {
@@ -122,38 +132,9 @@ func TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires(t *testing.T
 	if status := rig.refused(t, expiring); status != http.StatusUnauthorized {
 		t.Fatalf("a reopen that carried the expired assertion again was refused %d, want 401", status)
 	}
-	reopened := rig.dial(t, iap.assertion(t, time.Now().Add(9*time.Minute)))
+	reopened := rig.dial(t, iap.assertion(t, judged.Now().Add(9*time.Minute)))
 	reopened.send(t, LiveUnsubscribe{Type: "unsubscribe"})
 	reopened.refusal(t, "", "INVALID_FRAME")
-}
-
-// dialExpiring opens a live socket on an assertion with about lifetime left (expiring) and answers
-// the socket, that assertion and the moment on the wall clock from which the IAP verifier refuses
-// it. An upgrade that comes once the assertion has already expired - the machine stalled for
-// lifetime between the mint and the upgrade - is refused 401, and the wait mints a fresh assertion
-// and dials again: the verifier reads the wall clock, which no seam of its moves.
-func dialExpiring(t *testing.T, rig *liveSocketRig, iap iapSocketKeys, lifetime time.Duration) (*socketClient, http.Header, time.Time) {
-	t.Helper()
-	type dialed struct {
-		client *socketClient
-		header http.Header
-		until  time.Time
-	}
-	got := testwait.Until(t, fmt.Sprintf("a live socket admitted on an assertion with %v left", lifetime), func() (dialed, bool) {
-		until := time.Now().Add(lifetime)
-		header := iap.expiring(t, lifetime)
-		conn, response, err := gws.DefaultDialer.Dial(rig.url, header)
-		if err != nil {
-			if response != nil && response.StatusCode == http.StatusUnauthorized {
-				return dialed{}, false
-			}
-			t.Fatalf("open %s on an assertion with %v left: %v", rig.url, lifetime, err)
-		}
-		t.Cleanup(func() { _ = conn.Close() })
-		client := &socketClient{conn: conn, frames: make(chan []byte, 4096), ended: make(chan struct{})}
-		return dialed{client: client.servedBy(rig.database).read(), header: header, until: until}, true
-	})
-	return got.client, got.header, got.until
 }
 
 // switchedIdentity is a Dispatch's IAP identity, which a test swaps while sockets are open, so a
@@ -186,7 +167,7 @@ var iapChanges = []iapChange{
 		rotated := oidctest.New(t)
 		rotated.Publish(oidctest.NewES256Key(t, iap.signing.KeyID()))
 		changed := iap.identity
-		changed.Verifier = oidc.NewIAPVerifier(iapSocketAudience, oidc.NewKeysAt(rotated.URL()+"/keys"))
+		changed.Verifier = oidc.NewIAPVerifierOn(iapSocketAudience, oidc.NewKeysAt(rotated.URL()+"/keys"), iap.clock)
 		return changed
 	}},
 	{"the person no longer admitted", func(t *testing.T, iap iapSocketKeys) identity.IAPIdentity {
@@ -205,7 +186,7 @@ func TestALiveSocketBehindIAPClosesWhenItsExpiredAssertionIsAlsoWrong(t *testing
 	for _, change := range iapChanges {
 		t.Run(change.name, func(t *testing.T) {
 			database := storetest.Open(t)
-			iap := newIAPSocketKeys(t, database)
+			iap := newIAPSocketKeys(t, database, clock.Real())
 			switched := newSwitchedIdentity(iap.identity)
 			rig := newLiveSocketRig(t, testServerOptions{store: database, streamHeartbeat: 3 * time.Second, identity: switched}, nil)
 			socket := rig.dial(t, iap.expiring(t, time.Second))
@@ -234,15 +215,15 @@ type iapDocumentRig struct {
 
 func newIAPDocumentRig(t *testing.T, heartbeat time.Duration) *iapDocumentRig {
 	t.Helper()
-	return newIAPDocumentRigOn(t, heartbeat, nil)
+	return newIAPDocumentRigOn(t, heartbeat, nil, clock.Real())
 }
 
 // newIAPDocumentRigOn is newIAPDocumentRig whose server runs its heartbeats on clk (the real
-// clock when nil).
-func newIAPDocumentRigOn(t *testing.T, heartbeat time.Duration, clk clock.Clock) *iapDocumentRig {
+// clock when nil) and whose IAP verifier judges an assertion's times on judged (newIAPSocketKeys).
+func newIAPDocumentRigOn(t *testing.T, heartbeat time.Duration, clk, judged clock.Clock) *iapDocumentRig {
 	t.Helper()
 	database := storetest.Open(t)
-	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database)}
+	rig := &iapDocumentRig{iap: newIAPSocketKeys(t, database, judged)}
 	rig.switched = newSwitchedIdentity(rig.iap.identity)
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker, Identity: rig.switched, Settle: time.Hour})
@@ -267,7 +248,7 @@ func newIAPDocumentRigOn(t *testing.T, heartbeat time.Duration, clk clock.Clock)
 			t.Fatalf("encode request: %v", err)
 		}
 		request := httptest.NewRequest(method, target, bytes.NewReader(encoded))
-		for name, values := range rig.iap.assertion(t, time.Now().Add(9*time.Minute)) {
+		for name, values := range rig.iap.assertion(t, rig.iap.clock.Now().Add(9*time.Minute)) {
 			request.Header[name] = values
 		}
 		request.Header.Set("Content-Type", "application/json")
@@ -301,53 +282,28 @@ func (rig *iapDocumentRig) openDocument(t *testing.T, headers http.Header) *sync
 	return peer
 }
 
-// openExpiringDocument is openDocument on an assertion with about lifetime left (expiring), and
-// answers the peer and the moment on the wall clock from which the IAP verifier refuses that
-// assertion. An upgrade that comes once the assertion has already expired is refused 401, and the
-// wait mints a fresh assertion and dials again, as dialExpiring does for the live socket.
-func (rig *iapDocumentRig) openExpiringDocument(t *testing.T, lifetime time.Duration) (*syncedPeer, time.Time) {
-	t.Helper()
-	type opened struct {
-		peer  *syncedPeer
-		until time.Time
-	}
-	got := testwait.Until(t, fmt.Sprintf("a document socket admitted on an assertion with %v left", lifetime), func() (opened, bool) {
-		until := time.Now().Add(lifetime)
-		peer := &syncedPeer{
-			wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
-			headers: rig.iap.expiring(t, lifetime), artifactID: rig.artifactID, doc: crdt.New(),
-		}
-		if err := peer.tryConnect(t); err != nil {
-			if strings.Contains(err.Error(), "401") {
-				return opened{}, false
-			}
-			t.Fatal(err)
-		}
-		t.Cleanup(peer.close)
-		return opened{peer: peer, until: until}, true
-	})
-	return got.peer, got.until
-}
-
 // The document socket's heartbeat re-checks the assertion its upgrade carried too, and once that
 // assertion expires the socket closes with the document socket's own reopen code, 4412, on which
 // the provider reconnects and the reconnect is admitted again on a fresh assertion; never the
 // silent drop (1006) that ends a socket whose person no longer resolves. The control, a nine-minute
 // assertion, keeps its socket open and answering its editor. The heartbeats are on the server's
-// clock, a fake the row moves, and the assertion's expiry on the wall clock, which the IAP
-// verifier reads, as in TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires, whose
-// fresh assertion for an upgrade that came too late this row takes too (openExpiringDocument).
+// clock, a fake the row moves, and the assertion's expiry on a fake of the IAP verifier's own,
+// which the row moves past the short assertion's exp and skew before the heartbeat that re-checks
+// it, as in TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires.
 func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testing.T) {
 	const heartbeat = time.Second
 	fake := clocktest.New(time.Now())
 	opened := fake.Now()
-	rig := newIAPDocumentRigOn(t, heartbeat, fake)
+	judged := clocktest.New(time.Now())
+	rig := newIAPDocumentRigOn(t, heartbeat, fake, judged)
 	const lifetime = 3 * time.Second
-	short, admittedUntil := rig.openExpiringDocument(t, lifetime)
-	long := rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute)))
+	short := rig.openDocument(t, rig.iap.expiring(t, lifetime))
+	long := rig.openDocument(t, rig.iap.assertion(t, judged.Now().Add(9*time.Minute)))
 
-	testwait.Eventually(t, "the wall clock, which the IAP verifier judges an assertion's exp by, to pass the short assertion's",
-		func() bool { return time.Now().After(admittedUntil) })
+	// The verifier admits the short assertion until at most lifetime past judged's present
+	// (TestALiveSocketBehindIAPRotatesWhenItsUpgradesAssertionExpires); a second past that, it has
+	// expired.
+	judged.Advance(lifetime + time.Second)
 	next := driveHeartbeats(t, fake, opened.Add(heartbeat), 1, heartbeat)
 	testwait.Receive(t, "the document socket whose upgrade's assertion expired to close", short.connection().Ended)
 	if code := short.connection().CloseCode(); code != contracts.DocumentAdmissionRevokedCloseCode {
@@ -363,7 +319,7 @@ func TestADocumentSocketBehindIAPReopensWhenItsUpgradesAssertionExpires(t *testi
 	default:
 	}
 	long.barrier(t)
-	rig.openDocument(t, rig.iap.assertion(t, time.Now().Add(9*time.Minute))).barrier(t)
+	rig.openDocument(t, rig.iap.assertion(t, judged.Now().Add(9*time.Minute))).barrier(t)
 }
 
 // The document socket's side of the same rule: an expired assertion that IAP's keys no longer

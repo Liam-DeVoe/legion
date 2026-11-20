@@ -309,8 +309,7 @@ func (p *dispatchProcess) openAgentView(t *testing.T) agentViewFrame {
 // requires a frame the session publishes on conn to reach that view.
 func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn) {
 	t.Helper()
-	ctx := testwait.Context(t)
-	deadline, _ := ctx.Deadline()
+	deadline, _ := testwait.Context(t).Deadline()
 	var view *gws.Conn
 	testwait.Eventually(t, "an agent view to open with the session's responder verdict", func() bool {
 		view = p.startAgentView(t)
@@ -326,7 +325,7 @@ func (p *dispatchProcess) requireAgentViewRelays(t *testing.T, conn *natsgo.Conn
 	if err := conn.Publish(contracts.AgentStreamFramesSubject(streamedSessionID), []byte(frame)); err != nil {
 		t.Fatalf("publish the session's frame: %v", err)
 	}
-	if err := conn.FlushWithContext(ctx); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the session's frame: %v", err)
 	}
 	for {
