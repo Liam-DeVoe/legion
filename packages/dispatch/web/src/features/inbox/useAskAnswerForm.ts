@@ -540,14 +540,17 @@ export function useAskAnswerForm({
   // it where they can read and copy it, since the box it was in has gone. Their own answer is not
   // this: it left as a draft the moment the server recorded it.
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
+  // A refusal for the form is the request's that the press was of (`onError` keeps it there), so
+  // the card shows it from what is kept for the request it shows, never from the write's last
+  // error: a host may draw the card for another request while the answer is out, and that
+  // request was not refused. Every other failure is the press's, with its Retry.
+  const pressFailure =
+    mutation.error !== null && !isSpecFormRefusal(mutation.error) ? answerFailure(mutation) : null;
 
   return {
     answerFailure:
-      mutation.error !== null
-        ? answerFailure(mutation)
-        : formRefusal === undefined
-          ? null
-          : answerFailure({ error: formRefusal, method: undefined }),
+      pressFailure ??
+      (formRefusal === undefined ? null : answerFailure({ error: formRefusal, method: undefined })),
     answerFieldId,
     answerPlaceholder,
     answers,

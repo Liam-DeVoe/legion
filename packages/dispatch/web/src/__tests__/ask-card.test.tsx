@@ -1564,6 +1564,90 @@ test("a form refusal of Approve puts Dispatch's reason before the note that the 
   }
 });
 
+// A refusal of Approve is the request's that the person pressed on, whichever ask the card shows by
+// the time it lands: each press carries its ask, and a host may draw the card for the next request
+// while the answer is out. The refusal is kept for the first request, and its reason goes into the
+// first ask's draft, so the card drawn for the next request keeps its own field and shows no
+// refusal, and the card drawn for the first request again shows the refusal and the reason.
+test("a form refusal of Approve that lands after the card moves to another request stays with the request it was pressed on", async () => {
+  const user = userEvent.setup();
+  const first = ask({
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "first.md",
+      requested_version: 12,
+      version: 12,
+    },
+    kind: "approval",
+    options: [{ label: "Approve" }, { label: "Request changes" }],
+    question: "Approve the first spec?",
+  });
+  const next: OwnedAsk = {
+    ...first,
+    approval: {
+      artifact_id: "artifact-2",
+      documents: null,
+      name: "second.md",
+      requested_version: 3,
+      version: 3,
+    },
+    id: "ask-2",
+    question: "Approve the second spec?",
+  };
+  const answered: string[] = [];
+  const refusal = Promise.withResolvers<Ask>();
+  const answerAsk = (id: string): Promise<Ask> => {
+    answered.push(id);
+    return refusal.promise;
+  };
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const draw = (input: OwnedAsk) => (
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <AskCard answerAsk={answerAsk} ask={input} getAskThread={emptyThread(input)} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  const view = render(draw(first));
+
+  try {
+    await user.click(
+      await within(view.getByTestId("ask-ask-1")).findByRole("radio", { name: "Approve" })
+    );
+    await user.click(within(view.getByTestId("ask-ask-1")).getByRole("button", { name: "Answer" }));
+    await waitFor(() => expect(answered).toEqual(["ask-1"]));
+
+    view.rerender(draw(next));
+    const shown = await view.findByTestId("ask-ask-2");
+    await act(async () => {
+      refusal.reject(specFormRefusal());
+    });
+
+    expect(within(shown).queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      (within(shown).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(false);
+    expect((shown.querySelector("textarea[data-ask-answer]") as HTMLTextAreaElement).value).toBe(
+      ""
+    );
+
+    view.rerender(draw(first));
+    const again = await view.findByTestId("ask-ask-1");
+    expect((await within(again).findByRole("alert")).textContent).toBe(cardRefusal);
+    expect(
+      (within(again).getByRole("radio", { name: "Request changes" }) as HTMLInputElement).checked
+    ).toBe(true);
+    expect((within(again).getByLabelText("Reason (required)") as HTMLTextAreaElement).value).toBe(
+      specFormRefusalBody.changes_reason
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
   const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
