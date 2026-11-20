@@ -462,7 +462,7 @@ func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 	}
 	compact := strings.TrimSpace(stdout.String())
 
-	key, err := loadKey(filepath.Join(keyDir, "key.pem"))
+	key, err := loadKey(filepath.Join(keyDir, "key.pem"), keyDirFile(keyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -507,7 +507,7 @@ func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 	}
 	compact := strings.TrimSpace(stdout.String())
 
-	key, err := loadKey(filepath.Join(keyDir, "key.pem"))
+	key, err := loadKey(filepath.Join(keyDir, "key.pem"), keyDirFile(keyFile))
 	if err != nil {
 		t.Fatal(err)
 	}

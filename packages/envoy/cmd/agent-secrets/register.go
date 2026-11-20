@@ -62,8 +62,7 @@ func cmdRegister(args []string, stdout, stderr io.Writer) int {
 		return exitUsageError
 	}
 	if !*doExec && len(command) > 0 {
-		fmt.Fprintf(stderr, "agent-secrets register: unexpected argument %q\n", command[0])
-		return exitUsageError
+		return refuseUnexpectedArgument(stderr, "register")
 	}
 	// A zero or negative patience would give a still-starting helper no retry at all: the loop
 	// would give up on its first refused dial, which is not what "wait less" means.
