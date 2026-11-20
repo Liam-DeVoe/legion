@@ -1892,6 +1892,13 @@ tests a second time, envoy-go's unit step having run them already, so the -run c
 assignment is a line of its own: under bash -e it carries the script's exit status, so an
 empty or refused list fails the step instead of running -run "", which matches every test.
 
+The tests of the server's agent process (packages/envoy/cmd/dispatch/agent_loop_test.go,
+agent_supervisor_test.go and agent_soak_test.go, INFRA-1588) carry the same tag and run here: each
+row starts a server and its agent, two processes, and waits out real leases, holds and bounds,
+about 1,130 s together in envoy-go's unit step at 2da9ac1c, which took that step's cmd/dispatch
+past its 20 minutes. The agent's limits and environment (agent_environment_test.go) take seconds
+and stay in envoy-go, and the harness every build shares is agent_harness_test.go, untagged.
+
 ## The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts
 
 The two-build tests (packages/envoy/cmd/dispatch/twobuild_*_test.go): each row starts

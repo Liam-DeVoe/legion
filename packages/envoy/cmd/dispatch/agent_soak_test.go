@@ -1,3 +1,5 @@
+//go:build multiprocess
+
 package main
 
 // agent_soak_test.go holds check c21: background runs, and plans that wait for their person, hold
@@ -5,7 +7,9 @@ package main
 // envoy-dispatch agent, which calls a fake chat model over https (going/agent/agenttest) with the
 // agent's test hooks on. The agent's live heap and goroutines are read from the collection its
 // test hooks make at each SIGUSR1 (collectAgentOnSignal), and the server's live heap from /metrics
-// just after its profiler's heap profile made it collect.
+// just after its profiler's heap profile made it collect. It carries the multiprocess tag, as the
+// other tests of the agent do (agent_loop_test.go), and the fake model's script it shares with
+// the memory build's load test is agent_harness_test.go's.
 
 import (
 	"encoding/json"
@@ -15,7 +19,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -82,59 +85,6 @@ func (k soakKind) end() (state, reason string) {
 		return "stopped", agent.ReasonOutputTokens
 	}
 	return "done", ""
-}
-
-// soakModel is the fake chat model's script: each run's replies by its person's words, and how
-// many requests each run has made. A request is answered with one lookup of its words, where
-// modelScript's scan of every earlier request would grow with the soak.
-type soakModel struct {
-	mu      sync.Mutex
-	replies map[string]func(n int) agenttest.Reply
-	asked   map[string]int
-}
-
-// newSoakModel is a fake chat model over https that answers as its script says.
-func newSoakModel(t *testing.T) (*agenttest.Model, *soakModel) {
-	t.Helper()
-	script := &soakModel{replies: map[string]func(int) agenttest.Reply{}, asked: map[string]int{}}
-	fake := agenttest.NewTLS(t, func(request *agenttest.Request) agenttest.Reply {
-		words := askedWords(request.Text())
-		script.mu.Lock()
-		reply, scripted := script.replies[words]
-		script.asked[words]++
-		n := script.asked[words]
-		script.mu.Unlock()
-		if !scripted {
-			return agenttest.Reply{Text: "No run of the soak asks that."}
-		}
-		return reply(n)
-	})
-	return fake, script
-}
-
-// askedWords is the words of the run a request is of: the line after the last agenttest.Asked of
-// the request's text, which is the turn the run works now.
-func askedWords(text string) string {
-	at := strings.LastIndex(text, agenttest.Asked)
-	if at < 0 {
-		return ""
-	}
-	words, _, _ := strings.Cut(text[at+len(agenttest.Asked):], "\n")
-	return words
-}
-
-// set scripts the replies to the run whose words are words.
-func (m *soakModel) set(words string, reply func(n int) agenttest.Reply) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.replies[words] = reply
-}
-
-// requests is how many requests the run whose words are words has made.
-func (m *soakModel) requests(words string) int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.asked[words]
 }
 
 // soakRig is the soak's server and its agent, the fake model's script, and what the runs read and
@@ -391,31 +341,6 @@ func (r *soakRig) waitingPlans(t *testing.T, count int) {
 			return true
 		})
 	}
-}
-
-// runRows is the row of each of runs, by id.
-func (s agentServer) runRows(t *testing.T, runs []string) map[string]runRow {
-	t.Helper()
-	rows, err := s.database.Pool.Query(t.Context(), `
-		select id::text, state, coalesce(stop_reason, ''), coalesce(lease_owner, ''), kills from going_runs where id = any($1::uuid[])
-	`, runs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	read := make(map[string]runRow, len(runs))
-	for rows.Next() {
-		var id string
-		var row runRow
-		if err := rows.Scan(&id, &row.state, &row.reason, &row.owner, &row.kills); err != nil {
-			t.Fatal(err)
-		}
-		read[id] = row
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	return read
 }
 
 // agentCollection is one collection the agent made at a SIGUSR1 (collectAgentOnSignal): its

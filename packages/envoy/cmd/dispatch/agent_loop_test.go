@@ -1,9 +1,14 @@
+//go:build multiprocess
+
 package main
 
 // agent_loop_test.go holds the agent's loop as a deployment meets it: a real envoy-dispatch
 // server on a real database, whose own envoy-dispatch agent calls a fake chat model over https
 // (going/agent/agenttest), trusting its certificate through SSL_CERT_FILE, with the agent's test
 // hooks on (going/agent/hooks.go) so a reply of the fake can hang a tool or a stream, or panic.
+// Its rows run two processes, the server and its agent, and wait out real leases and holds, so
+// they carry the multiprocess tag and run in CI's dispatch-multiprocess job; the harness they
+// share with the other builds is agent_harness_test.go.
 
 import (
 	"context"
@@ -11,7 +16,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -22,8 +26,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agent/agenttest"
 	"github.com/sjawhar/envoy/going/agentwire"
@@ -33,254 +35,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
-
-// modelScript is what a fake chat model answers, by the person's words of the run that asks: each
-// row's reply to the n-th request of its run, from 1.
-type modelScript struct {
-	mu   sync.Mutex
-	rows map[string]func(n int) agenttest.Reply
-}
-
-// set scripts the replies to the run whose person's words are words.
-func (s *modelScript) set(words string, reply func(n int) agenttest.Reply) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rows[words] = reply
-}
-
-// newFakeModel is a fake chat model over https that answers as its script says.
-func newFakeModel(t *testing.T) (*agenttest.Model, *modelScript) {
-	t.Helper()
-	script := &modelScript{rows: map[string]func(int) agenttest.Reply{}}
-	var fake *agenttest.Model
-	fake = agenttest.NewTLS(t, func(request *agenttest.Request) agenttest.Reply {
-		script.mu.Lock()
-		defer script.mu.Unlock()
-		for words, reply := range script.rows {
-			if request.Asks(words) {
-				return reply(len(fake.Asking(words)))
-			}
-		}
-		return agenttest.Reply{Text: "No row of this test asks that."}
-	})
-	return fake, script
-}
-
-// modelEnv is the environment of a server whose agent calls fake, with the agent's test hooks on.
-func modelEnv(t *testing.T, fake *agenttest.Model) map[string]string {
-	t.Helper()
-	return map[string]string{
-		"DISPATCH_ANSWERER":         "endpoint",
-		"DISPATCH_CHAT_ENDPOINT":    fake.URL(),
-		"DISPATCH_CHAT_MODEL":       agenttest.ModelID,
-		"DISPATCH_CHAT_TOKEN_FILE":  agenttest.TokenFile(t),
-		"SSL_CERT_FILE":             fake.CertFile(t),
-		"DISPATCH_TEST_AGENT_HOOKS": "1",
-	}
-}
-
-// modelServer is a server whose agent calls a fake chat model, and the script the fake answers by.
-type modelServer struct {
-	agentServer
-	fake   *agenttest.Model
-	script *modelScript
-}
-
-// startModelServer starts Dispatch with env and the fake model's settings on a database of its own.
-func startModelServer(t *testing.T, env map[string]string) modelServer {
-	t.Helper()
-	fake, script := newFakeModel(t)
-	merged := modelEnv(t, fake)
-	maps.Copy(merged, env)
-	return modelServer{agentServer: startAgentServer(t, merged), fake: fake, script: script}
-}
-
-// toolCall is the reply that calls tool with arguments.
-func toolCall(tool string, arguments map[string]any) agenttest.Reply {
-	return agenttest.Reply{Calls: []agenttest.Call{{Name: tool, Arguments: arguments}}}
-}
-
-// readCall is the reply that reads with tool of Dispatch, by call_tool, with arguments.
-func readCall(tool string, arguments map[string]any) agenttest.Reply {
-	return toolCall("call_tool", map[string]any{"tool": tool, "arguments": arguments})
-}
-
-// answer is the reply that answers text and calls nothing.
-func answer(text string) agenttest.Reply { return agenttest.Reply{Text: text} }
-
-// agentGrant is the credential a run acts with: the header identity of a test server where kind is
-// empty, a sign-in's generation and expiry, or a personal token's agent_tokens row (kind token).
-type agentGrant struct {
-	kind       string
-	generation int64
-	expires    time.Time
-	token      string
-}
-
-// agentRun is a run a row starts, as the route that starts a run records one: login's words at
-// level, with what it already worked, under grant.
-type agentRun struct {
-	login, words, level string
-	workingMS           int64
-	grant               agentGrant
-}
-
-// begin records runs queued with their grants, in one transaction that announces them, so every
-// agent's claim finds them at once; it answers their ids.
-func (s agentServer) begin(t *testing.T, runs ...agentRun) []string {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := s.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	ids := make([]string, 0, len(runs))
-	for _, run := range runs {
-		id := uuid.NewString()
-		if run.level == "" {
-			run.level = "standard"
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into going_runs (id, author_login, words, conversation_id, level, mode, state, shape, created_at, budget_used)
-			values ($1::uuid, $2, $3, $1::uuid, $4, 'ask', 'queued', $5, clock_timestamp(),
-			  jsonb_build_object('calls', 0, 'working_ms', $6::bigint, 'tokens', 0))
-		`, id, run.login, run.words, run.level, readShape, run.workingMS); err != nil {
-			t.Fatalf("record run %q: %v", run.words, err)
-		}
-		grant := run.grant
-		if grant.kind == "" {
-			grant.kind = "header"
-		}
-		var generation *int64
-		var expires *time.Time
-		var token *string
-		switch grant.kind {
-		case "sign_in":
-			generation, expires = &grant.generation, &grant.expires
-		case "token":
-			token = &grant.token
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into going_run_grants (run_id, kind, login, generation, expires_at, token_id) values ($1::uuid, $2, $3, $4, $5, $6::uuid)
-		`, id, grant.kind, run.login, generation, expires, token); err != nil {
-			t.Fatalf("grant run %q: %v", run.words, err)
-		}
-		ids = append(ids, id)
-	}
-	if _, err := tx.Exec(ctx, `select pg_notify($1, 'ready')`, api.GoingRunsChannel); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-	return ids
-}
-
-// ended waits up to within for run to leave queued and working, and answers its row.
-func (s agentServer) ended(t *testing.T, run string, within time.Duration) runRow {
-	t.Helper()
-	var row runRow
-	s.eventually(t, within, "run "+run+" to end", func() bool {
-		row = s.run(t, run)
-		return row.state != "queued" && row.state != "working"
-	})
-	return row
-}
-
-// toolResults is what the model was told of each tool call of run that saved its step, in order.
-func (s agentServer) toolResults(t *testing.T, run string) []string {
-	t.Helper()
-	rows, err := s.database.Pool.Query(context.Background(), `
-		select body->>'result' from going_run_steps where run_id = $1::uuid and kind = $2 order by step
-	`, run, agentwire.StepTool)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	var results []string
-	for rows.Next() {
-		var result string
-		if err := rows.Scan(&result); err != nil {
-			t.Fatal(err)
-		}
-		results = append(results, result)
-	}
-	return results
-}
-
-// steps is how many steps run saved.
-func (s agentServer) steps(t *testing.T, run string) int {
-	t.Helper()
-	var steps int
-	if err := s.database.Pool.QueryRow(context.Background(), `select count(*) from going_run_steps where run_id = $1::uuid`, run).Scan(&steps); err != nil {
-		t.Fatal(err)
-	}
-	return steps
-}
-
-// endFrame is the end frame of run's events.
-func (s agentServer) endFrame(t *testing.T, run string) agentwire.EndFrame {
-	t.Helper()
-	var data []byte
-	if err := s.database.Pool.QueryRow(context.Background(), `
-		select data from going_run_events where run_id = $1::uuid and name = $2 order by sequence desc limit 1
-	`, run, agentwire.FrameEnd).Scan(&data); err != nil {
-		t.Fatalf("read run %s's end frame: %v", run, err)
-	}
-	var frame agentwire.EndFrame
-	if err := json.Unmarshal(data, &frame); err != nil {
-		t.Fatal(err)
-	}
-	return frame
-}
-
-// runs is how many runs are in state.
-func (s agentServer) runs(t *testing.T, state string) int {
-	t.Helper()
-	var count int
-	if err := s.database.Pool.QueryRow(context.Background(), `select count(*) from going_runs where state = $1`, state).Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	return count
-}
-
-// stop stops run as its person's Stop does: it is set stopped and its lease freed, and the stop is
-// announced, in one transaction.
-func (s agentServer) stop(t *testing.T, run string) {
-	t.Helper()
-	ctx := context.Background()
-	tx, err := s.database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `
-		update going_runs set state = 'stopped', stop_reason = 'STOPPED: its person stopped it', lease_token = null, lease_owner = null,
-		  lease_ends_at = null, finished_at = now()
-		where id = $1::uuid
-	`, run); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tx.Exec(ctx, `select pg_notify($1, 'stop')`, api.GoingRunsChannel); err != nil {
-		t.Fatal(err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// hookTimes is when each call the agent-call test hook held entered it (what "holds") or left it
-// (what "released"), in order.
-func (s agentServer) hookTimes(t *testing.T, what string) []time.Time {
-	t.Helper()
-	var times []time.Time
-	for _, line := range s.logLines(`msg="dispatch: a test hook ` + what + ` a call of the agent"`) {
-		times = append(times, logTime(t, line))
-	}
-	slices.SortFunc(times, func(a, b time.Time) int { return a.Compare(b) })
-	return times
-}
 
 // TestAStaleOwnerWritesNothing: a run has a lease, and an owner whose lease ended writes nothing
 // (check c17). The fake model holds one call for 3 times the lease while the agent's renewal goes

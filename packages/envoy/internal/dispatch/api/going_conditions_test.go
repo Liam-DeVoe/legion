@@ -105,33 +105,39 @@ func goingConditionState(t *testing.T, rig goingWritesRig, f goingConditionFixtu
 
 // goingConditionWrites is one write of each route that takes a condition, by name: the issue
 // update, the ask edit, the issue's, the project's and a session's upload, the claim of an issue
-// nobody holds and of one alice holds, the release and the reopen.
-var goingConditionWrites = map[string]func(t *testing.T, f goingConditionFixtures) goingSend{
-	"issue update": func(t *testing.T, f goingConditionFixtures) goingSend {
+// nobody holds and of one alice holds, the release and the reopen. The issue's and the project's
+// uploads replace a document, so each names the token of the version it replaces, read off
+// handler when it is sent, as the command bar's upload names it (main's upload precondition).
+var goingConditionWrites = map[string]func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend{
+	"issue update": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]any{"title": "Written in process"})
 	},
-	"ask edit": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"ask edit": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPatch, "/api/v1/asks/"+f.ask, map[string]any{"question": "Written in process?"})
 	},
-	"issue upload": func(t *testing.T, f goingConditionFixtures) goingSend {
-		return goingJSONSend(t, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts", map[string]any{"name": "notes.md", "content": "# Notes\n\nWritten in process.\n"})
+	"issue upload": func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend {
+		target := "/api/v1/issues/" + f.issue + "/artifacts"
+		return goingJSONSend(t, http.MethodPost, target, map[string]any{"name": "notes.md", "content": "# Notes\n\nWritten in process.\n",
+			"precondition": uploadBaseNamed(t, handler, target, "notes.md")})
 	},
-	"project upload": func(t *testing.T, f goingConditionFixtures) goingSend {
-		return goingJSONSend(t, http.MethodPost, "/api/v1/projects/DEMO/artifacts", map[string]any{"name": "guide.md", "content": "# Guide\n\nWritten in process.\n"})
+	"project upload": func(t *testing.T, handler http.Handler, f goingConditionFixtures) goingSend {
+		target := "/api/v1/projects/DEMO/artifacts"
+		return goingJSONSend(t, http.MethodPost, target, map[string]any{"name": "guide.md", "content": "# Guide\n\nWritten in process.\n",
+			"precondition": uploadBaseNamed(t, handler, target, "guide.md")})
 	},
-	"session upload": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"session upload": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingMultipartSend(t, "/api/v1/agents/"+goingPlanner+"/artifacts", map[string]string{"name": "notes.txt"}, "Written in process.")
 	},
-	"claim": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"claim": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPost, "/api/v1/issues/"+f.unclaimed+"/claim", map[string]any{})
 	},
-	"claim of a held issue": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"claim of a held issue": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingJSONSend(t, http.MethodPost, "/api/v1/issues/"+f.claimed+"/claim", map[string]any{})
 	},
-	"release": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"release": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingSend{method: http.MethodDelete, path: "/api/v1/issues/" + f.claimed + "/claim"}
 	},
-	"reopen": func(t *testing.T, f goingConditionFixtures) goingSend {
+	"reopen": func(t *testing.T, _ http.Handler, f goingConditionFixtures) goingSend {
 		return goingSend{method: http.MethodPost, path: "/api/v1/comments/" + f.comment + "/reopen"}
 	},
 }
@@ -162,7 +168,7 @@ func TestGoingConditionOnTheRequestsContextIsDecidedByItsRoute(t *testing.T) {
 	} {
 		t.Run(tc.write+" "+tc.code, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
-			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[tc.write](t, f), tc.condition)
+			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[tc.write](t, rig.mux, f), tc.condition)
 			if status != http.StatusConflict || goingAnswerCode(t, answer) != tc.code {
 				t.Fatalf("the %s carrying %+v answered %d %s, want 409 %s", tc.write, tc.condition, status, answer, tc.code)
 			}
@@ -207,7 +213,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
-			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[tc.write](t, f), tc.condition)
+			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[tc.write](t, rig.mux, f), tc.condition)
 			if status != http.StatusInternalServerError || goingAnswerCode(t, answer) != codeGoingConditionMissing {
 				t.Fatalf("the %s marked as a write back carrying %+v answered %d %s, want 500 %s", tc.write, tc.condition, status, answer, codeGoingConditionMissing)
 			}
@@ -220,7 +226,7 @@ func TestGoingWriteBackWithoutItsConditionIsRefusedWithNothingWritten(t *testing
 	for _, write := range []string{"issue update", "ask edit", "issue upload", "project upload", "session upload", "claim", "release", "reopen"} {
 		t.Run("unmarked "+write, func(t *testing.T) {
 			before := goingConditionState(t, rig, f)
-			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, f), goingCondition{})
+			status, answer := goingConditioned(t, rig.mux, "alice", goingConditionWrites[write](t, rig.mux, f), goingCondition{})
 			if status >= http.StatusMultipleChoices {
 				t.Fatalf("the unmarked %s answered %d %s, want it made", write, status, answer)
 			}
@@ -253,7 +259,9 @@ func goingMultipartUpload(t *testing.T, handler http.Handler, target string, fie
 // body off the network that names one under its old member - expect, expect_sha256, expect_new
 // (JSON and multipart), expect_unclaimed, expect_holder, expect_resolved_at - is answered as one
 // that names nothing, the member ignored as main's decodeJSON ignores any member a route does not
-// declare: each condition below is one its route would refuse, and each write goes through.
+// declare: each condition below is one its route would refuse, and each write goes through. Each
+// JSON upload replaces a document, so it names the token of the version it replaces, as main's
+// upload precondition asks of every caller, and the old member is all that could refuse it.
 func TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	f := newGoingConditionFixtures(t, rig)
@@ -295,6 +303,9 @@ func TestAnOutsideRequestNamingAnOldConditionMemberIsNotConditional(t *testing.T
 			func(t *testing.T, answer string) bool { return strings.Contains(answer, `"resolved":false`) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if strings.HasSuffix(tc.target, "/artifacts") {
+				tc.body["precondition"] = uploadBaseNamed(t, rig.mux, tc.target, tc.body["name"].(string))
+			}
 			response := dispatchRequest(t, rig.mux, tc.method, tc.target, tc.body, "alice")
 			if response.Code >= http.StatusMultipleChoices || !tc.went(t, response.Body.String()) {
 				t.Fatalf("%s %s naming %v answered %d %s, want the write made with the member ignored",

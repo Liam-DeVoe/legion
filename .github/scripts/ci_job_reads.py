@@ -1097,7 +1097,7 @@ MEMORY_GROUP_SCRIPT = "go test -count=1 -timeout 15m -v -run '^TestTheServerEnds
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
-go test -tags multiprocess -count=1 -timeout 20m -v -run "$pattern" ./cmd/dispatch"""
+go test -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch"""
 # The two-build job's Go step, which runs only what the twobuild tag adds, as the two above do:
 # envoy-go's unit step runs ./cmd/dispatch's untagged tests, so a run of them here would be a
 # second one. The step is a gate of its own (dispatch_two_builds_go), so the TAG_RUNS pairing

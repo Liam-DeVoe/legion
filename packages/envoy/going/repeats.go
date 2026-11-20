@@ -37,9 +37,14 @@ func SpreadOf(counts []int) Spread {
 	}
 	s.Mean = float64(sum) / float64(len(counts))
 	if len(counts) > 1 {
+		// Each square is rounded to a float64 before it is added (the explicit conversion), so
+		// no compiler fuses the multiply and the add: arm64 does where amd64 does not, and the
+		// fused sum differs in the last digit, so a record measured on one architecture would
+		// not hold the spread the other computes from the same repeats.
 		squares := 0.0
 		for _, c := range counts {
-			squares += (float64(c) - s.Mean) * (float64(c) - s.Mean)
+			d := float64(c) - s.Mean
+			squares += float64(d * d)
 		}
 		s.SD = math.Sqrt(squares / float64(len(counts)-1))
 	}

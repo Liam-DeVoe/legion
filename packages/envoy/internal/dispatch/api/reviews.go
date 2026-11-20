@@ -716,10 +716,22 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	ask := open
 	var appended []*model.Event
 	var opened *model.Event
+	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
+	// open request already stood as asked, whether or not it made its requester a follower
+	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
+	// hand-back that follows it appends an event of its own, which is published below, while the
+	// rewording's goes to the ledger and is published by Commit. The status is read off what the
+	// request decided to write, never off the events it appended: the write phase Commit runs
+	// fills those in, and the landing is handed the status before that commit (goingRecordAnswer).
+	status := http.StatusCreated
 	if open != nil {
-		if appended, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
+		var handedBack bool
+		if appended, handedBack, err = s.renewApprovalAsk(documentCtx, tx, ledger, open, actor, documents, summary); err != nil {
 			s.writeHandlerError(w, err)
 			return
+		}
+		if !handedBack {
+			status = http.StatusOK
 		}
 	} else {
 		if ask, opened, err = s.openApprovalAsk(documentCtx, tx, ledger, owner, artifact, actor, documents, question); err != nil {
@@ -732,18 +744,6 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	ask.WaitingOnPerson = waitingOnPerson
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	approval := approvalAfterRequest(*artifact.Approval, *ask)
-	// 201 says this request opened the request, reworded it or handed it to the human; 200 says the
-	// open request already stood as asked, whether or not it made its requester a follower
-	// (ask.follower_added, renewApprovalAsk). A rewording is never this route's only write: the
-	// hand-back that follows it appends an event of its own, which is published below, while the
-	// rewording's goes to the ledger and is published by Commit.
-	status := http.StatusOK
-	for _, event := range appended {
-		if event.Type != "ask.follower_added" {
-			status = http.StatusCreated
-			break
-		}
-	}
 	// What this request answers it did - the ask, with the id of the event that opened the request,
 	// which the write phase fills in, whether it opened it, and the approval it leaves: the record
 	// the command bar's landing of this request makes in this transaction (goingRecordAnswer) and
@@ -896,11 +896,12 @@ func (s *server) openApprovalAsk(
 }
 
 // renewApprovalAsk answers a request on a document whose approval request is already open, and
-// returns the events it queued for this route to publish after Commit. summary is the request's,
-// "" when it named none, which keeps the open request's own; documents are the documents this
-// request names, which are added to the open request's, each at its current version. A request
-// that names fewer documents than the open one takes nothing away: the open request's documents
-// stand until it is answered.
+// returns the events it queued for this route to publish after Commit and whether it handed the
+// request back to the human, which the route's status says. summary is the request's, "" when it
+// named none, which keeps the open request's own; documents are the documents this request
+// names, which are added to the open request's, each at its current version. A request that
+// names fewer documents than the open one takes nothing away: the open request's documents stand
+// until it is answered.
 //
 // The turn decides, read once before anything is written. A request waiting on its agent - moved
 // to a later version, or answered in its thread - goes back to the human: a new summary, or a
@@ -919,10 +920,10 @@ func (s *server) renewApprovalAsk(
 	actor model.Actor,
 	documents []model.AskApprovalDocument,
 	summary string,
-) ([]*model.Event, error) {
+) ([]*model.Event, bool, error) {
 	openSummary, err := docs.ApprovalAskSummary(*open)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if summary == "" {
 		summary = openSummary
@@ -933,25 +934,26 @@ func (s *server) renewApprovalAsk(
 	// owner lock this request holds, so the turn read here is the one every read reports.
 	waitingOn, err := askWaitingOn(ctx, tx, open.ID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var appended []*model.Event
+	handedBack := false
 	switch {
 	case waitingOn == "human" && changed:
-		return nil, errorf(http.StatusConflict, "APPROVAL_WAITS_ON_HUMAN",
+		return nil, false, errorf(http.StatusConflict, "APPROVAL_WAITS_ON_HUMAN",
 			"the approval request already waits on the human, asking %q, and a different summary or another document would rewrite the card they are reading, so nothing was changed; raise what changed with the human first, in the request's thread or as a decision block in the document, and once they have agreed to every point in it and a reply or a new version leaves the request waiting on you, hand it back with the new summary",
 			open.Question)
 	case waitingOn == "agent":
 		if changed {
 			if err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.ServerURL); err != nil {
-				return nil, err
+				return nil, false, err
 			}
 		}
-		handedBack, err := s.handBackApprovalAsk(ledger, open, actor)
+		event, err := s.handBackApprovalAsk(ledger, open, actor)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		appended = append(appended, handedBack)
+		appended, handedBack = append(appended, event), true
 	}
 	// The requester follows the request. A renewal that appended no event above - an unchanged
 	// request that already waits on the human - and adds the requester as a follower records
@@ -964,28 +966,28 @@ func (s *server) renewApprovalAsk(
 	follows := true
 	if len(appended) == 0 && actor.Kind == "session" && actor.ID != "" {
 		if follows, err = asks.Follows(ctx, tx, open.ID, actor.ID); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		asks.QueueFollowAuthor(b, open.ID, actor)
 		return nil
 	}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !follows {
 		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
 			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
 		))
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		appended = append(appended, followed)
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return appended, nil
+	return appended, handedBack, nil
 }
 
 // renewedApprovalDocuments is the open request's documents, each keeping the requested_version
