@@ -37,6 +37,14 @@ beforeAll(() => {
 // whose init runs as this user). The harness shell, and so everything it starts with `&`, runs in
 // a process group of its own (ownGroup): the rows stop what they end, and a stopped member of the
 // test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
+//
+// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
+// rowWaitSeconds from the shell's start, never by the wait's own seconds: Bun.spawnSync holds the
+// runner, so Bun's own row timeout cannot end the shell, and a loaded host took more than 10 s to
+// deliver a zombie (2026-11-20, main d36289cb84, 8 busy loops on two CPUs). 180 s ends a wait 20 s
+// before the 200 s bound of the step that runs this directory (ci-job-test.yaml), so a wait that
+// gives up names what it waited for.
+const rowWaitSeconds = 180;
 function run(body: string) {
   const script = `set -Eeuo pipefail
 trap 'echo "ERR trap: $BASH_COMMAND" >&2' ERR
@@ -45,6 +53,7 @@ work=$(mktemp -d "$DIR/work.XXXXXX") evidence=$work timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
+until_true_deadline=$((SECONDS + ${rowWaitSeconds}))
 scratch=$(mktemp -d "$DIR/run.XXXXXX")
 started=()
 # The shell's own "Killed" notice of each job the trap stops goes nowhere: it is no output of a row.

@@ -197,11 +197,20 @@ walk stop_tree stop_tree 4242`,
 // recorded start that is not the process's own stands in for a daemon that ended and whose pid
 // another process took since. stop_pid and signal_group send that process nothing. The shell sources
 // lib/rig.sh as a proof does, so the row reads the stop_pid a proof calls.
+//
+// Each wait of a row's shell (until_true) ends on the event it waits for, and is bounded only by
+// rowWaitSeconds from the shell's start, never by the wait's own seconds: Bun.spawnSync holds the
+// runner, so Bun's own row timeout cannot end the shell, and on a loaded host the kernel's end of a
+// signalled process can take longer than a proof's bound. 180 s ends a wait 20 s before the 200 s
+// bound of the step that runs this directory (ci-job-test.yaml), so a wait that gives up names
+// what it waited for.
+const rowWaitSeconds = 180;
 const rigPrelude = `root=${JSON.stringify(root)} work=$(mktemp -d) timeout_hook=
 evidence=$work
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
-. "$root/scripts/e2e/lib/rig.sh"`;
+. "$root/scripts/e2e/lib/rig.sh"
+until_true_deadline=$((SECONDS + ${rowWaitSeconds}))`;
 test("stop_pid and signal_group leave alone a process whose start is not the one recorded for its pid", async () => {
   const stranger = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
   killed.push(stranger.pid);
@@ -462,10 +471,10 @@ stop_pid "$svc3_pid"
 until_true 10 "the setsid recorded gone to have ended" gone "$svc3_pid"
 echo "with setsid gone at the read: recorded $(state "$svc3_pid"), service $(state "$leader3"), child $(state "$child3")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
+  expect(r.err).toBe("");
   expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
     "recorded: gone\nwith setsid gone at the read: recorded gone, service running, child running\n"
   );
-  expect(r.err).toBe("");
 });
 
 // A service that has exited before start_process reads its start is recorded `gone`. start_process
