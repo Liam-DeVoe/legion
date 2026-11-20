@@ -595,9 +595,176 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 			if got := PodWake("LEGION-208", tc.kind, tc.detail); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("PodWake(%s) = %+v, want %+v", tc.kind, got, tc.want)
 			}
-			read := readTaskOf(t, WakeTask("LEGION-208", tc.kind, tc.detail))
-			if read.fields["kind"] != string(texts.PodWake) || read.fields["wake"] != tc.kind {
-				t.Fatalf("the wake's task names %v, want kind %s and wake %s", read.fields, texts.PodWake, tc.kind)
+			read := readTaskOf(t, WakeTask("LEGION-208", tc.kind, tc.detail, StoppedByRelease))
+			if read.fields["kind"] != string(texts.PodWake) || read.fields["wake"] != tc.kind || read.fields["stopped_by"] != texts.StoppedByRelease {
+				t.Fatalf("the wake's task names %v, want kind %s, wake %s and stopped_by %s", read.fields, texts.PodWake, tc.kind, texts.StoppedByRelease)
+			}
+		})
+	}
+}
+
+// Decision 16 of dispatch://INFRA-3759: a wake of a session a project's pause stopped says so,
+// as the field stopped_by: pause, where a release's wake says stopped_by: release; the pod, the
+// workspace and the unpushed work are as the session left them, which the reader's prompt says of
+// that word. The fields about what woke it stay as they are for a release's wake.
+func TestTheWakeTaskOfASessionAPauseStoppedSaysThePauseStoppedIt(t *testing.T) {
+	for _, tc := range []struct {
+		kind, detail string
+		key, want    string
+	}{
+		{kind: pods.WakeRoleMessage, detail: "legion-LEGION-208-implementer", key: "topic", want: notify.RoleTopicPrefix + "legion-LEGION-208-implementer"},
+		{kind: pods.WakeAgentMessage, detail: "session-1", key: "session", want: "session-1"},
+		{kind: pods.WakeBackstop, detail: "implementer", key: "armed_for", want: "implementer"},
+		{kind: "other", detail: "what it was about", key: "detail", want: "what it was about"},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			paused := readTaskOf(t, WakeTask("LEGION-208", tc.kind, tc.detail, StoppedByPause))
+			released := readTaskOf(t, WakeTask("LEGION-208", tc.kind, tc.detail, StoppedByRelease))
+			if paused.fields["stopped_by"] != texts.StoppedByPause || released.fields["stopped_by"] != texts.StoppedByRelease {
+				t.Fatalf("stopped_by after a pause = %q and after a release = %q, want %q and %q",
+					paused.fields["stopped_by"], released.fields["stopped_by"], texts.StoppedByPause, texts.StoppedByRelease)
+			}
+			if paused.fields["wake"] != tc.kind || paused.fields[tc.key] != tc.want {
+				t.Fatalf("the wake's task after a pause names %v, want wake %s and %s %q", paused.fields, tc.kind, tc.key, tc.want)
+			}
+			delete(paused.fields, "stopped_by")
+			delete(released.fields, "stopped_by")
+			if !reflect.DeepEqual(paused.fields, released.fields) {
+				t.Fatalf("the wake's task after a pause names %v, and after a release %v: want them to differ in stopped_by alone", paused.fields, released.fields)
+			}
+		})
+	}
+}
+
+// seedWakePause opens a pause of project LEGION at at, as the pause's own transaction writes it,
+// and answers its id.
+func seedWakePause(t *testing.T, pool *pgxpool.Pool, at time.Time) int64 {
+	t.Helper()
+	var id int64
+	if err := pool.QueryRow(context.Background(), `insert into project_pauses (project, began_at, by_kind, reason)
+		values ('LEGION', $1, 'operator', 'the model provider is down') returning id`, at).Scan(&id); err != nil {
+		t.Fatalf("pause LEGION: %v", err)
+	}
+	return id
+}
+
+// Decision 15 of dispatch://INFRA-3759: a wake taken while the project is paused is held by the
+// pause. Its resume records the pause and pairs with release 0, though the issue has a release
+// recorded, and its start row names the wake's kind and the pause. A wake taken once the pause has
+// ended is an ordinary wake again.
+func TestAWakeTakenWhileThePausedProjectHoldsItRecordsThePauseAndNoRelease(t *testing.T) {
+	rig := newWakeRig(t)
+	ctx := context.Background()
+	if _, err := rig.pool.Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at)
+		values ($1, 'LEGION-208', 7, 'architect,implementer', $2)`, wakeProjectToken(t), wakeAt.Add(-time.Hour)); err != nil {
+		t.Fatalf("record the release: %v", err)
+	}
+	pause := seedWakePause(t, rig.pool, wakeAt.Add(-time.Minute))
+
+	rig.apply("role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(wakeToken(t, claim.RoleImplementer)), At: wakeAt, Report: "report-1"})
+
+	var release, held int64
+	if err := rig.pool.QueryRow(ctx, `select release_id, coalesce(pause_id, 0) from pod_resumes
+		where issue = 'LEGION-208' and role = 'implementer'`).Scan(&release, &held); err != nil {
+		t.Fatalf("read the implementer's resume: %v", err)
+	}
+	if release != 0 || held != pause {
+		t.Fatalf("the held resume pairs with release %d and pause %d, want release 0 and pause %d", release, held, pause)
+	}
+	var kind string
+	var startPause int64
+	if err := rig.pool.QueryRow(ctx, `select payload->>'wakeKind', (payload->>'pause')::bigint from outbox
+		where kind = 'supervise' and payload->>'op' = 'start' and payload->>'role' = 'implementer'`).Scan(&kind, &startPause); err != nil {
+		t.Fatalf("read the implementer's start row: %v", err)
+	}
+	if kind != pods.WakeRoleMessage || startPause != pause {
+		t.Fatalf("the start row names wake %q and pause %d, want %q and pause %d", kind, startPause, pods.WakeRoleMessage, pause)
+	}
+
+	if _, err := rig.pool.Exec(ctx, `update project_pauses set ended_at = $2, ended_by_kind = 'operator', ended_by_session = ''
+		where id = $1`, pause, wakeAt.Add(time.Minute)); err != nil {
+		t.Fatalf("resume LEGION: %v", err)
+	}
+	rig.apply("role-message-architect", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: string(wakeToken(t, claim.RoleArchitect)), At: wakeAt.Add(2 * time.Minute), Report: "report-2"})
+	if err := rig.pool.QueryRow(ctx, `select release_id, coalesce(pause_id, 0) from pod_resumes
+		where issue = 'LEGION-208' and role = 'architect'`).Scan(&release, &held); err != nil {
+		t.Fatalf("read the architect's resume: %v", err)
+	}
+	if release == 0 || held != 0 {
+		t.Fatalf("the wake after the resume pairs with release %d and pause %d, want the issue's release and no pause", release, held)
+	}
+}
+
+// Decision 16 of dispatch://INFRA-3759, through the engine: the task of a wake says the pause
+// stopped the session when the role's newest stop is a pause's stop that ended as `stopped` after
+// both the issue's newest pod release and the role's last ready, and says the release did once a
+// release is recorded after that stop. The same read decides whose wake it is (decision 15): a
+// wake of a role the ended pause stopped last is that pause's held wake, which pairs with no
+// release, and the wake of a role a later release stopped pairs with that release and names no
+// pause. A role whose agent was ready after the pause's stop was launched since, by the resume:
+// an idle release that stops it suspends it before its teardown records the release, and a wake
+// taken in between is the release's, which names no pause and pairs with the issue's newest
+// release.
+func TestAWakeOfARoleThePauseStoppedLastIsToldThePauseStoppedIt(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name      string
+		releaseAt time.Duration
+		// readyAt is when the role's agent was last ready, relative to the wake; 0 for never.
+		readyAt time.Duration
+		paused  bool
+	}{
+		{name: "the pause's stop is newer than the release", releaseAt: -2 * time.Hour, paused: true},
+		{name: "a release is newer than the pause's stop", releaseAt: -10 * time.Minute, paused: false},
+		{name: "the role was ready after the pause's stop, and an idle release stopped it before its teardown",
+			releaseAt: -2 * time.Hour, readyAt: -4 * time.Minute, paused: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newWakeRig(t)
+			if _, err := rig.pool.Exec(ctx, `insert into pod_releases (project, issue, generation, roles, at)
+				values ($1, 'LEGION-208', 7, 'implementer', $2)`, wakeProjectToken(t), wakeAt.Add(tc.releaseAt)); err != nil {
+				t.Fatalf("record the release: %v", err)
+			}
+			pause := seedWakePause(t, rig.pool, wakeAt.Add(-time.Hour))
+			if _, err := rig.pool.Exec(ctx, `insert into project_pause_stops (pause_id, project, claim, issue, role, asked_at, ended_at, ended_as)
+				values ($1, 'LEGION', $2, 'LEGION-208', 'implementer', $3, $3, 'stopped')`,
+				pause, string(wakeToken(t, claim.RoleImplementer)), wakeAt.Add(-30*time.Minute)); err != nil {
+				t.Fatalf("record the pause's stop: %v", err)
+			}
+			if _, err := rig.pool.Exec(ctx, `update project_pauses set ended_at = $2, ended_by_kind = 'operator', ended_by_session = ''
+				where id = $1`, pause, wakeAt.Add(-5*time.Minute)); err != nil {
+				t.Fatalf("resume LEGION: %v", err)
+			}
+			if tc.readyAt != 0 {
+				if _, err := rig.pool.Exec(ctx, `update claims set last_ready = $2 where token = $1`,
+					string(wakeToken(t, claim.RoleImplementer)), wakeAt.Add(tc.readyAt)); err != nil {
+					t.Fatalf("record the implementer's ready after the resume: %v", err)
+				}
+			}
+
+			rig.apply("agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: "session-implementer", At: wakeAt, Report: "report-1"})
+
+			starts := wakeStarts(t, rig.pool)
+			if len(starts) != 1 {
+				t.Fatalf("start rows = %+v, want the implementer's one wake", starts)
+			}
+			want, other := WakeTask("LEGION-208", pods.WakeAgentMessage, "session-implementer", StoppedByRelease), WakeTask("LEGION-208", pods.WakeAgentMessage, "session-implementer", StoppedByPause)
+			if tc.paused {
+				want, other = other, want
+			}
+			if starts[0].Task != want {
+				t.Fatalf("the wake's task = %q, want %q (not %q)", starts[0].Task, want, other)
+			}
+			var release, held int64
+			if err := rig.pool.QueryRow(ctx, `select release_id, coalesce(pause_id, 0) from pod_resumes
+				where issue = 'LEGION-208' and role = 'implementer'`).Scan(&release, &held); err != nil {
+				t.Fatalf("read the implementer's resume: %v", err)
+			}
+			if tc.paused && (held != pause || release != 0) {
+				t.Fatalf("the wake of the role the pause stopped last pairs with release %d and pause %d, want release 0 and pause %d", release, held, pause)
+			}
+			if !tc.paused && (held != 0 || release == 0) {
+				t.Fatalf("the wake of the role a release stopped last pairs with release %d and pause %d, want the release and no pause", release, held)
 			}
 		})
 	}
@@ -607,7 +774,9 @@ func TestWakeTaskNamesItsWake(t *testing.T) {
 // R7), each as a field: the role topic the message was published to, that Envoy keeps a role
 // message for one hour, that a kept message reaches the woken session as a card that shows
 // kept_at, possibly before the wake's task, that Envoy tells its sender when it drops one, and that
-// a message sent with keep: false is not kept, so its sender sends it again.
+// a message sent with keep: false is not kept, so its sender sends it again. The task states the
+// same fields whether an idle release or a project's pause stopped the session, and stopped_by
+// names which.
 func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
 	want := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeRoleMessage,
 		Topic: notify.RoleTopicPrefix + "legion-LEGION-208-implementer", KeptFor: time.Hour.String(), KeptCardField: "kept_at",
@@ -615,7 +784,19 @@ func TestTheRoleMessageWakeTaskSaysWhatWasKept(t *testing.T) {
 	if got := PodWake("LEGION-208", pods.WakeRoleMessage, "legion-LEGION-208-implementer"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the role message wake = %+v, want %+v", got, want)
 	}
-	readTaskOf(t, WakeTask("LEGION-208", pods.WakeRoleMessage, "legion-LEGION-208-implementer"))
+	var fields []map[string]string
+	for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
+		read := readTaskOf(t, WakeTask("LEGION-208", pods.WakeRoleMessage, "legion-LEGION-208-implementer", stop))
+		if read.fields["stopped_by"] != stop.word() || read.fields["topic"] != want.Topic || read.fields["kept_for"] != want.KeptFor ||
+			read.fields["kept_card_field"] != want.KeptCardField || read.fields["not_kept_with"] != want.NotKeptWith {
+			t.Fatalf("the role message wake's task, stop %d, names %v, want stopped_by %s and the facts of R7", stop, read.fields, stop.word())
+		}
+		delete(read.fields, "stopped_by")
+		fields = append(fields, read.fields)
+	}
+	if !reflect.DeepEqual(fields[0], fields[1]) {
+		t.Fatalf("the role message wake's task names %v after a release and %v after a pause: want them to differ in stopped_by alone", fields[0], fields[1])
+	}
 }
 
 // A settlement's wake names the pull request, the head it is for and the issue's phase, each check

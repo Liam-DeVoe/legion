@@ -14,10 +14,10 @@ import (
 )
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
-// kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7 or 724196ef
-// for a sentence main wrote since (a format verb, %s or %d, and … stand for any text), the readers,
-// and the passage of the readers' prompt (packages/daemon/internal/prompts) that gives each of them
-// its own rule for the step, quoted word for word from one line of the file.
+// kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef or
+// c7e1cbd5 for a sentence main wrote since (a format verb, %s or %d, and … stand for any text),
+// the readers, and the passage of the readers' prompt (packages/daemon/internal/prompts) that
+// gives each of them its own rule for the step, quoted word for word from one line of the file.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -159,6 +159,14 @@ var goldenSteps = []goldenStep{
 		goPrompts + "architect-common.md", "A direct Envoy message that Envoy refused reaches you when its sender sends it again."},
 	{texts.PodWake, ". Nothing else asked for you, so take up your phase where you left it.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "`wake: backstop` means that nothing else asked for you: take up your phase where you left it."},
+	{texts.PodWake, "Your project was paused, and its pause stopped your session. This wake started it again. Your pod, your workspace and any work you had not pushed are as you left them. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "`pause` is a pause of your project, which kept your pod."},
+	{texts.PodWake, "Your project was paused, and its pause stopped your session. This wake started it again. Your pod, your workspace and any work you had not pushed are as you left them. ", "architect",
+		goPrompts + "architect-common.md", "`pause` is a pause of your project, which kept your pod."},
+	{texts.PodWake, ") while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "`wake: agent_message` is a message sent to your session (`session`) while your session was stopped."},
+	{texts.PodWake, ") while your session was stopped. A message that Envoy or Dispatch stored for your session reaches you in this session. ", "architect",
+		goPrompts + "architect-common.md", "`wake: agent_message` is a message sent to your session (`session`) while your session was stopped."},
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "Before you do any of that work again, check what it already did in your workspace and on the issue's branch."},
 	{texts.RelaunchNote, "Before you do any of that work again, check what it already did.", "architect",
@@ -273,6 +281,12 @@ var goldenSteps = []goldenStep{
 		rolePrompts + "controller-root.md", "take nothing for its slot, which it keeps while it waits."},
 	{texts.TreeStalled, "Read the tree and decide what it needs. You can ask a role what it waits on. You can move an issue back a phase. You can park the tree.", "controller",
 		rolePrompts + "controller-root.md", "read the tree and decide what it needs, as `skill://legion-controller` says: ask a role what it waits on, move an issue back a phase, or ask whether to park the tree."},
+	{texts.ArchitectStalled, " That time is counted from the end of pause %d at %s, which held the project.", "controller",
+		rolePrompts + "controller-root.md", "`pause-end` is the end of the pause"},
+	{texts.ArchitectStalled, " That time is counted from %s, when the wake pacing let out its architect's launch, which pause %d held.", "controller",
+		rolePrompts + "controller-root.md", "`launch-let-out` is when the wake pacing let out the architect's launch that the pause held"},
+	{texts.ArchitectStalled, " That time is counted from %s, when a turn of its architect first confirmed a task of phase entry %d.", "controller",
+		rolePrompts + "controller-root.md", "`entry-confirmed` is when a turn of the architect first confirmed a task of its entry"},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "implementer",
 		goPrompts + "implementer.md", "That message is yours to act on while the issue is still in a phase you work: re-run a check that failed on itself rather than on your code"},
 	{texts.CISettled, " Nothing moved on it: decide whether to re-run the checks, wait for them, or fix the code.", "planner, tester, reviewer, merger",

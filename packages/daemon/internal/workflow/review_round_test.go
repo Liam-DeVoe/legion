@@ -473,8 +473,10 @@ func TestAReviewOfTheEntryTheBootsResumeNamesRecordsItsHead(t *testing.T) {
 }
 
 // aKindStillToCome is a wake no fact reports today: WakeTask's default, which the one act of every
-// wake (wakeReleased) gives any kind it is handed.
-const aKindStillToCome = "a wake of a kind still to come"
+// wake (wakeReleased) gives any kind it is handed. A start names only a kind of the pods wake kinds
+// (record.SuperviseRequest's WakeKind), so the delivery kind, which no workflow wake takes and
+// WakeTask names no sentence of its own for, stands in for a kind still to come.
+const aKindStillToCome = pods.WakeDelivery
 
 // wakeKinds is each kind of wake that brings a released role back (wake.go): the CI settlement,
 // the role message, the agent message, the backstop, and any other.
@@ -506,17 +508,19 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		fact := settlement(head)
 		at := issueRecord(t, pool, "LEGION-208").Phase
 		apply("wake-checks", fact)
-		return taskText(SettlementWake("LEGION-208", at, fact.Repo, fact))
+		wake := SettlementWake("LEGION-208", at, fact.Repo, fact)
+		wake.StoppedBy = StoppedByRelease.word()
+		return taskText(wake)
 	case pods.WakeRoleMessage:
 		apply("wake-role-message", intake.ListenerWake{Kind: intake.ListenerWakeRole, Role: token, At: reviewTestedAt, Report: "report-role"})
-		return WakeTask("LEGION-208", kind, token)
+		return WakeTask("LEGION-208", kind, token, StoppedByRelease)
 	case pods.WakeAgentMessage:
 		apply("wake-agent-message", intake.ListenerWake{Kind: intake.ListenerWakeAgent, Session: session, At: reviewTestedAt, Report: "report-agent"})
-		return WakeTask("LEGION-208", kind, session)
+		return WakeTask("LEGION-208", kind, session, StoppedByRelease)
 	case pods.WakeBackstop:
 		id := armBackstop(t, pool, role, reviewTestedAt)
 		apply("wake-backstop", intake.PodBackstopDue{ID: id, Issue: "LEGION-208", Role: role})
-		return WakeTask("LEGION-208", kind, string(role))
+		return WakeTask("LEGION-208", kind, string(role), StoppedByRelease)
 	}
 	applyInTx(t, pool, engine, func(ctx context.Context, tx pgx.Tx) error {
 		released, found, err := engine.cfg.Pods.ReleasedClaimOfRole(ctx, tx, "LEGION-208", role)
@@ -529,7 +533,7 @@ func wakes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, se
 		}
 		return err
 	})
-	return WakeTask("LEGION-208", kind, "its detail")
+	return WakeTask("LEGION-208", kind, "its detail", StoppedByRelease)
 }
 
 // wakesTheReviewerInRoundTwo is the walk of a wake of kind: LEGION-208's reviewer in its second

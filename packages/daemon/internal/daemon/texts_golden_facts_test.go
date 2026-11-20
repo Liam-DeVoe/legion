@@ -8,9 +8,10 @@ import (
 
 // goldenMainFacts is, for each kind, the facts its builder on main (b4a566cb) put in its text:
 // each id, reference, version, commit, phase and gate state, with the builder each was read from
-// (packages/daemon/internal/ at that commit). A sample of the kind must carry each with the value
-// the test gave the builder (goldenFactsOf.problems); a Dispatch item among them is a dispatch://
-// link. Where main named a pull request by its number alone, the sample names it owner/name#n.
+// (packages/daemon/internal/ at that commit, or at a later commit of main the row names). A sample
+// of the kind must carry each with the value the test gave the builder (goldenFactsOf.problems); a
+// Dispatch item among them is a dispatch:// link. Where main named a pull request by its number
+// alone, the sample names it owner/name#n.
 var goldenMainFacts = []goldenFactsOf{
 	// Tasks.
 	{kind: texts.PhaseAssignment, from: "workflow/effects.go:task, continueLine",
@@ -83,6 +84,8 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"session"}},
 	{kind: texts.PodWake, variants: []string{"backstop"}, from: "workflow/wake.go:podBackstopDue (the role the backstop was armed for)",
 		keys: []string{"armed_for"}},
+	{kind: texts.PodWake, from: "workflow/wake.go:WakeTask at c7e1cbd5 (what stopped the session: an idle release or a project's pause)",
+		keys: []string{"stopped_by"}},
 	{kind: texts.RelaunchNote, from: "supervise/relaunch.go:relaunchSentence (the cause)",
 		keys: []string{"cause"}},
 	{kind: texts.AbandonedSessionNote, from: "supervise/delivery.go:abandonedTask (the session, why)",
@@ -260,6 +263,12 @@ var goldenMainFacts = []goldenFactsOf{
 		keys: []string{"claim_state"}},
 	{kind: texts.ArchitectStalled, variants: []string{"slow-before-gate"}, from: "admit/architect_stall.go:architectSlowBeforeGate (since when)",
 		keys: []string{"since"}},
+	{kind: texts.ArchitectStalled, variants: []string{"slow-before-gate"}, from: "admit/architect_stall.go:stallFloor.count, architectSlowBeforeGate at c7e1cbd5 (the moment the arm counted from, and the pause)",
+		keys: []string{"counted_from", "pause_id"}},
+	{kind: texts.ProjectPaused, from: "pause/pause.go:pausedNotice at c7e1cbd5 (the pause, who paused, when, why)",
+		keys: []string{"issue", "pause.id", "pause.by.kind", "pause.at", "pause.reason"}},
+	{kind: texts.ProjectResumed, from: "pause/pause.go:resumedNotice at c7e1cbd5 (the pause ended, who resumed, when)",
+		keys: []string{"issue", "pause.id", "pause.by.kind", "pause.at"}},
 
 	// Role messages.
 	{kind: texts.CISettled, from: "workflow/review.go:tellChecks, namedConclusions (the pull request, each check)",

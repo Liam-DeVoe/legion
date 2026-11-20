@@ -14,10 +14,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pause"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/texts"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -444,8 +446,27 @@ func (b *goldenBuild) controllerNotices(r goldenRendering) {
 		b.notice(r, "claim-unreachable", ctl, admit.ArchitectStalledNotice(root, record.ArchitectClaimUnreachable, unreachable),
 			goldenWant("issue", root.Key, "arm", string(record.ArchitectClaimUnreachable), "phase", phase.Admitted, "claim_state", unreachable.ClaimState))
 		slow := texts.ArchitectStalledRecord{Since: r.at(-300), Bound: workflow.ArchitectGateWake.String()}
+		event := []string{texts.CountedFromPauseEnd, texts.CountedFromLaunchLetOut}[r.n-1]
+		slow.CountedFrom, slow.CountedFromEvent, slow.PauseID = r.at(-90-r.n), event, 60+int64(r.n)
 		b.notice(r, "slow-before-gate", ctl, admit.ArchitectStalledNotice(root, record.ArchitectSlowBeforeGate, slow),
-			goldenWant("issue", root.Key, "arm", string(record.ArchitectSlowBeforeGate), "phase", phase.Admitted, "since", r.at(-300)))
+			goldenWant("issue", root.Key, "arm", string(record.ArchitectSlowBeforeGate), "phase", phase.Admitted, "since", r.at(-300),
+				"counted_from", r.at(-90-r.n), "counted_from_event", event, "pause_id", 60+int64(r.n)))
+	}
+
+	// project-paused, with a reason past the bound in the first rendering, and project-resumed:
+	// the operator's pause and its resume, which tell the controller (the controller's own tell it
+	// nothing).
+	{
+		reason := r.words("pause/reason", []int{4300, 120}[r.n-1]) + " " + goldenHostile[r.n-1][1]
+		cut, _ := texts.Bound(reason, texts.OneAct)
+		operator := store.PauseActor{Kind: store.PauseByOperator}
+		p := store.Pause{ID: 40 + int64(r.n), Project: r.prefix, By: operator, Since: r.at(90), Reason: reason}
+		b.notice(r, "paused", ctl, pause.PausedNotice(p),
+			goldenWant("issue", r.prefix, "pause.id", p.ID, "pause.by.kind", string(store.PauseByOperator), "pause.at", r.at(90), "pause.reason", cut,
+				"words.pause.reason.by", string(store.PauseByOperator), "words.pause.reason.at", r.at(90)))
+		p.EndedAt, p.EndedBy = r.at(95+r.n), operator
+		b.notice(r, "resumed", ctl, pause.ResumedNotice(p),
+			goldenWant("issue", r.prefix, "pause.id", p.ID, "pause.by.kind", string(store.PauseByOperator), "pause.at", r.at(95+r.n)))
 	}
 }
 

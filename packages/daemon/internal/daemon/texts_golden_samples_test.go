@@ -662,24 +662,30 @@ func (b *goldenBuild) keptDecisions(r goldenRendering) {
 			"approval_step", "spec", "approval_document", "dispatch://"+root+"/spec", "approved", 2+r.n, "latest", 4+r.n))
 }
 
-// podWakes adds the task of a role whose released pod a wake brought back, for each wake.
+// podWakes adds the task of a role whose released pod a wake brought back, for each wake: the
+// first rendering's wakes bring back a session an idle release stopped, the second's one a
+// project's pause stopped.
 func (b *goldenBuild) podWakes(r goldenRendering) {
 	issue := r.key(50)
+	stop, stoppedBy := []workflow.WakeStop{workflow.StoppedByRelease, workflow.StoppedByPause}[r.n-1],
+		[]string{texts.StoppedByRelease, texts.StoppedByPause}[r.n-1]
 	checks := goldenChecks(r, "wake")
 	settled := workflow.SettlementWake(issue, phase.Testing, r.repo, intake.PullRequestChecks{Repo: r.repo, Number: 500 + r.n,
 		HeadSHA: r.sha("wake/head"), CheckRuns: checks.runs, Failing: checks.failing, Cancelled: checks.cancelled, Statuses: checks.statuses})
-	want := checks.statusFacts(goldenWant("issue", issue, "wake", pods.WakeChecks, "pull_request", texts.PullRequestRef(r.repo, 500+r.n), "head", r.sha("wake/head"),
+	settled.StoppedBy = stoppedBy
+	want := checks.statusFacts(goldenWant("issue", issue, "wake", pods.WakeChecks, "stopped_by", stoppedBy,
+		"pull_request", texts.PullRequestRef(r.repo, 500+r.n), "head", r.sha("wake/head"),
 		"phase", phase.Testing, "list_passed", texts.ListPassed(r.repo, 500+r.n), "not_passed#", len(checks.notPassed)))
 	b.task(r, "checks", claim.RoleTester, issue, settled, want)
 	token := r.token(b.t, issue, claim.RoleImplementer)
-	b.taskText(r, texts.PodWake, "role-message", claim.RoleImplementer, issue, workflow.WakeTask(issue, pods.WakeRoleMessage, string(token)),
-		goldenWant("issue", issue, "wake", pods.WakeRoleMessage, "topic", "notifications.role."+string(token)))
+	b.taskText(r, texts.PodWake, "role-message", claim.RoleImplementer, issue, workflow.WakeTask(issue, pods.WakeRoleMessage, string(token), stop),
+		goldenWant("issue", issue, "wake", pods.WakeRoleMessage, "stopped_by", stoppedBy, "topic", "notifications.role."+string(token)))
 	session := r.id("wake/session")
-	b.taskText(r, texts.PodWake, "agent-message", claim.RoleArchitect, issue, workflow.WakeTask(issue, pods.WakeAgentMessage, session),
-		goldenWant("issue", issue, "wake", pods.WakeAgentMessage, "session", session))
+	b.taskText(r, texts.PodWake, "agent-message", claim.RoleArchitect, issue, workflow.WakeTask(issue, pods.WakeAgentMessage, session, stop),
+		goldenWant("issue", issue, "wake", pods.WakeAgentMessage, "stopped_by", stoppedBy, "session", session))
 	role := []claim.Role{claim.RolePlanner, claim.RoleMerger}[r.n-1]
-	b.taskText(r, texts.PodWake, "backstop", role, issue, workflow.WakeTask(issue, pods.WakeBackstop, string(role)),
-		goldenWant("issue", issue, "wake", pods.WakeBackstop, "armed_for", role))
+	b.taskText(r, texts.PodWake, "backstop", role, issue, workflow.WakeTask(issue, pods.WakeBackstop, string(role), stop),
+		goldenWant("issue", issue, "wake", pods.WakeBackstop, "stopped_by", stoppedBy, "armed_for", role))
 }
 
 // goldenChecks is a head's 60 check runs: 15 that failed and 10 that were cancelled, the 25 that

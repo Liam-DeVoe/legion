@@ -892,7 +892,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1050",
-      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: agent_message\nsession: 637feca6-9a48-6f3e-f547-28239ad5d96a"
+      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: agent_message\nsession: 637feca6-9a48-6f3e-f547-28239ad5d96a\nstopped_by: release"
     },
     {
       "kind": "pod-wake",
@@ -902,7 +902,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2050",
-      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: agent_message\nsession: 22181512-5189-624f-9252-c926e276ebf1"
+      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: agent_message\nsession: 22181512-5189-624f-9252-c926e276ebf1\nstopped_by: pause"
     },
     {
       "kind": "pod-wake",
@@ -912,7 +912,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1050",
-      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: backstop\narmed_for: planner"
+      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: backstop\narmed_for: planner\nstopped_by: release"
     },
     {
       "kind": "pod-wake",
@@ -922,7 +922,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2050",
-      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: backstop\narmed_for: merger"
+      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: backstop\narmed_for: merger\nstopped_by: pause"
     },
     {
       "kind": "pod-wake",
@@ -932,7 +932,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1050",
-      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: checks\npull_request: alpha-works/alpha-tower#501\nhead: 7865ddece4eceebe72788120af5ab89c681ab4f3\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",failed\n  123456e78901 03,cancelled\n  1e5 02,failed\n  \"a, b 04\",cancelled\n  true 00,failed\n  yswow-12 togsz um,failed\n  yswow-13 icgcjq c,failed\n  yswow-14 pqkfi sq,failed\n  yswow-15 tnwdnojp,cancelled\n  yswow-16 xfkjpy g,cancelled\n  \"yswow-24 nuqfyhj \",failed\n  yswow-25 lmb yehb,failed\n  yswow-26 xmp zgfi,failed\n  yswow-27 rgwywaaz,cancelled\n  yswow-28 ksgtmdxy,cancelled\n  yswow-36 xzjdkrve,failed\n  \"yswow-37 tkocofx \",failed\n  yswow-38 cfmxfbvs,failed\n  yswow-39 svt omvi,cancelled\n  yswow-40 drbydy x,cancelled\n  \"yswow-48 pyyxopt \",failed\n  yswow-49 nkgis by,failed\n  \"yswow-50 bmaltar \",failed\n  yswow-51 oclmoegt,cancelled\n  yswow-52 ruu tpda,cancelled\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/hxo -13 lve pl,error\n  status/hxo -23 mmznov,failure\npassed: 62\nlist_passed: gh pr checks 501 --repo alpha-works/alpha-tower"
+      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: checks\npull_request: alpha-works/alpha-tower#501\nhead: 7865ddece4eceebe72788120af5ab89c681ab4f3\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"-x 01\",failed\n  123456e78901 03,cancelled\n  1e5 02,failed\n  \"a, b 04\",cancelled\n  true 00,failed\n  yswow-12 togsz um,failed\n  yswow-13 icgcjq c,failed\n  yswow-14 pqkfi sq,failed\n  yswow-15 tnwdnojp,cancelled\n  yswow-16 xfkjpy g,cancelled\n  \"yswow-24 nuqfyhj \",failed\n  yswow-25 lmb yehb,failed\n  yswow-26 xmp zgfi,failed\n  yswow-27 rgwywaaz,cancelled\n  yswow-28 ksgtmdxy,cancelled\n  yswow-36 xzjdkrve,failed\n  \"yswow-37 tkocofx \",failed\n  yswow-38 cfmxfbvs,failed\n  yswow-39 svt omvi,cancelled\n  yswow-40 drbydy x,cancelled\n  \"yswow-48 pyyxopt \",failed\n  yswow-49 nkgis by,failed\n  \"yswow-50 bmaltar \",failed\n  yswow-51 oclmoegt,cancelled\n  yswow-52 ruu tpda,cancelled\nnot_passed_statuses[3]{context,state}:\n  \"a, b status 03\",failure\n  status/hxo -13 lve pl,error\n  status/hxo -23 mmznov,failure\npassed: 62\nlist_passed: gh pr checks 501 --repo alpha-works/alpha-tower\nstopped_by: release"
     },
     {
       "kind": "pod-wake",
@@ -942,7 +942,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2050",
-      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: checks\npull_request: bravo-labs/bravo-yard#502\nhead: 634e19830a4a5a12d91e2675c43a62a3c4ea456e\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  null 00,failed\n  \"ouu zt-03 ougzlcp \",cancelled\n  ouu zt-12 xcxx ybg,failed\n  ouu zt-13 ieu zcdu,failed\n  ouu zt-14 ucew vls,failed\n  ouu zt-15 kydc hhd,cancelled\n  \"ouu zt-16 suguxhy \",cancelled\n  ouu zt-24 sylhqu o,failed\n  ouu zt-25 pjfaf iv,failed\n  ouu zt-26 qvugp ft,failed\n  ouu zt-27 lfgc qxb,cancelled\n  ouu zt-28 brntfd q,cancelled\n  ouu zt-36 cpvyhj e,failed\n  ouu zt-37 hmbjutff,failed\n  ouu zt-38 qrxxoh m,failed\n  ouu zt-39 coghybuu,cancelled\n  \"ouu zt-40 wcbioqe \",cancelled\n  ouu zt-48 miart bb,failed\n  ouu zt-49 ckp inys,failed\n  ouu zt-50 wznnt qk,failed\n  ouu zt-51 ckl nssu,cancelled\n  ouu zt-52 epzhnvfd,cancelled\n  \"say \\\"so\\\" 04\",cancelled\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  \"status/frkh -13 hzlol \",error\n  status/frkh -23 qbvz b,failure\npassed: 62\nlist_passed: gh pr checks 502 --repo bravo-labs/bravo-yard"
+      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: checks\npull_request: bravo-labs/bravo-yard#502\nhead: 634e19830a4a5a12d91e2675c43a62a3c4ea456e\nphase: testing\nnot_passed[25]{check,conclusion}:\n  \"#x 01\",failed\n  0123 02,failed\n  null 00,failed\n  \"ouu zt-03 ougzlcp \",cancelled\n  ouu zt-12 xcxx ybg,failed\n  ouu zt-13 ieu zcdu,failed\n  ouu zt-14 ucew vls,failed\n  ouu zt-15 kydc hhd,cancelled\n  \"ouu zt-16 suguxhy \",cancelled\n  ouu zt-24 sylhqu o,failed\n  ouu zt-25 pjfaf iv,failed\n  ouu zt-26 qvugp ft,failed\n  ouu zt-27 lfgc qxb,cancelled\n  ouu zt-28 brntfd q,cancelled\n  ouu zt-36 cpvyhj e,failed\n  ouu zt-37 hmbjutff,failed\n  ouu zt-38 qrxxoh m,failed\n  ouu zt-39 coghybuu,cancelled\n  \"ouu zt-40 wcbioqe \",cancelled\n  ouu zt-48 miart bb,failed\n  ouu zt-49 ckp inys,failed\n  ouu zt-50 wznnt qk,failed\n  ouu zt-51 ckl nssu,cancelled\n  ouu zt-52 epzhnvfd,cancelled\n  \"say \\\"so\\\" 04\",cancelled\nnot_passed_statuses[3]{context,state}:\n  \"say \\\"so\\\" status 03\",failure\n  \"status/frkh -13 hzlol \",error\n  status/frkh -23 qbvz b,failure\npassed: 62\nlist_passed: gh pr checks 502 --repo bravo-labs/bravo-yard\nstopped_by: pause"
     },
     {
       "kind": "pod-wake",
@@ -952,7 +952,7 @@
       "form": "task",
       "urgency": "",
       "issue": "ALPHA-1050",
-      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: role_message\ntopic: notifications.role.legion-alpha-alpha-1050-implementer\nkept_for: 1h0m0s\nkept_card_field: kept_at\nkept_card_may_come_first: true\nsender_told_of_drop: true\nnot_kept_with: \"keep: false\"\nsender_sends_again: true"
+      "text": "kind: pod-wake\nissue: ALPHA-1050\nwake: role_message\ntopic: notifications.role.legion-alpha-alpha-1050-implementer\nkept_for: 1h0m0s\nkept_card_field: kept_at\nkept_card_may_come_first: true\nsender_told_of_drop: true\nnot_kept_with: \"keep: false\"\nsender_sends_again: true\nstopped_by: release"
     },
     {
       "kind": "pod-wake",
@@ -962,7 +962,7 @@
       "form": "task",
       "urgency": "",
       "issue": "BRAVO-2050",
-      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: role_message\ntopic: notifications.role.legion-bravo-bravo-2050-implementer\nkept_for: 1h0m0s\nkept_card_field: kept_at\nkept_card_may_come_first: true\nsender_told_of_drop: true\nnot_kept_with: \"keep: false\"\nsender_sends_again: true"
+      "text": "kind: pod-wake\nissue: BRAVO-2050\nwake: role_message\ntopic: notifications.role.legion-bravo-bravo-2050-implementer\nkept_for: 1h0m0s\nkept_card_field: kept_at\nkept_card_may_come_first: true\nsender_told_of_drop: true\nnot_kept_with: \"keep: false\"\nsender_sends_again: true\nstopped_by: pause"
     },
     {
       "kind": "controller-start",
@@ -8710,7 +8710,10 @@
         "issue": "ALPHA-1240",
         "bound": "1h30m0s",
         "arm": "slow-before-gate",
-        "since": "2026-11-18T04:30:00Z"
+        "since": "2026-11-18T04:30:00Z",
+        "counted_from": "2026-11-18T07:59:00Z",
+        "counted_from_event": "pause-end",
+        "pause_id": 61
       }
     },
     {
@@ -8729,7 +8732,10 @@
         "issue": "BRAVO-2240",
         "bound": "1h30m0s",
         "arm": "slow-before-gate",
-        "since": "2027-04-07T11:45:00Z"
+        "since": "2027-04-07T11:45:00Z",
+        "counted_from": "2027-04-07T15:13:00Z",
+        "counted_from_event": "launch-let-out",
+        "pause_id": 62
       }
     },
     {
@@ -8772,6 +8778,105 @@
         "entry": 5,
         "arm": "took-nothing",
         "queued_at": "2027-04-07T14:45:00Z"
+      }
+    },
+    {
+      "kind": "project-paused",
+      "variant": "paused",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "project-paused on ALPHA",
+      "payload": {
+        "kind": "project-paused",
+        "issue": "ALPHA",
+        "pause": {
+          "id": 41,
+          "by": {
+            "kind": "operator"
+          },
+          "at": "2026-11-18T11:00:00Z",
+          "reason": "hthhscmmo jeaz cuqjrzji mcqnfwjo hhw owscjpv sxofgxj vixkob snuj byo ftxrtcabj jsgkj zbv woicnpfaf gtc uhvpkhe dezrtcpx mhy hezgqs yharmw mxnejr oqixsvup runpbzlv evvlczz zmuujiwji qixjcrckd gnpfjai ajngrmwxj yali iyxjc dheqr vajy vlh gmcbvgyhi lvneerpa miqku duhibijy zukg tdmtqzoq tmiyssvr efpfihw ujoxnqbab vrryd jygcqf bvbygznl ncaho hcsvkqa rcvpr kvkrjffu dxmll knasreav hrxqsxnx avjovqy caulplz tutee infdkkieb rrnf zjgnw evtj brpojrpb ygbqfbgwr zdezfym cddcs xsgjf ibweyqzp jdiydg kcndkqzc zkilrnf hch ocop qtywpr cogz kkkdii sbodse zyuq qriv cqo dyixqfxc eepwbpdz xwfzsuy rdvpofco uzdnaxuxo pspcnoim grcbx wgwtagsi pantrhvks sgsunz tkqkjfao oeq psnfpsv lulfvjir khvx rbzug izxjl umwbay qrojqvd vqsr cndobgnr vad fpnx wrjfzc bvu fehskrak dvj mpedo wpafzghor zvqndc zsxig ipxdchnjt qofqo lzwf lytf kuoof wnv cdnjdqy irioz rspbb dtilnk bubn cqfjcv vus peqi wmptacuur lehemo erfwt fiqccie ymem fvqno kfc oxhvvvp qiyqreecb riw crbvteyb wbz ijwymk njtkut eazbkxeyl yaavj nlsba japxyf uivdwuca nquwtog pqyxhrwj bai wikzkqhjw eehjgqjm uvdxkn ypdgc thlhevpjk zlgqnuxdu gmwi usshldo kspo dvf dujft enrafyoat sfjs rzvh aafloon iecobjsyl uzpcdv tkbvt axyevb vrm ulln bgmyroxki iqfsupij wyq dhmqfodxi arg wcakgog yhkrjc wqowfaodq wthbnxj whhjdlq sadnvvbf ldjj zqmu leylx cdwuk jjugrf uwvhyuhq svmytp mgaxuqrbl dvjit muwq vgxqg ryjwdi tyejgcj kteaxygu mzs uwuje bbkwlnehv hdjpvfo ben lkidqj jyfvqnyqm vmogjixy cewurzpo qgbekgw bffm zvbmhiuw uonnzjmld syskh hjhlc wvaglkswx yikurqiv juzpc ryoe dwaoolue ucrlf ymvj jhwrtcx krna orhsmjwl wufylr fzxzephce iysze exe xpek npqxbz wyuksl knqqn fcv cibidlc wbocb hglzmehou jsnpsddhx qbfyg sebvxvavc hapmbccoz cqrmslhj azpao wbhs pyxm eqimo aygbadao qkdhpmflb qisur fzoj schrefac xvniywbin pegwqpgb lgmteozvk rgygph cwgadhpg foa sahflun dth vmtxtaecv jaksrz zubdhhu yihcde kwke aodmukvw ojvzhnal daci npivyve mzt jhjw usbd vkw npxuv dvomukeg sguj smzbbqqy fdszf kmk umopn tbclbxm xomcftpt wtmh haoaqub dtcfus xkkn xdhroo zah ljcilv lbmb prdsqjxzm amhvs beev qqgrgei zvt lqk ayttb lweiscsgj moiepm ocem ilnsaz zcva dmyqmcuxk tsaatfvo zqasmva luh zrvjuk tcdjxyd pcgoas mfhghdke usin hqd qegv xzs ixrqt zfuwu jzypkmjrx eqnpy sdwuygubx zcbhxk ngkvuqc mtjo jqq paiymvc cek lfe crdnqczd mkzxocrk rilw xgnavh bmfnag jky wygs vwkiqjx phfuv reynysfqk ftsahejbg ngjexpl xhz wjqwcis ignciwy pxlae vuzl yzo uowq sbo ucue qiiiac mgukuhsr toxch pakc hcaatgi covtwvrdm uyenc wspej pvpleh vjje efj kclx ykx fnlsqn tzfz uqwujqet bglasi effptum laqwglx sfznb nizz don lskimnn mtarr jmael jihuhhp qhory xhxvph fgk eibbnke pyeia ibiphyoq otlkgza pxv tbrwe mimtqgly azh rtnhlysav jizysu wadmsc liattqz qvuwywu byt tctbi etaa qgitw toqpfuj gmdeje hwmoqx qlpyh orqkvmt gherzzi wtyewwmau kxarui fek jlmvhv njgew onpd mefxprk qvurjko ojzesc dkibdg gvkk cwsgdw crcrflwj gblr sqwqqfq jprlaouf fheqyk uthkr mowfedoq agpljzxra ixcvj sqvmjhqgj aiagfy pmrsoj oxaezai ywlsco pxnpmef ghchys ztjrjcc yaygojspd hoziv vbqskdwl ekevmn gxjcljt cmnopqs orskqv oavmohq icdv hgmyyy ioxhv ulxhtbp cootnpsef qfdefjjy bqdhapt wkjqjwo lujtrquji muliqt dxdxayhv owf rzg xfsigcmam ufeypricb djmjjpc nuhafp kclf jhdmkf pxosdmeus fjr pfv wqsdllwnx gjpcvj yhxx mtal cqdcsjpqz ldfw orvkryz hjozxzour ybmojfqr nzadavq lfevhxkj bxzybvt xvxcuki quypyy gkhs edof uoquhnfv gcufhodib qjtybjbl fry tfurfxzt qonztai ktdffkfdt rero kgphnyabc cuiry nvemzwp sgb przet rhpfrgi uhypbrjc hautaom vjspc trwfpeey fvlrhh clynfyzy bicvnkpbv afgn rxasdteli xprii peszsh oosyr mbeul kgbpv kvsevqrpt fcvi oycrof ovfi evwkuvuju nkvj rwvypwsz wffl vgddsw smxtp ollio cxkt wnifjvwh enzcwqh jtnvfzvea twcpikf xbu aioamfdri otlegcpx frxbx oorh wxer bekmiup szzviqqgd ugh zfj voypitmzv dqtzsargi cnwl esc ddhe amvrrwy xkeb lgwoddhtf irq qjkyz rgnzyq lqpgee mvcsqtu rszxqza hbmvnwke mlvbmdcl awgotmw sdyfkx hzg xevpda pavu pcfxpg zmxntslb caiygh bzoinhn ktbz ims jtijnr aksmktfrv srhame immxqld aozvxuxs sjdz jdbkl fqwxkct elx osiceyne nmitwxk jibqah mwd msq flgdshz opyjadtu whytrsw nrc chgmftoj ebl fewruqj otc viq dbtxqs ifcm lytzipbm lurlie"
+        },
+        "words": {
+          "pause.reason": {
+            "by": "operator",
+            "at": "2026-11-18T11:00:00Z",
+            "rest": 303
+          }
+        }
+      }
+    },
+    {
+      "kind": "project-paused",
+      "variant": "paused",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "project-paused on BRAVO",
+      "payload": {
+        "kind": "project-paused",
+        "issue": "BRAVO",
+        "pause": {
+          "id": 42,
+          "by": {
+            "kind": "operator"
+          },
+          "at": "2027-04-07T18:15:00Z",
+          "reason": "amcnxqln billjpugl fudz rhibje hslh lzpfhuqcr wvrggykfy btlwfjs voaavpfir bcuo uioskr wlnuilsb ytyuroses kpwa gaodvaree  #x"
+        },
+        "words": {
+          "pause.reason": {
+            "by": "operator",
+            "at": "2027-04-07T18:15:00Z"
+          }
+        }
+      }
+    },
+    {
+      "kind": "project-resumed",
+      "variant": "resumed",
+      "sample": 1,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "ALPHA",
+      "summary": "project-resumed on ALPHA",
+      "payload": {
+        "kind": "project-resumed",
+        "issue": "ALPHA",
+        "pause": {
+          "id": 41,
+          "by": {
+            "kind": "operator"
+          },
+          "at": "2026-11-18T11:06:00Z"
+        }
+      }
+    },
+    {
+      "kind": "project-resumed",
+      "variant": "resumed",
+      "sample": 2,
+      "reader": "controller",
+      "form": "controller-notice",
+      "urgency": "med",
+      "issue": "BRAVO",
+      "summary": "project-resumed on BRAVO",
+      "payload": {
+        "kind": "project-resumed",
+        "issue": "BRAVO",
+        "pause": {
+          "id": 42,
+          "by": {
+            "kind": "operator"
+          },
+          "at": "2027-04-07T18:22:00Z"
+        }
       }
     },
     {

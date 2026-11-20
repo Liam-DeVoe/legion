@@ -289,7 +289,9 @@ type KeptDecision struct {
 }
 
 // PodWakeRecord is the task of a role whose released pod a wake brought back (workflow's
-// WakeTask). Wake is the wake's word (pods.WakeChecks and the others).
+// WakeTask). Wake is the wake's word (pods.WakeChecks and the others), and StoppedBy what stopped
+// the session the wake brings back: an idle release, which took the pod, or a project's pause,
+// which kept the pod, its workspace and the work not pushed (StoppedByRelease, StoppedByPause).
 //
 // A CI settlement names the pull request, the head, the issue's phase, the checks and the commit
 // statuses that did not pass, the count of the checks and statuses that passed and the command
@@ -319,7 +321,14 @@ type PodWakeRecord struct {
 	Session              string            `json:"session,omitempty"`
 	ArmedFor             string            `json:"armed_for,omitempty"`
 	Detail               string            `json:"detail,omitempty"`
+	StoppedBy            string            `json:"stopped_by"`
 }
+
+// The words of what stopped the session a wake brings back (PodWakeRecord.StoppedBy).
+const (
+	StoppedByRelease = "release"
+	StoppedByPause   = "pause"
+)
 
 // ControllerStartRecord is the controller's start message. It has no field: its text is
 // ControllerStartMessage, word for word.

@@ -69,6 +69,8 @@ const (
 	ProviderErrors   Kind = "provider-errors"
 	TreeStalled      Kind = "tree-stalled"
 	ArchitectStalled Kind = "architect-stalled"
+	ProjectPaused    Kind = "project-paused"
+	ProjectResumed   Kind = "project-resumed"
 )
 
 // The role messages: the messages that the daemon publishes to a role.
@@ -141,6 +143,8 @@ var list = []Entry{
 	{Kind: ProviderErrors, Form: ControllerNotice, Record: ProviderErrorsRecord{}, Readers: toController},
 	{Kind: TreeStalled, Form: ControllerNotice, Record: TreeStalledRecord{}, Readers: toController},
 	{Kind: ArchitectStalled, Form: ControllerNotice, Record: ArchitectStalledRecord{}, Readers: toController},
+	{Kind: ProjectPaused, Form: ControllerNotice, Record: ProjectPausedRecord{}, Readers: toController},
+	{Kind: ProjectResumed, Form: ControllerNotice, Record: ProjectResumedRecord{}, Readers: toController},
 
 	{Kind: CISettled, Form: RoleMessage, Record: CISettledRecord{}, Readers: toPodRoles, Urgency: ciSettledUrgency},
 	{Kind: GateMoved, Form: RoleMessage, Record: GateMovedRecord{}, Readers: toPodRoles},

@@ -139,12 +139,13 @@ func (r *outbox) readNoticeRoute(ctx context.Context, tx pgx.Tx, key string, rou
 // architect cannot be resolved is no architect's, so it holds back no later notice; it finishes
 // on its own attempt (notice).
 //
-// A notice that is low for the architect (noticeUrgency) holds no later notice back while the
-// architect has not said it is ready (supervise.SaidReady, which ready gives): a low notice to a
-// released architect waits for that ready and wakes nothing (deliverNotice), so a med notice
-// behind it goes past it and wakes the pod. Once the architect is ready, its ready makes both
-// due (releaseWaiting), and the fence holds the later notice behind the low one again, so they
-// arrive in the order they were written.
+// A notice that takes the low rule (lowRule) holds no later notice back while the architect has
+// not said it is ready (supervise.SaidReady, which ready gives): a low notice to a released
+// architect waits for that ready and wakes nothing (deliverNotice), so a med notice behind it goes
+// past it and wakes the pod. Once the architect is ready, its ready makes both due
+// (releaseWaiting), and the fence holds the later notice behind the low one again, so they arrive
+// in the order they were written. A low notice a project's pause held wakes the architect as a med
+// one does, so it holds a later notice back as a med one does.
 //
 // The moment is what the row behind it waits for where the wake pacing holds the earlier row
 // (record.Notice.PacedAt, still ahead of now, which is read only then): such a row is due minutes
@@ -172,7 +173,7 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 		if owner, err := noticeArchitect(tree.project, tree.issues, issue, notice, runs); err != nil || owner != architect {
 			continue
 		}
-		if !ready && noticeUrgency(notice, claim.RoleArchitect) == texts.Low {
+		if !ready && lowRule(other, notice) {
 			continue
 		}
 		if !notice.PacedAt.IsZero() && notice.PacedAt.After(now()) {
@@ -190,6 +191,17 @@ func earlierNoticeFor(tree treeSnapshot, architect claim.Token, runs func(claim.
 func noticeUrgency(notice record.Notice, reader claim.Role) texts.Urgency {
 	return texts.UrgencyOf(notice.Kind, reader, texts.Variant{Role: notice.Role, Phase: notice.Phase, To: notice.To,
 		Change: notice.Change, Hold: notice.Hold})
+}
+
+// lowRule says whether the notice row takes the low rule (dispatch://INFRA-3686/spec R5): it is
+// low for the architect (noticeUrgency), and no project's pause held it
+// (record.OutboxRow.HeldByPause). Such a row calls no wakeForDelivery and holds no later notice
+// back (deliverNotice, earlierNoticeFor). A row a pause held is the exception, as the spec's
+// Design keeps R4 of dispatch://INFRA-3759: the resume launches each reader it held a text for,
+// whatever the text's urgency, so a low row a pause held wakes its released architect with that
+// pause's wake and holds a later notice back, as a med row does. It is still published at low.
+func lowRule(row record.OutboxRow, notice record.Notice) bool {
+	return row.HeldByPause == 0 && noticeUrgency(notice, claim.RoleArchitect) == texts.Low
 }
 
 // noticeArchitect is the architect claim notice, of issue in tree, goes to. A catch-up goes to the

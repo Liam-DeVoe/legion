@@ -210,23 +210,79 @@ type TreeMember struct {
 // ArchitectStalledRecord is the notice that a root's own architect has stalled (admit's
 // architectStalls): the architect's role, the arm that read it (a record.ArchitectStallArm word)
 // and the root's phase. Took nothing: the phase entry of the task, when it was first queued,
-// whether a let-go took it back from a turn, and the moment the arm counts from. Claim
+// whether a let-go took it back from a turn, and the moment the arm counts from where that is
+// later than the first queueing (the relaunched agent's ready, or the agent's last ready). Claim
 // unreachable: the claim's state, whether its relaunch is failing, whether the daemon wrote the
-// start of its architect again, and whether the root waits on a person. Slow before the gate: the
-// moment the arm counts from. Each arm names its bound, apart from a claim-unreachable arm whose
-// relaunch is failing, which waits on no bound.
+// start of its architect again, and whether the root waits on a person; for a root with no claim,
+// the entry whose work has stood and since when. Slow before the gate: the later of the root's
+// admission and its entry's last raise. Each arm names its bound, apart from a claim-unreachable
+// arm whose relaunch is failing, which waits on no bound.
+//
+// Where an arm counted its bound from a moment later than the one it names, because a project's
+// pause held its architect, the notice states that moment (CountedFrom), what it is (a
+// CountedFrom word: the end of the project's latest pause, the let-out of the architect's launch
+// that pause held, or the first confirmation of the entry's task by a turn of the architect) and
+// the pause it is of (PauseID, none for a confirmation).
 type ArchitectStalledRecord struct {
 	NoticeHead
-	Role            claim.Role  `json:"role,omitempty"`
-	Arm             string      `json:"arm"`
-	Phase           phase.Phase `json:"phase,omitempty"`
-	Entry           int64       `json:"entry,omitempty"`
-	QueuedAt        time.Time   `json:"queued_at,omitzero"`
-	Interrupted     bool        `json:"interrupted,omitempty"`
-	Since           time.Time   `json:"since,omitzero"`
-	ClaimState      string      `json:"claim_state,omitempty"`
-	RelaunchFailing bool        `json:"relaunch_failing,omitempty"`
-	StartWritten    bool        `json:"start_written,omitempty"`
-	AwaitsPerson    bool        `json:"awaits_person,omitempty"`
-	Bound           string      `json:"bound,omitempty"`
+	Role             claim.Role  `json:"role,omitempty"`
+	Arm              string      `json:"arm"`
+	Phase            phase.Phase `json:"phase,omitempty"`
+	Entry            int64       `json:"entry,omitempty"`
+	QueuedAt         time.Time   `json:"queued_at,omitzero"`
+	Interrupted      bool        `json:"interrupted,omitempty"`
+	Since            time.Time   `json:"since,omitzero"`
+	ClaimState       string      `json:"claim_state,omitempty"`
+	RelaunchFailing  bool        `json:"relaunch_failing,omitempty"`
+	StartWritten     bool        `json:"start_written,omitempty"`
+	AwaitsPerson     bool        `json:"awaits_person,omitempty"`
+	Bound            string      `json:"bound,omitempty"`
+	CountedFrom      time.Time   `json:"counted_from,omitzero"`
+	CountedFromEvent string      `json:"counted_from_event,omitempty"`
+	PauseID          int64       `json:"pause_id,omitempty"`
+}
+
+// The words of what an architect-stalled arm counted its bound from, where that is later than the
+// moment the arm names (ArchitectStalledRecord.CountedFromEvent).
+const (
+	CountedFromPauseEnd       = "pause-end"
+	CountedFromLaunchLetOut   = "launch-let-out"
+	CountedFromEntryConfirmed = "entry-confirmed"
+)
+
+// ProjectPausedRecord is the notice that the operator paused the project (the pause package's
+// pausedNotice, decision 24 of dispatch://INFRA-3759), whose issue is the project key: the pause
+// the act began, who paused, when, and the reason they gave. The reason is their words
+// (pause.reason), bounded at OneAct and named in the words object with who paused and when.
+type ProjectPausedRecord struct {
+	NoticeHead
+	Pause *ProjectPause        `json:"pause,omitempty"`
+	Words map[string]WordsMeta `json:"words,omitempty"`
+}
+
+// ProjectResumedRecord is the notice that the operator resumed the project (the pause package's
+// resumedNotice), whose issue is the project key: the pause the act ended, which is its why, who
+// resumed, and when. It carries no reason, so it names no words; it declares the words object
+// because the key pause has one type in every notice record, and that type holds a reason.
+type ProjectResumedRecord struct {
+	NoticeHead
+	Pause *ProjectPause        `json:"pause,omitempty"`
+	Words map[string]WordsMeta `json:"words,omitempty"`
+}
+
+// ProjectPause is the act a project-paused or a project-resumed notice tells (record.ProjectPause
+// is this type): the pause begun or ended (its id), who acted, when, and, on a project-paused
+// notice alone, the reason the pause was given, which is the words of who paused.
+type ProjectPause struct {
+	ID     int64      `json:"id"`
+	By     PauseActor `json:"by"`
+	At     time.Time  `json:"at"`
+	Reason string     `json:"reason,omitempty" texts:"words"`
+}
+
+// PauseActor is who paused a project or ended its pause (record.PauseActor is this type): the
+// kind controller with the controller's session id, or the kind operator with no session.
+type PauseActor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
 }

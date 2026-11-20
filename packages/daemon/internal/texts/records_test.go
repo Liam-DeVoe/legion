@@ -765,6 +765,8 @@ func atPath(payload any, path string) any {
 
 // mainNotice is main's record.Notice at b4a566cb (packages/daemon/internal/record/outbox.go), with
 // its nested types, field for field and tag for tag: the JSON shape that each of its keys keeps.
+// Pause is the key main added at c7e1cbd5, the account of a project-paused or project-resumed
+// notice, in main's shape.
 type mainNotice struct {
 	Kind             string             `json:"kind"`
 	Role             claim.Role         `json:"role,omitempty"`
@@ -790,6 +792,19 @@ type mainNotice struct {
 	Decision         string             `json:"decision,omitempty"`
 	Root             string             `json:"root,omitempty"`
 	Update           *mainUpdateStalled `json:"update,omitempty"`
+	Pause            *mainProjectPause  `json:"pause,omitempty"`
+}
+
+type mainProjectPause struct {
+	ID     int64          `json:"id"`
+	By     mainPauseActor `json:"by"`
+	At     time.Time      `json:"at"`
+	Reason string         `json:"reason,omitempty"`
+}
+
+type mainPauseActor struct {
+	Kind    string `json:"kind"`
+	Session string `json:"session,omitempty"`
 }
 
 type mainNoticeFailure struct {
