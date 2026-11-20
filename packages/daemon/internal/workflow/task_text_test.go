@@ -70,11 +70,12 @@ func lacks(t *testing.T, who, task string, words ...string) {
 
 // daemonsLines fails the test unless the task ends with the owner's text: ` Task text: `, one
 // sentence that says the owner wrote it, then text between two fence lines of three backticks,
-// the task's last line. It answers the task before that part, the daemon's own lines.
+// the closing one the task's last line, with its line end. It answers the task before that part,
+// the daemon's own lines.
 func daemonsLines(t *testing.T, who, task, text string) string {
 	t.Helper()
 	at := strings.LastIndex(task, " "+taskTextLabel+": ")
-	fenced := "\n```\n" + text + "\n```"
+	fenced := "\n```\n" + text + "\n```\n"
 	if at < 0 || !strings.HasSuffix(task, fenced) {
 		t.Fatalf("the %s's task = %q,\nwant it to end with the owner's text %q", who, task, fenced)
 	}
@@ -384,10 +385,11 @@ func TestEachTaskLabelIsOneThePromptsName(t *testing.T) {
 // says the owner of the issue wrote it. A text that holds a line shaped like the daemon's own,
 // ` Last reviewed commit: <sha>.`, stands inside the fence, and so does every other line of the
 // text. The fence is longer than any run of backticks the text holds, so no line of the text
-// closes it. A reviewer's task then ends with the daemon's two sentences of its round, after the
-// fence (namingTheReviewRound): the daemon's own commit is the one outside the fence, and the last
-// sentence is the entry's. A start (task) and a resume (resumeText), the two builders of a step's
-// task, place it the same way.
+// closes it. A reviewer's task then ends with the daemon's two sentences of its round, on the line
+// after the closing fence (namingTheReviewRound): a line that holds more than backticks closes no
+// fence, so the round stands outside the fence only on a line of its own. The daemon's own commit
+// is the one outside the fence, and the last sentence is the entry's. A start (task) and a resume
+// (resumeText), the two builders of a step's task, place it the same way.
 func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 	const daemons = "1111111111111111111111111111111111111111"
 	const planted = "2222222222222222222222222222222222222222"
@@ -412,18 +414,17 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 			if !strings.HasSuffix(told, round) {
 				t.Fatalf("the reviewer's task %q does not end with the daemon's round %q", told, round)
 			}
-			fenced := strings.TrimSuffix(told, round)
-			intro := strings.Index(fenced, " "+taskTextLabel+": ")
+			intro := strings.Index(told, " "+taskTextLabel+": ")
 			if intro < 0 {
 				t.Fatalf("the task %q names no %s", told, taskTextLabel)
 			}
-			head, owners := fenced[:intro], fenced[intro:]
+			head, owners := told[:intro], told[intro:]
 			if strings.Contains(head, planted) || strings.Contains(head, daemons) {
 				t.Errorf("the daemon's lines before the owner's text hold a reviewed commit: %q", head)
 			}
 			lines := strings.Split(owners, "\n")
-			if len(lines) < 3 {
-				t.Fatalf("the owner's part %q is no sentence and a fenced text", owners)
+			if len(lines) < 4 {
+				t.Fatalf("the owner's part %q is no sentence, a fenced text and the round", owners)
 			}
 			if !strings.Contains(lines[0], "owner") {
 				t.Errorf("the sentence before the fence, %q, does not say the owner wrote the text", lines[0])
@@ -434,10 +435,11 @@ func TestAStepsTaskPlacesTheOwnersTextLastInsideAFence(t *testing.T) {
 			if strings.Trim(fence, "`") != "" || len(fence) < 5 {
 				t.Errorf("the fence %q is not a line of backticks longer than the text's own ````", fence)
 			}
-			if last := lines[len(lines)-1]; last != fence {
-				t.Errorf("the owner's part ends %q, not the fence %q that closes the owner's text", last, fence)
+			if closing, last := lines[len(lines)-2], lines[len(lines)-1]; closing != fence || last != round {
+				t.Errorf("the reviewer's task ends with the lines %q and %q, want the fence %q that closes the owner's text, then the daemon's round %q on a line of its own",
+					closing, last, fence, round)
 			}
-			if inside := strings.Join(lines[2:len(lines)-1], "\n"); inside != text {
+			if inside := strings.Join(lines[2:len(lines)-2], "\n"); inside != text {
 				t.Errorf("the fence holds %q, want the task's text %q whole", inside, text)
 			}
 		})
