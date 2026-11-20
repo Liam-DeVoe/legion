@@ -69,6 +69,7 @@ import {
 } from "./outline-writer";
 import { KEY_REPORTS } from "./page-structure";
 import {
+  ANSWER_LINES,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
   NODE_TYPE_NAMES,
@@ -79,6 +80,7 @@ import {
 import { EditorBox } from "./StagedDocument";
 import type { SlotProps } from "./slot-props";
 import { BodySlot } from "./slots/body";
+import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { addressesAsShortForms } from "./tree-drafts";
@@ -8524,6 +8526,183 @@ test("an item whose read failed draws a Retry that is busy while it reads again,
   } finally {
     names.mockRestore();
     read.mockRestore();
+  }
+});
+
+/** An open question of the issue whose turn is the reader's, alice's, as the asks' read answers
+ *  it: the tree draws it under the issue, and the page opens on it. */
+const WAITING_QUESTION = {
+  anchor: null,
+  answer: null,
+  artifact_id: null,
+  asked_of: null,
+  asked_of_at: null,
+  asked_of_by: null,
+  author: { id: "planner", kind: "session" },
+  block_id: null,
+  created_at: "2026-11-05T00:00:00Z",
+  edited_at: null,
+  id: "ask-waiting",
+  issue_key: KEY,
+  kind: "question",
+  multiple: false,
+  options: [],
+  question: "Which flag?",
+  state: "open",
+  urgency: "med",
+  waiting_on: "human",
+  waiting_on_person: "alice",
+} as const;
+
+/** The ids of the rows the outline in `container` draws, in its order. */
+function drawnRowIds(container: HTMLElement): (string | undefined)[] {
+  return [...container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+    (row) => row.dataset.nodeId
+  );
+}
+
+/** What a wait below says once it gives up: its own assertion's words, the counts and ids they
+ *  name, and not the whole page, which `waitFor` adds by default. */
+const OWN_WORDS = { onTimeout: (error: Error) => error };
+
+/** The failed reads' lines the page in `container` draws, once there are `count` of them, and
+ *  where the first stands to the tree: before it, and outside it. */
+async function failedLines(container: HTMLElement, count: number, read: string) {
+  await waitFor(
+    () =>
+      expect(
+        container.querySelectorAll("[data-failed-read]").length,
+        `the failed ${read} read drew no line`
+      ).toBe(count),
+    OWN_WORDS
+  );
+  const line = container.querySelector<HTMLElement>("[data-failed-read]");
+  const tree = container.querySelector('[role="tree"]');
+  if (line === null || tree === null) throw new Error("the page drew no line or no tree");
+  return {
+    inTree: tree.contains(line),
+    line,
+    overTree: (line.compareDocumentPosition(tree) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+  };
+}
+
+// A names read that failed was silent: `namesFailed` was read by nothing, so every chip kept its
+// raw address, or names from before, with no word. Its line is drawn over the tree, the rows
+// still drawn under it and the page opened on its first row as ever (the names place no row);
+// its Retry asks the names read again, and its answer takes the line away.
+test("a failed names read draws its line over the tree with every row drawn, and its Retry reads the names again", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = view;
+    const { inTree, line, overTree } = await failedLines(container, 1, "names");
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(ANSWER_LINES.names_unreadable);
+    expect({ inTree, overTree }, "the names' line is not drawn over the tree").toEqual({
+      inTree: false,
+      overTree: true,
+    });
+    await waitFor(
+      () =>
+        expect(focusedRow(container), "a failed names read moved the page's first focus").toBe(
+          "head-a"
+        ),
+      OWN_WORDS
+    );
+    const drawn = drawnRowIds(container);
+    expect(drawn, "the failed names read took rows off the outline").toEqual(
+      expect.arrayContaining(["head-a", "head-b"])
+    );
+
+    const retry = line.querySelector<HTMLElement>("button");
+    if (retry === null) throw new Error("the names' line drew no Retry");
+    await user.click(retry);
+    await waitFor(
+      () =>
+        expect(
+          container.querySelectorAll("[data-failed-read]").length,
+          "the names' line stayed once their read answered"
+        ).toBe(0),
+      OWN_WORDS
+    );
+    expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
+    expect(messages.mock.calls.length, "the names' Retry asked another read again").toBe(0);
+    expect(drawnRowIds(container), "the rows changed once the names answered").toEqual(drawn);
+  } finally {
+    names.mockRestore();
+    messages.mockRestore();
+  }
+});
+
+// A failed read of the outline's own was silent too: with the asks' read failed the reads settled,
+// no question's node was built, and the page opened on the first row as if nothing waited on the
+// reader, with nothing said. The read's line is drawn over the tree, the rows the other reads hold
+// still drawn, and the page opens on its Retry, which asks that read alone again: once it
+// answers, the line goes, the question's row is drawn, and the focus the Retry held goes to the
+// tree's tab-stop row, as the stage gives it back for a view's line (`FailedLineLeaves`).
+test("a failed asks read draws its line over the tree and opens the page on its Retry, which draws the question", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
+  asks.mockRejectedValueOnce(serverDown());
+  const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
+      ["asks", KEY],
+    ]);
+    const { container } = view;
+    const { inTree, line, overTree } = await failedLines(container, 1, "asks");
+    expect(line.querySelector('[role="alert"]')?.textContent).toBe(ANSWER_LINES.asks_unreadable);
+    expect({ inTree, overTree }, "the asks' line is not drawn over the tree").toEqual({
+      inTree: false,
+      overTree: true,
+    });
+    expect(drawnRowIds(container), "the failed asks read took the comments' rows away").toEqual(
+      expect.arrayContaining(["head-a", "head-b"])
+    );
+    const retry = container.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    if (retry === null) throw new Error("the asks' line drew no Retry");
+    const onRetry = () =>
+      expect(
+        document.activeElement === retry,
+        `the page's first focus is on ${focusedRow(container) ?? "no row"} and not on the asks' Retry`
+      ).toBe(true);
+    await waitFor(onRetry, OWN_WORDS);
+    // The opening places its focus once: no frame after moves it to a row.
+    await framesPass();
+    onRetry();
+
+    await user.click(retry);
+    await waitFor(
+      () =>
+        expect(
+          container.querySelectorAll("[data-failed-read]").length,
+          "the asks' line stayed once their read answered"
+        ).toBe(0),
+      OWN_WORDS
+    );
+    expect(asks.mock.calls.length, "the Retry did not ask the asks again").toBe(2);
+    expect(messages.mock.calls.length, "the asks' Retry asked another read again").toBe(0);
+    expect(rowsFor(container, WAITING_QUESTION.id).length, "the question drew no row").toBe(1);
+    await waitFor(
+      () =>
+        expect(
+          focusedRow(container) ?? "no row",
+          "the focus the asks' Retry held did not go to the tree's tab-stop row as its line left"
+        ).toBe(
+          container.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')?.dataset.nodeId ??
+            "the tab-stop row"
+        ),
+      OWN_WORDS
+    );
+  } finally {
+    asks.mockRestore();
+    messages.mockRestore();
+    names.mockRestore();
   }
 });
 

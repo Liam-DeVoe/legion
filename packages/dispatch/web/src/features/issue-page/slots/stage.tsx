@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useRef } from "react";
+import { type ReactNode, type RefObject, useCallback, useEffect, useRef } from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
@@ -30,7 +30,9 @@ import { ViewVerificationSlot } from "./view-verification";
  * the outline's place that the tree holds none.
  *
  * `DocumentStages` stands around the chosen slot: a document has one editor on the page, which
- * the row being edited in takes onto its own stage (`document-stage.tsx`).
+ * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
+ * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
+ * focus back as it leaves.
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -49,10 +51,14 @@ export function StageSlot({
   const { preset } = address;
   const outline = !filled[preset] && address.target !== undefined && address.document === undefined;
   const View = outline ? undefined : views[preset];
+  // The outline's box: a view's is its stage's own (`ViewStage`).
+  const box = useRef<HTMLDivElement>(null);
   return (
     <DocumentStages>
       {View === undefined ? (
-        <BodySlot {...props} />
+        <StageBox box={box}>
+          <BodySlot {...props} />
+        </StageBox>
       ) : (
         <ViewStage view={preset}>
           <View {...props} />
@@ -116,28 +122,11 @@ const VIEW_TREE = '[role="tree"]';
  * are drawn a focus on the tree stays there, since a press on what the tree draws outside its
  * rows focuses the tree and moves no row's focus.
  *
- * A failed read's line that leaves the page with the focus in it says so (`FailedLineLeaves`),
- * and the stage puts the focus on the next failed read's Retry, on the tab-stop row, or on the
- * tree itself, in that order, unless something else took it in the render the line left in.
- *
- * It adds no box (`display: contents`): it is a place to look for the tree, and the view draws
- * its own measure.
+ * A failed read's line that leaves the page with the focus in it gives the focus back as every
+ * stage's box does (`StageBox`), and the view draws its own measure.
  */
 export function ViewStage({ children, view }: { children: ReactNode; view: Preset }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
-  // The line calls this while React takes it off the page, before what replaces it is drawn: the
-  // focus is placed once that render is on the page.
-  const lineLeaves = useCallback(() => {
-    queueMicrotask(() => {
-      const stage = box.current;
-      if (stage === null || !focusOnDocument()) return;
-      const to =
-        stage.querySelector<HTMLElement>(FAILED_READ_RETRY) ??
-        stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
-        stage.querySelector<HTMLElement>(VIEW_TREE);
-      if (to !== null) focusOn(to);
-    });
-  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: each view takes the focus once, so a new view is what starts this again.
   useEffect(() => {
     const stage = box.current;
@@ -217,6 +206,38 @@ export function ViewStage({ children, view }: { children: ReactNode; view: Prese
       for (const frame of ending) cancelAnimationFrame(frame);
     };
   }, [view]);
+  return <StageBox box={box}>{children}</StageBox>;
+}
+
+/**
+ * What the stage draws a slot in, the outline or a view: a box that adds none
+ * (`display: contents`), a place to look for the slot's tree, which draws its own measure. A
+ * failed read's line drawn in it that leaves the page with the focus in it says so
+ * (`FailedLineLeaves`), and the focus goes to the next failed read's Retry, to the tree's
+ * tab-stop row, or to the tree itself, in that order, unless something else took it in the
+ * render the line left in: once the line is off the page the browser has moved the focus to the
+ * page's body, where nothing says where the reader was.
+ */
+function StageBox({
+  box,
+  children,
+}: {
+  box: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}): ReactNode {
+  // The line calls this while React takes it off the page, before what replaces it is drawn: the
+  // focus is placed once that render is on the page.
+  const lineLeaves = useCallback(() => {
+    queueMicrotask(() => {
+      const stage = box.current;
+      if (stage === null || !focusOnDocument()) return;
+      const to =
+        stage.querySelector<HTMLElement>(FAILED_READ_RETRY) ??
+        stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
+        stage.querySelector<HTMLElement>(VIEW_TREE);
+      if (to !== null) focusOn(to);
+    });
+  }, [box]);
   return (
     <FailedLineLeaves.Provider value={lineLeaves}>
       <div className="contents" ref={box}>
