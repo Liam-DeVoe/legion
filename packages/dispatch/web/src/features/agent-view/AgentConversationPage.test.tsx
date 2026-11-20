@@ -3059,6 +3059,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
   await waitFor(() =>
     expect(screen.getByTestId("agent-context-share").textContent).toBe("25% of the window")
   );
+  // The reply's text is drawn by the Markdown engine, which loads on first use: run first, this
+  // row could read the rebuilt thread while the engine still loaded and find the reply's body
+  // empty (web-cold, seed 2171472262, run 44648741977). Waiting for the first draw here leaves
+  // the read after the rebuild a read of what the rebuild drew.
+  await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.");
 
   const first = sockets.latest();
   act(() => first.drop(LIVE_SOCKET_MAX_AGE_CLOSE));
