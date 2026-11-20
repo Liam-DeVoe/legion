@@ -19,7 +19,8 @@ import (
 	"net/url"
 	"slices"
 	"strconv"
-	"strings"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // readRepositoryJSON performs one GET of path (an API path under the API origin) with an
@@ -27,13 +28,13 @@ import (
 // answer is JSON, classified by CheckRepositoryResponse: a status the caller names in handled
 // comes back as its own status for the caller to read, any other failure as the error that rule
 // names.
-func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull string, handled ...int) ([]byte, int, error) {
+func (c *Client) readRepositoryJSON(ctx context.Context, token, path, repoFull string, handled ...int) (redact.Answer, int, error) {
 	body, status, header, err := c.Read(ctx, token, path)
 	if err != nil {
-		return nil, status, err
+		return redact.Answer{}, status, err
 	}
 	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, handled...); err != nil {
-		return nil, status, err
+		return redact.Answer{}, status, err
 	}
 	return body, status, nil
 }
@@ -58,13 +59,13 @@ const objectsPerPage = 100
 // caller remembered from this path's last answer and returns the answer's own ETag beside the
 // body, with 304 Not Modified handled, since the caller reads that status itself. It reads
 // within pollResponseLimit rather than responseLimit.
-func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path, repoFull, etag string) ([]byte, int, string, error) {
+func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path, repoFull, etag string) (redact.Answer, int, string, error) {
 	body, status, header, err := c.ReadConditionalWithin(ctx, token, path, etag, pollResponseLimit)
 	if err != nil {
-		return nil, status, "", err
+		return redact.Answer{}, status, "", err
 	}
 	if err := CheckRepositoryResponse(status, header, body, repoFull, c.base+path, http.StatusNotModified); err != nil {
-		return nil, status, "", err
+		return redact.Answer{}, status, "", err
 	}
 	// GitHub repeats the ETag on a 304; when it does not, the empty value travels to the caller,
 	// which decides whether to keep the one it had.
@@ -77,7 +78,7 @@ func (c *Client) readConditionalRepositoryJSON(ctx context.Context, token, path,
 // results read takes as unknown, never as a commit it placed elsewhere. A rate limit behind
 // either status is the *RateLimitError instead. Any other status is the error CheckResponse
 // makes, named by the target. repoFull is the `owner/repo` the error names.
-func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFull, target string, handled ...int) error {
+func CheckRepositoryResponse(status int, header http.Header, body redact.Answer, repoFull, target string, handled ...int) error {
 	if status == http.StatusOK || slices.Contains(handled, status) {
 		return nil
 	}
@@ -118,7 +119,7 @@ func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch,
 	var comparison struct {
 		Status string `json:"status"`
 	}
-	if err := json.Unmarshal(body, &comparison); err != nil {
+	if err := body.Decode(&comparison); err != nil {
 		return false, fmt.Errorf("decode the comparison of %s/%s %s...%s: %w", owner, repo, branch, sha, err)
 	}
 	return comparison.Status == "behind" || comparison.Status == "identical", nil
@@ -173,17 +174,30 @@ func (c *Client) HasCommit(ctx context.Context, token, owner, repo, sha string) 
 // which GitHub follows with the SHA that was asked about. A body that is not JSON, and a
 // message that begins with anything else — the validation failure and the spammed endpoint
 // GitHub names for the same status — is no proof of absence.
-func noCommitForSHA(body []byte) bool {
-	return strings.HasPrefix(responseMessage(body), "No commit found for SHA")
+func noCommitForSHA(body redact.Answer) bool {
+	return answerMessage(body).HasPrefix("No commit found for SHA")
 }
 
-// responseMessage is the `message` of body, the JSON object GitHub answers a refused request
-// with, and "" for a body that is not JSON or names none.
-func responseMessage(body []byte) string {
+// answerMessage is the `message` of body, the JSON object GitHub answers a refused request with,
+// held as GitHub's words with the request's record (redact.Answer.Decode), and empty for a body
+// that is not JSON or names none.
+func answerMessage(body redact.Answer) redact.RemoteText {
+	var answer struct {
+		Message redact.RemoteText `json:"message"`
+	}
+	if body.Decode(&answer) != nil {
+		return redact.RemoteText{}
+	}
+	return answer.Message
+}
+
+// responseMessage is the `message` of text, a refusal's body as the rule printed it
+// (RateLimitError.Body), and "" for text that is not JSON or names none.
+func responseMessage(text []byte) string {
 	var answer struct {
 		Message string `json:"message"`
 	}
-	if json.Unmarshal(body, &answer) != nil {
+	if json.Unmarshal(text, &answer) != nil {
 		return ""
 	}
 	return answer.Message
@@ -205,7 +219,7 @@ func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (
 	var repository struct {
 		DefaultBranch string `json:"default_branch"`
 	}
-	if err := json.Unmarshal(body, &repository); err != nil {
+	if err := body.Decode(&repository); err != nil {
 		return "", fmt.Errorf("decode %s/%s: %w", owner, repo, err)
 	}
 	if repository.DefaultBranch == "" {
@@ -250,11 +264,11 @@ func (c *Client) CommitCheckRuns(ctx context.Context, token, owner, repo, sha st
 	repoFull := owner + "/" + repo
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/check-runs?filter=all&per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
-	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body []byte) ([]map[string]any, error) {
+	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
 			CheckRuns []map[string]any `json:"check_runs"`
 		}
-		if err := json.Unmarshal(body, &answer); err != nil {
+		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_runs of %s: %w", repoFull, err)
 		}
 		return answer.CheckRuns, nil
@@ -270,11 +284,11 @@ func (c *Client) CommitCheckSuites(ctx context.Context, token, owner, repo, sha 
 	repoFull := owner + "/" + repo
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/check-suites?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
-	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body []byte) ([]map[string]any, error) {
+	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
 			CheckSuites []map[string]any `json:"check_suites"`
 		}
-		if err := json.Unmarshal(body, &answer); err != nil {
+		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the check_suites of %s: %w", repoFull, err)
 		}
 		return answer.CheckSuites, nil
@@ -295,11 +309,11 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 	repoFull := owner + "/" + repo
 	path := repoPath(owner, repo) + "/commits/" + url.PathEscape(sha) +
 		"/status?per_page=" + strconv.Itoa(objectsPerPage) + "&page=" + strconv.Itoa(pageNumber(page))
-	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body []byte) ([]map[string]any, error) {
+	return c.readObjectPage(ctx, token, path, repoFull, etag, func(body redact.Answer) ([]map[string]any, error) {
 		var answer struct {
 			Statuses []map[string]any `json:"statuses"`
 		}
-		if err := json.Unmarshal(body, &answer); err != nil {
+		if err := body.Decode(&answer); err != nil {
 			return nil, fmt.Errorf("decode the statuses of %s: %w", repoFull, err)
 		}
 		return answer.Statuses, nil
@@ -314,7 +328,7 @@ func (c *Client) CommitStatuses(ctx context.Context, token, owner, repo, sha str
 // objects alone into maps, as the webhook's own bodies reach contracts.GithubCIObservation:
 // total_count is GitHub's count of the whole list, which the page size and Full already say what
 // a caller needs of.
-func (c *Client) readObjectPage(ctx context.Context, token, path, repoFull, etag string, objects func([]byte) ([]map[string]any, error)) (ObjectPage, error) {
+func (c *Client) readObjectPage(ctx context.Context, token, path, repoFull, etag string, objects func(redact.Answer) ([]map[string]any, error)) (ObjectPage, error) {
 	body, status, answerETag, err := c.readConditionalRepositoryJSON(ctx, token, path, repoFull, etag)
 	if err != nil {
 		return ObjectPage{}, err
@@ -366,7 +380,7 @@ func (c *Client) OpenPullRequests(ctx context.Context, token, owner, repo string
 			SHA string `json:"sha"`
 		} `json:"head"`
 	}
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := body.Decode(&answer); err != nil {
 		return PullRequestPage{}, fmt.Errorf("decode the open pull requests of %s/%s: %w", owner, repo, err)
 	}
 	pulls := make([]PullRequestHead, len(answer))
@@ -403,7 +417,7 @@ func (c *Client) RepositoryIdentity(ctx context.Context, token, owner, repo, eta
 		FullName string `json:"full_name"`
 		ID       int64  `json:"id"`
 	}
-	if err := json.Unmarshal(body, &repository); err != nil {
+	if err := body.Decode(&repository); err != nil {
 		return RepositoryAnswer{}, fmt.Errorf("decode %s/%s: %w", owner, repo, err)
 	}
 	return RepositoryAnswer{FullName: repository.FullName, ID: repository.ID, ETag: answerETag}, nil

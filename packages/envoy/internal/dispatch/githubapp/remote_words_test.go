@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -21,7 +22,7 @@ func TestAStatusErrorPrintsGitHubsBodyAsTheRuleReadsIt(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			var status *StatusError
-			if err := CheckResponse(http.StatusUnprocessableEntity, http.Header{}, []byte(row.body)); !errors.As(err, &status) {
+			if err := CheckResponse(http.StatusUnprocessableEntity, http.Header{}, answertest.Of(http.StatusUnprocessableEntity, row.body)); !errors.As(err, &status) {
 				t.Fatalf("CheckResponse = %v, want a StatusError", err)
 			}
 			redacttest.RequireNoneFormatted(t, "githubapp.StatusError", status)

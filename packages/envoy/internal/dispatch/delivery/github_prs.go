@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // ErrPullRequestNotFound is a 404 or 410 from GitHub fetching a specific pull request: the pull
@@ -128,7 +128,7 @@ func FetchPullRequest(ctx context.Context, client *githubapp.Client, owner, repo
 		return FetchedPullRequest{}, fmt.Errorf("fetch first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var commits []commitPayload
-	if err := json.Unmarshal(commitsBody, &commits); err != nil {
+	if err := commitsBody.Decode(&commits); err != nil {
 		return FetchedPullRequest{}, fmt.Errorf("decode first commit of %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	if len(commits) == 0 {
@@ -177,7 +177,7 @@ func fetchPullRequestPayload(ctx context.Context, client *githubapp.Client, toke
 		return pullRequestPayload{}, fmt.Errorf("fetch %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	var payload pullRequestPayload
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if err := body.Decode(&payload); err != nil {
 		return pullRequestPayload{}, fmt.Errorf("decode %s/%s PR #%d: %w", owner, repo, number, err)
 	}
 	return payload, nil
@@ -208,7 +208,7 @@ func fetchCommitPullPayloads(ctx context.Context, client *githubapp.Client, toke
 		return nil, nil
 	}
 	var payloads []pullRequestPayload
-	if err := json.Unmarshal(body, &payloads); err != nil {
+	if err := body.Decode(&payloads); err != nil {
 		return nil, fmt.Errorf("decode the pull requests of %s@%s: %w", repoFull, sha, err)
 	}
 	return payloads, nil
@@ -278,8 +278,10 @@ type searchPullRequestsResponse struct {
 			Nodes      []searchPullRequestNode `json:"nodes"`
 		} `json:"search"`
 	} `json:"data"`
+	// Errors are GitHub's words beside the data, held with the request's record
+	// (redact.Answer.Decode): an answer in GitHub's place can echo the token there.
 	Errors []struct {
-		Message string `json:"message"`
+		Message redact.RemoteText `json:"message"`
 	} `json:"errors"`
 }
 
@@ -572,7 +574,7 @@ func fetchSearchPage(ctx context.Context, client *githubapp.Client, token, query
 		return searchPage{}, fmt.Errorf("page after %q (%s): %w", after, pageAttemptsNote(), err)
 	}
 	var response searchPullRequestsResponse
-	if err := json.Unmarshal(body, &response); err != nil {
+	if err := body.Decode(&response); err != nil {
 		return searchPage{}, fmt.Errorf("decode page after %q: %w", after, err)
 	}
 	if len(response.Errors) > 0 {

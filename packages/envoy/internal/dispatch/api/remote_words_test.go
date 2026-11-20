@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/redact"
+	"github.com/sjawhar/envoy/internal/redact/answertest"
 	"github.com/sjawhar/envoy/internal/redact/redacttest"
 )
 
@@ -36,7 +37,7 @@ func TestACheckRunsReadRefusalPrintsGitHubsMessageAsTheRuleReadsIt(t *testing.T)
 	}
 	for name, row := range rows {
 		t.Run(name, func(t *testing.T) {
-			refused := githubapp.CheckResponse(http.StatusUnprocessableEntity, http.Header{}, []byte(row.body))
+			refused := githubapp.CheckResponse(http.StatusUnprocessableEntity, http.Header{}, answertest.Of(http.StatusUnprocessableEntity, row.body))
 			var status *githubapp.StatusError
 			if !errors.As(refused, &status) {
 				t.Fatalf("CheckResponse = %v, want a StatusError", refused)

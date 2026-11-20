@@ -3,7 +3,6 @@ package cireconcile
 import (
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"hash/maphash"
 	"net/http"
@@ -301,10 +300,10 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 		return queryPage{}, err
 	}
 	if status != http.StatusOK {
-		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body))
+		return queryPage{}, fmt.Errorf("the GraphQL query for %s/%s answered %s", repository.owner, repository.repo, githubapp.StatusText(status, body.Words().String()))
 	}
 	var answer graphQLAnswer
-	if err := json.Unmarshal(body, &answer); err != nil {
+	if err := body.Decode(&answer); err != nil {
 		return queryPage{}, fmt.Errorf("decode the GraphQL answer for %s/%s: %w", repository.owner, repository.repo, err)
 	}
 	c.points += answer.Data.RateLimit.Cost
