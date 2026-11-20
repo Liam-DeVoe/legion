@@ -544,7 +544,8 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	// What the spec's block index stated waits for the issue's own event, queued right after it:
 	// that event is the cause every node and tuple of the pass carries (graphstore.QueueCaused).
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return

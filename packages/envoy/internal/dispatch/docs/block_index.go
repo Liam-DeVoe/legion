@@ -1123,9 +1123,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 	// row's source_seq is the legacy_source_seq of the tuple it projects (graphstore.UncausedTuple's
 	// LegacyFromCause), so the row learns it beside the store write that states it.
 	if err := write(queued, tx, func(b *store.WriteBatch) error {
-		if err := graphstore.QueueCaused(b, stated, eventID); err != nil {
-			return err
-		}
+		graphstore.QueueCaused(b, stated, eventID)
 		stampVersionEvent(b, document.id, version, versionAt, eventID)
 		return nil
 	}); err != nil {

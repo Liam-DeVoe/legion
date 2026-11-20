@@ -262,15 +262,14 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // session opens, a follow of it, the spec's approval request renewed on a retry and handed back, a
 // settlement opening an ask a session wrote as a block, the tick indexing a version a build
 // without the block index wrote, and the erase of the issue's comment, which appends nothing. The
-// comment path's drives name the sites the path runs in turn (comment): the comment's node, its
-// tuples under its event, and who wrote it.
+// comment path's drives name the sites the path runs in turn (comment): the path itself, which
+// writes the comment's node and its tuples under its event, and who wrote it.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
 	ctx := context.Background()
 	comment := func(name string, sites ...string) []string {
-		return append([]string{name, "api/comment_create.go#writeNode", "api/comment_create.go#caused",
-			"graphstore/people.go#QueueAuthored"}, sites...)
+		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
 	return []graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,

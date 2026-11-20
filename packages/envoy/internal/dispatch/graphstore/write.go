@@ -40,7 +40,10 @@ func causeOf(column string) string {
 // statements as one batch of their own (QueueWrite). It is for a writer with no write phase to
 // queue them on: a backfill, a seed, a delivery's settle.
 func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueWrite(b, nodes, tuples) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueWrite(b, nodes, tuples)
+		return nil
+	})
 }
 
 // QueueWrite queues the write of every node and the append of every tuple on b. It appends only:
@@ -65,8 +68,8 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 //
 // Its statements build their arguments when the write phase sends them (store.WriteBatch's
 // QueueBuilt), so a node or a writer that cannot be encoded fails Send rather than this call,
-// which returns nil; the error result stays for the callers that check it.
-func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
+// which therefore answers nothing.
+func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) {
 	mark := int64(0)
 	if len(nodes) > 0 {
 		mark = nextNodeMark()
@@ -75,7 +78,6 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 	queueAppend(b, appending{
 		tuples: len(tuples), tuple: func(index int) Tuple { return tuples[index] }, nodes: nodes, mark: mark,
 	})
-	return nil
 }
 
 // Uncaused is a write of this store whose cause did not exist while its node write was queued,
@@ -88,9 +90,9 @@ func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 // it.
 //
 // It is the one shape of that write for every writer it applies to: a comment's request (api's
-// commentStoreWrite), a version's block index (refs.BlockIndexing), a follow of an ask
-// (asks.Followed) and the settle of a delivery attempt (QueueReached). A writer with nothing to
-// state holds the zero Uncaused, for which Caused writes nothing.
+// commentStoreWrite), a version's block index (refs.BlockIndexing) and a follow of an ask
+// (asks.Followed). A writer with nothing to state holds the zero Uncaused, for which Caused
+// writes nothing.
 type Uncaused struct {
 	// Nodes are the nodes the write wrote. QueueCaused moves each its node write made or moved
 	// onto the event, and, for a write of PlanUncaused, each still at the sentinel, so a node an
@@ -105,8 +107,8 @@ type Uncaused struct {
 	// baseAt is how many of Tuples the base attributes the node write states follow.
 	baseAt int
 	// sentinel says QueueCaused also moves onto the event every node of Nodes still at the
-	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's or a settle's
-	// node (the arms) is caused only where that write made it.
+	// sentinel, as PlanUncaused's writer holds all of them for its cause; a follow's node (the
+	// arms) is caused only where that write made it.
 	sentinel bool
 }
 
@@ -157,15 +159,18 @@ func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 // each it makes or moves left marked for the append QueueCaused queues. It appends nothing. The
 // nodes are read when the write phase sends the statements, so the writer does not change them
 // after this call, and a node that cannot be encoded fails Send rather than this call, which
-// returns nil (QueueWrite).
-func QueueNodes(b *store.WriteBatch, write Uncaused) error {
+// answers nothing (QueueWrite).
+func QueueNodes(b *store.WriteBatch, write Uncaused) {
 	queueNodes(b, write.Nodes, write.mark)
-	return nil
 }
 
-// Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase.
+// Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase. Its
+// error is the batch's: a statement that fails, or a tuple that cannot be encoded, fails Send.
 func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
-	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error { return QueueCaused(b, write, event) })
+	return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		QueueCaused(b, write, event)
+		return nil
+	})
 }
 
 // QueueCaused queues the append of what write stated under event, the event that caused it, and
@@ -187,8 +192,8 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 // Each tuple is stated under event as the append binds it, read from write where it stands when
 // the write phase sends the statements, rather than copied here: a version's block index holds a
 // tuple a block. The writer does not change write after this call, and a tuple that cannot be
-// encoded fails Send rather than this call, which returns nil (QueueWrite).
-func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
+// encoded fails Send rather than this call, which answers nothing (QueueWrite).
+func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) {
 	legacy := event
 	queueAppend(b, appending{
 		tuples: len(write.Tuples),
@@ -203,7 +208,6 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 		},
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt, cause: &event, sentinel: write.sentinel,
 	})
-	return nil
 }
 
 // The two base attributes, as the kind of the tuple that states each spells it. graph_nodes
@@ -284,10 +288,10 @@ func markAttributes(row string) string {
 // columns differ, and leaves made_at and made_by as the row's own first write left them - the row
 // is the projection of its tuples and may be written again, and a later write that learns the
 // event id has to be able to move source_event. A node the write restates (Node.Restates) keeps
-// its row's visibility, and its row's state unless that state or the node's is gone: its writer
-// says only whether the node is there, so the row moves to gone when the writer says gone, and to
-// the writer's state only from gone. Both statements leave mark, which the write's caller drew
-// (nextNodeMark), on the rows they made or moved (nodeMarks).
+// its row's visibility and attributes, and its row's state unless that state or the node's is
+// gone: its writer says only whether the node is there, so the row moves to gone when the writer
+// says gone, and to the writer's state only from gone. Both statements leave mark, which the
+// write's caller drew (nextNodeMark), on the rows they made or moved (nodeMarks).
 //
 // The rows carry the base attributes the write states, one attribute at a time, for the append
 // to state. A node the insert made states `visibility` and `state`, which is the node carrying
@@ -351,7 +355,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) {
 		return append(args, mark), nil
 	})
 	// The move reads, beside the five columns it compares, whether the write restates each node
-	// (Node.Restates): a node the insert made has no stored state or visibility to keep.
+	// (Node.Restates): a node the insert made has no stored state, visibility or attributes to keep.
 	b.QueueBuilt("write graph nodes", `
 		with incoming as (
 			select kind, id, supertag, visibility, state, attributes, restates
@@ -362,7 +366,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) {
 			supertag = incoming.supertag,
 			visibility = `+writtenVisibility+`,
 			state = `+writtenState+`,
-			attributes = incoming.attributes,
+			attributes = `+writtenAttributes+`,
 			source_event = `+markSQL("$8", `case when graph_nodes.visibility is distinct from `+writtenVisibility+` then `+strconv.Itoa(markVisibility)+` else 0 end
 				+ case when graph_nodes.state is distinct from `+writtenState+` then `+strconv.Itoa(markState)+` else 0 end`)+`
 		from incoming
@@ -370,7 +374,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) {
 		  and (graph_nodes.supertag is distinct from incoming.supertag
 		       or graph_nodes.visibility is distinct from `+writtenVisibility+`
 		       or graph_nodes.state is distinct from `+writtenState+`
-		       or graph_nodes.attributes is distinct from incoming.attributes)
+		       or graph_nodes.attributes is distinct from `+writtenAttributes+`)
 	`, func() ([]any, error) {
 		compared := shared
 		shared = nil
@@ -389,18 +393,24 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) {
 	})
 }
 
-// writtenVisibility and writtenState are the visibility and the state the move writes a row at,
-// read off the row its update holds (graph_nodes, before the update) and the node it was handed
-// (incoming): the node's own, but for a node the write restates (Node.Restates), which keeps the
-// row's visibility, and the row's state unless the row's or the node's is gone. A state that
-// moves therefore moves to the node's own, the value the append states of it. Each is spelled
-// once and read three times, by the update's set, by its mark and by its condition, so a row a
-// restating write keeps as it is takes no update.
+// writtenVisibility, writtenState and writtenAttributes are the visibility, the state and the
+// attributes the move writes a row at, read off the row its update holds (graph_nodes, before the
+// update) and the node it was handed (incoming): the node's own, but for a node the write restates
+// (Node.Restates), which keeps the row's visibility and attributes, and the row's state unless the
+// row's or the node's is gone. A state that moves therefore moves to the node's own, the value the
+// append states of it. A restating writer owns only the facts it writes the node again for - a
+// block's text and place, a comment's anchor - and none of the node's attributes, which another
+// write gives the node as it may give it a state: no writer that restates a node states any, so
+// the empty object such a node carries would otherwise erase what that other write stored. The
+// visibility and the state are each spelled once and read three times, by the update's set, by its
+// mark and by its condition, and the attributes twice, by the set and the condition, since no base
+// attribute states them: a row a restating write keeps as it is takes no update.
 const (
 	writtenVisibility = `case when incoming.restates then graph_nodes.visibility else incoming.visibility end`
 	writtenState      = `case when incoming.restates and incoming.state <> '` + StateGone + `'
 				and graph_nodes.state <> '` + StateGone + `'
 			then graph_nodes.state else incoming.state end`
+	writtenAttributes = `case when incoming.restates then graph_nodes.attributes else incoming.attributes end`
 )
 
 // appending is one append of a write's tuples (queueAppend): the caller's own, and the base

@@ -97,7 +97,10 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 // would run before the rows it settles exist. A transaction no ledger joins runs it at once
 // (write).
 func causeInWritePhase(ctx context.Context, tx pgx.Tx, written graphstore.Uncaused, event int64) error {
-	return write(ctx, tx, func(b *store.WriteBatch) error { return graphstore.QueueCaused(b, written, event) })
+	return write(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written, event)
+		return nil
+	})
 }
 
 // countRows is one count over the document's rows of a table keyed by artifact_id.
@@ -499,12 +502,7 @@ var indexPasses = map[string]string{
 	"api/comment_actions.go#editComment":     "the edit request's own body",
 	"api/comment_actions.go#reopenComment":   "the reopen request",
 	"api/comment_create.go#createCommentFor": "the create request's own body",
-	// The comment path's two halves of one store write, split at its event (commentStoreWrite):
-	// the node and facts of the comment the request stores, then the same facts under the event
-	// that stored it. Neither reads a row of either side.
-	"api/comment_create.go#writeNode":      "the comment the create request stores, as its row is written",
-	"api/comment_create.go#caused":         "the facts writeNode stated and the event that stored the comment",
-	"api/comment_delivery.go#replyComment": "the reply a delivery recorded",
+	"api/comment_delivery.go#replyComment":   "the reply a delivery recorded",
 	// A delivery attempt's settle states the session it reached (graphstore.QueueReached).
 	"api/comment_delivery.go#completeCommentDelivery": "the delivery attempt the sender settles",
 	"api/message_delivery.go#completeMessageDelivery": "the delivery attempt the sender settles",

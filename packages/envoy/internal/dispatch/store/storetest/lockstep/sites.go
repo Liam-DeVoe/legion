@@ -46,10 +46,9 @@ var storeWriteCallSites = map[string]string{
 	"cmd/dispatch-seed/write_docs.go#writeDocument": "cmd/dispatch-seed#TestTheSeedsDocumentWriteTakesTheStoreLockOrder",
 	"docs/block_index.go#indexOwedDocument":         "docs#TestEveryDocsStoreWriterTakesTheStoreLockOrder",
 	// The comment path: the comment's node before the comments row that names it, then its
-	// tuples and its cause under the event appended after both, and who wrote it.
-	"api/comment_create.go#caused":           "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
+	// tuples and its cause under the event appended after both, and who wrote it
+	// (graphstore.QueueNodes, QueueCaused and QueueAuthored, each called by the path itself).
 	"api/comment_create.go#createCommentFor": "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
-	"api/comment_create.go#writeNode":        "api#TestEveryApiStoreWriterTakesTheStoreLockOrder",
 	// A delivery's reply and the settle of a delivery attempt, which records the session the
 	// attempt reached, and the one record both replies share of what their answer makes of the
 	// attempt they answer: an attempt the answer flips to sent is one the listener took, and

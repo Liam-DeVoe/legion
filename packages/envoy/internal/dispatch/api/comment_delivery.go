@@ -512,8 +512,7 @@ func (s *server) completeCommentDelivery(
 			if settled.SessionID != nil {
 				session = *settled.SessionID
 			}
-			_, err := graphstore.QueueReached(b, settled.State, session, actor, settled.CreatedAt, graphstore.LatestEvent)
-			return err
+			return graphstore.QueueReached(b, settled.State, session, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }
@@ -1444,12 +1443,13 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// The row's id and created_at were taken above, so the reply's own index and references
 	// could be planned for them with nothing held; both are written explicitly here, as the
 	// comments route writes them (comment_create.go). The reply's node goes in before the row,
-	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite).
+	// whose foreign key names it, in the one batch that writes the row (commentStoreWrite), and
+	// a reply left out of the store writes none.
 	var reply model.Comment
 	nodeKind, nodeAddress := plan.stored.rowNode()
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
-		if err := plan.stored.writeNode(b); err != nil {
-			return err
+		if !plan.stored.unprojected {
+			graphstore.QueueNodes(b, plan.stored.written)
 		}
 		b.Queue("", `
 			insert into comments (id, issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers, node_kind, node_address, created_at)
@@ -1526,10 +1526,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		refs.QueueStamp(b, graphstore.KindComment, reply.ID)
-		if err := plan.stored.caused(b, event.ID); err != nil {
-			return err
-		}
 		if !plan.stored.unprojected {
+			graphstore.QueueCaused(b, plan.stored.written, event.ID)
 			if err := graphstore.QueueAuthored(b, graphstore.KindComment, reply.ID, actor, reply.CreatedAt, event.ID); err != nil {
 				return err
 			}
@@ -1596,18 +1594,16 @@ func queueAnsweredDelivery(
 	if session == "" {
 		return nil
 	}
-	if _, err := graphstore.QueueSessionRecorded(b, session, actor, at, event); err != nil {
+	if err := graphstore.QueueSessionRecorded(b, session, actor, at, event); err != nil {
 		return fmt.Errorf("record the session the answered attempt reached: %w", err)
 	}
 	if answered.itemID == "" || model.DeliveryTaken(answered.was) || !graphstore.AddressFits(session) {
 		return nil
 	}
-	if err := graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
+	graphstore.QueueWrite(b, nil, []graphstore.Tuple{{
 		FromKind: answered.itemKind, FromID: answered.itemID, Kind: graphstore.TupleDeliveredTo,
 		ToKind: graphstore.KindSession, ToID: session,
 		At: at, Who: actor, SourceEvent: event, Asserted: true,
-	}}); err != nil {
-		return fmt.Errorf("record what the answered attempt delivered: %w", err)
-	}
+	}})
 	return nil
 }

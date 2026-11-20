@@ -1001,7 +1001,8 @@ func (s *server) renewApprovalAsk(
 		heldCause = graphstore.LatestEvent
 	}
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return graphstore.QueueCaused(b, held, heldCause)
+		graphstore.QueueCaused(b, held, heldCause)
+		return nil
 	}); err != nil {
 		return nil, err
 	}

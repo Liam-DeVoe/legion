@@ -719,8 +719,7 @@ func (s *server) completeMessageDelivery(
 		// took, sent or queued (model.DeliveryTaken), is a delivery and its session is a node
 		// from this moment, a pending or failed one reached nobody and writes nothing.
 		func(b *store.WriteBatch, settled model.MessageDelivery) error {
-			_, err := graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
-			return err
+			return graphstore.QueueReached(b, settled.State, settled.SessionID, actor, settled.CreatedAt, graphstore.LatestEvent)
 		},
 	)
 }

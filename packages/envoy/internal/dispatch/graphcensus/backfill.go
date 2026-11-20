@@ -1040,9 +1040,7 @@ func (w CommentWrite) Comments() int { return len(w.ids) }
 // (graphstore.QueueWrite), and then the node named on each comment's row, which has to follow the
 // store write of the nodes: the row's foreign key names the node.
 func (w CommentWrite) Queue(b *store.WriteBatch) error {
-	if err := graphstore.QueueWrite(b, w.Nodes, w.Tuples); err != nil {
-		return err
-	}
+	graphstore.QueueWrite(b, w.Nodes, w.Tuples)
 	b.Queue("name the nodes of a comment batch on their rows", `
 		update comments c
 		set node_kind = $3, node_address = p.address
@@ -1229,24 +1227,18 @@ func writeRoleBatch(ctx context.Context, database *store.Store, batch []roleRow)
 	var nodes []graphstore.Node
 	claims := make([]graphstore.Claim, 0, len(batch))
 	for _, row := range batch {
-		page := graphstore.RolePageID(row.name)
-		if row.needsRole {
-			nodes = append(nodes, graphstore.RoleNode(row.name, backfillActor, row.at, row.event))
-		}
-		if row.needsPage {
-			nodes = append(nodes, graphstore.PageNode(page, backfillActor, row.at, row.event))
-		}
-		// The part_of claim keys the page and the role at once, so it is appended only where the
-		// page's address fits (and so the role's, which the page contains): a role whose page is
-		// past the bound has no page node, and a claim naming it would key an address the store
-		// cannot hold.
-		if graphstore.AddressFits(page) {
-			claims = append(claims, graphstore.Claim{
-				FromKind: graphstore.KindPage, FromID: page, Kind: graphstore.TuplePartOf,
-				ToKind: graphstore.KindRole, ToID: row.name,
-				At: row.at, Who: backfillActor, SourceEvent: row.event,
-			})
-		}
+		// A role's facts as the publisher states them (graphstore.RoleFacts), each address held to
+		// the store's bound on its own: a role whose page is past the bound has no page node and no
+		// part_of, a claim that would key an address the store cannot hold. Of the two nodes the
+		// batch writes the ones the store lacks (readRoleRows), and leaves the other to the write
+		// that made it; the part_of is a claim, which appends nothing where the page is part of
+		// the role already.
+		stated := len(nodes)
+		nodes, claims = graphstore.RoleFacts(nodes, claims, row.name, backfillActor, row.at, row.event)
+		owed := slices.DeleteFunc(nodes[stated:], func(node graphstore.Node) bool {
+			return (node.Kind == graphstore.KindRole && !row.needsRole) || (node.Kind == graphstore.KindPage && !row.needsPage)
+		})
+		nodes = nodes[:stated+len(owed)]
 	}
 	arms, params, err := graphstore.WriteArms(1, nodes, nil, claims)
 	if err != nil {

@@ -721,9 +721,7 @@ func (b BlockIndexing) Queue(batch *store.WriteBatch) error {
 	}
 	artifactID, version := b.artifactID, b.version
 	b.queueStand(batch)
-	if err := graphstore.QueueNodes(batch, b.stated); err != nil {
-		return fmt.Errorf("write the block nodes of version %d of %s: %w", version, artifactID, err)
-	}
+	graphstore.QueueNodes(batch, b.stated)
 	if len(b.deleted) > 0 {
 		batch.Queue(fmt.Sprintf("delete the blocks version %d of %s no longer holds", version, artifactID), `
 			delete from document_blocks where artifact_id = $1 and block_id = any($2)

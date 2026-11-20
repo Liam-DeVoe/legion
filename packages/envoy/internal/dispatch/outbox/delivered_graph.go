@@ -156,12 +156,7 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 	held := map[string]struct{}{}
 	for _, role := range roleOrder {
 		claim := roles[role]
-		page := graphstore.RolePageID(role)
-		write.nodes = append(write.nodes,
-			graphstore.RoleNode(role, graphWriter, at, claim.event),
-			graphstore.PageNode(page, graphWriter, at, claim.event))
-		write.claims = append(write.claims,
-			partOf(graphstore.KindPage, page, graphstore.KindRole, role, at, claim.event))
+		write.nodes, write.claims = graphstore.RoleFacts(write.nodes, write.claims, role, graphWriter, at, claim.event)
 		if !claim.resolved {
 			continue
 		}
@@ -205,10 +200,12 @@ func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.T
 	// can route an issue to one: a role of 1,400 bytes once failed graph_tuples_once with
 	// "index row size ... exceeds ... 2704" and the issue's outbox never drained again. The record
 	// goes on without it. Every node, page and tuple whose address is past the store's bound is
-	// left out here, so the record still commits and the stream drains; the role's row keeps
-	// answering from the old arm, and the census counts the address as a class of its own rather
-	// than a difference (graphcensus). A role whose name fits but whose page (role/<name>) does
-	// not keeps its node and loses its page, each address held to the bound on its own.
+	// left out, so the record still commits and the stream drains; the role's row keeps answering
+	// from the old arm, and the census counts the address as a class of its own rather than a
+	// difference (graphcensus). A role's own node, page and part_of are held to the bound where
+	// they are stated (graphstore.RoleFacts): a role whose name fits but whose page (role/<name>)
+	// does not keeps its node and loses its page, each address held to the bound on its own. The
+	// rest - a role's held_by, a session and its page, a delivered_to - are left out here.
 	write.nodes = slices.DeleteFunc(write.nodes, func(n graphstore.Node) bool {
 		return !graphstore.AddressFits(n.ID)
 	})
