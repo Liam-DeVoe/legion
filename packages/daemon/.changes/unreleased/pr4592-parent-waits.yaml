@@ -20,4 +20,4 @@ body: |-
   `forward_merge_owed`, `children_waited_at` and `phases.entry_from`. `docs/kubernetes.md` says
   how to roll the release back.
 custom:
-    Issue: pr4017
+    Issue: pr4592

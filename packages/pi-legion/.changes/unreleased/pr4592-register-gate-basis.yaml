@@ -7,4 +7,4 @@ body: |-
   Before the daemon is asked anything, the tool refuses a basis while the root's own document holds
   an open decision block, with the test `dispatch request-approval` makes.
 custom:
-    Issue: pr4017
+    Issue: pr4592

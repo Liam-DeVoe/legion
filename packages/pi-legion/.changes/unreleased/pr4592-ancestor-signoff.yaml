@@ -4,4 +4,4 @@ body: |-
   its approval is still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`) and while a Dispatch
   child of it is open (`SIGNOFF_CHILD_OPEN`), after `SIGNOFF_CHILD_IN_WORKFLOW` and in that order.
 custom:
-    Issue: pr4017
+    Issue: pr4592

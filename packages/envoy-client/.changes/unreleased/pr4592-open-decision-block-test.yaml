@@ -6,4 +6,4 @@ body: |-
   issue as Dispatch shows it; and `parseDispatchRef`. The `legion` tool's `register_gate` uses them
   for a registration on an ancestor's basis.
 custom:
-    Issue: pr4017
+    Issue: pr4592

@@ -8,4 +8,4 @@ body: |-
   it, when a root's wait on its approval request starts or ends, and when a resting root closes or
   leaves the workflow. Its start task and each catch-up name the roots that rest on it.
 custom:
-    Issue: pr4017
+    Issue: pr4592

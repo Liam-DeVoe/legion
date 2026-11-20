@@ -7,4 +7,4 @@ body: |-
   `RequirementIDs` gives the ids of a version's requirement blocks, and `Ref.PinnedTo` writes a
   reference as Dispatch's canonical form pinned to a version.
 custom:
-    Issue: pr4017
+    Issue: pr4592

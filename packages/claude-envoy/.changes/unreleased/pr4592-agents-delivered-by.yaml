@@ -4,4 +4,4 @@ body: |-
   whose text starts `Delivered by` after its number and any title and names the issue that
   delivers it, whatever that issue's parent, since that issue's checks serve it.
 custom:
-    Issue: pr4017
+    Issue: pr4592

@@ -4,4 +4,4 @@ body: |-
   an issue above it with a full stop, as the awaiting_children notice does, so two such children
   read as two sentences rather than one run together.
 custom:
-    Issue: pr4017
+    Issue: pr4592
