@@ -78,8 +78,9 @@ var (
 // means (splitKeepsMeaning); "that" before the clause, for a listed verb that is a noun of the
 // object there; and, after a condition at the start, the condition as a sentence of its own
 // (conditionSentence), for a list of verbs in the condition. Where the split would change what the
-// sentence means, the finding says what the sentences must keep, and gives no split.
-func instructionBreaks(line string) []broken {
+// sentence means, the finding says what the sentences must keep, and gives no split. It gives only
+// the ways out that judge passes in the sentence (wayJudge).
+func instructionBreaks(line string, judge *wayJudge) []broken {
 	var found []broken
 	coded, spans := codeAsWords(line)
 	for _, sentence := range sentencesOf(coded) {
@@ -100,6 +101,7 @@ func instructionBreaks(line string) []broken {
 		if condition, ok := conditionSentence(sentence, words, commas); ok {
 			ways[2] = wayOut{original, said(condition)}
 		}
+		ways = judge.offered(original, false, ruleInstructions, original, ways)
 		quoted := strings.TrimRight(said(sentence[second:min(len(sentence), second+instructionQuote)]), ".!?")
 		found = append(found, broken{rule: ruleInstructions, detail: instructionsDetail(quoted, words[second], keep, ways), ways: ways})
 	}

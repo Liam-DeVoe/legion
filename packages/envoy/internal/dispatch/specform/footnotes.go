@@ -125,8 +125,9 @@ func (j *footnoteJudge) judgment(note *Footnote) *footnoteJudgment {
 	if judged, ok := j.judged[note]; ok {
 		return judged
 	}
-	form, sentences, verbs := formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{})
-	judged := &footnoteJudgment{form: form, references: heldBreaks(j.c, j.people, note.Body, note.Held), sentences: sentences, verbs: verbs}
+	judge := newWayJudge(j.c, j.people, kindFootnote)
+	form, sentences, verbs := formBreaks(kindFootnote, oneLine(note.Body), footnotesHeld{}, judge)
+	judged := &footnoteJudgment{form: form, references: heldBreaks(j.c, j.people, note.Body, note.Held, judge), sentences: sentences, verbs: verbs}
 	j.judged[note] = judged
 	return judged
 }

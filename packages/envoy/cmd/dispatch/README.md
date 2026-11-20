@@ -5082,7 +5082,8 @@ Each item below names a path with its method and identity, then its purpose.
       So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
       Nothing in code font ends a sentence.
       A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
-      Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font.
+      Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font, each only where the text that it makes breaks no rule that the text does not break.
+      So in a statement of two sentences, where the space makes three, the finding tells the writer to put the name in code font.
       A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
       Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
       A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
@@ -5104,9 +5105,6 @@ Each item below names a path with its method and identity, then its purpose.
       A word that the list does not name is no verb, so `Read the log, especially the last line` and `Count the rows, minus the header` give one instruction.
       A listed verb that a noun phrase and then an auxiliary or a verb ending in -s or -ed follow is a noun of the object, as `output` in `Read the input and output the tool writes`, so that sentence gives one instruction.
       A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and each of its sentences has at most 25 words.
-      The refusal gives its ways out, and a test applies each and holds the result to the rule: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there.
-      It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
-      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition opens a clause, as in `If the run fails, read the log and send the report`, the split cuts an instruction off from the condition that governs it: there the refusal says to keep the choice or the condition, and shows no split.
       Six forms are stated limits.
       A verb that the list does not name starts no instruction, so `Seed the database and run the test` breaks no rule.
       A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.
@@ -5114,6 +5112,14 @@ Each item below names a path with its method and identity, then its purpose.
       A listed verb that is a noun of the object with no clause of its own after it, as `name` in ``Run the test of the step, name `lint`, with the race detector``, reads as a second instruction: 43 verbs of the list are also nouns in the skills.
       A listed verb before a clause whose verb is a plural or a past form with no -ed, as `output` in `Compare the input and output the tools write`, reads as a second instruction: write `that` before the clause.
       A listed verb before a word that starts no object, such as `tests`, `go` or a name, as in `Run tests against the server` and `Start Dispatch with a fixture issue`, starts no instruction, so its sentence has at most 25 words and no second instruction is read in it.
+
+    - How a refusal gives its ways out: a refusal of the form gives a way out only where the text that the way out makes gives no finding that the text does not give, word for word.
+      Dispatch reads each way out in the sentence that it changes, by every rule, with the other sentences of the text in the count of a statement.
+      So `that` before the clause of an instruction of 20 words is no way out, as it makes 21.
+      It reads the ways out of at most eight findings of one sentence, so the findings after the eighth stop with no space after it, or the eighth email address, of one sentence give no way out, and the work stays in proportion to the text.
+      The refusal of two instructions gives its ways out, and a test applies each and holds the result to every rule: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there.
+      It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
+      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition opens a clause, as in `If the run fails, read the log and send the report`, the split cuts an instruction off from the condition that governs it: there the refusal says to keep the choice or the condition, and shows no split.
 
     A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
 
@@ -5166,6 +5172,7 @@ Each item below names a path with its method and identity, then its purpose.
       So `scp report.txt deploy@build.example.com:`, `rsync -a dist/ deploy@build.example.com:`, `ssh deploy@build.example.com` and the remote glob `deploy@build.example.com:?.log` break the form.
       The finding gives the ways out: write the path after the colon, as in `deploy@build.example.com:~/` or `deploy@build.example.com:./?.log`.
       Or write the user and the host apart, as in `ssh -l deploy build.example.com`.
+      It gives each only where the text that it makes breaks no rule that the text does not break, so in a sentence of 23 words, the user and the host apart, which make 26 words, are no way out.
       An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
       So `xada@example.com` is an email address too.
       A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.

@@ -40,6 +40,12 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 			`". Write each instruction in a sentence of its own and keep ` + keep + `, or, if "` + verb +
 			`" is no verb here, write "that" before the clause after it`
 	}
+	// split is the detail of a sentence whose way out "that" another rule refuses: in an instruction
+	// of 20 words or more, "that" makes one word more than the word bound.
+	split := func(second, split string) string {
+		return `a sentence gives two instructions, and a sentence of a procedure gives one: "` + second +
+			`". Write each instruction in a sentence of its own, as in "` + split + `"`
+	}
 	const condition, choice = "the condition with each instruction that it governs", "the choice between them"
 	const twenty = "Run the merge test against a fixture server that holds two approved specs of the same issue and three requests."
 	const twentyOne = "Run the merge test against a fixture server that holds two approved specs of the same issue and three open requests."
@@ -60,9 +66,13 @@ func TestAProcedureGivesOneInstructionInEachSentenceOfTwentyWordsAtMost(t *testi
 				finding(procedure("Read each open approval request and record the document, its version, its author and the reason that the request gives for approval."),
 					ruleSentenceWords, `a sentence has 22 words, and an instruction has at most 20: "Read each open approval request and record the"`),
 				finding(procedure("Read each open approval request and record the document, its version, its author and the reason that the request gives for approval."),
-					ruleInstructions, twoInstructions("record the document, its version, its author and",
-						"Read each open approval request. Record the document, its version, its author and the reason that the request gives for approval.", "record")),
+					ruleInstructions, split("record the document, its version, its author and",
+						"Read each open approval request. Record the document, its version, its author and the reason that the request gives for approval.")),
 			}},
+		{"two instructions in 20 words, whose way out that would make 21",
+			procedure("Read each open approval request of the root and record its version in the table of the review for today."),
+			[]Finding{finding(procedure("Read each open approval request of the root and record its version in the table of the review for today."), ruleInstructions,
+				split("record its version in the table of the", "Read each open approval request of the root. Record its version in the table of the review for today."))}},
 		{"a second instruction after a comma", procedure("Read the log, record its size."),
 			[]Finding{finding(procedure("Read the log, record its size."), ruleInstructions,
 				twoInstructions("record its size", "Read the log. Record its size.", "record"))}},

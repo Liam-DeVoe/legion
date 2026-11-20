@@ -190,9 +190,10 @@ type broken struct {
 const maxWays = 3
 
 // wayOut is one way out that a finding gives, as a change of the text: the words that it changes
-// (from) and what it writes in their place (to). A test applies each way out of each finding and
-// holds the text that results to the rule (TestEachWayOutOfARefusalPasses), so a finding gives no
-// way out that its rule refuses again. A zero wayOut is none.
+// (from) and what it writes in their place (to). A finding gives a way out only where its judge
+// passes it (wayJudge): the text that it writes gives no finding that the text does not give. A
+// test applies each way out of each finding and holds the text that results to every rule
+// (TestEachWayOutOfARefusalPasses). A zero wayOut is none.
 type wayOut struct {
 	from, to string
 }
@@ -248,17 +249,19 @@ func prose(kind Kind) bool {
 // four reference rules for every kind, on what it holds (heldBreaks), then the findings of each
 // footnote that it is the first text to hold (footnoteJudge.owned). A line under Terms that is no
 // term line (Kind line) breaks the one rule term-line, and no other. people is the name of each
-// signed-in person (peopleNames).
+// signed-in person (peopleNames). Each finding gives only the ways out that its judge passes
+// (wayJudge): one judge for the text, for the form rules and the reference rules.
 func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []broken {
 	if text.Kind == KindLine {
 		return []broken{{rule: ruleTermLine, detail: termLineDetail}}
 	}
 	var found []broken
+	judge := newWayJudge(c, people, text.Kind)
 	if prose(text.Kind) {
-		form, _, _ := formBreaks(text.Kind, oneLine(text.Body), notes.held(text))
+		form, _, _ := formBreaks(text.Kind, oneLine(text.Body), notes.held(text), judge)
 		found = append(found, form...)
 	}
-	found = append(found, heldBreaks(c, people, text.Body, text.Held)...)
+	found = append(found, heldBreaks(c, people, text.Body, text.Held, judge)...)
 	found = append(found, notes.owned(text)...)
 	seen := map[broken]bool{}
 	unique := found[:0]
@@ -279,15 +282,16 @@ func breaks(c Context, people [][]string, text Text, notes *footnoteJudge) []bro
 // also when one record is a part of the other, such as the spec of an issue and the issue. The
 // words name the record of an address also by a part of what the address names (namedBy): the
 // key of its issue, or its id. Where the words name it in another form, the address's finding
-// names that form too, said from the parts of each naming.
-func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
+// names that form too, said from the parts of each naming. judge judges the ways out of each
+// finding (wayJudge).
+func heldBreaks(c Context, people [][]string, body string, held Held, judge *wayJudge) []broken {
 	var addressed []broken
 	// gave is each record whose finding an address gave, and linked the finding of the address of
 	// each record that an address links to, by each form in which the words can name that record.
 	gave := map[text.Ref]bool{}
 	linked := map[text.Ref]int{}
 	for _, address := range held.Addresses {
-		for _, each := range addressBreaks(c, people, address) {
+		for _, each := range addressBreaks(c, people, address, judge) {
 			if each.rule == ruleDispatchLink {
 				if gave[each.record] {
 					continue
@@ -312,7 +316,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
 		named   naming
 	}
 	var named map[also]bool
-	for _, each := range referenceBreaks(c, people, oneLine(shown), false) {
+	for _, each := range referenceBreaks(c, people, oneLine(shown), false, judge) {
 		index, ok := linked[each.record]
 		if each.rule != ruleDispatchLink || !ok {
 			found = append(found, each)
@@ -327,7 +331,7 @@ func heldBreaks(c Context, people [][]string, body string, held Held) []broken {
 		}
 	}
 	for _, title := range held.Titles {
-		found = append(found, referenceBreaks(c, people, oneLine(title), false)...)
+		found = append(found, referenceBreaks(c, people, oneLine(title), false, judge)...)
 	}
 	return append(found, addressed...)
 }
@@ -353,13 +357,13 @@ func namedBy(record text.Ref) []text.Ref {
 // image. An address with no scheme opens a page of the server, so it links to a record when that
 // page is the page of a record (serverPage), as the whole address of the page does, and that one
 // finding holds each key and id that the path writes.
-func addressBreaks(c Context, people [][]string, address string) []broken {
+func addressBreaks(c Context, people [][]string, address string, judge *wayJudge) []broken {
 	record, page := serverPage(c, address)
 	if !page {
-		return referenceBreaks(c, people, address, true)
+		return referenceBreaks(c, people, address, true, judge)
 	}
 	found := []broken{recordBreak(byLink, address, record)}
-	for _, each := range referenceBreaks(c, people, address, true) {
+	for _, each := range referenceBreaks(c, people, address, true, judge) {
 		if each.rule != ruleDispatchLink {
 			found = append(found, each)
 		}
@@ -428,13 +432,25 @@ func serverPage(c Context, address string) (text.Ref, bool) {
 // (ste.Rotations): two verbs for one action that the words of a footnote hold, or that it holds
 // with the footnotes that it refers to, are the footnote's one finding (footnoteJudge.rotations),
 // however many texts refer to it. It also answers how many sentences the line has, and the verbs
-// of the synonym groups that it uses.
-func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste.Verbs) {
-	var found []broken
-	for _, word := range stopsWithNoSpace(line) {
-		found = append(found, stopNoSpaceBreak(word))
-	}
+// of the synonym groups that it uses. judge judges the ways out of each finding (wayJudge): it is
+// told the line's count of sentences and its verbs before any way out is judged, and each way out of
+// a stop with no space after it is judged in the sentence of the line that holds the word.
+func formBreaks(kind Kind, line string, noted footnotesHeld, judge *wayJudge) ([]broken, int, ste.Verbs) {
 	sentences := sentencesOf(line)
+	lint, verbs := ste.LintVerbs(line)
+	judge.told(len(sentences)+noted.count, verbs, noted.verbs)
+	var found []broken
+	var places *sentenceSpans
+	for _, word := range stopsWithNoSpace(line) {
+		unit := ""
+		if judge != nil {
+			if places == nil {
+				places = spansOf(line)
+			}
+			unit = places.next(word)
+		}
+		found = append(found, stopNoSpaceBreak(word, judge.offered(unit, false, ruleStopNoSpace, word, stopNoSpaceWays(word))))
+	}
 	if count := len(sentences) + noted.count; kind == KindStatement && (count < 1 || count > maxSentences) {
 		found = append(found, broken{rule: ruleSentences, detail: sentencesDetail(count, noted)})
 	}
@@ -449,9 +465,8 @@ func formBreaks(kind Kind, line string, noted footnotesHeld) ([]broken, int, ste
 		}
 	}
 	if kind == KindProcedure {
-		found = append(found, instructionBreaks(line)...)
+		found = append(found, instructionBreaks(line, judge)...)
 	}
-	lint, verbs := ste.LintVerbs(line)
 	for _, finding := range lint {
 		found = append(found, broken{rule: Rule("ste100-" + finding.Rule), detail: fmt.Sprintf("ASD-STE100 does not permit %s: %q", steRules[finding.Rule], finding.Match)})
 	}
@@ -550,8 +565,9 @@ func (c covered) holds(at int) bool {
 // reference to a record of Dispatch, the address of a pull request and an email address. A form
 // of a name that only words have, such as "#12" or "Ada Lovelace", names nothing in an address,
 // nor in a reference that words hold, such as "https://example.com/guide#12". A "#12" in the name
-// of an incident names no pull request.
-func referenceBreaks(c Context, people [][]string, line string, address bool) []broken {
+// of an incident names no pull request. judge judges the ways out of each person (wayJudge): in the
+// sentence of line that names the person, or in the whole address.
+func referenceBreaks(c Context, people [][]string, line string, address bool, judge *wayJudge) []broken {
 	var links []span
 	references := newCovered(line)
 	for _, located := range text.ExtractAt(line, c.ServerURL) {
@@ -603,36 +619,68 @@ func referenceBreaks(c Context, people [][]string, line string, address bool) []
 	for _, each := range pullRequests {
 		found = append(found, broken{rule: rulePullRequest, detail: fmt.Sprintf("it names a pull request: %q. %s", line[each.start:each.end], pullRequestForms)})
 	}
-	var names []string
+	var names []span
 	if address {
 		for _, each := range email.find(line) {
 			if !references.holds(each.start) {
-				names = append(names, line[each.start:each.end])
+				names = append(names, each)
 			}
 		}
 	} else {
 		names = personNames(people, line, references)
 	}
-	for _, name := range names {
-		found = append(found, personBreak(name))
+	var places *sentenceSpans
+	for _, each := range names {
+		name, unit := line[each.start:each.end], line
+		if judge != nil && !address {
+			if places == nil {
+				places = spansOf(line)
+			}
+			unit = places.of(each.start)
+		}
+		found = append(found, personBreak(name, judge.offered(unit, address, rulePerson, name, personWays(name))))
 	}
 	return found
 }
 
+// personWays is the ways out of the rule person for name, an email address: a path after the
+// colon, as the user and host of a remote path take one, or the user and the host apart. A name
+// that is no email address has none.
+func personWays(name string) [maxWays]wayOut {
+	user, host, found := strings.Cut(name, "@")
+	if !found || user == "" {
+		return [maxWays]wayOut{}
+	}
+	return [maxWays]wayOut{{name, name + ":~/"}, {name, name + ":./?.log"}, {name, "ssh -l " + user + " " + host}}
+}
+
 // personBreak is the break of the rule person for name. An email address is the one form of both
 // a person and the user and host of a remote command with no path, such as "scp report.txt
-// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path,
-// written from its ways: a path after the colon, or the user and the host apart.
-func personBreak(name string) broken {
-	user, host, found := strings.Cut(name, "@")
+// deploy@build.example.com:", so its detail says so and gives the ways out of a remote path that it
+// is given (ways, personWays), written from them: a path after the colon, or the user and the host
+// apart.
+func personBreak(name string, ways [maxWays]wayOut) broken {
+	user, _, found := strings.Cut(name, "@")
 	if !found || user == "" {
 		return broken{rule: rulePerson, detail: fmt.Sprintf("it names a person: %q", name)}
 	}
-	ways := [maxWays]wayOut{{name, name + ":~/"}, {name, name + ":./?.log"}, {name, "ssh -l " + user + " " + host}}
-	return broken{rule: rulePerson, ways: ways, detail: fmt.Sprintf(
-		"it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person. "+
-			"For a remote path, write the path after the colon, such as %s or %s, or write the user and the host apart, such as %s",
-		name, ways[0].to, ways[1].to, ways[2].to)}
+	detail := fmt.Sprintf("it names a person: %q. Dispatch reads an address user@host with no path after it as the address of a person", name)
+	var paths, options []string
+	for _, way := range ways[:2] {
+		if way != (wayOut{}) {
+			paths = append(paths, way.to)
+		}
+	}
+	if len(paths) > 0 {
+		options = append(options, "write the path after the colon, such as "+strings.Join(paths, " or "))
+	}
+	if ways[2] != (wayOut{}) {
+		options = append(options, "write the user and the host apart, such as "+ways[2].to)
+	}
+	if len(options) > 0 {
+		detail += ". For a remote path, " + strings.Join(options, ", or ")
+	}
+	return broken{rule: rulePerson, ways: ways, detail: detail}
 }
 
 // referenceAt is the reference that starts at offset of line, as the server's reference grammar
@@ -705,11 +753,11 @@ func peopleNames(c Context, in Input) [][]string {
 	return names
 }
 
-// personNames is each person line names, in the order of the line: an email address, an
-// @handle, and the name of one signed-in person (peopleNames), its parts in order as whole words
+// personNames is the span of each person line names, in the order of the line: an email address,
+// an @handle, and the name of one signed-in person (peopleNames), its parts in order as whole words
 // (nameWord) that only white space parts, each with a capital first letter as a name is written.
 // A reference holds none, and a name holds no other.
-func personNames(people [][]string, line string, references covered) []string {
+func personNames(people [][]string, line string, references covered) []span {
 	var found []span
 	named := newCovered(line)
 	keep := func(each span) {
@@ -751,9 +799,5 @@ func personNames(people [][]string, line string, references covered) []string {
 		}
 	}
 	sort.SliceStable(found, func(a, b int) bool { return found[a].start < found[b].start })
-	names := make([]string, len(found))
-	for index, each := range found {
-		names[index] = line[each.start:each.end]
-	}
-	return names
+	return found
 }

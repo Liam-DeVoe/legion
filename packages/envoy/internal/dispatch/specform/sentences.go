@@ -82,11 +82,27 @@ func isAddress(word string) bool {
 	return addressStart.MatchString(strings.TrimLeft(word, openingMarks))
 }
 
-// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and the two ways out,
-// a space after each such stop (spacedStops) or the word in code font.
-func stopNoSpaceBreak(word string) broken {
-	return broken{rule: ruleStopNoSpace, ways: [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + word + "`"}},
-		detail: fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence. Put a space after the stop, or put the name in code font", word)}
+// stopNoSpaceWays is the two ways out of the rule stop-no-space for word: a space after each such
+// stop (spacedStops), or the word in code font.
+func stopNoSpaceWays(word string) [maxWays]wayOut {
+	return [maxWays]wayOut{{word, spacedStops(word)}, {word, "`" + word + "`"}}
+}
+
+// stopNoSpaceBreak is the break of the rule stop-no-space for word: the place, and each way out
+// that it is given (ways, stopNoSpaceWays), written from them.
+func stopNoSpaceBreak(word string, ways [maxWays]wayOut) broken {
+	detail := fmt.Sprintf("a stop in %q has no space after it, so Dispatch cannot find the end of the sentence", word)
+	var options []string
+	if ways[0] != (wayOut{}) {
+		options = append(options, "put a space after the stop")
+	}
+	if ways[1] != (wayOut{}) {
+		options = append(options, "put the name in code font")
+	}
+	if len(options) > 0 {
+		detail += ". " + capitalized(strings.Join(options, ", or "))
+	}
+	return broken{rule: ruleStopNoSpace, ways: ways, detail: detail}
 }
 
 // spacedStops is word with a space after each stop that joinedStop reads, after its closing marks.
