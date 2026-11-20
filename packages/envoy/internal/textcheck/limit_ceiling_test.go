@@ -12,6 +12,11 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	// For its source alone: the row below reads server/raft.go from the module cache, and the go
+	// command fetches a module into that cache only for a build that imports one of its packages
+	// (moduleDir). This import makes this package's build fetch nats-server.
+	_ "github.com/nats-io/nats-server/v2/server"
 )
 
 // natsServerModule is nats-server's module, whose raft.go holds the election timeouts.

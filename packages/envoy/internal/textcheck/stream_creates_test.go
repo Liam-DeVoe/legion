@@ -1,9 +1,7 @@
 package textcheck
 
 import (
-	"bufio"
 	"errors"
-	"fmt"
 	"go/ast"
 	"go/build"
 	"go/constant"
@@ -12,14 +10,12 @@ import (
 	"go/types"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"unicode"
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -160,49 +156,6 @@ func (s *sourceImporter) empty(importPath string) *types.Package {
 	pkg.MarkComplete()
 	s.packages[importPath] = pkg
 	return pkg
-}
-
-// moduleDir is where the module cache holds module at the version moduleRoot's go.mod requires.
-// The cache is the one the go command itself reads modules from, as the repository's scripts ask
-// for it (loadtest/cluster/cluster.test.sh): `go env GOMODCACHE`, run in moduleRoot, which reads
-// GOMODCACHE from the environment, from the go command's environment file (`go env -w`) and
-// otherwise from GOPATH. The variable alone misses the second, and GOPATH alone the first two.
-func moduleDir(moduleRoot, module string) (string, error) {
-	mod, err := os.Open(filepath.Join(moduleRoot, "go.mod"))
-	if err != nil {
-		return "", err
-	}
-	defer mod.Close()
-	version := ""
-	for scanner := bufio.NewScanner(mod); scanner.Scan(); {
-		if fields := strings.Fields(strings.TrimPrefix(strings.TrimSpace(scanner.Text()), "require ")); len(fields) >= 2 && fields[0] == module {
-			version = fields[1]
-		}
-	}
-	if version == "" {
-		return "", fmt.Errorf("%s/go.mod requires no %s", moduleRoot, module)
-	}
-	command := exec.Command("go", "env", "GOMODCACHE")
-	command.Dir = moduleRoot
-	out, err := command.Output()
-	cache := strings.TrimSpace(string(out))
-	if err != nil || cache == "" {
-		return "", fmt.Errorf("ask the go command for its module cache (go env GOMODCACHE) = %q: %w", cache, err)
-	}
-	var escaped strings.Builder
-	for _, r := range module {
-		// The module cache spells each upper-case letter of a path as "!" and its lower case.
-		if unicode.IsUpper(r) {
-			escaped.WriteByte('!')
-			r = unicode.ToLower(r)
-		}
-		escaped.WriteRune(r)
-	}
-	dir := filepath.Join(cache, filepath.FromSlash(escaped.String())+"@"+version)
-	if _, err := os.Stat(dir); err != nil {
-		return "", fmt.Errorf("%s %s is not in the go command's module cache %s, though this package's own build read it: %w", module, version, cache, err)
-	}
-	return dir, nil
 }
 
 // typedTestUnits parses every Go file under root (packages/envoy, infra included; goFiles) and
