@@ -72,6 +72,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // start starts both processes on the pair's database and NATS, each on a port held for it from the
@@ -4021,8 +4022,8 @@ func waitForPassBehind(
 	deadline := time.Now().Add(within)
 	for {
 		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid() and position($1 in query) > 0
+			select a.pid from `+lockread.Activity+` a
+			where a.pid <> pg_backend_pid() and position($1 in a.query) > 0
 		`, fragment)
 		if err != nil {
 			t.Fatalf("read the sessions running a statement carrying %q: %v", fragment, err)

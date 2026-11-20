@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -199,8 +201,8 @@ func (s *factPutsTheFenceAgain) Handover(ctx context.Context, tx pgx.Tx, issue s
 		default:
 		}
 		var waiting bool
-		if err := s.pool.QueryRow(context.Background(), `select exists (select 1 from pg_locks
-			where pid = $1 and locktype = 'advisory' and not granted)`, pid).Scan(&waiting); err != nil {
+		if err := s.pool.QueryRow(context.Background(), `select exists (select 1 from `+lockread.Locks+` l
+			where l.pid = $1 and l.locktype = 'advisory' and not l.granted)`, pid).Scan(&waiting); err != nil {
 			return nil, fmt.Errorf("read whether the fact waits for the lock: %w", err)
 		}
 		if waiting {

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -417,7 +419,7 @@ func TestARestoredClaimTakesNoSessionBeforeTheBootHoldsIt(t *testing.T) {
 		var w waited
 		for until := time.Now().Add(time.Minute); !w.blocked && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
 			var waiting int
-			w.probe = st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting)
+			w.probe = st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a where $1 = any(`+lockread.BlockingPIDs("a.pid")+`)`, holderPID).Scan(&waiting)
 			w.blocked = w.probe == nil && waiting > 0
 		}
 		if w.blocked {

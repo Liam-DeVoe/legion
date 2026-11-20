@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -63,9 +65,8 @@ func TestTheReadOfAStepsAgentWaitsOnNoCreateThatWaitsOnTheFactLock(t *testing.T)
 	// database waits on an advisory lock, Create is inside it, waiting on the fact lock.
 	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
 		var waiting int
-		err := pool.QueryRow(ctx, `select count(*) from pg_locks
-			where locktype = 'advisory' and not granted
-			  and database = (select oid from pg_database where datname = current_database())`).Scan(&waiting)
+		err := pool.QueryRow(ctx, `select count(*) from `+lockread.Locks+` l
+			where l.locktype = 'advisory' and not l.granted`).Scan(&waiting)
 		return err == nil && waiting > 0
 	}) {
 		t.Fatal("Create never waited on the fact lock, so the read below would prove nothing")

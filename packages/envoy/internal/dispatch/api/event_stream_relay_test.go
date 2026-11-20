@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // secondProcessHandler mounts a second API stack on the database the first one is on, as the
@@ -195,7 +196,7 @@ func recordRelayDials(relay *eventStreamRelay, deps Deps) *listenerDials {
 // other state is the listener's own.
 func relayBackends(t *testing.T, database *store.Store, dials *listenerDials) []int32 {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select pid from pg_stat_activity where pid = any($1) order by pid`, dials.pids())
+	rows, err := database.Pool.Query(context.Background(), `select a.pid from `+lockread.Activity+` a where a.pid = any($1) order by a.pid`, dials.pids())
 	if err != nil {
 		t.Fatalf("read the backends of the relay's listener connections: %v", err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's arrival
@@ -237,9 +238,9 @@ func awaitFleetReadPause(t *testing.T, s *Store, pid uint32, done <-chan struct{
 		var waiting bool
 		if err := s.Pool.QueryRow(context.Background(), `
 			select exists (
-				select from pg_locks
-				where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
-				  and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2 and pid = $3 and not granted)`,
+				select from `+lockread.Locks+` l
+				where l.locktype = 'advisory'
+				  and l.classid::bigint = $1 and l.objid::bigint = $2 and l.objsubid = 2 and l.pid = $3 and not l.granted)`,
 			fleetReadPauseNamespace, fleetReadPauseKey, pid).Scan(&waiting); err != nil {
 			t.Fatalf("read the fleet read's pause: %v", err)
 		}

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -156,8 +157,8 @@ func waitBackendGone(t *testing.T, database *store.Store, pid uint32, within tim
 	deadline := time.Now().Add(within)
 	for {
 		var count int
-		if err := database.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity where pid = $1`, int(pid)).Scan(&count); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
+		if err := database.Pool.QueryRow(context.Background(), `select count(*) from `+lockread.Activity+` a where a.pid = $1`, int(pid)).Scan(&count); err != nil {
+			t.Fatalf("read lockread.Activity: %v", err)
 		}
 		if count == 0 {
 			return
@@ -319,7 +320,7 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	default:
 	}
 	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select a.query from `+lockread.Activity+` a where a.pid = $1`, int(pid)).Scan(&query); err != nil {
 		t.Fatalf("read the listener's backend: %v", err)
 	}
 	if query != "-- ping" {
@@ -584,7 +585,7 @@ func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.
 		t.Fatalf("dials after a notification the listener has nowhere to report = %d, want 1: the notification cost it the connection", dials)
 	}
 	var query string
-	if err := database.Pool.QueryRow(context.Background(), `select query from pg_stat_activity where pid = $1`, int(pid)).Scan(&query); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select a.query from `+lockread.Activity+` a where a.pid = $1`, int(pid)).Scan(&query); err != nil {
 		t.Fatalf("read the listener's backend: %v", err)
 	}
 	if query != "-- ping" {

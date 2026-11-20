@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // deviceMachine is one machine logging in: its key, the OAuth client it logs in with, and the
@@ -614,9 +615,9 @@ func awaitWaiters(t *testing.T, rig *brokertest.Rig, holder, n int) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		var waiting int
-		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity a
-			where a.datname = current_database() and ($1 = any(pg_blocking_pids(a.pid)) or exists (select 1 from pg_stat_activity b
-				where $1 = any(pg_blocking_pids(b.pid)) and b.pid = any(pg_blocking_pids(a.pid))))`, holder).Scan(&waiting); err != nil {
+		if err := rig.Store.Pool.QueryRow(context.Background(), `select count(*) from `+lockread.Activity+` a
+			where $1 = any(`+lockread.BlockingPIDs("a.pid")+`) or exists (select 1 from `+lockread.Activity+` b
+				where $1 = any(`+lockread.BlockingPIDs("b.pid")+`) and b.pid = any(`+lockread.BlockingPIDs("a.pid")+`))`, holder).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting >= n {

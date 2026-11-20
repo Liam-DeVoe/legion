@@ -16,6 +16,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -61,7 +63,7 @@ func daemonBackends(t *testing.T, pool *store.Pool, application, condition strin
 	t.Helper()
 	var count int
 	err := pool.QueryRow(context.Background(),
-		"select count(*) from pg_stat_activity where application_name = $1 and ("+condition+")",
+		"select count(*) from "+lockread.Activity+" a where a.application_name = $1 and ("+condition+")",
 		application,
 	).Scan(&count)
 	if err != nil {

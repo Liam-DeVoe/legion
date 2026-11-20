@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 const (
@@ -711,7 +712,7 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 			}
 			var waiters int
 			if err := pool.QueryRow(context.Background(),
-				`select count(*) from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))`,
+				`select count(*) from `+lockread.Activity+` a where a.wait_event_type = 'Lock' and $1 = any(`+lockread.BlockingPIDs("a.pid")+`)`,
 				pid).Scan(&waiters); err != nil {
 				t.Errorf("read the backends waiting behind the login: %v", err)
 				return

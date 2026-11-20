@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -1779,8 +1781,8 @@ func TestTwoDaemonsClaimingDifferentLifecycleRowsOfOneIssueAtOnceLeaseOnlyOne(t 
 		default:
 		}
 		var waiting int
-		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+		err := st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txA.Commit(ctx))
@@ -1869,8 +1871,8 @@ func TestABoardRowClaimedWhileItsIssuesLifecycleClaimIsUncommittedIsLeasedAtOnce
 		default:
 		}
 		var waiting int
-		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+		err := st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	if !returned {
@@ -1954,8 +1956,8 @@ func TestDroppingCatchUpsLeavesTheRowALaneIsLeasing(t *testing.T) {
 		default:
 		}
 		var waiting int
-		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting)
+		err := st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.wait_event = 'advisory'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txLane.Commit(ctx))
@@ -2028,8 +2030,8 @@ func TestDroppingCatchUpsWaitsOnNoRowAFinishIsDeleting(t *testing.T) {
 	}()
 	testwait.Eventually(t, "the finish to wait on the decisions the adoption locked", func() bool {
 		var waiting int
-		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'`).Scan(&waiting)
+		err := st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	select {
@@ -2124,8 +2126,8 @@ func TestDroppingCatchUpsWaitsForTheClaimOfACopyAReholdQueued(t *testing.T) {
 		default:
 		}
 		var waiting int
-		err := st.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting)
+		err := st.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.wait_event = 'advisory'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 	must(t, txDrop.Commit(ctx))

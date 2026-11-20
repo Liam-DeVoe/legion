@@ -23,6 +23,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // CheckEmbedsEveryFile reports an error unless embedded holds, in dir, every entry the directory
@@ -219,9 +220,8 @@ func auditMigrationLocks(ctx context.Context, conn *pgx.Conn, migration pgmigrat
 	// statement, audit the index's actual catalog target instead of claiming to observe locks.
 	query := `
 		select coalesce(i.indrelid, l.relation), l.mode
-		from pg_locks l left join pg_index i on i.indexrelid = l.relation
-		where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.granted
-			and l.database = (select oid from pg_database where datname = current_database())`
+		from ` + lockread.Locks + ` l left join pg_index i on i.indexrelid = l.relation
+		where l.pid = pg_backend_pid() and l.locktype = 'relation' and l.granted`
 	var tx pgx.Tx
 	if migration.NonTransactional {
 		if _, err := conn.Exec(ctx, `create temp table pgmigrate_audit_locks (relation oid, mode text);

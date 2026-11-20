@@ -19,17 +19,21 @@
 // put another object of the same name in its place.
 //
 // Postgres reads pg_stat_activity once per transaction and serves that copy until the transaction
-// ends, while pg_locks is read anew each time. Locks and BlockingPIDs take the database's backends
-// from pg_stat_activity, so inside one transaction they keep to the backends that copy holds: a
-// backend that connected after the transaction's first read of it does not count. A test that polls
-// reads in a statement of its own, which is a transaction of its own.
+// ends, while pg_locks is read anew each time. So the backends of the database, which Locks,
+// BlockingPIDs and BackendWAL keep to, are those pg_locks shows holding or waiting for a lock in it,
+// read anew, beside those pg_stat_activity shows: a poll inside a transaction that read
+// pg_stat_activity before a waiter connected still counts that waiter, which waits on a table of
+// the database or holds a lock on one. Activity is pg_stat_activity's rows, and inside one
+// transaction it shows its first copy, as the view itself does.
 package lockread
 
 // ownDatabase is the oid of the database the statement runs in.
 const ownDatabase = `(select d.oid from pg_catalog.pg_database d where d.datname = pg_catalog.current_database())`
 
-// ownBackends is the process ids of the backends of the database the statement runs in.
-const ownBackends = `(select b.pid from pg_catalog.pg_stat_activity b where b.datid = ` + ownDatabase + `)`
+// ownBackends is the process ids of the backends of the database the statement runs in: each that
+// holds or waits for a lock in it, and each pg_stat_activity lists in it.
+const ownBackends = `(select m.pid from pg_catalog.pg_locks m where m.database = ` + ownDatabase +
+	` union select b.pid from pg_catalog.pg_stat_activity b where b.datid = ` + ownDatabase + `)`
 
 // Activity is pg_stat_activity's rows of the backends of the database the statement runs in, every
 // column of the view. A background process that belongs to no database (the checkpointer, the WAL

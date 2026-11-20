@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The near_copy_checks record: one row for each answer the near-copy gate gives a create, read
@@ -212,10 +213,9 @@ func createWaitsForNearCopyChecks(t *testing.T, database *store.Store) bool {
 	var waiting bool
 	if err := database.Pool.QueryRow(context.Background(), `
 		select exists (
-		  select 1 from pg_locks l
+		  select 1 from `+lockread.Locks+` l
 		   where not l.granted and l.relation = 'near_copy_checks'::regclass
-		     and l.database = (select oid from pg_database where datname = current_database())
-		     and exists (select 1 from pg_locks i
+		     and exists (select 1 from `+lockread.Locks+` i
 		                  where i.pid = l.pid and i.granted and i.relation = 'issues'::regclass))`,
 	).Scan(&waiting); err != nil {
 		t.Fatalf("read the waiters on near_copy_checks: %v", err)
@@ -537,8 +537,8 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	var firstStart time.Time
 	poll("the row's first attempt waiting on the lock", func() bool {
 		err := database.Pool.QueryRow(context.Background(), `
-			select pid, query_start from pg_stat_activity
-			 where datname = current_database() and state = 'active' and pid <> pg_backend_pid()
+			select a.pid, a.query_start from `+lockread.Activity+` a
+			 where a.state = 'active' and a.pid <> pg_backend_pid()
 			   and query like '%insert into near_copy_checks%'
 			 order by query_start limit 1
 		`).Scan(&firstPID, &firstStart)
@@ -557,7 +557,7 @@ func TestNearCopyChecksARowHeldUpPastItsSecondIsWrittenOnceTheLockIsReleased(t *
 	poll("the first attempt's insert cancelled", func() bool {
 		var waiting bool
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select from pg_stat_activity
+			select exists (select from `+lockread.Activity+` a
 			 where pid = $1 and query_start = $2 and state = 'active')
 		`, firstPID, firstStart).Scan(&waiting); err != nil {
 			t.Fatalf("read the first attempt: %v", err)

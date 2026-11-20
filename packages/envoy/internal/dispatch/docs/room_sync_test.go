@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // newListenerHub is service's process listener as cmd/dispatch builds it: a pglisten.Hub on a
@@ -178,8 +179,8 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 	var terminated int
 	if err := tx.QueryRow(ctx, `
 		select count(*) from (
-			select pg_terminate_backend(pid) from pg_stat_activity
-			where datname = current_database() and application_name = $1
+			select pg_terminate_backend(a.pid) from `+lockread.Activity+` a
+			where a.application_name = $1
 		) killed
 	`, senderName).Scan(&terminated); err != nil {
 		t.Fatalf("terminate the sender's connection: %v", err)
@@ -187,10 +188,10 @@ func TestTheRoomSyncSenderReachesTheOtherProcessFromInsideATransaction(t *testin
 	if terminated != 1 {
 		t.Fatalf("terminated %d connections named %q, want the sender's one", terminated, senderName)
 	}
-	waitFor(t, roomWait(t), "the sender's terminated connection to leave pg_stat_activity", func() bool {
+	waitFor(t, roomWait(t), "the sender's terminated connection to leave lockread.Activity", func() bool {
 		var alive bool
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from pg_stat_activity where datname = current_database() and application_name = $1)
+			select exists (select 1 from `+lockread.Activity+` a where a.application_name = $1)
 		`, senderName).Scan(&alive); err != nil {
 			t.Fatalf("read the sender's connection: %v", err)
 		}

@@ -5,6 +5,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The owner lock beside an earlier build (ownerlock_fleet_test.go): the earlier build's mark, as
@@ -114,7 +116,7 @@ func TestTheMigrationMarksAnEarlierBuildThatPublishedBeforeIt(t *testing.T) {
 				}
 				var queued bool
 				if err := s.Pool.QueryRow(ctx, `
-					select exists (select from pg_stat_activity where datname = current_database() and $1::integer = any(pg_blocking_pids(pid)))`,
+					select exists (select from `+lockread.Activity+` a where $1::integer = any(`+lockread.BlockingPIDs("a.pid")+`))`,
 					writerPID).Scan(&queued); err != nil {
 					t.Fatal(err)
 				}

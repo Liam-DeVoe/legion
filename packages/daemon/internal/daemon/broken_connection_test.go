@@ -12,6 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -131,7 +133,7 @@ func daemonDSN(t *testing.T, pool *store.Pool, application string) string {
 func terminateDaemonBackends(t *testing.T, pool *store.Pool, application string) int {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
-		"select pg_terminate_backend(pid) from pg_stat_activity where application_name = $1", application)
+		"select pg_terminate_backend(a.pid) from "+lockread.Activity+" a where a.application_name = $1", application)
 	if err != nil {
 		t.Fatalf("end the backends of %s: %v", application, err)
 	}

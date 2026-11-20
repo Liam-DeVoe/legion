@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // CountLockWaits counts the sessions of database waiting on a lock whose statement matches the LIKE
@@ -19,8 +20,8 @@ import (
 func CountLockWaits(ctx context.Context, database *store.Store, like string) (int, error) {
 	var waiting int
 	if err := database.Pool.QueryRow(ctx, `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and query like $1
+		select count(*) from `+lockread.Activity+` a
+		where a.wait_event_type = 'Lock' and a.query like $1
 	`, like).Scan(&waiting); err != nil {
 		return 0, fmt.Errorf("inspect database locks: %w", err)
 	}
@@ -36,12 +37,12 @@ func CountLockWaits(ctx context.Context, database *store.Store, like string) (in
 func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid int) {
 	t.Helper()
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*), count(*) filter (where backend_xid is not null)
-		from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'
-		  and query like '%owner_lock%' and pid <> pg_backend_pid()
+		select count(*), count(*) filter (where a.backend_xid is not null)
+		from `+lockread.Activity+` a
+		where a.wait_event_type = 'Lock' and a.wait_event = 'advisory'
+		  and a.query like '%owner_lock%' and a.pid <> pg_backend_pid()
 	`).Scan(&waiting, &holdingXid); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read lockread.Activity: %v", err)
 	}
 	return waiting, holdingXid
 }
@@ -74,13 +75,13 @@ func AwaitOwnerLockWaiter[T any](t testing.TB, database *store.Store, what strin
 
 // waitingBehindHolder is the recursive CTE naming, as waiting(pid), every backend queued behind a
 // lock the current transaction owns, directly or behind an earlier waiter.
-const waitingBehindHolder = `
+var waitingBehindHolder = `
 	with recursive waiting(pid) as (
-		select pid from pg_locks
-		where not granted and pg_backend_pid() = any(pg_blocking_pids(pid))
+		select l.pid from ` + lockread.Locks + ` l
+		where not l.granted and pg_backend_pid() = any(` + lockread.BlockingPIDs("l.pid") + `)
 		union
-		select blocked.pid from pg_locks blocked, waiting
-		where not blocked.granted and waiting.pid = any(pg_blocking_pids(blocked.pid))
+		select blocked.pid from ` + lockread.Locks + ` blocked, waiting
+		where not blocked.granted and waiting.pid = any(` + lockread.BlockingPIDs("blocked.pid") + `)
 	)
 `
 
@@ -89,10 +90,10 @@ const waitingBehindHolder = `
 // the first, which holds the tuple lock), and returns how many it last saw. It polls through
 // holder's own connection: the code under test can drain the shared pool while it waits on that
 // lock, and a poll that needed a pool connection of its own would deadlock with it once the pool is
-// exhausted. It reads pg_locks, not pg_stat_activity, whose view is frozen for the rest of a
-// transaction once read. It counts every backend behind the holder, a background document
-// settlement's among them; a test that must know the call under test is the one waiting watches
-// that call's backend instead (QueuedBehind).
+// exhausted. It reads lockread.Locks, which reads pg_locks anew each time, not pg_stat_activity,
+// whose view is frozen for the rest of a transaction once read. It counts every backend behind the
+// holder, a background document settlement's among them; a test that must know the call under
+// test is the one waiting watches that call's backend instead (QueuedBehind).
 func WaitForLockWaiters(t testing.TB, holder pgx.Tx, want int, within time.Duration) int {
 	t.Helper()
 	deadline := time.Now().Add(within)
@@ -157,14 +158,14 @@ func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answere
 // that session's backend process id, or 0 if none did. It is for a call under test that runs in
 // another process, whose connection a test cannot give a pool of its own: the statement names
 // the call's backend, and a session queued behind the same lock with any other statement is
-// never taken for it. It reads pg_stat_activity through the pool, a fresh view on each read.
+// never taken for it. It reads lockread.Activity through the pool, a fresh view on each read.
 func WaitForStatementBehind(t testing.TB, database *store.Store, holder pgx.Tx, statement string, within time.Duration) uint32 {
 	t.Helper()
 	ctx := context.Background()
 	deadline := time.Now().Add(within)
 	for {
 		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity where datname = current_database() and query = $1
+			select a.pid from `+lockread.Activity+` a where a.query = $1
 		`, statement)
 		if err != nil {
 			t.Fatalf("read the sessions running %q: %v", statement, err)

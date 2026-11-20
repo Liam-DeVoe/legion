@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // waitForQueuedLock waits until some session is queued, not yet granted, for mode on relation: a
@@ -19,10 +21,9 @@ func waitForQueuedLock(t *testing.T, store *Store, relation, mode string) {
 	for {
 		var waiting bool
 		if err := store.Pool.QueryRow(ctx, `
-			select exists(select 1 from pg_locks where relation = $1::regclass and mode = $2 and not granted
-				and database = (select oid from pg_database where datname = current_database()))
+			select exists(select 1 from `+lockread.Locks+` l where l.relation = $1::regclass and l.mode = $2 and not l.granted)
 		`, relation, mode).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_locks: %v", err)
+			t.Fatalf("read lockread.Locks: %v", err)
 		}
 		if waiting {
 			return

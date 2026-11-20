@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // relayStartSettle is the moment the relay's first start is left to read the log once it has begun
@@ -367,9 +368,9 @@ func TestTheFirstColdSubscriptionIsSentAnEventCommittedWhileAWriteFromBeforeBoot
 func eventsTuplesRead(t *testing.T, database *store.Store) int64 {
 	t.Helper()
 	if _, err := database.Pool.Exec(t.Context(), `
-		select pg_terminate_backend(pid, 5000) from pg_stat_activity
-		where datname = current_database() and backend_type = 'client backend' and pid <> pg_backend_pid()
-			and pid not in (select pid from pg_locks where locktype = 'transactionid' and mode = 'ExclusiveLock')
+		select pg_terminate_backend(a.pid, 5000) from `+lockread.Activity+` a
+		where a.backend_type = 'client backend' and a.pid <> pg_backend_pid()
+			and a.pid not in (select l.pid from `+lockread.Locks+` l where l.locktype = 'transactionid' and l.mode = 'ExclusiveLock')
 	`); err != nil {
 		t.Fatalf("end the other connections so they flush their statistics: %v", err)
 	}

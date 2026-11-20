@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // promptShutdown bounds a SIGTERM's whole ordered shutdown with a dashboard open. Closing the
@@ -907,12 +908,12 @@ func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx, wit
 	deadline := time.Now().Add(within)
 	for {
 		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity
-			where datname = current_database() and query = $1
-			  and pid not in (
-			    select pid from pg_locks
-			    where locktype = 'advisory' and granted
-			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
+			select a.pid from `+lockread.Activity+` a
+			where a.query = $1
+			  and a.pid not in (
+			    select l.pid from `+lockread.Locks+` l
+			    where l.locktype = 'advisory' and l.granted
+			      and not (l.objsubid = 2 and l.classid = $2::oid and l.objid = $3::oid))
 		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
 		if err != nil {
 			t.Fatalf("read the sessions waiting on an owner lock: %v", err)

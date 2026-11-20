@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // testSigningKey is the one-key set the package's people stores seal refresh tokens under.
@@ -5403,8 +5404,8 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := service.store.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
@@ -5612,8 +5613,8 @@ func waitForDatabaseLock(t *testing.T, database *store.Store) {
 	for time.Now().Before(deadline) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}

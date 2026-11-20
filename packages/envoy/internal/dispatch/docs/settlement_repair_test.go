@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // Settlement repairs an ask block's server-owned attributes into the document as it stands when
@@ -632,9 +633,8 @@ func settleUnderPause(t *testing.T, service *Service, pause *repairCommitPause, 
 func endRoomLockHolders(t *testing.T, service *Service) {
 	t.Helper()
 	if _, err := service.store.Pool.Exec(context.Background(), `
-		select pg_terminate_backend(pid) from pg_locks
-		where locktype = 'advisory' and granted and pid <> pg_backend_pid()
-		  and database = (select oid from pg_database where datname = current_database())
+		select pg_terminate_backend(l.pid) from `+lockread.Locks+` l
+		where l.locktype = 'advisory' and l.granted and l.pid <> pg_backend_pid()
 	`); err != nil {
 		t.Errorf("end the sessions holding the document's lock: %v", err)
 	}
@@ -689,9 +689,9 @@ func describeCloseWait(t *testing.T, service *Service) {
 	rows, err := service.store.Pool.Query(context.Background(), `
 		select a.pid, a.state, coalesce(a.wait_event_type, ''), coalesce(a.wait_event, ''),
 		       left(a.query, 160), coalesce(string_agg(l.objid::text, ',') filter (where l.granted), '')
-		from pg_stat_activity a
-		left join pg_locks l on l.pid = a.pid and l.locktype = 'advisory'
-		where a.datname = current_database() and a.pid <> pg_backend_pid()
+		from `+lockread.Activity+` a
+		left join `+lockread.Locks+` l on l.pid = a.pid and l.locktype = 'advisory'
+		where a.pid <> pg_backend_pid()
 		group by a.pid, a.state, a.wait_event_type, a.wait_event, a.query
 	`)
 	if err != nil {

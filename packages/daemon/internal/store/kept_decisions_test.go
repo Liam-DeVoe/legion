@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -321,7 +323,7 @@ func TestTwoComposersNeverBothNameOneKeptDecision(t *testing.T) {
 			continue
 		default:
 		}
-		if err := r.store.Pool().QueryRow(r.ctx, `select exists (select 1 from pg_locks where pid = $1 and not granted)`, pid).Scan(&waiting); err != nil {
+		if err := r.store.Pool().QueryRow(r.ctx, `select exists (select 1 from `+lockread.Locks+` l where l.pid = $1 and not l.granted)`, pid).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if time.Now().After(deadline) {

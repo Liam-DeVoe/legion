@@ -14,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // waitForInvalidIndex waits for the INVALID catalog entry a concurrent build writes before it
@@ -43,13 +44,12 @@ func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	}
 }
 
-// migrationKeyRows selects the rows of pg_locks that are advisory locks on migrationLockKey in
-// the current database, with the key as $1. migrationKeyLocks counts them and
+// migrationKeyRows selects the rows of lockread.Locks, the current database's, that are advisory
+// locks on migrationLockKey, with the key as $1. migrationKeyLocks counts them and
 // migrationKeyLockPids lists their sessions, both through it, so the shape of an advisory-key row
-// (locktype, database, classid, objid, objsubid) is written once.
-const migrationKeyRows = `from pg_locks where locktype = 'advisory'
-	and database = (select oid from pg_database where datname = current_database())
-	and classid = 0 and objid = $1::bigint and objsubid = 1`
+// (locktype, classid, objid, objsubid) is written once.
+const migrationKeyRows = `from ` + lockread.Locks + ` l where l.locktype = 'advisory'
+	and l.classid = 0 and l.objid = $1::bigint and l.objsubid = 1`
 
 // migrationKeyLocks counts the advisory locks held on migrationLockKey in this store's database.
 // It reads pg_locks through store.Pool, which is where a leaked key would be: pg_locks is the
@@ -130,8 +130,8 @@ func TestMigrateConcurrentIndexHoldsMigrationLockAndRetriesAnUnrecordedBuild(t *
 	if _, err := store.Pool.Exec(ctx, `
 		create function require_migration_lock() returns event_trigger language plpgsql as $$
 		begin
-			if not exists (select from pg_locks where pid = pg_backend_pid() and locktype = 'advisory'
-				and classid = 0 and objid = 8150001 and objsubid = 1 and granted) then
+			if not exists (select from `+lockread.Locks+` l where l.pid = pg_backend_pid() and l.locktype = 'advisory'
+				and l.classid = 0 and l.objid = 8150001 and l.objsubid = 1 and l.granted) then
 				raise exception 'concurrent build lost the migration lock';
 			end if;
 		end $$;
@@ -288,7 +288,7 @@ func waitForGoneBackend(t *testing.T, store *Store, pid int32, what string) {
 	deadline := time.Now().Add(pgmigrate.LockTimeout)
 	for {
 		var alive int
-		if err := store.Pool.QueryRow(ctx, "select count(*) from pg_stat_activity where pid = $1", pid).Scan(&alive); err != nil {
+		if err := store.Pool.QueryRow(ctx, "select count(*) from "+lockread.Activity+" a where a.pid = $1", pid).Scan(&alive); err != nil {
 			t.Fatalf("look for backend %d: %v", pid, err)
 		}
 		if alive == 0 {
@@ -315,8 +315,8 @@ func waitForPollingBackend(t *testing.T, store *Store) int32 {
 	deadline := time.Now().Add(pgmigrate.LockTimeout)
 	for {
 		var pids []int32
-		rows, err := store.Pool.Query(ctx, `select pid from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid()
+		rows, err := store.Pool.Query(ctx, `select a.pid from `+lockread.Activity+` a
+			where a.pid <> pg_backend_pid()
 			and query like '%pg_try_advisory' || '_lock%'`)
 		if err != nil {
 			t.Fatalf("look for the backend polling for the key: %v", err)
@@ -465,8 +465,8 @@ func waitForRunningStatement(t *testing.T, store *Store, substring string) {
 	deadline := time.Now().Add(pgmigrate.LockTimeout)
 	for {
 		var running int
-		if err := store.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and pid <> pg_backend_pid()
+		if err := store.Pool.QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.pid <> pg_backend_pid()
 			and state = 'active' and query like '%' || $1 || '%'`, substring).Scan(&running); err != nil {
 			t.Fatalf("look for a backend running %s: %v", substring, err)
 		}

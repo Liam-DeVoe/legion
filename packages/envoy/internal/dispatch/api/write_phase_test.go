@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // A write transaction runs a read phase holding no transaction id - its owner's advisory lock
@@ -168,10 +169,10 @@ func transactionIDHolders(t *testing.T, database *store.Store) (int, string) {
 	var holders int
 	var running string
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*), coalesce(string_agg(query, ' | '), '') from pg_stat_activity
-		where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid()
+		select count(*), coalesce(string_agg(a.query, ' | '), '') from `+lockread.Activity+` a
+		where a.backend_xid is not null and a.pid <> pg_backend_pid()
 	`).Scan(&holders, &running); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read lockread.Activity: %v", err)
 	}
 	return holders, running
 }

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The xid window rig (INFRA-636) measures how long a write transaction holds its transaction id
@@ -260,9 +261,9 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 		t.Fatalf("xid rig: open the poll connection: %v", err)
 	}
 	defer conn.Close(ctx)
-	const holdersQuery = `
-		select pid from pg_stat_activity
-		where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid()`
+	holdersQuery := `
+		select a.pid from ` + lockread.Activity + ` a
+		where a.backend_xid is not null and a.pid <> pg_backend_pid()`
 	poll := func() (xidPoll, error) {
 		sample := xidPoll{sent: time.Now()}
 		rows, err := conn.Query(ctx, holdersQuery)
@@ -276,7 +277,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	}
 	// The first poll prepares the statement, so no later one pays for it.
 	if _, err := poll(); err != nil {
-		t.Fatalf("xid rig: poll pg_stat_activity: %v", err)
+		t.Fatalf("xid rig: poll lockread.Activity: %v", err)
 	}
 
 	x.mu.Lock()
@@ -328,7 +329,7 @@ func (x *XidTracer) Measure(t testing.TB, pool *store.Pool, operation func()) *X
 	x.statements = nil
 	x.mu.Unlock()
 	if pollErr != nil {
-		t.Fatalf("xid rig: poll pg_stat_activity: %v", pollErr)
+		t.Fatalf("xid rig: poll lockread.Activity: %v", pollErr)
 	}
 	return analyzeXidWindows(statements, polls, finished.Sub(started))
 }

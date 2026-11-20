@@ -713,6 +713,6 @@ func TestALeaseHeldInAnotherDatabaseIsNotHeldHere(t *testing.T) {
 		t.Fatalf("read whether the lease is held: %v", err)
 	}
 	if held {
-		t.Fatal("a lease another database's session holds reads as held here: pg_locks is the whole server's, and this read is not kept to this database")
+		t.Fatal("a lease another database's session holds reads as held here: the server's lock view lists every database's locks, and this read is not kept to this database")
 	}
 }

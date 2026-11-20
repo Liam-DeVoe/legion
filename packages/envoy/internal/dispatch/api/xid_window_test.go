@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The xid window tests (INFRA-636, plan test T1) drive each write route through the real handler
@@ -195,8 +196,8 @@ func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 		var busy bool
 		if err := database.Pool.QueryRow(context.Background(), `
 			select ($1::boolean and exists (select 1 from doc_settlements_pending))
-			    or exists (select 1 from pg_stat_activity
-			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
+			    or exists (select 1 from `+lockread.Activity+` a
+			               where a.backend_xid is not null and a.pid <> pg_backend_pid())
 		`, settled).Scan(&busy); err != nil {
 			t.Fatalf("read settlement state: %v", err)
 		}

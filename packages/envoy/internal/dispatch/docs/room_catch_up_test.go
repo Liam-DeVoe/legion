@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // A room this process holds for a document another process writes follows that write: the write
@@ -551,9 +552,8 @@ func waitingAdvisoryLocks(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var waiting int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_locks
-		where locktype = 'advisory' and not granted
-		  and database = (select oid from pg_database where datname = current_database())
+		select count(*) from `+lockread.Locks+` l
+		where l.locktype = 'advisory' and not l.granted
 	`).Scan(&waiting); err != nil {
 		t.Fatalf("read the advisory locks waited for: %v", err)
 	}

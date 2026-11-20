@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // searchCoverageResponse reads GET /api/v1/search/coverage as alice and holds its body to
@@ -229,10 +230,9 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		t.Helper()
 		var count int
 		if err := database.Pool.QueryRow(ctx, `
-			select count(*) from pg_stat_activity
-			where pid <> pg_backend_pid() and cardinality(pg_blocking_pids(pid)) > 0
-			  and datname = current_database()`).Scan(&count); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
+			select count(*) from `+lockread.Activity+` a
+			where a.pid <> pg_backend_pid() and cardinality(`+lockread.BlockingPIDs("a.pid")+`) > 0`).Scan(&count); err != nil {
+			t.Fatalf("read lockread.Activity: %v", err)
 		}
 		return count
 	}
@@ -257,14 +257,14 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 	showed := testwait.Holds(5*time.Second, testwait.Poll, func() bool {
 		select {
 		case early := <-answered:
-			t.Fatalf("the route answered (status=%d body=%s after %s) before pg_stat_activity showed its statement blocked",
+			t.Fatalf("the route answered (status=%d body=%s after %s) before lockread.Activity showed its statement blocked",
 				early.response.Code, early.response.Body.String(), early.took)
 		default:
 		}
 		return blocked() == 1
 	})
 	if !showed {
-		t.Fatal("pg_stat_activity never showed the coverage statement blocked by the lock on components while the request waited")
+		t.Fatal("lockread.Activity never showed the coverage statement blocked by the lock on components while the request waited")
 	}
 	var got answer
 	select {
@@ -292,6 +292,6 @@ func TestSearchCoverageRefusesAtItsBound(t *testing.T) {
 		t.Errorf("the pool holds %d acquired connections after the answer, want the %d it held before the request", conns, acquired)
 	}
 	if statements != 0 {
-		t.Errorf("pg_stat_activity shows %d backends blocked after the answer, want none: the bound frees the coverage statement's backend", statements)
+		t.Errorf("lockread.Activity shows %d backends blocked after the answer, want none: the bound frees the coverage statement's backend", statements)
 	}
 }

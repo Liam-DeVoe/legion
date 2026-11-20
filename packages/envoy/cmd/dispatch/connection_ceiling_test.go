@@ -106,10 +106,10 @@ const tooManyConnections = "(SQLSTATE 53300)"
 
 // connectionRefusalCause is the reason a Dispatch process that exited before it was healthy gives
 // when refused, a line of its output, says Postgres turned it away for too many clients. It quotes
-// the line and reads, through databaseURL, the server's max_connections and the client backends
-// open on it now, which say whether the server is too small or other clients hold its slots. The
-// process has exited, so the count holds none of its connections once Postgres has ended their
-// backends.
+// the line and reads, through databaseURL, the server's max_connections and the backends connected
+// to its databases now (pg_stat_database's per-database counts, summed, less the reading backend),
+// which say whether the server is too small or other clients hold its slots. The process has
+// exited, so the count holds none of its connections once Postgres has ended their backends.
 func connectionRefusalCause(refused, databaseURL string) string {
 	reason := "Postgres refused it a connection for too many clients (SQLSTATE 53300):\n" + refused + "\n"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -119,15 +119,14 @@ func connectionRefusalCause(refused, databaseURL string) string {
 	if err == nil {
 		defer conn.Close(ctx)
 		err = conn.QueryRow(ctx, `
-			select current_setting('max_connections')::int, count(*)
-			from pg_stat_activity
-			where backend_type = 'client backend' and pid <> pg_backend_pid()`).Scan(&allowed, &open)
+			select current_setting('max_connections')::int, coalesce(sum(numbackends), 0)::int - 1
+			from pg_stat_database`).Scan(&allowed, &open)
 	}
 	if err != nil {
-		return reason + fmt.Sprintf("Reading the server's max_connections and its open client backends failed too: %v", err)
+		return reason + fmt.Sprintf("Reading the server's max_connections and the backends connected to its databases failed too: %v", err)
 	}
-	return reason + fmt.Sprintf("The server allows max_connections=%d and has %d client backends open now "+
-		"(pg_stat_activity), while %d other Dispatch process(es) of this test binary run, each of which may "+
+	return reason + fmt.Sprintf("The server allows max_connections=%d and has %d backends connected to its databases now "+
+		"(pg_stat_database), while %d other Dispatch process(es) of this test binary run, each of which may "+
 		"open %d (store.ConnectionsPerProcess). The connection ceiling check counts only those processes; "+
 		"the rest are this binary's own pools and the server's other clients. Free the server's "+
 		"connections, or raise max_connections.",

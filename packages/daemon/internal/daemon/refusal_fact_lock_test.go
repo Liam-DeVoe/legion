@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -206,9 +208,8 @@ func holdFactLock(t *testing.T, pool *store.Pool) pgx.Tx {
 func factLockWaited(pool *store.Pool) bool {
 	return testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
 		var waiting int
-		err := pool.QueryRow(context.Background(), `select count(*) from pg_locks
-			where locktype = 'advisory' and not granted
-			  and database = (select oid from pg_database where datname = current_database())`).Scan(&waiting)
+		err := pool.QueryRow(context.Background(), `select count(*) from `+lockread.Locks+` l
+			where l.locktype = 'advisory' and not l.granted`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 }

@@ -11,6 +11,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
@@ -481,15 +483,14 @@ func TestTheBootOfAPausedProjectStopsALiveClaimOfAnotherProjectsIssue(t *testing
 }
 
 // waitingOnThePauseLock is whether a backend waits for issue's pause lock (store.LockIssueForPause),
-// read by its two keys in pg_locks.
+// read by its two keys in lockread.Locks.
 func waitingOnThePauseLock(t *testing.T, pool *store.Pool, issue string) bool {
 	t.Helper()
 	var waiting bool
-	if err := pool.QueryRow(context.Background(), `select exists (select 1 from pg_locks
-		where locktype = 'advisory' and not granted and objsubid = 2
-		and database = (select oid from pg_database where datname = current_database())
-		and classid = hashtext('legion.pause.issue')::oid and objid = hashtext($1)::oid)`, issue).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_locks: %v", err)
+	if err := pool.QueryRow(context.Background(), `select exists (select 1 from `+lockread.Locks+` l
+		where l.locktype = 'advisory' and not l.granted and l.objsubid = 2
+		and l.classid = hashtext('legion.pause.issue')::oid and l.objid = hashtext($1)::oid)`, issue).Scan(&waiting); err != nil {
+		t.Fatalf("read lockread.Locks: %v", err)
 	}
 	return waiting
 }
@@ -499,9 +500,9 @@ func waitingOnThePauseLock(t *testing.T, pool *store.Pool, issue string) bool {
 func waitingOnARowLock(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
 	var waiting bool
-	if err := pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+	if err := pool.QueryRow(context.Background(), `select exists (select 1 from `+lockread.Activity+` a
+		where a.wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
+		t.Fatalf("read lockread.Activity: %v", err)
 	}
 	return waiting
 }

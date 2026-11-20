@@ -213,7 +213,7 @@ func TestHorizonReachesTheNewestIDAfterAStallLongerThanThePendingList(t *testing
 // must still leave the reader its horizon.
 func TestHorizonStallWarningNamesTheHolderAndNeverFailsSafe(t *testing.T) {
 	ctx := context.Background()
-	db := &scriptedHorizonDB{holder: func(...any) error { return errors.New("pg_stat_activity unavailable") }}
+	db := &scriptedHorizonDB{holder: func(...any) error { return errors.New("the server's activity view is unavailable") }}
 	for i := range 4 {
 		db.script = append(db.script, scriptedObservation{newest: 5, xmin: 10, xid: uint64(20 + i)})
 	}

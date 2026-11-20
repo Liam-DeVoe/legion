@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -280,8 +282,8 @@ func holdSerializerThenLock(t *testing.T, store *Store, lock string, step func()
 	go func() { done <- step() }()
 	if !testwait.Holds(5*time.Second, 20*time.Millisecond, func() bool {
 		var waiting int
-		if err := store.Pool().QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'`).Scan(&waiting); err != nil {
+		if err := store.Pool().QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.wait_event = 'advisory'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		return waiting > 0

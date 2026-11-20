@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The broker's set is numbered 1 to N with none missing; pgmigratetest.CheckNumberedOneToN says
@@ -281,7 +282,7 @@ func TestMigrateReleasesTheVersionTablesAlterLockBeforeItsMigrations(t *testing.
 				t.Fatalf("create the version table: %v", err)
 			}
 			set := fstest.MapFS{"migrations/0001_lock_probe.up.sql": {Data: []byte(
-				"create table lock_probe as select count(*) as held from pg_locks where relation = 'broker_schema_migrations'::regclass and mode = 'AccessExclusiveLock' and granted")}}
+				"create table lock_probe as select count(*) as held from " + lockread.Locks + " l where l.relation = 'broker_schema_migrations'::regclass and l.mode = 'AccessExclusiveLock' and l.granted")}}
 			if err := s.migrate(ctx, set); err != nil {
 				t.Fatalf("migrate: %v", err)
 			}

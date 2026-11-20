@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
@@ -221,8 +222,8 @@ func waitForAsksQueryLock(t *testing.T, database *store.Store) {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*)
-			from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like '%from asks%'
+			from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.query like '%from asks%'
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect asks query lock: %v", err)
 		}

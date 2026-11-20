@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // A writer of this build beside a writer of an earlier build. That build serialises an owner's
@@ -96,7 +97,7 @@ func runEarlierBuildRace(t *testing.T, fixture itemRowFixture, race earlierBuild
 			answer.Code, answer.Body.String())
 	}
 	var waitingOn string
-	if err := fixture.database.Pool.QueryRow(ctx, `select query from pg_stat_activity where pid = $1`, pid).Scan(&waitingOn); err != nil {
+	if err := fixture.database.Pool.QueryRow(ctx, `select a.query from `+lockread.Activity+` a where a.pid = $1`, pid).Scan(&waitingOn); err != nil {
 		t.Fatal(err)
 	}
 	race.meanwhile(t, holder)
@@ -334,7 +335,7 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 					t.Errorf("%s went through in %s while this build's PATCH, which read no earlier build in the fleet, was between its owner lock and its write; want it to wait for that PATCH (the owner lock gate)",
 						arrival.name, time.Since(began).Round(time.Millisecond))
 				default:
-					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(pg_blocking_pids($1))`, arrivalPID, pid).Scan(&waited); err != nil {
+					if err := fixture.database.Pool.QueryRow(ctx, `select $2::integer = any(`+lockread.BlockingPIDs("$1")+`)`, arrivalPID, pid).Scan(&waited); err != nil {
 						t.Fatal(err)
 					}
 					if !waited {
@@ -420,15 +421,15 @@ func TestAnEarlierBuildsWriteAfterItArrivesBesideAWriteInFlightIsKept(t *testing
 	}
 }
 
-// gateHeldBy is the owner lock gate as backend pid holds or waits for it, by pg_locks: its mode
+// gateHeldBy is the owner lock gate as backend pid holds or waits for it, by lockread.Locks: its mode
 // ("ShareLock", "ExclusiveLock"; "" when pid neither holds nor waits for it) and whether it is
 // granted.
 func gateHeldBy(t *testing.T, database *store.Store, pid uint32) (mode string, granted bool) {
 	t.Helper()
 	err := database.Pool.QueryRow(context.Background(), `
-		select mode, granted from pg_locks
-		where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
-		  and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2 and pid = $3`,
+		select l.mode, l.granted from `+lockread.Locks+` l
+		where l.locktype = 'advisory'
+		  and l.classid::bigint = $1 and l.objid::bigint = $2 and l.objsubid = 2 and l.pid = $3`,
 		store.OwnerLockGateNamespace, store.OwnerLockGateKey, pid).Scan(&mode, &granted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false

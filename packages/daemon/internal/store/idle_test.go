@@ -9,6 +9,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockread"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -652,10 +654,10 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 func waitingOnTheSerializer(t *testing.T, st *Store) bool {
 	t.Helper()
 	var waiting bool
-	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-		where datname = current_database() and pid <> pg_backend_pid()
-		and wait_event_type = 'Lock' and wait_event = 'advisory')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from `+lockread.Activity+` a
+		where a.pid <> pg_backend_pid()
+		and a.wait_event_type = 'Lock' and a.wait_event = 'advisory')`).Scan(&waiting); err != nil {
+		t.Fatalf("read lockread.Activity: %v", err)
 	}
 	return waiting
 }

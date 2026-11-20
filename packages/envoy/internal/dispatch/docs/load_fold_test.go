@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // A load of a log within foldBufferBytes reads its rows, ends its transaction and folds them
@@ -236,8 +237,8 @@ func idleInTransaction(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var sessions int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and state = 'idle in transaction'
+		select count(*) from `+lockread.Activity+` a
+		where a.state = 'idle in transaction'
 	`).Scan(&sessions); err != nil {
 		t.Fatalf("count the sessions idle in a transaction: %v", err)
 	}

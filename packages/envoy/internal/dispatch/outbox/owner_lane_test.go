@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // laterEvent appends another human message on an issue routedEvent already seeded, so that an
@@ -381,8 +382,8 @@ func TestASettleWaitingOnTheOwnerLockDoesNotFailTheBatchBesideIt(t *testing.T) {
 	waitFor(t, 10*time.Second, "the settle waiting on the comment owner's lock", func() bool {
 		var waiting int
 		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("read the lock waiters: %v", err)
 		}

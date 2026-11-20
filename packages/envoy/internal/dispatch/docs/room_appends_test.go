@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // A browser's keystrokes reach the store through the room's persistence, one call per update
@@ -1150,7 +1151,7 @@ func TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection(t *testing.
 	}
 	waitFor(t, roomWait(t), "the backend of the append's connection to end with it", func() bool {
 		var running bool
-		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from pg_stat_activity where pid = $1)`, backend.Load()).Scan(&running); err != nil {
+		if err := database.Pool.QueryRow(ctx, `select exists (select 1 from `+lockread.Activity+` a where a.pid = $1)`, backend.Load()).Scan(&running); err != nil {
 			t.Fatalf("read the state of the append backend: %v", err)
 		}
 		return !running

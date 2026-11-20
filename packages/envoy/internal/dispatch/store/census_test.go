@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 var censusBase = fstest.MapFS{
@@ -848,7 +849,7 @@ func TestCensusRefusesAWALSenderHoldingALockInATransaction(t *testing.T) {
 	senderPID := sender.PID()
 	var backendType, state string
 	var noStart bool
-	if err := store.Pool.QueryRow(ctx, "select backend_type, state, xact_start is null from pg_stat_activity where pid = $1", senderPID).Scan(&backendType, &state, &noStart); err != nil {
+	if err := store.Pool.QueryRow(ctx, "select a.backend_type, a.state, a.xact_start is null from "+lockread.Activity+" a where a.pid = $1", senderPID).Scan(&backendType, &state, &noStart); err != nil {
 		t.Fatal(err)
 	}
 	if backendType != "walsender" || state != "idle in transaction" || !noStart {
@@ -1342,7 +1343,7 @@ func TestCensusReadsTheAgeOfAHolderOfItsOwnRoleWhoseTransactionBeganDuringTheCen
 	deadline := fataltest.BeforeTheBinaryDeadline(t)
 	for {
 		var waiting bool
-		if err := store.Pool.QueryRow(ctx, "select exists (select from pg_locks where relation = 'blocker'::regclass and not granted and database = (select oid from pg_database where datname = current_database()))").Scan(&waiting); err != nil {
+		if err := store.Pool.QueryRow(ctx, "select exists (select from "+lockread.Locks+" l where l.relation = 'blocker'::regclass and not l.granted)").Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}
 		if waiting {

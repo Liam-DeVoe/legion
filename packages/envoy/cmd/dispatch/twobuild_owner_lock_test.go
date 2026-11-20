@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // ───── one owner's writers across the two builds ───────────────────────────
@@ -201,8 +202,8 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 	deadline := time.Now().Add(within)
 	for {
 		rows, err := database.Pool.Query(ctx, `
-			select pid, query from pg_stat_activity
-			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
+			select a.pid, a.query from `+lockread.Activity+` a
+			where a.application_name = $1 and a.wait_event_type = 'Lock'`, application)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -272,12 +273,12 @@ func answerWithin(t *testing.T, answered <-chan httpAnswer, within time.Duration
 	}
 }
 
-// awaitedLockType is the type of the lock the backend pid waits on (pg_locks.locktype): advisory
+// awaitedLockType is the type of the lock the backend pid waits on (lockread.Locks' locktype): advisory
 // for an owner lock, tuple or transactionid for a row another transaction holds.
 func awaitedLockType(t *testing.T, database *store.Store, pid uint32) string {
 	t.Helper()
 	var lockType string
-	if err := database.Pool.QueryRow(context.Background(), `select locktype from pg_locks where pid = $1 and not granted`, pid).Scan(&lockType); err != nil {
+	if err := database.Pool.QueryRow(context.Background(), `select l.locktype from `+lockread.Locks+` l where l.pid = $1 and not l.granted`, pid).Scan(&lockType); err != nil {
 		t.Fatalf("read the lock backend %d waits on: %v", pid, err)
 	}
 	return lockType
@@ -433,11 +434,11 @@ func gateWaiter(t *testing.T, database *store.Store, blocker uint32) (uint32, st
 	var query string
 	err := database.Pool.QueryRow(context.Background(), `
 		select activity.pid, activity.query
-		from pg_stat_activity activity join pg_locks lock on lock.pid = activity.pid
-		where activity.datname = current_database() and activity.application_name = $1
+		from `+lockread.Activity+` activity join `+lockread.Locks+` lock on lock.pid = activity.pid
+		where activity.application_name = $1
 		  and lock.locktype = 'advisory' and not lock.granted and lock.mode = 'ExclusiveLock'
 		  and lock.classid::bigint = $2 and lock.objid::bigint = $3 and lock.objsubid = 2
-		  and $4::integer = any(pg_blocking_pids(activity.pid))`,
+		  and $4::integer = any(`+lockread.BlockingPIDs("activity.pid")+`)`,
 		previousApplication, store.OwnerLockGateNamespace, store.OwnerLockGateKey, blocker).Scan(&pid, &query)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ""

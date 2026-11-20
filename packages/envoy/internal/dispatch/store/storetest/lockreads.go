@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // pg_locks holds every lock of every database on the server, while a lock is taken within one
@@ -23,13 +25,13 @@ import (
 // test's waiter, or names another test's holder, as its own: the API's upload lock probe once
 // named another test's spec settlement as the holder of its issue's owner lock, and failed.
 //
-// Waiting and Holders are the reads that keep to the database they run in, of a Lock that names
-// what they look for. Hold, HoldOn and Queue plant that same Lock in a database a test names,
-// another clone of its own (Open) among them, and ConnectInListingOrder opens the connections a
-// test needs when the order the server lists holders in matters, so a test shows its read counts
-// its own database's lock and not another's. internal/textcheck's lock_reads_test.go refuses a
-// read of pg_locks or pg_stat_activity in test code whose query block keeps to no database or
-// backend of its own, as that test's comment spells out, with what it cannot see.
+// Waiting and Holders are the reads, of a Lock that names what they look for, that keep to the
+// database they run in: they read lockread's Locks and Activity, which keep their rows to it. Hold,
+// HoldOn and Queue plant that same Lock in a database a test names, another clone of its own (Open)
+// among them, and ConnectInListingOrder opens the connections a test needs when the order the server
+// lists holders in matters, so a test shows its read counts its own database's lock and not
+// another's. Every read of lock or session state here goes through lockread, as internal/textcheck's
+// lock_reads_test.go requires of all test code.
 //
 // Every call here to the server but one has a deadline, each derived from what the call waits for:
 // answerWait for a call that waits for no lock, holdWait for HoldOn's lock and queueWait for
@@ -39,9 +41,6 @@ import (
 // One wait has no deadline, by design: Queue's waiter asks for its lock until it is cancelled, by
 // the end of its test's context or by Queue's cleanup, which cancels it before its connection
 // closes; that wait is the plant, and nothing waits on it.
-
-// thisDatabase keeps a read of pg_locks, aliased l, to the rows of the database it runs in.
-const thisDatabase = `l.database = (select oid from pg_database where datname = current_database())`
 
 // answerWait bounds a call here that waits for no lock, only for the server to answer it:
 // opening a connection, and reading pg_locks or pg_stat_activity, which takes no lock a test can
@@ -138,12 +137,13 @@ func OwnerLock(owner store.Owner) Lock {
 }
 
 // Waiting counts the backends of the database pool reads that wait for lock: its ungranted rows
-// in pg_locks, of that database alone. It waits for the answer at most answerWait, within ctx.
+// in pg_locks, of that database alone (lockread.Locks). It waits for the answer at most
+// answerWait, within ctx.
 func Waiting(ctx context.Context, pool *store.Pool, lock Lock) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, answerWait)
 	defer cancel()
 	var waiting int
-	if err := pool.QueryRow(ctx, `select count(*) from pg_locks l where not l.granted and `+thisDatabase+` and (`+lock.match+`)`, lock.args...).Scan(&waiting); err != nil {
+	if err := pool.QueryRow(ctx, `select count(*) from `+lockread.Locks+` l where not l.granted and (`+lock.match+`)`, lock.args...).Scan(&waiting); err != nil {
 		return 0, fmt.Errorf("count the waiters on %s, waiting at most %s for the answer: %w", lock, answerWait, err)
 	}
 	return waiting, nil
@@ -197,8 +197,8 @@ type querier interface {
 func readHolders(ctx context.Context, db querier, lock Lock) ([]LockHolder, error) {
 	rows, err := db.Query(ctx, `
 		select a.pid, a.state, a.xact_start, a.query
-		from pg_locks l join pg_stat_activity a on a.pid = l.pid
-		where l.granted and a.pid <> pg_backend_pid() and `+thisDatabase+` and (`+lock.match+`)
+		from `+lockread.Locks+` l join `+lockread.Activity+` a on a.pid = l.pid
+		where l.granted and a.pid <> pg_backend_pid() and (`+lock.match+`)
 		order by a.pid
 	`, lock.args...)
 	if err != nil {
@@ -304,9 +304,11 @@ func holdersBeside(t testing.TB, conn *pgx.Conn, lock Lock) string {
 // which no test decides and which can run high or low for a while. So it opens one connection to
 // each in turn, the two in alternating order, keeps them all open while it looks (a slot closed
 // would be handed out again), and answers the earliest-listed connection to first and the
-// latest-listed one to second once the first is listed before the second, closing the others. A
-// connection whose backend has gone from the listing is dead, and it fails t naming that backend.
-// It fails t after listingTries rounds.
+// latest-listed one to second once the first is listed before the second, closing the others.
+// Each database's slots are read in that database (lockread.Slots), and a slot's number is its
+// backend's while the backend lives, so the two reads compare. A connection whose backend has gone
+// from the listing is dead, and it fails t naming that backend. It fails t after listingTries
+// rounds.
 //
 // The listing order is not the order of the backends' process ids, which rise as connections
 // open: in a run of slots handed out high to low, every connection opened later is listed earlier
@@ -328,11 +330,18 @@ func ConnectInListingOrder(t testing.TB, first, second *store.Store) (*pgx.Conn,
 			firsts = append(firsts, connect(t, first))
 		}
 		all := append(slices.Clone(firsts), seconds...)
-		ctx, cancel := context.WithTimeout(t.Context(), answerWait)
-		positions, err := listingPositions(ctx, first.Pool, all)
-		cancel()
-		if err != nil {
-			t.Fatalf("read where the server lists the connections' backends, waiting at most %s: %v", answerWait, err)
+		positions := map[*pgx.Conn]int64{}
+		for _, side := range []struct {
+			database *store.Store
+			conns    []*pgx.Conn
+		}{{first, firsts}, {second, seconds}} {
+			ctx, cancel := context.WithTimeout(t.Context(), answerWait)
+			slots, err := listingPositions(ctx, side.database.Pool, side.conns)
+			cancel()
+			if err != nil {
+				t.Fatalf("read where the server lists the connections' backends, waiting at most %s: %v", answerWait, err)
+			}
+			maps.Copy(positions, slots)
 		}
 		for _, conns := range []struct {
 			database string
@@ -340,7 +349,7 @@ func ConnectInListingOrder(t testing.TB, first, second *store.Store) (*pgx.Conn,
 		}{{"first", firsts}, {"second", seconds}} {
 			for _, conn := range conns.conns {
 				if positions[conn] == 0 {
-					t.Fatalf("backend %d, of a connection opened to the %s database, is gone from the server's listing (pg_stat_get_activity) in round %d: its connection is dead, so no order holds on it", conn.PgConn().PID(), conns.database, round)
+					t.Fatalf("backend %d, of a connection opened to the %s database, is gone from the server's listing (lockread.Slots) in round %d: its connection is dead, so no order holds on it", conn.PgConn().PID(), conns.database, round)
 				}
 			}
 		}
@@ -397,7 +406,7 @@ func Queue(t testing.TB, database *store.Store, lock Lock, holding ...Lock) uint
 	defer stop()
 	for {
 		var waiting bool
-		if err := database.Pool.QueryRow(read, `select exists (select 1 from pg_locks where pid = $1 and not granted)`, int32(pid)).Scan(&waiting); err != nil {
+		if err := database.Pool.QueryRow(read, `select exists (select 1 from `+lockread.Locks+` l where l.pid = $1 and not l.granted)`, int32(pid)).Scan(&waiting); err != nil {
 			t.Fatalf("read whether backend %d waits for %s, waiting at most %s for it to: %v", pid, lock, queueWait, err)
 		}
 		if waiting {
@@ -432,18 +441,16 @@ func closeWithin(conn *pgx.Conn) {
 	_ = conn.Close(ctx)
 }
 
-// listingPositions is where pg_stat_activity lists each of conns' backends: the order of the
-// server's backend slots, which pg_stat_get_activity reads them in, counted from 1 by its
-// ordinality, which numbers every backend the function lists before the filter keeps conns'. A
-// backend that is gone is not in the answer, so its position reads 0.
+// listingPositions is where the server lists each of conns' backends, read in pool's database: the
+// number of its backend's slot (lockread.Slots), in whose order pg_stat_activity lists every
+// database's backends. A backend that is gone, or is not of pool's database, is not in the answer,
+// so its position reads 0.
 func listingPositions(ctx context.Context, pool *store.Pool, conns []*pgx.Conn) (map[*pgx.Conn]int64, error) {
 	pids := make([]int32, len(conns))
 	for i, conn := range conns {
 		pids[i] = int32(conn.PgConn().PID())
 	}
-	rows, err := pool.Query(ctx, `
-		select pid, ordinality from pg_stat_get_activity(null) with ordinality where pid = any($1)
-	`, pids)
+	rows, err := pool.Query(ctx, `select s.pid, s.slot from `+lockread.Slots+` s where s.pid = any($1)`, pids)
 	if err != nil {
 		return nil, err
 	}

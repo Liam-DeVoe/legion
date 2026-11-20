@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 const (
@@ -729,8 +730,8 @@ func waitForLockWait(t *testing.T, ctx context.Context, st *store.Store, like st
 		default:
 		}
 		var waiting int
-		if err := st.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like $1`, like).Scan(&waiting); err != nil {
+		if err := st.Pool.QueryRow(ctx, `select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.query like $1`, like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The pool refuses a second connection to a caller that already holds one of its transactions:
@@ -517,7 +518,7 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 			t.Fatalf("round %d: observation with the shared pool fully acquired: %v", round, err)
 		}
 		var backends int
-		if err := horizon.QueryRow(waitCtx, "select count(*) from pg_stat_activity").Scan(&backends); err != nil {
+		if err := horizon.QueryRow(waitCtx, "select count(*) from "+lockread.Activity+" a").Scan(&backends); err != nil {
 			cancel()
 			t.Fatalf("round %d: diagnosis read with the shared pool fully acquired: %v", round, err)
 		}

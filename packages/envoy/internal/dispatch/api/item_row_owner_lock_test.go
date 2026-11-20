@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The item-writer census (item_writer_census_test.go) is a map of names: it catches a writer of a
@@ -296,7 +297,7 @@ func holdsTransactionID(t *testing.T, holder pgx.Tx, pid uint32) bool {
 	var held bool
 	if err := holder.QueryRow(context.Background(), `
 		select exists (
-			select 1 from pg_locks where pid = $1 and locktype = 'transactionid' and granted
+			select 1 from `+lockread.Locks+` l where l.pid = $1 and l.locktype = 'transactionid' and l.granted
 		)
 	`, pid).Scan(&held); err != nil {
 		t.Fatalf("read the writer's transaction id: %v", err)

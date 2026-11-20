@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // hubRig is a delivery hub on the API test server: the handler a test writes through, the store
@@ -1067,7 +1068,7 @@ func terminateListener(t *testing.T, database *store.Store, dials *listenerDials
 		var ended []int32
 		if err := database.Pool.QueryRow(context.Background(), `
 			with listener as materialized (
-				select pid from pg_stat_activity where pid = any($1) and datname = current_database()
+				select a.pid from `+lockread.Activity+` a where a.pid = any($1)
 			)
 			select coalesce(array_agg(pid), '{}') from listener where pg_terminate_backend(pid)
 		`, pids).Scan(&ended); err != nil {
@@ -1086,14 +1087,14 @@ func terminateListener(t *testing.T, database *store.Store, dials *listenerDials
 		for {
 			var left int
 			if err := database.Pool.QueryRow(context.Background(),
-				`select count(*) from pg_stat_activity where pid = any($1)`, ended).Scan(&left); err != nil {
+				`select count(*) from `+lockread.Activity+` a where a.pid = any($1)`, ended).Scan(&left); err != nil {
 				t.Fatalf("read whether the listener's backend has exited: %v", err)
 			}
 			if left == 0 {
 				break
 			}
 			if time.Now().After(deadline) {
-				t.Fatalf("the listener's terminated backends %v are still in pg_stat_activity 5s later", ended)
+				t.Fatalf("the listener's terminated backends %v are still in lockread.Activity 5s later", ended)
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
@@ -1798,7 +1799,7 @@ func waitListening(t *testing.T, database *store.Store, what string, dials *list
 		pids := dials.pids()
 		var count int
 		if err := database.Pool.QueryRow(context.Background(),
-			`select count(*) from pg_stat_activity where pid = any($1) and query like 'listen %'`, pids,
+			`select count(*) from `+lockread.Activity+` a where a.pid = any($1) and a.query like 'listen %'`, pids,
 		).Scan(&count); err != nil {
 			t.Fatalf("count the backends of %s: %v", what, err)
 		}

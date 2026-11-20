@@ -335,14 +335,14 @@ func TestLoadRefusesACensusWithNoMigrationOneThatIsNotASelectAndOneThatCallsAFor
 		"terminates a backend": {
 			set: fstest.MapFS{
 				"migrations/0001_first.up.sql":     {Data: []byte(first)},
-				"migrations/0001_first.census.sql": {Data: []byte("select count(*) from (select pg_terminate_backend(pid) from pg_stat_activity) t")},
+				"migrations/0001_first.census.sql": {Data: []byte("select count(*) from (select pg_terminate_backend(pg_backend_pid())) t")},
 			},
 			want: "census 0001_first.census.sql: a census may not call pg_terminate_backend",
 		},
 		"cancels a backend": {
 			set: fstest.MapFS{
 				"migrations/0001_first.up.sql":     {Data: []byte(first)},
-				"migrations/0001_first.census.sql": {Data: []byte("select count(*) from (select pg_cancel_backend(pid) from pg_stat_activity) t")},
+				"migrations/0001_first.census.sql": {Data: []byte("select count(*) from (select pg_cancel_backend(pg_backend_pid())) t")},
 			},
 			want: "census 0001_first.census.sql: a census may not call pg_cancel_backend",
 		},

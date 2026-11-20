@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // These tests hold an API transaction open between its live document write and a forced
@@ -544,8 +545,8 @@ func (f *heldWriteFixture) waitForLockWaiter(t *testing.T) {
 	for {
 		var waiting int
 		if err := f.probe.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}

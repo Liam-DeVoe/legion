@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/lockread"
 )
 
 func TestMain(m *testing.M) { os.Exit(Main(m)) }
@@ -52,7 +54,7 @@ func backendWALBytes(t *testing.T, conn *pgxpool.Conn) int64 {
 		t.Fatalf("force the backend's statistics flush: %v", err)
 	}
 	var written int64
-	if err := conn.QueryRow(ctx, "select wal_bytes::bigint from pg_stat_get_backend_wal(pg_backend_pid())").Scan(&written); err != nil {
+	if err := conn.QueryRow(ctx, "select w.wal_bytes::bigint from "+lockread.BackendWAL("pg_backend_pid()")+" w").Scan(&written); err != nil {
 		t.Fatalf("read the backend's write-ahead log: %v", err)
 	}
 	return written

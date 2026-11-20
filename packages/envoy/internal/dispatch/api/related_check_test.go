@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // relatedOwnerKeys is the issue each related item stands for, in order.
@@ -732,9 +733,9 @@ func TestRelatedCheckRecordBlockedPastItsSecondIsWrittenOnceTheLockIsReleased(t 
 	poll("the first attempt's insert cancelled", func() bool {
 		var waiting bool
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select from pg_stat_activity
-			 where datname = current_database() and state = 'active' and pid <> pg_backend_pid()
-			   and query like '%insert into related_checks%' and query_start < $1)
+			select exists (select from `+lockread.Activity+` a
+			 where a.state = 'active' and a.pid <> pg_backend_pid()
+			   and a.query like '%insert into related_checks%' and a.query_start < $1)
 		`, answered.Add(-relatedRecordTimeout/2)).Scan(&waiting); err != nil {
 			t.Fatalf("read the waiting inserts: %v", err)
 		}

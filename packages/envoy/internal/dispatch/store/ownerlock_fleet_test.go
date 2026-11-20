@@ -14,6 +14,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The owner lock beside an earlier build (OwnerLockProtocol). A build before this one serialises
@@ -166,15 +168,15 @@ func hasLegacyMark(t *testing.T, s *Store) bool {
 	return marked
 }
 
-// gateLock is the owner lock gate as backend pid holds or waits for it, by pg_locks: its mode
+// gateLock is the owner lock gate as backend pid holds or waits for it, by lockread.Locks: its mode
 // ("ShareLock", "ExclusiveLock"; "" when pid neither holds nor waits for it) and whether it is
 // granted.
 func gateLock(t *testing.T, s *Store, pid uint32) (mode string, granted bool) {
 	t.Helper()
 	err := s.Pool.QueryRow(context.Background(), `
-		select mode, granted from pg_locks
-		where locktype = 'advisory' and database = (select oid from pg_database where datname = current_database())
-		  and classid::bigint = $1 and objid::bigint = $2 and objsubid = 2 and pid = $3`,
+		select l.mode, l.granted from `+lockread.Locks+` l
+		where l.locktype = 'advisory'
+		  and l.classid::bigint = $1 and l.objid::bigint = $2 and l.objsubid = 2 and l.pid = $3`,
 		OwnerLockGateNamespace, OwnerLockGateKey, pid).Scan(&mode, &granted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false
@@ -656,8 +658,8 @@ func awaitRowLockWaiter(t *testing.T, s *Store, answered <-chan error) (error, b
 		}
 		var waiting int
 		if err := s.Pool.QueryRow(context.Background(), `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock'
 			  and query like '%= any($1::%order by%for %'`).Scan(&waiting); err != nil {
 			t.Fatal(err)
 		}

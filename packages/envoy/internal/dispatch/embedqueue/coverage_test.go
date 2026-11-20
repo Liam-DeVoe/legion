@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // The identities the coverage tests configure: one place's, and another's a row may carry from
@@ -1446,8 +1447,8 @@ func TestRunsCoveragePassIsNotRefusedWhileTheScanLoopHoldsACursor(t *testing.T) 
 	for {
 		var waiting int
 		if err := database.Pool.QueryRow(ctx, `
-			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'transactionid'`).Scan(&waiting); err != nil {
+			select count(*) from `+lockread.Activity+` a
+			where a.wait_event_type = 'Lock' and a.wait_event = 'transactionid'`).Scan(&waiting); err != nil {
 			t.Fatalf("count lock waiters: %v", err)
 		}
 		if waiting == 1 {

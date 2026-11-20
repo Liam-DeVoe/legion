@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // holdLock opens a transaction that runs lock and keeps it until the returned release runs, so a
@@ -54,16 +55,16 @@ func holdWith(t *testing.T, database *store.Store, what string, take func(pgx.Tx
 	return release
 }
 
-// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to
-// current_database() because one Postgres serves every test in the package.
+// lockWaiters counts the backends of this test's own database that wait on a lock. Scoped to it
+// (lockread.Activity) because one Postgres serves every test in the package.
 func lockWaiters(t *testing.T, database *store.Store) int {
 	t.Helper()
 	var waiting int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and pid <> pg_backend_pid()
+		select count(*) from `+lockread.Activity+` a
+		where a.wait_event_type = 'Lock' and a.pid <> pg_backend_pid()
 	`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read lockread.Activity: %v", err)
 	}
 	return waiting
 }

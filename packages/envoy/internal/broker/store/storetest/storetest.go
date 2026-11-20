@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/lockread"
 )
 
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
@@ -190,9 +191,9 @@ func LockWaitersBehind(t testing.TB, q Querier, pid uint32) []int32 {
 	t.Helper()
 	var waiting []int32
 	if err := q.QueryRow(context.Background(), `with recursive waiting(pid) as (
-			select pid from pg_stat_activity where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid))
+			select a.pid from `+lockread.Activity+` a where a.wait_event_type = 'Lock' and $1 = any(`+lockread.BlockingPIDs("a.pid")+`)
 			union
-			select a.pid from pg_stat_activity a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(pg_blocking_pids(a.pid))
+			select a.pid from `+lockread.Activity+` a, waiting w where a.wait_event_type = 'Lock' and w.pid = any(`+lockread.BlockingPIDs("a.pid")+`)
 		)
 		select coalesce(array_agg(pid order by pid), '{}') from waiting`, int32(pid)).Scan(&waiting); err != nil {
 		t.Fatalf("read the backends waiting behind %d: %v", pid, err)

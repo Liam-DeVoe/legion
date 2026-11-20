@@ -234,7 +234,7 @@ func TestPGStatementsWritesTheStepsStatementsAndItsLockWaits(t *testing.T) {
 			f.LockSamples, f.LockSampleFailures)
 	}
 	if !db.waitstartOn || f.LockWaitSource != "pg_locks.waitstart" {
-		t.Errorf("the lock waits say their length comes from %q, want pg_locks.waitstart, which this server's pg_locks has", f.LockWaitSource)
+		t.Errorf("the lock waits say their length comes from %q, want the lock view's waitstart, which this server's lock view has", f.LockWaitSource)
 	}
 	if len(f.LockWaits) != 2 {
 		t.Fatalf("the file holds %d lock waits, want the two the samples saw: %+v", len(f.LockWaits), f.LockWaits)
@@ -473,7 +473,7 @@ func TestPGLockWaitsQueryFollowsTheCatalogue(t *testing.T) {
 	}
 	for _, q := range []string{with, without} {
 		if strings.Contains(q, "pg_blocking_pids") {
-			t.Error("the lock read calls pg_blocking_pids, which takes exclusive access to the lock manager")
+			t.Error("the lock read calls the blocking-pids function, which takes exclusive access to the lock manager")
 		}
 	}
 }
