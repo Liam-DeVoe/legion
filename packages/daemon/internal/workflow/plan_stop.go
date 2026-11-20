@@ -209,57 +209,54 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 // new task keeps its counts of zero. The act is task_restarted, which the log line names: no row
 // of the table moves a held issue.
 //
-// A task that is done, or left the workflow with its issue, has nothing left to start, and the
-// store's move refuses neither state: each is refused here, before anything is written
-// (FinishedTask).
-func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) (*intake.Refusal, error) {
-	if refusal := intake.FinishedTask(issue.Key, w.Task, w.State, intake.RestartOfTask); refusal != nil {
-		return refusal, nil
-	}
+// Its callers hand it a stopped task, or the new task of a later version, waiting: a task held
+// for its stop is never done or left, since each write of done or left clears the issue's hold in
+// the same write (endTaskWithLeave, and the merge of an issue that awaits it).
+func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, reason string) error {
 	steps := w.steps()
 	if !w.Stored || len(steps) == 0 {
-		return nil, fmt.Errorf("restart task %s of %s: its line %v holds no first step", w.Task, issue.Key, w.Line)
+		return fmt.Errorf("restart task %s of %s: its line %v holds no first step", w.Task, issue.Key, w.Line)
 	}
 	if w.State != record.TaskWaiting {
 		counts, err := e.store.ReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		counts.Pass++
 		if err := e.store.PutReturnCounts(ctx, tx, issue.Key, issue.Generation, w.Task, counts); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	from, first := record.StandsAt(issue), steps[0]
 	status := PhaseStatus(first)
 	if status != issue.DispatchStatus {
 		if err := e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.DispatchStatus, "")); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if err := e.moveTask(ctx, tx, &issue, &w, first, record.TaskRunning); err != nil {
-		return nil, err
+		return err
 	}
 	issue.Hold, issue.Status = nil, status
 	if err := e.WriteIssue(ctx, tx, issue); err != nil {
-		return nil, err
+		return err
 	}
 	// The restart takes the issue out of held into a phase, which is a movement (the rule in
 	// dispatchIssue).
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
-		return nil, err
+		return err
 	}
 	e.logOnCommit(ctx, "workflow: a stopped task starts again at its first step", "issue", issue.Key, "tree", issue.Tree, "task", w.Task,
 		"act", "task_restarted", "from", from, "to", first, "reason", reason)
 	role := phase.RoleFor(first)
 	if err := e.clearHandoff(ctx, tx, issue.Key, role); err != nil {
-		return nil, err
+		return err
 	}
 	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return nil, e.start(ctx, tx, issue, w, role, func(at Standing) string {
+	return e.start(ctx, tx, issue, w, role, func(at Standing) string {
 		return task(issue, at, record.PhaseRow{}, pr, reason)
 	}, true)
 }

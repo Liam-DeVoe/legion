@@ -491,8 +491,7 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 	// from a phase stands at neither, which keeps the park and un-park of a lingering root on
 	// its new generation. A held child is untouched, and comes back through ReenterChild below.
 	if fact.Status == "todo" && claim.IsTreeRoot(issue.Key, issue.Tree) && issue.Phase == phase.Held && issue.Hold != nil && !issue.Readmittable() {
-		refusal, err := e.releaseHeldRoot(ctx, tx, *issue, fact)
-		return intake.Result{Refusal: refusal}, err
+		return intake.Result{}, e.releaseHeldRoot(ctx, tx, *issue, fact)
 	}
 	if fact.Status == "todo" && !claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return intake.Result{}, e.ReenterChild(ctx, tx, *issue, fact)
@@ -531,45 +530,39 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 //
 // A hold of the root's plan (planHold) is not a failure a retry answers. A todo on a root held for
 // its stopped task ends the stop: a task whose work ran starts again at its first step
-// (restartTask), and its refusal of a task done or left is this todo's answer, with the observation
-// kept so admission records no todo over the hold; a task stopped before its first step went out
-// waits for that step again (waitForFirstStep). A todo on a root held for the issues beneath it
-// leaves the hold, since the last of them to leave starts the retro, keeps the observation, and
-// logs why.
-func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (*intake.Refusal, error) {
+// (restartTask), and a task stopped before its first step went out waits for that step again
+// (waitForFirstStep). A todo on a root held for the issues beneath it leaves the hold, since the
+// last of them to leave starts the retro, keeps the observation, and logs why.
+func (e *Engine) releaseHeldRoot(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) error {
 	released, err := e.observedIssue(ctx, tx, issue, fact)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	w, err := e.walk(ctx, tx, released)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	switch {
 	case !planHold(issue, w.Stored):
-	case issue.Hold.Reason == record.HoldForChildren:
+	case record.HeldForChildren(issue):
 		beneath, err := e.openBeneath(ctx, tx, issue)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		e.logOnCommit(ctx, "workflow: a todo leaves the hold of a root that waits for the issues beneath it; the last of them to leave starts its retro",
 			"issue", issue.Key, "beneath", beneath)
-		return nil, e.WriteIssue(ctx, tx, released)
+		return e.WriteIssue(ctx, tx, released)
 	default:
 		if !w.Place.Started() {
-			return nil, e.waitForFirstStep(ctx, tx, released, w, restartReason)
+			return e.waitForFirstStep(ctx, tx, released, w, restartReason)
 		}
-		refusal, err := e.restartTask(ctx, tx, released, w, restartReason)
-		if err != nil || refusal == nil {
-			return nil, err
-		}
-		return refusal, e.WriteIssue(ctx, tx, released)
+		return e.restartTask(ctx, tx, released, w, restartReason)
 	}
 	ended, err := e.retryPhase(ctx, tx, released, issue.Hold.From, releaseReason, false)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return nil, e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
+	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(PhaseStatus(ended), fact.Status, ""))
 }
 
 // releaseReason is the daemon's own reason for that release, which the restarted role's task and

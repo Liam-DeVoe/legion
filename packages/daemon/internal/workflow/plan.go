@@ -229,8 +229,7 @@ func (e *Engine) rateRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, r
 // a run, which the roll-forward of a way back that left its reason finds, is a plain hold that a
 // retry releases.
 func planHold(issue record.Issue, stored bool) bool {
-	return stored && issue.Phase == phase.Held && issue.Hold != nil &&
-		(issue.Hold.Reason == record.HoldTaskStopped || issue.Hold.Reason == record.HoldForChildren)
+	return stored && (record.HeldFor(issue, record.HoldTaskStopped) || record.HeldForChildren(issue))
 }
 
 // planHoldRefusal is the answer to a release of issue's hold — the architect's retry or
@@ -247,7 +246,7 @@ func (e *Engine) planHoldRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil || !planHold(issue, w.Stored) {
 		return nil, err
 	}
-	if issue.Hold.Reason == record.HoldForChildren {
+	if record.HeldForChildren(issue) {
 		beneath, err := e.openBeneath(ctx, tx, issue)
 		if err != nil {
 			return nil, err
@@ -286,7 +285,7 @@ func (e *Engine) pastReportOf(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return noRunReported, err
 	case left:
 		return leftPhaseReported, nil
-	case issue.Hold != nil && issue.Hold.Reason == record.HoldTaskStopped && issue.Hold.From == reported:
+	case record.HeldFor(issue, record.HoldTaskStopped) && issue.Hold.From == reported:
 		w, err := e.walk(ctx, tx, issue)
 		if err != nil || !planHold(issue, w.Stored) {
 			return noRunReported, err

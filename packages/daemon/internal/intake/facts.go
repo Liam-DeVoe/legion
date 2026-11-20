@@ -1870,19 +1870,13 @@ const (
 	ChangeOfTask TaskAct = iota
 	// StopOfTask is the owner's stop of the task (stop_task).
 	StopOfTask
-	// RestartOfTask is a start of the task again at its first step: a person's todo on a root
-	// held for the stopped task, or a later version of the plan that changes the stopped task.
-	RestartOfTask
 )
 
 // words is what act does to a task, as the refusal says nothing of the task is left to do, and the
 // call that changed nothing.
 func (act TaskAct) words() (does, call string) {
-	switch act {
-	case StopOfTask:
+	if act == StopOfTask {
 		return "stop", "stop"
-	case RestartOfTask:
-		return "start again", "restart"
 	}
 	return "change", "plan"
 }
@@ -1892,8 +1886,7 @@ func (act TaskAct) words() (does, call string) {
 // has nothing of it left, and one that left the workflow with its issue before it was done is
 // never moved again, so each refuses every act with the one code, the code of a stop of a done
 // task. Every refusal of a finished task is made here, so the workflow judges the state once for
-// each act: a version of the plan (versionRefusal), the owner's stop (taskStopped) and a restart
-// (restartTask).
+// each act: a version of the plan (versionRefusal) and the owner's stop (taskStopped).
 func FinishedTask(issue, task, state string, act TaskAct) *Refusal {
 	var stands string
 	switch state {

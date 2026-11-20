@@ -59,10 +59,6 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 			Message: "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."}},
 		{"a version that changes a task that left the workflow", FinishedTask("LEGION-208", "a", record.TaskLeft, ChangeOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
 			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."}},
-		{"a restart of a task that is done", FinishedTask("LEGION-208", "a", record.TaskDone, RestartOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
-			Message: "task a of LEGION-208 is done, so nothing of it is left to start again. This restart changed nothing."}},
-		{"a restart of a task that left the workflow", FinishedTask("LEGION-208", "a", record.TaskLeft, RestartOfTask), Refusal{Status: http.StatusConflict, Code: "TASK_DONE",
-			Message: "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to start again. This restart changed nothing."}},
 		{"an issue that started before Legion took plans", PlanRefused([]plan.Refusal{StartedBeforePlans("LEGION-208")}), Refusal{Status: http.StatusConflict,
 			Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: LEGION-208 started its work before Legion took plans, " +
 				"so it runs the steps it started with to their end. This plan changed nothing.",
@@ -97,7 +93,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	// A task that is neither done nor left has its work still before it, so no act on it is
 	// refused TASK_DONE.
 	for _, state := range []string{record.TaskWaiting, record.TaskRunning, record.TaskStopped} {
-		for _, act := range []TaskAct{ChangeOfTask, StopOfTask, RestartOfTask} {
+		for _, act := range []TaskAct{ChangeOfTask, StopOfTask} {
 			if got := FinishedTask("LEGION-208", "a", state, act); got != nil {
 				t.Fatalf("FinishedTask of a task %s = %+v, want no refusal", state, got)
 			}

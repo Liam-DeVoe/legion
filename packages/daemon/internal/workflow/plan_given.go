@@ -178,7 +178,7 @@ func (e *Engine) writeVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 // the version in force.
 func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGiven, given givenVersion, written writtenVersion) error {
 	issue := *given.issue
-	ends := len(written.stopped) > 0 && planHold(issue, given.stored != nil) && issue.Hold.Reason == record.HoldTaskStopped
+	ends := len(written.stopped) > 0 && given.stored != nil && record.HeldFor(issue, record.HoldTaskStopped)
 	if !written.started && !ends {
 		return nil
 	}
@@ -198,16 +198,7 @@ func (e *Engine) afterVersion(ctx context.Context, tx pgx.Tx, fact intake.PlanGi
 	if !written.started {
 		return e.waitForFirstStep(ctx, tx, issue, w, reason)
 	}
-	refusal, err := e.restartTask(ctx, tx, issue, w, reason)
-	if err != nil {
-		return err
-	}
-	if refusal != nil {
-		// The version wrote its rows already, and restartTask refuses only a task that is done or
-		// left the workflow, which no task held stopped is.
-		return fmt.Errorf("start task %s of %s again after version %d of its plan: %s", w.Task, issue.Key, fact.Plan.Version, refusal.Message)
-	}
-	return nil
+	return e.restartTask(ctx, tx, issue, w, reason)
 }
 
 // waitsAtZero says whether a plan given at generation 0 for issue, which the daemon recorded after
