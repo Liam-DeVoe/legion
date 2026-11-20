@@ -250,6 +250,10 @@ fail() { printf 'FAIL %s: %s\n' "$check" "$*" >&2; exit 1; }
 # Every read a criterion is judged by, apart from the rig that produces what they read, so that
 # lib/answer-loop-reads.test.ts runs each of them over fixtures with no model and no services.
 . "$root/scripts/e2e/lib/answer-loop-reads.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+# Dispatch's own identity at the listener, as main's rigs that start both give it: a Dispatch that
+# presents none refuses every send for a `role:` route, a role mention among them (A3's thread leg).
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
 # Nothing the run starts inherits the operator's Dispatch bearer.
 unset DISPATCH_TOKEN
 
@@ -299,6 +303,7 @@ cleanup() {
   [ -z "${tmux_bin:-}" ] || kill_tmux_servers
   stop_pid "$dispatch_pid"
   stop_pid "$listener_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_tree "$asker_heartbeat_pid"
   stop_pid "$inbox_pid"
   stop_pid "$proxy_pid"
@@ -891,7 +896,7 @@ start_listener() {
   start_kept listener listener_keeper ENVOY_LISTEN_FD -- "${service_env[@]}" "HOME=$work/listener-home" \
     "ENVOY_API_TOKEN=$(cat "$work/envoy-token")" ENVOY_LISTEN_FD=3 "PORT={port}" ENVOY_LISTEN_HOST=127.0.0.1 \
     "ENVOY_MACHINE_ID=legion-e2eal-$$" ENVOY_WEBHOOKS=github "ENVOY_GITHUB_WEBHOOK_SECRET=$(cat "$work/github-webhook-secret")" \
-    "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" \
+    "ENVOY_REVIEWER_APP_ID=${review_app_id:-$default_review_app_id}" "${dispatch_identity_listener_env[@]}" \
     "NATS_URLS=nats://127.0.0.1:$port_nats" "$bin/envoy-listener"
   await_start listener "$listener_pid" 60 "the Envoy listener to answer /v1/sessions" \
     curl -fsS --max-time 5 -H "@$work/envoy-auth-header" "http://127.0.0.1:$port_listener/v1/sessions"
@@ -911,7 +916,8 @@ start_dispatch() {
     "DISPATCH_AGENT_TOKEN=$(cat "$work/dispatch-token")" "ENVOY_TOKEN=$(cat "$work/envoy-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_FD=3 DISPATCH_LISTEN_HOST=127.0.0.1 \
     "DISPATCH_PORT={port}" "DISPATCH_SERVER_URL=http://127.0.0.1:{port}" "${web[@]}" \
-    "NATS_URLS=nats://127.0.0.1:$port_nats" "ENVOY_URL=http://127.0.0.1:$port_listener" "$bin/envoy-dispatch"
+    "NATS_URLS=nats://127.0.0.1:$port_nats" "ENVOY_URL=http://127.0.0.1:$port_listener" "${dispatch_identity_dispatch_env[@]}" \
+    "$bin/envoy-dispatch"
   dispatch_base="http://127.0.0.1:$port_dispatch"
   await_start dispatch "$dispatch_pid" 120 "the scratch Dispatch server" \
     curl -fsS --max-time 5 "$dispatch_base/api/v1"
@@ -1623,6 +1629,9 @@ note "Postgres $pg_version (pid $pg_pid, port $port_pg) with pgvector $(pg_sql d
 start_nats
 start_proxy
 start_inbox
+# The issuer outlives every restart of the listener and Dispatch, A13's base binaries included: its
+# key lives in its memory alone, so each listener verifies Dispatch's token only while it runs.
+dispatch_identity_start
 start_listener "$work/branch"
 start_dispatch "$work/branch" dispatch
 # Every daemon of the run, the base commit's and the branch's in both passes, serves this one kept
