@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
 // IssueReleased is one idle release of an issue's pod as its issue_release outbox row names it:
@@ -371,9 +372,9 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // stored goes — when the run it released has moved on, the issue has left the workflow or its
 // tree lingers (each of which is a close's business, not a release's), when the tree's cleanup is
 // reserved, which deletes the Sandbox this release would, or when the pod went on working after
-// the mark: a claim started, resumed or holding a process now. It waits while one of the
-// release's own role stops is unfinished or a stored claim of the issue may still hold a
-// process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
+// the mark: a claim started, resumed or holding a process now. It waits while the release's own
+// workspace save or one of its role stops is unfinished, or a stored claim of the issue may still
+// hold a process. outOfWorkflow is the workflow's rule for a status that takes an issue out of it
 // (record.OutOfWorkflow), which the store does not restate; the gate itself is the one every
 // other path that acts on a released pod reads (pods.InWorkflowNotLingering), down to the
 // issue's own linger, which this read missed.
@@ -488,17 +489,29 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		if err != nil {
 			return err
 		}
-		if may {
-			decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
-			// The runtime takes the pod on this answer when it is the last read, and reads the
-			// store no more: the take goes on the mark in this same transaction, so an
-			// operator's take-over that comes after it is refused rather than landing on a claim
-			// whose pod is going (refuseOperatorTakeOver).
-			if release.Takes {
-				if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = $3 where project = $1 and issue = $2`,
-					project, release.Issue, release.Sandbox); err != nil {
-					return err
-				}
+		if !may {
+			return nil
+		}
+		// The release's own save is its issue_bundle row inside the mark's range, the range holds
+		// reads; a save below it is an earlier release's and holds no pod of this one.
+		var saving bool
+		if err := tx.QueryRow(ctx, `select exists (
+			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
+			release.Issue, mark.first, mark.last).Scan(&saving); err != nil {
+			return err
+		}
+		if saving {
+			return wait.Errorf("issue %s release waits for its workspace save", release.Issue)
+		}
+		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
+		// The runtime takes the pod on this answer when it is the last read, and reads the store
+		// no more: the take goes on the mark in this same transaction, so an operator's take-over
+		// that comes after it is refused rather than landing on a claim whose pod is going
+		// (refuseOperatorTakeOver).
+		if release.Takes {
+			if _, err := tx.Exec(ctx, `update issue_releases set taken_pod = $3 where project = $1 and issue = $2`,
+				project, release.Issue, release.Sandbox); err != nil {
+				return err
 			}
 		}
 		return nil
