@@ -7,6 +7,11 @@
  *   (`@legion/contracts/held-secrets`), so it is never printed, logged or written: every error
  *   `send` throws has the key, and each run of 10 or more of its characters, taken out of its
  *   message, its stack and its fields, whatever echoed it (a refusal that quotes the key it got).
+ * - `send(body, {headers})` sends `headers` with the body on every try: the `anthropic-*` headers
+ *   Oh My Pi sent beside it (its `anthropic-beta` names the betas that the body's fields need, and
+ *   the gateway answers 400 to such a body without it). Only `anthropic-*` names are taken, and a
+ *   name that can carry a key (`x-api-key`, `authorization`, any name holding `key`, `token`,
+ *   `secret`, `auth`, `cookie`, `credential` or `password`) is refused by name before any call.
  * - A 429 or a 5xx, a failed connection, a try past `timeoutMs` (its body read included; the try is
  *   ended) and a reply that does not read as a Messages API message are tried again, after the
  *   `retry-after` wait or the back-off (1 s, 2 s, 4 s, ...), up to GATEWAY_TRIES tries in all. Any
@@ -177,11 +182,40 @@ export interface GatewayOptions {
   readonly sleep?: Sleep;
 }
 
+/** What one `send` takes beside its body. */
+export interface SendOptions {
+  /** Headers sent with the body, such as the `anthropic-beta` Oh My Pi sent beside it, which the
+   *  body's fields need (adaptive thinking's `block_binding`, `context_management`,
+   *  `output_config.effort`). Only `anthropic-*` names; a name that can carry a key is refused. */
+  readonly headers?: Readonly<Record<string, string>>;
+}
+
 export interface Gateway {
   /** The reply to `body`. Rejects with `BudgetSpent` once the budget is reached. */
-  send(body: MessagesBody): Promise<Reply>;
+  send(body: MessagesBody, options?: SendOptions): Promise<Reply>;
   /** Every reply counted so far, as a copy. */
   spend(): Spend;
+}
+
+/** A header name that can carry a credential: the gateway signs each call with the key file's key
+ *  itself, and no other credential goes with a call. */
+const KEY_BEARING = /key|token|secret|auth|cookie|credential|password/i;
+/** The header names a caller may send: Anthropic's own. */
+const ANTHROPIC_HEADER = /^anthropic-[a-z0-9-]+$/i;
+
+/** Throws naming the first header of `headers` that is not sent with a call: one whose name can
+ *  carry a key, or one that is not an `anthropic-*` header. Never names a value. */
+function checkHeaders(headers: Readonly<Record<string, string>>): void {
+  for (const name of Object.keys(headers)) {
+    if (KEY_BEARING.test(name)) {
+      throw new Error(
+        `the header ${name} can carry a key, so it is not sent: the gateway signs each call with the key file's key itself`
+      );
+    }
+    if (!ANTHROPIC_HEADER.test(name)) {
+      throw new Error(`only anthropic-* headers are sent beside a body, not ${name}`);
+    }
+  }
 }
 
 /** The refusal of a call once the budget is reached. */
@@ -412,7 +446,8 @@ export function createGateway(options: GatewayOptions): Gateway {
     return spent;
   }
 
-  async function send(body: MessagesBody): Promise<Reply> {
+  async function send(body: MessagesBody, { headers = {} }: SendOptions = {}): Promise<Reply> {
+    checkHeaders(headers);
     const bodyPrice = prices[body.model];
     if (bodyPrice === undefined) {
       throw new Error(
@@ -438,6 +473,7 @@ export function createGateway(options: GatewayOptions): Gateway {
         url: baseUrl,
         key,
         body: text,
+        headers,
         fetch,
         sleep,
         tries: GATEWAY_TRIES,

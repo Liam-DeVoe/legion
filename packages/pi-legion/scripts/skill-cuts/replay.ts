@@ -11,13 +11,14 @@
  * and the body goes again with the reply and the answers added; at most `maxSkillRounds` times
  * (MAX_SKILL_ROUNDS). The first reply that holds no tool call, or any other tool call (a read of
  * another skill, a read of a path on disk, a read of a directory of the skill, any other tool), is
- * the judged step, and so is the reply after the last round, whatever it holds.
+ * the judged step, and so is the reply after the last round, whatever it holds. Every round goes
+ * with the same headers (`ReplayOptions.headers`), the ones Oh My Pi sent beside the body.
  */
 import { statSync } from "node:fs";
 import path from "node:path";
 import { type Arm, skillFile } from "./arms";
 import { skillReadFile } from "./cases";
-import type { ContentBlock, Gateway, MessagesBody, Reply, Spent } from "./gateway";
+import type { ContentBlock, Gateway, MessagesBody, Reply, SendOptions, Spent } from "./gateway";
 
 /** The most times a replay answers a reply's skill reads and sends again. */
 export const MAX_SKILL_ROUNDS = 3;
@@ -30,7 +31,10 @@ export interface Replayed {
   readonly usage: Spent[];
 }
 
-export interface ReplayOptions {
+/** How a replay runs: the most rounds of skill reads it answers, and the headers that go with the
+ *  body on every round (gateway.ts's `SendOptions`: the `anthropic-*` headers Oh My Pi sent beside
+ *  the captured body, whose betas its fields need). */
+export interface ReplayOptions extends SendOptions {
   readonly maxSkillRounds?: number;
 }
 
@@ -63,12 +67,12 @@ export async function replayOnce(
   body: MessagesBody,
   arm: Arm,
   gateway: Gateway,
-  { maxSkillRounds = MAX_SKILL_ROUNDS }: ReplayOptions = {}
+  { maxSkillRounds = MAX_SKILL_ROUNDS, headers }: ReplayOptions = {}
 ): Promise<Replayed> {
   const messages = [...body.messages];
   const usage: Spent[] = [];
   for (let rounds = 0; ; rounds += 1) {
-    const reply = await gateway.send({ ...body, messages: [...messages] });
+    const reply = await gateway.send({ ...body, messages: [...messages] }, { headers });
     usage.push(reply.spent);
     const calls = reply.message.content.filter((block) => block.type === "tool_use");
     const reads = calls.map((block) => skillRead(block, arm));

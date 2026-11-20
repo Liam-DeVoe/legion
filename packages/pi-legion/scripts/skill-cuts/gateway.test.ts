@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { MessagesApiError } from "../skill-scenarios/messages-api";
+import { MessagesApiError, postMessages } from "../skill-scenarios/messages-api";
 import type { Fetch } from "../skill-scenarios/production-dispatch";
 import {
   BudgetSpent,
@@ -57,6 +57,7 @@ function keyFileHolding(key: string): string {
 interface Sent {
   readonly url: string;
   readonly key: string | null;
+  readonly headers: Headers;
   readonly body: unknown;
   readonly signal: AbortSignal;
 }
@@ -72,9 +73,11 @@ function world(
   const fetch: Fetch = async (url, init) => {
     const signal = init.signal;
     if (!(signal instanceof AbortSignal)) throw new Error("the call carries no timeout signal");
+    const headers = new Headers(init.headers);
     const one = {
       url,
-      key: new Headers(init.headers).get("x-api-key"),
+      key: headers.get("x-api-key"),
+      headers,
       body: JSON.parse(String(init.body)),
       signal,
     };
@@ -142,6 +145,95 @@ test("posts the body to <base>/v1/messages with the key file's key and reads a s
     cache_read_input_tokens: 8076,
     cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 4836 },
   });
+});
+
+/** The `anthropic-*` headers Oh My Pi 18.18.6 sent beside a body at `--thinking low` (F2), as a
+ *  capture keeps them: the version, the betas its body's fields need, and one more. */
+const CAPTURED_HEADERS: Record<string, string> = Object.fromEntries(
+  Object.entries(
+    JSON.parse(readFileSync(path.join(TESTDATA, "F2-request-thinking-low.headers.json"), "utf8"))
+      .headers
+  ).filter((entry): entry is [string, string] => entry[0].startsWith("anthropic-"))
+);
+
+test("sends the anthropic-* headers given with the body, on every try", async () => {
+  expect(Object.keys(CAPTURED_HEADERS).sort()).toEqual([
+    "anthropic-beta",
+    "anthropic-dangerous-direct-browser-access",
+    "anthropic-version",
+  ]);
+  const { gateway, sent } = world((n) =>
+    n === 1 ? refusal(503, "overloaded_error", "busy") : f5("thinking")
+  );
+  await gateway.send(BODY, { headers: CAPTURED_HEADERS });
+  expect(sent).toHaveLength(2);
+  for (const one of sent) {
+    for (const [name, value] of Object.entries(CAPTURED_HEADERS)) {
+      expect(one.headers.get(name)).toBe(value);
+    }
+    expect(one.headers.get("content-type")).toBe("application/json");
+    expect(one.key).not.toBeNull();
+  }
+
+  // With none given, the call carries the API version and no beta.
+  const plain = world(() => f5("text"));
+  await plain.gateway.send(BODY);
+  expect(plain.sent[0]?.headers.get("anthropic-version")).toBe("2023-06-01");
+  expect(plain.sent[0]?.headers.get("anthropic-beta")).toBeNull();
+});
+
+test("refuses a header that can carry a key, or that is not anthropic-*, by name, before any call", async () => {
+  const secret = fixtureSecret("hdr");
+  const { gateway, sent } = world(() => f5("text"));
+  for (const name of [
+    "x-api-key",
+    "Authorization",
+    "anthropic-api-key",
+    "Cookie",
+    "x-auth-token",
+  ]) {
+    const error = await gateway
+      .send(BODY, { headers: { "anthropic-beta": "effort-2025-11-24", [name]: secret } })
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(Error);
+    expect(String(error)).toBe(
+      `Error: the header ${name} can carry a key, so it is not sent: the gateway signs each call with the key file's key itself`
+    );
+  }
+  const other = await gateway
+    .send(BODY, { headers: { "x-app": "cli" } })
+    .catch((caught: unknown) => caught);
+  expect(String(other)).toBe("Error: only anthropic-* headers are sent beside a body, not x-app");
+  expect(sent).toHaveLength(0);
+});
+
+test("postMessages lets a header given replace the API version, never the key or the content type", async () => {
+  const key = fixtureSecret("gw");
+  const seen: Headers[] = [];
+  const answer = await postMessages({
+    url: "http://gateway.test",
+    key: async () => key,
+    body: "{}",
+    headers: {
+      "X-Api-Key": "replaced-not-a-secret",
+      "Content-Type": "text/plain",
+      "Anthropic-Version": "2099-01-01",
+      "anthropic-beta": "effort-2025-11-24",
+    },
+    fetch: async (_url, init) => {
+      seen.push(new Headers(init.headers));
+      return new Response("answered");
+    },
+    sleep: async () => {},
+    tries: 1,
+    timeoutMs: 5_000,
+    accept: (text) => text,
+  });
+  expect(answer).toBe("answered");
+  expect(seen[0]?.get("x-api-key")).toBe(key);
+  expect(seen[0]?.get("content-type")).toBe("application/json");
+  expect(seen[0]?.get("anthropic-version")).toBe("2099-01-01");
+  expect(seen[0]?.get("anthropic-beta")).toBe("effort-2025-11-24");
 });
 
 test("reads every block of a streamed reply: text, thinking with its signature, and tool calls", async () => {

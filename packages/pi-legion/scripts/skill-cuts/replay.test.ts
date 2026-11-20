@@ -62,9 +62,11 @@ function f5(shape: string): Response {
   });
 }
 
-/** A gateway whose fake fetch answers the n-th call (from 1) with `answer`, and the bodies sent. */
+/** A gateway whose fake fetch answers the n-th call (from 1) with `answer`, and the bodies and
+ *  headers sent. */
 function world(answer: (n: number) => Response) {
   const bodies: MessagesBody[] = [];
+  const headers: Headers[] = [];
   const keyFile = path.join(scratch, `key-${Math.random()}`);
   writeFileSync(keyFile, fixtureSecret("gw"), { mode: 0o600 });
   const gateway = createGateway({
@@ -74,12 +76,22 @@ function world(answer: (n: number) => Response) {
     timeoutMs: 5_000,
     fetch: async (_url, init) => {
       bodies.push(JSON.parse(String(init.body)));
+      headers.push(new Headers(init.headers));
       return answer(bodies.length);
     },
     sleep: async () => {},
   });
-  return { gateway, bodies };
+  return { gateway, bodies, headers };
 }
+
+/** The `anthropic-*` headers Oh My Pi 18.18.6 sent beside a body at `--thinking low` (F2), as a
+ *  capture keeps them. */
+const CAPTURED_HEADERS: Record<string, string> = Object.fromEntries(
+  Object.entries(
+    JSON.parse(readFileSync(path.join(TESTDATA, "F2-request-thinking-low.headers.json"), "utf8"))
+      .headers
+  ).filter((entry): entry is [string, string] => entry[0].startsWith("anthropic-"))
+);
 
 /** F5-skill-read's one tool call. */
 const SKILL_READ_CALL = {
@@ -189,6 +201,29 @@ test("answers at most three rounds of skill reads; the reply after the last is t
   const once = world(() => f5("skill-read"));
   expect((await replayOnce(BODY, arm, once.gateway, { maxSkillRounds: 1 })).rounds).toBe(1);
   expect(once.bodies).toHaveLength(2);
+});
+
+test("sends the captured anthropic-* headers with the body on every round", async () => {
+  const arm = armWith("old", { "SKILL.md": SKILL_MD, "references/x.md": X_MD });
+  expect(CAPTURED_HEADERS["anthropic-beta"]).toContain("context-management-2025-06-27");
+  const { gateway, headers } = world(() => f5("skill-read"));
+  const replayed = await replayOnce(BODY, arm, gateway, { headers: CAPTURED_HEADERS });
+  expect(replayed.rounds).toBe(3);
+  expect(headers).toHaveLength(4);
+  for (const sent of headers) {
+    for (const [name, value] of Object.entries(CAPTURED_HEADERS)) {
+      expect(sent.get(name)).toBe(value);
+    }
+  }
+
+  // `replay` gives each of its runs the same headers.
+  const runs = world(() => f5("text"));
+  const settled = await replay(BODY, arm, runs.gateway, 2, { headers: CAPTURED_HEADERS });
+  expect(settled.map((run) => run.status)).toEqual(["fulfilled", "fulfilled"]);
+  expect(runs.headers.map((sent) => sent.get("anthropic-beta"))).toEqual([
+    CAPTURED_HEADERS["anthropic-beta"],
+    CAPTURED_HEADERS["anthropic-beta"],
+  ]);
 });
 
 test("a read of a file the arm lacks is answered with the not-found result", async () => {

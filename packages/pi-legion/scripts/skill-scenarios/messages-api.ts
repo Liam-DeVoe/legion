@@ -9,17 +9,19 @@
  * - `modelError(status, text)`: why a call failed, from Anthropic's error JSON when the body is one.
  * - `retryAfterMs(response)`: the wait a `retry-after` header asks for, at most 60 s, or 0.
  * - `postMessages(call)`: one POST of `call.body` to `<call.url>/v1/messages` with the key in the
- *   `x-api-key` header, got again from `call.key()` for each try. Each try has `call.timeoutMs`,
- *   its body read included; a try past it is ended and counts as a failed try. A failed connection,
- *   a body that fails after its headers, a timeout, a 429 or a 5xx, or an ok answer that
- *   `call.accept(text, response)` throws on is tried again, after the longer of the `retry-after`
- *   wait (429 and 5xx only) and `backoffMs` (1 s, 2 s, 4 s, ... at most 30 s), up to `call.tries`
- *   tries in all. Any other status (a 400, a 401, a 404) throws at once. It returns what `accept`
- *   returns for the first ok answer it takes. A failure throws `MessagesApiError`, whose message is
- *   the last try's reason (`the model answered <status> <type>: <message>`, `the model call failed:
- *   <why>`, or `accept`'s own message), followed by `, on each of <n> tries` when every try failed,
- *   and whose `status` is the last answer's HTTP status, or undefined when no answer came.
- *   `accept` gets the body whole as text: a streamed (SSE) reply is read to its end before it.
+ *   `x-api-key` header, got again from `call.key()` for each try, and `call.headers` beside it
+ *   (names taken in lower case; one may replace `anthropic-version`, none the key or
+ *   `content-type`). Each try has `call.timeoutMs`, its body read included; a try past it is
+ *   ended and counts as a failed try. A failed connection, a body that fails after its headers, a
+ *   timeout, a 429 or a 5xx, or an ok answer that `call.accept(text, response)` throws on is tried
+ *   again, after the longer of the `retry-after` wait (429 and 5xx only) and `backoffMs` (1 s, 2 s,
+ *   4 s, ... at most 30 s), up to `call.tries` tries in all. Any other status (a 400, a 401, a 404)
+ *   throws at once. It returns what `accept` returns for the first ok answer it takes. A failure
+ *   throws `MessagesApiError`, whose message is the last try's reason (`the model answered
+ *   <status> <type>: <message>`, `the model call failed: <why>`, or `accept`'s own message),
+ *   followed by `, on each of <n> tries` when every try failed, and whose `status` is the last
+ *   answer's HTTP status, or undefined when no answer came. `accept` gets the body whole as text:
+ *   a streamed (SSE) reply is read to its end before it.
  */
 import { messageFor } from "@legion/envoy-client/errors";
 import { backoffMs, type Fetch, type Sleep, transient } from "./production-dispatch";
@@ -86,6 +88,10 @@ export interface MessagesCall<T> {
   readonly key: () => Promise<string>;
   /** The request body, as JSON text. */
   readonly body: string;
+  /** Headers sent beside the call's own, such as the `anthropic-beta` a body's fields need. Each
+   *  name is taken in lower case; one may replace `anthropic-version`, but never `x-api-key` or
+   *  `content-type`, which the call sets after them. */
+  readonly headers?: Readonly<Record<string, string>>;
   readonly fetch: Fetch;
   readonly sleep: Sleep;
   /** How many times the call is tried before it fails. */
@@ -110,8 +116,11 @@ export async function postMessages<T>(call: MessagesCall<T>): Promise<T> {
       response = await call.fetch(`${call.url}/v1/messages`, {
         method: "POST",
         headers: {
-          "x-api-key": await call.key(),
           "anthropic-version": ANTHROPIC_VERSION,
+          ...Object.fromEntries(
+            Object.entries(call.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value])
+          ),
+          "x-api-key": await call.key(),
           "content-type": "application/json",
         },
         body: call.body,
