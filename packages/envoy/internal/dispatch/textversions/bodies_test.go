@@ -348,16 +348,18 @@ func appendCommentEvent(t *testing.T, tx pgx.Tx, broker *events.Broker, eventTyp
 }
 
 // readLoggedEvents reads the events ids from the log as the fill reads it: the columns of each
-// row the rules read, its project as the log names it, in id order.
+// row the rules read, its project as the log names it, and an ask's body (askBodySQL), in id
+// order.
 func readLoggedEvents(t *testing.T, database *store.Store, ids ...int64) []event {
 	t.Helper()
 	rows, err := database.Pool.Query(t.Context(), `
-		select e.id, e.type, e.issue_key, coalesce(e.project_key, i.project_key, ar.project_key, ''), e.seq, e.created_at, e.payload
+		select e.id, e.type, e.issue_key, coalesce(e.project_key, i.project_key, ar.project_key, ''), e.seq, e.created_at, e.payload,
+		       case when e.type = any($2::text[]) then `+askBodySQL+` end
 		  from events e
 		  left join issues i on i.key = e.issue_key
 		  left join artifacts ar on ar.id = e.artifact_id
 		 where e.id = any($1) order by e.id
-	`, ids)
+	`, ids, askTypes)
 	if err != nil {
 		t.Fatalf("read the events: %v", err)
 	}
@@ -366,7 +368,7 @@ func readLoggedEvents(t *testing.T, database *store.Store, ids ...int64) []event
 	for rows.Next() {
 		var e event
 		var payload []byte
-		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody); err != nil {
 			t.Fatalf("read an event: %v", err)
 		}
 		e.Payload = payload

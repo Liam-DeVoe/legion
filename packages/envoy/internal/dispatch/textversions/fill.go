@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -273,18 +274,28 @@ const (
 	returning reach`
 )
 
+// askBodySQL is the body of the ask event e, as the ask's own search column makes it of the
+// ask's row (asks_search, migrations 0019 and 0087): the question, a space and ask_search_suffix
+// of the options and the answer, over the event's payload; null where the payload holds no
+// question. It reads any JSON value without failing. readEventsQuery reads it of each ask event
+// into event.AskBody, so the body askVersion compares and the insert writes is made in SQL alone,
+// by the function the ask's column reads.
+const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.payload->'options', e.payload->'answer')`
+
 // readEventsQuery reads one batch's events: those above the cursor ($1) and at or below the safe
 // horizon ($2), in id order, at most $3 of them, and of those the first whose text comes to at
 // most $4 bytes, the first one whatever its size. An event's text is what its vector is made
 // from, for a type a rule reads ($5): its payload, the whole body of a post whose event cut it
 // (its row's, the one source a cut body is most often read from), and for a primary document's
-// version its version.size; any other type makes no vector and counts nothing. Each read of a
-// payload's value as a uuid or a number is guarded, so a payload no rule can read reaches the
-// rules, which name it, rather than failing the statement. Its project is the one the log names
-// for it: its own, its issue's or its document's.
+// version its version.size; any other type makes no vector and counts nothing. Of an ask's event
+// ($6, askTypes) it reads the ask's body (askBodySQL), and null of every other event. Each read
+// of a payload's value as a uuid or a number is guarded, so a payload no rule can read reaches
+// the rules, which name it, rather than failing the statement. Its project is the one the log
+// names for it: its own, its issue's or its document's.
 const readEventsQuery = `
 with candidates as (
        select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
+              case when e.type = any($6::text[]) then ` + askBodySQL + ` end as ask_body,
               case when e.type = any($5::text[]) then
                      octet_length(e.payload::text)
                      + case when e.type = 'artifact.version'
@@ -315,7 +326,7 @@ with candidates as (
               count(*) over () as candidates
          from candidates c)
 select s.id, s.type, s.issue_key, coalesce(s.project_key, i.project_key, ar.project_key, ''), s.seq,
-       s.created_at, s.payload, s.size, s.candidates
+       s.created_at, s.payload, s.ask_body, s.size, s.candidates
   from sized s
   left join public.issues i on i.key = s.issue_key
   left join public.artifacts ar on ar.id = s.artifact_id
@@ -486,11 +497,17 @@ func statementTimeout(bytes int64) string {
 // readEventsQuery counts.
 var ruleTypes = slices.Sorted(maps.Keys(versionRules))
 
+// askTypes is the types of ruleTypes that are an ask's (ask.*), whose rule is askVersion: the
+// types readEventsQuery reads the ask's body of (askBodySQL).
+var askTypes = slices.DeleteFunc(slices.Clone(ruleTypes), func(eventType string) bool {
+	return !strings.HasPrefix(eventType, "ask.")
+})
+
 // readEvents reads the batch's events above cursor up to safe (readEventsQuery), with the bytes
 // of text they hold and how many events the read took before its bound on bytes, so a batch cut
 // short by its bytes is known to leave events for the next one.
 func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) ([]event, int64, int, error) {
-	rows, err := tx.Query(ctx, readEventsQuery, cursor, safe, f.maxEvents, f.maxBytes, ruleTypes)
+	rows, err := tx.Query(ctx, readEventsQuery, cursor, safe, f.maxEvents, f.maxBytes, ruleTypes, askTypes)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
 	}
@@ -502,7 +519,7 @@ func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) 
 		var e event
 		var payload []byte
 		var size, taken int64
-		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload, &size, &taken); err != nil {
+		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody, &size, &taken); err != nil {
 			return nil, 0, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
 		}
 		e.Payload = payload

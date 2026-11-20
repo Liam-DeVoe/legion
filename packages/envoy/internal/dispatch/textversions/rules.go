@@ -53,8 +53,9 @@ const (
 // and at a comment.edited whose body differs; an issue message's at message.created and
 // message.answered (a reply is a new message), and a message of no issue starts none, since the
 // keyword table leaves direct messages out. An ask's starts at ask.opened (a reopen is one too),
-// ask.edited and ask.answered (a restored answer included) when its question, options or answer,
-// as ask_search_suffix reads them, differ from its latest version's.
+// ask.edited and ask.answered (a restored answer included) when its body, its question, a space
+// and ask_search_suffix of its options and answer as readEventsQuery reads it (askBodySQL),
+// differs from its latest version's.
 var versionRules = map[string]rule{
 	"issue.created":    issueCreated,
 	"issue.updated":    issueRetitled,
@@ -151,14 +152,12 @@ type postPayload struct {
 	BodyTruncated bool    `json:"body_truncated"`
 }
 
-// askPayload is what the rules read of an ask.* event's payload: its question, and its options
-// and answer as ask_search_suffix reads them.
+// askPayload is what the rules read of an ask.* event's payload: its id, its issue and its
+// question. Its options and answer reach the rules inside the ask's body (event.AskBody).
 type askPayload struct {
-	ID       *string         `json:"id"`
-	IssueKey *string         `json:"issue_key"`
-	Question *string         `json:"question"`
-	Options  json.RawMessage `json:"options"`
-	Answer   json.RawMessage `json:"answer"`
+	ID       *string `json:"id"`
+	IssueKey *string `json:"issue_key"`
+	Question *string `json:"question"`
 }
 
 // decodePayload decodes e's payload into payload.
@@ -337,9 +336,10 @@ func postVersion(kind string, onlyWhenChanged bool) rule {
 }
 
 // askVersion is the rule of ask.opened, ask.edited and ask.answered: the version holds the ask's
-// question, options and answer as the event carries them, and starts only when the text they
-// make, the question, a space and ask_search_suffix of the options and the answer, differs from
-// the ask's latest version's.
+// question and its body as readEventsQuery made it in SQL (event.AskBody), and starts only when
+// that body differs from the ask's latest version's. An event read with no body while its
+// payload holds a question is a bug of the fill's read, not a payload the rules cannot read, and
+// is answered with an error that says so.
 func askVersion(e event, latest latestVersion) (version, bool, error) {
 	var p askPayload
 	if err := decodePayload(e, &p); err != nil {
@@ -351,8 +351,10 @@ func askVersion(e event, latest latestVersion) (version, bool, error) {
 	if p.Question == nil {
 		return version{}, false, missing("question")
 	}
-	body := *p.Question + " " + askSearchSuffix(p.Options, p.Answer)
-	if prior := latest(kindAsk, *p.ID); prior != nil && prior.Body == body {
+	if e.AskBody == nil {
+		return version{}, false, fmt.Errorf("the event of ask %s was read with no body, which readEventsQuery reads of every ask event (askBodySQL): a bug of the fill, not of the payload", *p.ID)
+	}
+	if prior := latest(kindAsk, *p.ID); prior != nil && prior.Body == *e.AskBody {
 		return version{}, false, nil
 	}
 	issueKey := p.IssueKey
@@ -363,88 +365,8 @@ func askVersion(e event, latest latestVersion) (version, bool, error) {
 	if err != nil {
 		return version{}, false, err
 	}
-	v.Text, v.Body, v.Options, v.Answer = p.Question, body, p.Options, p.Answer
+	v.Text, v.Body = p.Question, *e.AskBody
 	return v, true, nil
-}
-
-// askSearchSuffix is ask_search_suffix(options, answer) of migration 0019, the text an ask's
-// options and answer add to its question in its vector, made in Go so the rules can tell whether
-// an event changed it: the label and the description of each option, the answer's text and its
-// selected options, joined by single spaces, an absent or null value adding nothing but its
-// separator. A string is its own text; a value of another JSON type, which no writer puts where
-// the function reads, is its JSON as the event wrote it, which can differ from the text jsonb
-// gives it, and so can only make a version that repeats its text, never miss one.
-func askSearchSuffix(options, answer json.RawMessage) string {
-	var described []string
-	var elements []json.RawMessage
-	if jsonKind(options) == '[' && json.Unmarshal(options, &elements) == nil {
-		described = make([]string, 0, len(elements))
-		for _, element := range elements {
-			fields := jsonObject(element)
-			var parts []string
-			for _, key := range []string{"label", "description"} {
-				if text, ok := jsonText(fields[key]); ok {
-					parts = append(parts, text)
-				}
-			}
-			described = append(described, strings.Join(parts, " "))
-		}
-	}
-	answered := jsonObject(answer)
-	text, _ := jsonText(answered["text"])
-	var selected []string
-	if raw := answered["selected"]; jsonKind(raw) == '[' {
-		var items []json.RawMessage
-		if json.Unmarshal(raw, &items) == nil {
-			for _, item := range items {
-				if value, ok := jsonText(item); ok {
-					selected = append(selected, value)
-				}
-			}
-		}
-	}
-	return strings.Join(described, " ") + " " + text + " " + strings.Join(selected, " ")
-}
-
-// jsonKind is the first byte of the JSON value raw, which names its type ('{', '[', '"', 'n'
-// and so on), or 0 for no value.
-func jsonKind(raw json.RawMessage) byte {
-	for _, b := range raw {
-		switch b {
-		case ' ', '\t', '\n', '\r':
-			continue
-		}
-		return b
-	}
-	return 0
-}
-
-// jsonObject is the fields of the JSON object raw, and none for a value of another type, which
-// ->> reads no field of.
-func jsonObject(raw json.RawMessage) map[string]json.RawMessage {
-	if jsonKind(raw) != '{' {
-		return nil
-	}
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &fields) != nil {
-		return nil
-	}
-	return fields
-}
-
-// jsonText is the text ->> gives of a JSON value: a string's own text, and false for an absent
-// value or null, which give SQL's null.
-func jsonText(raw json.RawMessage) (string, bool) {
-	switch jsonKind(raw) {
-	case 0, 'n':
-		return "", false
-	case '"':
-		var text string
-		if json.Unmarshal(raw, &text) == nil {
-			return text, true
-		}
-	}
-	return strings.TrimSpace(string(raw)), true
 }
 
 // item names one item of the keyword table, the key its versions share: its kind and its id.
@@ -490,23 +412,18 @@ type decided struct {
 // logger takes the warnings. The first event whose payload a rule cannot read
 // (errUnreadablePayload) ends the events decided: the versions of the events before it are
 // decided and answered, with how many events those are, its index, and the error naming it; with
-// every event read, that count is len(events). Any other error, a statement that failed or events
-// out of id order, answers no version.
+// every event read, that count is len(events). Any other error, a statement that failed, events
+// out of id order or an ask's event read with no body (askVersion), answers no version.
 func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events []event) (decided, int, error) {
-	// Each rule asks for the latest version of the item it decides: a first pass through the
-	// rules names those items, so the table's rows of all of them are read in one statement. A
-	// post whose event cut its body names its item too, since complete compares the whole body
-	// with the item's latest version, which the rule does not ask for then. The first pass reads
-	// every field a rule can find missing, so it meets the first unreadable payload.
+	// A first pass gives each rule no latest version, as versionOf does, and names the item of
+	// each version it starts, so the table's latest rows of all of them are read in one
+	// statement. That names every item the second pass reads the latest version of: with no
+	// latest version, each rule that reads one starts a version of that same item, and the item a
+	// rule's version names does not depend on the latest version, so the second pass starts
+	// versions only of the items named here. The first pass reads every field a rule can find
+	// missing, so it meets the first unreadable payload.
 	var items []item
-	asked := map[item]bool{}
-	record := func(kind, id string) *version {
-		if key := (item{kind, id}); !asked[key] {
-			asked[key] = true
-			items = append(items, key)
-		}
-		return nil
-	}
+	named := map[item]bool{}
 	read := len(events)
 	var unreadable error
 	for index, e := range events {
@@ -517,13 +434,17 @@ func decideVersions(ctx context.Context, tx pgx.Tx, logger *slog.Logger, events 
 		if !ok {
 			continue
 		}
-		v, started, err := apply(e, record)
+		v, started, err := apply(e, noLatest)
 		if err != nil {
+			if !errors.Is(err, errUnreadablePayload) {
+				return decided{}, 0, eventError(e, err)
+			}
 			read, unreadable = index, eventError(e, err)
 			break
 		}
-		if started && v.BodyTruncated {
-			record(v.Kind, v.ID)
+		if key := (item{v.Kind, v.ID}); started && !named[key] {
+			named[key] = true
+			items = append(items, key)
 		}
 	}
 	events = events[:read]
@@ -830,9 +751,8 @@ const latestVersionsQuery = `
 
 // latestVersions reads the latest row in the keyword table of each of items, in tx: an item with
 // no row is not in the map. A version read from the table holds its kind, its id, its body as its
-// Body, and as its Text where the body is the item's own text, which an ask's is not (an ask's
-// body holds its question, a space and ask_search_suffix of its options and answer), its BodyFrom
-// and its primary document version, and none of its other columns.
+// Body and as its Text, its BodyFrom and its primary document version, and none of its other
+// columns.
 func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*version, error) {
 	latest := make(map[item]*version, len(items))
 	if len(items) == 0 {
@@ -853,9 +773,7 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 		if err := rows.Scan(&v.Kind, &v.ID, &v.Body, &v.BodyFrom, &v.SpecArtifactID, &v.SpecVersion); err != nil {
 			return nil, fmt.Errorf("read the latest keyword versions of %d items: %w", len(items), err)
 		}
-		if v.Kind != kindAsk {
-			v.Text = &v.Body
-		}
+		v.Text = &v.Body
 		latest[item{v.Kind, v.ID}] = &v
 	}
 	if err := rows.Err(); err != nil {
@@ -865,66 +783,51 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 }
 
 // insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
-// statement, and makes each row's body and vector with the functions the items' own search
-// triggers call, so the vector of a version of an unchanged item equals the item's search
-// column: an issue's from its key, its title and the markdown of the version of its primary
-// document the row names (issue_search_vector, 20261105145242), a comment's or a message's from
-// its body, and an ask's from its question, a space and ask_search_suffix of its options and
-// answer (search_vector over search_text, 0087 and 0019), which is also the body the ask's row
-// holds.
+// statement. Each row's body is its version's Body, and its vector is made with the functions the
+// items' own search triggers call, so the vector of a version of an unchanged item equals the
+// item's search column: an issue's from its key, its title and the markdown of the version of its
+// primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
+// message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
+// the question, a space and ask_search_suffix of the options and the answer that the ask's
+// trigger reads too, as readEventsQuery made it (askBodySQL).
 const insertVersionsQuery = `
 	insert into public.search_text_versions
 	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
 	        spec_artifact_id, spec_version, search)
-	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, b.body,
+	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
 	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
 	       case r.kind
-	         when 'issue' then issue_search_vector(r.id, b.body,
+	         when 'issue' then issue_search_vector(r.id, r.body,
 	           (select a.markdown from public.artifact_versions a
 	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
-	         else search_vector('', search_text(b.body))
+	         else search_vector('', search_text(r.body))
 	       end
 	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
-	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[], $12::text[],
-	              $13::text[])
-	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, text, body_from,
-	             spec_artifact_id, spec_version, options, answer)
-	 cross join lateral (
-	       select case r.kind
-	                when 'ask' then r.text || ' ' || ask_search_suffix(r.options::jsonb, r.answer::jsonb)
-	                else r.text
-	              end as body) b`
+	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
+	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	             spec_artifact_id, spec_version)`
 
 // insertVersions writes versions as rows of the keyword table in tx, in one statement
-// (insertVersionsQuery), and writes nothing for none. A version's text is its Body, and an ask's
-// its question (Text), which the statement makes the body of with its options and answer. A row
-// is never written twice: a version whose (kind, id, event_seq) the table holds fails the
+// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
+// row is never written twice: a version whose (kind, id, event_seq) the table holds fails the
 // statement.
 func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
 	if len(versions) == 0 {
 		return nil
 	}
 	n := len(versions)
-	kinds, ids, projects, texts, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	issueKeys, specArtifacts, options, answers := make([]*string, n), make([]*string, n), make([]*string, n), make([]*string, n)
+	kinds, ids, projects, bodies, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+	issueKeys, specArtifacts := make([]*string, n), make([]*string, n)
 	eventIDs, seqs, specVersions := make([]int64, n), make([]int32, n), make([]*int32, n)
 	startedAts := make([]time.Time, n)
 	for index, v := range versions {
-		text := v.Body
-		if v.Kind == kindAsk {
-			if v.Text == nil {
-				return fmt.Errorf("write the keyword version of ask %s at event %d: it holds no question", v.ID, v.EventID)
-			}
-			text = *v.Text
-			options[index], answers[index] = rawJSON(v.Options), rawJSON(v.Answer)
-		}
 		kinds[index], ids[index], issueKeys[index], projects[index] = v.Kind, v.ID, v.IssueKey, v.ProjectKey
 		eventIDs[index], seqs[index], startedAts[index] = v.EventID, v.EventSeq, v.StartedAt
-		texts[index], bodyFroms[index] = text, v.BodyFrom
+		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
 		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
 	}
-	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, texts,
-		bodyFroms, specArtifacts, specVersions, options, answers)
+	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
+		bodyFroms, specArtifacts, specVersions)
 	if err != nil {
 		return fmt.Errorf("write %d keyword versions: %w", n, err)
 	}
@@ -932,13 +835,4 @@ func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
 		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
 	}
 	return nil
-}
-
-// rawJSON is raw as the text of a jsonb parameter, nil (SQL's null) for no value.
-func rawJSON(raw json.RawMessage) *string {
-	if len(raw) == 0 {
-		return nil
-	}
-	text := string(raw)
-	return &text
 }
