@@ -1670,9 +1670,7 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
       await expectTablesAndToolbars(`the ${tab} tab`);
     }
 
-    // A priority's own page: its work table and toolbar, and its margin, which lists every act
-    // the page makes and none for the visibility the priority was written with. The server's
-    // history holds that act; the margin's words for it are `actWords`' ("who can see").
+    // A priority's own page: its work table and toolbar.
     await page.goto(`/priorities/${seed.ids[0]}`);
     const work = section(page, "Work advancing this priority");
     await expectRowNames(work, [
@@ -1680,15 +1678,115 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
       `${seed.smoke} Daemon smoke suite`,
     ]);
     await expectTablesAndToolbars("a priority's page");
-    expect((await getPriorityHistory(seed.ids[0])).some((act) => act.field === "visibility")).toBe(
-      true
-    );
+
+    // The margin of the priority written once above: one entry for each act its history holds
+    // but the visibility it was written with, which no control on the page sets. Each of those
+    // acts writes another field, so no run folds them, and the entries are read by their count
+    // rather than by the words an entry would carry, which this clause does not fix.
+    const acts = await getPriorityHistory(long.id);
+    expect(acts.some((act) => act.field === "visibility")).toBe(true);
+    const fields = acts.map((act) => act.field);
+    expect(new Set(fields).size).toBe(fields.length);
+    await page.goto(`/priorities/${long.id}`);
     const entries = page.getByRole("complementary", { name: "Margin" }).getByRole("listitem");
     await expect(entries.first()).toBeVisible();
+    const shown = await settledValue("the margin's entries", () => entries.count());
     soft(
-      await entries.filter({ hasText: /who can see/ }).count(),
-      "the margin lists no entry for the priority's visibility"
-    ).toBe(0);
+      shown,
+      `the margin lists one entry for each act but the visibility (${acts.length} acts: ${fields.join(", ")})`
+    ).toBe(acts.filter((act) => act.field !== "visibility").length);
+  } finally {
+    await context.close();
+  }
+});
+
+// INFRA-2947 R7 (spec v83) and check 138e9e4d (Verification v60), read on a phone, 390 by 844:
+// the priorities tab keeps each priority's place and title in view together, as wide as the
+// table's box, with every header on one line, and the other columns scroll inside the box. So
+// each column's header label and its controls stand on one line; the cell of the grip, the place
+// and the disclosure is no wider than 80 px; and while the table stands scrolled to its start,
+// the Priority column ends at the box's inner right edge.
+// SLOW(>=2s): the seed and one page read at a phone's size.
+test("on a phone the priorities tab keeps each place and title together as wide as the box, under headers on one line", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize(PHONE);
+    await page.goto(PRIORITIES_PATH);
+    const table = page.getByRole("table", { exact: true, name: "Priorities table" });
+    await expectRowOrder(table, [
+      `#1 ${seed.titles[0]}`,
+      `#2 ${seed.titles[1]}`,
+      `#3 ${seed.titles[2]}`,
+    ]);
+    const soft = expect.configure({ soft: true });
+
+    // Each header whose label and controls - the sort button with its arrow, and the filter -
+    // stand on more than one line: the parts whose boxes share no band across the header.
+    const headersOnTwoLines = () =>
+      table.locator("thead th").evaluateAll((headers) =>
+        headers.flatMap((header) => {
+          const parts: DOMRect[] = [];
+          for (const part of header.querySelectorAll(
+            'button[title^="Sort"], [aria-label^="Filter"]'
+          )) {
+            const range = document.createRange();
+            range.selectNodeContents(part);
+            parts.push(part.getBoundingClientRect(), ...range.getClientRects());
+          }
+          const drawn = parts.filter((rect) => rect.width > 0 && rect.height > 0);
+          if (drawn.length === 0) return [];
+          const top = Math.max(...drawn.map((rect) => rect.top));
+          const bottom = Math.min(...drawn.map((rect) => rect.bottom));
+          return top < bottom ? [] : [(header.textContent ?? "").trim()];
+        })
+      );
+    soft(
+      await settledValue("the headers' lines", headersOnTwoLines),
+      "each header's label and controls stand on one line"
+    ).toEqual([]);
+
+    // The room #1's grip, place and disclosure take at the row's start: from the left edge of the
+    // grip's cell to the right edge of whichever of the three ends last - its cell, or the
+    // disclosure where the row draws it in the next cell.
+    const row = table.getByRole("row", { exact: true, name: `#1 ${seed.titles[0]}` });
+    const disclosure = row.getByRole("button", { name: `Open #1 ${seed.titles[0]}` });
+    const placeWidth = async () => {
+      const grip = await row.getByRole("button", { name: /^Move #1 / }).evaluate((element) => {
+        const cell = element.closest("td")?.getBoundingClientRect();
+        return { left: cell?.left ?? 0, right: cell?.right ?? 0 };
+      });
+      const opener = await disclosure.evaluate((element) => element.getBoundingClientRect().right);
+      return Math.round(Math.max(grip.right, opener) - grip.left);
+    };
+    const place = await settledValue("the place's room", placeWidth);
+    soft(
+      place,
+      `the grip, the place and the disclosure take no more than 80 px (${place} px)`
+    ).toBeLessThanOrEqual(80);
+
+    // Scrolled to its start, the Priority column ends at the box's inner right edge.
+    const priorityGap = () =>
+      table.evaluate((element) => {
+        const box = element.closest('[data-testid$="-table-scroll"]');
+        if (box === null) throw new Error("the priorities table stands in no scroll box");
+        box.scrollLeft = 0;
+        const header = [...element.querySelectorAll("thead th")].find((cell) =>
+          (cell.textContent ?? "").trim().startsWith("Priority")
+        );
+        if (header === undefined) throw new Error("the table draws no Priority column");
+        const inner = box.getBoundingClientRect().left + box.clientLeft + box.clientWidth;
+        return Math.round(inner - header.getBoundingClientRect().right);
+      });
+    const gap = await settledValue("the Priority column's right edge", priorityGap);
+    soft(
+      Math.abs(gap),
+      `the Priority column ends at the box's inner right edge (${gap} px from it)`
+    ).toBeLessThanOrEqual(1);
+    await expect.poll(() => documentOverflow(page)).toBeLessThanOrEqual(0);
   } finally {
     await context.close();
   }
