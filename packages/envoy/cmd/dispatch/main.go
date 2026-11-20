@@ -685,10 +685,9 @@ func main() {
 	}
 	// Under a Google rule, whether a person's personal tokens and broker credentials are held
 	// (identity.Membership.Standing), asked by the API and answered on the person route; nil, which
-	// holds nobody, under any other rule.
-	built.Standing = standingFor(rule, membership)
-	appCtx, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
-
+	// holds nobody, under any other rule. The membership is handed the router's check of access
+	// that outlives the browser here, before anything is served (buildAppContext).
+	appCtx, err := buildAppContext(boot, rule, built, membership)
 	if err != nil {
 		slog.Error("dispatch: build app context", "error", err)
 		os.Exit(1)
@@ -1222,7 +1221,7 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	var confirmMemberships func(context.Context) error
-	if built.Standing != nil {
+	if standingFor(rule, membership) != nil {
 		confirmMemberships = identity.MembershipPass{Membership: membership, People: people, Outliving: appCtx.Outliving()}.Run
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, maintenanceSweepLeases, background.ResumeDeliveries, boot.PrivateProjects, confirmMemberships)

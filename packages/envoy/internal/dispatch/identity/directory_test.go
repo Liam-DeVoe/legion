@@ -83,10 +83,12 @@ func failedReason(t *testing.T, result checked) string {
 
 // TestIAPDirectoryOutcomes holds each answer Google can give a Directory check to its outcome: an
 // active answer for the person's own account is Active, a suspended or missing user and an active
-// answer for another account are Held, and everything else is Failed with an error that names its
-// class and HTTP status only. Each step of the check - IAM's signJwt, the token exchange and the
-// Directory read - ends when the check's context ends, the two the impersonate package sends
-// included.
+// answer for another account at another address (an alias of a colleague's account) are Held, an
+// active answer for the asked address itself under another account than the stored one (the
+// address deleted and created again) is Recreated, and everything else is Failed with an error
+// that names its class and HTTP status only. Each step of the check - IAM's signJwt, the token
+// exchange and the Directory read - ends when the check's context ends, the two the impersonate
+// package sends included.
 func TestIAPDirectoryOutcomes(t *testing.T) {
 	stalled := directorytest.Answer{Stall: true}
 	rows := []struct {
@@ -121,8 +123,11 @@ func TestIAPDirectoryOutcomes(t *testing.T) {
 		{name: "a renamed person, the stored id", knownID: "u-ada", outcome: DirectoryActive, userID: "u-ada", answer: func(g *directorytest.Google) {
 			g.SetUser(directoryAda, directorytest.User{ID: "u-ada", PrimaryEmail: "ada.lovelace@example.com"})
 		}},
-		{name: "the stored address answered with another id, deleted and created again", knownID: "u-ada", outcome: DirectoryHeld, userID: "u-ada-2", answer: func(g *directorytest.Google) {
+		{name: "the stored address answered with another id, deleted and created again", knownID: "u-ada", outcome: DirectoryRecreated, userID: "u-ada-2", answer: func(g *directorytest.Google) {
 			g.SetUser(directoryAda, directorytest.User{ID: "u-ada-2", PrimaryEmail: directoryAda})
+		}},
+		{name: "the stored address answered with another id in other letter case, deleted and created again", knownID: "u-ada", outcome: DirectoryRecreated, userID: "u-ada-2", answer: func(g *directorytest.Google) {
+			g.SetUser(directoryAda, directorytest.User{ID: "u-ada-2", PrimaryEmail: "ADA@example.com"})
 		}},
 		{name: "a 200 with no suspended", reason: "the Directory read's answer has no suspended (HTTP 200)", answer: func(g *directorytest.Google) {
 			g.AnswerUser(directoryAda, directorytest.Answer{Status: http.StatusOK, Body: `{"id":"u-ada","primaryEmail":"ada@example.com","etag":"` + directorytest.Planted + `"}`})

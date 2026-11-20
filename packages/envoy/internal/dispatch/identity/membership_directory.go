@@ -16,13 +16,17 @@ import (
 // keeps no refresh token, so Google's refusal of a refresh cannot reach it. Membership follows each
 // person's Google Workspace account in the Directory instead (Membership.Directory): an Active
 // answer confirms the person, releases a hold and fixes a deadline 24 hours later; a Held answer
-// records a hold; and a Failed check changes nothing but the time of the check.
+// records a hold; a Failed check changes nothing but the time of the check; and an answer for an
+// address deleted and created again confirms the new account only once the address holds no
+// access that outlives the browser, and is Held until then.
 
 // DirectoryPeople is what the people store records of a Directory check:
-// store.PgPeopleStore's writes of an Active, a Held and a Failed outcome. Under IAP identity
+// store.PgPeopleStore's writes of an Active, a Held and a Failed outcome, and of an Active one that
+// stores a recreated address's new account (RecordDirectoryRebound). Under IAP identity
 // Membership.People must be one.
 type DirectoryPeople interface {
 	RecordDirectoryActive(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error)
+	RecordDirectoryRebound(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error)
 	RecordDirectoryHeld(ctx context.Context, email string) error
 	RecordDirectoryFailed(ctx context.Context, email string) error
 }
@@ -108,6 +112,16 @@ func (m *Membership) directoryFlight(ctx context.Context, email string) <-chan s
 // write fails is Failed, and records nothing more: its deadline has passed, or the database is
 // not answering. It records its start in m.started while it runs, and, as it ends, its end in
 // m.unavailable when it was Failed, deleting any entry otherwise, as a refresh does.
+//
+// An answer for the address itself under another account (DirectoryRecreated: the address deleted
+// and created again for another person) is the earlier person's row, keyed by the address, so every
+// credential the row's person holds is the earlier person's. It asks, within ctx, the question a
+// sign-out asks (Membership.Outliving): while the address has access that outlives the browser, or
+// the question fails, the answer is Held and the stored id stays; once it has none, the new
+// account is the person the row is for, and RecordDirectoryRebound stores its id in place of the
+// earlier one, confirms and releases a hold. The question shares ctx, the check's one deadline,
+// with the write after it, so a question that runs past the deadline leaves a Held whose write
+// misses it: Failed, as any check's is.
 func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome RefreshOutcome, err error) {
 	m.started.Store(email, time.Now())
 	defer func() {
@@ -134,6 +148,20 @@ func (m *Membership) checkDirectory(ctx context.Context, email string) (outcome 
 		return RefreshNone, nil
 	}
 	answered, userID, err := m.Directory.Check(ctx, email, read.DirectoryUserID)
+	if answered == DirectoryRecreated {
+		outlives, err := m.Outliving.Holds(ctx, email)
+		if err == nil && !outlives {
+			if _, err := people.RecordDirectoryRebound(ctx, email, userID); err != nil {
+				slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account, and its write failed; the check is Failed", "email", email, "error", err)
+				return RefreshFailed, err
+			}
+			slog.Info("dispatch: the Workspace Directory answered a recreated address's new account, and the address holds no access that outlives the browser; the new account is confirmed", "email", email)
+			return RefreshConfirmed, nil
+		}
+		slog.Warn("dispatch: the Workspace Directory answered a recreated address's new account while the address may still hold the earlier person's access; held until it holds none",
+			"email", email, "outlives", outlives, "error", err)
+		answered = DirectoryHeld
+	}
 	switch answered {
 	case DirectoryActive:
 		if _, err := people.RecordDirectoryActive(ctx, email, userID); err != nil {

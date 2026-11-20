@@ -219,8 +219,7 @@ func appContextFor(boot bootConfig, built routes.AppContextOptions) (*routes.App
 	if err != nil {
 		return nil, err
 	}
-	built.Standing = standingFor(rule, membership)
-	return routes.BuildAppContext(appContextOptions(boot, rule, built))
+	return buildAppContext(boot, rule, built, membership)
 }
 
 // testPeople is a people store over a fresh test database, with the pool it writes through, so a

@@ -24,17 +24,23 @@ import (
 )
 
 // DirectoryOutcome is what one Workspace Directory check found for a person, under IAP identity:
-// Active confirms them, Held records a hold, and Failed changes nothing.
+// Active confirms them, Held records a hold, Failed changes nothing, and Recreated is an address
+// the Workspace deleted and created again, which the caller decides (Membership.checkDirectory).
 type DirectoryOutcome int
 
 const (
-	// DirectoryFailed is every answer that is neither of the other two, and the zero value.
+	// DirectoryFailed is every answer that is none of the others, and the zero value.
 	DirectoryFailed DirectoryOutcome = iota
 	// DirectoryActive is a 200 with suspended false for the person's own account.
 	DirectoryActive
 	// DirectoryHeld is a 200 with suspended true, a 404, or a 200 with suspended false for an
-	// account that is not the person's own.
+	// account that is not the person's own and whose primaryEmail is another address: the asked
+	// address made an alias of a colleague's account.
 	DirectoryHeld
+	// DirectoryRecreated is a 200 with suspended false for the asked address itself (its
+	// primaryEmail, letter case ignored) under another account than the stored one: the address
+	// deleted and created again for another person. It confirms nobody by itself.
+	DirectoryRecreated
 )
 
 // String is the outcome's name, as `envoy-dispatch directory-check` prints it.
@@ -44,6 +50,8 @@ func (o DirectoryOutcome) String() string {
 		return "Active"
 	case DirectoryHeld:
 		return "Held"
+	case DirectoryRecreated:
+		return "Recreated"
 	default:
 		return "Failed"
 	}
@@ -172,10 +180,13 @@ func NewDirectoryReader(ctx context.Context, signer, admin string, opts ...optio
 // empty before one. The answer is the person's own account when its id is knownID, or, with no
 // knownID, when its primaryEmail is email with letter case ignored (Google addresses ignore case):
 // a renamed person, whose old address is now an alias of their own account, keeps their id and is
-// Active, and an address made an alias of a colleague's account, or deleted and created again,
-// answers with another id and is Held. A Failed outcome comes with a *DirectoryError. Check
-// returns when ctx ends, at each of its steps. A shared mint it started runs to ctx's deadline at
-// most, and goes on after ctx is canceled for the checks still waiting on it.
+// Active, and an address made an alias of a colleague's account answers with another id and
+// another primaryEmail and is Held. An answer for email itself (its primaryEmail, case ignored)
+// under another id than knownID is the address deleted and created again for another person, and
+// is Recreated: whether it confirms anyone is the caller's to decide. A Failed outcome comes with
+// a *DirectoryError. Check returns when ctx ends, at each of its steps. A shared mint it started
+// runs to ctx's deadline at most, and goes on after ctx is canceled for the checks still waiting
+// on it.
 func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (DirectoryOutcome, string, error) {
 	token, err := d.accessToken(ctx)
 	if err != nil {
@@ -221,14 +232,14 @@ func (d *DirectoryReader) Check(ctx context.Context, email, knownID string) (Dir
 	case *user.Suspended:
 		return DirectoryHeld, user.ID, nil
 	}
-	own := strings.EqualFold(user.PrimaryEmail, email)
-	if knownID != "" {
-		own = user.ID == knownID
+	sameAddress := strings.EqualFold(user.PrimaryEmail, email)
+	switch {
+	case knownID == "" && sameAddress, user.ID == knownID:
+		return DirectoryActive, user.ID, nil
+	case sameAddress:
+		return DirectoryRecreated, user.ID, nil
 	}
-	if !own {
-		return DirectoryHeld, user.ID, nil
-	}
-	return DirectoryActive, user.ID, nil
+	return DirectoryHeld, user.ID, nil
 }
 
 // ProbeScope asks Google for a token for scope with the reader's signer and delegated user, as a

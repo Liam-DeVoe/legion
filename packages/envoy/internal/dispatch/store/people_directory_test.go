@@ -83,13 +83,14 @@ func sameInstant(got *time.Time, want time.Time) bool {
 // stores the Directory user's id, and a later one keeps it. A Held outcome sets
 // directory_checked_at and records a hold, and a second keeps the first's time; it leaves the
 // confirmation and the deadline as they are. A Failed outcome moves directory_checked_at and
-// nothing else. ForgetDirectoryUser clears a stored id and answers true, and answers false for a row
-// with none; the next Active stores its answer's id again. No outcome writes a row for a login with
-// none. Membership reads DirectoryHeld true for a hold on a row with no confirmation and for a hold
-// later than the confirmation, and false after a later Active.
+// nothing else. RecordDirectoryRebound replaces a stored id with the new account's, confirms with a
+// new deadline and releases a hold, and moves no other column. No outcome writes a row for a login
+// with none. Membership reads DirectoryHeld true for a hold on a row with no confirmation and for a
+// hold later than the confirmation, and false after a later Active or a rebind.
 //
-// Control (verify step): a Failed write that also sets directory_confirmed_at fails the Failed
-// outcome's check that it moved nothing but directory_checked_at.
+// Controls (verify step): a Failed write that also sets directory_confirmed_at fails the Failed
+// outcome's check that it moved nothing but directory_checked_at; a rebind that keeps the stored id
+// (coalesce, as RecordDirectoryActive writes it) fails the rebind's check of the new id.
 func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	ctx := context.Background()
 	database := migratedEmptyStore(t)
@@ -111,8 +112,8 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 	if err := people.RecordDirectoryFailed(ctx, nobody); err != nil {
 		t.Fatalf("a Failed outcome for a login with no row: %v", err)
 	}
-	if changed, err := people.ForgetDirectoryUser(ctx, nobody); err != nil || changed {
-		t.Fatalf("ForgetDirectoryUser of a login with no row answered %t, %v; want false", changed, err)
+	if until, err := people.RecordDirectoryRebound(ctx, nobody, "directory-nobody"); err != nil || !until.IsZero() {
+		t.Fatalf("a rebind for a login with no row answered %s, %v; want the zero time and no error", until, err)
 	}
 	var rows int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from people where email = $1`, nobody).Scan(&rows); err != nil || rows != 0 {
@@ -234,30 +235,32 @@ func TestPgPeopleStoreRecordsEachDirectoryOutcome(t *testing.T) {
 		t.Fatalf("Membership reads %s, %v after a later Active outcome; want not DirectoryHeld", directoryMembership(membership), err)
 	}
 
-	// ForgetDirectoryUser clears a stored id, and only that, and answers false for a row with none.
-	rest := rowLeavingOut(t, database, ada, "directory_user_id")
-	if changed, err := people.ForgetDirectoryUser(ctx, ada); err != nil || !changed {
-		t.Fatalf("ForgetDirectoryUser of %s, whose row stores an id, answered %t, %v; want true", ada, changed, err)
-	}
-	if forgot := readDirectoryRow(t, database, ada); forgot.userID != nil {
-		t.Fatalf("after ForgetDirectoryUser directory_user_id reads %q; want null", *forgot.userID)
-	}
-	if got := rowLeavingOut(t, database, ada, "directory_user_id"); got != rest {
-		t.Fatalf("ForgetDirectoryUser changed more than directory_user_id:\nbefore %s\nafter  %s", rest, got)
-	}
-	if membership, _, err = people.Membership(ctx, ada); err != nil || membership.DirectoryUserID != "" {
-		t.Fatalf("Membership reads id %q, %v after ForgetDirectoryUser; want none", membership.DirectoryUserID, err)
-	}
-	for _, email := range []string{ada, bob} {
-		if changed, err := people.ForgetDirectoryUser(ctx, email); err != nil || changed {
-			t.Fatalf("ForgetDirectoryUser of %s, whose row stores no id, answered %t, %v; want false", email, changed, err)
-		}
-	}
-	if _, err := people.RecordDirectoryActive(ctx, ada, "directory-new"); err != nil {
+	// A Held outcome, as a recreated address that still holds the earlier person's access answers,
+	// then a rebind once it holds none: the new id replaces the stored one, the confirmation and the
+	// deadline move, the hold is released, and nothing else of the row moves.
+	if err := people.RecordDirectoryHeld(ctx, ada); err != nil {
 		t.Fatal(err)
 	}
-	if again := readDirectoryRow(t, database, ada); again.userID == nil || *again.userID != "directory-new" {
-		t.Fatalf("the first Active outcome after ForgetDirectoryUser left the row at %v; want its answer's directory-new", again)
+	rest := rowLeavingOut(t, database, ada, "directory_user_id", "directory_confirmed_at", "directory_checked_at", "not_held_until", "held_since")
+	before = databaseNow(t, database)
+	until, err = people.RecordDirectoryRebound(ctx, ada, "directory-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	after = databaseNow(t, database)
+	rebound := readDirectoryRow(t, database, ada)
+	if rebound.userID == nil || *rebound.userID != "directory-new" {
+		t.Fatalf("a rebind answered by directory-new left the row at %v; want directory-new in place of directory-ada", rebound)
+	}
+	if rebound.confirmedAt == nil || rebound.confirmedAt.Before(before) || rebound.confirmedAt.After(after) || !sameInstant(rebound.checkedAt, *rebound.confirmedAt) ||
+		!sameInstant(rebound.notHeldUntil, rebound.confirmedAt.Add(24*time.Hour)) || !until.Equal(*rebound.notHeldUntil) || rebound.heldSince != nil {
+		t.Fatalf("after a rebind the row reads %+v and the write answered %s; want a confirmation and check of one time between %s and %s, its deadline 24 hours on, and no hold", rebound, until, before, after)
+	}
+	if got := rowLeavingOut(t, database, ada, "directory_user_id", "directory_confirmed_at", "directory_checked_at", "not_held_until", "held_since"); got != rest {
+		t.Fatalf("a rebind changed more than the Directory columns and the hold:\nbefore %s\nafter  %s", rest, got)
+	}
+	if membership, _, err = people.Membership(ctx, ada); err != nil || membership.DirectoryHeld || membership.DirectoryUserID != "directory-new" {
+		t.Fatalf("Membership reads %s, %v after a rebind; want not DirectoryHeld, with directory-new", directoryMembership(membership), err)
 	}
 }
 

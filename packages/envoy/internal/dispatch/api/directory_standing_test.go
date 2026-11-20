@@ -7,14 +7,97 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/brokertoken/brokertokentest"
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords: under IAP identity
+// (Standing.ChecksDirectory) a hold the Workspace Directory's answer recorded (RecordDirectoryHeld)
+// refuses a broker token whose introspection answers its person not held, at its admission
+// (brokerPersonAdmitted), and refuses an approve by such a token whose person was held while its
+// body was held back (approverStanding), each 401 MEMBERSHIP_HELD in the Directory's words, since a
+// sign-in releases nothing there. In cookie identity the same recorded hold keeps the sign-in's
+// words. The approve that is refused never reaches the broker.
+//
+// Control: either check answering the recorded hold in the sign-in's words whatever the identity,
+// as both did before this row; its row fails naming the words.
+func TestAnIAPDirectoryHoldRefusesBrokerCallersInTheDirectorysWords(t *testing.T) {
+	for _, mode := range []struct {
+		name      string
+		directory bool
+		text      string
+	}{
+		{"under IAP identity", true, membershipHeldDirectoryText},
+		{"in cookie identity", false, membershipHeldText},
+	} {
+		t.Run("a broker token, "+mode.name, func(t *testing.T) {
+			rig := newBrokerTokenRig(t)
+			seedPeople(t, rig.database, accessDave)
+			caller := newBrokerCaller(t)
+			const token = "daves-token-the-broker-answers-not-held"
+			rig.broker.Says(token, heldPersonToken(caller.jkt, accessDave, false))
+			served := rig.deps
+			served.Standing = &standingFake{directory: mode.directory}
+			handler := servedWith(t, served)
+			whoami := func() *httptest.ResponseRecorder {
+				t.Helper()
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, caller.presenting(t, http.MethodGet, "/api/v1/whoami", token, nil))
+				return response
+			}
+			if response := whoami(); response.Code != http.StatusOK {
+				t.Fatalf("dave's broker token before any hold, %s = %d %s, want 200", mode.name, response.Code, response.Body.String())
+			}
+			if err := peopleOf(rig.database).RecordDirectoryHeld(context.Background(), accessDave); err != nil {
+				t.Fatal(err)
+			}
+			wantHeldRefusal(t, whoami(), mode.text, "dave's broker token with a Directory hold recorded, "+mode.name)
+		})
+		t.Run("an approver's broker token, "+mode.name, func(t *testing.T) {
+			relay := newFakeBrokerRig(t)
+			introspection := brokertokentest.NewStubBroker(t)
+			_, database, deps := newTestServer(t, testServerOptions{brokerTokens: stubBrokerTokens(t, introspection)})
+			deps.AgentSecrets = agentsecrets.New(relay.server.URL, accountTokenFile(t, credentialTestAccountToken))
+			deps.Standing = &standingFake{directory: mode.directory}
+			handler := servedWith(t, deps)
+			seedPeople(t, database, accessDave)
+			caller := newBrokerCaller(t)
+			const token = "daves-machine-broker-token"
+			introspection.Says(token, heldPersonToken(caller.jkt, accessDave, false))
+			const path = "/api/v1/credential-requests/rec1/approve"
+			request := func(body io.Reader) *http.Request {
+				signed := caller.caller.Signed(t, http.MethodPost, testServerURL+path, token)
+				request := httptest.NewRequest(http.MethodPost, path, body)
+				request.RemoteAddr = brokerTestAddress
+				request.Header.Set("Content-Type", "application/json")
+				request.Header.Set("Authorization", signed.Header.Get("Authorization"))
+				request.Header.Set("DPoP", signed.Header.Get("DPoP"))
+				return request
+			}
+			const decision = `{"code":"ABCD-1234"}`
+			body := newHeldRequestBody(decision)
+			before := relay.calls
+			response := serveWithBodyHeld(t, handler, request(body), body, func() {
+				if err := peopleOf(database).RecordDirectoryHeld(context.Background(), accessDave); err != nil {
+					t.Fatal(err)
+				}
+			})
+			wantHeldRefusal(t, response, mode.text, "dave's approve by his broker token, a Directory hold recorded while its body was held, "+mode.name)
+			if relay.calls != before {
+				t.Fatalf("dave's approve, refused, reached the broker %d times, want none", relay.calls-before)
+			}
+		})
+	}
+}
 
 // TestAnIAPPersonalTokenAsksStandingFirst: under IAP identity (Standing.ChecksDirectory) a personal
 // token asks Standing at every use, before the fast paths over the refresh token and the sign-in

@@ -407,9 +407,11 @@ var bindingTransitions = []bindingTransition{
 	{"people.not_held_until", "fixed at an active answer plus 24 hours, then moved by the next (RecordDirectoryActive)",
 		[]string{bindingDirectoryRow, bindingDirectoryActive, `select pg_sleep(0.01)`},
 		bindingDirectoryActive},
-	{"people.directory_user_id", "stored at the first active answer, then forgotten (RecordDirectoryActive, ForgetDirectoryUser)",
+	{"people.directory_user_id", "stored at the first active answer, then replaced by a rebind of a recreated address (RecordDirectoryActive, RecordDirectoryRebound)",
 		[]string{bindingDirectoryRow, bindingDirectoryActive},
-		`update people set directory_user_id = null where email = 'i@x.example' and directory_user_id is not null`},
+		`update people set directory_user_id = 'directory-b', directory_confirmed_at = checked.at, directory_checked_at = checked.at,
+			not_held_until = checked.at + interval '24 hours', held_since = null
+			from (select clock_timestamp() as at) as checked where email = 'i@x.example'`},
 	{"broker_revocations row", "recorded (the sign-in's insert, naming the holder people records)",
 		[]string{bindingRevocationHolder},
 		bindingRevocation},

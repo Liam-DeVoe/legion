@@ -65,17 +65,31 @@ func (s *PgPeopleStore) RecordDirectoryFailed(ctx context.Context, email string)
 	return nil
 }
 
-// ForgetDirectoryUser sets email's directory_user_id to null, so its next Directory answer is
-// compared by address, as for a row never confirmed: an address deleted and created again for
-// another person answers with another id, which holds the row until an operator forgets the stored
-// one (envoy-dispatch forget-directory-user). It answers whether it changed a row: false for a
-// login with no row and for a row that stores no id.
-func (s *PgPeopleStore) ForgetDirectoryUser(ctx context.Context, email string) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `update people set directory_user_id = null where email = $1 and directory_user_id is not null`, email)
-	if err != nil {
-		return false, fmt.Errorf("forget the Directory user of %q: %w", email, err)
+// RecordDirectoryRebound records an Active outcome of email's Directory check for an address the
+// Workspace deleted and created again, once the address holds no access that outlives the browser
+// (identity.Membership.checkDirectory decides that): the earlier person's credentials are gone, so
+// the account now at the address is the person the row is for. It stores userID, the new
+// account's Directory user id, in directory_user_id in place of the earlier one, so later answers
+// are compared with it, and confirms as RecordDirectoryActive does: directory_confirmed_at and
+// directory_checked_at set to now, not_held_until to now plus 24 hours, and held_since to null,
+// which releases a recorded hold. It answers the deadline it fixed, the zero time for a login with
+// no row.
+func (s *PgPeopleStore) RecordDirectoryRebound(ctx context.Context, email, userID string) (notHeldUntil time.Time, err error) {
+	err = s.pool.QueryRow(ctx, `
+		update people set directory_user_id = $2,
+			directory_confirmed_at = checked.at, directory_checked_at = checked.at,
+			not_held_until = checked.at + interval '24 hours', held_since = null
+		from (select clock_timestamp() as at) as checked
+		where email = $1
+		returning not_held_until
+	`, email, userID).Scan(&notHeldUntil)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, nil
 	}
-	return tag.RowsAffected() == 1, nil
+	if err != nil {
+		return time.Time{}, fmt.Errorf("record an active Directory answer of a new account for %q: %w", email, err)
+	}
+	return notHeldUntil, nil
 }
 
 // ClaimDirectoryDue stamps directory_checked_at = clock_timestamp() on one full member's row that

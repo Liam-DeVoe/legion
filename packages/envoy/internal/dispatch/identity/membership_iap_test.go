@@ -2,11 +2,17 @@ package identity
 
 import (
 	"context"
+	"crypto/sha256"
 	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/identity/directorytest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -18,12 +24,15 @@ import (
 // Ada's address is directoryAda, the address the fake's rows answer for.
 
 // directoryStandingRig is the people store on a database of its own, the fake Google hosts, and a
-// Membership that follows the Directory as one IAP Dispatch process holds it.
+// Membership that follows the Directory as one IAP Dispatch process holds it. outliving is the
+// question a sign-out asks that each Membership is handed, as cmd/dispatch hands it the router's:
+// over the rig's database, with no broker unless a test gives it one.
 type directoryStandingRig struct {
 	t          *testing.T
 	database   *store.Store
 	people     *store.PgPeopleStore
 	google     *directorytest.Google
+	outliving  agentsecrets.OutlivingAccess
 	membership *Membership
 }
 
@@ -31,10 +40,11 @@ func newDirectoryStandingRig(t *testing.T) *directoryStandingRig {
 	t.Helper()
 	database := storetest.Open(t)
 	r := &directoryStandingRig{
-		t:        t,
-		database: database,
-		people:   store.NewPgPeopleStore(database.Pool, testSigningKey, nil),
-		google:   directorytest.ServeGoogle(t),
+		t:         t,
+		database:  database,
+		people:    store.NewPgPeopleStore(database.Pool, testSigningKey, nil),
+		google:    directorytest.ServeGoogle(t),
+		outliving: agentsecrets.OutlivingAccess{Pool: database.Pool},
 	}
 	r.newProcess()
 	return r
@@ -48,7 +58,7 @@ func (r *directoryStandingRig) newProcess() {
 	if err != nil {
 		r.t.Fatalf("NewDirectoryReader: %v", err)
 	}
-	r.membership = &Membership{People: r.people, Rule: workspace, Directory: reader}
+	r.membership = &Membership{People: r.people, Rule: workspace, Directory: reader, Outliving: r.outliving}
 }
 
 // pass is one membership pass over the rig's Membership, telling observe of each claim attempt.
@@ -477,30 +487,258 @@ func TestIAPMembershipPassChecksHeldIdleAndTokenlessRows(t *testing.T) {
 	}
 }
 
-// TestForgetDirectoryUserLetsTheNextAnswerCompareByAddress: a row that stores the Directory user id
-// of its first Active answer is held when its address answers with another id, as for an address
-// deleted and created again for another person. Once `envoy-dispatch forget-directory-user` forgets
-// the stored id (store.PgPeopleStore.ForgetDirectoryUser, the command's one write), the next answer
-// for the address is compared by address: Active, and its id is stored.
+// personAccessStandIn is the secrets broker's GET /v1/person-access (K8) for the rebind tests: it
+// answers each ask with answer, and counts the asks.
+type personAccessStandIn struct {
+	mu     sync.Mutex
+	asks   int
+	answer func(w http.ResponseWriter, r *http.Request)
+}
+
+// serve starts the stand-in, stopped when t ends, and answers the outliving question over database
+// and it, under a token file of the test's own, as Dispatch's broker client asks it.
+func (s *personAccessStandIn) serve(t *testing.T, database *store.Store) agentsecrets.OutlivingAccess {
+	t.Helper()
+	gone := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/person-access" || r.URL.Query().Get("person") != directoryAda {
+			t.Errorf("the broker was asked %s %s, want only the person-access route for %s", r.Method, r.URL.RequestURI(), directoryAda)
+			http.NotFound(w, r)
+			return
+		}
+		s.mu.Lock()
+		s.asks++
+		answer := s.answer
+		s.mu.Unlock()
+		if answer == nil {
+			t.Error("the broker was asked, and the test gave it no answer")
+			http.Error(w, "no answer", http.StatusTeapot)
+			return
+		}
+		select {
+		case <-gone:
+		default:
+			answer(w, r)
+		}
+	}))
+	// Cleanups run last first: a stand-in still waiting lets go before the server waits for it.
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(gone) })
+	tokenFile := filepath.Join(t.TempDir(), "account-token")
+	if err := os.WriteFile(tokenFile, []byte("account-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return agentsecrets.OutlivingAccess{Pool: database.Pool, Broker: agentsecrets.New(server.URL, tokenFile)}
+}
+
+// asked is how many asks the stand-in counted.
+func (s *personAccessStandIn) asked() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.asks
+}
+
+// counts answers the person-access route with the three counts, as the broker does.
+func counts(machineLogins, signIns, exchangeEntries int) func(http.ResponseWriter, *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"person":"` + directoryAda + `","machine_logins":` + strconv.Itoa(machineLogins) +
+			`,"signins":` + strconv.Itoa(signIns) + `,"exchange_entries":` + strconv.Itoa(exchangeEntries) + `}`))
+	}
+}
+
+// storePersonalToken stores one personal token of owner, revoked when revoked is set.
+func storePersonalToken(t *testing.T, database *store.Store, owner, name string, revoked bool) {
+	t.Helper()
+	hash := sha256.Sum256([]byte(name))
+	if _, err := database.Pool.Exec(context.Background(), `
+		insert into agent_tokens (owner, name, token_hash, prefix, revoked_at)
+		values ($1, $2, $3, 'test', case when $4::boolean then now() end)`, owner, name, hash[:], revoked); err != nil {
+		t.Fatalf("store the personal token %q of %q: %v", name, owner, err)
+	}
+}
+
+// TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone (c-iap-rebind): each case starts
+// from ada's row, which stores her Directory user id u-ada, and the Directory answers her address
+// itself (its primaryEmail) with suspended false and another account's id, u-ada-2, as it does for
+// an address deleted and created again. Dispatch asks the question a sign-out asks
+// (agentsecrets.OutlivingAccess.Holds), within the check's 15 seconds:
 //
-// Control: a forget that leaves the stored id; the next answer is Held again, and the test fails.
-func TestForgetDirectoryUserLetsTheNextAnswerCompareByAddress(t *testing.T) {
-	r := newDirectoryStandingRig(t)
+//   - an unrevoked personal token of the address, nothing at the broker: Held, the stored id kept,
+//     and the broker not asked, since the token answers first;
+//   - one machine login, one sign-in on a machine, one exchange entry naming the address, each
+//     alone at the broker: Held, the stored id kept, the broker asked once;
+//   - the broker answering 500, or not answering within its client's 5 seconds: Held, the stored
+//     id kept;
+//   - the Directory's answer delayed until less than five of the 15 seconds remain, and the broker
+//     waiting past the 15: Failed at the 15-second mark, not after the question's own 5 seconds,
+//     with the stored id, the confirmation, not_held_until and the hold unchanged;
+//   - a revoked personal token, the broker answering all three counts zero, on a held row: the
+//     membership pass, with no request from the person, confirms the new account, stores u-ada-2,
+//     fixes a new not_held_until and releases the hold; the next answer, carrying the stored
+//     u-ada-2, is Active and asks the broker nothing;
+//   - an answer whose primaryEmail is another address (ada's address made an alias of bob's
+//     account), all counts zero: Held, the stored id kept, the broker not asked.
+//
+// Controls, each run alone: confirming another id without asking fails the personal-token case;
+// reading a failed question as no access fails the broker-failing case; confirming an alias answer
+// as a recreated address fails the alias case; keeping the earlier id after a confirmation fails
+// the stored-id assertion; giving the question a context of its own fails the deadline case,
+// which then returns later than the 15-second mark.
+func TestARecreatedAddressConfirmsOnlyOnceItsEarlierAccessIsGone(t *testing.T) {
 	ctx := context.Background()
-	r.record(directoryAda)
-	r.active(directoryAda, "u-ada", 2*time.Hour)
-	r.google.SetUser(directoryAda, directorytest.User{ID: "u-ada-2", PrimaryEmail: directoryAda})
-	if outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda); outcome != RefreshHeld || err != nil || !r.standing(directoryAda).Held {
-		t.Fatalf("the address answered with another id = %v, %v; want Held, and ada held", outcome, err)
+	// start is ada's row as each case starts: confirmed by u-ada two hours ago, so due a check,
+	// and the Directory answering her address with primaryEmail and id as given. The stand-in
+	// answers the broker's part of the question.
+	start := func(t *testing.T, primaryEmail string, broker func(http.ResponseWriter, *http.Request)) (*directoryStandingRig, *personAccessStandIn) {
+		t.Helper()
+		r := newDirectoryStandingRig(t)
+		standIn := &personAccessStandIn{answer: broker}
+		r.outliving = standIn.serve(t, r.database)
+		r.newProcess()
+		r.record(directoryAda)
+		r.active(directoryAda, "u-ada", 2*time.Hour)
+		r.google.SetUser(directoryAda, directorytest.User{ID: "u-ada-2", PrimaryEmail: primaryEmail})
+		return r, standIn
 	}
-	if changed, err := r.people.ForgetDirectoryUser(ctx, directoryAda); err != nil || !changed {
-		t.Fatalf("ForgetDirectoryUser = %t, %v; want the stored id forgotten", changed, err)
+	// held runs one check and requires it Held, with the stored id u-ada kept and a hold recorded,
+	// and the broker asked asks times.
+	held := func(t *testing.T, r *directoryStandingRig, standIn *personAccessStandIn, asks int, what string) {
+		t.Helper()
+		before := r.row(directoryAda)
+		outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda)
+		after := r.row(directoryAda)
+		if outcome != RefreshHeld || err != nil {
+			t.Fatalf("%s: the check = %v, %v; want Held", what, outcome, err)
+		}
+		if after.userID == nil || *after.userID != "u-ada" {
+			t.Fatalf("%s: the row stores the Directory user id %s after the check; want u-ada kept", what, storedID(after.userID))
+		}
+		if after.heldSince == nil || !sameTime(after.confirmedAt, before.confirmedAt) || !sameTime(after.notHeldUntil, before.notHeldUntil) {
+			t.Fatalf("%s: held since %s, confirmed %s -> %s, deadline %s -> %s; want a hold recorded and the confirmation and deadline as they were",
+				what, stamp(after.heldSince), stamp(before.confirmedAt), stamp(after.confirmedAt), stamp(before.notHeldUntil), stamp(after.notHeldUntil))
+		}
+		if got := standIn.asked(); got != asks {
+			t.Fatalf("%s: the broker was asked %d times; want %d", what, got, asks)
+		}
+		if !r.standing(directoryAda).Held {
+			t.Fatalf("%s: ada's Standing after the check is not held", what)
+		}
 	}
-	outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda)
-	if outcome != RefreshConfirmed || err != nil {
-		t.Fatalf("the next answer after the forget = %v, %v; want Active, compared by address", outcome, err)
+
+	t.Run("an unrevoked personal token", func(t *testing.T) {
+		r, standIn := start(t, directoryAda, counts(0, 0, 0))
+		storePersonalToken(t, r.database, "Ada@Example.com", "ada's agent", false)
+		held(t, r, standIn, 0, "an unrevoked personal token, nothing at the broker")
+	})
+	for _, at := range []struct {
+		name   string
+		answer func(http.ResponseWriter, *http.Request)
+	}{
+		{"one machine login", counts(1, 0, 0)},
+		{"one sign-in on a machine", counts(0, 1, 0)},
+		{"one exchange entry", counts(0, 0, 1)},
+		{"the broker answering 500", func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, `{"code":"INTERNAL","error":"boom"}`, http.StatusInternalServerError)
+		}},
+		{"the broker not answering within its 5 seconds", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }},
+	} {
+		t.Run(at.name, func(t *testing.T) {
+			r, standIn := start(t, directoryAda, at.answer)
+			held(t, r, standIn, 1, at.name+" at the broker")
+		})
 	}
-	if row, answer := r.row(directoryAda), r.standing(directoryAda); answer.Held || row.userID == nil || *row.userID != "u-ada-2" {
-		t.Fatalf("after the forget and an Active answer ada = %+v with id %v; want released, with the new id stored", answer, row.userID)
+
+	t.Run("the question outlasting the check's 15 seconds", func(t *testing.T) {
+		r, standIn := start(t, directoryAda, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+		before := r.row(directoryAda)
+		release := r.google.HoldSigner()
+		type result struct {
+			outcome RefreshOutcome
+			err     error
+			took    time.Duration
+		}
+		done := make(chan result, 1)
+		began := time.Now()
+		go func() {
+			outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda)
+			done <- result{outcome, err, time.Since(began)}
+		}()
+		waitFor(t, "the check's signJwt", func() bool { return len(r.google.Signs()) > 0 })
+		// The Directory answers once less than five of the check's 15 seconds remain.
+		time.Sleep(time.Until(began.Add(DirectoryFlight - 3*time.Second)))
+		release()
+		var got result
+		select {
+		case got = <-done:
+		case <-time.After(DirectoryFlight + 15*time.Second):
+			t.Fatalf("the check had not returned %s after it began", DirectoryFlight+15*time.Second)
+		}
+		if got.outcome != RefreshFailed || got.err == nil {
+			t.Fatalf("the check whose question outlasted its 15 seconds = %v, %v after %s; want Failed", got.outcome, got.err, got.took)
+		}
+		if got.took < DirectoryFlight-time.Second || got.took > DirectoryFlight+time.Second {
+			t.Fatalf("the check returned Failed after %s; want it at the %s mark, the question bounded by the check's deadline, not by its own 5 seconds", got.took, DirectoryFlight)
+		}
+		if standIn.asked() != 1 {
+			t.Fatalf("the broker was asked %d times; want once, after the delayed Directory answer", standIn.asked())
+		}
+		after := r.row(directoryAda)
+		if after.userID == nil || *after.userID != "u-ada" || !sameTime(after.confirmedAt, before.confirmedAt) ||
+			!sameTime(after.notHeldUntil, before.notHeldUntil) || !sameTime(after.heldSince, before.heldSince) {
+			t.Fatalf("after the Failed check the row stores id %v, confirmed %s, deadline %s, held since %s; want u-ada, %s, %s, %s as before",
+				storedID(after.userID), stamp(after.confirmedAt), stamp(after.notHeldUntil), stamp(after.heldSince),
+				stamp(before.confirmedAt), stamp(before.notHeldUntil), stamp(before.heldSince))
+		}
+	})
+
+	t.Run("no access left, a held row", func(t *testing.T) {
+		r, standIn := start(t, directoryAda, counts(0, 0, 0))
+		storePersonalToken(t, r.database, directoryAda, "ada's revoked agent", true)
+		r.held(directoryAda)
+		r.age(directoryAda, 2*time.Hour)
+		before := r.row(directoryAda)
+		if !r.standing(directoryAda).Held {
+			t.Fatal("ada is not held before the pass")
+		}
+		if err := r.pass(nil).Run(ctx); err != nil {
+			t.Fatalf("the membership pass: %v", err)
+		}
+		after := r.row(directoryAda)
+		if after.userID == nil || *after.userID != "u-ada-2" {
+			t.Fatalf("after the pass the row stores the Directory user id %s; want the new account's u-ada-2 in place of u-ada", storedID(after.userID))
+		}
+		if after.confirmedAt == nil || !after.confirmedAt.After(*before.confirmedAt) || !sameTime(after.notHeldUntil, new(after.confirmedAt.Add(24*time.Hour))) || after.heldSince != nil {
+			t.Fatalf("after the pass ada's row reads confirmed %s, deadline %s, held since %s; want a new confirmation, its deadline 24 hours on, and the hold released",
+				stamp(after.confirmedAt), stamp(after.notHeldUntil), stamp(after.heldSince))
+		}
+		if answer := r.standing(directoryAda); answer.Held || answer.Unavailable() {
+			t.Fatalf("ada's Standing after the pass = %+v; want served, with no request from her", answer)
+		}
+		if standIn.asked() != 1 {
+			t.Fatalf("the broker was asked %d times; want once", standIn.asked())
+		}
+
+		// The next answer carries the stored id: Active, and the broker is asked nothing.
+		r.age(directoryAda, 2*time.Hour)
+		if outcome, err := r.membership.ConfirmDirectory(ctx, directoryAda); outcome != RefreshConfirmed || err != nil {
+			t.Fatalf("the next check, answered with the stored u-ada-2 = %v, %v; want Active", outcome, err)
+		}
+		if standIn.asked() != 1 {
+			t.Fatalf("an answer with the stored id asked the broker; it was asked %d times in all, want once", standIn.asked())
+		}
+	})
+
+	t.Run("an alias of a colleague's account", func(t *testing.T) {
+		r, standIn := start(t, directoryBob, counts(0, 0, 0))
+		held(t, r, standIn, 0, "an answer whose primaryEmail is another address, all counts zero")
+	})
+}
+
+// storedID is a stored Directory user id as a failure names it: null, or the id quoted.
+func storedID(id *string) string {
+	if id == nil {
+		return "null"
 	}
+	return strconv.Quote(*id)
 }

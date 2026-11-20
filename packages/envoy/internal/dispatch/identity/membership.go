@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -79,6 +80,12 @@ type Membership struct {
 	// identity (DISPATCH_IDENTITY=iap): nil outside IAP. With it set, nothing is refreshed, and
 	// People must also be a DirectoryPeople, which records each check's outcome.
 	Directory *DirectoryReader
+	// Outliving answers whether an address still has access that outlives the browser, the
+	// question a sign-out asks (api.Deps.Outliving, which cmd/dispatch hands over once the router
+	// is built). Under IAP identity a Directory answer for an address deleted and created again
+	// confirms the new account only while it answers no (checkDirectory). Its zero value has no
+	// database and answers an error, so it confirms nobody.
+	Outliving agentsecrets.OutlivingAccess
 
 	// refreshes holds one refresh per person in flight in this process: a page load's many
 	// requests and Standing's calls share it. Another server process refreshes on its own, so two

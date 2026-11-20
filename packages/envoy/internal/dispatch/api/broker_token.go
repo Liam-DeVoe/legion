@@ -180,11 +180,12 @@ func errBrokerTokenLapsed() error {
 // holds it to.
 //
 // Last, where a Google rule signs people in (Deps.Standing set), the same statement reads whether
-// Dispatch records a hold of the person (recordedHoldSQL), which is 401 MEMBERSHIP_HELD, whatever
-// the token's project scope: an operator entry's token names the person too. It asks Standing
-// nothing: the broker's hold gate already asked the person route, and its introspection's held
-// answer, which a caller reads after this admission (brokertoken.Caller.Held), carries every hold
-// this read cannot see. With Standing nil a recorded hold holds nobody.
+// Dispatch records a hold of the person (recordedHoldSQL), which is 401 MEMBERSHIP_HELD in the
+// words for what ends it (recordedHoldRefusal), whatever the token's project scope: an operator
+// entry's token names the person too. It asks Standing nothing: the broker's hold gate already
+// asked the person route, and its introspection's held answer, which a caller reads after this
+// admission (brokertoken.Caller.Held), carries every hold this read cannot see. With Standing nil
+// a recorded hold holds nobody.
 func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Caller) (brokerAdmission, error) {
 	var kind string
 	var replaced, named, recorded bool
@@ -212,9 +213,22 @@ func (s *server) brokerPersonAdmitted(ctx context.Context, caller brokertoken.Ca
 		}
 	}
 	if recorded && s.deps.Standing != nil {
-		return brokerAdmission{}, errMembershipHeld(membershipHeldText)
+		return brokerAdmission{}, s.recordedHoldRefusal()
 	}
 	return admission, nil
+}
+
+// recordedHoldRefusal is the refusal of a credential whose person people records a hold of, read
+// in the credential's own statement (recordedHoldSQL), where a Google rule signs people in
+// (Deps.Standing set): 401 MEMBERSHIP_HELD in the words for what ends the hold. Under IAP identity
+// (Standing.ChecksDirectory) the Workspace Directory recorded it and only its next active answer
+// ends it, so the words are the Directory's (membershipHeldDirectoryText), as brokerTokenHeld's and
+// a personal token's are there; under a Google sign-in rule a sign-in ends it (membershipHeldText).
+func (s *server) recordedHoldRefusal() error {
+	if s.deps.Standing.ChecksDirectory() {
+		return errMembershipHeld(membershipHeldDirectoryText)
+	}
+	return errMembershipHeld(membershipHeldText)
 }
 
 // recordedHoldSQL is the SQL expression that people records a hold of the person address names

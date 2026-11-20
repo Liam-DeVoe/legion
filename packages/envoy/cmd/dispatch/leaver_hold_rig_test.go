@@ -450,8 +450,7 @@ func newLeaverRig(t *testing.T, opts ...leaverOption) *leaverRig {
 	if err != nil {
 		t.Fatalf("build the request identity: %v", err)
 	}
-	built.Standing = standingFor(rule, r.membership)
-	r.app, err = routes.BuildAppContext(appContextOptions(boot, rule, built))
+	r.app, err = buildAppContext(boot, rule, built, r.membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}

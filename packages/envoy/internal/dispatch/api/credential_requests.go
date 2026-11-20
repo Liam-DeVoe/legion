@@ -313,7 +313,7 @@ func (s *server) approverStanding(r *http.Request, actor model.Actor) (subject s
 	case brokerReplaced:
 		return "", 0, brokerReplacedRefusal(broker.subject == "", brokerNamed)
 	case brokerHeld && s.deps.Standing != nil:
-		return "", 0, errMembershipHeld(membershipHeldText)
+		return "", 0, s.recordedHoldRefusal()
 	}
 	if owner != nil {
 		if err := s.personalTokenHeld(r.Context(), *owner, hold); err != nil {

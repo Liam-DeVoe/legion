@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
+	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/weborigin"
@@ -466,4 +467,24 @@ func standingFor(rule identity.SignInRule, membership *identity.Membership) api.
 		return nil
 	}
 	return membership
+}
+
+// buildAppContext is the router's app context main serves for boot, built from built with
+// membership, the one requestIdentityFor built (nil for none), as the router's Standing
+// (standingFor). It then hands membership the router's check of access that outlives the browser
+// (routes.AppContext.Outliving, api.Deps.Outliving), the one a sign-out asks, so a Directory check
+// of an address deleted and created again asks the same database and broker client and no second
+// client is built (identity.Membership.Outliving). requestIdentityFor runs before the router can
+// be built, so the handoff is here, before the app context serves a request or the maintenance
+// sweep starts a membership pass.
+func buildAppContext(boot bootConfig, rule identity.SignInRule, built routes.AppContextOptions, membership *identity.Membership) (*routes.AppContext, error) {
+	built.Standing = standingFor(rule, membership)
+	app, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
+	if err != nil {
+		return nil, err
+	}
+	if membership != nil {
+		membership.Outliving = app.Outliving()
+	}
+	return app, nil
 }

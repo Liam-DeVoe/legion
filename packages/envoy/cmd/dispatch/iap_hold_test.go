@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -19,9 +18,9 @@ import (
 )
 
 // The IAP hold through the real router (R9, c-iap-directory): Dispatch under DISPATCH_IDENTITY=iap
-// as main builds it (requestIdentityFor, standingFor, appContextOptions), on Postgres, naming its
-// person from assertions signed by a key set served here in IAP's place, and checking people's
-// Workspace accounts through the Directory reader against Google hosts served here (directorytest).
+// as main builds it (requestIdentityFor, buildAppContext), on Postgres, naming its person from
+// assertions signed by a key set served here in IAP's place, and checking people's Workspace
+// accounts through the Directory reader against Google hosts served here (directorytest).
 
 // iapPerson is the person iapAssertion's assertions name, lowercased as Dispatch records them.
 const iapPerson = "a.person@example.com"
@@ -58,8 +57,7 @@ func newIAPHoldRig(t *testing.T) *iapHoldRig {
 	if err != nil {
 		t.Fatalf("build the IAP identity: %v", err)
 	}
-	built.Standing = standingFor(rule, r.membership)
-	app, err := routes.BuildAppContext(appContextOptions(boot, rule, built))
+	app, err := buildAppContext(boot, rule, built, r.membership)
 	if err != nil {
 		t.Fatalf("build the router: %v", err)
 	}
@@ -254,65 +252,35 @@ func TestIAPPersonalTokenFollowsTheDirectory(t *testing.T) {
 	wantAnswer(t, "the token of an owner the Directory holds, after their valid assertion", r.use(token), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
 }
 
-// TestForgetDirectoryUserCommand: `envoy-dispatch forget-directory-user <address>` forgets the
-// Directory user id the address's row stores, for the address in any case and spacing, prints that
-// it did, and exits 0; it changes nothing else of the row. Run again, or for an address no row
-// holds, it prints that nothing changed and exits 1. No address, a blank one, or two are usage
-// errors (2), and a database it cannot open is 1.
-func TestForgetDirectoryUserCommand(t *testing.T) {
-	database := storetest.Open(t)
-	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx := context.Background()
-	if err := people.Record(ctx, iapPerson); err != nil {
+// TestIAPRecreatedAddressConfirmsThroughTheRoutersCheck: under IAP, the Membership the router's
+// Standing and the membership pass ask is handed the router's check of access that outlives the
+// browser (buildAppContext, routes.AppContext.Outliving). The person's address is deleted and
+// created again for a new account, which the Directory answers with another id: the pass holds the
+// row while the earlier person's personal token is unrevoked, and once it is revoked the next pass
+// confirms the new account, stores its id and releases the hold, with no operator command. The new
+// person then mints a token of their own, which acts.
+//
+// Control: leave out buildAppContext's handoff. The Membership's question has no database and
+// fails, so the second pass holds the row again, and the test fails naming the stored id.
+func TestIAPRecreatedAddressConfirmsThroughTheRoutersCheck(t *testing.T) {
+	r := newIAPHoldRig(t)
+	r.directory(false)
+	earlier := r.mintToken()
+	wantAnswer(t, "the earlier person's token, their account active", r.use(earlier), http.StatusOK, "", "")
+
+	r.google.SetUser(iapPerson, directorytest.User{ID: "u-person-2", PrimaryEmail: iapPerson})
+	r.pass()
+	wantAnswer(t, "the earlier person's token once the address answers another account", r.use(earlier), http.StatusUnauthorized, "MEMBERSHIP_HELD", iapHeldText)
+
+	r.exec(`update agent_tokens set revoked_at = now() where canonical_login(owner) = $1 and revoked_at is null`, iapPerson)
+	r.pass()
+	var stored string
+	if err := r.database.Pool.QueryRow(context.Background(), `select coalesce(directory_user_id, 'null') from people where email = $1`, iapPerson).Scan(&stored); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := people.RecordDirectoryActive(ctx, iapPerson, "u-person"); err != nil {
-		t.Fatal(err)
+	if held := r.heldSince(); stored != "u-person-2" || held != nil {
+		t.Fatalf("after the earlier person's token was revoked and a pass ran, the row stores id %s and is held since %v; want u-person-2 and no hold", stored, held)
 	}
-	if err := people.RecordDirectoryHeld(ctx, iapPerson); err != nil {
-		t.Fatal(err)
-	}
-	type columns struct {
-		confirmed, deadline, held *time.Time
-		id                        *string
-	}
-	read := func() columns {
-		t.Helper()
-		var row columns
-		if err := database.Pool.QueryRow(ctx, `select directory_confirmed_at, not_held_until, held_since, directory_user_id from people where email = $1`, iapPerson).
-			Scan(&row.confirmed, &row.deadline, &row.held, &row.id); err != nil {
-			t.Fatal(err)
-		}
-		return row
-	}
-	before := read()
-	run := func(args ...string) (int, string, string) {
-		var stdout, stderr bytes.Buffer
-		env := envGetter(map[string]string{"DATABASE_URL": database.Pool.Config().ConnString()})
-		code := runSubcommand(ctx, append([]string{"forget-directory-user"}, args...), env, &stdout, &stderr)
-		return code, stdout.String(), stderr.String()
-	}
-	if code, stdout, stderr := run("  A.Person@Example.com "); code != 0 || !strings.Contains(stdout, "forget-directory-user: "+iapPerson+" no longer stores a Directory user id") {
-		t.Fatalf("forget-directory-user of the stored address: exit %d, stdout %q, stderr %q; want 0 saying it forgot the id", code, stdout, stderr)
-	}
-	after := read()
-	if after.id != nil || !after.confirmed.Equal(*before.confirmed) || !after.deadline.Equal(*before.deadline) || after.held == nil || !after.held.Equal(*before.held) {
-		t.Fatalf("after forget-directory-user the row holds id %v, confirmed %v, deadline %v, held %v; want no id and the rest as before (%v, %v, %v)",
-			after.id, after.confirmed, after.deadline, after.held, before.confirmed, before.deadline, before.held)
-	}
-	for _, again := range []string{iapPerson, "nobody@example.com"} {
-		if code, stdout, stderr := run(again); code != 1 || !strings.Contains(stderr, "stores no Directory user id; nothing changed") || stdout != "" {
-			t.Errorf("forget-directory-user %s with no stored id: exit %d, stdout %q, stderr %q; want 1 saying nothing changed", again, code, stdout, stderr)
-		}
-	}
-	for _, args := range [][]string{nil, {" "}, {iapPerson, "other@example.com"}} {
-		if code, _, stderr := run(args...); code != 2 || !strings.Contains(stderr, "forget-directory-user <address>") {
-			t.Errorf("forget-directory-user %q: exit %d, stderr %q; want 2 with the usage", args, code, stderr)
-		}
-	}
-	var stdout, stderr bytes.Buffer
-	unreachable := envGetter(map[string]string{"DATABASE_URL": "postgres://nobody@127.0.0.1:1/none?sslmode=disable&connect_timeout=1"})
-	if code := runSubcommand(ctx, []string{"forget-directory-user", iapPerson}, unreachable, &stdout, &stderr); code != 1 {
-		t.Errorf("forget-directory-user with an unreachable database: exit %d, stderr %q; want 1", code, stderr.String())
-	}
+	newer := r.mintToken()
+	wantAnswer(t, "the new person's own token", r.use(newer), http.StatusOK, "", "")
 }
