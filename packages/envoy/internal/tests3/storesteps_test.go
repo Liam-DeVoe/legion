@@ -54,10 +54,10 @@ import (
 //     anywhere, no sleep outside such a wait, and no wait inside another wait or in a function,
 //     which a call from inside another wait would run there: either would set the deadline the
 //     outer wait reads on every pass, so it might never end.
-//   - The rules waits_test.go's ownFindings reads for the script hold here too: no own function
-//     takes the name of a command these rules read or is defined twice, only a wait's deadline
-//     statement sets deadline and holds arithmetic, and only s3's first statement sets seconds
-//     and what, to its first and second arguments.
+//   - The rules shellpolicy_test.go's ownFindings reads for the script hold here too: no own
+//     function takes the name of a command these rules read or is defined twice, only a wait's
+//     deadline statement sets deadline and holds arithmetic, and only s3's first statement sets
+//     seconds and what, to its first and second arguments.
 
 // repository is this repository's root, read from this package's directory; workflow is the
 // workflow whose shard job starts the browser suite's file store; waitStep is that job's step
