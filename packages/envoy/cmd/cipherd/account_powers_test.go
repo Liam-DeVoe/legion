@@ -1,11 +1,12 @@
-// account_powers_test.go drives the REAL compiled broker with three accounts in
-// BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review — over
-// HTTP, on a real Postgres, against a local OpenID issuer standing in for the cluster's. Being
-// listed is not being allowed: the caller's name says which of the broker's fourteen
-// named-caller routes that account reaches, so the introspection-only caller is refused every
-// route Dispatch's server relays a person's decisions through, the review caller reads the
-// grant log and is refused the other thirteen, and the dispatch caller reaches all thirteen of
-// its own and is refused the review's. Nothing here is a unit test — the binary is the one
+// account_powers_test.go drives the REAL compiled broker with four accounts in
+// BROKER_API_ACCOUNTS — one calling as dispatch, one as listener, one as access-review, one as
+// session-watch — over HTTP, on a real Postgres, against a local OpenID issuer standing in for the
+// cluster's. Being listed is not being allowed: the caller's name says which of the broker's
+// fifteen named-caller routes that account reaches, so the introspection-only caller is refused
+// every route Dispatch's server relays a person's decisions through, the review caller reads the
+// grant log and is refused the other fourteen, the session watch reads the private list and is
+// refused the other fourteen, and the dispatch caller reaches all thirteen of its own and is
+// refused the review's and the watch's. Nothing here is a unit test — the binary is the one
 // cmd/cipherd builds and every request crosses a socket.
 package main
 
@@ -25,22 +26,27 @@ const (
 	// listenerAccount is the second listed ServiceAccount, calling as listener: the Envoy
 	// listener, which reads one of the broker's access tokens back and relays no person's
 	// decision. reviewAccount is the third, calling as access-review: the identity a quarterly
-	// access review reads the broker's audit trail as, which decides nothing. apiAccount
-	// (token_exchange_test.go) is the first, calling as dispatch.
+	// access review reads the broker's audit trail as, which decides nothing. watchAccount is the
+	// fourth, calling as session-watch: the shared session watch, which reads the broker's list of
+	// private projects and nothing else. apiAccount (token_exchange_test.go) is the first, calling
+	// as dispatch.
 	listenerAccount = "system:serviceaccount:example-ns:example-listener"
 	reviewAccount   = "system:serviceaccount:example-ns:example-access-review"
-	// The three caller names those accounts are listed under, which the broker names in a
+	watchAccount    = "system:serviceaccount:example-ns:example-session-watch"
+	// The four caller names those accounts are listed under, which the broker names in a
 	// refusal and this test drives every route from.
 	dispatchCaller = "dispatch"
 	listenerCaller = "listener"
 	reviewCaller   = "access-review"
+	watchCaller    = "session-watch"
 	// introspection is the one route two names carry: the listener's own, which dispatch
 	// reaches too, since the name that relays a person's decisions reads a token back as well.
 	// grantLogRoute is the review's own, which carries a closed period because the review
-	// caller's answer there is a page and not a refusal.
-	introspection = "/v1/oauth/introspect"
-	grantLogRoute = "/v1/grant-log"
-	grantLogQuery = grantLogRoute + "?since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z"
+	// caller's answer there is a page and not a refusal. privateListRoute is the watch's own.
+	introspection    = "/v1/oauth/introspect"
+	grantLogRoute    = "/v1/grant-log"
+	grantLogQuery    = grantLogRoute + "?since=2026-01-01T00:00:00Z&until=2026-01-02T00:00:00Z"
+	privateListRoute = "/v1/private-projects"
 	// powersApprover is the person a relayed decision would name, and unknownID an id no record,
 	// machine login or grant has: the routes under test are reached, never satisfied, so the
 	// answer this test reads is the authority's and not a decision's.
@@ -56,15 +62,17 @@ const (
 	lacksPower = "ACCOUNT_LACKS_POWER"
 )
 
-// TestAListedAccountReachesOnlyItsOwnRoutes lists three callers and drives every route
+// TestAListedAccountReachesOnlyItsOwnRoutes lists four callers and drives every route
 // accountAuth authenticates from each of them. The listener caller, listed for introspection
 // alone, is refused each of the twelve relay routes — approve, deny, dismiss, both
 // revoke-by-approver, the RFC 7009 token revocation and both person sign-in routes among them —
-// and the grant log too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and still reads a
-// token back. The access-review caller reads the grant log and is refused the other thirteen the
-// same way. The dispatch caller reaches all thirteen of its own, the introspection route
-// included, and is refused the grant log: the broker's audit trail is not another of the powers
-// the name that decides already holds.
+// the grant log and the private list too, 403 ACCOUNT_LACKS_POWER naming itself and the route, and
+// still reads a token back. The access-review caller reads the grant log and is refused the other
+// fourteen the same way, and the session-watch caller reaches the private list, on a broker with
+// no BROKER_PROJECT_ACCESS_URL its 503 PRIVATE_LIST_UNKNOWN, and is refused the other fourteen.
+// The dispatch caller reaches all thirteen of its own, the introspection route included, and is
+// refused the grant log and the private list: neither the broker's audit trail nor the list of
+// private projects is another of the powers the name that decides already holds.
 func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 	databaseURL := storetest.URL(t)
 	cluster := oidctest.New(t)
@@ -80,7 +88,12 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + cluster.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + enrolmentAudience,
-		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount + " access-review=" + reviewAccount,
+		"BROKER_API_ACCOUNTS=dispatch=" + apiAccount + " listener=" + listenerAccount + " access-review=" + reviewAccount + " session-watch=" + watchAccount,
+		// No Dispatch, whatever the environment the test runs in sets: the private list's answer
+		// below is the one a broker that asks no Dispatch gives. Each is the last of its key, which
+		// is the value exec gives the child.
+		"BROKER_PROJECT_ACCESS_URL=",
+		"BROKER_PROJECT_ACCESS_TOKEN_FILE=",
 	}})
 	live := newPlainBroker(broker.Addr)
 	// Each listed caller: the name the broker knows it by and that account's own token.
@@ -88,6 +101,7 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		{dispatchCaller, accountToken(t, cluster, clusterKey, apiAccount)},
 		{listenerCaller, accountToken(t, cluster, clusterKey, listenerAccount)},
 		{reviewCaller, accountToken(t, cluster, clusterKey, reviewAccount)},
+		{watchCaller, accountToken(t, cluster, clusterKey, watchAccount)},
 	}
 
 	// Each row is one route accountAuth authenticates, with a request that reaches its handler:
@@ -127,6 +141,9 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 		// The review's own route, called for a period that closed long ago, so the answer the
 		// review gets here is a page of the grant log rather than a refusal of its period.
 		{method: http.MethodGet, pattern: grantLogRoute, path: grantLogQuery, caller: reviewCaller},
+		// The watch's own route, on a broker that asks no Dispatch: its answer is that the list is
+		// unknown, which is the route's own answer and not a refusal of the caller.
+		{method: http.MethodGet, pattern: privateListRoute, path: privateListRoute, caller: watchCaller},
 	} {
 		for _, who := range callers {
 			t.Run("as "+who.name+": "+route.method+" "+route.pattern, func(t *testing.T) {
@@ -160,6 +177,13 @@ func TestAListedAccountReachesOnlyItsOwnRoutes(t *testing.T) {
 					// yet, which is still a page and not a refusal.
 					if status != http.StatusOK || body["events"] == nil {
 						t.Fatalf("%s %s as %s = %d %v, want 200 and a page of events: the review reads the closed period it asked for",
+							route.method, route.pattern, who.name, status, body)
+					}
+				case privateListRoute:
+					// This broker has no BROKER_PROJECT_ACCESS_URL, so it cannot read Dispatch's
+					// part of the list, and a list it cannot read in full is no list.
+					if status != http.StatusServiceUnavailable || body["code"] != "PRIVATE_LIST_UNKNOWN" {
+						t.Fatalf("%s %s as %s = %d %v, want 503 PRIVATE_LIST_UNKNOWN: the watch reaches its route, and a broker that asks no Dispatch cannot say which projects are private",
 							route.method, route.pattern, who.name, status, body)
 					}
 				default:

@@ -69,6 +69,12 @@ const (
 	// grants nothing: it decides no request, releases no secret value and writes no row, so a
 	// caller holding it alone can read the broker's history and change none of it.
 	readsGrantLog
+	// readsPrivateList is reading the broker's own list of every private project (GET
+	// /v1/private-projects), the keys the deployment declares private with the ones Dispatch
+	// answers private. The shared session watch needs it so that it never judges a private
+	// project's session, and it is a power of its own because the list says which projects are
+	// private and nothing more: it grants nothing, decides nothing and writes nothing.
+	readsPrivateList
 )
 
 // Account is a caller of the accountAuth routes: the name BROKER_API_ACCOUNTS gives its
@@ -88,16 +94,20 @@ func (a Account) may(p power) bool { return p != noPower && a.powers&p == p }
 // give a ServiceAccount, and what that name may do. dispatch is Dispatch's server, which relays a
 // person's decisions and reads tokens back; listener is the Envoy listener, which reads a token
 // back and relays no decision; access-review is the identity a quarterly access review calls as,
-// which reads the grant log and nothing else. The review is a third name rather than another of
-// Dispatch's powers because Dispatch's server already holds approval authority over every
-// person's secrets: giving the whole audit trail to that same name would widen what one stolen
-// token reads, while the review identity decides nothing and so is safe to hand to whoever runs
-// the review. A new caller is a deliberate row here, since a name is an authority and not a
-// label: a name this table does not know refuses the broker's boot.
+// which reads the grant log and nothing else; session-watch is the shared session watch, which
+// reads the list of private projects and nothing else. The review is a third name rather than
+// another of Dispatch's powers because Dispatch's server already holds approval authority over
+// every person's secrets: giving the whole audit trail to that same name would widen what one
+// stolen token reads, while the review identity decides nothing and so is safe to hand to whoever
+// runs the review. The watch is a name of its own for the same reason: it reads one list and
+// decides nothing, so its token reaches nothing else. A new caller is a deliberate row here, since
+// a name is an authority and not a label: a name this table does not know refuses the broker's
+// boot.
 var accountPowers = map[string]power{
 	"access-review": readsGrantLog,
 	"dispatch":      readsTokensBack | relaysDecisions,
 	"listener":      readsTokensBack,
+	"session-watch": readsPrivateList,
 }
 
 // AccountFor answers the account a caller name carries, and whether the broker knows the name at
@@ -431,6 +441,16 @@ func routes() []apiRoute {
 		// revoking person is the one the request names, which the broker takes on the caller's
 		// word: a revoke only takes power away.
 		{http.MethodPost, "/v1/person-signins/{id}/revoke", accountAuth(relaysDecisions, (*server).revokePersonSignIn)},
+		// Answer the shared session watch every project the broker counts private: each project
+		// Dispatch answers private, read with the broker's own token and kept 30 seconds, with any
+		// key the deployment itself declares private, sorted and each key once, and an empty list
+		// when none is. Only the caller name session-watch reaches it. While Dispatch cannot
+		// answer (no answer in time, a refusal of the broker's token, any status but 200, a 404
+		// included, or an answer with no projects list), the route answers with the last list
+		// Dispatch gave, for at most 5 minutes after Dispatch can have given it. Past that, and on
+		// a broker with no BROKER_PROJECT_ACCESS_URL, it is 503 PRIVATE_LIST_UNKNOWN naming the
+		// kind of failure, never Dispatch's own words, and never a shorter list.
+		{http.MethodGet, "/v1/private-projects", accountAuth(readsPrivateList, (*server).privateProjects)},
 		// Read the broker's grant log for one closed period, for a quarterly access review:
 		// every audit row between ?since and ?until (RFC 3339, half-open), oldest first, each
 		// naming the session that wrote it, that session's person, the service the broker

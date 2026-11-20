@@ -165,11 +165,27 @@ type Deps struct {
 	// never stops in the first place - ciphertest and the in-process rigs - for which the broker
 	// is never draining.
 	Draining func() bool
+	// PrivateProjects is Dispatch's part of the broker's list of private projects, which GET
+	// /v1/private-projects answers the shared session watch: every project Dispatch holds private,
+	// read with the broker's own token through projectaccess.Client.PrivateProjects, kept
+	// projectaccess.CacheTTL. Nil is a broker with no BROKER_PROJECT_ACCESS_URL, which cannot say
+	// which projects are private and answers that route 503 PRIVATE_LIST_UNKNOWN.
+	PrivateProjects CachedPrivateProjects
+	// PrivateDeclared is the private projects the broker's own settings declare, the other part
+	// of that list, which needs no read of Dispatch. Nil declares none, so the list is Dispatch's
+	// alone: cmd/cipherd leaves it nil, since no setting of this broker declares one yet.
+	PrivateDeclared func() []string
+	// now is the clock GET /v1/private-projects ages the answer of Dispatch it holds by; nil is
+	// the wall clock. Only this package's tests set it (SetPrivateListClock).
+	now func() time.Time
 }
 
 type server struct {
 	deps            Deps
 	launcherLimiter *launcherLimiter
+	// privateList is the last list of private projects Dispatch gave GET /v1/private-projects,
+	// which the route answers with while Dispatch cannot answer (dispatchPrivateKeys).
+	privateList heldPrivateList
 	// rereadLimiter is the per-address bucket on POST /v1/secrets/{name}/reread
 	// (clientAddress) and rereadOverall the one every caller shares; refuseReread takes from
 	// both or neither. For a Deps that carries a RereadRate these are that rate's own pair, so
