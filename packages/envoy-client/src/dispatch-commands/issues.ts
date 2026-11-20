@@ -697,7 +697,7 @@ export async function specCheckResultCommand(
 function specCheckResultLine(result: SpecCheckResult): string {
   const { predicate, subject } = result.attestation;
   const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
-  const commit = subject?.[0]?.digest?.["gitCommit"] ?? "an unnamed commit";
+  const commit = subject?.[0]?.digest?.gitCommit ?? "an unnamed commit";
   return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
 }
 
@@ -724,7 +724,6 @@ async function specCheckResultsCommand(
           ].join("\n");
   return { text, details: { project, commit, results: results.length } };
 }
-
 
 /** Whether the CLI's `--dry-run` of a call asks Dispatch what the call's write would answer: a
  *  `dispatch result` record, whose dry run prints the pull-request body line the record would

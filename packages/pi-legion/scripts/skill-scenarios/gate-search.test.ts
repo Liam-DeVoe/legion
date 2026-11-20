@@ -127,9 +127,7 @@ describe("gate-search", () => {
     expect(
       faults.some(
         (fault) =>
-          fault.includes(stale.file) &&
-          fault.includes(stale.has) &&
-          fault.includes("matches 0")
+          fault.includes(stale.file) && fault.includes(stale.has) && fault.includes("matches 0")
       )
     ).toBe(true);
   });

@@ -2330,13 +2330,11 @@ describe("dispatch result --project, as a CI job writes it", () => {
     const write = written[0];
     expect(write?.authorization).toBe(`DPoP ${RESULTS_TOKEN}`);
     const proof = jwsPart(write?.dpop ?? null, 1);
-    expect(proof["htm"]).toBe("POST");
-    expect(proof["htu"]).toBe(`${dispatchUrl}/api/v1/projects/ACME/results`);
-    expect(proof["ath"]).toBe(createHash("sha256").update(RESULTS_TOKEN).digest("base64url"));
+    expect(proof.htm).toBe("POST");
+    expect(proof.htu).toBe(`${dispatchUrl}/api/v1/projects/ACME/results`);
+    expect(proof.ath).toBe(createHash("sha256").update(RESULTS_TOKEN).digest("base64url"));
     // One key: the one the trade proved is the one the write proves.
-    expect(jwsPart(write?.dpop ?? null, 0)["jwk"]).toEqual(
-      jwsPart(trades[0]?.proof ?? null, 0)["jwk"]
-    );
+    expect(jwsPart(write?.dpop ?? null, 0).jwk).toEqual(jwsPart(trades[0]?.proof ?? null, 0).jwk);
     namesNoToken(argv, stdout, stderr);
   }, 30_000);
 

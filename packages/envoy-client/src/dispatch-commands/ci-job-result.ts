@@ -52,7 +52,7 @@ function ciJobResultProblems(args: Readonly<Record<string, unknown>>): string[] 
   if (missing.length > 0) {
     problems.push(`a CI job's result needs ${missing.join(", ")}. ${CI_JOB_RESULT_RULE}`);
   }
-  const verdict = args["verdict"];
+  const verdict = args.verdict;
   if (verdict !== undefined && verdict !== "pass" && verdict !== "fail") {
     problems.push(
       "--verdict is pass or fail for a CI job's result of a check that its ci_check names."

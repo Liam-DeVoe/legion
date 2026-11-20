@@ -568,7 +568,6 @@ test("the worker prompt's push step leaves out a check CI proves", () => {
   ]);
 });
 
-
 // A `ci_check` that no run of its name answers is a defect of the check's words, which the
 // architect corrects, and no role sends that to an implementer who cannot cure it
 // (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass

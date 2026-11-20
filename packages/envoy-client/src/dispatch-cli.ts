@@ -340,7 +340,7 @@ async function ownIdentityResult(
   refuse: (text: string, code: number, tool?: string) => number
 ): Promise<number> {
   const resolution = ownIdentityDispatch(env);
-  const projectForm = parsed.args["project"] !== undefined;
+  const projectForm = parsed.args.project !== undefined;
   const check = {
     tool: parsed.tool,
     args: parsed.args,

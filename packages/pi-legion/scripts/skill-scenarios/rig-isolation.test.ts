@@ -12,8 +12,8 @@ import {
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { fileRowLimit, RIG_BATCH, SCRIPT_RUN } from "./test-limit";
 import { ownGroup } from "../../../../scripts/e2e/lib/own-group";
+import { fileRowLimit, RIG_BATCH, SCRIPT_RUN } from "./test-limit";
 
 // Two runs of one batch, started at the same time as the batch's xargs starts them:
 // `rig.sh run askgate on <n> <index> <start>`. The rig.sh under test is this one, copied into a
