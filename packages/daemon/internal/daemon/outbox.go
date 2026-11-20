@@ -3186,18 +3186,22 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 // cancelled this release has already resumed what it suspended, and a release that finished
 // left the pod gone and its bundle waiting for the pod that replaces it.
 //
-// The teardown is one-way from the runtime's read under its pod lock, just before the runtime
-// takes the pod: that read commits the release where it acts (store.Store.CommitIssueRelease).
-// A step of the runtime after it can fail once the pod is gone, and the row then runs again. That
-// attempt reads the mark as committed (store.ReleaseDecision.Committed): it cancels nothing, and
-// it asks the runtime again, whose steps are each done at most once (a Sandbox already gone is
-// done, a Suspended one is not patched again, a Secret already gone counts as deleted). Once the
-// runtime has answered, the release's record is the first step, and it writes the release on the
-// mark (store.Store.RecordPodRelease). A later step that fails runs the row again, and that
-// attempt reads the mark as a release that took its pod (store.ReleaseDecision.PodTaken): it asks
-// the runtime nothing, cancels nothing, and finishes the steps that are left. A cancel then would
-// resume roles in a pod that is gone, delete the bundle of unpushed work the next pod restores,
-// and drop the wakes the record already counted.
+// The teardown is one-way from the runtime's read of the store under its pod lock, just before
+// the runtime takes the pod: that read commits the release where it acts
+// (store.Store.CommitIssueRelease). The runtime reads the issue's Sandbox under that lock first,
+// and it asks the store only for a Sandbox of the issue and tree, or for one already gone. It
+// refuses a Sandbox labelled for another project, issue or tree before it asks, so that refusal
+// commits nothing: the row runs again, and a later takeover or queued start can still cancel the
+// release. A step of the runtime after the commit can fail once the pod is gone, and the row then
+// runs again. That attempt reads the mark as committed (store.ReleaseDecision.Committed): it
+// cancels nothing, and it asks the runtime again, whose steps are each done at most once (a
+// Sandbox already gone is done, a Suspended one is not patched again, a Secret already gone
+// counts as deleted). Once the runtime has answered, the release's record is the first step, and
+// it writes the release on the mark (store.Store.RecordPodRelease). A later step that fails runs
+// the row again, and that attempt reads the mark as a release that took its pod
+// (store.ReleaseDecision.PodTaken): it asks the runtime nothing, cancels nothing, and finishes
+// the steps that are left. A cancel then would resume roles in a pod that is gone, delete the
+// bundle of unpushed work the next pod restores, and drop the wakes the record already counted.
 func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload record.IssueRelease) error {
 	if r.supervisor == nil {
 		return errors.New("issue release executor has no claim supervisor")

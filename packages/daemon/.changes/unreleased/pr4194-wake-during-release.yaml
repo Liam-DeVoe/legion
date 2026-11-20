@@ -36,12 +36,13 @@ body: |-
   operator took over a woken role's claim before its release was cancelled, that wake's resume is
   not recorded, and the wake's start, which the role reads when an operator resumes it, says that
   the release did not finish and the role goes on in the same pod; a start in the pause's words
-  keeps them. A release is no longer cancelled once the runtime's read under the pod's launch turn
-  has authorized its teardown. A teardown that fails after that read runs again and finishes: it
-  asks the runtime again until the runtime answers without an error, and then records the release
-  once; a teardown that fails after that record asks the runtime nothing and finishes its own
-  steps. The bundle of unpushed work stays for the next pod. A record of a release that cannot be
-  written makes the teardown run again, after the warning
+  keeps them. A release is no longer cancelled once the runtime has read a Sandbox of the issue, or
+  found it gone, under the pod's launch turn and the store has then authorized its teardown, before
+  the runtime takes the pod. A teardown that fails after that authorization runs again and
+  finishes: it asks the runtime again until the runtime answers without an error, and then records
+  the release once; a teardown that fails after that record asks the runtime nothing and finishes
+  its own steps. The bundle of unpushed work stays for the next pod. A record of a release that
+  cannot be written makes the teardown run again, after the warning
   `outbox: could not record an issue pod's release`.
   A waiting retry logs
   `an intake fact waits and is applied again after its delay` at info.

@@ -423,14 +423,16 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 }
 
 // CommitIssueRelease is IssueRelease as the runtime reads it under the pod's launch turn, just
-// before it takes the pod (the teardown's authorize, runtime.IssueReleaser). Where it answers
-// ReleaseActs, the same transaction marks the release committed (issue_releases.committed). That
-// read is the teardown's point of no return: the runtime acts on it, and each of the runtime's
-// steps after it can fail once the pod is already gone. So from that read on, the release is
-// never cancelled: IssueRelease answers ReleaseActs (ReleaseDecision.Committed), and
-// CancelIssueRelease refuses the mark. The teardown that runs again asks the runtime again, and
-// then records the release (RecordPodRelease), after which the runtime is not asked again
-// (ReleaseDecision.PodTaken).
+// before it takes the pod (the teardown's authorize, runtime.IssueReleaser). The runtime reads the
+// issue's Sandbox under that turn first, and it reads this only for a Sandbox of the issue and
+// tree, or for one already gone: it refuses a Sandbox labelled for another project, issue or tree
+// before this read, so that refusal commits nothing. Where it answers ReleaseActs, the same
+// transaction marks the release committed (issue_releases.committed). That read is the
+// teardown's point of no return: the runtime acts on it, and each of the runtime's steps after it
+// can fail once the pod is already gone. So from that read on, the release is never cancelled:
+// IssueRelease answers ReleaseActs (ReleaseDecision.Committed), and CancelIssueRelease refuses
+// the mark. The teardown that runs again asks the runtime again, and then records the release
+// (RecordPodRelease), after which the runtime is not asked again (ReleaseDecision.PodTaken).
 func (s *Store) CommitIssueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool) (ReleaseDecision, error) {
 	return s.issueRelease(ctx, project, release, outOfWorkflow, true)
 }
