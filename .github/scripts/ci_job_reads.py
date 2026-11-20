@@ -2355,11 +2355,17 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
     ]),
     harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
+        (f"{SCRIPTS}/check-ci-images-rows.test.sh", at("test", "Test the CI image check")),
+        (f"{SCRIPTS}/check-ci-images-references.test.sh", at("test", "Test the CI image check")),
+        (f"{SCRIPTS}/check-ci-images-test-lib.sh", "check-ci-images.test.sh:22, check-ci-images-rows.test.sh:22 and "
+                                                   "check-ci-images-references.test.sh:21 source it for their fixtures"),
+        (TEST_LIB, "check-ci-images-test-lib.sh:42 sources it for check/is/summary"),
         (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
-        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images.test.sh:108 symlinks in the path model its sweep walks the tree with"),
-        (f"{SCRIPTS}/ci_images.py", "check-ci-images.test.sh:109 symlinks in the reference grammar it reads a reference with"),
-        (".github/ci-images.yaml", "its last case runs the package mode over this repository's own rows"),
-    ]),
+        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images-test-lib.sh:98 symlinks in the path model its sweep walks the tree with"),
+        (f"{SCRIPTS}/ci_images.py", "check-ci-images-test-lib.sh:99 symlinks in the reference grammar it reads a reference with"),
+        (".github/ci-images.yaml", "check-ci-images.test.sh:249 reads its built row, and that last case runs the package mode "
+                                   "over this repository's own rows"),
+    ], lib=False),
     harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/mirror-ci-images.test.sh", [
         (f"{SCRIPTS}/mirror-ci-images.sh", "the script under test"),
         (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:437 runs the gate over the registry a copy left"),

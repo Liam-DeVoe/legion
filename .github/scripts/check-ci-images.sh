@@ -208,10 +208,10 @@
 # legion.browser-image.source-sha256 label. A stand-in that prints a status alone answers for
 # the manifest and not for a label, and rule 10 refuses a `built` row answered that way rather
 # than passing it over: a seam that could turn a rule off is a seam that hides what the rule
-# would have said. check-ci-images.test.sh sets the seam to a small script of its own, which
-# prints the label its rule 10 cases drive the comparison with, and mirror-ci-images.test.sh
-# drives rule 9 with it over the repository's own rows, so no case of either test reaches the
-# network.
+# would have said. check-ci-images-test-lib.sh, which this check's three harnesses source, sets
+# the seam to a small script of its own, which prints the label the rule 10 cases of
+# check-ci-images-rows.test.sh drive the comparison with, and mirror-ci-images.test.sh drives
+# rule 9 with it over the repository's own rows, so no case of those tests reaches the network.
 #
 # Run from anywhere: .github/scripts/check-ci-images.sh tree
 #                    .github/scripts/check-ci-images.sh package
@@ -339,7 +339,9 @@ MIRROR = "mirror.gcr.io"
 # The directories workflow_paths.walk skips (.git, .jj, node_modules, .venv, vendor) are every
 # directory this sweep skips but one, and this set holds that one.
 SWEEP_SKIP_DIRS = {".legion"}
-SELF = {".github/scripts/check-ci-images.sh", ".github/scripts/check-ci-images.test.sh"}
+# The files the sweep below skips, because each names MIRROR on purpose: this check, which names
+# it to refuse it, and the harness of the sweep's cases, which writes it into fixture trees.
+SELF = {".github/scripts/check-ci-images.sh", ".github/scripts/check-ci-images-references.test.sh"}
 ACCEPT = ",".join(
     (
         "application/vnd.oci.image.index.v1+json",
