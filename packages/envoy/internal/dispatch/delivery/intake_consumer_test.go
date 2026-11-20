@@ -20,6 +20,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -640,7 +641,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	// is the one a bound durable takes.
 	awaitPushBound(t, holder, "the durable is not bound to the other process")
 
-	startIntakeProcess(t, pool, natsURL, nil)
+	triesStart := time.Now()
+	tries := clocktest.New(triesStart)
+	startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { p.intake.holdClock = tries })
 	standingBy := "dispatch delivery: NATS consumer bound to a process that holds no hold; standing by until it lets go"
 	waitFor(t, func() bool {
 		for _, record := range logs() {
@@ -652,9 +655,9 @@ func TestAConsumerAnotherProcessIsBoundToIsLeftAlone(t *testing.T) {
 	}, func() string {
 		return fmt.Sprintf("the intake never said it was standing by for the bound durable: %v", logs())
 	})
-	// The intake's attempts go on every durableBindInterval, and two of them are what the durable
-	// is left alone through.
-	testwait.Span(t, 2*durableBindInterval, "an attempt after the first leaves nothing to read: the intake keeps the hold it took, its lookup of the durable writes nothing, and it says it stands by once per standbyLogEvery; the intake does real NATS and Postgres I/O, which synctest cannot hold; and no action of the test is ordered after its next attempt")
+	// The intake's tries run on a fake the row moves, one durableBindInterval at a time: the two
+	// after the first, which the durable is left alone through, have ended once bringTries returns.
+	bringTries(t, tries, triesStart, 2)
 	after := awaitPushBound(t, holder, "the other process lost its binding to the durable")
 	if !slices.Equal(after.Config.FilterSubjects, legacy.FilterSubjects) || after.Config.FilterSubject != "" {
 		t.Fatalf("the durable's filter is %q / %v, want the set it carried: %v",

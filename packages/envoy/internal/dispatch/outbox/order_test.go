@@ -360,7 +360,7 @@ func newSessionOrderRig(t *testing.T) sessionOrderRig {
 	}
 	t.Cleanup(client.Close)
 	reader := testnats.Connect(t, url)
-	js, err := reader.JetStream()
+	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}
@@ -699,13 +699,18 @@ func TestASendToASessionWaitsForTheAnswerToAnEarlierTopicSendOfItsBatch(t *testi
 
 // shiftedClock moves database's clock an hour ahead of the pod's, as a database host whose clock
 // disagrees with the pod's has it, and returns a store whose connections read it: every now() they
-// call answers an hour later than the pod's clock.
+// call answers an hour later than the pod's clock did when the clock was shifted, and answers that
+// one moment until the row ends. A back-off the row reads against now() then reads the same
+// however long the machine takes between the scan that wrote it and the reads that judge it, and
+// it never falls due while the row runs.
 func shiftedClock(t *testing.T, database *store.Store) *store.Store {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		create schema testclock;
+		create table testclock.moment (at timestamptz not null);
+		insert into testclock.moment (at) values (pg_catalog.now() + interval '1 hour');
 		create function testclock.now() returns timestamptz language sql stable
-			as $$ select pg_catalog.now() + interval '1 hour' $$;
+			as $$ select at from testclock.moment $$;
 		do $$ begin
 			execute format('alter database %I set search_path = testclock, pg_catalog, public', current_database());
 		end $$;

@@ -2,12 +2,14 @@ package delivery
 
 import (
 	"fmt"
+	"log/slog"
 	"slices"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -37,7 +39,7 @@ var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 // this intake's, no line says it stopped delivering, and a message published after the callback is
 // handled by it.
 func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBind(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureLogsFrom(t, slog.LevelDebug)
 	_, uri := testnats.Start(t)
 	// A client that connects in the foreground creates the stream before the intake's client
 	// exists: the intake's client ensures nothing until its held callback runs. It also reads the
@@ -66,6 +68,10 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 	seedDeliverySettings(t, ctx, pool)
 	fetches, github := countingGitHub(t)
 	intake := newIntake(client, pool, deliveryTestLeases(t, pool), github, events.NewBroker(), loadedSettingsCache(t, ctx, pool))
+	// The run loop's checks of the durable and the hold's loss run on the hold's clock, a fake the
+	// row moves: the check after the callback comes when the row brings it.
+	checks := clocktest.New(time.Now())
+	intake.holdClock = checks
 	// The first bind's subject, sent from the run loop: boundHook runs there after the take-over
 	// set the subject, so it reads it there. Only the first bind is the row's, and only it waits
 	// for the row to have seen the callback run.
@@ -114,13 +120,24 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 		}
 	}
 
-	// Two bind intervals after the callback, as the run loop polls and checks in its own time.
-	testwait.Span(t, 2*durableBindInterval+500*time.Millisecond, "a give-up shows only as the line the run loop logs: the hold's loss and its check of the durable fire on timers of the intake's own, which no state the row reads reaches before they fire; the intake does real NATS and Postgres I/O, which synctest cannot hold; and the message published below is handled on a key's goroutine, which orders nothing against the run loop")
-	keptTheDurable("two bind intervals after the callback")
+	// The run loop's first check of the durable, intakeHoldRenew into its run: the row brings it and
+	// waits for its line (DurableChecked), so a check that found the durable delivering elsewhere has
+	// logged its give-up by then.
+	checks.Advance(intakeHoldRenew)
+	testwait.Until(t, "the run loop's first check of the durable after the callback", func() ([]map[string]any, bool) {
+		records := logs()
+		for _, record := range records {
+			if record["msg"] == DurableChecked && record["pass"] == float64(1) {
+				return records, true
+			}
+		}
+		return records, false
+	})
+	keptTheDurable("once the run loop had checked the durable after the callback")
 
 	info := deliveryConsumerInfo(t, observer)
 	if !info.PushBound || info.Config.DeliverSubject != firstSubject {
-		t.Fatalf("two bind intervals after the callback the durable is push-bound = %t on %q, want bound on %q, the subject this intake bound; the messages logged were %q",
+		t.Fatalf("once the run loop had checked it after the callback the durable is push-bound = %t on %q, want bound on %q, the subject this intake bound; the messages logged were %q",
 			info.PushBound, info.Config.DeliverSubject, firstSubject, loggedMessages(logs()))
 	}
 	var holder, token string

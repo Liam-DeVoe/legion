@@ -213,13 +213,20 @@ func awaitAcknowledged(t *testing.T, natsClient *bus.Client) {
 	})
 }
 
-// captureLogs sends every slog record from here on to a buffer, as JSON, until the test ends, and
-// answers the records written so far. Intake logs from NATS's delivery goroutine, so the buffer is
-// locked. Call it before startIntake, so the default logger is restored only once intake stops.
+// captureLogs sends every slog record from Info up from here on to a buffer, as JSON, until the
+// test ends, and answers the records written so far. Intake logs from NATS's delivery goroutine, so
+// the buffer is locked. Call it before startIntake, so the default logger is restored only once
+// intake stops.
 func captureLogs(t *testing.T) func() []map[string]any {
 	t.Helper()
+	return captureLogsFrom(t, slog.LevelInfo)
+}
+
+// captureLogsFrom is captureLogs from level up, for a row that reads a Debug line.
+func captureLogsFrom(t *testing.T, level slog.Level) func() []map[string]any {
+	t.Helper()
 	var buffer lockedBuffer
-	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, nil))
+	logtest.SetDefault(t, slog.NewJSONHandler(&buffer, &slog.HandlerOptions{Level: level}))
 	return func() []map[string]any {
 		var records []map[string]any
 		for _, line := range strings.Split(strings.TrimSpace(buffer.String()), "\n") {

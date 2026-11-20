@@ -392,7 +392,7 @@ func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventPr
 	// reconnect among it -- before the envelope is published on the other process's connection.
 	// Without it the row could publish into a server that had not yet read that SUB, and read a
 	// fan-out that had not happened yet.
-	if err := holderClient.Connection().FlushWithContext(testwait.Context(t)); err != nil {
+	if err := holderClient.Connection().FlushWithContext(testnats.Context(t)); err != nil {
 		t.Logf("the returned process's connection did not answer a flush: %v", err)
 	}
 

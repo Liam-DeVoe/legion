@@ -123,6 +123,12 @@ type Outbox struct {
 	// clocktest.Fake in a row that reads which wait the outbox armed and moves past it itself.
 	// Set it only before Run starts, so nothing races it.
 	clock timerClock
+	// holdClock is the clock the publisher hold runs on (duty.HoldOptions.Clock: its renewals and
+	// its loss deadline) and the one this outbox reads that deadline against (Publishing, scan):
+	// nil, which New leaves, is the real clock. A row that drives a hold's loss or a silence on a
+	// clocktest.Fake sets it, and gives the outbox's bus client the same fake
+	// (bus.WithWindowClock), whose windows read the hold's deadline. Set it only before Run starts.
+	holdClock clock.Clock
 	// afterRetryArmed is given the wait serve armed its one retry timer for, each time it arms
 	// one. Nil in production; a test uses it to read the sequence the outbox went through - which
 	// wait it armed, and when - rather than measuring the wall clock the publish landed on. Set
@@ -183,7 +189,15 @@ func (o *Outbox) Publishing() bool {
 		return false
 	}
 	hold := o.hold.Load()
-	return hold != nil && time.Now().Before(hold.Deadline())
+	return hold != nil && o.holdTime().Now().Before(hold.Deadline())
+}
+
+// holdTime is holdClock, and the real clock when it is nil.
+func (o *Outbox) holdTime() clock.Clock {
+	if o.holdClock == nil {
+		return clock.Real()
+	}
+	return o.holdClock
 }
 
 // Run publishes the outbox whenever this process holds the publisher hold, and stands by for it
@@ -374,6 +388,7 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 	pool := o.deps.Store.Pool
 	options := publisherHoldOptions
 	options.Token = o.token
+	options.Clock = o.holdClock
 	hold, err := duty.TryHold(ctx, pool, publisherHold, o.instance, options)
 	if err == nil && hold != nil {
 		return hold, 0
@@ -468,14 +483,14 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // Rows wait on these messages' words (tookHold, releasedHold and lostHold in
 // cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
-	started := time.Now()
+	started := o.holdTime().Now()
 	o.hold.Store(hold)
 	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
 		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
-	returned := time.Now()
+	returned := o.holdTime().Now()
 	o.hold.Store(nil)
-	cleared := time.Now()
+	cleared := o.holdTime().Now()
 	deadline := hold.Deadline()
 	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {
@@ -636,7 +651,7 @@ func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 			switch {
 			case ctx.Err() != nil:
 				stop = true
-			case !time.Now().Before(hold.Deadline()):
+			case !o.holdTime().Now().Before(hold.Deadline()):
 				end.fenced, stop = true, true
 			default:
 				inflight++

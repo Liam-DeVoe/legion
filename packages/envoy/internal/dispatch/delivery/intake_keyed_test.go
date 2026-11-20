@@ -771,7 +771,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 	// The client restores its subscriptions before it runs the hooks, so a SUB it re-sent went out
 	// before this round trip, and the server has entered it in its subscription list by the
 	// answer.
-	if err := natsClient.Conn.FlushWithContext(testwait.Context(t)); err != nil {
+	if err := natsClient.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("a round trip on the reconnected connection: %v", err)
 	}
 	if subscribers := deliverSubjectSubscribers(t, server, stopped.DeliverSubject); subscribers != 0 {

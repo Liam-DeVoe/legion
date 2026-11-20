@@ -17,6 +17,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -60,7 +61,7 @@ func subscribe(t *testing.T, conn *natsgo.Conn, subject string) <-chan *natsgo.M
 	if _, err := conn.ChanSubscribe(subject, received); err != nil {
 		t.Fatalf("subscribe to %s: %v", subject, err)
 	}
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription to %s: %v", subject, err)
 	}
 	return received
@@ -74,6 +75,18 @@ func publishedDestinations(t *testing.T, database *store.Store, eventID int64) (
 		t.Fatalf("read published destinations: %v", err)
 	}
 	return destinations, attempts
+}
+
+// runRetriesHeld runs New(deps) until the returned func stops it, as runDeps does, with the
+// outbox's timers on a fake the row never moves. The retry a denial backs its event off for is
+// armed on that fake (Outbox.nextRetry) and never fires, so a row reads its first attempt's
+// count, log lines and metric with no second attempt behind them, however late it reads them;
+// the real clock's retry.BaseDelay would add one a second after the first.
+func runRetriesHeld(t *testing.T, deps Deps) func() {
+	t.Helper()
+	outbox := New(deps)
+	outbox.clock = clocktest.New(time.Now())
+	return runOn(t, outbox)
 }
 
 // holderSubject is the agent subject of roleHolder, every role's holder in a test that runs the
@@ -99,7 +112,7 @@ func TestRunRetriesARoleForwardNATSDenies(t *testing.T) {
 		IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Route to the reviewer"},
 	})
-	stop := run(t, database, client, broker)
+	stop := runRetriesHeld(t, withHeldRoles(Deps{Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener}))
 	defer stop()
 
 	testwait.Eventually(t, "the outbox's first attempt at the event settled", func() bool {
@@ -153,7 +166,7 @@ func TestRunDeliversTheGrantedRoutesOfAnEventWhoseRoleForwardNATSDenies(t *testi
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	event := seedThreeDestinationEvent(t, database, broker)
-	stop := run(t, database, client, broker)
+	stop := runRetriesHeld(t, withHeldRoles(Deps{Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener}))
 	defer stop()
 
 	testwait.Eventually(t, "the outbox's first attempt at the event settled", func() bool {
@@ -208,7 +221,7 @@ func TestTheRetryAfterAGrantDeliversOnlyTheDeniedRoute(t *testing.T) {
 	testwait.Receive(t, "the role holder's forward after the grant", forwarded)
 	// Everything the two attempts published was answered before the event was marked published,
 	// so the server has queued it to the subscriber ahead of the PONG this flush waits for.
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriber: %v", err)
 	}
 	if sent := len(authorReceived); sent != 1 {
@@ -285,7 +298,7 @@ func TestRunRetriesAnIssueTopicNATSDenies(t *testing.T) {
 		Payload: model.Message{ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", IssueKey: new("T-1"), Body: "Only the issue topic"},
 	})
 	registry := metrics.New()
-	stop := runDeps(t, Deps{
+	stop := runRetriesHeld(t, Deps{
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),
@@ -537,7 +550,7 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 		Payload: map[string]any{"id": "comment-2", "body": "The second, a moment later."},
 	})
 	registry := metrics.New()
-	stop := runDeps(t, Deps{
+	stop := runRetriesHeld(t, Deps{
 		Store: database, Publisher: client, Broker: broker, Listen: database.Pool.Listener,
 		PublishFailures: registry.NewCounter("envoy_dispatch_outbox_publish_failures_total",
 			"Destinations of an outbox publish attempt that did not reach NATS"),

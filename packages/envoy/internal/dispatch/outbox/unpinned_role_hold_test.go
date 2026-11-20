@@ -10,7 +10,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The second road to one host, which TestACommentAnUnansweredRoleMentionNotYetPinnedReachesThatSessionOnce
@@ -172,7 +171,8 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s among them: no mention of this comment names the thread root's author, and the hold an unpinned mention puts on the role's holder delays no other session's copy",
 			reached, authorSubject)
 	}
-	testwait.Eventually(t, "the author's copy", func() bool { return len(wrote.received()) > 0 })
+	// The scan has run to its end, so every copy it sent is handed on before settle's marker.
+	wrote.settle(t)
 	copies := wrote.received()
 	if len(copies) != 1 || copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", comment.ID) {
 		t.Fatalf("%s was sent %+v, want the author copy of event %d alone, under the event's own key",
@@ -182,6 +182,7 @@ func TestAnUnpinnedRoleMentionHoldsBackNoOtherSessionsCopy(t *testing.T) {
 		t.Fatalf("the comment reached %v, want %s not among them: that session holds the role the comment mentions, and its mention is on its way to the same host",
 			reached, contracts.LegacyAgentSubject(holder))
 	}
+	claimant.settle(t)
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing", holder, got, target)
 	}

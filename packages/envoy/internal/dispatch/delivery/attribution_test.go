@@ -263,6 +263,12 @@ func TestCitedIssuesCostsNoMoreThanTheBodyIsLong(t *testing.T) {
 	if allowed := uint64(matches) * 2 * maxHostName; read > allowed {
 		t.Errorf("citedIssues over %d bytes read back %d bytes before its %d matches' paths, past the %d allowed: %d digits and %d host bytes a match", len(body), read, matches, allowed, maxHostName, maxHostName)
 	}
+	// Each match's host is at least one byte before its path, which authorityBefore reads and
+	// counts: a reading that walks back some other way (strings.LastIndexAny to the nearest
+	// space, which copies nothing) counts none of it, and the bound above would pass it.
+	if read < uint64(matches) {
+		t.Errorf("citedIssues over %d bytes read back %d bytes before its %d matches' paths, want at least one a match: the walk back is not authorityBefore's, which counts what it reads", len(body), read, matches)
+	}
 	// The least of three readings at each size, since another goroutine of the binary only ever
 	// adds to what a reading sees.
 	allocated := func(size int) uint64 {

@@ -233,6 +233,12 @@ func TestCitedIssuesCostsNoMoreForACitationFarFromASpace(t *testing.T) {
 	if comma != space || space > 200*2*maxHostName {
 		t.Errorf("citing %d bytes read back %d bytes before the paths separated by commas and %d separated by spaces, want the same, and at most %d digits and %d host bytes for each of the 200: a match is reading back to the nearest space rather than a bounded run", len(byComma), comma, space, maxHostName, maxHostName)
 	}
+	// Each of the 200 hosts is at least one byte before its path, which authorityBefore reads and
+	// counts: a reading that walks back some other way (strings.LastIndexAny to the nearest space,
+	// which copies nothing) counts nothing for either body, which the comparison above passes.
+	if space < 200 {
+		t.Errorf("citing %d bytes read back %d bytes before the 200 paths separated by spaces, want at least one a path: the walk back is not authorityBefore's, which counts what it reads", len(bySpace), space)
+	}
 	if commaAllocated > 2*spaceAllocated {
 		t.Errorf("citing %d bytes allocated %d bytes with the paths separated by commas and %d separated by spaces, want about the same: a match is copying what it reads back to the nearest space", len(byComma), commaAllocated, spaceAllocated)
 	}

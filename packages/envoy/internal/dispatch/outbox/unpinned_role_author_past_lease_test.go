@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session that wrote the thread a comment replies to is sent nothing in the pass that reads
@@ -118,7 +117,8 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	testwait.Eventually(t, "the copy the mention's failure owes the thread author", func() bool { return len(wrote.received()) > 0 })
+	// The pass has run to its end, so every copy it sent is handed on before settle's marker.
+	wrote.settle(t)
 	want := []string{eventKey}
 	if got := keysOf(wrote.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once the resend had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

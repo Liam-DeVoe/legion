@@ -440,10 +440,7 @@ func newThroughputRig(t *testing.T, rtt time.Duration) *throughputRig {
 		t.Fatalf("connect the outbox's client through the latency proxy: %v", err)
 	}
 	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	t.Cleanup(reader.Close)
 	rig := &throughputRig{database: storetest.Open(t), client: client, reader: reader, broker: events.NewBroker()}
 	rig.holder = subscribeInOrder(t, reader, client.Connection(), contracts.LegacyAgentSubject(throughputHolder), func(message *natsgo.Msg, _ <-chan struct{}) {
@@ -690,11 +687,18 @@ func runOutbox(t *testing.T, database *store.Store, client *bus.Client, broker *
 // resolve on client's connection, as cmd/dispatch has them.
 func runOutboxThrough(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) func() {
 	t.Helper()
+	return runOn(t, wiredOutbox(t, database, client, publisher, broker))
+}
+
+// wiredOutbox is the outbox runOutboxThrough runs, built and not yet running, for a row that sets
+// one of its own fields (its clock, a hook) before it runs it with runOn.
+func wiredOutbox(t *testing.T, database *store.Store, client *bus.Client, publisher Publisher, broker *events.Broker) *Outbox {
+	t.Helper()
 	pool, err := database.Pool.Outbox()
 	if err != nil {
 		t.Fatalf("open the outbox's pool: %v", err)
 	}
 	holders := roles.NewBuckets(client, roles.Windows{})
-	return runDeps(t, Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
+	return New(Deps{Store: &store.Store{Pool: pool}, Publisher: publisher, Broker: broker, Listen: database.Pool.Listener,
 		RoleClaims: holders, Sessions: holders})
 }

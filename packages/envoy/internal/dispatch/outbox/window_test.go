@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -202,10 +204,7 @@ func destinationFamily(subject string) string {
 // in for no message here and a message lost on a destination still fails.
 func assertStreamInOrderPerDestination(t *testing.T, url string, want int) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	bySubject, _ := streamOrder(t, reader)
 	byFamily := map[string][]int64{}
@@ -240,10 +239,7 @@ func assertStreamInOrderPerDestination(t *testing.T, url string, want int) {
 // which is the order the next holder of the role is handed them in.
 func assertKeptLaneInOrder(t *testing.T, url, role string, seeded []model.Event, want int) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	issueOf := make(map[int64]string, len(seeded))
 	for _, event := range seeded {
@@ -301,13 +297,27 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	const wantOnDestinations, wantKept = count + count/2, count
 
 	proxy.Cut()
-	stop := runOutbox(t, database, client, broker)
+	testwait.Eventually(t, "the outbox's client noticing the cut", func() bool { return !client.Connected() })
+	// The outbox's own timers - a standby's holdRetry and lapse timer, a holder's natsLossGrace -
+	// are on a fake, so the row reads which it armed rather than waiting them out. A standby whose
+	// client is disconnected tries nothing and arms none of them: it waits for a wake alone, which
+	// only its connection coming back gives (Outbox.standby).
+	timers := clocktest.New(time.Now())
+	outbox := wiredOutbox(t, database, client, client, broker)
+	outbox.clock = timers
+	var standbyWaits atomic.Int64
+	outbox.afterStandbyWait = func() { standbyWaits.Add(1) }
+	stop := runOn(t, outbox)
 	defer stop()
-	// Long enough for an outbox that publishes while NATS is down to have done so more than once.
-	testwait.Span(t, 12*time.Second, "an outbox that took the hold or marked an event published with its "+
-		"client disconnected would do it on its own timers (holdRetry, natsLossGrace), which runOutbox's "+
-		"outbox reports to no state this row reads, and no later action follows a send never made while "+
-		"NATS is down; the span outlasts several of those timers")
+	testwait.Eventually(t, "the outbox standing by, or taking the hold, with NATS down", func() bool {
+		return standbyWaits.Load() > 0 || outbox.Publishing()
+	})
+	if outbox.Publishing() {
+		t.Fatal("the outbox took the publisher hold with its client disconnected")
+	}
+	if armed := timers.Armed(); len(armed) != 0 {
+		t.Fatalf("the standby holds timers for %v with its client disconnected, want none: a timer is the one way it could try the hold before NATS is back", armed)
+	}
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published while NATS was down", count-left)
 	}
@@ -315,6 +325,11 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 	restarted := time.Now()
 
 	testwait.Eventually(t, "the backlog published once NATS is back", func() bool {
+		// With NATS back, the fake stands for the wall clock again: each ask fires every timer the
+		// outbox armed, a back-off's retry among them, as the wall clock would have by then.
+		if armed := timers.Armed(); len(armed) > 0 {
+			timers.Set(armed[len(armed)-1])
+		}
 		return unpublishedCount(t, database) == 0
 	})
 	t.Logf("the backlog of %d events was published %s after NATS came back", count, time.Since(restarted).Round(time.Millisecond))
@@ -423,10 +438,7 @@ func TestOneIssuesEventsReachItsSubjectInSeqOrderWhileAnotherIssueCommitsAcrossT
 // them in stream order.
 func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 	t.Helper()
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -480,10 +492,7 @@ func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
 		t.Fatalf("connect the outbox's client: %v", err)
 	}
 	t.Cleanup(client.Close)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	js, err := reader.JetStream(testnats.MaxWait(t))
 	if err != nil {
@@ -564,10 +573,7 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 	}
 
 	stop := runOutbox(t, database, client, broker)
-	reader, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect the reader: %v", err)
-	}
+	reader := testnats.Connect(t, url)
 	defer reader.Close()
 	testwait.Eventually(t, "every destination and the kept lane acknowledged", func() bool {
 		_, all := streamOrder(t, reader)

@@ -9,7 +9,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A comment mentions two roles this read can name no holder for: one attempt is past the lease
@@ -105,7 +104,8 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	testwait.Eventually(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
+	// The pass has run to its end, so every copy it sent is handed on before settle's marker.
+	claimant.settle(t)
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
 	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",

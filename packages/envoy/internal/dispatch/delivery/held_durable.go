@@ -227,12 +227,17 @@ type heldDurable struct {
 	// gives it, and a test's clocktest.Fake, set before Run, as boundHook is.
 	clock intakeClock
 	// holdClock is the time the durable's hold runs on: this intake's tries for it every
-	// durableBindInterval (run), its renewals and its loss deadline (duty.HoldOptions.Clock), and
-	// every reading of whether this intake still holds it (holds, intakeDelivery.holdCovers,
-	// retryHeld). clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set
-	// before Run, on which a try comes and a loss deadline passes only where the test moves it.
-	// Whether another process may take the hold is the database's clock either way.
+	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), its renewals
+	// and its loss deadline (duty.HoldOptions.Clock), every reading of whether this intake still
+	// holds it (holds, intakeDelivery.holdCovers, retryHeld), and the take-over's bound and its
+	// waits between tries under it (finishTakeOver, retryHeld). clock.Real, which newHeldDurable
+	// gives it, and a test's clocktest.Fake, set before Run, on which a try or a check comes, a
+	// take-over tries a step again or gives it up, and a loss deadline passes only where the test
+	// moves it. Whether another process may take the hold is the database's clock either way.
 	holdClock clock.Clock
+	// checkPasses counts this intake's checks of its durable (check, DurableChecked's pass). Only
+	// the run loop's goroutine reads and writes it.
+	checkPasses uint64
 
 	mu sync.Mutex
 	// delivering is the latest subscription subscribe made, which StopDelivering stops.
@@ -282,13 +287,15 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 	stopping, release := stopContext(ctx, d.clock)
 	defer release()
 	defer d.stop(stopping)
-	// The tries are due on a grid durableBindInterval apart from the run's start, on the hold's
-	// clock, as a ticker's ticks are (duty.RunLeasedOn): a try that overran the interval is
-	// followed by one at once, and the grid moments it overran are dropped.
+	// The tries are due on a grid durableBindInterval apart from the run's start, and the checks on
+	// one intakeHoldRenew apart, both on the hold's clock, as a ticker's ticks are
+	// (duty.RunLeasedOn): a try or a check that overran its interval is followed by one at once,
+	// and the grid moments it overran are dropped.
 	bindDue := d.holdClock.Now().Add(durableBindInterval)
 	binds := d.holdClock.NewTimer(durableBindInterval)
 	defer binds.Stop()
-	checks := time.NewTicker(intakeHoldRenew)
+	checkDue := d.holdClock.Now().Add(intakeHoldRenew)
+	checks := d.holdClock.NewTimer(intakeHoldRenew)
 	defer checks.Stop()
 	attempt := func() {
 		if d.subject == "" && ready() {
@@ -315,16 +322,15 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			changed = wake()
 			attempt()
 		case <-binds.C():
-			received := d.holdClock.Now()
-			next := bindDue.Add(durableBindInterval)
-			for !next.After(received) {
-				next = next.Add(durableBindInterval)
-			}
+			next := gridAfter(bindDue, durableBindInterval, d.holdClock.Now())
 			attempt()
 			bindDue = next
 			binds.Reset(bindDue.Sub(d.holdClock.Now()))
-		case <-checks.C:
+		case <-checks.C():
+			next := gridAfter(checkDue, intakeHoldRenew, d.holdClock.Now())
 			d.check(ctx)
+			checkDue = next
+			checks.Reset(checkDue.Sub(d.holdClock.Now()))
 		case <-lost:
 			slog.Warn(intakeHoldLost, "name", d.name)
 			// The hold lasts intakeHoldMargin longer on the database's clock, so a handler that
@@ -334,6 +340,16 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 			d.hold, d.subject = nil, ""
 		}
 	}
+}
+
+// gridAfter is the first moment of the grid interval apart through due that is after now: where a
+// timer on that grid that fired at now is armed next.
+func gridAfter(due time.Time, interval time.Duration, now time.Time) time.Time {
+	next := due.Add(interval)
+	for !next.After(now) {
+		next = next.Add(interval)
+	}
+	return next
 }
 
 // stopDeliveringWithin stops this intake's subscription, giving the handlers still running budget
@@ -512,29 +528,30 @@ func startingAt(config natsgo.ConsumerConfig, start uint64) natsgo.ConsumerConfi
 // The bounds on finishTakeOver, the part of a take-over that runs after it has recorded the
 // durable's start, and that must not give up the consumer lease with the durable deleted.
 //
-// takeOverFinishWithin bounds the whole of it, from its first step to its last try. It is under
-// intakeHoldTTL - intakeHoldMargin (13 s), how long a hold lasts from its taking or its last
-// renewal. A hold takeHold just took has at most 13 s left when attempt reaches these steps, less
-// the lookup of the durable (lookupDurable, up to 5 s), the consumer lease (duty.Exclusive) and
-// takeOver's read of the durable before them: with every renewal after the taking failing, the
-// hold covers most of the 10 s of the steps, not always all of them. A take-over that runs again
-// after a check found the durable delivering elsewhere (check) begins at any point in the renewal
-// cycle of a hold this intake already held, so up to intakeHoldRenew (5 s) after its last renewal:
-// with the renewals from there on failing, about 8 s of the hold are left against the 10 s bound.
-// In both cases retryHeld stops at the hold's deadline. That exit is the safe one -- no step acts
-// once another process can take the hold, and the next attempt takes the durable over again.
-// takeOverFinishWithin is also inside intakeStopBudget, and so inside stopGrace (cmd/dispatch),
-// since a stop that comes meanwhile waits for it to end.
+// takeOverFinishWithin bounds the whole of it, from its first step to its last try, on the hold's
+// clock (heldDurable.holdClock). It is under intakeHoldTTL - intakeHoldMargin (13 s), how long a
+// hold lasts from its taking or its last renewal. A hold takeHold just took has at most 13 s left
+// when attempt reaches these steps, less the lookup of the durable (lookupDurable, up to 5 s), the
+// consumer lease (duty.Exclusive) and takeOver's read of the durable before them: with every
+// renewal after the taking failing, the hold covers most of the 10 s of the steps, not always all
+// of them. A take-over that runs again after a check found the durable delivering elsewhere
+// (check) begins at any point in the renewal cycle of a hold this intake already held, so up to
+// intakeHoldRenew (5 s) after its last renewal: with the renewals from there on failing, about 8 s
+// of the hold are left against the 10 s bound. In both cases retryHeld stops at the hold's
+// deadline. That exit is the safe one -- no step acts once another process can take the hold, and
+// the next attempt takes the durable over again. takeOverFinishWithin is also inside
+// intakeStopBudget, and so inside stopGrace (cmd/dispatch), since a stop that comes meanwhile
+// waits for it to end.
 //
 // takeOverCallTimeout bounds each try of each step, so that one call that draws no answer -- a
 // JetStream request during a leader change -- leaves room for the tries after it. A JetStream
 // leader election ordinarily ends within it.
 //
-// A failed try waits takeOverFirstRetry before the next one, doubling after each try up to
-// takeOverLastRetry: with calls that fail at once, that is eight tries within takeOverFinishWithin.
-// A try the connection's grant refuses (bus.ErrPublishDenied) is not tried again: the server
-// refuses it again however often it is sent, so the step gives up at once and the consumer lease
-// is released, rather than held for the rest of takeOverFinishWithin.
+// A failed try waits takeOverFirstRetry on the hold's clock before the next one, doubling after
+// each try up to takeOverLastRetry: with calls that fail at once, that is eight tries within
+// takeOverFinishWithin. A try the connection's grant refuses (bus.ErrPublishDenied) is not tried
+// again: the server refuses it again however often it is sent, so the step gives up at once and
+// the consumer lease is released, rather than held for the rest of takeOverFinishWithin.
 const (
 	takeOverFinishWithin = 10 * time.Second
 	takeOverCallTimeout  = 3 * time.Second
@@ -566,8 +583,11 @@ const (
 // (TestATakeOverWhoseCreateFailsCreatesTheDurableBeforeAPreviousBuildReconciles).
 func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst bool) {
 	js := d.nats.JS()
-	finish, cancel := context.WithTimeout(context.Background(), takeOverFinishWithin)
+	clocked, cancel := d.holdClock.WithTimeout(context.Background(), takeOverFinishWithin)
 	defer cancel()
+	// nats.go is shown a deadline it can read: a fake's is its own (bus.WithShownDeadline).
+	finish, cancelShown := bus.WithShownDeadline(clocked)
+	defer cancelShown()
 	if deleteFirst {
 		if d.retryHeld(finish, "delete NATS consumer to take it over", func(call context.Context) error {
 			if err := js.DeleteConsumer(bus.Stream, d.name, natsgo.Context(call)); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
@@ -613,15 +633,15 @@ func (d *heldDurable) finishTakeOver(create natsgo.ConsumerConfig, deleteFirst b
 var errHoldNotHeld = errors.New("the intake no longer holds its hold")
 
 // retryHeld calls step until it succeeds, while this intake holds its hold and finish has not
-// ended, waiting takeOverFirstRetry after the first failed try and twice as long after each one
-// after it, up to takeOverLastRetry. Each try runs on a context that ends takeOverCallTimeout
-// after it starts, or at the hold's loss deadline if that comes first, so no step acts once
-// another process can hold the hold. A try the connection's grant refuses (bus.ErrPublishDenied)
-// ends the step at once, since no later try gets past it. A failed try is logged at WARN as doing
-// what names, and the failure it gives up on at ERROR by failedStep, so a caller writes no step's
-// text a second time and keeps only what it does next. It returns nil once step succeeds, and
-// otherwise the last try's error, or errHoldNotHeld. attributes are the caller's own on that ERROR
-// line.
+// ended, waiting takeOverFirstRetry on the hold's clock after the first failed try and twice as
+// long after each one after it, up to takeOverLastRetry. Each try runs on a context that ends
+// takeOverCallTimeout after it starts, or at the hold's loss deadline if that comes first, so no
+// step acts once another process can hold the hold. A try the connection's grant refuses
+// (bus.ErrPublishDenied) ends the step at once, since no later try gets past it. A failed try is
+// logged at WARN as doing what names, and the failure it gives up on at ERROR by failedStep, so a
+// caller writes no step's text a second time and keeps only what it does next. It returns nil once
+// step succeeds, and otherwise the last try's error, or errHoldNotHeld. attributes are the
+// caller's own on that ERROR line.
 func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(context.Context) error, attributes ...any) error {
 	wait := takeOverFirstRetry
 	for {
@@ -642,12 +662,12 @@ func (d *heldDurable) retryHeld(finish context.Context, doing string, step func(
 			return d.failedStep(doing, err, attributes)
 		}
 		slog.Warn("dispatch delivery: take-over step failed; trying it again", "name", d.name, "step", doing, "retry_in", wait, "error", err)
-		timer := time.NewTimer(wait)
+		timer := d.holdClock.NewTimer(wait)
 		select {
 		case <-finish.Done():
 			timer.Stop()
 			return d.failedStep(doing, err, attributes)
-		case <-timer.C:
+		case <-timer.C():
 		}
 		wait = min(2*wait, takeOverLastRetry)
 	}
@@ -670,20 +690,51 @@ var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConf
 // deliver subject, so it stops delivering (check).
 const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
 
+// DurableChecked is the line an intake writes at Debug for each check of its durable (check), so a
+// test can count a process's checks from its log; production's handler, at Info, leaves it out. Its
+// fields are name, the durable; pass, the check's number in this intake's run, from 1; and found,
+// what the check found: checkNotDelivering, checkDeliversHere, checkDeliversElsewhere,
+// checkDeleted or checkUnread.
+const DurableChecked = "dispatch delivery: the intake checked its NATS consumer"
+
+// What a check of the durable found (DurableChecked's found).
+const (
+	// checkNotDelivering: the intake delivers nothing, so the check looks nothing up.
+	checkNotDelivering = "not delivering"
+	// checkDeliversHere: the durable delivers to this intake's deliver subject.
+	checkDeliversHere = "delivers here"
+	// checkDeliversElsewhere: the durable delivers to another subject, so the intake stops.
+	checkDeliversElsewhere = "delivers elsewhere"
+	// checkDeleted: the durable is gone, so the intake stops.
+	checkDeleted = "deleted"
+	// checkUnread: the lookup failed, which says nothing and changes nothing.
+	checkUnread = "unread"
+)
+
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
-// hold. A lookup that fails says nothing, and changes nothing.
+// hold. A lookup that fails says nothing, and changes nothing. Each check writes DurableChecked.
 func (d *heldDurable) check(ctx context.Context) {
-	if d.subject == "" {
-		return
+	d.checkPasses++
+	found := checkNotDelivering
+	if d.subject != "" {
+		info, err := d.lookupDurable(ctx)
+		switch {
+		case errors.Is(err, natsgo.ErrConsumerNotFound):
+			found = checkDeleted
+		case err != nil:
+			found = checkUnread
+		case info.Config.DeliverSubject == d.subject:
+			found = checkDeliversHere
+		default:
+			found = checkDeliversElsewhere
+		}
 	}
-	info, err := d.lookupDurable(ctx)
-	switch {
-	case errors.Is(err, natsgo.ErrConsumerNotFound):
-	case err != nil:
-		return
-	case info.Config.DeliverSubject == d.subject:
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.Debug(DurableChecked, "name", d.name, "pass", d.checkPasses, "found", found)
+	}
+	if found != checkDeleted && found != checkDeliversElsewhere {
 		return
 	}
 	slog.Warn(durableDeliversElsewhere, "name", d.name)

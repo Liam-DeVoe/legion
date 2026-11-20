@@ -339,7 +339,7 @@ func subscribeInOrder(t *testing.T, conn, via *natsgo.Conn, subject string, take
 		close(done)
 		<-read
 	})
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription to %s: %v", subject, err)
 	}
 	return ordered
@@ -2118,9 +2118,9 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the other owner's comment reached %v, want %s among them: a session no attempt of that comment names takes its claimant copy as if it had not been mentioned",
 				reached, contracts.LegacyAgentSubject(bystander))
 		}
-		testwait.Eventually(t, "the other owner's claimant copy", func() bool {
-			return len(other.received()) > 0
-		})
+		// The scan has run to its end, so every copy it sent is handed on before settle's marker:
+		// a second copy behind the first is read too.
+		other.settle(t)
 		copies := other.received()
 		if len(copies) != 1 || copies[0].EventID != fmt.Sprintf("dispatch-%d", apart.ID) ||
 			copies[0].DedupeKey != fmt.Sprintf("dispatch-%d", apart.ID) {
@@ -2168,10 +2168,12 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 			t.Fatalf("the comment reached %v, want %s among them: the mention of %s failed, so the session it was pinned to is owed the outbox's copy and nothing else delivers it",
 				reached, holderSubject, target)
 		}
-		testwait.Eventually(t, "the copy owed to the session whose mention failed", func() bool {
-			return len(pinned.received()) > 0
-		})
-		for _, item := range pinned.received() {
+		pinned.settle(t)
+		copies := pinned.received()
+		if len(copies) == 0 {
+			t.Fatalf("%s was sent nothing, want the copy its failed mention owes it", holder)
+		}
+		for _, item := range copies {
 			if item.DedupeKey != mentionKey(commentID) {
 				t.Fatalf("%s was sent a copy keyed %q, want its failed mention's own key %q: a send that landed before its attempt failed gave that host this key, which is what has it drop the copy",
 					holder, item.DedupeKey, mentionKey(commentID))
