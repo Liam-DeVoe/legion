@@ -3,8 +3,6 @@ package specform
 import (
 	"fmt"
 	"strings"
-
-	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // maxJudgedInSentence is how many findings of one sentence the judge of the ways out reads the
@@ -44,22 +42,26 @@ func (o offer) said(detail string) string {
 // make an instruction of 21 words, and a space after a stop can make a statement of three
 // sentences. A way out changes one sentence, so the judge reads that sentence alone, by each rule
 // that judges a text of its kind: the form rules, with the other sentences of the text and of its
-// footnotes in the count of a statement, and the reference rules. The rule synonym-rotation reads
-// the text whole, so a way out that adds a verb of a synonym group is refused where the text or a
-// footnote that it holds already uses another verb of that group. One finding stands for each
-// place of its words, and the writer changes the words at each place, so the judge offers a way
-// out only where it passes in the sentence of each place: it first takes each place (survey), then
-// judges. A nil judge offers each way out unjudged: the judge's own reading of a sentence is one.
+// footnotes in the count of a statement, and the reference rules. In that count each stop with no
+// space after it but the finding's own ends a sentence, as the space that its own finding asks for
+// makes it end one, so the ways out of one finding do not change with the white space after the
+// stop of another. One finding stands for each place of its words, and the writer changes the
+// words at each place, so the judge offers a way out only where it passes in the sentence of each
+// place: it first takes each place (survey), then judges. No way out adds a verb of a synonym group
+// of ste-lint: a way out writes a space, code font, a stop and a capital, "that", "ssh -l", a path
+// after a colon or the words that go on from a condition, none of which a group holds, and each
+// word that it moves ste-lint already reads, at a stop and at an "@" too, so the judge reads no
+// verb of a group (the rule synonym-rotation reads the text whole). A nil judge offers each way out
+// unjudged: the judge's own reading of a sentence is one.
 type wayJudge struct {
 	c      Context
 	people [][]string
 	kind   Kind
-	// count is how many sentences of the text and of its footnotes count for the rule sentences,
-	// and verbs the verbs of the synonym groups that the text and its footnotes use (told). For a
-	// footnote that a statement holds, count is that statement's (heldIn), and stays.
-	count       int
-	verbs       ste.Verbs
-	inStatement bool
+	// count is how many sentences of the text and of its footnotes count for the rule sentences, and
+	// joined how many stops with no space after them the text holds (told). For a footnote that a
+	// statement holds, count is that statement's (heldIn), and stays.
+	count, joined int
+	inStatement   bool
 	// surveying is whether the judge takes places (survey); places is each unit that holds a
 	// finding, once and in the order of the text, rank where a finding stands among the
 	// findings of each unit that holds it, and ranked how many findings each unit holds.
@@ -84,13 +86,14 @@ type place struct {
 	unit unitKey
 }
 
-// judgedUnit is a unit as the judge reads it alone: each finding by its rule and detail, with how
-// many times it stands; the verbs of the synonym groups that it uses; and how many sentences of the
-// text stand outside it (others).
+// judgedUnit is a unit as the judge reads it alone: how many sentences of the text stand outside
+// it (others), each stop with no space after it there ending one, how many such stops it holds
+// (joined), and each finding by its rule and detail, with how many times it stands, read with the
+// stops of the finding whose ways out the judge reads left out of the count (findings, by how many
+// those are).
 type judgedUnit struct {
-	findings map[findingKey]int
-	verbs    ste.Verbs
-	others   int
+	others, joined int
+	findings       map[int]map[findingKey]int
 }
 
 // findingKey is a finding as the judge compares two readings of a unit: its rule and its detail,
@@ -112,20 +115,17 @@ func newWayJudge(c Context, people [][]string, kind Kind) *wayJudge {
 }
 
 // told gives the judge what the form rules read of the whole text: how many sentences count for
-// the rule sentences, with those of its footnotes, and the verbs of the synonym groups that the
-// text uses (own) and that its footnotes use (held). The count of the judge of a footnote that a
-// statement holds stays the statement's (heldIn).
-func (j *wayJudge) told(count int, own ste.Verbs, held []ste.Verbs) {
+// the rule sentences, with those of its footnotes, and how many stops with no space after them it
+// holds (joined). The count of the judge of a footnote that a statement holds stays the
+// statement's (heldIn).
+func (j *wayJudge) told(count, joined int) {
 	if j == nil {
 		return
 	}
 	if !j.inStatement {
 		j.count = count
 	}
-	j.verbs = own
-	for _, each := range held {
-		j.verbs |= each
-	}
+	j.joined = joined
 }
 
 // heldIn tells the judge of a footnote that a statement holds it, a statement of count sentences
@@ -214,17 +214,18 @@ func (j *wayJudge) take(at place) {
 	j.places[at.way] = append(j.places[at.way], at.unit)
 }
 
-// unit is the judge's reading of unit, read once.
+// unit is the judge's reading of unit, read once: how many sentences of the text stand outside it
+// and how many stops with no space after them it holds.
 func (j *wayJudge) unit(unit unitKey) *judgedUnit {
 	if state, ok := j.units[unit]; ok {
 		return state
 	}
-	others := 0
+	state := &judgedUnit{findings: map[int]map[findingKey]int{}}
 	if prose(j.kind) && !unit.address {
-		others = max(0, j.count-len(sentencesOf(unit.text)))
+		sentences := sentencesOf(unit.text)
+		state.joined = joinedIn(sentences)
+		state.others = max(0, j.count+j.joined-len(sentences)-state.joined)
 	}
-	findings, verbs := j.read(unit, others)
-	state := &judgedUnit{findings: findings, verbs: verbs, others: others}
 	if j.units == nil {
 		j.units = map[unitKey]*judgedUnit{}
 	}
@@ -232,16 +233,25 @@ func (j *wayJudge) unit(unit unitKey) *judgedUnit {
 	return state
 }
 
-// read is each finding of unit, with how many times it stands, and the verbs of the synonym groups
-// that it uses: for a sentence of prose, the form rules, as a sentence of a text of the judge's
-// kind that others sentences of the text stand beside; then the reference rules, for an address as
-// an address. It judges no way out.
-func (j *wayJudge) read(unit unitKey, others int) (map[findingKey]int, ste.Verbs) {
+// before is each finding of the unit that state reads, with how many times it stands, where each
+// stop with no space after it ends a sentence but the stops of the finding whose ways out the judge
+// reads, stops of them, read once for each count of such stops.
+func (j *wayJudge) before(state *judgedUnit, unit unitKey, stops int) map[findingKey]int {
+	if found, ok := state.findings[stops]; ok {
+		return found
+	}
+	found := j.read(unit, state.others+state.joined-stops)
+	state.findings[stops] = found
+	return found
+}
+
+// read is each finding of unit, with how many times it stands: for a sentence of prose, the form
+// rules, as a sentence of a text of the judge's kind that outside sentences of the text stand
+// beside; then the reference rules, for an address as an address. It judges no way out.
+func (j *wayJudge) read(unit unitKey, outside int) map[findingKey]int {
 	findings := map[findingKey]int{}
-	var verbs ste.Verbs
 	if prose(j.kind) && !unit.address {
-		var form []broken
-		form, _, verbs = formBreaks(j.kind, unit.text, footnotesHeld{count: others}, nil)
+		form, _, _ := formBreaks(j.kind, unit.text, footnotesHeld{count: outside}, nil)
 		for _, each := range form {
 			findings[findingKey{each.rule, each.detail}]++
 		}
@@ -249,34 +259,42 @@ func (j *wayJudge) read(unit unitKey, others int) (map[findingKey]int, ste.Verbs
 	for _, each := range referenceBreaks(j.c, j.people, unit.text, unit.address, nil) {
 		findings[findingKey{each.rule, each.detail}]++
 	}
-	return findings, verbs
+	return findings
 }
 
 // passes reports whether way, a way out of a finding of rule in the unit that state reads, writes
 // a unit that gives no finding that the unit does not give as many times, and fewer findings of
-// rule, and that adds no verb of a synonym group of which the text uses another verb.
+// rule. Each stop with no space after it of another finding ends a sentence in the count of both
+// readings: in the unit before the way out, all but the finding's own; after it, each that is
+// left.
 func (j *wayJudge) passes(state *judgedUnit, unit unitKey, rule Rule, way wayOut) bool {
 	changed := unitKey{strings.Replace(unit.text, way.from, way.to, 1), unit.address}
 	if changed.text == unit.text {
 		return false
 	}
-	after, verbs := j.read(changed, state.others)
+	stops, outside := 0, state.others
+	if rule == ruleStopNoSpace {
+		stops = len(joinedStops(way.from))
+	}
+	if prose(j.kind) && !unit.address {
+		outside += joinedIn(sentencesOf(changed.text))
+	}
+	before, after := j.before(state, unit, stops), j.read(changed, outside)
 	own, ownAfter := 0, 0
 	for key, count := range after {
-		if count > state.findings[key] {
+		if count > before[key] {
 			return false
 		}
 		if key.rule == rule {
 			ownAfter += count
 		}
 	}
-	for key, count := range state.findings {
+	for key, count := range before {
 		if key.rule == rule {
 			own += count
 		}
 	}
-	added := verbs &^ state.verbs
-	return ownAfter < own && added.Groups()&^added&j.verbs == 0
+	return ownAfter < own
 }
 
 // sentencePlaces finds the sentence of a line that holds a place of it, for the judge of the ways

@@ -219,6 +219,41 @@ func TestAWayOutStaysWhereTheOtherFindingsStayAsTheyWere(t *testing.T) {
 	}
 }
 
+// The ways out that one finding offers do not change with the white space after another stop: the
+// judge reads a stop with no space after it, of another finding, as the end of a sentence, since
+// the space that the other finding asks for makes it one. So the finding of "file.Size" offers the
+// same ways out whether the stop of "file.Name" before it has its space after it or not: in a
+// statement, a space in each makes three sentences, so each offers the code font alone. Control:
+// a statement whose words differ, with no "file.Name", gives "file.Size" the space too.
+func TestTheWaysOutOfAFindingStayWhateverSpaceFollowsTheStopOfAnother(t *testing.T) {
+	offered := func(body, word string) (string, int) {
+		for _, each := range Check(planted(), Input{Texts: []Text{statement(body)}}) {
+			if each.Rule == ruleStopNoSpace && strings.Contains(each.Detail, fmt.Sprintf("%q", word)) {
+				ways := 0
+				for _, way := range []string{"put a space after the stop", "put the name in code font"} {
+					if strings.Contains(strings.ToLower(each.Detail), way) {
+						ways++
+					}
+				}
+				return each.Detail, ways
+			}
+		}
+		t.Fatalf("%q: no finding of %s names %q", body, ruleStopNoSpace, word)
+		return "", 0
+	}
+	joined, joinedWays := offered("The parser reads file.Name and file.Size at its start.", "file.Size")
+	spaced, spacedWays := offered("The parser reads file. Name and file.Size at its start.", "file.Size")
+	if joined != spaced || joinedWays != spacedWays {
+		t.Errorf("the finding of file.Size is %q after file.Name and %q after file. Name, want the same", joined, spaced)
+	}
+	if joinedWays != 1 {
+		t.Errorf("the finding of file.Size offers %d ways out, want the code font alone: %q", joinedWays, joined)
+	}
+	if alone, ways := offered("The parser reads file.Size at its start.", "file.Size"); ways != 2 {
+		t.Errorf("the control: the finding of file.Size with no file.Name is %q, with %d ways out, want both", alone, ways)
+	}
+}
+
 // The judge reads the ways out of the first maxJudgedInSentence findings of one sentence, so it
 // reads a sentence a bounded number of times however many findings it holds. A finding after them
 // is still refused and named, and its detail says that Dispatch offers no way out of it, not that

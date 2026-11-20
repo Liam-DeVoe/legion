@@ -51,8 +51,9 @@ func TestAClosingQuoteOrBracketAfterAStopBelongsToItsSentence(t *testing.T) {
 // does not show as an end: an initialism of single letters such as "U.S." is one word, and a stop
 // that an upper-case letter follows with no space ends no sentence and is a finding of its own,
 // which names the place and the ways out that pass: in a statement of two sentences, a space
-// after the stop makes three, so its finding gives the code font alone. Control: three sentences
-// with a space after each stop are refused for their count.
+// after the stop makes three, so its finding gives the code font alone; and so do two such stops
+// in one sentence, as a space after each makes three too. Control: three sentences with a space
+// after each stop are refused for their count.
 func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 	control, got := checkStatement("Dispatch keeps each comment. Dispatch indexes each comment. Dispatch shows each comment.")
 	if want := []Finding{finding(control, "sentences", "it has 3 sentences, and a statement has one or two")}; !sameFindings(got, want) {
@@ -69,8 +70,8 @@ func TestANameWithAStopInsideEndsNoSentence(t *testing.T) {
 		{"Dispatch reads the file Web.Config at boot. Legion writes it.", []string{"Web.Config"}, codeFont},
 		{"Dispatch reads the file Web.Config at boot.", []string{"Web.Config"}, ""},
 		{"Dispatch ships the release v1.2.Next to each server. Legion waits for it.", []string{"v1.2.Next"}, codeFont},
-		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", []string{"comment.Dispatch"}, ""},
-		{"Dispatch stops!Dispatch starts?Dispatch waits.", []string{"stops!Dispatch", "starts?Dispatch"}, ""},
+		{"Dispatch keeps each comment.Dispatch indexes each comment.Dispatch shows each comment.", []string{"comment.Dispatch"}, codeFont},
+		{"Dispatch stops!Dispatch starts?Dispatch waits.", []string{"stops!Dispatch", "starts?Dispatch"}, codeFont},
 		{"Dispatch runs each job on .NET and on Go.", nil, ""},
 		{`Dispatch prints "Start."Dispatch stops.`, []string{`"Start."Dispatch`}, ""},
 		{"Dispatch reads the file `Web.Config` at boot. Legion writes it.", nil, ""},

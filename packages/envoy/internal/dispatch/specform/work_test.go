@@ -86,7 +86,7 @@ func workRows(race bool) []workRow {
 // that breaks no rule. A row's n is the larger of two: twice the least n at which the walk that the
 // row is for, made a walk for each pair, still failed the bound when its n was searched at steps of
 // about 1.41, and the n at which the row's smaller window lasts about 110 ms on the machine of 288
-// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the fourteen
+// cores, so that it passes cputest.MinWindow on a machine somewhat faster. Each of the sixteen
 // walks failed its rows in 5 of 5 runs at the table's n, each walk broken in turn: ste-lint's
 // count of a column from the start of the line (many semicolons, many phrasal verbs, many
 // marketing adjectives, many nominalizations); the list of distinct addresses and titles, read
@@ -103,11 +103,17 @@ func workRows(race bool) []workRow {
 // footnotes a text was given, made new for each text (many statements that refer to one long
 // footnote, to one footnote of many links, or to one chain of footnotes); the instructions rule's
 // read of a sentence's words again at each word (one long procedure sentence, one sentence of many
-// spans of code); and its split of a sentence into one sentence for each instruction, read again
-// from each instruction to the end of the sentence (one sentence of many instructions, also after
-// a condition); and the judge of the ways out (wayJudge), made to read the ways out of every
+// spans of code); its split of a sentence into one sentence for each instruction, read again from
+// each instruction to the end of the sentence (one sentence of many instructions, also after a
+// condition inside its first instruction, the two sentences of many instructions that it splits),
+// 93.3 times or more; its reading of the conditions of a sentence whose split could change what it
+// means, read again from each word (the same two rows), 63.6 times or more; its reading of the
+// condition that opens a sentence as a sentence of its own, read again from each comma (one
+// sentence of many instructions after the condition that opens it, which it does not split), 92.2
+// times or more; and the judge of the ways out (wayJudge), made to read the ways out of every
 // finding of one sentence where it reads those of maxJudgedInSentence (8) findings at most (many
-// stops with no space in one sentence, many addresses of a person in one sentence). That bound
+// stops with no space in one sentence, many addresses of a person in one sentence), 207.4 times or
+// more. Each of those last four walks was broken in the code that this table reads. The bound of 8
 // keeps the work of a sentence's ways out at most 8 readings of the sentence for each way out a
 // finding can give, so the work of a judgment stays linear in its text, and each finding past it
 // is still refused and named. A row's smaller text can be shorter than 16 KB, which Go's regexp

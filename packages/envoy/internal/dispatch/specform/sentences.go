@@ -106,6 +106,19 @@ func (s sentence) stopsWithNoSpace() []string {
 	return found
 }
 
+// joinedIn is how many stops with no space after them the sentences hold, each a sentence that the
+// space its finding asks for ends (spacedStops), as the judge of the ways out counts them
+// (wayJudge).
+func joinedIn(sentences []sentence) int {
+	count := 0
+	for _, each := range sentences {
+		for _, word := range each.stopsWithNoSpace() {
+			count += len(joinedStops(word))
+		}
+	}
+	return count
+}
+
 // isAddress reports whether word, without the marks that open it, is an address (addressStart).
 func isAddress(word string) bool {
 	return addressStart.MatchString(strings.TrimLeft(word, openingMarks))
