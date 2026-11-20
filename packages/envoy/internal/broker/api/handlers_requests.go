@@ -436,7 +436,12 @@ const requestWaitStep = 500 * time.Millisecond
 
 // readRequest answers one request to any enrollment of the principal that made it: the same
 // person, the same Legion claim, the same machine (requests.Machine.OwnerAndState), and a request
-// of an enrollment that records no owner to that enrollment alone. Everyone else is 403 NOT_YOURS.
+// of an enrollment that records no owner to that enrollment alone. Everyone else is 403 NOT_YOURS,
+// but before that owner check a session other than the one that holds the request is answered 404
+// exactly as for an id no request has when the request touches a private project the session
+// cannot see, whoever owns it, and 503 PROJECT_ACCESS_UNAVAILABLE when Dispatch could not say
+// (requests.Machine.HideRequestFromSession), so NOT_YOURS says only that a request exists in a
+// project the caller sees.
 // With ?wait=N, N a whole number of seconds from 1 to record.MaxRequestWaitSeconds, it holds the
 // read while the request is pending (readHeld) and answers the first state that is not pending, or
 // pending once N seconds have passed since the request reached the broker
@@ -481,6 +486,9 @@ func (s *server) readRequest(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrNotYours):
 		writeError(w, http.StatusForbidden, "NOT_YOURS", err.Error())
 		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		writeProjectAccessUnavailable(w, "read request", err)
+		return
 	case err != nil && wait > 0 && errors.Is(ctx.Err(), context.Canceled) && time.Now().Before(deadline.Add(requestWaitStep)):
 		recorder.NoteCallerEnded()
 		writeError(w, http.StatusServiceUnavailable, "REQUEST_ENDED", "the request ended before the read finished; send it again")
@@ -513,17 +521,22 @@ func requestWait(w http.ResponseWriter, raw string) (time.Duration, bool) {
 	return time.Duration(seconds) * time.Second, true
 }
 
-// readHeld reads request id for enrollmentID. It reads the caller's owner once
-// (Machine.EnrollmentOwner), then the request's owner, state and whether the model judge holds it
-// (Machine.OwnerAndState, one statement), refusing requests.ErrNotOwner when the request's owner is
-// not the caller's; while the state is pending and deadline has not passed, it reads them again
-// every requestWaitStep; then it reads the whole request (Machine.Get) once. A request the judge
-// held at the first read and holds no more has been handed to its person, still pending: that ends
-// the hold too, so the caller learns at once who decides it now and where. A deadline already
-// passed is the one read. The owner is checked at every step, so a request that moves to an
-// enrollment of another owner while the read is held is refused at the next step, as a new read of
-// it is. Any other error is the store's, or ctx's when ctx ended first.
+// readHeld reads request id for enrollmentID. It first reads the session rule
+// (Machine.HideRequestFromSession), whose pgx.ErrNoRows it answers as for an id no request has;
+// then the caller's owner once (Machine.EnrollmentOwner), then the request's owner, state and
+// whether the model judge holds it (Machine.OwnerAndState, one statement), refusing
+// requests.ErrNotOwner when the request's owner is not the caller's; while the state is pending
+// and deadline has not passed, it reads them again every requestWaitStep; then it reads the whole
+// request (Machine.Get) once. A request the judge held at the first read and holds no more has
+// been handed to its person, still pending: that ends the hold too, so the caller learns at once
+// who decides it now and where. A deadline already passed is the one read. The owner is checked
+// at every step, so a request that moves to an enrollment of another owner while the read is held
+// is refused at the next step, as a new read of it is. Any other error is the store's, or ctx's
+// when ctx ended first.
 func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline time.Time) (requests.Request, error) {
+	if err := s.deps.Machine.HideRequestFromSession(ctx, id, enrollmentID); err != nil {
+		return requests.Request{}, err
+	}
 	caller, err := s.deps.Machine.EnrollmentOwner(ctx, enrollmentID)
 	if err != nil {
 		return requests.Request{}, fmt.Errorf("read the caller's owner: %v", err)
@@ -552,6 +565,11 @@ func (s *server) readHeld(ctx context.Context, id, enrollmentID string, deadline
 	}
 }
 
+// cancelRequest ends a pending request for any enrollment of the principal that made it, by the
+// read route's rule (requests.Machine.Cancel): 403 NOT_YOURS for every other enrollment, but before
+// that owner check a session other than the one that holds the request is answered 404 exactly as
+// for an id no request has when the request touches a private project the session cannot see, and
+// 503 PROJECT_ACCESS_UNAVAILABLE, cancelling nothing, when Dispatch could not say.
 func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "REQUEST_ID_INPUT", "request")
 	if !ok {
@@ -567,6 +585,9 @@ func (s *server) cancelRequest(w http.ResponseWriter, r *http.Request, enrollmen
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such request")
+		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		writeProjectAccessUnavailable(w, "cancel request", err)
 		return
 	case err != nil:
 		writeInternal(w, "cancel request", err)
@@ -608,6 +629,11 @@ func writeNarrowingRefusal(w http.ResponseWriter, err error) bool {
 	return true
 }
 
+// grantValues releases a live grant's values to the session that holds it (requests.Machine.Values):
+// every other session is 403 NOT_YOURS, but before that owner check a session other than the
+// holder is answered 403 GRANT_NOT_LIVE exactly as for an id no grant has when the grant touches a
+// private project the session cannot see, and 503 PROJECT_ACCESS_UNAVAILABLE, releasing nothing,
+// when Dispatch could not say.
 func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "GRANT_ID_INPUT", "grant")
 	if !ok {
@@ -679,7 +705,10 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 
 // revokeGrant ends a grant for the session that holds it — session proof only, per the shared
 // broker contract (human revocation is the UI's revoke-by-approver route, which Dispatch's server
-// calls with the human's login).
+// calls with the human's login). Every other session is 403 NOT_YOURS, but before that owner check
+// a session other than the holder is answered 404 exactly as for an id no grant has when the grant
+// touches a private project the session cannot see, and 503 PROJECT_ACCESS_UNAVAILABLE, revoking
+// nothing, when Dispatch could not say (requests.Machine.RevokeGrant).
 func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request, enrollmentID string) {
 	id, ok := pathUUID(w, r, "id", "GRANT_ID_INPUT", "grant")
 	if !ok {
@@ -692,6 +721,9 @@ func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	case errors.Is(err, pgx.ErrNoRows):
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "no such grant")
+		return
+	case errors.Is(err, requests.ErrProjectAccessUnavailable):
+		writeProjectAccessUnavailable(w, "revoke grant", err)
 		return
 	case err != nil:
 		writeInternal(w, "revoke grant", err)

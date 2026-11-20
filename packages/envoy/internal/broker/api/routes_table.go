@@ -310,13 +310,27 @@ func routes() []apiRoute {
 		// Request secrets: the policy grants or denies them at once, or a person must approve them.
 		{http.MethodPost, "/v1/requests", sessionAuth((*server).createRequest)},
 		// Read a request the calling session's owner made: its person, its Legion claim or its
-		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided or once N seconds pass.
+		// machine, or, for a session that records no owner, the session alone; with ?wait=N (whole
+		// seconds, 1 to 20), hold the read while it is pending, answering as soon as it is decided
+		// or once N seconds pass. Every other session is 403 NOT_YOURS. Before that, a session other
+		// than the one the request hangs off is answered 404 NOT_FOUND, as for an id no request has,
+		// when the request touches a private Dispatch project the session cannot see (one its own
+		// credential does not name, or whose list no longer holds its person), whoever owns it, and
+		// 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say.
 		{http.MethodGet, "/v1/requests/{id}", sessionAuth((*server).readRequest)},
-		// Cancel a pending request the calling session's owner made, by the same rule as the read.
+		// Cancel a pending request the calling session's owner made, by the same rule as the read,
+		// its 404 NOT_FOUND for a request of a private project the session cannot see and its 503
+		// PROJECT_ACCESS_UNAVAILABLE included; neither cancels anything.
 		{http.MethodPost, "/v1/requests/{id}/cancel", sessionAuth((*server).cancelRequest)},
-		// Release a live grant's values to the session that holds it.
+		// Release a live grant's values to the session that holds it. Every other session is 403
+		// NOT_YOURS, but one the grant's private project hides it from, as the read's rule says, is
+		// answered 403 GRANT_NOT_LIVE, as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE
+		// while Dispatch cannot say; neither releases anything.
 		{http.MethodPost, "/v1/grants/{id}/values", sessionAuth((*server).grantValues)},
-		// End a grant the calling session holds.
+		// End a grant the calling session holds. Every other session is 403 NOT_YOURS, but one the
+		// grant's private project hides it from, as the read's rule says, is answered 404 NOT_FOUND,
+		// as for an id no grant has, and 503 PROJECT_ACCESS_UNAVAILABLE while Dispatch cannot say;
+		// neither revokes anything.
 		{http.MethodPost, "/v1/grants/{id}/revoke", sessionAuth((*server).revokeGrant)},
 		// List the undecided requests and machine logins the named person is asked to decide, each
 		// with its state, pending or expired, and its deadline, and each secret request with the

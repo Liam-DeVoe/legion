@@ -1387,7 +1387,16 @@ func lockPendingNames(ctx context.Context, tx pgx.Tx, enrollmentID string, sorte
 // grant-log line names it too, since the line carries the ids its row names; the actor on both is
 // the caller's session. The request's detail says which of the two cancelled it: its own session,
 // or another session of its owner.
+//
+// Before the owner check, on the pool and since it may ask Dispatch, a session that does not hold
+// the request is answered as for an id no request has, pgx.ErrNoRows, when the request touches a
+// private project it cannot see, whoever owns it, and ErrProjectAccessUnavailable when Dispatch
+// could not say (HideRequestFromSession): so ErrNotOwner says only that a request exists in a
+// project the caller sees.
 func (m *Machine) Cancel(ctx context.Context, id, enrollmentID string) error {
+	if err := m.HideRequestFromSession(ctx, id, enrollmentID); err != nil {
+		return err
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -2634,8 +2643,15 @@ func (m *Machine) verifyChain(ctx context.Context, grantID string) (recordID str
 // already-revoked grant succeeds and changes nothing: it writes no second grant.revoked audit row,
 // so the trail never names a revoker who ended nothing. Human revocation is RevokeByApprover.
 // The owner check reads the grants row's own enrollment_id, which an adoption rewrites, so the
-// moved session ends the grant that moved with it and every other enrollment is ErrNotYours.
+// moved session ends the grant that moved with it and every other enrollment is ErrNotYours. Before
+// it, on the pool and since it may ask Dispatch, a session that does not hold the grant is answered
+// as for a grant id no grant has, pgx.ErrNoRows, when the grant touches a private project it cannot
+// see, and ErrProjectAccessUnavailable when Dispatch could not say (hideGrantFromSession): so
+// ErrNotYours says only that a grant exists in a project the caller sees.
 func (m *Machine) RevokeGrant(ctx context.Context, grantID, enrollmentID string) error {
+	if err := m.hideGrantFromSession(ctx, grantID, enrollmentID); err != nil {
+		return err
+	}
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -2758,28 +2774,13 @@ func (m *Machine) RevokeByApprover(ctx context.Context, grantID, login, actor st
 // RevokeByApprover's transaction, since it may ask Dispatch: pgx.ErrNoRows for an id no grant has
 // and for a grant login may not see, ErrProjectAccessUnavailable when Dispatch could not say, and
 // nil for a grant login may see (hideUnseenRow). It reads the grant as GrantsForApprover lists it
-// — the names it releases, its request's reason, and the projects of both credentials its request
-// has had, the one that asked, which its record names, and the one it hangs off now — so a person
-// revokes exactly the grants their own list may show them.
+// (readGrantFacts), so a person revokes exactly the grants their own list may show them.
 func (m *Machine) hideUnseenGrant(ctx context.Context, grantID, login string) error {
-	var names []string
-	var reason string
-	var asked, current enrollmentRow
-	err := m.Store.Pool.QueryRow(ctx, `select
-			coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}'),
-			coalesce(r.reason, ''), `+credentialColumns+`, `+currentCredentialColumns+`
-		from grants g
-		join requests r on r.id = g.request_id
-		left join enrollments cur on cur.id = g.enrollment_id
-		left join credential_requests cr on cr.id = r.record_id
-		left join enrollments enr on enr.id = cr.enrollment_id
-		where g.id=$1`, grantID).
-		Scan(&names, &reason, &asked.Kind, &asked.Operator, &asked.Subject, &asked.Projects,
-			&current.Kind, &current.Operator, &current.Subject, &current.Projects)
+	facts, err := m.readGrantFacts(ctx, grantID)
 	if err != nil {
 		return err
 	}
-	return m.hideUnseenRow(ctx, "grant "+grantID, login, names, m.credentialsProjects(asked, current), reason)
+	return m.hideUnseenRow(ctx, "grant "+grantID, login, facts.names, facts.sessionProjects, facts.reason)
 }
 
 // withhold withholds from enrollmentID every name request requestID, whose grant its operator just

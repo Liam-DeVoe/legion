@@ -14,7 +14,17 @@ body: |-
   record signed for another broker address answers such a person `404` too, where the dismissal
   answered `500` and the page `503`. While Dispatch cannot say whether the person may see the
   record or grant, the decide routes and both revokes answer `503 PROJECT_ACCESS_UNAVAILABLE`, as
-  the dismissal does, and change nothing.
+  the dismissal does, and change nothing. A session's own routes do the same for a request or a
+  grant of a private project the calling session cannot see: one its own credential does not name,
+  or whose access list no longer holds the credential's person. `GET /v1/requests/{id}`,
+  `POST /v1/requests/{id}/cancel` and `POST /v1/grants/{id}/revoke` answer such an id `404
+  NOT_FOUND`, and `POST /v1/grants/{id}/values` `403 GRANT_NOT_LIVE`, as each answers an id nothing
+  has, where they answered `403 NOT_YOURS`, and `503 PROJECT_ACCESS_UNAVAILABLE` while Dispatch
+  cannot say. This holds whoever owns the id, so another session of the same person that does not
+  name the project no longer reads or cancels it either; `403 NOT_YOURS` now says only that an id
+  exists in a project the caller sees. The session that holds the request or grant reads,
+  cancels, releases and revokes it as before, a request whose reason cites a private project's
+  issue its credential does not name included.
 time: 2026-11-20T07:01:48Z
 custom:
     Issue: pr4135
