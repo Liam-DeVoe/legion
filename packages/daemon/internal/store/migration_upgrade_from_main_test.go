@@ -78,6 +78,9 @@ import (
 // as one of main's own. It creates experiment_assignments and fills it from the issues' memory
 // columns, which main's own 20261104073148 and 20261104153554 added, and it touches no
 // outbox_kind_check.
+// dispatch://INFRA-3759's project pause (20261115194357) adds the pause's three tables, two
+// columns of pod_resumes and the outbox's held_by_pause, and rewrites no kind list, so it needs
+// no row of its own here (migration_20261115194357_test.go reads it).
 // The kind list with the role-holders publication (20261116165926) stands above all of these but
 // the reviewer's reviewed commit: it names every kind the merge-queue list names and its own.
 // The two kind lists above it are named here too: the step record's (20261117000528) restates
@@ -106,9 +109,9 @@ var thisBranchsMigrations = []int{
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111045636, 20261111181500,
 	20261111214351, 20261111225552, 20261112070503, 20261112180548, 20261113082214, 20261113082415,
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
-	20261114061900, 20261116012459, 20261116082000, 20261116092312, 20261116144907, 20261116164153,
-	20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932, 20261117064152,
-	20261117112334, 20261117200337, 20261118133133, 20261118134019, 20261119003157,
+	20261114061900, 20261115194357, 20261116012459, 20261116082000, 20261116092312, 20261116144907,
+	20261116164153, 20261116165926, 20261116234034, 20261117000528, 20261117004117, 20261117023932,
+	20261117064152, 20261117112334, 20261117200337, 20261118133133, 20261118134019, 20261119003157,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -118,15 +121,15 @@ var thisBranchsMigrations = []int{
 // 20261112070503, dispatch://INFRA-3219's 20261112180548, dispatch://INFRA-2981's 20261113082214
 // and 20261113110610, dispatch://INFRA-3276's 20261113082415, dispatch://INFRA-3146's
 // 20261113090512, dispatch://INFRA-3274's 20261114031356, dispatch://INFRA-2614's
-// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, the unreachable claims'
-// 20261116012459, 20261116082000, 20261116092312 and 20261116164153, t-e-54's 20261116144907, the
-// role-holders publication's 20261116165926, the reviewer's reviewed commit, 20261116234034, the
-// step records' three: the kind list with the step record (20261117000528), the count of starts of
-// each step (20261117004117) and its roll forward (20261117064152), the kind list with the plan
-// record (20261117023932), dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
-// 20261117200337 and dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the
-// list rather than counting it, so that a version added above any of them is named here rather
-// than read as main's.
+// 20261113181500, 20261113182000, 20261114020537 and 20261114061900, dispatch://INFRA-3759's
+// 20261115194357, the unreachable claims' 20261116012459, 20261116082000, 20261116092312 and
+// 20261116164153, t-e-54's 20261116144907, the role-holders publication's 20261116165926, the
+// reviewer's reviewed commit, 20261116234034, the step records' three: the kind list with the
+// step record (20261117000528), the count of starts of each step (20261117004117) and its roll
+// forward (20261117064152), the kind list with the plan record (20261117023932),
+// dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's 20261117200337 and
+// dispatch://INFRA-4374's 20261119003157. That is why the loop below holds the list rather than
+// counting it, so that a version added above any of them is named here rather than read as main's.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main
@@ -387,10 +390,11 @@ const thisBranchsClaimSessions = 20261116144907
 
 // mainsNewestBefore4220 is the newest version a deployment of main before #4220 recorded, the update
 // ask's mark cutover, and mainsAfter4220 are the versions main took after it, which such a
-// deployment has not recorded either: the plan record's kind list and the conflict's.
+// deployment has not recorded either: the project pause's tables, the plan record's kind list and
+// the conflict's.
 const mainsNewestBefore4220 = 20261117200337
 
-var mainsAfter4220 = []int{20261117023932, 20261119003157}
+var mainsAfter4220 = []int{20261115194357, 20261117023932, 20261119003157}
 
 // A database a deployment of main before #4220 migrated has recorded every migration up to main's
 // newest then, 20261117200337, but claim_sessions, which is numbered below it, and this branch's

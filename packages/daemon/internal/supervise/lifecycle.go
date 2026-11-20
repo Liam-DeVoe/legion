@@ -133,7 +133,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 	}
 	if treelifecycle.Refuses(err) {
 		m.log.Warn("supervise: the tree refuses the launch of the retired process, which is stopped; suspending the claim for the tree's close or its next start", "error", err)
-		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon))
+		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	return errors.Join(m.relaunchLater(m.deps.Timeouts.Probe, m.retryHolding(m.pluginRelaunch, relaunch), err), m.persist(ctx))
@@ -216,13 +216,14 @@ func (w launchRetried) Error() string { return w.err.Error() }
 func (w launchRetried) Unwrap() error { return w.err }
 
 // relaunchAgain is the relaunch relaunchLater left waiting (TimerRelaunch). A suspension held
-// meanwhile ends here, with no process left to stop, rather than in a relaunch; otherwise the
+// meanwhile ends here, with no process left to stop, rather than in a relaunch — a stop that meets
+// the relaunch it ends, which a project pause's stop owes the role (suspendedFor); otherwise the
 // relaunch is tried again as it was first made, charged as that call charges it.
 func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
-		return m.suspendedFor(ctx, *m.held)
+		return m.suspendedFor(ctx, *m.held, true)
 	}
 	return relaunch(ctx)
 }
@@ -230,6 +231,10 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 // RunsNothing is whether the claim is in a state with no process of its own (RunsNothingStates):
 // only such a claim may move to another tree.
 func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State) }
+
+// Gone is whether the claim is suspended, failed or retired (GoneStates): its process has been
+// let go, so a project's pause has nothing of it to stop.
+func (c Claim) Gone() bool { return IsGone(c.State) }
 
 // Retree re-points a claim to tree, the tree its issue belongs to now: a child of a closed tree
 // re-admitted as a root of its own keeps its roles' claims, which still name the tree it left. The

@@ -2420,14 +2420,47 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 180: a claim Envoy cannot reach, and its relaunch on its same session.
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 185: a claim Envoy cannot reach, and its relaunch on its same session.
 // Every claim view of `GET /legion/v1/state` (`read_state` and `read_record`) and the controller's
 // locator gain `unreachable`, `{since, lastSeen?}`: the daemon's mark of a claim whose session's
 // last registration with Envoy is more than 20 minutes old, counted from the latest of that
 // registration, the daemon's boot, the session's first ready and the daemon's last failed or empty
 // read of Envoy's list (supervise.Reach, the daemon's reach keeper). The claim keeps its state;
 // the key is absent while it is reachable, and absent from every view the route serves a caller
-// below 180 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
+// below 185 (api.stateFor, withoutUnreachable), whose plugin reads claim views with a schema that
 // knows no such key. The `legion` tool's controller gains `relaunch`, which posts
 // `POST /legion/v1/claims/relaunch` (`api.RelaunchRequest`: `grantId` and `claim`, the claim's
 // token as the notices name it). Its answers (api.claimRelaunch, relaunchRefusal) are: 200
@@ -2486,5 +2519,9 @@ package api
 // a reading at refs/pull/<n>/head for each of the 239 open pull requests, made at
 // 2026-11-19T22:54Z, gave 178 at two other heads (cybermonklabs/legion#3831 among them, which
 // declared it first) and 179 at two, so 180 was the lowest number above 178 that no open head
-// declared.)
-const DaemonAPIVersion = 180
+// declared. It took 185 at the forward merge of 2026-11-20 that brought main in at 32a82acbee,
+// which landed contract 178 (cybermonklabs/legion#4115), the entry right above: a reading at
+// refs/pull/<n>/head for each of the 248 open pull requests, made at 2026-11-20T04:11Z, gave 179 at
+// one other head, 180 at one (cybermonklabs/legion#4049), 181 at two, 182 at six, 183 at five and
+// 184 at four, so 185 was the lowest number above the base's 178 that no other open head declared.)
+const DaemonAPIVersion = 185

@@ -17,6 +17,10 @@ import {
   LegionIssueStatusRequest,
   LegionPhaseBackwardRequest,
   LegionPhaseRetryRequest,
+  LegionProjectPauseRequest,
+  LegionProjectPauseResponse,
+  LegionProjectResumeRequest,
+  LegionProjectResumeResponse,
   type LegionReadyForUpdateRequest,
   type LegionReadyRequest,
   LegionRegisterResponse,
@@ -185,6 +189,19 @@ export interface LegionDaemonClient {
   readonly relaunch: (
     input: z.input<typeof LegionRelaunchRequest>
   ) => Promise<z.output<typeof LegionRelaunchResponse>>;
+  /** The controller's `pause`: the daemon pauses its own project for `reason`, the effect
+   * `legion project pause` runs for an operator. Every role but the controller stops, one in a
+   * turn when that turn ends, and every start waits for the resume. The answer is the pause it
+   * began. */
+  readonly projectPause: (
+    input: z.input<typeof LegionProjectPauseRequest>
+  ) => Promise<z.output<typeof LegionProjectPauseResponse>>;
+  /** The controller's `resume`: the daemon ends its project's pause, whoever made it, the effect
+   * `legion project resume` runs for an operator. The answer is the pause it ended and how many
+   * held rows it let out to run. */
+  readonly projectResume: (
+    input: z.input<typeof LegionProjectResumeRequest>
+  ) => Promise<z.output<typeof LegionProjectResumeResponse>>;
   readonly waveRelease: (
     input: z.input<typeof LegionWaveReleaseRequest>
   ) => Promise<z.output<typeof LegionWaveReleaseResponse>>;
@@ -805,6 +822,20 @@ export function createLegionDaemonClient(
       post("/legion/v1/claims/compact", LegionClaimRequest, LegionCompactResponse, input),
     relaunch: (input) =>
       post("/legion/v1/claims/relaunch", LegionRelaunchRequest, LegionRelaunchResponse, input),
+    projectPause: (input) =>
+      post(
+        "/legion/v1/project/pause",
+        LegionProjectPauseRequest,
+        LegionProjectPauseResponse,
+        input
+      ),
+    projectResume: (input) =>
+      post(
+        "/legion/v1/project/resume",
+        LegionProjectResumeRequest,
+        LegionProjectResumeResponse,
+        input
+      ),
     gateRegister: (input, options) =>
       post(
         "/legion/v1/gates/register",

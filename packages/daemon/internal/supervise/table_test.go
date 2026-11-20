@@ -177,6 +177,7 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
 		"RequestCompact":       {RequestCompact{}},
 		"RequestRelaunch":      {RequestRelaunch{}},
+		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
 	}
 	for _, kind := range timers {
@@ -358,6 +359,8 @@ func fenced(ev Event, c Claim) Event {
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case ResumePause:
+		return ResumePause{Claim: c.Token, Pause: 1}
 	case RequestTurnOutcome:
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestCompact:
