@@ -4294,17 +4294,17 @@ Each item below names a path with its method and identity, then its purpose.
   - `state` is `succeeded` when the newest recorded attempt sent requests to GitHub and noted no failure, `failed` when it noted one, `no_attempt` while the record holds no attempt of the read, `unknown` until this process's first read of the record succeeds, and `off` where this process does not run the read:
     all four without the App private key, and `webhook_redelivery` and `ci_reconcile` without NATS as well, since `webhookSweeper` and `ciReconciler` build nothing without a NATS client.
     `at` is when that attempt was recorded as its pass ended, by the database's clock, in RFC 3339 UTC, and is `null` unless the state is `succeeded` or `failed`.
-    `cause` is the text of the attempt's first failure, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut;
+    `cause` is the class of the attempt's first failure (`gitHubReadCauseClass`): `status <n>` for the first HTTP status that failure names, which is the status GitHub answered, since the client words an answer it notes as a failure with its status ahead of any body, and `no status` for a failure that names none (a request GitHub never answered, or a failure of the read's own);
     it is `null` unless the state is `failed`, and the entry's Go type sets neither where the state carries none (`gitHubReadEntryOf`).
+    The failure's own text, made storable (`text.StorableReplacement`) and cut on a character boundary to at most 1,024 bytes (`githubreads.CauseLimit`), ending with ` … (cut from <n> bytes)` inside that limit when it was cut, is `github_read_attempts.cause`.
 
   - The probe sends the database nothing for `github` and waits on nothing:
     it answers from this process's copy of `github_read_attempts` (`githubreads.Copy`), read at start and again each time any process writes a row (Background loops, above), and a read that fails keeps the copy it had.
     So a missing table or a failed read of the record changes neither `db`, `ok` nor the status.
     During a roll the release before this one writes no row, so an entry can be an interval or more old, which `at` shows.
 
-  - A cause can name a repository: the route takes no credential, a GitHub error carries the URL it asked, and Dispatch answers on its private network alone.
-    So while any project is private (the state the `Dispatch-Private-Projects` header reads, `privateProjectsState.AnyPrivate`), every failed read's `cause` is the fixed text `withheldGitHubCause`, which names no repository, and the cause itself is read in `github_read_attempts`.
-    With no private project it is answered as recorded (`TestHealthzNamesNoPrivateProjectToACallerWithNoCredential`).
+  - `/healthz` never answers a failure's text: the route takes no credential, whoever reaches the port reads it, from outside too where the deployment has an outside origin, and a GitHub error carries the URL it asked, which names the repository the read read, one a private project maps or one GitHub keeps private.
+    So in every deployment, with a private project or none, it answers the class alone, which names no repository, and the operator reads the text in `github_read_attempts` (`TestHealthzNamesNoPrivateProjectToACallerWithNoCredential`).
 
   - The delivery intakes read GitHub too, for each webhook event (`FetchPullRequest`, `FetchWorkflowRun` and `ListWorkflowRunJobs` in `internal/dispatch/delivery`), and have no entry of their own:
     they report through `delivery_reconcile`, since the delivery reconcile reads the same pull requests and runs with the same App every interval, so a GitHub failure of those reads shows there within one pass.
