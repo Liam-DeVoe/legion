@@ -14,7 +14,7 @@ import (
 // projectRepositoriesWant is each project's answer over seedProjectRepositories' rows, sorted
 // byte-wise and each once.
 var projectRepositoriesWant = map[string][]string{
-	"PRIV":  {"acme/done", "acme/newname", "acme/privdefault", "acme/pub", "acme/two"},
+	"PRIV":  {"acme/done", "acme/oldname", "acme/privdefault", "acme/pub", "acme/two"},
 	"OTHER": {"acme/priv", "acme/two"},
 }
 
@@ -24,11 +24,11 @@ var projectRepositoriesWant = map[string][]string{
 // OTHER-2, which names acme/two, so only the parent chain gives PRIV acme/two, since no issue of
 // PRIV names it; PRIV-4 names none and is a root, so it resolves to PRIV's default,
 // acme/privdefault; PRIV-5 names acme/done and is done; and PRIV-6 names acme/oldname, which a
-// recorded rename gives the name acme/newname. OTHER-1 names acme/priv. PRIV maps acme/privmapped,
-// which no issue names. The default, the rename and that mapping are stored as this build stores
-// them, in repo_projects. A parent in another project is a row only a direct write makes (the API
-// refuses one), as refs' other seeds hold one too (seedRepositoryIssues): it is the one way the
-// parent chain adds a repository that the project's own issues do not name.
+// mapping of PRIV records as renamed to acme/newname. OTHER-1 names acme/priv. PRIV maps
+// acme/privmapped, which no issue names. The default, the rename and that mapping are stored as
+// this build stores them, in repo_projects. A parent in another project is a row only a direct
+// write makes (the API refuses one), as refs' other seeds hold one too (seedRepositoryIssues): it
+// is the one way the parent chain adds a repository that the project's own issues do not name.
 func seedProjectRepositories(t *testing.T) *store.Store {
 	t.Helper()
 	database := storetest.Open(t)
@@ -56,13 +56,15 @@ func seedProjectRepositories(t *testing.T) *store.Store {
 
 // TestAProjectsRepositoriesAreWhereItsIssuesResolve (K-E5): a project's answer is the repository
 // each of its issues resolves to, open or done: its own, its parent's, or its project's default,
-// under the name a recorded rename gives it, sorted and each once. PRIV's answer holds acme/pub
+// as the issue or the default stores it, sorted and each once. PRIV's answer holds acme/pub
 // (PRIV-1's own, and PRIV-2's through its parent), acme/two (PRIV-3's, only through its parent
-// OTHER-2), acme/privdefault (PRIV-4's default), acme/done (the done PRIV-5's) and acme/newname
-// (PRIV-6's acme/oldname under its new name). OTHER-1's acme/priv adds nothing to PRIV's answer,
-// and acme/privmapped, which PRIV maps and no issue names, is in no answer. Control: the statement
+// OTHER-2), acme/privdefault (PRIV-4's default), acme/done (the done PRIV-5's) and acme/oldname
+// (PRIV-6's, as stored: the answer reads no rename from repo_projects, so acme/newname, the name a
+// mapping records for it, is in no answer). OTHER-1's acme/priv adds nothing to PRIV's answer, and
+// acme/privmapped, which PRIV maps and no issue names, is in no answer. Controls: the statement
 // without its parent-chain step resolves PRIV-3 to PRIV's default, misses acme/two, and the test
-// fails naming it.
+// fails naming it; the statement reading renames answers acme/newname in place of acme/oldname,
+// and the test fails naming both.
 func TestAProjectsRepositoriesAreWhereItsIssuesResolve(t *testing.T) {
 	database := seedProjectRepositories(t)
 	for _, project := range []string{"PRIV", "OTHER"} {
@@ -90,9 +92,9 @@ func notIn(these, from []string) []string {
 }
 
 // fixtureIssue is one issue of the fixture as the one-issue read resolves it: its key, its
-// project, the repository IssueRepository answers, and that repository under its recorded rename.
+// project and the repository IssueRepository answers, as stored.
 type fixtureIssue struct {
-	key, project, resolved, canonical string
+	key, project, resolved string
 }
 
 // resolveFixtureIssues reads every issue the database holds, whatever seeded it, and resolves
@@ -128,21 +130,16 @@ func resolveFixtureIssues(t *testing.T, database *store.Store) []fixtureIssue {
 		if resolved == nil {
 			t.Fatalf("IssueRepository(%s) resolves to no repository, and every issue of the fixture resolves to one", issues[i].key)
 		}
-		canonical, err := CanonicalRepo(ctx, database.Pool, *resolved)
-		if err != nil {
-			t.Fatalf("CanonicalRepo(%s): %v", *resolved, err)
-		}
-		issues[i].resolved, issues[i].canonical = *resolved, canonical
+		issues[i].resolved = *resolved
 	}
 	return issues
 }
 
 // TestEveryIssueResolvesIntoItsProjectsRepositories (K-E5): for every issue of the fixture, the
-// repository the one-issue read resolves it to (IssueRepository), under its recorded rename, is in
-// its project's answer, and the union of them over a project's issues, open and done, is that
-// project's answer, no more: no repository the project only maps. Control: answer a project from
-// its open issues alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails
-// naming it.
+// repository the one-issue read resolves it to (IssueRepository), as stored, is in its project's
+// answer, and the union of them over a project's issues, open and done, is that project's answer,
+// no more: no repository the project only maps. Control: answer a project from its open issues
+// alone, and PRIV-5's acme/done is missing from PRIV's answer, and the test fails naming it.
 //
 // Its row "the GitHub proxy" holds the proxy's rule to the same resolution, on what the two reads
 // must agree on: for every fixture issue's repository, the projects that ProjectRepositoriesSQL,
@@ -151,9 +148,10 @@ func resolveFixtureIssues(t *testing.T, database *store.Store) []fixtureIssue {
 // repositories in PRIV's answer, which is the spec's rule for a viewer that is not open (a
 // repository an issue the viewer sees resolves to). It compares no open viewer's view: the proxy
 // hides a repository that a private project the viewer cannot see shares with a project the
-// viewer sees, and that is the proxy's own rule, not this answer's. Control: the proxy's ownership
-// read with each issue's own repository alone, no parent walk, and PRIV no longer owns acme/two
-// there, and the row fails naming it.
+// viewer sees, and that is the proxy's own rule, not this answer's. It compares each repository
+// by the name the issue stores, which the proxy, reading renames, also reads under the new name.
+// Control: the proxy's ownership read with each issue's own repository alone, no parent walk, and
+// PRIV no longer owns acme/two there, and the row fails naming it.
 func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 	database := seedProjectRepositories(t)
 	issues := resolveFixtureIssues(t, database)
@@ -168,12 +166,12 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 			}
 			answers[issue.project] = answer
 		}
-		if !slices.Contains(answer, issue.canonical) {
-			t.Errorf("IssueRepository(%s) = %s (%s under its recorded rename), which ProjectRepositories(%s) = %q does not hold",
-				issue.key, issue.resolved, issue.canonical, issue.project, answer)
+		if !slices.Contains(answer, issue.resolved) {
+			t.Errorf("IssueRepository(%s) = %s, which ProjectRepositories(%s) = %q does not hold",
+				issue.key, issue.resolved, issue.project, answer)
 		}
-		if !slices.Contains(union[issue.project], issue.canonical) {
-			union[issue.project] = append(union[issue.project], issue.canonical)
+		if !slices.Contains(union[issue.project], issue.resolved) {
+			union[issue.project] = append(union[issue.project], issue.resolved)
 		}
 	}
 	for project, answer := range answers {
@@ -195,7 +193,7 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 		for _, issue := range issues {
 			listed := []string{}
 			for _, project := range projects {
-				if slices.Contains(answers[project], issue.canonical) {
+				if slices.Contains(answers[project], issue.resolved) {
 					listed = append(listed, project)
 				}
 			}
@@ -203,7 +201,7 @@ func TestEveryIssueResolvesIntoItsProjectsRepositories(t *testing.T) {
 				t.Errorf("the proxy's rule counts %q as the owners of %s, %s's repository, and the answers of %q list it: the two must name the same projects",
 					got, issue.resolved, issue.key, listed)
 			}
-			inPRIV := slices.Contains(answers["PRIV"], issue.canonical)
+			inPRIV := slices.Contains(answers["PRIV"], issue.resolved)
 			if shown := repositoryPasses(t, database, member, issue.resolved); shown != inPRIV {
 				t.Errorf("the proxy shows %s, %s's repository, to a person who sees only PRIV: %t; PRIV's answer holds it: %t",
 					issue.resolved, issue.key, shown, inPRIV)

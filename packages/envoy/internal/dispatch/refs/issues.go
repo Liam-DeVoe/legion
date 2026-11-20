@@ -230,13 +230,13 @@ func (e *UnresolvedChainError) Error() string {
 
 // projectRepositoriesQuery is IssueRepoTerms over every issue of the project bound at $1, open or
 // done: whether the project exists, the first issue by number whose walk ran out of depth, and the
-// names the issues resolve to under their recorded renames, each once and sorted byte-wise
-// (collate "C", the order Go's sort.Strings gives, whatever the database's collation). Like
-// issueRepositoryQuery, the text is built once, at start.
+// repositories the issues resolve to, as stored, each once and sorted byte-wise (collate "C", the
+// order Go's sort.Strings gives, whatever the database's collation). Like issueRepositoryQuery, the
+// text is built once, at start.
 var projectRepositoriesQuery = `
 	with recursive subjects as (select i.key from issues i where i.project_key = $1), ` + IssueRepoTerms + `,
 	resolved as (
-		select i.key, i.number, ` + CanonicalRepoSQL(IssueRepoResolved) + ` as repository, ` + IssueRepoTooDeep + ` as too_deep
+		select i.key, i.number, ` + IssueRepoResolved + ` as repository, ` + IssueRepoTooDeep + ` as too_deep
 		from issues i ` + IssueRepoJoin + `
 		where i.project_key = $1
 	)
@@ -248,19 +248,22 @@ var projectRepositoriesQuery = `
 // through q: its own, else the nearest one above it on `child_of`, else its project's default
 // mapping. It runs the terms IssueRepository runs for one key (IssueRepoTerms, IssueRepoJoin,
 // IssueRepoResolved and IssueRepoTooDeep) over every issue of the project in one statement, so
-// the union of IssueRepository over those issues is this list. Each repository is named once,
-// under the name a recorded rename gives it (CanonicalRepoSQL, the form CanonicalRepo answers),
-// and the list is sorted byte-wise; a project none of whose issues resolves to one answers [],
-// never nil. An issue whose chain the walk could not finish is an *UnresolvedChainError naming
-// it, never the list of the others, and an unknown project is access.ErrProjectNotFound.
+// the union of IssueRepository over those issues is this list. Each repository is named once, as
+// the issue, or the project's default mapping, stores it (the API stores both lowercase), and the
+// list is sorted byte-wise; a project none of whose issues resolves to one answers [], never nil.
+// No rename is read: a repository GitHub renamed is answered under the name its issues store. An
+// issue whose chain the walk could not finish is an *UnresolvedChainError naming it, never the
+// list of the others, and an unknown project is access.ErrProjectNotFound.
 //
 // It reads the issues and no list of a project's repositories: a repository the project maps and
 // no issue of it resolves to is not in the answer. ProjectRepositoriesSQL, the rule by which the
-// GitHub proxy hides a repository, walks the same terms and differs from this answer in two ways:
-// it counts such a mapped repository as the project's too, and it reads an issue whose chain the
-// walk could not finish as resolving to its project's default. For every issue whose chain the walk
-// finishes, the two give the project the same repository. Dispatch answers this list at GET
-// /api/v1/access/projects/{key}/repositories, which the secrets broker relays to the edge listener.
+// GitHub proxy hides a repository, walks the same terms and differs from this answer in three ways:
+// it counts such a mapped repository as the project's too, it reads an issue whose chain the walk
+// could not finish as resolving to its project's default, and it reads each repository under the
+// name a rename recorded in repo_projects gives it (CanonicalRepoSQL). For every issue whose chain
+// the walk finishes, the two give the project the same repository, compared under the name the
+// issue stores. Dispatch answers this list at GET /api/v1/access/projects/{key}/repositories, which
+// the secrets broker relays to the edge listener.
 func ProjectRepositories(ctx context.Context, q Queryer, project string) ([]string, error) {
 	var exists bool
 	var unresolved *string

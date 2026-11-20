@@ -207,10 +207,10 @@ every other caller is `403 ACCESS_ACCOUNT_REQUIRED`.
 The boot refuses either list without `DISPATCH_OIDC_AUDIENCE`, an entry that is empty or is not `system:serviceaccount:<namespace>:<name>` (naming its position), and an access account that a set `DISPATCH_OIDC_ACCOUNTS` does not list.
 
 The repository answer is the list of the repositories a project's issues resolve to, which the secrets broker reads for the edge listener, so that the GitHub events the edge listener relays to an outside person's agents are those of exactly these repositories:
-`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), under the name a recorded rename gives it, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
-It is computed from the issues alone, read live on each request, by the terms every issue read resolves a repository with (`refs.IssueRepoTerms`).
+`{"project": "<KEY>", "repositories": ["<owner>/<name>", …]}`, the repository each issue of the project resolves to, open or done (its own, else its nearest parent's, else the project's default), as the issue or the default mapping stores it, each once and sorted byte-wise, and `[]` when no issue of the project resolves to one (`refs.ProjectRepositories`).
+It is computed from the issues alone, read live on each request, by the terms every issue read resolves a repository with (`refs.IssueRepoTerms`), and it reads no rename: a repository GitHub renamed is answered under the name its issues store.
 An unknown key is `404 PROJECT_NOT_FOUND`, and an issue whose parent chain is deeper than 32 links, or loops, is `503 REPOSITORIES_UNRESOLVED` naming that issue, never a shorter list.
-The GitHub proxy's rule (`/api/github/rest/...`, under Routes) walks the same terms and differs from this answer in two ways: it also counts a repository the project maps and no issue resolves to as the project's, and it reads an issue whose chain the walk cannot finish as resolving to its project's default.
+The GitHub proxy's rule (`/api/github/rest/...`, under Routes) walks the same terms and differs from this answer in three ways: it also counts a repository the project maps and no issue resolves to as the project's, it reads an issue whose chain the walk cannot finish as resolving to its project's default, and it reads a repository under the name a mapping's `renamed_to` gives it.
 
 With `DISPATCH_AGENT_SECRETS_URL` set, an access token the secrets broker issued is a fifth credential, and the only one that proves a session of its own.
 It is presented under RFC 9449's DPoP scheme
@@ -4596,7 +4596,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/settings/repo-projects/{owner}/{repo}` (PUT, DELETE; cookie, trusted header, or bearer)
 
   Create or replace, or remove, a repository mapping; PUT takes `{project, default?, renamed_to?}`, and `default: true` moves the project's one default to it.
-  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`):
+  `renamed_to` is the full `owner/name` the repository is called today, which every comparison Dispatch makes of a repository canonicalises through (`refs.CanonicalRepo`), but the repository answer (`GET /api/v1/access/projects/{key}/repositories`), which names a repository as its issues store it:
   absent or null leaves the stored pair as it is, `""` clears it, and a pair naming this repository itself, one naming a repository that is itself renamed, or one on a repository another mapping is already renamed to is `400 INVALID_REPO_PROJECT`.
   A mapping an issue names as its `repo` is deleted and moved like any other: an issue's own repository needs no mapping.
   `AGENTS.md` gives the rules and the `settings.repo_project.updated` events.
