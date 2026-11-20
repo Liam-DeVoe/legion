@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `legion-worker` skill's forward merge runs `legion merge` in place of a `jj new` of two
+  commits, says that every merge of two commits is `legion merge`, and points to
+  `legion merge --help` for each conflict and for how to read a merge's resolution: against git's
+  own merge of the merge's two parents (`git merge-tree --write-tree`), not with
+  `git show --remerge-diff`.

@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `legion merge -R <workspace> -m <message> <first> <second>` makes the merge commit of two
+  commits in a jj workspace, and the merge holds git's merge (`git merge-tree --write-tree`):
+  jj can merge two commits that have more than one merge base wrongly and show no conflict
+  (jj-vcs/jj#6369). Where git conflicts, the merge holds jj's merge of git's own three versions of
+  the path, over one merge base, so an unresolved conflict is a jj conflict that `jj git push`
+  refuses. It exits 0 for a clean merge, 1 for a merge with conflicts, whose output ends with the
+  next step, 2 for a usage error, and 3 for a refusal or a failure, which makes nothing and leaves
+  the working copy where it was. Its last description line is `Legion-Merge: <git's tree id>`.
+  It needs git 2.38 or later.
