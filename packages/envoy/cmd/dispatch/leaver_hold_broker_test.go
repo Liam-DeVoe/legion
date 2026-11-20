@@ -230,7 +230,9 @@ func waitForLeaverCredentials(t *testing.T, r *leaverRig, p *leaverPerson, bound
 	}
 }
 
-func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) string {
+// leaverCredentialFailures is each of p's credentials that is not served, by name and answer:
+// none when every one is.
+func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) []string {
 	t.Helper()
 	var failures []string
 	for _, row := range []struct {
@@ -253,7 +255,7 @@ func leaverCredentialFailures(t *testing.T, r *leaverRig, p *leaverPerson) strin
 			failures = append(failures, fmt.Sprintf("%s answered %d %q", row.name, status, code))
 		}
 	}
-	return fmt.Sprint(failures)
+	return failures
 }
 
 func waitForOutageRelease(t *testing.T, r *leaverRig, p *leaverPerson, bound time.Duration) {
