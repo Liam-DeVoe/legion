@@ -1,46 +1,49 @@
 /**
- * What a row of a table or list is, for the page's focus rescue (`ROW_SELECTOR`): an element HTML
- * or ARIA defines as an item of a list or a table - an `<li>`, a `<tr>`, an element of role `row`
- * or `listitem`, an element of role `article` inside one of role `feed` - or an element that
- * carries the shared marker below. A list drawn as `<li>`s and a table drawn as `<tr>`s are rows
- * with nothing added: every `<tr>` the shared tables draw (`DataTable`, `TableShell`, and the rows
- * their callers draw), header, spacer, group and empty lines included, the Inbox's and the
- * Answers page's rows, the Conversation's turns, and every other `<ul>`, `<ol>` and table a page
- * draws.
+ * What a row of a table or list is, for the page's focus rescue (`ROW_SELECTOR`): an item of a
+ * list or a table by its markup - an `<li>`, a `<tr>`, an `<article>`, an element of role `row`
+ * or `listitem` - or an element that carries the shared marker below. HTML defines an
+ * `<article>` as a self-contained composition - a post, a comment, a card - so a list of cards
+ * drawn as `<article>`s is a list of rows with nothing added, as a list drawn as `<li>`s and a
+ * table drawn as `<tr>`s are: every `<tr>` the shared tables draw (`DataTable`, `TableShell`, and
+ * the rows their callers draw), header, spacer, group and empty lines included; every `<ul>`,
+ * `<ol>` and table a page draws; and every card drawn as an `<article>` - the Agents page's rows
+ * and its ended agents, the Architecture page's rows, the Board's cards, the Broadcast page's
+ * recipients, the margin's threads, decisions and pinned cards, and every ask card, open or
+ * answered.
  *
- * The marker is for a row drawn as an element that says nothing of being one: the Agents page's
- * `<article data-agent-row>` and the Architecture page's `<article data-component-row>`, each the
- * element the page's keys move between, inside an `<li>` of its list, and the Board's cards. A
- * page's own row attribute (`data-agent-row`, `data-board-card`, ...) stays the page's, for its
- * own keys and tests; the marker says only that the element is a row.
+ * The marker is for a row whose list markup would change how a screen reader reads the page. One
+ * row carries it: a send the reader made that Dispatch has not yet made (`PendingSendTurn`), a
+ * turn of the session's transcript in its live view, whose stored turns are no list, and the same
+ * turn above the composer in its Agents row. A page's own row attribute (`data-agent-row`,
+ * `data-board-card`, ...) stays the page's, for its own keys and tests; the marker says only that
+ * the element is a row.
  *
- * A table in a document's or a comment's prose is a table too, so its `<tr>`s are rows, which
- * harms nothing. In the live Proof editor it changes nothing: the editor's whole text is
- * content-editable, so the rescue passes over every element of it, a link in a cell included, as
- * one that takes typed text before it asks whether that element is in a row, and the focus a loss
- * there leaves is the editor's own, which sits in no prose row. In prose drawn read-only - a
- * comment, a closed issue's document, a past version - a link in a table's cell is no longer a
- * place a loss the reader did not cause lands: the focus goes to the box the table is drawn in, as
- * it does from any other row, only while the reader can see that box and with no scroll, so their
- * next key acts on nothing they did not pick.
+ * Rows nest - a reply's `<li>` inside a thread's `<article>` inside a Conversation turn's `<li>`,
+ * an ask card inside an Inbox row - and a control's row is the nearest one around it, itself
+ * included. A table in a document's or a comment's prose is a table too, so its `<tr>`s are rows,
+ * and the `<article>` a document is drawn in (`ProofDocument`, `VersionView`) is a row around
+ * every control of the document no nearer row holds.
  *
- * The rescue reads a row by this one rule (`inRow` in `focus-place.ts`): a loss the reader did
- * not cause lands in no row and in no control inside one, so a row this rule does not match is
- * one the rescue can hand the focus into.
+ * The rescue reads a row for a loss the reader caused alone (`focus-place.ts`): a press of theirs
+ * inside the row of the control that lost the focus makes the loss theirs, a press on the one
+ * checkbox a row draws is a press on its mark, and the same control in the row that moves up into
+ * the place of the row a press took away takes the focus. A loss the reader did not cause leaves
+ * the focus on the body, or on an open modal dialog's own stop, whatever rows stand near it, so
+ * the rescue reads no row for it.
  */
 export const ROW_MARKER_ATTRIBUTE = "data-row-marker";
 
-/** The marker as props for a row's element to spread where the row is drawn, on an element that
- *  is no `<li>` or `<tr>`: `<article {...ROW_MARKER}>`. */
+/** The marker as props for a row's element to spread where the row is drawn, on an element whose
+ *  list markup would change how a screen reader reads the page: `<div {...ROW_MARKER}>`. */
 export const ROW_MARKER = { [ROW_MARKER_ATTRIBUTE]: "" } as const;
 
-/** Every element that is a row: an item of a list or a table by HTML or ARIA, or one that carries
+/** Every element that is a row: an item of a list or a table by its markup, or one that carries
  *  the marker. */
 export const ROW_SELECTOR = [
   "li",
   "tr",
+  "article",
   '[role="row"]',
   '[role="listitem"]',
-  '[role="feed"] [role="article"]',
   `[${ROW_MARKER_ATTRIBUTE}]`,
 ].join(", ");

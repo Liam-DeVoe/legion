@@ -28,7 +28,7 @@ The Go server's guide: `packages/envoy/cmd/dispatch/AGENTS.md`.
 - One primary per screen, chrome after it; type 22px, 15px, `text-sm`, `text-xs`; spacing in 4px steps; colour means state.
 - Editor: never write a class into editor DOM (ProseMirror reads it as an edit); use `ProofEditorHandle` decorations. Fix editor gaps in `packages/proof-editor`.
 - Root `patches/` patch `@milkdown/plugin-clipboard`, `@milkdown/preset-gfm` and `prosemirror-tables` at one version each; Bun skips a stale patch silently.
-- Search, sort and filter controls: a page draws these, and `components/one-definition.test.ts` refuses its own.
+- Search, sort and filter controls: a page draws these. `components/one-definition.test.ts` refuses a page's own search box, `<table>`, panel and hand-written control mark, but not a `<select>`.
   - `components/ControlRow.tsx`: the one row a page's controls sit in.
   - `components/SearchBox.tsx`: the search box of a list narrowed by typed words.
   - `components/PanelTrigger.tsx`: the button that opens a menu, a filter panel or a column filter.
