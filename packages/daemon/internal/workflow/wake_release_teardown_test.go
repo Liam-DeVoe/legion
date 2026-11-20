@@ -75,7 +75,7 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 			}
 			return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 		}
-		if _, _, err := st.CancelIssueRelease(ctx, project, "LEGION-208", resume, record.OutOfWorkflow); err != nil {
+		if _, err := st.CancelIssueRelease(ctx, project, "LEGION-208", resume, record.OutOfWorkflow, store.ReleaseCancelPause{At: time.Now()}); err != nil {
 			t.Fatalf("cancel the release as the outbox does: %v", err)
 		}
 	}

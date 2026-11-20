@@ -241,8 +241,8 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 			}
 			return store.IdleReleaseRow{Kind: string(row.Kind), Payload: row.Payload}, nil
 		}
-		resumed, _, err := st.CancelIssueRelease(ctx, project, "LEGION-208", resume, record.OutOfWorkflow)
-		if err != nil || !slices.Equal(resumed, []claim.Role{claim.RoleImplementer}) {
+		cancelled, err := st.CancelIssueRelease(ctx, project, "LEGION-208", resume, record.OutOfWorkflow, store.ReleaseCancelPause{At: time.Now()})
+		if resumed := cancelled.Resumed; err != nil || !slices.Equal(resumed, []claim.Role{claim.RoleImplementer}) {
 			t.Fatalf("CancelIssueRelease = %v, %v; want the implementer's resume queued", resumed, err)
 		}
 		var state, source string
@@ -397,7 +397,7 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 				}
 
 				starts := wakeStarts(t, rig.pool)
-				if want := WakeTask(wake.kind, detail); len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want {
+				if want := WakeTask(wake.kind, detail, StoppedByRelease); len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want {
 					t.Fatalf("supervise start rows = %+v, want the one start of the implementer with the task %q", starts, want)
 				}
 				const preamble = "Your issue's pod had been released while it was idle, and this wake brought it back. "
@@ -510,8 +510,10 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 
 	t.Run("(h) neither says nothing kept the message", func(t *testing.T) {
 		for _, kind := range []string{pods.WakeAgentMessage, pods.WakeRoleMessage} {
-			if task := WakeTask(kind, "detail"); strings.Contains(task, "nothing kept") {
-				t.Errorf("WakeTask(%s) = %q, want no claim that nothing kept the message", kind, task)
+			for _, stop := range []WakeStop{StoppedByRelease, StoppedByPause} {
+				if task := WakeTask(kind, "detail", stop); strings.Contains(task, "nothing kept") {
+					t.Errorf("WakeTask(%s, stop %d) = %q, want no claim that nothing kept the message", kind, stop, task)
+				}
 			}
 		}
 	})
@@ -524,7 +526,7 @@ func TestAWokenRoleReadsATrueWakeText(t *testing.T) {
 				want: preamble + "The wake is the release's backstop running out: the backstop armed for LEGION-208's implementer came due. " +
 					"Nothing else asked for you, so take up your phase where you left it."},
 		} {
-			if got := WakeTask(tc.kind, tc.detail); got != tc.want {
+			if got := WakeTask(tc.kind, tc.detail, StoppedByRelease); got != tc.want {
 				t.Errorf("WakeTask(%s) = %q, want %q", tc.kind, got, tc.want)
 			}
 		}

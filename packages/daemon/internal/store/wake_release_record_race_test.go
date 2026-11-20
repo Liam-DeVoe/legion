@@ -40,7 +40,7 @@ func TestAWakeTakenWhileItsReleaseIsRecordedNamesThatRelease(t *testing.T) {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at.Add(-time.Second)); err != nil || !taken {
+	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at.Add(-time.Second), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
 
@@ -112,7 +112,7 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 		t.Fatalf("begin the wake's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at); err != nil || !taken {
+	if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeAgentMessage, at, 0); err != nil || !taken {
 		t.Fatalf("take the implementer's wake = %t, %v; want it taken", taken, err)
 	}
 
@@ -120,7 +120,7 @@ func TestAWakeTakenWhileItsReleaseIsCancelledLeavesNoResume(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		_, _, err := store.CancelIssueRelease(cancelCtx, "legion", rootIssue, resumeRow, record.OutOfWorkflow)
+		_, err := store.CancelIssueRelease(cancelCtx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()})
 		done <- err
 	}()
 	var cancelErr error
@@ -170,11 +170,11 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 	if err != nil {
 		t.Fatalf("record the idle release: %v", err)
 	}
-	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, claim.RoleImplementer, pods.WakeDelivery,
-		at.Add(-time.Hour)); err != nil || !taken {
+	if taken, err := store.TakePodWake(ctx, "legion", rootIssue, releasedToken, pods.WakeDelivery,
+		at.Add(-time.Hour), 0); err != nil || !taken {
 		t.Fatalf("take the implementer's first wake = %t, %v; want it taken", taken, err)
 	}
-	old, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer)
+	old, _, found, err := store.OpenPodResume(ctx, "legion", rootIssue, claim.RoleImplementer)
 	if err != nil || !found {
 		t.Fatalf("the implementer's open resume = %t, %v; want the one its first wake recorded", found, err)
 	}
@@ -228,7 +228,7 @@ func TestAWakeWhileANewerReleaseIsRecordedClosesTheOldResumeAndTakesItsOwn(t *te
 			if w.closed, err = records.ClosePodGoneResume(wakeCtx, tx, rootIssue, claim.RoleImplementer); err != nil {
 				return err
 			}
-			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, pods.WakeBackstop, at)
+			w.taken, err = records.TakePodWake(wakeCtx, tx, rootIssue, claim.RoleImplementer, pods.WakeBackstop, at, 0)
 			return err
 		})
 		done <- w
@@ -303,7 +303,7 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 		return n
 	}
 
-	taken, inRelease, err := store.TakeDeliveryWake(ctx, "legion", rootIssue, claim.RoleImplementer, at)
+	taken, inRelease, err := store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at, 0)
 	if err != nil || taken || !inRelease {
 		t.Fatalf("the delivery wake before the stop records the role = taken %t, in a release %t, %v; want nothing taken and the release named: the teardown is about to take the pod",
 			taken, inRelease, err)
@@ -315,7 +315,7 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	// The stops record their roles. The mark still stands, and the wake still takes nothing.
 	stoppedByTheRelease(t, store, claim.RoleImplementer, boundary)
 	stoppedByTheRelease(t, store, claim.RoleArchitect, stop)
-	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, claim.RoleImplementer, at)
+	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at, 0)
 	if err != nil || taken || !inRelease {
 		t.Fatalf("the delivery wake after the stops record their roles = taken %t, in a release %t, %v; want nothing taken and the release named",
 			taken, inRelease, err)
@@ -334,7 +334,7 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	if err := store.ClearIssueRelease(ctx, "legion", rootIssue); err != nil {
 		t.Fatalf("clear the release's mark: %v", err)
 	}
-	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, claim.RoleImplementer, at.Add(2*time.Minute))
+	taken, inRelease, err = store.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, at.Add(2*time.Minute), 0)
 	if err != nil || !taken || inRelease {
 		t.Fatalf("the delivery wake once the teardown finished = taken %t, in a release %t, %v; want the wake taken", taken, inRelease, err)
 	}
@@ -350,5 +350,52 @@ func TestADeliveryWakeTakesNothingWhileAReleaseMarkStands(t *testing.T) {
 	if resumed != release || seen != release || kind != pods.WakeDelivery {
 		t.Errorf("the wake's resume is a %s wake of release %d, seen release %d; want a %s wake of release %d, seen release %d",
 			kind, resumed, seen, pods.WakeDelivery, release, release)
+	}
+}
+
+// A release's record of a wake that a project's pause holds (main's c7e1cbd5 in this pull
+// request). A pause starts no release, and a release that saved before the pause runs to its end
+// (IssueReleaseSave, decision 12 of dispatch://INFRA-3759). A wake of a role that release
+// recorded can then come while the project is paused, and it is a held wake of the pause
+// (PauseOfWake, decision 15), which pairs with no release
+// (pod_resumes_held_wake_pairs_with_no_release). The release's record points that wake at itself
+// as it points every wake taken under its mark, and keeps its release 0: its seen release becomes
+// the release, and its time and its stuck clock become the release's time. A record that set the
+// release on it would fail the check, and the teardown with it.
+func TestARecordedReleaseKeepsAHeldWakeTakenUnderItsMarkPairedWithNoRelease(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, store)
+	at := time.Now().UTC().Truncate(time.Millisecond)
+	markRelease(t, store, 1, 1, 1, 0, claim.RoleImplementer)
+	pause, _ := pauseLegion(t, store, at.Add(-time.Minute))
+	records := podRecords(t, store)
+	inTx(t, store, func(tx pgx.Tx) error {
+		held, stopping, err := records.PauseOfWake(ctx, tx, rootIssue, releasedToken, 0)
+		if err != nil || held != pause.ID || stopping != 0 {
+			t.Fatalf("the pause of the implementer's wake = held %d, stopping %d, %v; want held by pause %d and stopped by none",
+				held, stopping, err, pause.ID)
+		}
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakeChecks, at.Add(-30*time.Second), held); err != nil || !taken {
+			t.Fatalf("take the held wake = %t, %v; want it taken", taken, err)
+		}
+		return nil
+	})
+
+	release, err := store.RecordPodRelease(ctx, PodRelease{Project: "legion", Issue: rootIssue, Generation: 1,
+		Roles: []string{"implementer"}, At: at})
+	if err != nil {
+		t.Fatalf("record the release under the held wake: %v", err)
+	}
+	var resumed, seen, held int64
+	var when, clock time.Time
+	if err := store.Pool().QueryRow(ctx, `select release_id, seen_release, coalesce(pause_id, 0), at, clock_at from pod_resumes
+		where project = 'legion' and issue = $1 and role = 'implementer'`, rootIssue).Scan(&resumed, &seen, &held, &when, &clock); err != nil {
+		t.Fatalf("read the held wake's resume: %v", err)
+	}
+	if resumed != 0 || seen != release || held != pause.ID || !when.Equal(at) || !clock.Equal(at) {
+		t.Errorf("the held wake's resume = release %d, seen release %d, pause %d, time %s, stuck clock %s; want release 0, seen release %d, pause %d and the release's time %s for both",
+			resumed, seen, held, when.UTC().Format(time.RFC3339Nano), clock.UTC().Format(time.RFC3339Nano),
+			release, pause.ID, at.Format(time.RFC3339Nano))
 	}
 }
