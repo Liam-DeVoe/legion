@@ -153,9 +153,11 @@ func validateSpawnSpec(spec runtime.SpawnSpec, providerKeys []string, operatorEn
 
 // workspaceDir is where spec's agent works, under the daemon's state directory: the issue's jj
 // workspace the daemon provisioned at `<state_dir>/workspaces/<owner>/<repo>/<issue>`
-// (workspace.Location), which must exist; for a configuration with no repository,
-// `<state_dir>/workspaces/<issue>`, made here; and for the controller, which works no checkout,
-// `<state_dir>/controller`, made here.
+// (workspace.Location), or, for the reviewer, the reviewer's own clone of the issue the daemon
+// made at `<state_dir>/reviews/<owner>/<repo>/<issue>` (workspace.ReviewLocation), which no
+// other role's pane works in (workspace/reviewgit.go), each of which must exist; for a
+// configuration with no repository, `<state_dir>/workspaces/<issue>`, made here; and for the
+// controller, which works no checkout, `<state_dir>/controller`, made here.
 func (r *Runtime) workspaceDir(spec runtime.SpawnSpec) (string, error) {
 	if spec.Role == claim.RoleController || spec.Repository.IsZero() {
 		dir := filepath.Join(r.stateDir, "workspaces", spec.Issue)
@@ -171,16 +173,23 @@ func (r *Runtime) workspaceDir(spec runtime.SpawnSpec) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	info, err := os.Stat(working.Dir)
+	dir, missing := working.Dir, "the issue's workspace was never provisioned"
+	if spec.Role == claim.RoleReviewer {
+		if dir, err = workspace.ReviewLocation(r.stateDir, spec.Repository, spec.Issue); err != nil {
+			return "", err
+		}
+		missing = "the reviewer's own clone of the issue was never provisioned"
+	}
+	info, err := os.Stat(dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
-		return "", fmt.Errorf("workspace %s does not exist: the issue's workspace was never provisioned", working.Dir)
+		return "", fmt.Errorf("workspace %s does not exist: %s", dir, missing)
 	case err != nil:
 		return "", fmt.Errorf("the workspace: %w", err)
 	case !info.IsDir():
-		return "", fmt.Errorf("workspace %s is not a directory", working.Dir)
+		return "", fmt.Errorf("workspace %s is not a directory", dir)
 	}
-	return working.Dir, nil
+	return dir, nil
 }
 
 func sortedKeys(m map[string]string) []string {

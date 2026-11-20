@@ -1435,11 +1435,13 @@ func TestRuntimeOwnedIsWhatTheWorkerContainerIsToldByTheRuntime(t *testing.T) {
 			stamping := workerSpec(t)
 			stamping.IssueTrailer = stamping.Issue
 			// The resumed tree agent is told what holds it to the session it resumes, which no fresh
-			// launch is told (runtime.SessionExclusiveVariable).
+			// launch is told (runtime.SessionExclusiveVariable); the reviewer is told its own git and
+			// the default branch its clone is checked out at (gitConfigEnvFor, agentEnv).
 			resuming := stamping
 			resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
 			told := map[string]bool{}
-			for _, spec := range []runtime.SpawnSpec{stamping, resuming, claudeWorkerSpec(t), controllerSpec(t)} {
+			reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
+			for _, spec := range []runtime.SpawnSpec{stamping, resuming, reviewer, claudeWorkerSpec(t), controllerSpec(t)} {
 				spec.Env, spec.Secrets = nil, nil
 				for name := range envOf(workerOf(t, r, spec)) {
 					told[name] = true
@@ -2121,11 +2123,15 @@ func TestLegionsOwnNamesAreWhatItsPodsCarry(t *testing.T) {
 				carry(pod, workerOf(t, r, spec))
 			}
 			// A pane whose repository the project names is told the issue key it stamps its
-			// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository.
+			// commits with (LEGION_ISSUE_TRAILER), and no golden case works such a repository; the
+			// reviewer is told its own git and default branch, and no golden case is a reviewer.
 			stamping := workerSpec(t)
 			stamping.Env, stamping.Secrets = nil, nil
 			stamping.IssueTrailer = stamping.Issue
 			carry(podOf(t, r, stamping), workerOf(t, r, stamping))
+			reviewer := testSpec(t, otherToken, claim.RoleReviewer, testTree)
+			reviewer.Env, reviewer.Secrets = nil, nil
+			carry(podOf(t, r, reviewer), workerOf(t, r, reviewer))
 			probe := r.probeManifest("legion-probe", ImageProbe{Contract: 5}, time.Time{}).Spec.PodTemplate.Spec
 			carry(probe, containerNamed(t, probe, probeContainer))
 			// The one path no container mounts: role-init binds the pod's test server log there in

@@ -114,6 +114,9 @@ var ProtectedPaths = []string{
 	VolumeRoot + "/workspaces",
 	// The shared clones every workspace is cut from, `/legion/repos/github.com/<owner>/<repo>`.
 	VolumeRoot + "/repos",
+	// The reviewer's own clone of the issue, which its role-init makes beside the workspace and no
+	// other role sees (workspace.ReviewLocation): a checkout the reviewer reads the change from.
+	VolumeRoot + "/reviews",
 	// The pod's feed, which workspace-fetch wrote and every other container mounts read-only
 	// (sandbox.FeedDir).
 	VolumeRoot + "/feed",

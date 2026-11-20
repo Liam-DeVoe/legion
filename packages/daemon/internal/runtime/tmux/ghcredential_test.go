@@ -139,8 +139,8 @@ func acmeWidgets(context.Context, claim.Token) (ghrepo.Repository, error) {
 // fakeGH is the real gh every fake server runtime is told, which a pane's LEGION_GH_PATH names.
 const fakeGH = "/usr/bin/gh"
 
-// spec is testSpec on acme/widgets, with the issue's workspace provisioned and a role prompt that
-// exists, as a launch requires.
+// spec is testSpec on acme/widgets, with the issue's workspace provisioned — for the reviewer,
+// its own clone of the issue — and a role prompt that exists, as a launch requires.
 func (f *fakeServerRuntime) spec(t *testing.T, role claim.Role) runtime.SpawnSpec {
 	t.Helper()
 	prompt := filepath.Join(t.TempDir(), "role.md")
@@ -159,7 +159,13 @@ func (f *fakeServerRuntime) spec(t *testing.T, role claim.Role) runtime.SpawnSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(located.Dir, 0o700); err != nil {
+	dir := located.Dir
+	if role == claim.RoleReviewer {
+		if dir, err = workspace.ReviewLocation(f.stateDir, spec.Repository, spec.Issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return spec

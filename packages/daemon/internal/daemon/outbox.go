@@ -134,6 +134,9 @@ type outbox struct {
 	// checkedOut is whether a workspace on the daemon's host finished its checkout
 	// (workspace.CheckedOut): a launch provisions one that did not (ensureWorkspace).
 	checkedOut func(context.Context, workspace.Workspace) (bool, error)
+	// provisionReview makes a reviewer's own clone on the daemon's host, handed the shared clone's
+	// store lock and the checkout places (workspace.ProvisionReviewClone): ensureReviewClone.
+	provisionReview func(context.Context, workspace.ReviewRequest) error
 	// provisions orders the workspace provisions and removals (provisionLocks): up to
 	// provisionConcurrency checkouts at once, one at a time per issue, and one command at a time
 	// on each repository's shared clone but for the checkouts — the clone's `jj git fetch`, its
@@ -239,6 +242,9 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 		},
 		checkedOut: func(ctx context.Context, working workspace.Workspace) (bool, error) {
 			return workspace.CheckedOut(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), working)
+		},
+		provisionReview: func(ctx context.Context, request workspace.ReviewRequest) error {
+			return workspace.ProvisionReviewClone(ctx, workspace.NewRunner(workspace.CommandTimeout, tools), request)
 		},
 	}
 }
@@ -3372,6 +3378,40 @@ func (r *outbox) ensureWorkspace(ctx context.Context, key string, repo ghrepo.Re
 	return r.provisionIn(ctx, key, repo, defaultBranch, true)
 }
 
+// ensureReviewClone makes key's reviewer's own clone (workspace.ProvisionReviewClone), or brings
+// the one there to the current head, at every reviewer launch on the daemon's host (the launch's
+// spec, specs.ensureReviewClone), after ensureWorkspace has made sure of the shared clone it is
+// cloned from. It takes the issue's turn, as a provision of the issue's workspace does, so it
+// never reads a shared clone that the issue's own provision is still making, and hands the clone
+// the repository's store lock and the checkout places a provision takes (provisionIn).
+func (r *outbox) ensureReviewClone(ctx context.Context, key string, repo ghrepo.Repository, defaultBranch string) error {
+	if r.podsProvision() {
+		return nil
+	}
+	located, err := workspace.Location(r.stateDir, repo, key)
+	if err != nil {
+		return fmt.Errorf("provision the review clone of %s: %w", key, err)
+	}
+	dir, err := workspace.ReviewLocation(r.stateDir, repo, key)
+	if err != nil {
+		return fmt.Errorf("provision the review clone of %s: %w", key, err)
+	}
+	issue, releaseIssue := r.provisions.issues.take(located.Dir)
+	defer releaseIssue()
+	issue.Lock()
+	defer issue.Unlock()
+	store, releaseStore := r.provisions.stores.take(located.Clone)
+	defer releaseStore()
+	if err := r.provisionReview(ctx, workspace.ReviewRequest{
+		Clone: located.Clone, Dir: dir, Repo: repo, Issue: key, DefaultBranch: defaultBranch,
+		StoreLock: store, CheckoutSlot: r.provisions.slot,
+		Log: func(line string) { r.log.Info("review clone: "+line, "issue", key) },
+	}); err != nil {
+		return fmt.Errorf("provision the review clone of %s: %w", key, err)
+	}
+	return nil
+}
+
 // unprovisioned is why key's workspace, working, needs a provision before a launch works in it, or
 // "" when it is whole: its directory is absent from the daemon's host ("missing"), or its checkout
 // never finished ("not checked out", checkedOut).
@@ -3889,6 +3929,15 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	defer releaseStore()
 	if err := r.remove(ctx, working, store); err != nil {
 		return fmt.Errorf("remove workspace for %s: %w", row.Issue, err)
+	}
+	// The reviewer's own clone goes with the workspace, under the same turn: it is the issue's,
+	// and a reviewer relaunched after this provisions it again (ensureReviewClone).
+	review, err := workspace.ReviewLocation(r.stateDir, repo, row.Issue)
+	if err != nil {
+		return fmt.Errorf("locate the review clone of %s: %w", row.Issue, err)
+	}
+	if err := workspace.RemoveReviewClone(review); err != nil {
+		return fmt.Errorf("remove the review clone of %s: %w", row.Issue, err)
 	}
 	return nil
 }

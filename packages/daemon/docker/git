@@ -1,7 +1,20 @@
 #!/bin/sh
 # The git first on a pod's PATH, /opt/legion/bin/git (worker.Dockerfile). It changes two commands,
-# a commit and a push, and runs every other one unchanged: the real git, /usr/bin/git, gets "$@"
-# as it came.
+# a commit and a push, and, for the reviewer alone, every command; it runs every other one
+# unchanged: the real git, /usr/bin/git, gets "$@" as it came.
+#
+# A reviewer's command (LEGION_ROLE=reviewer) that is neither a commit nor a push runs with
+# `-c core.fsmonitor=false -c core.hooksPath=/dev/null` immediately before the subcommand, and a
+# diff, log, show, format-patch, whatchanged, blame or annotate also with
+# `--no-ext-diff --no-textconv` immediately after it, so no fsmonitor command, hook, diff driver
+# command or text conversion that a configuration names runs under the reviewer's claim: not one
+# its own clone's configuration names, nor one a repository the head commits carries, which every
+# git run below that directory reads as its own (packages/daemon/internal/workspace/
+# reviewgit.go says what each setting is for, and holds the tmux runtime's copy of this rule). One
+# of those seven that names --ext-diff or --textconv itself, before a `--`, is refused, since it
+# would take the two flags back. The runtime sets the same two settings, and no global or system
+# configuration, in the reviewer's environment (gitConfigEnvFor,
+# packages/daemon/internal/runtime/sandbox/manifest.go), which every other git it runs reads too.
 #
 # A commit goes to `legion git --real /usr/bin/git` (packages/daemon/cmd/legion/git.go), which
 # adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. It adds each
@@ -61,11 +74,13 @@ legion=/opt/legion/bin/legion
 # `-h`, `--version` and `-v` make git run its help or version command with what follows as that
 # command's arguments, and `--exec-path` with no `=`, `--html-path`, `--man-path` and `--info-path`
 # make git print a path and stop. So `git --help push` is no push and `git --help commit` no
-# commit, and the pass stops there with neither: the real git gets "$@" as it came.
+# commit, and the pass stops there with neither: the real git gets "$@" as it came. sub is the
+# subcommand the pass found, and empty where it found none.
 push=0
 commit=0
 value=0
 ahead=0
+sub=
 for arg; do
   if [ "$value" -eq 1 ]; then
     value=0
@@ -76,17 +91,18 @@ for arg; do
       --exec-path=*) ;;
       --exec-path*) break ;;
       -*) ;;
-      push | send-pack) push=1; break ;;
-      commit) commit=1; break ;;
-      *) break ;;
+      push | send-pack) push=1; sub=$arg; break ;;
+      commit) commit=1; sub=$arg; break ;;
+      *) sub=$arg; break ;;
     esac
   fi
   ahead=$((ahead + 1))
 done
 
-# Only a push has its list rebuilt here. A commit goes to `legion git` with "$@" as it came, and
-# legion git, in Go, puts the trailer arguments in. Every other command goes to the real git with
-# "$@" as it came. A POSIX shell edits its own positional parameters by taking each from the front
+# Only a push has its whole list rebuilt here, and a reviewer's command the words in front of its
+# subcommand. A commit goes to `legion git` with "$@" as it came, and legion git, in Go, puts the
+# trailer arguments in. Every other command goes to the real git with "$@" as it came. A POSIX
+# shell edits its own positional parameters by taking each from the front
 # and putting the kept ones back at the end with `set -- "$@" "$arg"`, and dash copies the whole
 # list each time, so a rebuild costs time that grows with the square of the argument count: one
 # push's leak check spent 62 s of its 78 s in this wrapper, rebuilding a `git rev-list` of about
@@ -94,7 +110,48 @@ done
 if [ "$commit" -eq 1 ]; then
   exec "$legion" git --real "$real" -- "$@"
 fi
+if [ "$push" -eq 0 ] && { [ -z "$sub" ] || [ "${LEGION_ROLE:-}" != reviewer ]; }; then
+  exec "$real" "$@"
+fi
+
+# A reviewer's command: only the ahead words in front of the subcommand are rebuilt, each quoted
+# for the eval below, which then hands the rest of the list on as it came ("$@"), so the cost does
+# not grow with the square of the argument count either.
 if [ "$push" -eq 0 ]; then
+  front=
+  while [ "$ahead" -gt 0 ]; do
+    word=$1
+    shift
+    ahead=$((ahead - 1))
+    quoted=
+    while :; do
+      case $word in
+        *\'*)
+          quoted=$quoted${word%%\'*}\'\\\'\'
+          word=${word#*\'}
+          ;;
+        *) break ;;
+      esac
+    done
+    front="$front '$quoted$word'"
+  done
+  shift
+  flags=
+  case $sub in
+    diff | log | show | format-patch | whatchanged | blame | annotate)
+      flags='--no-ext-diff --no-textconv'
+      for arg; do
+        case $arg in
+          --) break ;;
+          --ext-diff | --textconv)
+            echo "legion: a reviewer's git runs no diff driver: refusing $sub $arg" >&2
+            exit 2
+            ;;
+        esac
+      done
+      ;;
+  esac
+  eval "set -- $front"' -c core.fsmonitor=false -c core.hooksPath=/dev/null "$sub" '"$flags"' "$@"'
   exec "$real" "$@"
 fi
 

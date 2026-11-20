@@ -143,10 +143,13 @@ var runtimeOwned = func() map[string]bool {
 		// What holds a resumed Oh My Pi to the session it resumes (mainEnvironment).
 		runtime.SessionExclusiveVariable: true,
 	}
-	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> gitConfigEnv sets.
-	for _, entry := range gitConfigEnv() {
+	// GIT_CONFIG_COUNT and each GIT_CONFIG_KEY_<n>/GIT_CONFIG_VALUE_<n> gitConfigEnv sets, and the
+	// reviewer's (gitConfigEnvFor): its two pairs more, no global or system configuration, and the
+	// default branch its role-init checks its own clone out at (agentEnv).
+	for _, entry := range slices.Concat(gitConfigEnv(), gitConfigEnvFor(claim.RoleReviewer)) {
 		owned[entry.Name] = true
 	}
+	owned["LEGION_DEFAULT_BRANCH"] = true
 	return owned
 }()
 
@@ -348,6 +351,11 @@ type launch struct {
 	// which workspace-init provisions on the issue's volume (workspace.Location under TreeRoot), or
 	// the root of the controller's own volume, TreeRoot.
 	workspace string
+	// roleWorkspace is the workspace the launch's role is told it works in (LEGION_WORKSPACE): the
+	// issue's workspace, and for the reviewer the reviewer's own clone of the issue on the same
+	// volume (workspace.ReviewLocation under TreeRoot), which its role-init makes. Empty for
+	// the controller, whose pod has no workspace.
+	roleWorkspace string
 	// secrets are the claim's launch credentials, each reaching the agent as a `<NAME>_FILE`
 	// pointer into its generation's private directory: the boot token, the spec's but the providers
 	// Secret's own (Options.ProvidersSecrets, which the runtime points at the providers mount
@@ -1523,11 +1531,12 @@ func (r *Runtime) LaunchBound() time.Duration {
 // image's, so no directory of the issue's disk leads PATH. The GIT_CONFIG pairs are the GitHub
 // credential of every git the role runs, in the issue's clone or outside it, and two settings that
 // would run a program another role planted in the clone, the fsmonitor and the hooks, turned off
-// (gitConfigEnv); other settings of the shared clone can still run one. A Claude Code role, and no
-// other, is also told Claude Code's own three (claudelaunch.Environment, runsClaude) and the
-// session its launcher keeps (claudelaunch.SessionVariable). An Oh My Pi role that resumes a
-// recorded session, and no other launch, is told last that the session is its alone
-// (runtime.SessionExclusiveVariable=1).
+// (gitConfigEnv); other settings of the shared clone can still run one. The reviewer's git reads
+// no global or system configuration either, and the fsmonitor off and the hooks at /dev/null
+// after those pairs (gitConfigEnvFor). A Claude Code role, and no other, is also told Claude
+// Code's own three (claudelaunch.Environment, runsClaude) and the session its launcher keeps
+// (claudelaunch.SessionVariable). An Oh My Pi role that resumes a recorded session, and no other
+// launch, is told last that the session is its alone (runtime.SessionExclusiveVariable=1).
 func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	spec := l.spec
 	env := l.kind.agentEnv(l)
@@ -1552,7 +1561,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	add("PATH", podPath(legionDir))
 	add("PI_SHELL_PREFIX", shellprefix.For(legionDir))
 	add("GIT_TERMINAL_PROMPT", "0")
-	env = append(env, gitConfigEnv()...)
+	env = append(env, gitConfigEnvFor(spec.Role)...)
 	// The shared public leak check every write of this role runs first: its `legion gh` and its
 	// pushes each resolve PUBLIC_LEAK_CHECK before anything else
 	// (leakguard's Resolve) and refuse the write when they find no check. The check is not in the
@@ -1700,6 +1709,26 @@ func gitConfigEnv() []corev1.EnvVar {
 		env = append(env,
 			corev1.EnvVar{Name: "GIT_CONFIG_KEY_" + strconv.Itoa(i), Value: pair[0]},
 			corev1.EnvVar{Name: "GIT_CONFIG_VALUE_" + strconv.Itoa(i), Value: pair[1]})
+	}
+	return env
+}
+
+// gitConfigEnvFor is role's git environment: gitConfigEnv, and for the reviewer
+// workspace.ReviewGitEnv of gitConfigPairs followed by the fsmonitor off and the hooks at
+// /dev/null (workspace.ReviewGitConfig), which git reads last and so takes, with no global or
+// system configuration. gitConfigPairs stay first for `legion gh`, which hands the git gh runs only
+// the pairs that are one of them (cmd/legion's ghChildGitConfig), so that git keeps its fsmonitor
+// off and its hooks at /dev/null too. The reviewer's own git, the image's git wrapper, also puts
+// the reviewer's two settings in front of every subcommand, and --no-ext-diff and --no-textconv
+// after the ones that read a diff (packages/daemon/docker/git).
+func gitConfigEnvFor(role claim.Role) []corev1.EnvVar {
+	if role != claim.RoleReviewer {
+		return gitConfigEnv()
+	}
+	var env []corev1.EnvVar
+	for _, entry := range workspace.ReviewGitEnv(slices.Concat(gitConfigPairs, workspace.ReviewGitConfig())) {
+		name, value, _ := strings.Cut(entry, "=")
+		env = append(env, corev1.EnvVar{Name: name, Value: value})
 	}
 	return env
 }

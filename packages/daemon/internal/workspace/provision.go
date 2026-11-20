@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -315,6 +318,350 @@ func Location(stateDir string, repository ghrepo.Repository, issue string) (Work
 		Clone:    filepath.Join(CloneRoot(stateDir), repository.Owner(), repository.Name()),
 		Repo:     repository,
 	}, nil
+}
+
+// ReviewRoot is the directory under stateDir that holds every reviewer's clone, each at
+// <owner>/<name>/<issue> below it (ReviewLocation): under tmux the daemon's state directory, and
+// in a pod the issue's volume, where every role but the reviewer has it covered
+// (internal/launcher's role-init).
+func ReviewRoot(stateDir string) string { return filepath.Join(stateDir, "reviews") }
+
+// ReviewLocation is the reviewer's own clone of issue's repository (ProvisionReviewClone),
+// <state>/reviews/<owner>/<name>/<issue>: beside the shared clone and the issue's workspace, and
+// under neither, so no other role's work reaches it. It refuses what Location refuses.
+func ReviewLocation(stateDir string, repository ghrepo.Repository, issue string) (string, error) {
+	located, err := Location(stateDir, repository, issue)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ReviewRoot(stateDir), repository.Owner(), repository.Name(), filepath.Base(located.Dir)), nil
+}
+
+// IssueWorkspace is the issue's own workspace (Location) when dir is a reviewer's clone
+// (ReviewLocation) of that issue, read out of dir's path alone as locationOf reads a workspace's,
+// and dir itself otherwise: the reviewer's LEGION_WORKSPACE is its clone, and what works the
+// issue's workspace whichever role's variable it reads — a pod launcher's lock sweep and restore,
+// a shim's release bundle — works the workspace this answers.
+func IssueWorkspace(dir string) string {
+	stateDir := stateDirOf(dir)
+	owner, name := filepath.Base(filepath.Dir(filepath.Dir(dir))), filepath.Base(filepath.Dir(dir))
+	repository, err := ghrepo.Parse("workspace repository", owner+"/"+name)
+	if err != nil {
+		return dir
+	}
+	if review, err := ReviewLocation(stateDir, repository, filepath.Base(dir)); err != nil || review != dir {
+		return dir
+	}
+	located, err := Location(stateDir, repository, filepath.Base(dir))
+	if err != nil {
+		return dir
+	}
+	return located.Dir
+}
+
+// stateDirOf is the state directory of a path layoutDepth below it: a workspace, a shared clone
+// or a reviewer's clone.
+func stateDirOf(dir string) string {
+	for range layoutDepth {
+		dir = filepath.Dir(dir)
+	}
+	return dir
+}
+
+// ReviewRequestFor is the request a pod reviewer's role-init makes or refreshes its own clone with
+// (internal/launcher): dir, its LEGION_WORKSPACE, must be the ReviewLocation of issue's workspace in
+// a state directory's layout, and that workspace's shared clone is what it is cloned from. Any
+// other dir is refused, naming it.
+func ReviewRequestFor(dir, issue, defaultBranch string) (ReviewRequest, error) {
+	shared := IssueWorkspace(dir)
+	located, err := locationOf(shared)
+	if err != nil || shared == dir {
+		return ReviewRequest{}, fmt.Errorf("%s is no reviewer's clone of an issue's workspace in a state directory's layout", dir)
+	}
+	if want, err := ReviewLocation(stateDirOf(shared), located.Repo, issue); err != nil || want != dir {
+		return ReviewRequest{}, fmt.Errorf("%s is not the reviewer's clone of %s", dir, issue)
+	}
+	return ReviewRequest{Clone: located.Clone, Dir: dir, Repo: located.Repo, Issue: issue, DefaultBranch: defaultBranch}, nil
+}
+
+// ReviewRootOf is the directory every reviewer's clone of the state directory sits under
+// (ReviewRoot), for the issue's workspace dir in that directory's layout: what a pod's role-init
+// covers in every role's namespace but the reviewer's.
+func ReviewRootOf(dir string) (string, error) {
+	if _, err := locationOf(dir); err != nil {
+		return "", err
+	}
+	return ReviewRoot(stateDirOf(dir)), nil
+}
+
+// ReviewRequest is where ProvisionReviewClone makes a reviewer's clone and what from. Clone is the
+// shared clone the review clone takes its objects from, and its record of origin's branches; Dir
+// is the review clone (ReviewLocation). The head is Issue's branch (Bookmark) as the shared clone
+// last saw it at origin, else DefaultBranch's, for an issue whose branch origin no longer holds.
+// StoreLock and CheckoutSlot are Request's, for the same steps: the lock is held while the shared
+// clone is read, and the checkout takes a place. A pod's reviewer passes neither: its role-init is
+// the one provision of its pod's review clone, and a git clone or fetch reads a shared clone that
+// another role's git writes at that moment as git reads any repository it shares. Log, when set,
+// is told each stale lock a refresh removes.
+type ReviewRequest struct {
+	Clone, Dir           string
+	Repo                 ghrepo.Repository
+	Issue, DefaultBranch string
+	StoreLock            sync.Locker
+	CheckoutSlot         func(ctx context.Context) (release func(), err error)
+	Log                  func(string)
+}
+
+// reviewProvisionEnv is what the git of ProvisionReviewClone's clone, fetch, head and checkout
+// reads besides the runner's pins: no global or system configuration, the fsmonitor off and no
+// hook, and the file transport alone, the shared clone being a local path.
+var reviewProvisionEnv = append(ReviewGitEnv(ReviewGitConfig()), "GIT_ALLOW_PROTOCOL=file")
+
+// reviewStagingSuffix ends the name of the temporary sibling a review clone is made in.
+const reviewStagingSuffix = ".review-"
+
+// ProvisionReviewClone makes the reviewer's own clone at request.Dir, or brings the one there to
+// the head. A new one is a `git clone --no-checkout --no-hardlinks` of the shared clone, which
+// copies its object files rather than linking them, so no role's write of the shared clone's
+// object files reaches the review clone, then origin's
+// branches as the shared clone records them (its refs/remotes/origin, which the clone alone does
+// not copy), origin set to GitHub with the shared clone's credential helper and gh's default
+// repository, then a checkout of the head, detached, and jj colocated with it, since the shim's
+// adoption of the working copy and every role's prompt run jj in the workspace. It is made under a
+// temporary sibling and renamed into place only once whole, so a clone that stands at Dir is a
+// finished one, and one that stands there without its .jj is no clone of this function's, and is
+// removed and made again; a temporary sibling an earlier attempt left when it was killed is
+// removed before the next is made.
+//
+// A clone already there is brought to the head as a fresh one would stand, at every provision, so
+// a reviewer never starts on the head its clone was first made at: the git lock files a reviewer's
+// git killed mid-write left in it are removed, since its only writer is the reviewer, which is not
+// running while its next launch provisions; origin's branches are fetched again from the shared
+// clone's objects, by its path and with no network; and `jj new <head>` puts the working copy on
+// the head, leaving what the reviewer wrote there before in a change of its own.
+//
+// No other role's run writes it: a clone copies neither the shared clone's configuration nor its
+// hooks, and no normal git operation rewrites an object file another clone links to. Its clone,
+// fetch, head and checkout read no global or system configuration and run no fsmonitor or hook
+// (reviewProvisionEnv), so nothing planted in the shared clone or the machine's configuration
+// runs here; the reviewer's own git is held the same way (ReviewGitEnv, InstallReviewGit). It goes
+// with the issue's workspace (RemoveReviewClone).
+func ProvisionReviewClone(ctx context.Context, run Runner, request ReviewRequest) error {
+	switch {
+	case !filepath.IsAbs(request.Clone) || !filepath.IsAbs(request.Dir):
+		return fmt.Errorf("review clone %q of %q: each must be an absolute path", request.Dir, request.Clone)
+	case underDirectory(request.Clone, request.Dir) || underDirectory(request.Dir, request.Clone):
+		return fmt.Errorf("review clone %s and the shared clone %s: neither may lie in the other", request.Dir, request.Clone)
+	case request.Repo.IsZero():
+		return errors.New("review clone repository is required")
+	case request.Issue == "":
+		return errors.New("review clone issue is required")
+	}
+	if err := refuseSymlinkedLayout(request.Dir, request.Dir); err != nil {
+		return err
+	}
+	complete := false
+	if exists, err := pathExists(request.Dir); err != nil {
+		return err
+	} else if exists {
+		if complete, err = pathExists(filepath.Join(request.Dir, ".jj")); err != nil {
+			return err
+		}
+		if !complete {
+			if err := rolefile.RemoveTree(request.Dir); err != nil {
+				return fmt.Errorf("remove incomplete review clone %s: %w", request.Dir, err)
+			}
+		}
+	}
+	if complete {
+		return refreshReviewClone(ctx, run, request)
+	}
+	parent := filepath.Dir(request.Dir)
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return fmt.Errorf("make the review clone's parent: %w", err)
+	}
+	abandoned, err := filepath.Glob(filepath.Join(parent, filepath.Base(request.Dir)+reviewStagingSuffix+"*"))
+	if err != nil {
+		return err
+	}
+	for _, dir := range abandoned {
+		if err := rolefile.RemoveTree(dir); err != nil {
+			return fmt.Errorf("remove an abandoned review clone %s: %w", dir, err)
+		}
+	}
+	temporary, err := os.MkdirTemp(parent, filepath.Base(request.Dir)+reviewStagingSuffix)
+	if err != nil {
+		return fmt.Errorf("make the review clone's temporary directory: %w", err)
+	}
+	defer func() { _ = rolefile.RemoveTree(temporary) }()
+	store := &storeLock{locker: request.StoreLock}
+	store.lock()
+	clone := []string{"git", "clone", "--quiet", "--no-checkout", "--no-hardlinks", request.Clone, temporary}
+	result, err := runCommandTimeout(ctx, run, clone, reviewProvisionEnv, parent, CloneTimeout)
+	if _, err = checkedResult(clone, result, err); err == nil {
+		err = fetchForReview(ctx, run, temporary, "origin")
+	}
+	store.unlock()
+	if err != nil {
+		return err
+	}
+	head, err := reviewHead(ctx, run, request, temporary)
+	if err != nil {
+		return err
+	}
+	gitDir := "--git-dir=" + filepath.Join(temporary, ".git")
+	if _, err := RunChecked(ctx, run, []string{"git", gitDir, "remote", "set-url", "origin", GitHubURL(request.Repo)}, reviewProvisionEnv, temporary); err != nil {
+		return err
+	}
+	if err := configureRepositoryCredential(ctx, run, temporary, GitHubCredentialHelper); err != nil {
+		return err
+	}
+	if err := configureCloneDefaultRepository(ctx, run, temporary); err != nil {
+		return err
+	}
+	err = inCheckoutPlace(ctx, request, func(bound time.Duration) error {
+		for _, step := range []struct {
+			dir  string
+			argv []string
+			env  []string
+		}{
+			{temporary, []string{"git", "checkout", "--quiet", "--detach", head}, reviewProvisionEnv},
+			// jj opens no repository here, so it runs in the parent (cloneSteps.dir says why).
+			{parent, []string{"jj", "git", "init", "--colocate", temporary}, nil},
+		} {
+			result, err := runCommandTimeout(ctx, run, step.argv, step.env, step.dir, bound)
+			if _, err := checkedResult(step.argv, result, err); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if err := requireReviewHead(ctx, run, temporary, head); err != nil {
+		return err
+	}
+	if err := os.Rename(temporary, request.Dir); err != nil {
+		if complete, statErr := pathExists(filepath.Join(request.Dir, ".jj")); cloneCollision(err) && statErr == nil && complete {
+			return nil
+		}
+		return fmt.Errorf("rename the review clone into place: %w", err)
+	}
+	return nil
+}
+
+// refreshReviewClone brings the review clone at request.Dir to the head (ProvisionReviewClone):
+// the stale locks under its git directory removed, origin's branches fetched again from the shared
+// clone by its path, under its store lock, then `jj new <head>` in the clone, in a checkout place.
+func refreshReviewClone(ctx context.Context, run Runner, request ReviewRequest) error {
+	log := request.Log
+	if log == nil {
+		log = func(string) {}
+	}
+	why := "a review clone's only writer is its reviewer, which is not running while its launch provisions"
+	if err := removeLocksUnder(filepath.Join(request.Dir, ".git"), time.Now(), log, why); err != nil {
+		return err
+	}
+	store := &storeLock{locker: request.StoreLock}
+	store.lock()
+	err := fetchForReview(ctx, run, request.Dir, request.Clone)
+	store.unlock()
+	if err != nil {
+		return err
+	}
+	head, err := reviewHead(ctx, run, request, request.Dir)
+	if err != nil {
+		return err
+	}
+	err = inCheckoutPlace(ctx, request, func(bound time.Duration) error {
+		argv := []string{"jj", "new", head, "--color=never", "-R", request.Dir}
+		result, err := runCommandTimeout(ctx, run, argv, nil, request.Dir, bound)
+		_, err = checkedResult(argv, result, err)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	return requireReviewHead(ctx, run, request.Dir, head)
+}
+
+// requireReviewHead refuses the review clone at dir unless the commit its git HEAD names is head,
+// the one the provision brought it to: a reviewer reads the change through that HEAD, so a clone
+// left at any other commit is refused, naming both, rather than handed to the reviewer.
+func requireReviewHead(ctx context.Context, run Runner, dir, head string) error {
+	result, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "HEAD"}, reviewProvisionEnv, dir)
+	if err != nil {
+		return err
+	}
+	if at := strings.TrimSpace(result.Stdout); at != head {
+		return fmt.Errorf("review clone %s stands on %s, not on %s, the head under review", dir, at, head)
+	}
+	return nil
+}
+
+// inCheckoutPlace runs checkout, a step that writes the review clone's whole working copy, holding
+// one of request's checkout places and given the checkout's bound, as Provision's own checkout is.
+func inCheckoutPlace(ctx context.Context, request ReviewRequest, checkout func(bound time.Duration) error) error {
+	slot := Request{CheckoutSlot: request.CheckoutSlot}
+	release, err := slot.checkoutPlace(ctx)
+	if err != nil {
+		return fmt.Errorf("check out review clone %s: wait for a checkout's place: %w", request.Dir, err)
+	}
+	defer release()
+	if err := checkout(slot.checkoutBound()); err != nil {
+		return fmt.Errorf("check out review clone %s: %w", request.Dir, err)
+	}
+	return nil
+}
+
+// fetchForReview fetches origin's branches as the shared clone records them (its
+// refs/remotes/origin) from from — the clone's own origin while it still names the shared clone,
+// else the shared clone's path — into the review clone at dir, pruning the ones the shared clone
+// no longer has.
+func fetchForReview(ctx context.Context, run Runner, dir, from string) error {
+	_, err := RunChecked(ctx, run, []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "fetch", "--quiet", "--no-tags",
+		"--prune", from, "+refs/remotes/origin/*:refs/remotes/origin/*"}, reviewProvisionEnv, dir)
+	return err
+}
+
+// reviewHead is the head the review clone at dir is to stand on: Issue's branch at origin, else
+// DefaultBranch's, as its last fetch (fetchForReview) recorded them.
+func reviewHead(ctx context.Context, run Runner, request ReviewRequest, dir string) (string, error) {
+	for _, branch := range []string{Bookmark(request.Issue), request.DefaultBranch} {
+		if branch == "" {
+			continue
+		}
+		argv := []string{"git", "--git-dir=" + filepath.Join(dir, ".git"), "rev-parse", "--verify", "--quiet",
+			"refs/remotes/origin/" + branch + "^{commit}"}
+		found, err := runCommand(ctx, run, argv, reviewProvisionEnv, dir)
+		if err := answered(argv, found, err); err != nil {
+			return "", err
+		}
+		if found.ExitCode == 0 {
+			return strings.TrimSpace(found.Stdout), nil
+		}
+	}
+	return "", fmt.Errorf("review clone of %s: the shared clone %s records neither %s nor %q at origin", request.Repo, request.Clone, Bookmark(request.Issue), request.DefaultBranch)
+}
+
+// RemoveReviewClone removes the reviewer's clone at dir, which its issue's workspace removal does
+// with the workspace. It renames the clone aside first (removingSuffix, as Remove does), so a kill
+// in the slower delete after leaves no half a clone at dir, which ProvisionReviewClone would
+// otherwise take for a whole one; an aside an earlier removal left is cleared first.
+func RemoveReviewClone(dir string) error {
+	aside := removingPath(dir)
+	if err := rolefile.RemoveTree(aside); err != nil {
+		return fmt.Errorf("clear a stale removal of review clone %s: %w", dir, err)
+	}
+	if exists, err := pathExists(dir); err != nil {
+		return err
+	} else if exists {
+		if err := os.Rename(dir, aside); err != nil {
+			return fmt.Errorf("rename review clone %s aside before removing it: %w", dir, err)
+		}
+	}
+	return rolefile.RemoveTree(aside)
 }
 
 // locationOf is the workspace Location puts at dir, read out of dir's path alone: the owner and
