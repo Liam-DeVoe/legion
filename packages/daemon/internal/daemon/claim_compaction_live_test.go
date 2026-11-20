@@ -61,6 +61,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -188,13 +189,16 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	// The backends map is the one the API server reads through cfg.BackendFor, and it is empty
 	// while the daemon boots: boot resolves Claude Code's binary, its bun and its plugin
 	// directory for every backend the configuration names (the daemon's resolveClaude), and this
-	// pod has no Claude Code to resolve. The role is put on that backend once the daemon is up,
+	// pod has no Claude Code to resolve. The role is put on that backend after that resolution,
 	// because the refusal under test reads that map and nothing else (api's compact, over
 	// Options.Backend, which the daemon fills from config.Config.BackendFor); the alternative
-	// would put some other binary on a real resolver's path and claim it is Claude Code. The
-	// map is written after the boot that read it because a Config's WorkerBackends is a map and
-	// every copy of the Config shares it, which is how internal/daemon's own pod-update tests
-	// put a role on this backend too (podupdate_test.go:1986).
+	// would put some other binary on a real resolver's path and claim it is Claude Code. A
+	// Config's WorkerBackends is a map, and every copy of the Config shares it, so the write
+	// reaches the daemon's copy. It is made in the daemon's own supervising hook (overrides), on
+	// the boot's goroutine after the launchers are resolved and before supervision starts, so it
+	// comes before every read of the map: the relaunch of the unfinished claims and the API both
+	// run on goroutines started after it. A write once the daemon was up raced that relaunch's
+	// read (the race detector's report, in one -race run of ten of this proof).
 	r.cfg.WorkerBackends = r.backends
 	// The shipped launch_failure_limit, 3, fails a claim at the third turn in a row its provider
 	// refused (supervise's turnOutcome), so no run would reach the six turns step 3 drives twice.
@@ -230,7 +234,6 @@ func newClaimCompactionLive(t *testing.T) *claimCompactionLive {
 	r.daemon = newRecordingLog(r.log())
 	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
 	r.registerController()
-	r.backends[r.onClaude] = runtime.BackendClaude
 	r.note("worker_backends now runs %s on %s, and the %s claim of %s is stopped and never launched",
 		r.onClaude, runtime.Backends[runtime.BackendClaude].Name, r.onClaude, r.ladder)
 	return r
@@ -336,7 +339,10 @@ func (r *claimCompactionLive) overrides() overrides {
 			r.rt.conns, r.rt.stream = listener, address
 			return r.rt, nil
 		},
-		listen:         heldListen,
+		listen: heldListen,
+		supervising: func(*supervisor, func(context.Context, string, string, intake.Fact) (intake.Result, error)) {
+			r.backends[r.onClaude] = runtime.BackendClaude
+		},
 		workflowTokens: &workflowTokenRecorder{},
 	}
 }
@@ -705,13 +711,20 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 
 	from := r.daemon.count()
 	started := time.Now()
+	// The caller's own bound (`legion claims compact --wait`, a minute by default) must outlast
+	// the answer it waits for, or this step reads the command's refusal at its bound rather than
+	// the daemon's answer. The daemon bounds the compaction at runtime.CompactTimeout, the bound
+	// every other compaction wait of this proof takes, and answers its caller then whatever the
+	// summarizer does; the answer's round trip around it (the worker stream's request to the pane
+	// and the daemon's answer to the caller) is allowed worker_rpc_timeout_seconds, the bound the
+	// daemon gives every other request on the worker stream. The hold this step plants does not
+	// give the bound by itself: how many summary requests a compaction makes, and how many of them
+	// run at once, are Oh My Pi's (three requests, answered after two holds, in one run of this
+	// step), so the step bounds its caller by the daemon's own bound instead.
+	bound := runtime.CompactTimeout + r.cfg.WorkerRPCTimeout
 	answered := make(chan compactRun, 1)
 	go func() {
-		// The held compaction answers after about 70 s (this step's row of scripts/e2e/README.md),
-		// past `legion claims`'s own --wait default of a minute (cmd/legion's
-		// operatorCall.withWait), so the caller is given a bound past it: what this step reads is
-		// the daemon's answer, not the command's own refusal at its bound.
-		out, err := r.legionClaimsTry("compact", "--wait", "3m", "--claim", string(token))
+		out, err := r.legionClaimsTry("compact", "--wait", bound.String(), "--claim", string(token))
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
@@ -742,8 +755,8 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 		t.Fatalf("the held compaction answered after %s, which is not past worker_rpc_timeout_seconds (%s) and 30 s",
 			waited.Round(time.Millisecond), r.cfg.WorkerRPCTimeout)
 	}
-	r.note("the caller got the real answer %q after %s, past the RPC timeout %s and past 30 s",
-		run.out, waited.Round(time.Second), r.cfg.WorkerRPCTimeout)
+	r.note("the caller got the real answer %q after %s, past the RPC timeout %s and past 30 s, inside its --wait of %s (the compaction's own bound and the RPC timeout)",
+		run.out, waited.Round(time.Second), r.cfg.WorkerRPCTimeout, bound)
 	stand.answerSummary()
 
 	again := r.awaitLogFrom("the owed task's next turn", from, 2*time.Minute, func(record loggedRecord) bool {
