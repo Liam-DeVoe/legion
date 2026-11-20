@@ -838,8 +838,9 @@ func TestAMessagePutsItsDocumentOnTheIssueOnceBeforeItPosts(t *testing.T) {
 // document lists, so it always posts (dispatch://INFRA-2704).
 // A Dispatch older than legion-envoy-v30.21.0 answers the upload 400 INVALID_JSON "invalid JSON
 // body", since its JSON upload refuses the create_only member, so that line names the likely
-// cause too. Any other refusal, a 400 for another reason among them, is logged with its own text
-// alone.
+// cause too, in words written out here rather than read from the constant the outbox logs: a
+// cause that names no older Dispatch, or no release to update to, fails. Any other refusal, a 400
+// for another reason among them, is logged with its own text alone.
 func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 	const line = "outbox Dispatch message's document refused by Dispatch; the message is posted and says so"
 	row, _ := rescueListRow(t)
@@ -853,7 +854,8 @@ func TestAMessageWhoseDocumentDispatchRefusesStillPostsAndSaysSo(t *testing.T) {
 	}{
 		{name: "the upload refused", uploaded: 1, refusal: tooLarge, client: &artifactDispatch{outboxDispatch: &outboxDispatch{}, uploadErr: tooLarge}},
 		{name: "the read of the issue's documents refused", refusal: tooLarge, client: &artifactDispatch{outboxDispatch: &outboxDispatch{}, slugsErr: tooLarge}},
-		{name: "the upload refused by a Dispatch that does not read create_only", uploaded: 1, cause: dispatch.OlderDispatchRefusesCreateOnly,
+		{name: "the upload refused by a Dispatch that does not read create_only", uploaded: 1,
+			cause:   "a Dispatch older than legion-envoy-v30.21.0 refuses the create_only member of the daemon's document upload: the daemon needs Dispatch legion-envoy-v30.21.0 or later",
 			refusal: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_JSON", Message: "invalid JSON body"}},
 		{name: "the upload refused 400 for another reason", uploaded: 1,
 			refusal: &dispatch.Error{Status: http.StatusBadRequest, Code: "INVALID_ARTIFACT", Message: "artifact name is 2700 bytes, past the 2692 bytes a new artifact's name may hold; give it a shorter name"}},

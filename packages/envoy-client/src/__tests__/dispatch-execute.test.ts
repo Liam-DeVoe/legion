@@ -11673,18 +11673,16 @@ describe("executeDispatchTool", () => {
 
     expect(failure).toMatchObject({ name: "DispatchServiceError", code, status: 400 });
     if (!(failure instanceof Error)) throw new Error("expected the upload to be refused");
-    // The words a person reads, written out here rather than read from the constant the command
-    // uses: a cause that names no older Dispatch, or no release to update to, fails.
-    if (named) {
-      expect(failure.message).toStartWith(
-        `${code}: ${reason}; likely cause: a Dispatch older than legion-envoy-v30.21.0 `
-      );
-      expect(failure.message).toEndWith(
-        "the command needs Dispatch legion-envoy-v30.21.0 or later"
-      );
-    } else {
-      expect(failure.message).toBe(reason);
-    }
+    // The words a person reads, written out whole here rather than read from the constant the
+    // command uses: a cause that names no older Dispatch, no release to update to, or that says the
+    // upload may have written a version, fails.
+    expect(failure.message).toBe(
+      named
+        ? `${code}: ${reason}; likely cause: a Dispatch older than legion-envoy-v30.21.0 refuses the ` +
+            "create_only member that dispatch artifact sends without --force, so it wrote nothing: " +
+            "the command needs Dispatch legion-envoy-v30.21.0 or later"
+        : reason
+    );
   });
 
   // INFRA-1334 R10: the command's held-name refusal answers a create that would write the held
