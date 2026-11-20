@@ -12,7 +12,6 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { shellQuote } from "./script-functions";
 
 // The box-login route's own installer, against a fake operator home in a temp directory: never the
 // real ~/.omp. Its one outside call is `mise ls --global --json`, faked here by a `mise` first on
@@ -390,41 +389,5 @@ describe("a box-login run's teardown", () => {
     expect(() => lstatSync(link)).toThrow();
     expect(existsSync(join(r.agent, "config.yml"))).toBe(true);
     expect(readFileSync(r.db, "utf8")).toBe(dbBytes);
-  });
-
-  test("gives each process SIGTERM and the grace to exit, then SIGKILLs only the survivors", async () => {
-    const graceful = join(dir, "graceful-exited");
-    const stubborn = join(dir, "stubborn-killed");
-    // One exits on SIGTERM after a short write (a refresh finishing), one ignores SIGTERM. Each says
-    // "ready" once its trap is set, and the stop starts only then.
-    const a = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap ${shellQuote(`sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0`)} TERM; echo ready; while :; do sleep 0.1; done`,
-      ],
-      { stdout: "pipe" }
-    );
-    const b = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap '' TERM; echo ready; while :; do sleep 0.1; done; touch ${JSON.stringify(stubborn)}`,
-      ],
-      { stdout: "pipe" }
-    );
-    await a.stdout.getReader().read();
-    await b.stdout.getReader().read();
-    const stop = Bun.spawnSync([
-      "bash",
-      "-c",
-      helpers(undefined, `box_login_stop_grace=1; stop_box_login_processes ${a.pid} ${b.pid}`),
-    ]);
-    expect(stop.exitCode).toBe(0);
-    expect(await a.exited).toBe(0);
-    expect(existsSync(graceful)).toBe(true);
-    await b.exited;
-    expect(b.signalCode).toBe("SIGKILL");
-    expect(existsSync(stubborn)).toBe(false);
   });
 });

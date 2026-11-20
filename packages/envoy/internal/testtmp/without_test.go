@@ -40,7 +40,7 @@ func TestWithoutPassesOverABaseHoldingOneOfTheCharacters(t *testing.T) {
 // A base whose directory leaves no room for longest within a socket path is passed over too.
 func TestWithoutPassesOverABaseTooLongForTheSocket(t *testing.T) {
 	root := Without(t, "", " '?")
-	long := filepath.Join(root, strings.Repeat("d", maxSocketPath))
+	long := filepath.Join(root, strings.Repeat("d", MaxSocketPath))
 	if err := os.MkdirAll(long, 0o700); err != nil {
 		t.Fatal(err)
 	}
