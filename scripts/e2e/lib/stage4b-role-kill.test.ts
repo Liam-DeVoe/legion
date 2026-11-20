@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "./script-functions";
@@ -33,71 +33,87 @@ const alive = (pid: number) => {
   }
 };
 
-// The polls below wait on real processes (an exec, a SIGKILL's delivery) that no fake clock drives,
-// and role_kill_sh reads all of the host's /proc in one pass, so a busy host takes seconds.
+// The polls below wait on real processes (an exec, a SIGKILL's delivery) that no fake clock drives.
+// role_kill_sh reads the role-init's own /proc entry and its children's, never every process of the
+// host, so the host's process count does not set its time: realProcessBound guards the exec, the
+// polls and that one read on a loaded devbox, and a read of every process (22,000 to 30,000 of them
+// there) is what used to run past it.
+const realProcessBound = 60_000;
 describe("role_kill_sh", () => {
-  test("kills the shim's group and leaves a detached helper of the role-init alone", async () => {
-    const init = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `cd ${JSON.stringify(dir)} && mkfifo worker-shim
+  test(
+    "kills the shim's group and leaves a detached helper of the role-init alone",
+    async () => {
+      const init = Bun.spawn(
+        [
+          "bash",
+          "-c",
+          `cd ${JSON.stringify(dir)} && mkfifo worker-shim
 setsid bash -c 'exec -a legion cat worker-shim' & echo "shim $!"
 sleep 300 & echo "helper $!"
 wait`,
-      ],
-      { stdout: "pipe" }
-    );
-    const reader = init.stdout.getReader();
-    let out = "";
-    while (!/helper \d+\n/.test(out)) {
-      const { value, done } = await reader.read();
-      if (done) throw new Error(`the stand-in role-init ended early: ${out}`);
-      out += new TextDecoder().decode(value);
-    }
-    const shim = Number(/shim (\d+)/.exec(out)?.[1]);
-    const helper = Number(/helper (\d+)/.exec(out)?.[1]);
-    try {
-      // The shim's argv is in place once setsid and bash have exec'd.
-      for (let i = 0; i < 100; i++) {
-        const argv = readFileSync(`/proc/${shim}/cmdline`, "utf8").split("\0");
-        if (argv[1] === "worker-shim") break;
-        await Bun.sleep(20);
+        ],
+        { stdout: "pipe" }
+      );
+      const reader = init.stdout.getReader();
+      let out = "";
+      while (!/helper \d+\n/.test(out)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`the stand-in role-init ended early: ${out}`);
+        out += new TextDecoder().decode(value);
       }
-      const lines = `. ${JSON.stringify(lib)}\nsh -c "$role_kill_sh" role-kill ${init.pid}`;
+      const shim = Number(/shim (\d+)/.exec(out)?.[1]);
+      const helper = Number(/helper (\d+)/.exec(out)?.[1]);
+      try {
+        // The shim's argv is in place once setsid and bash have exec'd.
+        for (let i = 0; i < 100; i++) {
+          const argv = readFileSync(`/proc/${shim}/cmdline`, "utf8").split("\0");
+          if (argv[1] === "worker-shim") break;
+          await Bun.sleep(20);
+        }
+        const lines = `. ${JSON.stringify(lib)}\nsh -c "$role_kill_sh" role-kill ${init.pid}`;
+        const kill = Bun.spawnSync(["bash", "-c", lines]);
+        expect(kill.stderr.toString()).toBe("");
+        expect(kill.exitCode).toBe(0);
+        for (let i = 0; i < 100 && alive(shim); i++) await Bun.sleep(20);
+        expect(alive(shim)).toBe(false);
+        expect(alive(helper)).toBe(true);
+      } finally {
+        // Only the processes this test started, by the pids it recorded.
+        for (const pid of [helper, shim, init.pid]) {
+          if (alive(pid)) process.kill(pid, "SIGKILL");
+        }
+        await init.exited;
+      }
+    },
+    realProcessBound
+  );
+
+  test(
+    "a role-init with no worker-shim child is refused, nothing signalled",
+    () => {
+      const lines = `. ${JSON.stringify(lib)}\nsleep 300 & h=$!\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "helper alive"\nkill -KILL $h\nexit $rc`;
       const kill = Bun.spawnSync(["bash", "-c", lines]);
-      expect(kill.stderr.toString()).toBe("");
-      expect(kill.exitCode).toBe(0);
-      for (let i = 0; i < 100 && alive(shim); i++) await Bun.sleep(20);
-      expect(alive(shim)).toBe(false);
-      expect(alive(helper)).toBe(true);
-    } finally {
-      // Only the processes this test started, by the pids it recorded.
-      for (const pid of [helper, shim, init.pid]) {
-        if (alive(pid)) process.kill(pid, "SIGKILL");
-      }
-      await init.exited;
-    }
-  }, 120_000);
+      expect(kill.exitCode).toBe(1);
+      expect(kill.stderr.toString()).toContain("runs no worker-shim");
+      expect(kill.stdout.toString()).toBe("helper alive\n");
+    },
+    realProcessBound
+  );
 
-  test("a role-init with no worker-shim child is refused, nothing signalled", () => {
-    const lines = `. ${JSON.stringify(lib)}\nsleep 300 & h=$!\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "helper alive"\nkill -KILL $h\nexit $rc`;
-    const kill = Bun.spawnSync(["bash", "-c", lines]);
-    expect(kill.exitCode).toBe(1);
-    expect(kill.stderr.toString()).toContain("runs no worker-shim");
-    expect(kill.stdout.toString()).toBe("helper alive\n");
-  }, 120_000);
-
-  test("a child naming worker-shim in a later argv word is not the shim", () => {
-    // argv `bash -c <script> worker-shim`: worker-shim is argv[3], not argv[1]. The decoy waits in
-    // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own.
-    const fifo = join(dir, "decoy.fifo");
-    const lines = `. ${JSON.stringify(lib)}\nmkfifo ${JSON.stringify(fifo)}\nbash -c 'exec 3<>"$1"; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)} & h=$!\nsleep 0.2\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "decoy alive"\nkill -KILL $h\nexit $rc`;
-    const kill = Bun.spawnSync(["bash", "-c", lines]);
-    expect(kill.exitCode).toBe(1);
-    expect(kill.stderr.toString()).toContain("runs no worker-shim");
-    expect(kill.stdout.toString()).toBe("decoy alive\n");
-  }, 120_000);
+  test(
+    "a child naming worker-shim in a later argv word is not the shim",
+    () => {
+      // argv `bash -c <script> worker-shim`: worker-shim is argv[3], not argv[1]. The decoy waits in
+      // bash's builtin read on a FIFO it holds open itself, so it starts no process of its own.
+      const fifo = join(dir, "decoy.fifo");
+      const lines = `. ${JSON.stringify(lib)}\nmkfifo ${JSON.stringify(fifo)}\nbash -c 'exec 3<>"$1"; read -r -t 300 -u 3 _' worker-shim ${JSON.stringify(fifo)} & h=$!\nsleep 0.2\nsh -c "$role_kill_sh" role-kill $$; rc=$?\nkill -0 $h && echo "decoy alive"\nkill -KILL $h\nexit $rc`;
+      const kill = Bun.spawnSync(["bash", "-c", lines]);
+      expect(kill.exitCode).toBe(1);
+      expect(kill.stderr.toString()).toContain("runs no worker-shim");
+      expect(kill.stdout.toString()).toBe("decoy alive\n");
+    },
+    realProcessBound
+  );
 });
 
 describe("role_generation_ended", () => {
@@ -229,6 +245,9 @@ interface FakeProc {
   ppid: number;
   argv: string[];
   pgrp?: number;
+  // The pids its main thread's task/<pid>/children lists, as a Linux /proc lists a process's
+  // children; a process with none of this field has no children file, as a sandbox's procfs may.
+  children?: number[];
 }
 function fakeProc(name: string, procs: FakeProc[]): string {
   const root = join(dir, `proc-${name}`);
@@ -238,6 +257,13 @@ function fakeProc(name: string, procs: FakeProc[]): string {
     writeFileSync(join(d, "cmdline"), `${p.argv.join("\0")}\0`);
     writeFileSync(join(d, "status"), `Name:\t${p.argv[0]}\nPid:\t${p.pid}\nPPid:\t${p.ppid}\n`);
     writeFileSync(join(d, "stat"), `${p.pid} (${p.argv[0]}) S ${p.ppid} ${p.pgrp ?? p.pid} 0\n`);
+    if (p.children) {
+      mkdirSync(join(d, "task", String(p.pid)), { recursive: true });
+      writeFileSync(
+        join(d, "task", String(p.pid), "children"),
+        p.children.map((c) => `${c} `).join("")
+      );
+    }
   }
   return root;
 }
@@ -538,6 +564,46 @@ describe("role_kill_sh reads the proc root it is given", () => {
       { pid: 57, ppid: 55, argv: ["legion", "worker-shim"] },
     ]);
     const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
+  });
+
+  test("where /proc lists the role-init's children, they are its children: a process whose PPid names it and the list does not is none", () => {
+    // 17's status names 5 as its parent, and 5's children file lists 7 alone: the list is what
+    // role_kill_sh reads, so 17 makes no second shim.
+    const root = fakeProc("kill-children", [
+      {
+        pid: 5,
+        ppid: 1,
+        argv: ["legion", "launcher", "role-init", "--role", "planner"],
+        children: [7],
+      },
+      { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
+      { pid: 17, ppid: 5, argv: ["legion", "worker-shim"] },
+    ]);
+    const run = runSnippet(def, 'sh -c "$role_kill_sh" role-kill 5', root);
+    expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
+  });
+
+  test("where /proc lists the role-init's children, no other process's entry is read", () => {
+    // Every other entry's status is a FIFO no writer opens, so a read of any of them never returns:
+    // a role_kill_sh that reads every process's PPid, as one did that ran a devbox test past its
+    // 120 s bound, runs into the 20 s timeout here.
+    const procs: FakeProc[] = [
+      {
+        pid: 5,
+        ppid: 1,
+        argv: ["legion", "launcher", "role-init", "--role", "planner"],
+        children: [7],
+      },
+      { pid: 7, ppid: 5, argv: ["legion", "worker-shim"] },
+    ];
+    for (let pid = 100; pid < 140; pid++) procs.push({ pid, ppid: 1, argv: ["other"] });
+    const root = fakeProc("kill-no-scan", procs);
+    for (let pid = 100; pid < 140; pid++) {
+      rmSync(join(root, String(pid), "status"));
+      Bun.spawnSync(["mkfifo", join(root, String(pid), "status")]);
+    }
+    const run = runSnippet(def, 'timeout 20 sh -c "$role_kill_sh" role-kill 5', root);
     expect(run).toEqual({ out: "kill -s KILL -- -7", err: "", code: 0 });
   });
 });
