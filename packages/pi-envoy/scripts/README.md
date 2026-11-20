@@ -351,7 +351,8 @@ Bun drivers it starts: a recording proxy and a process per client (`start_proxy`
 waits until the channel server answers a tool, since the listener has the session's registration
 before the server's start ends and the server answers every tool "still starting" until then:
 `claude_answers_tools`), the stdin and stdout one command is sent and answered over
-(`client_fifo`, `client_ready`, `send`, or `post` and `answer_to` for a command read back later),
+(`client_fifo`, `client_ready`, `post` and `answer_to` for a command read back later, and `send`,
+which posts one and waits until `has_answered`),
 the readers of each client's proxy log — the claims it made (`claim_status`, `claim_holder`,
 `first_claim_status`, `first_claim_holder`, `first_claim_arrived_at`, `made_claim`,
 `claims_answered`, `claim_count`), the registrations it sent (`instance_id`, `registered_at`,

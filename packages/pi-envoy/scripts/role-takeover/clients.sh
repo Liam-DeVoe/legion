@@ -2,8 +2,9 @@
 # clients.sh — the client processes smoke-role-takeover.sh drives its rows with, and what each
 # one sent: a recording proxy and a process per client (start_proxy, client_fifo, client_ready,
 # start_omp, and start_claude, which is launch_claude and then claude_started, a wait until the
-# server answers a tool: claude_answers_tools), one command answered on a client's stdout (send),
-# or written and read back later (post, answer_to), the readers of that client's proxy log — the
+# server answers a tool: claude_answers_tools), one command written to a client's stdin and read
+# back off its stdout later (post, answer_to, has_answered) or waited for there (send), the
+# readers of that client's proxy log — the
 # claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder,
 # first_claim_arrived_at, made_claim, claims_answered, claim_count), the registrations it sent
 # (instance_id, registered_at, first_registered_at, first_registration_answered_at), the requests
@@ -155,26 +156,11 @@ claude_answers_tools() {
   jq -e '.result.error == null and .result.result != null' <<<"$reply" >/dev/null
 }
 
-reply=""
-# send LABEL JSON: one command, answered on the client's stdout. The answer is left in `reply`.
-send() {
-  local label="$1" body="$2" id
-  next_command_id=$((next_command_id + 1))
-  id="c${next_command_id}"
-  printf '%s\n' "$(jq -c --arg id "$id" '. + {id: $id}' <<<"$body")" >&"${client_fd[$label]}"
-  local answered=()
-  answered=(grep -q "\"id\":\"${id}\"" "${client_out[$label]}")
-  wait_for "$client_reply_timeout" "${answered[@]}" ||
-    refuse "the ${label} client did not answer ${body} within ${client_reply_timeout}s: $(tail -n 10 "${work}/logs/${label}.err")"
-  reply="$(grep -F "\"id\":\"${id}\"" "${client_out[$label]}" | tail -n 1)"
-  jq -e '.ok == true' <<<"$reply" >/dev/null ||
-    refuse "the ${label} client refused ${body}: ${reply}"
-}
-
 posted=""
 # post LABEL JSON: one command written to the client's stdin and not waited for. Its id is left in
-# `posted`, and answer_to reads the answer once it has come. A row posts where it must go on
-# driving another client while this one works on the command (renew_claude_until_started).
+# `posted`, and answer_to reads the answer once it has come. send is a post waited out; a row posts
+# by itself where it must go on driving another client while this one works on the command
+# (renew_claude_until_started).
 post() {
   local label="$1" body="$2"
   next_command_id=$((next_command_id + 1))
@@ -185,6 +171,26 @@ post() {
 # answer_to LABEL ID: that client's answer to the command ID, empty while it has not answered.
 answer_to() {
   grep -F "\"id\":\"${2}\"" "${client_out[$1]}" 2>/dev/null | tail -n 1
+}
+
+# has_answered LABEL ID: that client has answered the command ID.
+has_answered() {
+  [[ -n "$(answer_to "$1" "$2")" ]]
+}
+
+reply=""
+# send LABEL JSON: one command (post), waited for until the client has answered it on its stdout.
+# The answer is left in `reply`. Refused when it has not come within client_reply_timeout, or when
+# it is not `ok`.
+send() {
+  local label="$1" body="$2" id
+  post "$label" "$body"
+  id="$posted"
+  wait_for "$client_reply_timeout" has_answered "$label" "$id" ||
+    refuse "the ${label} client did not answer ${body} within ${client_reply_timeout}s: $(tail -n 10 "${work}/logs/${label}.err")"
+  reply="$(answer_to "$label" "$id")"
+  jq -e '.ok == true' <<<"$reply" >/dev/null ||
+    refuse "the ${label} client refused ${body}: ${reply}"
 }
 
 # ---- reading what a client sent ------------------------------------------------------------------
