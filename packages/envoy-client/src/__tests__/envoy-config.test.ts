@@ -984,6 +984,10 @@ describe("a ! command in envoy.json", () => {
     };
     const start = Date.now();
     try {
+      // The kept failure is stamped when its run ends, so the clock stands still from here: a run
+      // that a loaded host stretches past a second would otherwise stamp the failure later than
+      // `start`, and the 61 s step below would land inside its 60 s.
+      setSystemTime(new Date(start));
       for (let resolution = 0; resolution < 2; resolution += 1) {
         expect(resolve()).toMatchObject({
           dispatch: { token: cachedSecret },

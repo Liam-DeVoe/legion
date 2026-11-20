@@ -413,7 +413,9 @@ state() { if gone "$1"; then echo gone; else echo running; fi; }`;
 // leads its group: the recorded pid is a setsid that exits at once, and the stop reaches neither the
 // service nor its child. Whether that setsid has exited when start_process reads its start is the
 // machine's (on a loaded gVisor pod it often has): start_process records its start or `gone`, and
-// either way the stop reaches neither and says nothing. The next row forces the second.
+// either way the stop reaches neither and says nothing. Each row also waits for the recorded setsid
+// to end and says so, so a pid the stop leaves alone is a process that is gone, never one still
+// running unsignalled. The next row forces the second.
 test("start_process starts a service that leads its own group, and signal_group then stop_pid end it with its child; with setsid in front they reach neither", async () => {
   const r = run(`${goneOrRunning}
 start_process svc bash -c 'sleep 300 & echo $! >"$0"; wait' "$work/child"
@@ -432,18 +434,19 @@ echo "setsid's pids $leader2 $child2"
 [ "$svc2_pid" != "$leader2" ] && echo "with setsid the recorded pid is not the service's"
 signal_group "$svc2_pid" TERM
 stop_pid "$svc2_pid"
-echo "with setsid: service $(state "$leader2"), child $(state "$child2")"`);
+until_true 10 "the recorded setsid to end" gone "$svc2_pid"
+echo "with setsid: recorded $(state "$svc2_pid"), service $(state "$leader2"), child $(state "$child2")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
   expect(r.err).toBe("");
   expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: service running, child running\n"
+    "start 0\nleads its group\nservice gone, child gone\nwith setsid the recorded pid is not the service's\nwith setsid: recorded gone, service running, child running\n"
   );
 });
 
 // The same setsid start, forced to the shape a loaded machine gives at random: the setsid has exited
 // before start_process reads its start (proc_start answers nothing for that one read). It is
 // recorded `gone`, and signal_group and stop_pid of it send nothing and say nothing, while the
-// service and its child run on.
+// service and its child run on; the setsid recorded `gone` has in fact ended.
 test("with setsid in front and the setsid gone when start_process reads its start, signal_group then stop_pid reach neither and say nothing", async () => {
   const r = run(`${goneOrRunning}
 eval "real_$(declare -f proc_start)"
@@ -456,10 +459,11 @@ echo "setsid's pids $leader3 $child3"
 echo "recorded: \${started_at[$svc3_pid]-none}"
 signal_group "$svc3_pid" TERM
 stop_pid "$svc3_pid"
-echo "with setsid gone at the read: service $(state "$leader3"), child $(state "$child3")"`);
+until_true 10 "the setsid recorded gone to have ended" gone "$svc3_pid"
+echo "with setsid gone at the read: recorded $(state "$svc3_pid"), service $(state "$leader3"), child $(state "$child3")"`);
   killed.push(...pidsIn(/^setsid's pids (.*)$/m.exec(r.out)?.[1] ?? ""));
   expect(r.out.replace(/^setsid's pids .*\n/m, "")).toBe(
-    "recorded: gone\nwith setsid gone at the read: service running, child running\n"
+    "recorded: gone\nwith setsid gone at the read: recorded gone, service running, child running\n"
   );
   expect(r.err).toBe("");
 });
