@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -147,11 +148,14 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	number, err := strconv.Atoi(r.PathValue("attempt"))
-	if err != nil || number < 1 {
+	// An attempt's number is its row's int4, so a number past that range names no attempt, as one
+	// below 1 does: it is parsed to 32 bits, never narrowed after.
+	parsed, err := strconv.ParseInt(r.PathValue("attempt"), 10, 32)
+	if err != nil || parsed < 1 {
 		writeError(w, "MESSAGE_NOT_FOUND", http.StatusNotFound, "message delivery not found")
 		return
 	}
+	number := int(parsed)
 	ctx := r.Context()
 	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", r.PathValue("id"))
 	if err != nil {
@@ -1037,7 +1041,8 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if actor.Kind != "session" || input.Attempt < 1 || (input.Body == nil) == (input.Error == nil) {
+	// An attempt's number is its row's int4: one past that range names no attempt, as one below 1.
+	if actor.Kind != "session" || input.Attempt < 1 || input.Attempt > math.MaxInt32 || (input.Body == nil) == (input.Error == nil) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}

@@ -963,6 +963,8 @@ type attemptTable struct {
 	key                func(columns []string) (graphstore.AttemptKey, error)
 }
 
+// The attempt numbers are read as the int4 the rows hold them in (parseAttempt), so the keys the
+// pass states name exactly the rows it read.
 var (
 	commentAttempts = attemptTable{
 		table: "comment_deliveries", items: "comments", item: "comment_id",
@@ -970,7 +972,7 @@ var (
 		address: `'comment/' || d.comment_id::text || '/' || d.target || '/' || d.attempt::text`,
 		event:   commentEventOf,
 		key: func(columns []string) (graphstore.AttemptKey, error) {
-			attempt, err := strconv.Atoi(columns[2])
+			attempt, err := parseAttempt(columns[2])
 			return graphstore.CommentAttempt(columns[0], columns[1], attempt), err
 		},
 	}
@@ -980,11 +982,18 @@ var (
 		address: `'message/' || d.message_id::text || '/' || d.attempt::text`,
 		event:   messageEventOf,
 		key: func(columns []string) (graphstore.AttemptKey, error) {
-			attempt, err := strconv.Atoi(columns[1])
+			attempt, err := parseAttempt(columns[1])
 			return graphstore.MessageAttempt(columns[0], attempt), err
 		},
 	}
 )
+
+// parseAttempt reads an attempt row's number from its text, refusing one outside the int4 the
+// column holds rather than reading it as some other number.
+func parseAttempt(text string) (int, error) {
+	attempt, err := strconv.ParseInt(text, 10, 32)
+	return int(attempt), err
+}
 
 // owed is the rows of the table the attempt pass owes: each that names no node (migration
 // 20261116102800) at an address the store can key (graphstore.AttemptOpened).

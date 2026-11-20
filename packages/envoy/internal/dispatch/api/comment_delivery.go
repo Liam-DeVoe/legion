@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -1370,7 +1371,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if actor.Kind != "session" || input.Attempt < 1 || (input.Body == nil) == (input.Error == nil) {
+	// An attempt's number is its row's int4: one past that range names no attempt, as one below 1.
+	if actor.Kind != "session" || input.Attempt < 1 || input.Attempt > math.MaxInt32 || (input.Body == nil) == (input.Error == nil) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}

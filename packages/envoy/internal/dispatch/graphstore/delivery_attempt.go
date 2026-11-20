@@ -267,16 +267,20 @@ const attemptMovedOrder = `moved.major, moved.id, moved.minor, moved.to_kind, mo
 //     the node asserts but the row's retracted, and each relation of the row the node does not
 //     assert yet asserted. A delivery that happened and a reply that was drawn stay stated: a
 //     later settle of the row takes neither back.
+//
+// The attempt numbers are bound as they are, never narrowed in Go: pgx encodes each into the
+// `int[]` the statement names and refuses one outside int4's range, so an attempt no row can hold
+// fails the write instead of naming another attempt.
 func attemptMoved(keys []AttemptKey, moment string) (string, []any) {
 	var comments, targets, messages []string
-	var commentAttempts, messageAttempts []int32
+	var commentAttempts, messageAttempts []int
 	for _, key := range keys {
 		if key.Message != "" {
-			messages, messageAttempts = append(messages, key.Message), append(messageAttempts, int32(key.Attempt))
+			messages, messageAttempts = append(messages, key.Message), append(messageAttempts, key.Attempt)
 			continue
 		}
 		comments, targets = append(comments, key.Comment), append(targets, key.Target)
-		commentAttempts = append(commentAttempts, int32(key.Attempt))
+		commentAttempts = append(commentAttempts, key.Attempt)
 	}
 	var args []any
 	param := func(value any, cast string) string {
