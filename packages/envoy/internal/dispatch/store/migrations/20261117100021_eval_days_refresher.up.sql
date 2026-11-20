@@ -2,7 +2,8 @@
 --
 -- The day-row refresher's own state (dispatch://INFRA-2916, R12; evals.Store.RunRefresher), which
 -- keeps every project's eval_days true to its inputs: where it stands in the two feeds it reads,
--- and how far each of its walks over the days has come.
+-- how far each of its walks over the days has come, and the delivery settings its delivery and CI
+-- rows stand built under.
 --
 -- eval_days_cursor holds one row per feed the refresher reads, by name: `delivery_changes` (the
 -- seq of the last change a committed pass read) and `events` (the id of the last event, at or
@@ -43,9 +44,21 @@
 --              that day.
 --   updated_at when the walk last moved.
 --
--- Two new tables, both empty: nothing existing is read or rewritten, and the release before this
--- one neither reads nor writes either, so the two builds roll together (cmd/dispatch/README.md,
--- "Database migrations"). Neither holds a foreign key, as issue_facts_computed holds none: the
+-- eval_days_settings holds at most one row (singleton, as delivery_settings is keyed): the delivery
+-- settings the stored delivery and CI day rows stand built under, the five a day row reads
+-- (deploy_repo, production_job_names, production_apply_step_name, staging_e2e_job_name and
+-- staging_apply_job_name; evals.settingsMoves says which evals each moves). A pass that reads
+-- delivery settings other than these rewrites, before it writes a day under them, every day of the
+-- evals the difference moves, in one transaction that records the settings it read here
+-- (evals.rewriteSettings), and every eval a setting can move where another build moved a row since
+-- updated_at (the release before this one during a roll, which records nothing here); a pass that
+-- finds no row begins the delivery walk again, which builds every day under the settings it reads,
+-- and records them.
+--   updated_at when the row was last recorded, which that check reads rows' updated_at against.
+--
+-- Three new tables, all empty: nothing existing is read or rewritten, and the release before this
+-- one neither reads nor writes any of them, so the two builds roll together (cmd/dispatch/README.md,
+-- "Database migrations"). None holds a foreign key, as issue_facts_computed holds none: the
 -- delivery walk's project_key is '' and names no project. The census answers 0, and rolling back
 -- past it is an image rollback alone.
 create table eval_days_cursor (
@@ -62,4 +75,14 @@ create table eval_days_walks (
     next_day date,
     updated_at timestamptz not null default now(),
     primary key (family, project_key, built_by)
+);
+
+create table eval_days_settings (
+    singleton boolean primary key default true check (singleton),
+    deploy_repo text not null,
+    production_job_names text[] not null,
+    production_apply_step_name text,
+    staging_e2e_job_name text,
+    staging_apply_job_name text,
+    updated_at timestamptz not null default now()
 );

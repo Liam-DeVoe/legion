@@ -574,6 +574,43 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 	assertKinds("a settings change", before, "settings")
 }
 
+// TestTheSameSettingsSavedByAnotherPersonLogNoChange: a save of the delivery settings that moves
+// only who saved them and when (updated_by and updated_at, which PutSettings writes on every save)
+// logs no settings change and announces nothing on SettingsChannel (migration 20261120111107), so
+// no reader begins anything for it: no day row, delivery window or intake reads either column. A
+// save that moves a value logs and announces its change, whoever makes it.
+func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	settings := seedDeliverySettings(t, ctx, pool)
+	listener := listenConn(t, ctx, pool, SettingsChannel)
+	before := latestChange(t, ctx, pool)
+	saved, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "user", ID: "someone-else"})
+	if err != nil {
+		t.Fatalf("save the same settings as another person: %v", err)
+	}
+	if saved.UpdatedBy.ID != "someone-else" {
+		t.Fatalf("the save recorded %+v as who saved the settings, want someone-else", saved.UpdatedBy)
+	}
+	if changes := changesAfter(t, ctx, pool, before); len(changes) != 0 {
+		t.Errorf("the same settings saved by another person logged %+v, want nothing", changes)
+	}
+	if notification := nextNotification(t, ctx, listener, time.Second); notification != nil {
+		t.Errorf("the same settings saved by another person announced %q on %s, want nothing", notification.Payload, SettingsChannel)
+	}
+
+	settings.PRChecksRollupJobName = new("checks-complete")
+	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "user", ID: "a-third-person"}); err != nil {
+		t.Fatalf("save a new roll-up job: %v", err)
+	}
+	changes := changesAfter(t, ctx, pool, before)
+	if len(changes) != 1 || changes[0].Kind != ChangeKindSettings || changes[0].Repo != "" {
+		t.Errorf("a new roll-up job saved by another person logged %+v, want one settings change", changes)
+	}
+	if notification := nextNotification(t, ctx, listener, 10*time.Second); notification == nil {
+		t.Errorf("a new roll-up job announced nothing on %s", SettingsChannel)
+	}
+}
+
 // TestDeletingAPullRequestLogsItsOldMergeTime: a deleted pull request logs its merge time as the
 // time before and none after.
 func TestDeletingAPullRequestLogsItsOldMergeTime(t *testing.T) {

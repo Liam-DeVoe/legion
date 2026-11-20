@@ -32,9 +32,10 @@ import (
 //     each of those items was counted on before, so an item whose day or project moved rewrites
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
-//     day before and after. A settings change (the delivery settings, or a repository's
-//     mapping in repo_projects, 20261117100020) begins the delivery walk again, and a mapping
-//     begins every project's Legion walk again too.
+//     day before and after. A change of the delivery settings rewrites, in one transaction, every
+//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a
+//     change of a repository's mapping in repo_projects (20261117100020) begins the delivery walk
+//     again, and every project's Legion walk too.
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of
@@ -389,13 +390,16 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 	return cursors, read.RowsAffected() > 0, nil
 }
 
-// commitPage moves the two cursors to the positions a page read and begins again each walk the
-// page's changes call for, in one transaction: the days the page named are written before it, so
-// a crash between the two reads the same changes again, and a walk the changes begin again is
-// recorded with the cursor that passed them. The event cursor is stamped with the moment the pass
-// ran as of, and the change cursor with its ReadAt, when a page last read the change log to its
-// end (page), which the lost-cursor rule reads and which a full page leaves where it stood.
-func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey) error {
+// commitPage moves the two cursors to the positions a page read, begins again each walk the page's
+// changes call for and records built, where it is set, as the delivery settings the delivery and
+// CI rows stand built under (eval_days_settings), in one transaction: the days the page named are
+// written before it, so a crash between the two reads the same changes again, and a walk the
+// changes begin again is recorded with the cursor that passed them, and with the settings the walk
+// builds under where none were recorded (syncSettings). The event cursor is stamped with the
+// moment the pass ran as of, and the change cursor with its ReadAt, when a page last read the
+// change log to its end (page), which the lost-cursor rule reads and which a full page leaves where
+// it stood.
+func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, built *delivery.DeliverySettings) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
@@ -435,8 +439,17 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
+	var recorded time.Time
+	if built != nil {
+		if recorded, err = recordBuiltUnder(ctx, tx, *built); err != nil {
+			return err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit the eval day-row refresher's cursors: %w", err)
+	}
+	if built != nil {
+		r.builtAt = recorded
 	}
 	return nil
 }

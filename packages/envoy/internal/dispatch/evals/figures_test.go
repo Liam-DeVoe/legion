@@ -428,10 +428,10 @@ func (r *refresherRig) expectBuilt(t *testing.T, what string, today time.Time) {
 // figures the fold of the rows that stand: a pull request merged a day earlier, a deploy run that
 // is cancelled, a production job that fails, an issue's facts, a logged reading (in the readings
 // write's own transaction, after which the pass writes nothing), a register write that gives the
-// logged eval another fold, a settings change (the delivery walk of every day), and the daily tick
-// (the new day's rows and the ranges of the new last end day). A new build whose folds agree then
-// walks every figure and writes none, the stored figures built throughout; and one that meets
-// figures another build folded otherwise rewrites exactly those.
+// logged eval another fold, a settings change (every day of the eval it moves, in one
+// transaction), and the daily tick (the new day's rows and the ranges of the new last end day). A
+// new build whose folds agree then walks every figure and writes none, the stored figures built
+// throughout; and one that meets figures another build folded otherwise rewrites exactly those.
 func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r := newRefresherRig(t)
 	deliveries, _ := r.seedHistories(t)
@@ -519,8 +519,8 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	r.pass(t)
 	state = r.expectRewrites(t, "a register write of the logged eval's fold", state, false, func(line string) bool { return strings.HasSuffix(line, " "+evalID) })
 
-	// A settings change: the staging e2e job is named one no run holds, and the delivery walk
-	// begins again and writes every day.
+	// A settings change: the staging e2e job is named one no run holds, and one pass rewrites every
+	// day of staging-e2e, folding the figures of the days it moved in its own transaction.
 	settings := deliveries.Settings
 	settings.StagingE2EJobName = new("no-such-job")
 	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, model.Actor{Kind: "system", ID: "figures-test"}); err != nil {

@@ -1494,7 +1494,7 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   The second process's page waits on the row and then reads the cursor the first advanced, so it judges what the first did not rather than the same page twice, and no wake is given up to another process's pass.
 
 - The delivery settings both GitHub intakes route by are one cache per process (`delivery.SettingsCache`), read at start and again when `delivery_settings` changes:
-  `delivery_settings_changed` notifies `dispatch_delivery_settings` (`0156`) for a change to any column but the freshness ones every GitHub event and reconcile pass rewrite.
+  `delivery_settings_changed` notifies `dispatch_delivery_settings` (`0156`, `20261120111107`) for a change to any column but the freshness ones every GitHub event and reconcile pass rewrite and who saved the settings and when (`updated_by`, `updated_at`).
   A settings change reaches a running intake without a restart, and neither intake reads the row per message or on a timer;
   a read that fails is tried again 30 s later.
   The release before this one polls the row every 30 s and may run beside it during a roll.
@@ -1504,6 +1504,10 @@ The loops that run passes (`duty.RunWoken`) start two passes no closer together 
   Passes start at least 10 s apart.
   The first pass of each process seeds every project's evals (`evals.Store.Ensure`, the catalogue this build states), and each later pass every project no seed has reached (one made by SQL), each project whose seed failed, and each whose seed was refused because its `evals-md` is a file once that artifact is a document again.
   A pass first moves the outbox's pending changes into the change log (`delivery.DrainPending`), then reads the changes and the events after its two cursors (`eval_days_cursor`, `20261117100021`), the events at or below the safe horizon as the suggestion outcome sweep reads them, and rewrites each day they name (`internal/dispatch/evals/refresher_work.go` lists what each change touches).
+  A change of the delivery settings is answered by that pass alone, which rewrites every day of the delivery and CI evals the change moves, in one transaction (their day rows, the rows' stored figures, and the members whose day, repository or shipping run moved), and begins no walk (`internal/dispatch/evals/settings_rewrite.go`).
+  The pass finds what moved by comparing the settings it reads with those the rows stand built under (`eval_days_settings`, `20261117100021`), so a change no day row reads (a workflow path, the population rule, the roll-up job) rewrites nothing, and where none are recorded it begins the delivery walk again.
+  Where another build moved a value of a row a setting can move since the settings were recorded (`eval_days.built_by`, `updated_at`), a settings change rewrites every eval a setting can move, as a new deploy repository does: in a roll, the release before this one writes rows under settings it read and records none, which a change and a later one back to the recorded settings would otherwise leave standing.
+  A repository's mapping in `repo_projects` begins the delivery walk and every project's Legion walk again.
   A change cursor whose change has left the log, or names another change, is a loss only when that change was younger than its 24 hours or no page read the change log to its end for longer than that, and so is one above the newest seq of a log that holds rows, whose sequence went backwards (`delivery.CursorLost`, the one rule the delivery live hub and the Legion facts consumer read their own cursors by too): one pruned after its 24 hours while pages read the log to its end within them lost nothing, as does one over a log a prune emptied, and a loss begins every walk again.
   Each page judges the cursor at its own reading of the clock, and a page shorter than its limit stamps that reading as the cursor's last read of the whole log (`delivery.ChangeCursor`'s `ReadAt`), while a full page leaves the stamp where it stood, so a catch-up that a prune overtakes between two pages reads the cursor as lost.
   The pass then builds up to 28 days of each walk (`eval_days_walks`): every day from the first input day of the delivery and CI rows, of each project's Legion rows and of each project's logged evals, once per build and then each new UTC day, which writes the explicit zero rows of the days nothing happened on, and each project's `unowned-p0` row of today, once a day whether or not delivery settings exist.
@@ -2330,6 +2334,13 @@ and `eval_figures_built`, keyed by project, the day through which the project's 
 a row goes with its project, and a check holds each `eval_id` to its project.
 The walk family `figures` is admitted by `eval_days_walks`' own migration (`20261117100021`), of this release too.
 Three new tables: nothing existing is read, locked or rewritten, the previous release neither reads nor writes them, and its census answers `0`.
+
+Migration `20261120111107_delivery_settings_bookkeeping` replaces the body of `delivery_settings_changed` (`0100`, `0156`) so that it ignores `updated_by` as it ignores the freshness columns and `updated_at`:
+a save of the delivery settings with the same values by another person logs no settings change and sends nothing on `dispatch_delivery_settings`, since no day row, delivery window or intake reads who saved them.
+Every other column logs and announces as before, and every insert and update still sends `delivery_freshness`.
+Both builds of a roll read the change log as before: a settings change is still a `settings` row with no repository, which the release before this one answers by beginning its delivery walk again and this one by rewriting what the change moves, and a save of `updated_by` alone moved nothing either reads.
+`0106`'s trigger calls the function by name, so every save by either build runs the new body once it commits.
+It locks no table and rewrites no row, and its census answers `0`.
 
 Migration `20261101030537_server_processes_schema` adds four columns to `server_processes`:
 `schema_version` and `schema_creatable`, the document schema numbers each process reads and creates, which the document socket's admission reads (Two builds at once, above);

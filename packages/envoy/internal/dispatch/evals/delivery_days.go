@@ -268,15 +268,8 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 		}
 		repos = &mapped
 	}
+	attribute := attribution{issues: issueProjects, repos: *repos}
 
-	attribute := func(pr delivery.DeliveryPullRequest) counted {
-		if pr.IssueKey != nil {
-			if project, found := issueProjects[*pr.IssueKey]; found {
-				return counted{project: project}
-			}
-		}
-		return counted{project: repos.of(pr.Repo), via: true}
-	}
 	reached := map[int64]bool{}
 	for _, apply := range deploys.Applies {
 		reached[apply.RunID] = true
@@ -292,61 +285,95 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 		if pr.CreatedAt == nil {
 			continue
 		}
-		apply := delivery.ContainingRun(pr, settings.DeployRepo, applies)
-		entry := dayPR{
-			pr: measures.PROf(pr, apply), repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number),
-			counted: attribute(pr),
-		}
-		if apply != nil {
-			if run, found := applyRuns[apply.RunID]; found {
-				entry.deploy = &dayItem{member: RunMember(run.Repo, run.RunID), day: measures.Midnight(run.StartedAt)}
-			}
-		}
-		read.prs = append(read.prs, entry)
+		read.prs = append(read.prs, attribute.pullRequest(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies), applyRuns))
 	}
 	shipped := deploys.ShippedBy(merged, settings)
 	for _, run := range deploys.Started.Runs {
-		deploy := dayDeploy{
-			run: measures.Run{
-				ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
-				ReachedProduction: reached[run.RunID], ShippedPRs: len(shipped[run.RunID]),
-			},
-			repo: run.Repo, member: RunMember(run.Repo, run.RunID),
-		}
-		for _, pr := range shipped[run.RunID] {
-			deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
-		}
-		// Once in each project its pull requests count for, through an issue where any of that
-		// project's did.
-		for _, pr := range shipped[run.RunID] {
-			counts := attribute(*pr)
-			if counts.project == "" {
-				continue
-			}
-			index := slices.IndexFunc(deploy.projects, func(c counted) bool { return c.project == counts.project })
-			if index < 0 {
-				deploy.projects = append(deploy.projects, counts)
-				continue
-			}
-			deploy.projects[index].via = deploy.projects[index].via && counts.via
-		}
-		if len(deploy.projects) == 0 {
-			if project := repos.of(run.Repo); project != "" {
-				deploy.projects = []counted{{project: project, via: true}}
-			}
-		}
-		read.deploys = append(read.deploys, deploy)
+		read.deploys = append(read.deploys, attribute.deploy(run, reached[run.RunID], shipped[run.RunID]))
 	}
-	ciRuns := func(runs []delivery.DeliveryRun) []dayCIRun {
-		attributed := make([]dayCIRun, len(runs))
-		for i, run := range runs {
-			attributed[i] = dayCIRun{run: run, member: RunMember(run.Repo, run.RunID), project: repos.of(run.Repo)}
-		}
-		return attributed
-	}
-	read.checks, read.checkJobs = ciRuns(ci.Checks.Runs), ci.Checks.Jobs
-	read.pushes, read.pushJobs = ciRuns(ci.Deploys.Runs), ci.Deploys.Jobs
+	read.checks, read.checkJobs = attribute.ciRuns(ci.Checks.Runs), ci.Checks.Jobs
+	read.pushes, read.pushJobs = attribute.ciRuns(ci.Deploys.Runs), ci.Deploys.Jobs
 	return read, nil
+}
+
+// attribution is what a day's rows are attributed to their projects by: the project of each issue
+// the pull requests name (readIssueProjects) and repo_projects. readDeliveryDay attributes one
+// day's rows by it, and the refresher's rewrite of a settings change every day's (rewriteSettings).
+type attribution struct {
+	issues map[string]string
+	repos  repoProjects
+}
+
+// of is the project pr counts for: its issue's, else its repository's, reached through
+// repo_projects.
+func (a attribution) of(pr delivery.DeliveryPullRequest) counted {
+	if pr.IssueKey != nil {
+		if project, found := a.issues[*pr.IssueKey]; found {
+			return counted{project: project}
+		}
+	}
+	return counted{project: a.repos.of(pr.Repo), via: true}
+}
+
+// pullRequest is pr, merged on the day, as the builders read it: shipped by apply (nil while none
+// does), whose run, where runs holds it, is the deploy of another day that the day's rows link it
+// to.
+func (a attribution) pullRequest(pr delivery.DeliveryPullRequest, apply *delivery.Apply, runs map[int64]delivery.DeliveryRun) dayPR {
+	entry := dayPR{
+		pr: measures.PROf(pr, apply), repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number),
+		counted: a.of(pr),
+	}
+	if apply != nil {
+		if run, found := runs[apply.RunID]; found {
+			entry.deploy = &dayItem{member: RunMember(run.Repo, run.RunID), day: measures.Midnight(run.StartedAt)}
+		}
+	}
+	return entry
+}
+
+// deploy is run, a deploy run on main started on the day, as the builders read it: whether it
+// reached production, the pull requests it ships first (Deploys.ShippedBy's), and the projects it
+// counts for.
+func (a attribution) deploy(run delivery.DeliveryRun, reached bool, shipped []*delivery.DeliveryPullRequest) dayDeploy {
+	deploy := dayDeploy{
+		run: measures.Run{
+			ID: run.RunID, StartedAt: run.StartedAt, Conclusion: run.Conclusion,
+			ReachedProduction: reached, ShippedPRs: len(shipped),
+		},
+		repo: run.Repo, member: RunMember(run.Repo, run.RunID),
+	}
+	for _, pr := range shipped {
+		deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
+	}
+	// Once in each project its pull requests count for, through an issue where any of that
+	// project's did.
+	for _, pr := range shipped {
+		counts := a.of(*pr)
+		if counts.project == "" {
+			continue
+		}
+		index := slices.IndexFunc(deploy.projects, func(c counted) bool { return c.project == counts.project })
+		if index < 0 {
+			deploy.projects = append(deploy.projects, counts)
+			continue
+		}
+		deploy.projects[index].via = deploy.projects[index].via && counts.via
+	}
+	if len(deploy.projects) == 0 {
+		if project := a.repos.of(run.Repo); project != "" {
+			deploy.projects = []counted{{project: project, via: true}}
+		}
+	}
+	return deploy
+}
+
+// ciRuns is runs, CI runs started on the day, each attributed to the project of its repository.
+func (a attribution) ciRuns(runs []delivery.DeliveryRun) []dayCIRun {
+	attributed := make([]dayCIRun, len(runs))
+	for i, run := range runs {
+		attributed[i] = dayCIRun{run: run, member: RunMember(run.Repo, run.RunID), project: a.repos.of(run.Repo)}
+	}
+	return attributed
 }
 
 // readIssueProjects is the project of each of keys that an issue holds.

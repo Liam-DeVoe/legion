@@ -186,6 +186,45 @@ func MergedRowsWith(ctx context.Context, pool *store.Pool, applies ApplyRows, fr
 	return rows, nil
 }
 
+// HistoryRows is what every day of the eval registry's delivery and CI day rows reads but its CI
+// runs, read once over the whole history: every population pull request merged before a moment,
+// in ListPullRequestsInWindow's order, and every deploy run on main of the deploy repository,
+// whatever its event, oldest start first and those started in one instant by run id
+// (listRunsStartedIn's order), with its jobs of the names asked for, each run's in ListRunJobs'
+// order. A day's deploys, its apply runs and its deploy cards' push runs are all among those runs,
+// so a reader that builds every day at once (the day-row refresher's rewrite of a settings change,
+// evals' rewriteSettings) gives each day its part, where a read of each day would read every
+// deploy run created from that day on again. No limit bounds it, as one bounds a window's reads
+// (maxPullRequestsPerWindow, maxRunsPerWindow): the whole history is what such a reader builds,
+// and a limit would cut it short without a word.
+type HistoryRows struct {
+	PullRequests []DeliveryPullRequest
+	Deploys      RunsWithJobs
+}
+
+// ReadHistoryRows reads HistoryRows of deployRepo: the pull requests merged before to, and the
+// deploy runs with their jobs named names, its three reads side by side.
+func ReadHistoryRows(ctx context.Context, pool *store.Pool, deployRepo string, names []string, to time.Time) (HistoryRows, error) {
+	var rows HistoryRows
+	err := store.ReadSideBySide(ctx,
+		func(ctx context.Context) (err error) {
+			rows.PullRequests, err = listPullRequestsMergedBefore(ctx, pool, to)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			rows.Deploys.Runs, err = listDeployRunsOnMain(ctx, pool, deployRepo)
+			return err
+		},
+		func(ctx context.Context) (err error) {
+			rows.Deploys.Jobs, err = listDeployRunJobsOnMain(ctx, pool, deployRepo, names)
+			return err
+		})
+	if err != nil {
+		return HistoryRows{}, err
+	}
+	return rows, nil
+}
+
 // Deploys is the measures' deploys of a window: every deploy run on main of the deploy repository
 // started in it, whatever its event, with the jobs it is judged by (Production.JudgedJobNames), the
 // deploys among them, and the rows from before the window that decide which pull requests merged
