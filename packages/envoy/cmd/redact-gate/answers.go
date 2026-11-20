@@ -7,201 +7,221 @@ import (
 	"go/types"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 )
 
-// answersConfig is the answer census's configuration (gate.answers): the functions that hold
-// another party's text as the box (makers), the decoders that fill a value from text through its
-// address, the function that reads an answer's request record (record), the box's method that
-// holds a field with that record (recorder), the box's methods that answer no text (comparisons),
-// and the functions whose unrecorded use of a remote field the census allows, each with why.
+// answersConfig is the answer census's configuration (gate.answers): the reader every client reads
+// an answer's body through and the opaque type it answers, with that type's exact exported method
+// set; the standard library's own readers of a response's body; the function that holds another
+// party's text as the box (makers), the function that reads an answer's request record (record)
+// and the box's method that holds a field with it (recorder); and the functions whose unrecorded
+// remote text the census allows, each with why.
 type answersConfig struct {
-	Makers      []string       `json:"makers"`
-	Decoders    []string       `json:"decoders"`
-	Record      string         `json:"record"`
-	Recorder    string         `json:"recorder"`
-	Comparisons []string       `json:"comparisons"`
-	Exempt      []answerExempt `json:"exempt"`
+	Reader   []string       `json:"reader"`
+	Answer   string         `json:"answer"`
+	Methods  []string       `json:"methods"`
+	Readers  []string       `json:"readers"`
+	Makers   []string       `json:"makers"`
+	Record   string         `json:"record"`
+	Recorder string         `json:"recorder"`
+	Exempt   []answerExempt `json:"exempt"`
 }
 
-// answerExempt is a function of one file whose remote fields the answer census finds used with
-// no request record, and why no answer's request can be echoed there.
+// answerExempt is a function of one file whose remote text the answer census finds held with no
+// request record, and why no answer's request can be echoed there.
 type answerExempt struct {
 	File     string `json:"file"`
 	Function string `json:"function"`
 	Why      string `json:"why"`
 }
 
-// answerCensus is the answer census over one type-checked package: every client of this
-// repository that reads another party's words prints them through the record of the request it
-// sent (redact.Carried), since whatever answers in the server's place can echo that request's
-// credentials in any word of its answer. A remote field is made where text is held as the box
-// (gate.answers.makers, with an argument that is no constant) and where a decoder fills a value
-// that holds the box through its address (gate.answers.decoders, an encoding/json decode); a
-// local variable a remote field is stored into holds one too, and so does a parameter a call of
-// the package hands one to, and a value a function of the package decodes into through a
-// parameter of an interface type, at each call that hands it one by address. Each use of a remote
-// field must be one that prints none of it or one that holds it with the record:
+// answerCensus is the answer census over one type-checked package. Whatever answers in a server's
+// place can echo the request it was sent, credentials and all, in any byte of its answer, so no
+// client of this repository reads an answer's bytes but through redact.ReadAnswer, whose
+// redact.Answer decodes them into typed values holding the request's record, prints them only as
+// the rule reads them with that record, or streams them to a writer. Outside the box's package:
 //
-//   - a comparison of the box (gate.answers.comparisons), which answers no text;
-//   - the box's recorder (RemoteText.WithoutTokens) given the record, `record(resp)...` or a local
-//     set only from it, whose answer prints with every credential the request carried redacted;
-//   - a store into a local variable, a range over it, or a decode into it, whose own uses are read;
-//   - a value that holds the box handed whole to a function or method of the package, whose
-//     parameter is then read as a remote field.
+//   - every use of the Body field of a net/http.Response fails, but its Close called (body.Close())
+//     and an assignment to it: a read of the bytes, wherever they go next - a decoder, a string, a
+//     helper, a value of any type - is a read outside the reader, and the census does not follow it;
+//   - every call of the standard library's own readers of a response's body (gate.answers.readers:
+//     (*net/http.Response).Write, net/http/httputil.DumpResponse) fails, for the same reason;
+//   - each call of the reader is listed, and a census that lists none is UNKNOWN, since it cannot
+//     have read a client;
+//   - text held as the box (gate.answers.makers) from anything but a constant must be held with
+//     the record of the answer it came from: the box's recorder given record(resp)..., or a local
+//     set only from it, where resp is the response the text names (a header, the status line);
+//     text that names no response, or a record of another response, fails unless
+//     gate.answers.exempt names its function with why.
 //
-// Any other use - a field handed to another function, built into a value, returned, converted,
-// stored where the census cannot follow it, or read by a method of the box that answers its text -
-// fails, unless gate.answers.exempt names its function with why. The box's own package, which
-// defines the record and the box, is the field census's and the fixture's. A census that listed no
-// print through the record is UNKNOWN, since it cannot have read a client.
-func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info) {
-	boxPkg, boxName := splitTypeName(g.inv.Gate.Box.Type)
+// In the box's own package the census checks the reader's type: its exported methods are exactly
+// gate.answers.methods, so no method that answers the bytes can be added unseen.
+func (g *gate) answerCensus(c *census, dir, path string, fset *token.FileSet, files []*ast.File, info *types.Info, pkg *types.Package) {
+	cfg := g.inv.Gate.Answers
+	boxPkg, _ := splitTypeName(g.inv.Gate.Box.Type)
 	if path == boxPkg {
+		g.answerMethods(c, dir, fset, pkg, cfg)
 		return
 	}
-	cfg := g.inv.Gate.Answers
-	a := &answerReader{
-		info: info, fset: fset, boxPkg: boxPkg, boxName: boxName,
-		makers: set(cfg.Makers), decoders: set(cfg.Decoders), record: cfg.Record, recorder: cfg.Recorder,
-		comparisons: set(cfg.Comparisons), decls: map[*types.Func]*answerFunc{},
-	}
-	var order []*answerFunc
+	a := &answerReader{info: info, cfg: cfg, readers: set(cfg.Readers), makers: set(cfg.Makers)}
 	for _, f := range files {
 		rel, _ := filepath.Rel(dir, fset.Position(f.Pos()).Filename)
 		rel = filepath.ToSlash(rel)
-		for _, d := range f.Decls {
-			switch d := d.(type) {
+		var stack []ast.Node
+		var fn []string
+		function := func() string {
+			if len(fn) == 0 {
+				return path + ".<package>"
+			}
+			return fn[len(fn)-1]
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			if n == nil {
+				if _, ok := stack[len(stack)-1].(*ast.FuncDecl); ok {
+					fn = fn[:len(fn)-1]
+				}
+				if vs, ok := stack[len(stack)-1].(*ast.ValueSpec); ok && len(vs.Names) > 0 && len(stack) == 3 {
+					fn = fn[:len(fn)-1]
+				}
+				stack = stack[:len(stack)-1]
+				return true
+			}
+			parents := stack
+			stack = append(stack, n)
+			switch n := n.(type) {
 			case *ast.FuncDecl:
-				fn, _ := info.Defs[d.Name].(*types.Func)
-				if d.Body == nil || fn == nil {
-					continue
+				fn = append(fn, goFuncName(path, n))
+			case *ast.ValueSpec:
+				// A package-level var's value (a func literal, a composite literal of them) is read
+				// as code of its own, named for the var.
+				if len(parents) == 2 && len(n.Names) > 0 {
+					fn = append(fn, path+"."+n.Names[0].Name)
 				}
-				af := &answerFunc{node: d, body: d.Body, file: rel, name: goFuncName(path, d), fn: fn,
-					tainted: map[types.Object]bool{}, fills: map[int]bool{}}
-				a.decls[fn] = af
-				order = append(order, af)
-			case *ast.GenDecl:
-				// A function literal a package-level variable holds (var gcpUserinfo = func...) is
-				// a client's code too; it is called through the variable, so no call hands it
-				// a remote field the census can follow, and it is read on its own.
-				for _, spec := range d.Specs {
-					vs, ok := spec.(*ast.ValueSpec)
-					if !ok {
-						continue
-					}
-					for i, value := range vs.Values {
-						if lit, ok := value.(*ast.FuncLit); ok && i < len(vs.Names) {
-							order = append(order, &answerFunc{node: lit, body: lit.Body, file: rel, name: path + "." + vs.Names[i].Name,
-								tainted: map[types.Object]bool{}, fills: map[int]bool{}})
-						}
-					}
+			}
+			add := func(kind string, ok bool, what, why string) {
+				p := fset.Position(n.Pos())
+				c.Answers = append(c.Answers, finding{File: rel, Line: p.Line, Function: function(), What: what, Kind: kind, OK: ok, Why: why})
+			}
+			switch n := n.(type) {
+			case *ast.SelectorExpr:
+				if !a.responseBody(n) {
+					return true
 				}
+				switch {
+				case a.closed(n, parents):
+					add("close", true, exprString(n), "the body closed")
+				case a.assigned(n, parents):
+					add("set", true, exprString(n), "the body set, not read")
+				default:
+					add("body", false, exprString(n), "a read of an answer's body outside "+readerNames(cfg)+": read it through the reader, whose Answer decodes it into typed values with the request's record, prints it only as the rule reads it, or streams it as data")
+				}
+			case *ast.CallExpr:
+				name := a.calleeName(n)
+				switch {
+				case slices.Contains(cfg.Reader, name):
+					add("read", true, exprString(n), "the answer read through "+shortName(name))
+				case a.readers[name]:
+					add("body", false, exprString(n), name+" reads the answer's body outside "+readerNames(cfg))
+				case a.makers[name] && !a.constant(n):
+					ok, why := a.recorded(n, parents)
+					add("maker", ok, exprString(n), why)
+				}
+			}
+			return true
+		})
+	}
+}
+
+// answerMethods lists the reader's type with its exported method set, OK only where it is exactly
+// gate.answers.methods; a type that is not in pkg is listed as not found.
+func (g *gate) answerMethods(c *census, dir string, fset *token.FileSet, pkg *types.Package, cfg answersConfig) {
+	_, name := splitTypeName(cfg.Answer)
+	obj := pkg.Scope().Lookup(name)
+	if obj == nil {
+		c.Answers = append(c.Answers, finding{Kind: "methods", What: cfg.Answer, Why: "the reader's type is not declared in its package"})
+		return
+	}
+	var got []string
+	for _, t := range []types.Type{obj.Type(), types.NewPointer(obj.Type())} {
+		ms := types.NewMethodSet(t)
+		for i := range ms.Len() {
+			if m := ms.At(i).Obj(); m.Exported() && !slices.Contains(got, m.Name()) {
+				got = append(got, m.Name())
 			}
 		}
 	}
-	// The taint of each function grows until no pass of the package adds to it: a store, a decode,
-	// a holder handed to a function of the package, a fill through an interface parameter.
-	for changed := true; changed; {
-		changed = false
-		for _, af := range order {
-			if a.taint(af) {
-				changed = true
-			}
-		}
+	sort.Strings(got)
+	want := slices.Clone(cfg.Methods)
+	sort.Strings(want)
+	p := fset.Position(obj.Pos())
+	rel, _ := filepath.Rel(dir, p.Filename)
+	f := finding{File: filepath.ToSlash(rel), Line: p.Line, Function: cfg.Answer, What: strings.Join(got, ", "), Kind: "methods"}
+	if slices.Equal(got, want) {
+		f.OK, f.Why = true, "its exported methods are exactly "+strings.Join(want, ", ")
+	} else {
+		f.Why = "its exported methods are " + strings.Join(got, ", ") + ", not exactly " + strings.Join(want, ", ") + ": a method that answers the body's bytes lets a client print them"
 	}
-	for _, af := range order {
-		c.Answers = append(c.Answers, a.classify(af)...)
-	}
+	c.Answers = append(c.Answers, f)
 }
 
 type answerReader struct {
-	info             *types.Info
-	fset             *token.FileSet
-	boxPkg, boxName  string
-	makers, decoders map[string]bool
-	record, recorder string
-	comparisons      map[string]bool
-	decls            map[*types.Func]*answerFunc
+	info            *types.Info
+	cfg             answersConfig
+	readers, makers map[string]bool
 }
 
-// answerFunc is one function of the package as the answer census reads it - a declaration, or a
-// function literal a package-level variable holds (fn nil) - with the objects that hold a remote
-// field in it, and the parameters, by index, whose interface value it decodes into.
-type answerFunc struct {
-	node       ast.Node
-	body       *ast.BlockStmt
-	fn         *types.Func
-	file, name string
-	tainted    map[types.Object]bool
-	fills      map[int]bool
-}
-
-func (a *answerReader) isBox(t types.Type) bool {
-	n, ok := types.Unalias(t).(*types.Named)
-	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == a.boxPkg && n.Obj().Name() == a.boxName
-}
-
-// holds reports whether a value of type t holds the box anywhere: itself, or through a pointer, a
-// field, a slice, an array, a map or a channel.
-func (a *answerReader) holds(t types.Type) bool { return a.holdsSeen(t, map[types.Type]bool{}) }
-
-func (a *answerReader) holdsSeen(t types.Type, seen map[types.Type]bool) bool {
-	if t == nil || seen[t] {
+// responseBody reports whether sel selects the Body field of a net/http.Response, directly or
+// through an embedded one.
+func (a *answerReader) responseBody(sel *ast.SelectorExpr) bool {
+	s := a.info.Selections[sel]
+	if s == nil || s.Kind() != types.FieldVal {
 		return false
 	}
-	seen[t] = true
-	switch t := types.Unalias(t).(type) {
-	case *types.Named:
-		return a.isBox(t) || a.holdsSeen(t.Underlying(), seen)
-	case *types.Pointer:
-		return a.holdsSeen(t.Elem(), seen)
-	case *types.Slice:
-		return a.holdsSeen(t.Elem(), seen)
-	case *types.Array:
-		return a.holdsSeen(t.Elem(), seen)
-	case *types.Map:
-		return a.holdsSeen(t.Key(), seen) || a.holdsSeen(t.Elem(), seen)
-	case *types.Chan:
-		return a.holdsSeen(t.Elem(), seen)
-	case *types.Struct:
-		for i := range t.NumFields() {
-			if a.holdsSeen(t.Field(i).Type(), seen) {
-				return true
-			}
+	v, ok := s.Obj().(*types.Var)
+	if !ok || v.Name() != "Body" || v.Pkg() == nil || v.Pkg().Path() != "net/http" {
+		return false
+	}
+	t := s.Recv()
+	index := s.Index()
+	for i, k := range index {
+		t = derefType(t)
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok {
+			return false
 		}
+		if i == len(index)-1 {
+			n, ok := types.Unalias(t).(*types.Named)
+			return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" && n.Obj().Name() == "Response"
+		}
+		t = st.Field(k).Type()
 	}
 	return false
 }
 
-func (a *answerReader) typeOf(e ast.Expr) types.Type {
-	if tv, ok := a.info.Types[e]; ok {
-		return tv.Type
+// closed reports whether sel, a response's Body, is the receiver of its Close, called.
+func (a *answerReader) closed(sel ast.Expr, parents []ast.Node) bool {
+	if len(parents) < 2 {
+		return false
 	}
-	if id, ok := e.(*ast.Ident); ok {
-		if obj := a.object(id); obj != nil {
-			return obj.Type()
-		}
+	closeSel, ok := parents[len(parents)-1].(*ast.SelectorExpr)
+	if !ok || closeSel.X != sel || closeSel.Sel.Name != "Close" {
+		return false
 	}
-	return nil
+	call, ok := parents[len(parents)-2].(*ast.CallExpr)
+	return ok && call.Fun == closeSel
 }
 
-func (a *answerReader) object(id *ast.Ident) types.Object {
-	if obj := a.info.Uses[id]; obj != nil {
-		return obj
-	}
-	return a.info.Defs[id]
+// assigned reports whether sel, a response's Body, is a target of an assignment.
+func (a *answerReader) assigned(sel ast.Expr, parents []ast.Node) bool {
+	as, ok := parents[len(parents)-1].(*ast.AssignStmt)
+	return ok && slices.Contains(as.Lhs, sel)
 }
 
-// callee is the function or method call calls by name, its generic origin, or nil for a
-// conversion, a builtin or a call of a function value.
-func (a *answerReader) callee(call *ast.CallExpr) *types.Func {
+func (a *answerReader) calleeName(call *ast.CallExpr) string {
 	fun := ast.Unparen(call.Fun)
-	switch x := fun.(type) {
-	case *ast.IndexExpr:
-		fun = x.X
-	case *ast.IndexListExpr:
-		fun = x.X
+	if ix, ok := fun.(*ast.IndexExpr); ok {
+		fun = ix.X
 	}
 	var fn *types.Func
 	switch x := fun.(type) {
@@ -215,365 +235,134 @@ func (a *answerReader) callee(call *ast.CallExpr) *types.Func {
 		}
 	}
 	if fn == nil {
-		return nil
+		return ""
 	}
-	return fn.Origin()
+	return fn.Origin().FullName()
 }
 
-func (a *answerReader) calleeName(call *ast.CallExpr) string {
-	if fn := a.callee(call); fn != nil {
-		return fn.FullName()
-	}
-	return ""
-}
-
-// made reports whether call holds text that is no constant as the box (a maker).
-func (a *answerReader) made(call *ast.CallExpr) bool {
-	if !a.makers[a.calleeName(call)] {
-		return false
-	}
+// constant reports whether every argument of call is a constant.
+func (a *answerReader) constant(call *ast.CallExpr) bool {
 	for _, arg := range call.Args {
 		if tv, ok := a.info.Types[arg]; !ok || tv.Value == nil {
-			return true
+			return false
 		}
 	}
-	return false
-}
-
-// remote reports whether e is a remote field in af, or reaches one through a field, an index, a
-// dereference, an address, a slice or a type assertion.
-func (a *answerReader) remote(af *answerFunc, e ast.Expr) bool {
-	switch e := ast.Unparen(e).(type) {
-	case *ast.Ident:
-		return af.tainted[a.object(e)]
-	case *ast.SelectorExpr:
-		if sel := a.info.Selections[e]; sel != nil && sel.Kind() == types.FieldVal {
-			return a.remote(af, e.X)
-		}
-	case *ast.IndexExpr:
-		return a.remote(af, e.X)
-	case *ast.StarExpr:
-		return a.remote(af, e.X)
-	case *ast.UnaryExpr:
-		return e.Op == token.AND && a.remote(af, e.X)
-	case *ast.SliceExpr:
-		return a.remote(af, e.X)
-	case *ast.TypeAssertExpr:
-		return a.remote(af, e.X)
-	case *ast.CallExpr:
-		return a.made(e)
-	}
-	return false
-}
-
-// root is the variable an lvalue or an address names, through its fields, indexes and
-// dereferences; nil for any other expression.
-func (a *answerReader) root(e ast.Expr) types.Object {
-	switch e := ast.Unparen(e).(type) {
-	case *ast.Ident:
-		return a.object(e)
-	case *ast.SelectorExpr:
-		if sel := a.info.Selections[e]; sel != nil && sel.Kind() == types.FieldVal {
-			return a.root(e.X)
-		}
-	case *ast.IndexExpr:
-		return a.root(e.X)
-	case *ast.StarExpr:
-		return a.root(e.X)
-	case *ast.UnaryExpr:
-		if e.Op == token.AND {
-			return a.root(e.X)
-		}
-	}
-	return nil
-}
-
-// local reports whether obj is a variable af declares: a parameter, a result or a local of its
-// own or of a function literal inside it.
-func local(af *answerFunc, obj types.Object) bool {
-	v, ok := obj.(*types.Var)
-	return ok && !v.IsField() && af.node.Pos() <= v.Pos() && v.Pos() < af.node.End()
-}
-
-func (a *answerReader) mark(af *answerFunc, obj types.Object) bool {
-	if obj == nil || !local(af, obj) || af.tainted[obj] {
-		return false
-	}
-	af.tainted[obj] = true
 	return true
 }
 
-// param is the parameter (or the receiver, for index -1) of callee a call hands its index-th
-// argument to.
-func param(callee *answerFunc, index int) types.Object {
-	if callee.fn == nil {
-		return nil
-	}
-	sig := callee.fn.Type().(*types.Signature)
-	if index < 0 {
-		if sig.Recv() == nil {
-			return nil
+// recorded says whether call, text held as the box, is held with the record of the answer it came
+// from: the box's recorder called on it, given record(x)... or a local set only from record(x),
+// where x is the response the text names. Text that names no response has no record to be held
+// with.
+func (a *answerReader) recorded(call *ast.CallExpr, parents []ast.Node) (bool, string) {
+	from := a.response(call)
+	var recorder *ast.CallExpr
+	if len(parents) >= 2 {
+		if sel, ok := parents[len(parents)-1].(*ast.SelectorExpr); ok && sel.X == call {
+			if c, ok := parents[len(parents)-2].(*ast.CallExpr); ok && c.Fun == sel && a.calleeName(c) == a.cfg.Recorder {
+				recorder = c
+			}
 		}
-		return sig.Recv()
 	}
-	n := sig.Params().Len()
-	if n == 0 {
-		return nil
+	switch {
+	case recorder == nil:
+		return false, "text held as the box with no request record: hold it with " + shortName(a.cfg.Recorder) + "(" + shortName(a.cfg.Record) + "(resp)...), resp the answer it came from"
+	case from == nil:
+		return false, "text that names no answer, held as the box: no request record can hold it"
 	}
-	return sig.Params().At(min(index, n-1))
+	record := a.recordOf(recorder, parents)
+	switch {
+	case record == nil:
+		return false, shortName(a.cfg.Recorder) + " is given no request record: hand it " + shortName(a.cfg.Record) + "(resp)..., or a local set only from it"
+	case record != from:
+		return false, "held with the record of " + record.Name() + ", another answer than " + from.Name() + ", whose text it is"
+	}
+	return true, "held with the record of " + from.Name() + ", the answer it came from"
 }
 
-// taint runs one pass of af, adding what it finds to its own taint, its fills and its callees'
-// parameters, and answers whether it added anything.
-func (a *answerReader) taint(af *answerFunc) bool {
-	changed := false
-	ast.Inspect(af.body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.CallExpr:
-			full := a.calleeName(n)
-			if a.decoders[full] && len(n.Args) > 0 {
-				dest := n.Args[len(n.Args)-1]
-				if t := a.typeOf(dest); a.holds(t) {
-					changed = a.mark(af, a.root(dest)) || changed
-				} else if t != nil && types.IsInterface(t) {
-					if obj := a.root(dest); obj != nil && af.fn != nil {
-						sig := af.fn.Type().(*types.Signature)
-						for i := range sig.Params().Len() {
-							if sig.Params().At(i) == obj && !af.fills[i] {
-								af.fills[i], changed = true, true
-							}
-						}
-					}
-				}
-			}
-			callee := a.decls[a.callee(n)]
-			if callee == nil {
-				return true
-			}
-			for i, arg := range n.Args {
-				t := a.typeOf(arg)
-				switch {
-				case callee.fills[i] && a.holds(t):
-					// A function of the package decodes into this argument.
-					changed = a.mark(af, a.root(arg)) || changed
-				case a.remote(af, arg) && a.holds(t) && !a.isBox(t):
-					if p := param(callee, i); p != nil && !callee.tainted[p] {
-						callee.tainted[p], changed = true, true
-					}
-				}
-			}
-			if sel, ok := ast.Unparen(n.Fun).(*ast.SelectorExpr); ok && a.info.Selections[sel] != nil && a.remote(af, sel.X) {
-				if p := param(callee, -1); p != nil && !callee.tainted[p] {
-					callee.tainted[p], changed = true, true
-				}
-			}
-		case *ast.AssignStmt:
-			if len(n.Lhs) == len(n.Rhs) {
-				for i, rhs := range n.Rhs {
-					if a.remote(af, rhs) && a.holds(a.typeOf(rhs)) {
-						changed = a.mark(af, a.root(n.Lhs[i])) || changed
-					}
-				}
-			}
-		case *ast.ValueSpec:
-			if len(n.Names) == len(n.Values) {
-				for i, value := range n.Values {
-					if a.remote(af, value) && a.holds(a.typeOf(value)) {
-						changed = a.mark(af, a.object(n.Names[i])) || changed
-					}
-				}
-			}
-		case *ast.RangeStmt:
-			if a.remote(af, n.X) {
-				for _, e := range []ast.Expr{n.Key, n.Value} {
-					if e != nil && a.holds(a.typeOf(e)) {
-						changed = a.mark(af, a.root(e)) || changed
-					}
-				}
-			}
+// response is the response expr names: the first variable of type *net/http.Response or
+// net/http.Response it holds, or nil.
+func (a *answerReader) response(expr ast.Expr) types.Object {
+	var found types.Object
+	ast.Inspect(expr, func(n ast.Node) bool {
+		id, ok := n.(*ast.Ident)
+		if !ok || found != nil {
+			return found == nil
 		}
-		return true
-	})
-	return changed
-}
-
-// records reports whether call, a call of the recorder, is given the record: `record(x)...`, or a
-// local of af that every assignment sets from the record.
-func (a *answerReader) records(af *answerFunc, call *ast.CallExpr) bool {
-	if !call.Ellipsis.IsValid() || len(call.Args) != 1 {
-		return false
-	}
-	arg := ast.Unparen(call.Args[0])
-	if c, ok := arg.(*ast.CallExpr); ok {
-		return a.calleeName(c) == a.record
-	}
-	id, ok := arg.(*ast.Ident)
-	if !ok {
-		return false
-	}
-	obj := a.object(id)
-	if !local(af, obj) {
-		return false
-	}
-	sets, fromRecord := 0, true
-	ast.Inspect(af.node, func(n ast.Node) bool {
-		as, ok := n.(*ast.AssignStmt)
-		if !ok || len(as.Lhs) != len(as.Rhs) {
-			if ok {
-				for _, lhs := range as.Lhs {
-					if l, isID := lhs.(*ast.Ident); isID && a.object(l) == obj {
-						sets, fromRecord = sets+1, false
-					}
-				}
-			}
-			return true
-		}
-		for i, lhs := range as.Lhs {
-			if l, isID := lhs.(*ast.Ident); isID && a.object(l) == obj {
-				sets++
-				c, isCall := ast.Unparen(as.Rhs[i]).(*ast.CallExpr)
-				fromRecord = fromRecord && isCall && a.calleeName(c) == a.record
-			}
-		}
-		return true
-	})
-	return sets > 0 && fromRecord
-}
-
-// classify lists each use of a remote field in af with its verdict.
-func (a *answerReader) classify(af *answerFunc) []finding {
-	var found []finding
-	seen := map[string]bool{}
-	add := func(at ast.Node, what ast.Expr, kind string, ok bool, why string) {
-		p := a.fset.Position(at.Pos())
-		key := fmt.Sprintf("%d:%d:%s", p.Line, p.Column, kind)
-		if seen[key] {
-			return
-		}
-		seen[key] = true
-		found = append(found, finding{File: af.file, Line: p.Line, Function: af.name, What: exprString(what), Kind: kind, OK: ok, Why: why})
-	}
-	var stack []ast.Node
-	ast.Inspect(af.body, func(n ast.Node) bool {
-		if n == nil {
-			stack = stack[:len(stack)-1]
-			return true
-		}
-		parents := stack
-		stack = append(stack, n)
-		if call, ok := n.(*ast.CallExpr); ok && a.decoders[a.calleeName(call)] && len(call.Args) > 0 {
-			if dest := call.Args[len(call.Args)-1]; a.holds(a.typeOf(dest)) {
-				add(call, dest, "decoded", true, "a decode into a value that holds the box: each use of it is read")
-			}
-		}
-		e, ok := n.(ast.Expr)
-		if !ok || !a.holds(a.typeOf(e)) || !a.remote(af, e) {
-			return true
-		}
-		if _, isParen := e.(*ast.ParenExpr); isParen {
-			return true
-		}
-		var parent, grand ast.Node
-		for i := len(parents) - 1; i >= 0; i-- {
-			if _, isParen := parents[i].(*ast.ParenExpr); isParen {
-				continue
-			}
-			parent = parents[i]
-			for j := i - 1; j >= 0; j-- {
-				if _, isParen := parents[j].(*ast.ParenExpr); !isParen {
-					grand = parents[j]
-					break
-				}
-			}
-			break
-		}
-		fail := func(why string) { add(e, e, "unrecorded", false, why) }
-		switch p := parent.(type) {
-		case *ast.SelectorExpr:
-			if p.Sel == e {
-				return true
-			}
-			sel := a.info.Selections[p]
-			if sel == nil || sel.Kind() == types.FieldVal {
-				return true
-			}
-			m, _ := sel.Obj().(*types.Func)
-			if m == nil {
-				return true
-			}
-			recv := m.Type().(*types.Signature).Recv()
-			if recv != nil && a.isBox(derefType(recv.Type())) {
-				call, called := grand.(*ast.CallExpr)
-				called = called && call.Fun == ast.Expr(p)
-				switch {
-				case a.comparisons[m.Name()] && called:
-					add(e, e, "compared", true, "read by "+m.Name()+", which answers no text")
-				case a.comparisons[m.Name()]:
-					add(e, e, "compared", true, "the method value "+m.Name()+", which answers no text")
-				case m.Origin().FullName() == a.recorder && called && a.records(af, call):
-					add(e, e, "recorded", true, "held with the record of the request it answers ("+shortName(a.record)+")")
-				case m.Origin().FullName() == a.recorder:
-					fail(m.Name() + " is given no request record: hand it " + shortName(a.record) + "(resp)..., or a local set only from it")
-				default:
-					fail(m.Name() + " answers the field's text, and the field holds no request record: hold it with " + shortName(a.recorder) + "(" + shortName(a.record) + "(resp)...) first")
-				}
-				return true
-			}
-			if callee := a.decls[m.Origin()]; callee != nil {
-				add(e, e, "handed", true, "the receiver of "+shortName(callee.name)+", whose uses of it are read")
-				return true
-			}
-			fail("the receiver of " + m.Origin().FullName() + ", a method the census does not read, with no request record")
-		case *ast.IndexExpr:
-			if p.X != e {
-				fail("an index")
-			}
-		case *ast.StarExpr, *ast.SliceExpr, *ast.TypeAssertExpr:
-		case *ast.UnaryExpr:
-			if p.Op != token.AND {
-				fail("an operand of " + p.Op.String())
-			}
-		case *ast.AssignStmt:
-			if slices.Contains(p.Lhs, e) {
-				return true
-			}
-			i := slices.Index(p.Rhs, e)
-			if i >= 0 && len(p.Lhs) == len(p.Rhs) && local(af, a.root(p.Lhs[i])) {
-				return true
-			}
-			fail("stored where the census cannot follow it, with no request record")
-		case *ast.ValueSpec:
-		case *ast.RangeStmt:
-			if p.X != e {
-				fail("a range's key or value")
-			}
-		case *ast.CallExpr:
-			if p.Fun == e {
-				return true
-			}
-			fn := a.callee(p)
-			if fn == nil {
-				if tv, isType := a.info.Types[p.Fun]; isType && tv.IsType() {
-					fail("converted, with no request record")
-				} else {
-					fail("handed to a function value the census does not read, with no request record")
-				}
-				return true
-			}
-			if a.decoders[fn.FullName()] && p.Args[len(p.Args)-1] == e {
-				return true
-			}
-			if callee := a.decls[fn]; callee != nil && !a.isBox(a.typeOf(e)) {
-				add(e, e, "handed", true, "handed to "+shortName(callee.name)+", whose uses of it are read")
-				return true
-			}
-			fail("handed to " + fn.FullName() + " with no request record: hand it " + shortName(a.recorder) + "(" + shortName(a.record) + "(resp)...)")
-		default:
-			fail(describe(parent) + ", with no request record")
+		if obj := a.info.Uses[id]; obj != nil && isResponse(obj.Type()) {
+			found = obj
 		}
 		return true
 	})
 	return found
+}
+
+func isResponse(t types.Type) bool {
+	n, ok := types.Unalias(derefType(t)).(*types.Named)
+	return ok && n.Obj().Pkg() != nil && n.Obj().Pkg().Path() == "net/http" && n.Obj().Name() == "Response"
+}
+
+// recordOf is the response whose record recorder is given: record(x)... directly, or a local that
+// every assignment in the function sets from record(x); nil otherwise.
+func (a *answerReader) recordOf(recorder *ast.CallExpr, parents []ast.Node) types.Object {
+	if !recorder.Ellipsis.IsValid() || len(recorder.Args) != 1 {
+		return nil
+	}
+	arg := ast.Unparen(recorder.Args[0])
+	if c, ok := arg.(*ast.CallExpr); ok && a.calleeName(c) == a.cfg.Record && len(c.Args) == 1 {
+		return a.response(c.Args[0])
+	}
+	id, ok := arg.(*ast.Ident)
+	if !ok {
+		return nil
+	}
+	local := a.info.Uses[id]
+	var body ast.Node
+	for i := len(parents) - 1; i >= 0 && body == nil; i-- {
+		switch p := parents[i].(type) {
+		case *ast.FuncDecl:
+			body = p
+		case *ast.FuncLit:
+			body = p
+		}
+	}
+	if local == nil || body == nil {
+		return nil
+	}
+	var from types.Object
+	sets, fromRecord := 0, true
+	ast.Inspect(body, func(n ast.Node) bool {
+		as, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for i, lhs := range as.Lhs {
+			l, isID := lhs.(*ast.Ident)
+			if !isID || (a.info.Defs[l] != local && a.info.Uses[l] != local) {
+				continue
+			}
+			sets++
+			if len(as.Lhs) != len(as.Rhs) {
+				fromRecord = false
+				continue
+			}
+			c, isCall := ast.Unparen(as.Rhs[i]).(*ast.CallExpr)
+			if !isCall || a.calleeName(c) != a.cfg.Record || len(c.Args) != 1 {
+				fromRecord = false
+				continue
+			}
+			if r := a.response(c.Args[0]); from == nil || from == r {
+				from = r
+			} else {
+				fromRecord = false
+			}
+		}
+		return true
+	})
+	if sets == 0 || !fromRecord {
+		return nil
+	}
+	return from
 }
 
 // derefType is t, or what it points to.
@@ -600,4 +389,62 @@ func shortName(full string) string {
 		return "(" + body
 	}
 	return body
+}
+
+// recordedAnswers is how many reads of an answer through the reader the answer census listed.
+func recordedAnswers(c census) int {
+	n := 0
+	for _, a := range c.Answers {
+		if a.Kind == "read" {
+			n++
+		}
+	}
+	return n
+}
+
+// judgeAnswers fails each finding of the answer census that is not OK and that gate.answers.exempt
+// does not name, each exemption that names none, a census that listed no read through the reader
+// (UNKNOWN), and one that never found the reader's type.
+func (g *gate) judgeAnswers(c census) {
+	if recordedAnswers(c) == 0 {
+		g.fail("stage 2 (answer census) UNKNOWN: it listed %d uses of an answer and no read through %s, so it read no client", len(c.Answers), readerNames(g.inv.Gate.Answers))
+	}
+	methods := false
+	used := map[int]bool{}
+	for _, a := range c.Answers {
+		if a.Kind == "methods" {
+			methods = true
+		}
+		if a.OK {
+			continue
+		}
+		exempt := false
+		for i, e := range g.inv.Gate.Answers.Exempt {
+			if a.Kind == "maker" && e.File == a.File && e.Function == a.Function {
+				exempt, used[i] = true, true
+				fmt.Fprintf(g.out, "EXEMPT answer %s:%d %s in %s: %s\n", a.File, a.Line, a.What, a.Function, e.Why)
+			}
+		}
+		if !exempt {
+			g.fail("stage 2 (answer census) %s:%d %s in %s: %s", a.File, a.Line, a.What, a.Function, a.Why)
+		}
+	}
+	if !methods {
+		g.fail("stage 2 (answer census) UNKNOWN: the reader's type %s was not found", g.inv.Gate.Answers.Answer)
+	}
+	for i, e := range g.inv.Gate.Answers.Exempt {
+		if !used[i] {
+			g.fail("stage 2 (answer census) the exemption of %s in %s matches no text the census failed", e.Function, e.File)
+		}
+	}
+}
+
+// readerNames is the census's readers as a message names them: redact.ReadAnswer or
+// redact.StreamAnswer.
+func readerNames(cfg answersConfig) string {
+	names := make([]string, len(cfg.Reader))
+	for i, r := range cfg.Reader {
+		names[i] = shortName(r)
+	}
+	return strings.Join(names, " or ")
 }

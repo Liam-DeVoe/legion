@@ -113,12 +113,15 @@ type holderRow struct {
 }
 
 // reflectionExempt is a reflection or unsafe site the reflection census allows, with the types it
-// reaches, which the census checks hold no box storage and no external error type.
+// reaches, which the census checks hold no box storage and no external error type. RecordsBoxes
+// names the box's own record walk instead, in the box's package alone, which reaches box-holding
+// types to hand each box its record (structural.go, reflection).
 type reflectionExempt struct {
-	File     string   `json:"file"`
-	Function string   `json:"function"`
-	Operands []string `json:"operands"`
-	Why      string   `json:"why"`
+	File         string   `json:"file"`
+	Function     string   `json:"function"`
+	Operands     []string `json:"operands"`
+	RecordsBoxes bool     `json:"records_boxes"`
+	Why          string   `json:"why"`
 }
 
 type gateConfig struct {
@@ -324,8 +327,8 @@ func run(repo, inventoryPath string, o options, out io.Writer) int {
 	if !g.judge(c, ranges, bindErr) {
 		return g.stop(2, "census")
 	}
-	fmt.Fprintf(out, "PASS stage 2 (census): %d calls, %d box-storage uses, %d holders, %d reflection sites, %d whole-value uses, %d boundary findings, %d boundary fields, %d answer uses (%d printed through the request record), in %s\n",
-		len(c.Calls), len(c.Box), len(c.Holders), len(c.Reflect), len(c.Whole), len(c.Boundary), len(c.Fields), len(c.Answers), recordedAnswers(c), time.Since(start).Round(time.Second))
+	fmt.Fprintf(out, "PASS stage 2 (census): %d calls, %d box-storage uses, %d holders, %d reflection sites, %d whole-value uses, %d boundary findings, %d boundary fields, %d answer uses (%d reads through %s), in %s\n",
+		len(c.Calls), len(c.Box), len(c.Holders), len(c.Reflect), len(c.Whole), len(c.Boundary), len(c.Fields), len(c.Answers), recordedAnswers(c), readerNames(g.inv.Gate.Answers), time.Since(start).Round(time.Second))
 	// What the censuses found, each with its classification: part of what the check prints as its
 	// bound.
 	g.report(c)
@@ -736,48 +739,6 @@ func (g *gate) judgeStructural(c census) {
 		}
 	}
 	g.judgeAnswers(c)
-}
-
-// recordedAnswers is how many uses the answer census listed that print a remote field through the
-// record of the request it answers.
-func recordedAnswers(c census) int {
-	n := 0
-	for _, a := range c.Answers {
-		if a.Kind == "recorded" {
-			n++
-		}
-	}
-	return n
-}
-
-// judgeAnswers fails each use of a remote field the answer census found with no request record
-// that gate.answers.exempt does not name, each exemption that names none, and a census that listed
-// no print through the record, which cannot have read a client.
-func (g *gate) judgeAnswers(c census) {
-	if recordedAnswers(c) == 0 {
-		g.fail("stage 2 (answer census) UNKNOWN: it listed %d uses of a remote field and none printed through the request record, so it read no client", len(c.Answers))
-	}
-	used := map[int]bool{}
-	for _, a := range c.Answers {
-		if a.OK {
-			continue
-		}
-		exempt := false
-		for i, e := range g.inv.Gate.Answers.Exempt {
-			if e.File == a.File && e.Function == a.Function {
-				exempt, used[i] = true, true
-				fmt.Fprintf(g.out, "EXEMPT answer %s:%d %s in %s: %s\n", a.File, a.Line, a.What, a.Function, e.Why)
-			}
-		}
-		if !exempt {
-			g.fail("stage 2 (answer census) %s:%d %s in %s: %s", a.File, a.Line, a.What, a.Function, a.Why)
-		}
-	}
-	for i, e := range g.inv.Gate.Answers.Exempt {
-		if !used[i] {
-			g.fail("stage 2 (answer census) the exemption of %s in %s matches no use the census failed", e.Function, e.File)
-		}
-	}
 }
 
 // report prints every call the census listed, and each UNKNOWN, unjudged.

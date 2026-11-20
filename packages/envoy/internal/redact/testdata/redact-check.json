@@ -227,6 +227,13 @@
           "github.com/aws/aws-sdk-go-v2/config.SharedConfig"
         ],
         "why": "the AWS configuration a seed store writes with, walked for an nkey seed"
+      },
+      {
+        "file": "packages/envoy/internal/redact/answer.go",
+        "function": "github.com/sjawhar/envoy/internal/redact.recordBoxes",
+        "operands": [],
+        "records_boxes": true,
+        "why": "Answer.Decode's walk of the value a caller decodes an answer into: it reaches each RemoteText as a *RemoteText and hands it the answer's record through WithoutTokens, descending into no box and reading no box's storage"
       }
     ],
     "external_errors": ["golang.org/x/oauth2.RetrieveError"],
@@ -2014,21 +2021,17 @@
       "print-ts-box"
     ],
     "answers": {
-      "about": "The answer census (cmd/redact-gate/answers.go): a remote field is text held as the box by a maker, or a value that holds the box filled by a decoder; every use of one in a Go client of this repository is a comparison, a store, a holder handed to a function of its package, or the recorder given the record of the request it answers. exempt names a function whose unrecorded use no request of this process can have been echoed into, with why.",
+      "about": "The answer census (cmd/redact-gate/answers.go). Outside internal/redact, a net/http.Response's Body appears only in its Close and as an assignment's target, and the standard library's readers of a response's body (readers) are not called: every client reads an answer through reader - ReadAnswer, whose opaque answer type has exactly methods, or StreamAnswer, the stream of a body that is data - and a census that lists none is UNKNOWN. Text held as the box from anything but a constant is held with the record of the answer it came from (recorder given record(resp)...), or its function is in exempt, with why.",
+      "reader": [
+        "github.com/sjawhar/envoy/internal/redact.ReadAnswer",
+        "github.com/sjawhar/envoy/internal/redact.StreamAnswer"
+      ],
+      "answer": "github.com/sjawhar/envoy/internal/redact.Answer",
+      "methods": ["Decode", "Status", "StreamTo", "Words"],
+      "readers": ["(*net/http.Response).Write", "net/http/httputil.DumpResponse"],
       "makers": ["github.com/sjawhar/envoy/internal/redact.NewRemoteText"],
-      "decoders": ["encoding/json.Unmarshal", "(*encoding/json.Decoder).Decode"],
       "record": "github.com/sjawhar/envoy/internal/redact.Carried",
       "recorder": "(github.com/sjawhar/envoy/internal/redact.RemoteText).WithoutTokens",
-      "comparisons": [
-        "IsEmpty",
-        "Equal",
-        "EqualFold",
-        "HasPrefix",
-        "Contains",
-        "Time",
-        "Int64",
-        "OAuthCode"
-      ],
       "exempt": [
         {
           "file": "packages/envoy/internal/oidc/clientcheck.go",
@@ -2044,11 +2047,6 @@
           "file": "packages/envoy/internal/dispatch/auth/callback.go",
           "function": "github.com/sjawhar/envoy/internal/dispatch/auth.ParseCallback",
           "why": "the OAuth callback's own query, which the person's browser sends to Dispatch: it answers no request Dispatch sent, so there is no request record to read, and the rule reads the words"
-        },
-        {
-          "file": "packages/envoy/internal/dispatch/githubapp/deliveries.go",
-          "function": "github.com/sjawhar/envoy/internal/dispatch/githubapp.NewStatusError",
-          "why": "body is GitHub's answer as send handed it on, with every credential its request carried redacted (redact.Carried): send is the one function that sends anything to GitHub (row githubapp-answer-echo)"
         }
       ]
     }
