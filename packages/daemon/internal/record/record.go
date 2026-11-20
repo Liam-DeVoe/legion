@@ -733,7 +733,7 @@ type PhaseRow struct {
 	//
 	// The resume writes the text it rendered here all the same, though this release never sends
 	// it for an entry that holds a wait: its one reader is a rollback to the release before
-	// contract 183. The rollback block in docs/kubernetes.md (contract 183) marks each entry that
+	// contract 193. The rollback block in docs/kubernetes.md (contract 193) marks each entry that
 	// holds a wait (phases.entry_verbatim), and that release sends a marked entry's task as this
 	// field holds it, as it did before this release. So the write is no dead code: it goes only
 	// when that rollback block goes.
