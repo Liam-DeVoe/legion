@@ -607,10 +607,13 @@ func (p *Page) profilesMoved(ctx context.Context, ids []string, printed map[stri
 // decide decides one record as login and answers what became of it, for the log, and whether this
 // POST decided it: an approval or a denial the broker applied now, which is what the sign-in
 // status's last decision counts. A record already decided, expired, gone, or one login may not
-// decide, is decided by nobody here. A machine login is never decided here, whatever a form says:
-// its typed code is decided on Dispatch's page. An approval the broker recorded as a denial
-// answers with that decision's own detail, so the person who pressed approve reads which secret
-// refused it and why rather than one fixed sentence.
+// decide, is decided by nobody here. So is an approval whose target a profiles roll took out of
+// its profile before the page was made (requests.ErrTargetRefused): the page printed the live
+// profile, so profilesMoved let it through, and the approval's own target check refuses it. A
+// machine login is never decided here, whatever a form says: its typed code is decided on
+// Dispatch's page. An approval the broker recorded as a denial answers with that decision's own
+// detail, so the person who pressed approve reads which secret refused it and why rather than one
+// fixed sentence.
 func (p *Page) decide(ctx context.Context, id string, approve bool, login string) (string, bool) {
 	kind, err := p.cfg.Machine.RecordKind(ctx, id)
 	switch {
@@ -632,7 +635,7 @@ func (p *Page) decide(ctx context.Context, id string, approve bool, login string
 		return "expired", false
 	case errors.Is(err, requests.ErrTerminal):
 		return "already decided", false
-	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid):
+	case errors.Is(err, record.ErrNotApprover), errors.Is(err, requests.ErrGrantChainInvalid), errors.Is(err, requests.ErrTargetRefused):
 		return "refused: " + err.Error(), false
 	case errors.Is(err, requests.ErrJudgeHolds):
 		return "refused: the model judge is deciding this request", false

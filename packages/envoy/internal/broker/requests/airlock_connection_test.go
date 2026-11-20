@@ -2,6 +2,7 @@ package requests
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"errors"
 	"maps"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
@@ -95,9 +97,11 @@ func TestAirlockConnectionRefusesWhatOpensNothing(t *testing.T) {
 }
 
 // TestAirlockConnectionDropsAWithheldName: a name its operator withheld from the session is not
-// on the connection, so the proxy carries nothing for it, and a connection left with no name at
-// all is refused with ErrAirlockNoNames rather than opened empty. The rows are written directly:
-// what the connection reads is withheld_secrets, whatever wrote it.
+// on the connection of a grant nobody decided, so the proxy carries nothing for it, and a
+// connection left with no name at all is refused with ErrAirlockNoNames rather than opened empty.
+// The rows are written directly: what the connection reads is withheld_secrets, whatever wrote
+// it, and the grant is one the session got without asking, which a withhold that wrote them
+// would also have ended (withhold).
 func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
 	m, enr, _, release := twoNameGrant(t, "read both")
 	placeholder := release.Airlock.Names["AWS_KEY"].Slots[SlotAWSAccessKeyID]
@@ -123,14 +127,30 @@ func TestAirlockConnectionDropsAWithheldName(t *testing.T) {
 	}
 }
 
+// proxiedProfileFile is a profiles file of two proxied profiles of the stored secret AUTO_TOKEN,
+// which the session gets without asking: AUTO_TOKEN, which holds the source's own name, so the
+// session can ask for the source and its operator withhold it by revoking that grant, and
+// AUTO_TOKEN_PROXY, a profile of another name.
+var proxiedProfileFile = policytest.ProfilesFile(
+	`{"name": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+	`{"name": "AUTO_TOKEN_PROXY", "source": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`,
+)
+
+// proxiedProfileFixture is newAirlockFixture serving proxiedProfileFile with the airlock in force,
+// so a release of either profile takes the placeholder path.
+func proxiedProfileFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
+	t.Helper()
+	m, enr, key := newAirlockFixture(t, proxiedProfileFile)
+	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = policytest.Profiles(t, proxiedProfileFile, fixtureService).ProxyRules(), testProxyURL, testCACertificate
+	return m, enr, key
+}
+
 // TestAirlockConnectionDropsAProfileOfAWithheldSource: a session's operator who withholds a source
-// withholds each profile of it (policy.Set.Withholds), so a connection whose grant holds a proxied
-// profile of another name is refused with ErrAirlockNoNames once the source alone is withheld, as
-// it is when the profile's own name is.
+// withholds each profile of it (policy.Set.Withholds), so a connection whose grant, one the
+// session got without asking, holds a proxied profile of another name is refused with
+// ErrAirlockNoNames once the source alone is withheld, as it is when the profile's own name is.
 func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
-	file := policytest.ProfilesFile(`{"name": "AUTO_TOKEN_PROXY", "source": "AUTO_TOKEN", "proxy": {"hosts": ["api.example.com"]}}`)
-	m, enr, key := newAirlockFixture(t, file)
-	m.Airlock, m.AirlockProxyURL, m.AirlockCACertificate = policytest.Profiles(t, file, fixtureService).ProxyRules(), testProxyURL, testCACertificate
+	m, enr, key := proxiedProfileFixture(t)
 	_, grantID := grantOf(t, m, enr, key, "read it through the proxy", "AUTO_TOKEN_PROXY")
 	release, err := m.Values(t.Context(), grantID, enr, ReleaseCall{})
 	if err != nil {
@@ -147,6 +167,98 @@ func TestAirlockConnectionDropsAProfileOfAWithheldSource(t *testing.T) {
 	if conn, err := m.AirlockConnection(t.Context(), placeholder); !errors.Is(err, ErrAirlockNoNames) {
 		t.Fatalf("AirlockConnection with the profile's source withheld = %+v, %v; want ErrAirlockNoNames", conn, err)
 	}
+}
+
+// withholdAsItsOperator withholds source from session enr as its operator does: the session gets
+// source without asking, and the operator revokes that grant (RevokeByApprover, withhold).
+func withholdAsItsOperator(t *testing.T, m *Machine, enr string, key *ecdsa.PrivateKey, source string) {
+	t.Helper()
+	_, auto := grantOf(t, m, enr, key, "the source, without asking", source)
+	if err := m.RevokeByApprover(t.Context(), auto, fixtureOperator, record.HumanActor(fixtureOperator)); err != nil {
+		t.Fatalf("RevokeByApprover: %v", err)
+	}
+	if got := withheldFrom(t, m, enr); !slices.Equal(got, []string{source}) {
+		t.Fatalf("withheld = %v; want [%s]", got, source)
+	}
+}
+
+// approveAndRelease approves pending request req as the operator, who owns every name the
+// fixture's withhold sends to a person, and answers the first release of its grant, failing t
+// unless that release holds a name back behind the airlock.
+func approveAndRelease(t *testing.T, m *Machine, enr string, req Request) Release {
+	t.Helper()
+	if req.State != "pending" || req.RecordID == nil {
+		t.Fatalf("request %+v; want it pending on a person", req)
+	}
+	dec, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || dec.GrantID == "" {
+		t.Fatalf("ApplyDecision(%s) = %+v, %v; want granted", fixtureOperator, dec, err)
+	}
+	release, err := m.Values(t.Context(), dec.GrantID, enr, ReleaseCall{})
+	if err != nil || release.Airlock == nil {
+		t.Fatalf("Values of the approved grant = %+v, %v; want a release behind the airlock", release, err)
+	}
+	return release
+}
+
+// carries fails t unless a connection opened with release's proxy password carries want and
+// nothing else.
+func carries(t *testing.T, m *Machine, release Release, want ...string) {
+	t.Helper()
+	conn, err := m.AirlockConnection(t.Context(), release.Airlock.ProxyPassword)
+	if err != nil {
+		t.Fatalf("AirlockConnection of the approved grant: %v; want %v carried", err, want)
+	}
+	if got := slices.Sorted(maps.Keys(conn.Names)); !slices.Equal(got, want) {
+		t.Fatalf("connection names = %v; want %v", got, want)
+	}
+}
+
+// TestAirlockConnectionCarriesAWithheldNameAPersonApproved: a withhold ends every grant that got
+// the name without asking, in its own transaction (withhold), and an approval given after it
+// stands, as Values releases it (stillAllowed). So the proxy carries a withheld name its owner
+// approved for the session after the withhold, as it carries any other approval.
+func TestAirlockConnectionCarriesAWithheldNameAPersonApproved(t *testing.T) {
+	m, enr, key, _ := newPlaceholderFixture(t, airlock.Rules{Secrets: []airlock.SecretRule{rule("AUTO_TOKEN", "")}})
+	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
+	asked, err := m.Create(t.Context(), enr, signRequest(t, m, key, "asked again once withheld", "AUTO_TOKEN"), "")
+	if err != nil {
+		t.Fatalf("Create(AUTO_TOKEN) once withheld: %v", err)
+	}
+	carries(t, m, approveAndRelease(t, m, enr, asked), "AUTO_TOKEN")
+}
+
+// TestAirlockConnectionCarriesAProfileOfAWithheldSourceAPersonApproved: the same for a proxied
+// profile whose source is withheld, which the withhold sends to the source's owner
+// (policy.Set.Withholds): the owner's approval of the profile after the withhold is carried.
+func TestAirlockConnectionCarriesAProfileOfAWithheldSourceAPersonApproved(t *testing.T) {
+	m, enr, key := proxiedProfileFixture(t)
+	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
+	asked, err := m.Create(t.Context(), enr, signRequest(t, m, key, "the profile, once its source is withheld", "AUTO_TOKEN_PROXY"), "")
+	if err != nil {
+		t.Fatalf("Create(AUTO_TOKEN_PROXY) once its source is withheld: %v", err)
+	}
+	carries(t, m, approveAndRelease(t, m, enr, asked), "AUTO_TOKEN_PROXY")
+}
+
+// TestAirlockConnectionCarriesAWithheldNameARequestGotWithoutAskingThatAPersonApproved: a request
+// that got a proxied profile without asking while it waited on the operator for another name, and
+// that the operator approves after withholding the profile's source, is an approval like any
+// other (TestWithholdingASourceWithholdsEachProfileOfIt): Values releases the profile, its
+// automatic decision notwithstanding, since the person who decided the request approved it under
+// the withhold (stillAllowed). So the proxy carries it too.
+func TestAirlockConnectionCarriesAWithheldNameARequestGotWithoutAskingThatAPersonApproved(t *testing.T) {
+	m, enr, key := proxiedProfileFixture(t)
+	mixed, err := m.Create(t.Context(), enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN_PROXY", "DEEL_API_KEY"), "")
+	if err != nil {
+		t.Fatalf("Create(AUTO_TOKEN_PROXY, DEEL_API_KEY): %v", err)
+	}
+	withholdAsItsOperator(t, m, enr, key, "AUTO_TOKEN")
+	release := approveAndRelease(t, m, enr, mixed)
+	if release.Values["DEEL_API_KEY"] != "deel-v1" {
+		t.Fatalf("released values = %v; want DEEL_API_KEY's", release.Values)
+	}
+	carries(t, m, release, "AUTO_TOKEN_PROXY")
 }
 
 // TestAirlockValuesAnswersTheRealValuesOfTheAirlocksNames: what the proxy swaps in, and the

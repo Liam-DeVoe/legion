@@ -2342,11 +2342,15 @@ const PolicyDeniedActor = "broker:policy"
 // instead: only its owner may approve it for the session, and no owner can be read while it is
 // out of the policy, nor approves it while a service owns it (the one way left, once that pass
 // has answered the list's own deny, for the policy to deny a withheld name).
-// Admitted, such an approval would release the name once it returns with the tags it had, since
-// that brings back the policy version the request was made under and Values re-checks the grant
-// (stillAllowed) only when the version has moved. A secret whose max-grant the current policy sets
-// below the request's lifetime, or that now has one the request names none for, is no one's to
-// approve now, as with a withheld name: the session asks again within it.
+// Admitted, such an approval of a name served without a profile would release the name once it
+// returns with the tags it had, since that brings back the policy version the request was made
+// under and Values re-checks the grant (stillAllowed) only when the version has moved. A
+// profile's would not: the approval records the fingerprint "" for a name the policy does not
+// serve (decidedUnder), so the first release once the profile returns ends the grant, its profile
+// having changed (checkRelease). Ending it is the safe outcome, since the page printed no profile
+// for the person to approve. A secret whose max-grant the current policy sets below the request's
+// lifetime, or that now has one the request names none for, is no one's to approve now, as with a
+// withheld name: the session asks again within it.
 //
 // The model judge is held to two rules of its own, ahead of all of this: it settles no withheld
 // name and no administrator's secret, however the policy reads that name now. The run made both

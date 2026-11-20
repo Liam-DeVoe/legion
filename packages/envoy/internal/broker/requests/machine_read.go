@@ -243,8 +243,9 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner, at string) (
 		// approval records the entry it was given under and leaves the request's version as it
 		// was (decidedUnder), so a file that rolls back to the entry the request was made under
 		// brings the version back to the request's while the grant was decided under another
-		// entry. During a roll the two pods may read different files for a moment; a grant the
-		// one with the newer file ends is simply asked for again.
+		// entry. During a roll the two pods may read different files for a moment, and since each
+		// compares on every release, either one ends a grant decided under the other's entry; such
+		// a grant is simply asked for again.
 		if held := set.Secrets[g.name].ProfileDigest; held != g.profileDigest {
 			return grantRelease{}, m.endGrant(ctx, grantID, fmt.Errorf("%w: %s's profile changed since this grant was decided", ErrGrantNotLive, g.name))
 		}
