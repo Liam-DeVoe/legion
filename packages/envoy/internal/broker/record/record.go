@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -126,11 +127,98 @@ const (
 )
 
 // AuthorizationDetail is one entry of a request object's RFC 9396 authorization_details.
+// Locations is RFC 9396's field of the resources the request is for: on an agent_secret detail
+// naming a GitHub profile, the target that narrows it (validateLocations, Target), and nil for
+// every other request.
 type AuthorizationDetail struct {
 	Type       string   `json:"type"` // "agent_secret" | "launcher_credential"
 	Identifier string   `json:"identifier"`
 	Actions    []string `json:"actions,omitempty"` // ["inject"] for agent_secret
 	Service    string   `json:"service,omitempty"`
+	Locations  []string `json:"locations,omitempty"`
+}
+
+// Target is the GitHub target d's locations name, which validateDetails holds to one account: that
+// account and, for the repository form, the repositories' names without it, sorted and each once.
+// It answers "" and nil for a detail that names no location, and nil repositories for the account
+// form. The record embeds the signed object (Body.Canonical), so the record a person approves
+// holds the target it narrows to.
+func (d AuthorizationDetail) Target() (account string, repositories []string) {
+	for _, location := range d.Locations {
+		owner, repository, _ := parseLocation(location)
+		account = owner
+		if repository != "" {
+			repositories = append(repositories, repository)
+		}
+	}
+	slices.Sort(repositories)
+	return account, slices.Compact(repositories)
+}
+
+// MaxTargetLocations is the most entries one detail's locations hold: one for each repository of
+// its target, as many as a GitHub profile's token names (secrets.MaxNarrowedRepositories).
+const MaxTargetLocations = 100
+
+// gitHubLocationPrefix opens every entry of a target's locations.
+const gitHubLocationPrefix = "https://github.com/"
+
+var (
+	// locationAccount is the account a location names: a GitHub login (policy.ParseGitHubLogin's
+	// rule, at most 39 characters) in lowercase, the form GitHub compares logins in and the form
+	// the profiles file holds them in.
+	locationAccount = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,38}$`)
+	// locationRepository is the repository a location names: a name GitHub can hold (the
+	// profiles file's own rule for one), ASCII letters, digits, '.', '-' and '_', at most 100;
+	// the names . and .. are refused beside it.
+	locationRepository = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+)
+
+// parseLocation reads one entry of a target's locations, https://github.com/<account> or
+// https://github.com/<account>/<repository>: the account, the repository or "" for the account
+// form, and false for every other string. A name a location cannot hold is refused here rather
+// than left to the profile it is compared with, since the approval page prints the record's
+// target and a rune such as a bidi override would change what a person reads.
+func parseLocation(location string) (account, repository string, ok bool) {
+	rest, found := strings.CutPrefix(location, gitHubLocationPrefix)
+	if !found {
+		return "", "", false
+	}
+	account, repository, named := strings.Cut(rest, "/")
+	switch {
+	case !locationAccount.MatchString(account):
+		return "", "", false
+	case !named:
+		return account, "", true
+	case !locationRepository.MatchString(repository) || repository == "." || repository == "..":
+		return "", "", false
+	}
+	return account, repository, true
+}
+
+// validateLocations enforces a target's shape: at most MaxTargetLocations entries, each one
+// parseLocation reads, all of one account, and either the account form alone or repository forms
+// alone.
+func validateLocations(locations []string) error {
+	if len(locations) > MaxTargetLocations {
+		return fmt.Errorf("locations hold %d entries, more than %d", len(locations), MaxTargetLocations)
+	}
+	var account string
+	accountForm := false
+	for i, location := range locations {
+		owner, repository, ok := parseLocation(location)
+		if !ok {
+			return fmt.Errorf("location %q is no GitHub target: a target is %s<account> or %s<account>/<repository>, the account in lowercase", location, gitHubLocationPrefix, gitHubLocationPrefix)
+		}
+		if i > 0 && owner != account {
+			return fmt.Errorf("locations name two accounts, %s and %s; a target is one account's", account, owner)
+		}
+		account = owner
+		accountForm = accountForm || repository == ""
+	}
+	if accountForm && len(locations) > 1 {
+		return fmt.Errorf("locations mix the account form %s<account> with other entries", gitHubLocationPrefix)
+	}
+	return nil
 }
 
 // RequestObject is the verified claims of a credential-request object plus the verbatim compact
@@ -186,7 +274,8 @@ func ValidLifetime(seconds int) bool {
 // VerifyRequestObject enforces the contract: single ES256 JWS, typ RequestTyp, embedded P-256 JWK,
 // iss == thumbprint(jwk), aud == audience, iat within skew, exp in (now, iat+10m], reason ≤400 runes
 // with categories Cc/Cf/Cs/Co/Zl/Zp refused, details non-empty and single-typed, launcher identifiers
-// matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, and a lifetime, when
+// matching the contract hostname pattern, service matching [a-z0-9-]{1,64}, locations only as one
+// GitHub target on a request for one agent secret (validateLocations), and a lifetime, when
 // named, on a request for agent secrets alone and ValidLifetime. Replay (jti) is the caller's (it
 // needs the store). Every failure wraps ErrRequestInvalid with a reason that never quotes the JWS;
 // an aud that is not audience wraps ErrAudienceMismatch as well. The aud is checked after the
@@ -261,7 +350,9 @@ func VerifyRequestObject(compact, audience string, skew time.Duration, now time.
 
 // validateDetails enforces: non-empty, and single-typed — every entry "agent_secret", or exactly
 // one "launcher_credential" entry whose identifier is a valid hostname and whose optional service
-// matches [a-z0-9-]{1,64}.
+// matches [a-z0-9-]{1,64}. Locations, a target, are taken only on a request of one agent_secret
+// detail, since one target narrows one profile (validateLocations): a request naming several
+// secrets, and a machine login, carry none.
 func validateDetails(details []AuthorizationDetail) error {
 	if len(details) == 0 {
 		return errors.New("authorization_details is empty")
@@ -278,6 +369,15 @@ func validateDetails(details []AuthorizationDetail) error {
 			if d.Identifier == "" {
 				return errors.New("agent_secret detail has no identifier")
 			}
+			if len(d.Locations) == 0 {
+				continue
+			}
+			if len(details) > 1 {
+				return errors.New("locations narrow a request for one agent secret, and this one names more than one")
+			}
+			if err := validateLocations(d.Locations); err != nil {
+				return err
+			}
 		}
 		return nil
 	}
@@ -290,6 +390,9 @@ func validateDetails(details []AuthorizationDetail) error {
 	}
 	if d.Service != "" && !ValidService(d.Service) {
 		return errors.New("launcher_credential service does not match [a-z0-9-]{1,64}")
+	}
+	if len(d.Locations) > 0 {
+		return errors.New("a launcher_credential detail carries no locations")
 	}
 	return nil
 }

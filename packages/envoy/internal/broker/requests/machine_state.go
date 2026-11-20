@@ -90,6 +90,11 @@ var (
 	// ErrRequestPending means this session already has a person deciding one of the requested
 	// names. Its returned error names that pending request.
 	ErrRequestPending = errors.New("a request for one or more of these secrets is already pending")
+	// ErrTargetRefused is Create's refusal of the target a request's signed locations name
+	// (record.AuthorizationDetail.Target), before anybody is asked: one outside its profile, one
+	// on a name with no github block, or none on a value-token profile that names more than one
+	// account. Its returned error names the profile's accounts and repositories.
+	ErrTargetRefused = errors.New("the request's target is refused")
 	// ErrSessionIDInvalid: the request's own session_id override (requests.session_id — an
 	// unsigned claim any enrolled process may send, never verified against a signature) is too
 	// long or carries a whitespace or control character, refused before it is ever stored or
@@ -169,6 +174,12 @@ type SecretDecision struct {
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
+	// TargetAccount and TargetRepositories are the target the request's signed locations narrow
+	// this name's GitHub profile to (record.AuthorizationDetail.Target): the account, "" for no
+	// target, and the repositories' names, nil for the account form. The request records them in
+	// request_secrets.target_account and target_repositories, which the release mints for.
+	TargetAccount      string   `json:"-"`
+	TargetRepositories []string `json:"-"`
 }
 
 // Request is one agent_secret request as Create and Get answer it. Approver is the approver its
@@ -579,8 +590,15 @@ func (m *Machine) requester(ctx context.Context, q querier, e enrollmentRow) (po
 // request, is not, so the model judge sees each record it holds once.
 //
 // A request the policy would send to a person that names a GitHub profile gets the check mint of
-// each such profile first (checkProfiles, profile_check.go), so a profile the broker cannot mint
-// costs nobody an approval.
+// each such profile first (checkProfiles, profile_check.go), for the scope in effect, so a profile
+// the broker cannot mint costs nobody an approval.
+//
+// A request's target, the account or repositories of one account its signed locations narrow its
+// one GitHub profile to (record.AuthorizationDetail.Target), is refused when the profile cannot
+// serve it (checkTarget, ErrTargetRefused), once the names are read and before a live grant is
+// looked for or anybody is asked, and otherwise recorded beside its name. A live grant is handed
+// back, and a pending request joined, only for the same names and the same target, since each
+// grant releases its own request's scope.
 func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sessionID string) (Request, error) {
 	if !validSessionID(sessionID) {
 		return Request{}, ErrSessionIDInvalid
@@ -632,6 +650,14 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 			return Request{}, fmt.Errorf("%s %w", name, policy.ErrPendingValue)
 		}
 	}
+	// The target the request's signed locations name, which only a request for one name carries
+	// (record.VerifyRequestObject). One the name's profile cannot serve, and none on a value-token
+	// profile of several accounts, is refused here, before a live grant is looked for and before
+	// anybody is asked (checkTarget).
+	targetAccount, targetRepositories := obj.Details[0].Target()
+	if err := checkTarget(set, names, targetAccount, targetRepositories); err != nil {
+		return Request{}, err
+	}
 	lifetime := defaultLifetime(set, names, obj.LifetimeSeconds)
 	// A key the judge decides grants at most its own judge seconds, but only when the judge
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
@@ -665,7 +691,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		}
 	}
 	sorted := sortedCopy(names)
-	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set); err != nil {
+	if existing, ok, err := m.reuseLiveGrant(ctx, enr, sorted, lifetime, set, targetAccount, targetRepositories); err != nil {
 		return Request{}, err
 	} else if ok {
 		if err := m.endBesideReusedGrant(ctx, enrollmentID, sorted, existing.ID); err != nil {
@@ -676,7 +702,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	// The check mint of each GitHub profile the request names, before a row is written and
 	// before anybody is asked (checkProfiles, profile_check.go): a refusal returns here, so the
 	// approval a profile the broker cannot mint would have spent is never asked for.
-	if err := m.checkProfiles(ctx, enr, names, set, obj.Reason); err != nil {
+	if err := m.checkProfiles(ctx, enr, names, set, obj.Reason, targetAccount, targetRepositories); err != nil {
 		return Request{}, err
 	}
 	assignee := m.claimAssignee(ctx, enr, set, names, obj.Reason)
@@ -699,6 +725,11 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	// A target narrows the request's one name, so every decision of it carries the target, which
+	// insertRequest records beside it.
+	for i := range e.decisions {
+		e.decisions[i].TargetAccount, e.decisions[i].TargetRepositories = targetAccount, targetRepositories
+	}
 	// Who decides is the keys' setting, read now and kept on the row: the judge holds a request
 	// whose every key needing a decision is a judge key, on a broker that runs a judge; every
 	// other pending request is a person's from the start. judgeBounded is the same answer read
@@ -718,7 +749,17 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		return Request{}, err
 	}
 	if e.state == "pending" && kept.ID != "" {
-		if slices.Equal(kept.Names, sorted) && (kept.joins(lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil)) {
+		joins := slices.Equal(kept.Names, sorted) && (kept.joins(lifetime) || (obj.LifetimeSeconds == nil && kept.Lifetime == nil))
+		if joins {
+			// A pending request of another target is no request of this one: the grant its
+			// approval makes releases that target's scope (sameTarget).
+			keptSecrets, err := requestedSecrets(ctx, tx, kept.ID)
+			if err != nil {
+				return Request{}, err
+			}
+			joins = sameTarget(keptSecrets, targetAccount, targetRepositories)
+		}
+		if joins {
 			if err := tx.Commit(ctx); err != nil {
 				return Request{}, err
 			}
@@ -791,6 +832,31 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 		})
 	}
 	return req, nil
+}
+
+// checkTarget is Create's refusal of a request's target (ErrTargetRefused), nil where every name
+// can be served with it. account and repositories are the target the request's signed locations
+// name, "" for none; set is the snapshot Create evaluates names against. A name set does not serve
+// is passed over, since the evaluation answers it with the policy's own error. A target outside a
+// name's profile, and a target on a name with no github block, are gitHubScope's refusal, the
+// rule the release mints by. A value-token profile, whose release is one account's bare token,
+// asked for with no target while more than one account is in effect is refused too: the minter
+// would refuse that release (secrets.GitHubScope), and here nobody is asked to approve it first.
+func checkTarget(set *policy.Set, names []string, account string, repositories []string) error {
+	for _, name := range names {
+		served, ok := set.Secrets[name]
+		if !ok {
+			continue
+		}
+		scope, err := gitHubScope(name, served.Profile, account, repositories)
+		if err != nil {
+			return err
+		}
+		if account == "" && scope != nil && scope.Value == policy.ValueToken && len(scope.Accounts) > 1 {
+			return fmt.Errorf("%w: %s releases one account's bare token, and the profile names %s: name one with --target ACCOUNT[/REPOSITORY]", ErrTargetRefused, name, profileWords(served.Profile.GitHub))
+		}
+	}
+	return nil
 }
 
 // BrokerMovedDetail is the detail of a pending request Create ends because its record is signed
@@ -1233,7 +1299,8 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest) values ($1,$2,$3,$4,$5)`, r.id, d.Name, d.Decision, d.Source, d.ProfileDigest); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories) values ($1,$2,$3,$4,$5,$6,$7)`,
+			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.TargetAccount), d.TargetRepositories); err != nil {
 			return err
 		}
 	}

@@ -91,14 +91,16 @@ func gitHubProfile(served policy.Secret) bool {
 // checkProfiles is Create's whole verdict on the GitHub profiles a request names: the refusal
 // Create answers, and nil both for profiles the broker could mint and for any it could not
 // decide. names are the names the request asks for, set the snapshot Create evaluates them
-// against and reason the request object's own reason, all three as Create holds them. It runs
+// against, reason the request object's own reason and targetAccount and targetRepositories the
+// target its signed locations name ("" and nil for none), all as Create holds them. It runs
 // after reuseLiveGrant, which asks nobody for a grant that already exists, and before the
 // transaction, so a refusal writes no request row, makes no credential-request record and
 // interrupts no person; it also holds no row lock while it waits on GitHub, which is the rule
 // rereadMissing already states for the policy reread above it.
 //
 // It runs for every request that names a GitHub profile, whether or not the profile names
-// repositories, so an account with no installation and a cut that leaves no permission are
+// repositories, for the scope in effect, the target's account or the profile's accounts
+// (gitHubScope), so an account with no installation and a cut that leaves no permission are
 // refused before a person is asked as a repository the installation does not reach is. A request
 // that names none returns at once, reading nothing. The whole check runs only where the policy
 // would send this request to a person, which is the only case that spends an approval on a
@@ -111,7 +113,7 @@ func gitHubProfile(served policy.Secret) bool {
 // answers those in a moment, in the order a caller reads them today. A state that is not pending
 // skips it too, so an agent-tier request and the Legion daemon's own token command reach GitHub
 // for nothing.
-func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason string) error {
+func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []string, set *policy.Set, reason, targetAccount string, targetRepositories []string) error {
 	profiled := false
 	for _, name := range names {
 		if gitHubProfile(set.Secrets[name]) {
@@ -151,7 +153,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		if err != nil || !minted || secretType != policy.TypeGitHubApp || !gitHubProfile(served) {
 			continue
 		}
-		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served)
+		checked, refusal := m.checkProfile(budget, mint, enr.ID, d.Name, source, served, targetAccount, targetRepositories)
 		if !checked {
 			return nil
 		}
@@ -163,15 +165,16 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 	return nil
 }
 
-// checkProfile is the check mint's verdict on one GitHub profile: checked is true with no refusal
-// where GitHub would serve its release, and true with the refusal Create answers where it would
-// not. checked is false where trouble ended the check instead — a stored value that could not be
-// read or that the minter cannot mint from, an answer that is neither a token nor a refusal of
-// the scope, the check's own time gone — which this logs (NarrowingCheckSkippedMessage, one
-// reason= of its own for each) and which leaves Create on the path it took before the check
-// existed. That last rule is a requirement of its own: an outage at GitHub must not stop every
-// GitHub App request of the fleet, which is a larger failure than the spent approval this check
-// saves.
+// checkProfile is the check mint's verdict on one GitHub profile, for the scope in effect: the
+// target targetAccount and targetRepositories name, or the profile's own (gitHubScope). checked
+// is true with no refusal where GitHub would serve its release, and true with the refusal Create
+// answers where it would not. checked is false where trouble ended the check instead — a stored
+// value that could not be read or that the minter cannot mint from, an answer that is neither a
+// token nor a refusal of the scope, the check's own time gone — which this logs
+// (NarrowingCheckSkippedMessage, one reason= of its own for each) and which leaves Create on the
+// path it took before the check existed. That last rule is a requirement of its own: an outage at
+// GitHub must not stop every GitHub App request of the fleet, which is a larger failure than the
+// spent approval this check saves.
 //
 // Only two answers refuse the request: the profile's scope refused (secrets.ErrMintNarrowingRefused:
 // a cut that leaves no permission, which the minter refuses before any token request, or GitHub's
@@ -181,7 +184,14 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 // the App's JWT, a 403 of some other kind and a 404 on the token route each say nothing about the
 // scope. Refusing the request for one of those would tell the caller to fix a profile that is not
 // at fault and would hide a broken App key behind it.
-func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret) (checked bool, refusal error) {
+func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, name, source string, served policy.Secret, targetAccount string, targetRepositories []string) (checked bool, refusal error) {
+	// Create refused, against this same snapshot, a target the profile cannot serve
+	// (checkTarget), so gitHubScope refuses nothing here; were it to, its refusal is answered as
+	// the refusal it is rather than checked around.
+	scope, err := gitHubScope(name, served.Profile, targetAccount, targetRepositories)
+	if err != nil {
+		return true, err
+	}
 	stored, err := m.Secrets.Read(ctx, source)
 	if err != nil {
 		skippedNarrowingCheck(enrollmentID, name, "the stored value could not be read", err)
@@ -191,7 +201,6 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 	// line: the release logs TrailingLineEndingRemovedMessage once for each value the rule
 	// changed, and a check that logged it too would write that line twice for one release.
 	value, _ := policy.TrimLineEnding(stored)
-	scope := gitHubScope(served.Profile)
 	switch err := m.checkMint(ctx, mint, name, served, value, scope); {
 	case err == nil:
 		return true, nil
@@ -243,9 +252,9 @@ func (m *Machine) checkProfile(ctx context.Context, mint Minter, enrollmentID, n
 // checkMint is one mint of the check, of scope: the calls the release makes, in the same order,
 // with every token GitHub answers revoked at once and none released, answering the error the
 // release would have answered (secrets.MintRequest.Check). The request is the one Machine.release
-// builds for this name (mintRequest), with scope in place of the profile's own and Check set, so
-// the check and the release ask GitHub about the same secret, with the same scope; the cause
-// search asks with less of it.
+// builds for this name (mintRequest), with scope, the one in effect or a probe's part of it, and
+// Check set, so the check and the release ask GitHub about the same secret, with the same scope;
+// the cause search asks with less of it.
 //
 // Each mint, and the revoke inside it, is bounded by NarrowingCheckMint and by what is left of
 // the check's whole budget, whichever ends first: ctx already carries the budget, so deriving the
@@ -261,8 +270,7 @@ func (m *Machine) checkMint(ctx context.Context, mint Minter, name string, serve
 	defer cancel()
 	// The check runs for github-app names alone (checkProfiles), so that is the type its minter
 	// counts this attempt under, as the release it stands for would.
-	request := mintRequest(name, policy.TypeGitHubApp, served, value)
-	request.GitHub = scope
+	request := mintRequest(name, policy.TypeGitHubApp, served, value, scope)
 	request.Check = true
 	_, err := mint(bounded, request)
 	if err != nil && bounded.Err() != nil {

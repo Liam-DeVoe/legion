@@ -39,8 +39,25 @@ type profileServer struct {
 
 func newProfileServer(t *testing.T, mint func(secrets.MintRequest) (secrets.Minted, error)) *profileServer {
 	t.Helper()
+	return newProfileServerOf(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("HUMAN_APP_KEY")), mint, appSources(), "APP_KEY", "HUMAN_APP_KEY")
+}
+
+// appSources are the two github-app secrets of a profileServer: APP_KEY, agent tier, and
+// HUMAN_APP_KEY, human tier, both testApprover's.
+func appSources() []secrets.LocalSecret {
+	return []secrets.LocalSecret{
+		policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+		policytest.TypeSecret("HUMAN_APP_KEY", testApprover, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
+	}
+}
+
+// newProfileServerOf is newProfileServer whose deployment's profiles file is file and whose
+// store holds sources, which the broker serves once each name of reread is reread, as a
+// session's reread makes the broker serve a secret stored after its last load.
+func newProfileServerOf(t *testing.T, file string, mint func(secrets.MintRequest) (secrets.Minted, error), sources []secrets.LocalSecret, reread ...string) *profileServer {
+	t.Helper()
 	s := &profileServer{mint: mint}
-	s.testServer = newProfiledTestServer(t, policytest.ProfilesFile(policytest.AppProfile("APP_KEY"), policytest.AppProfile("HUMAN_APP_KEY")), func(d *api.Deps) {
+	s.testServer = newProfiledTestServer(t, file, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{
 			policy.TypeGitHubApp: func(_ context.Context, req secrets.MintRequest) (secrets.Minted, error) {
 				s.mu.Lock()
@@ -51,9 +68,10 @@ func newProfileServer(t *testing.T, mint func(secrets.MintRequest) (secrets.Mint
 			},
 		}
 	})
-	s.Secrets.Put(policytest.TypeSecret("APP_KEY", testApprover, policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	s.Secrets.Put(policytest.TypeSecret("HUMAN_APP_KEY", testApprover, policy.TierHuman, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)))
-	for _, name := range []string{"APP_KEY", "HUMAN_APP_KEY"} {
+	for _, source := range sources {
+		s.Secrets.Put(source)
+	}
+	for _, name := range reread {
 		if status, body := s.sessionReread(t, name); status != http.StatusOK {
 			t.Fatalf("reread %s = %d %s", name, status, body)
 		}

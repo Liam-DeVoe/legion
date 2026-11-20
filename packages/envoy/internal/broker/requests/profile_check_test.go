@@ -19,6 +19,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -261,6 +262,18 @@ func (f *profileFixture) create(t *testing.T, names ...string) (requests.Request
 	for i, name := range names {
 		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
 	}
+	return f.createWith(t, details)
+}
+
+// createTargeted is create for the one name, narrowed to the target locations name (C-4's
+// https://github.com/<account>[/<repository>] entries).
+func (f *profileFixture) createTargeted(t *testing.T, name string, locations ...string) (requests.Request, error) {
+	t.Helper()
+	return f.createWith(t, []record.AuthorizationDetail{{Type: record.KindAgentSecret, Identifier: name, Actions: []string{"inject"}, Locations: locations}})
+}
+
+func (f *profileFixture) createWith(t *testing.T, details []record.AuthorizationDetail) (requests.Request, error) {
+	t.Helper()
 	compact, err := record.Sign(f.key, checkAudience, details, "read the App key", "", nil, time.Now())
 	if err != nil {
 		t.Fatalf("sign the request object: %v", err)
@@ -324,30 +337,39 @@ func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 }
 
 // TestAPendingRequestWithAnAccountTargetIsCheckedToo: the check mint runs for every pending
-// request that names a GitHub profile, whether or not its scope names repositories. Here the
-// account in effect is the profile's single account (a request's target narrows it in a later
-// change): an account the App is installed on is minted, revoked at once and the request goes on
-// to its approver; an account the App has no installation on is refused before anybody is asked
-// (secrets.ErrMintNoInstallation, naming the account).
+// request that names a GitHub profile, whether or not its scope names repositories, for the
+// account in effect: the profile's single account, or the one account of a multi-account profile
+// that the request's target names. An account the App is installed on is minted, revoked at once
+// and the request goes on to its approver; an account the App has no installation on is refused
+// before anybody is asked (secrets.ErrMintNoInstallation, naming the account). A target naming
+// one account of two that are both installed is minted on that account's installation alone.
 func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		account string
+		name string
+		// installations are where the App is installed, accounts the profile's, as the
+		// profiles file writes them, and target the request's locations, none for a request that
+		// names no target. account is the account in effect.
+		installations map[string]int64
+		accounts      string
+		target        []string
+		account       string
 		// want is the refusal Create answers, nil where it writes the request pending; held is
 		// how many request rows and credential-request records the request leaves behind.
 		want error
 		held int
 	}{
-		{name: "an account the App is installed on", account: standInOwner, held: 1},
-		{name: "an account the App has no installation on", account: otherOwner, want: secrets.ErrMintNoInstallation},
+		{name: "an account the App is installed on", installations: map[string]int64{standInOwner: 7}, accounts: `["ada"]`, account: standInOwner, held: 1},
+		{name: "an account the App has no installation on", installations: map[string]int64{standInOwner: 7}, accounts: `["acme"]`, account: otherOwner, want: secrets.ErrMintNoInstallation},
+		{name: "a target naming one installed account of two", installations: map[string]int64{standInOwner: 7, otherOwner: 8}, accounts: `["acme", "ada"]`, target: []string{"https://github.com/ada"}, account: standInOwner, held: 1},
+		{name: "a target naming the account of two the App has no installation on", installations: map[string]int64{standInOwner: 7}, accounts: `["acme", "ada"]`, target: []string{"https://github.com/acme"}, account: otherOwner, want: secrets.ErrMintNoInstallation},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			logged := policytest.CaptureLog(t)
-			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
-				"APP_KEY": `{"accounts": ["` + tc.account + `"], "permissions": {"contents": "read"}}`,
+			f := newProfileFixture(t, tc.installations, map[string]string{
+				"APP_KEY": `{"accounts": ` + tc.accounts + `, "permissions": {"contents": "read"}}`,
 			})
 
-			request, err := f.create(t, "APP_KEY")
+			request, err := f.createTargeted(t, "APP_KEY", tc.target...)
 			switch {
 			case tc.want == nil && (err != nil || request.State != "pending" || request.RecordID == nil):
 				t.Fatalf("Create(APP_KEY) of %s = %+v, %v; want it pending on its approver", tc.account, request, err)
@@ -368,6 +390,12 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 			}
 			if tc.want == nil {
 				everyMintGivenBack(t, f.stand)
+				onAccount := fmt.Sprintf("/app/installations/%d/access_tokens", tc.installations[tc.account])
+				for _, asked := range f.stand.tokenRequests() {
+					if asked.Path != onAccount {
+						t.Fatalf("the check asked for a token at %s; want only %s, the installation on %s, the account in effect", asked.Path, onAccount, tc.account)
+					}
+				}
 			} else if asked := f.stand.tokenRequests(); len(asked) != 0 {
 				t.Fatalf("the check asked GitHub for %d tokens for an account with no installation; want none", len(asked))
 			}

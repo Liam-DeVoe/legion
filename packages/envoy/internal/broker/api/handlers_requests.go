@@ -145,6 +145,13 @@ func (s *server) createRequest(w http.ResponseWriter, r *http.Request, enrollmen
 	case errors.Is(err, requests.ErrRequestPending):
 		writeError(w, http.StatusConflict, "REQUEST_PENDING", err.Error())
 		return
+	case errors.Is(err, requests.ErrTargetRefused):
+		// The target the request's signed locations name is one its profile cannot serve: outside
+		// the profile, on a name with no github block, or missing on a value-token profile of
+		// several accounts. The message names the profile's accounts and repositories, so the
+		// caller names a target inside them; nobody was asked and nothing was written.
+		writeError(w, http.StatusBadRequest, "TARGET_REFUSED", err.Error())
+		return
 	case errors.Is(err, requests.ErrSessionIDInvalid):
 		writeError(w, http.StatusBadRequest, "SESSION_ID_INPUT", err.Error())
 		return

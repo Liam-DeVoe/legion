@@ -1,12 +1,14 @@
 package approval
 
 import (
+	"cmp"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -72,6 +74,45 @@ type recordView struct {
 	// record read-only: nobody decides it here until the judge has given it up, and if the judge
 	// cannot decide it, it comes back to its person as an ordinary card.
 	JudgeDeciding bool
+	// Profiles is each profile the record asks for, with the scope an approval grants
+	// (profileViewOf); none for a record of stored secrets alone and for a machine login.
+	Profiles []profileView
+}
+
+// profileView is one profile a record asks for as the page prints it: its name and its source,
+// and, for a GitHub profile, its accounts, its repositories, its permissions and the target the
+// record narrows it to, and, for a profile behind the proxy, the hosts its credential may go to.
+// A field the profile has none of is "", and the page prints no line for it.
+type profileView struct {
+	Name, Source                                string
+	Accounts, Repositories, Permissions, Target string
+	ProxyHosts                                  string
+}
+
+// profileViewOf is p as the page prints it, from the live profiles file and the record's own
+// target (requests.RecordProfile). A GitHub profile that names no repository reaches every one
+// its installations on its accounts reach, and a record that names no target asks for the whole
+// profile; the page says both rather than print nothing, since each is part of what an approval
+// grants.
+func profileViewOf(p requests.RecordProfile) profileView {
+	v := profileView{Name: p.Name, Source: p.Profile.Source}
+	if block := p.Profile.GitHub; block != nil {
+		v.Accounts = strings.Join(block.Accounts, ", ")
+		v.Repositories = "every repository the App's installations on these accounts reach"
+		if block.Repositories != nil {
+			v.Repositories = strings.Join(block.Repositories, ", ")
+		}
+		levels := make([]string, 0, len(block.Permissions))
+		for _, permission := range slices.Sorted(maps.Keys(block.Permissions)) {
+			levels = append(levels, permission+": "+block.Permissions[permission])
+		}
+		v.Permissions = strings.Join(levels, ", ")
+		v.Target = cmp.Or(p.Target, "none: the whole profile above")
+	}
+	if proxy := p.Profile.Proxy; proxy != nil {
+		v.ProxyHosts = strings.Join(proxy.Hosts, ", ")
+	}
+	return v
 }
 
 // tokenFields are the hidden fields every decision form carries: the records the page printed with
@@ -226,6 +267,9 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.JudgeDeciding = v.Pending && d.JudgeDeciding
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide && !v.JudgeDeciding
+	for _, profile := range d.Profiles {
+		v.Profiles = append(v.Profiles, profileViewOf(profile))
+	}
 	return v
 }
 
