@@ -2660,9 +2660,9 @@ package api
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-20c-md). At the forward merge of
 // 2026-11-20 that brought main in at a4cd4949fce7, main carried 189, which its #4581
 // (dispatch://INFRA-4108) took at the same time as this change, and a REST raw read of each of the
-// 283 open heads' file between 16:16Z and 16:20Z found 189 (#4611 and #4634), 190 (#4578),
-// 191, 192, 193, 194 and 195 (#4493 and #4590) declared by other heads, so this change moved
-// 189 → 196, the lowest number above main's that no other open head declares
+// 283 open heads' file between 2026-11-20T16:16Z and 16:20Z found 189 (#4611 and #4634), 190
+// (#4578), 191, 192, 193, 194 and 195 (#4493 and #4590) declared by other heads, so this change
+// moved 189 → 196, the lowest number above main's that no other open head declares
 // (dispatch://INFRA-4728/artifact/contract-census-2026-11-20d-md). Read the base's own number and
 // every open head again, by a REST raw read of each head's file, at the next forward merge rather
 // than from this line.)

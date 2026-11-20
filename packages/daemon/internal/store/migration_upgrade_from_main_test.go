@@ -103,12 +103,10 @@ import (
 // among them. The same migration deletes the queued phase_ended rows, the seeded one below among
 // them, and adds pull_requests.conflict_read and pull_requests.merge_forward, both null on every
 // row it finds.
-// INFRA-3320's kind list with the two basis seeds (20261119185013) stands above it, and above
-// every other version of this list but INFRA-4108's 20261120042902 and INFRA-4729's
-// 20261120055717, neither of which touches outbox_kind_check, and restates its kinds with the two
-// seeds, so an upgrade applies it last of the kind lists and it is the last word of
-// outbox_kind_check. It deletes nothing, so the phase_ended row 20261119003157 deleted stays
-// deleted.
+// INFRA-3320's kind list with the two basis seeds (20261119185013) stands above it and restates
+// its kinds with the two seeds, so an upgrade applies it last of the kind lists and it is the last
+// word of outbox_kind_check. It deletes nothing, so the phase_ended row 20261119003157 deleted
+// stays deleted.
 // dispatch://INFRA-4108's mark of a launch that had Oh My Pi resume a claim's session by its id
 // (20261120042902) stands above every other version of this list but dispatch://INFRA-4729's
 // 20261120055717; it adds claims.agent_resume_generation at its default, 0, on every row it finds,
