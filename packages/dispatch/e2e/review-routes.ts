@@ -320,7 +320,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities-in-flight",
     path: () => "/priorities?tab=none",
     pattern: "/priorities",
@@ -332,7 +332,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priorities-parked",
     path: () => "/priorities?tab=parked",
     pattern: "/priorities",
@@ -344,7 +344,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "priority",
     path: (seed) => `/priorities/${seed.priority}`,
     pattern: "/priorities/:id",
@@ -537,9 +537,13 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
  *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
  *  no reading pane beside it, the Spec's margin becomes a bottom sheet rather than a column
- *  beside the document, and the Priorities tab's toolbar stacks its search box over its
- *  controls, each at the 44 px a phone's target takes, while its table keeps the order and the
- *  title pinned and scrolls the counts sideways under them.
+ *  beside the document, and every page of the priorities draws its table for a phone. The
+ *  Priorities tab's toolbar stacks its search box over its controls, each at the 44 px a phone's
+ *  target takes, and its table draws each priority as its place beside one cell, which names
+ *  the owner, the three counts and the newest event under the title; each fault tab's table
+ *  keeps the key and the title pinned, the title's filter under its words and the title whole,
+ *  and scrolls its other columns sideways under them; and a priority's own page stands its work
+ *  table, drawn the same way, under its description, with the margin's entries below it.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
  *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last

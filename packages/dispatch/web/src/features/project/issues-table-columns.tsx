@@ -64,13 +64,15 @@ declare module "@tanstack/react-table" {
 const inPicks: FilterFn<Item> = (row, id, value: string[]) =>
   matchesFilters(row.original, [{ id, value }]);
 
-/** How each column renders and sorts, for the reader `userState` describes. Keyed by the
- *  registry's own ids, so a typo or a column with no rendering fails to compile. Everything
- *  else about a column — whether it filters, what a row files under, what it groups by, how
- *  wide it starts and how narrow it may go — comes from `COLUMNS` in the model, so the two
- *  never disagree. */
+/** How each column renders and sorts, for the reader `userState` describes, with each title
+ *  whole where the table wraps its titles (`wrapTitles`) and in two lines that end in '…'
+ *  otherwise. Keyed by the registry's own ids, so a typo or a column with no rendering fails to
+ *  compile. Everything else about a column — whether it filters, what a row files under, what
+ *  it groups by, how wide it starts and how narrow it may go — comes from `COLUMNS` in the
+ *  model, so the two never disagree. */
 const renderings = (
-  userState: UserState | undefined
+  userState: UserState | undefined,
+  wrapTitles: boolean
 ): Record<ColumnId, Partial<ColumnDef<Item>>> => ({
   select: {
     header: ({ table }) => (
@@ -155,7 +157,9 @@ const renderings = (
           to={buildIssuePath({ key: row.original.issue.key, kind: "issue" })}
           {...referenceTriggerProps({ key: row.original.issue.key, kind: "issue" })}
         >
-          <span className={`line-clamp-2 min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>
+          <span
+            className={`${wrapTitles ? "" : "line-clamp-2 "}min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}
+          >
             {row.original.issue.title}
           </span>
         </Link>
@@ -504,10 +508,12 @@ export function useIssueTableColumns(
    *  the one order: the Advances column names each priority by its place in this map (`#3`)
    *  with its title. One this map does not hold, a priority deleted since it was read, is named
    *  by its id. */
-  priorityTitles?: ReadonlyMap<string, string>
+  priorityTitles: ReadonlyMap<string, string> | undefined,
+  /** Whether each title is drawn whole rather than in two lines (`IssuesTable`'s `wrapTitles`). */
+  wrapTitles: boolean
 ): ColumnDef<Item>[] {
   return useMemo<ColumnDef<Item>[]>(() => {
-    const rendering = renderings(userState);
+    const rendering = renderings(userState, wrapTitles);
     const places = new Map([...(priorityTitles?.keys() ?? [])].map((id, at) => [id, at + 1]));
     const priorityOf: PriorityOf = (id) => ({
       place: places.get(id),
@@ -552,5 +558,5 @@ export function useIssueTableColumns(
     // Beside the title, which is what a reader reads a row of every project's issues by.
     const after = registered.findIndex(({ id }) => id === "title") + 1;
     return [...registered.slice(0, after), ...listing, ...registered.slice(after)];
-  }, [userState, compact, layout, priorityTitles]);
+  }, [userState, compact, layout, priorityTitles, wrapTitles]);
 }

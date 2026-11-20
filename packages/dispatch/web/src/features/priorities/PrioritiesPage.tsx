@@ -55,7 +55,8 @@ const FAULT_WIDTHS = {
 /** Each fault list's own stored layout and the columns it opens with (`IssuesTable`). The parked
  *  list names besides the priority each issue is parked under, and when the work was moved
  *  there and by whom; it names no reason, since nothing records one until
- *  dispatch://INFRA-2934 does. */
+ *  dispatch://INFRA-2934 does. Each draws its titles whole (`wrapTitles`): a fault row is read by
+ *  its title, and production's run to 194 characters, which two lines of Title cut in most. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
   opens: FAULT_OPENS,
@@ -63,6 +64,7 @@ const NO_PRIORITY_LAYOUT = {
   // Chromium at 1440 and at 1280), the Issues table's own Status width cuts at the column's
   // edge: this one holds it inside the cell's padding, and the room it takes is Title's.
   widths: { ...FAULT_WIDTHS, status: { min: 156, size: 156 } },
+  wrapTitles: true,
 } as const;
 const PARKED_LAYOUT = {
   key: "priorities-parked",
@@ -81,6 +83,7 @@ const PARKED_LAYOUT = {
     status: { min: 112, size: 112 },
     moved: { min: 112, size: 112 },
   },
+  wrapTitles: true,
 } as const;
 
 /** The page's three tabs, by the words each reads before its one count (INFRA-3221, R13). */

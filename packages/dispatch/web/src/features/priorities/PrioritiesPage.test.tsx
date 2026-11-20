@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, mock, spyOn, test } from "bun:test";
 import { ISSUE_TITLE_MAX } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
@@ -20,9 +20,17 @@ import { prioritiesQuery } from "../../api/queries";
 import type { IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { writesOf } from "../writes/write-store";
 import { PrioritiesPage } from "./PrioritiesPage";
+
+// A closed row's excerpt is the projection the markdown engine makes of its description
+// (`useMarkdownHeadline`), so the engine is loaded once before any row draws, as the shell loads
+// it as a page opens (`DeploymentResilience`).
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function priority(id: string, overrides: Partial<PriorityRow> = {}): PriorityRow {
   return {
@@ -589,38 +597,31 @@ test("a row counts the work in flight, waiting and parked, shows its newest even
   expect(texts(second).slice(3)).toEqual(["1", "0", "3", "2", "Never"]);
 });
 
-// On a phone every header stands on one line at its column's left edge, the place and the title
-// take the whole box while the other columns scroll behind them, and the one cell of the place
-// holds the grip and the disclosure that opens the row (INFRA-2947, R7).
-test("on a phone every header stands on one line, and the place and the title take the box", async () => {
+// On a phone the table draws each priority as its place beside one cell and no other column, so
+// nothing scrolls sideways: the place and the title take the whole box, each header stands on
+// one line, the `#` header offers its sort and no filter, the one cell of the place holds the
+// grip and the disclosure that opens the row, and the title's cell names the owner, the three
+// counts under their headers' words and the newest event (INFRA-2947, R7).
+test("on a phone the table draws the place and one cell, which names the owner, the counts and the newest event", async () => {
   page(FIFTEEN, [], true, "/priorities", PHONE_BOX);
   const row = await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   expect(
     screen.getAllByRole("columnheader").map((header) => {
       const line = header.firstElementChild?.className.split(" ") ?? [];
       return {
+        filter: within(header).queryAllByTitle(/^Filter/).length > 0,
         name: header.textContent?.replace("Filter", ""),
         oneLine: !line.includes("flex-col") && !line.includes("justify-end"),
         width: header.style.width,
       };
     })
   ).toEqual([
-    { name: "#▲", oneLine: true, width: "76px" },
-    { name: "Priority", oneLine: true, width: `${PHONE_BOX - 76}px` },
-    { name: "Owner", oneLine: true, width: "112px" },
-    { name: "Active", oneLine: true, width: "76px" },
-    { name: "Triage, Todo", oneLine: true, width: "104px" },
-    { name: "Backlog, icebox", oneLine: true, width: "128px" },
-    { name: "Newest event", oneLine: true, width: "160px" },
+    { filter: false, name: "#▲", oneLine: true, width: "76px" },
+    { filter: true, name: "Priority", oneLine: true, width: `${PHONE_BOX - 76}px` },
   ]);
-  for (const name of ["Triage, Todo", "Backlog, icebox", "Newest event"]) {
-    const header = screen.getByRole("columnheader", { name: new RegExp(`^${name}`) });
-    expect(within(header).getByRole("button", { name }).className, name).toContain(
-      "whitespace-nowrap"
-    );
-  }
-  const place = within(row).getAllByRole("cell")[0];
-  if (place === undefined) throw new Error("the row draws no cell");
+  const [place, title] = within(row).getAllByRole("cell");
+  if (place === undefined || title === undefined) throw new Error("the row draws no two cells");
+  expect(within(row).getAllByRole("cell")).toHaveLength(2);
   expect(
     within(place)
       .getAllByRole("button")
@@ -629,15 +630,29 @@ test("on a phone every header stands on one line, and the place and the title ta
     "Move #1 Legion works reliably first: drag it, or press the up and down arrows",
     "Open #1 Legion works reliably first",
   ]);
+  // In flight is in_progress, testing, needs_review and retro; waiting is todo and triage; the
+  // third count is backlog and icebox; the newest event is a time, whose words follow the clock.
+  const named = title.firstElementChild?.lastElementChild;
+  expect(named?.textContent).toStartWith(
+    "INFRA controller · Active 7 · Triage, Todo 12 · Backlog, icebox 0 · "
+  );
+  expect(within(title).getByRole("time").getAttribute("datetime")).toBe("2026-11-11T10:00:00Z");
+  const second = screen.getByRole("row", { name: "#2 Linkage closure eval" });
+  expect(
+    within(second).getAllByRole("cell")[1]?.firstElementChild?.lastElementChild?.textContent
+  ).toBe("BET controller · Active 1 · Triage, Todo 0 · Backlog, icebox 3 · Never");
 });
 
-test("the first line of a description shows on a closed row, in two lines at most, and the whole of it when it opens", async () => {
+test("the start of a description shows on a closed row, its lines run together in two lines at most, and the whole of it when it opens", async () => {
   const user = userEvent.setup();
   const { editors } = page(FIFTEEN, [issue("CORE-1", ["legion-first"]), issue("CORE-2")]);
   await screen.findByRole("row", { name: "#1 Legion works reliably first" });
-  // Closed, the row shows the description's first line, clamped to two lines that end in '…'
-  // where it runs on.
-  expect(screen.getByText("The first line.").className.split(" ")).toContain("line-clamp-2");
+  // Closed, the row shows the description's start, its line break read as a space, clamped to
+  // two lines that end in '…' where it runs on.
+  const excerpt = await screen.findByText(
+    "The first line. The rest of it, which the row shows when it is open."
+  );
+  expect(excerpt.className.split(" ")).toContain("line-clamp-2");
   await user.click(screen.getByRole("button", { name: "Open #1 Legion works reliably first" }));
   // Open, the row holds the whole description in the documents' editor, its line break read as
   // the space a paragraph's soft break is.
@@ -646,6 +661,29 @@ test("the first line of a description shows on a closed row, in two lines at mos
   expect(box.textContent).toBe(
     "The first line. The rest of it, which the row shows when it is open."
   );
+});
+
+// A description of several paragraphs whose first line is short and names an issue by its
+// Dispatch reference, as production's do: the closed row reads its paragraphs run together, its
+// markdown read rather than shown and the reference by its short form, so a first line that
+// fits leaves the rest after it for the clamp to end in '…' (INFRA-2947, R7).
+test("a closed row runs a description's paragraphs together, a reference read by its short form", async () => {
+  page(
+    body({
+      priorities: [
+        priority("local-testing", {
+          description:
+            "Start with dispatch://CORE-1.\n\nEvery reader of **this** deployment reaches the same corpus.",
+          title: "Local testing is one command",
+        }),
+      ],
+    })
+  );
+  const row = await screen.findByRole("row", { name: "#1 Local testing is one command" });
+  const excerpt = await within(row).findByText(
+    "Start with CORE-1. Every reader of this deployment reaches the same corpus."
+  );
+  expect(excerpt.className.split(" ")).toContain("line-clamp-2");
 });
 
 test("opening a row shows its description and no work: the work is on the priority's own page", async () => {
@@ -716,9 +754,9 @@ test("a title is a link to the priority's own page, where it is renamed, and no 
 });
 
 // Production's titles run to 94 characters, and a reader reads each one whole: the title wraps
-// in its column as a link to the priority's page, and nothing clamps or cuts it. The first line
-// of the description under it is clamped to two lines, in the small muted type, ending in '…'
-// where it runs on, with the whole line its tooltip.
+// in its column as a link to the priority's page, and nothing clamps or cuts it. The start of
+// the description under it, its paragraphs run together, is clamped to two lines, in the small
+// muted type, ending in '…' where it runs on, with the whole of it its tooltip.
 test("a 94-character title shows whole on its row, with no clamp and no cut", async () => {
   const long =
     "Every Legion phase worker reaches a merged pull request without a person's hands in between it";
@@ -746,8 +784,8 @@ test("a 94-character title shows whole on its row, with no clamp and no cut", as
       cut: false,
     });
   }
-  const line = within(row).getByTitle(summary);
-  expect(line.textContent).toBe(summary);
+  const line = await within(row).findByTitle(`${summary} The rest.`);
+  expect(line.textContent).toBe(`${summary} The rest.`);
   expect(line.className).toBe(`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`);
 });
 
@@ -1052,7 +1090,7 @@ test("a grouped table counts each group in the plural its rows are called by", a
 
 test("no header of the priorities table is longer than 16 characters, whichever columns show", async () => {
   const user = userEvent.setup();
-  page(FIFTEEN);
+  page(FIFTEEN, [], true, "/priorities", DESKTOP_BOX);
   await screen.findByRole("row", { name: "#1 Legion works reliably first" });
   await user.click(
     within(screen.getByRole("region", { name: "Priorities" })).getByRole("button", {

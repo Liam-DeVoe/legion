@@ -1,4 +1,4 @@
-import type { ColumnDef, ColumnFiltersState } from "@tanstack/react-table";
+import type { ColumnDef, ColumnFiltersState, VisibilityState } from "@tanstack/react-table";
 import type { LayoutColumns } from "../project/issues-table-layout";
 
 /**
@@ -28,9 +28,6 @@ export interface TableColumn<Row> {
   readonly numeric?: boolean;
   /** A header whose words wrap onto a second line in a column narrower than they are. */
   readonly wrap?: boolean;
-  /** Its width on a phone, which draws every header on one line (`DataTable`): wider than
-   *  `size` for a column whose header's words wrap on a desktop (`numeric`, `wrap`). */
-  readonly phone?: number;
   /** The text a typed filter matches, where this column filters by typing. */
   readonly text?: (row: Row) => string;
   /** The values a picked filter offers, where this column filters by picking. */
@@ -127,7 +124,7 @@ export function headingOf<Row>(
 /** The layout rules `useTableLayout` takes for these columns: each at its own width, never
  *  below its minimum, with the pinned ones kept at the left edge and the first of them that
  *  may narrow giving up width so the rest fit. On a phone the pinned ones take the whole of the
- *  box, so the rest scroll behind them, and a column that names a phone width is drawn at it. */
+ *  box, and they are all the table draws there (`phoneHidden`). */
 export function tableLayout<Row>(
   columns: readonly TableColumn<Row>[],
   flexible: string
@@ -143,17 +140,21 @@ export function tableLayout<Row>(
     minimums,
     pins: {
       wide: { columns: pinned, share: 0.6 },
-      phone: {
-        columns: pinned,
-        share: 1,
-        widths: Object.fromEntries(
-          columns.flatMap(({ id, phone }) => (phone === undefined ? [] : [[id, phone]]))
-        ),
-        flexibleMin: minimums[flexible] ?? 0,
-      },
+      phone: { columns: pinned, share: 1, widths: {}, flexibleMin: minimums[flexible] ?? 0 },
       flexible,
     },
   };
+}
+
+/** What a phone's box hides of these columns, whatever the reader shows: every one but the
+ *  pinned, which take the whole of the box there (`tableLayout`), so the table draws no column
+ *  past its edge and does not scroll sideways. The flexible column's cell names what the hidden
+ *  ones hold. It is laid over the reader's own visibility, which stays theirs, and a desktop's
+ *  box draws what they chose. */
+export function phoneHidden<Row>(columns: readonly TableColumn<Row>[]): VisibilityState {
+  return Object.fromEntries(
+    columns.filter((column) => !column.pinned).map(({ id }) => [id, false])
+  );
 }
 
 /**

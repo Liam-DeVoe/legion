@@ -1,8 +1,7 @@
 import type { PriorityRow } from "../../api/types";
-import { questionLine } from "../inbox/question-line";
 import type { IssueStatus } from "../project/board-model";
 import { ageOf, AGES as ISSUE_AGES, runningIssueStatuses } from "../project/issues-table-model";
-import { columnsById, type TableColumn, tableLayout } from "./priority-table-model";
+import { columnsById, phoneHidden, type TableColumn, tableLayout } from "./priority-table-model";
 
 /** The statuses each count column adds up. In flight is the statuses an issue is being worked
  *  in, which the issues table's own status bar counts (`runningIssueStatuses`); waiting is work
@@ -23,9 +22,6 @@ export interface PriorityItem {
   /** The priority's place in the order, from 1: what `#7` reads from. */
   readonly place: number;
   readonly order: string;
-  /** The first line of the description, in plain words, which the row shows while it is
-   *  closed: a description is markdown, so the markers it opens with are not read out. */
-  readonly summary: string;
   readonly inFlight: number;
   readonly waiting: number;
   readonly parked: number;
@@ -61,7 +57,6 @@ export function buildPriorityItems(rows: readonly PriorityRow[]): PriorityItem[]
     priority,
     place: index + 1,
     order: orderLabel(index),
-    summary: questionLine(priority.description),
     inFlight: countOf(priority.work.by_status, runningIssueStatuses),
     waiting: countOf(priority.work.by_status, WAITING_STATUSES),
     parked: countOf(priority.work.by_status, PARKED_STATUSES),
@@ -106,11 +101,11 @@ export const ownerOf = (item: PriorityItem): string =>
 const COUNT = { size: 76, min: 76, numeric: true } as const;
 
 /** Every column of the priorities table, left to right: the order and the title stay pinned at
- *  the left edge while the counts scroll. Each header reads in 16 characters or fewer, in the
- *  words a status is named by (INFRA-3221, R13). What closed in the last 7 days opens hidden, one
- *  tick away under Columns, so the table fits a 1280 px window beside the sidebar with the work
- *  as it stands now - who owns each priority, what is active, in triage or todo, and in backlog
- *  or icebox - and when anything under it last moved.
+ *  the left edge. Each header reads in 16 characters or fewer, in the words a status is named by
+ *  (INFRA-3221, R13). What closed in the last 7 days opens hidden, one tick away under Columns,
+ *  so the table fits a 1280 px window beside the sidebar with the work as it stands now - who
+ *  owns each priority, what is active, in triage or todo, and in backlog or icebox - and when
+ *  anything under it last moved.
  *
  *  Every column but the title is as wide as its header's words, its sort arrow and its filter
  *  control need, so the title takes the rest of a desktop box (`PRIORITY_LAYOUT`): at 1280 px a
@@ -118,10 +113,9 @@ const COUNT = { size: 76, min: 76, numeric: true } as const;
  *  the four counts have no filter, and their headers no filter control; a count's column is as
  *  narrow as its numbers, which stand at its right edge under its header's words, two lines of
  *  them where they need it (`numeric`). The newest event's words take two lines as well, beside
- *  its filter, over a time that takes one (`wrap`). A phone draws every header on one line, at
- *  its column's left edge, so a column whose words wrap on a desktop is as wide as its words on
- *  one line there (`phone`), measured in Chromium's DejaVu Sans with room to spare: the columns
- *  scroll behind the place and the title, which take the box. */
+ *  its filter, over a time that takes one (`wrap`). A phone draws the place and the title alone,
+ *  which take its box (`PRIORITY_PHONE_HIDDEN`), and the title's cell names the owner, the three
+ *  counts under their headers' words and the newest event, so nothing scrolls sideways. */
 export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
   { id: "order", header: "#", size: 76, min: 76, pinned: true, text: (item) => item.order },
   {
@@ -141,15 +135,14 @@ export const PRIORITY_COLUMNS: readonly TableColumn<PriorityItem>[] = [
     group: ownerOf,
   },
   { id: "in-flight", header: "Active", ...COUNT },
-  { id: "waiting", header: "Triage, Todo", ...COUNT, phone: 104 },
-  { id: "parked", header: "Backlog, icebox", ...COUNT, phone: 128 },
-  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true, phone: 120 },
+  { id: "waiting", header: "Triage, Todo", ...COUNT },
+  { id: "parked", header: "Backlog, icebox", ...COUNT },
+  { id: "closed", header: "Closed, 7 days", ...COUNT, hidden: true },
   {
     id: "newest",
     header: "Newest event",
     size: 104,
     min: 104,
-    phone: 160,
     wrap: true,
     values: (item) => [newestBucket(item.newest)],
     group: (item) => newestBucket(item.newest),
@@ -162,5 +155,8 @@ export const PRIORITY_COLUMNS_BY_ID = columnsById(PRIORITY_COLUMNS);
 /** The priorities table's layout: the order and the title pinned, and the title filling a
  *  desktop box with what the other shown columns leave (`fills`), so nothing scrolls sideways. */
 export const PRIORITY_LAYOUT = { ...tableLayout(PRIORITY_COLUMNS, "title"), fills: "title" };
+/** What a phone's box hides, whatever the reader shows: every column but the place and the
+ *  title, whose cell names what the others hold there. */
+export const PRIORITY_PHONE_HIDDEN = phoneHidden(PRIORITY_COLUMNS);
 /** The table opens in the one order, which is what the page is about. */
 export const PRIORITY_SORTING = [{ id: "order", desc: false }];

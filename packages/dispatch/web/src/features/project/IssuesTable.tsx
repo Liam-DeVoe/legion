@@ -79,15 +79,18 @@ export function IssuesTable({
    *  takes what the other shown columns and the row's actions leave (`fills`). `rowActions:
    *  false` draws no row's actions after the columns, no cell for a row's Start next, and keeps
    *  no width for them, as on a listing that holds no issue in Legion's queue (`listsQueued`):
-   *  Title takes that width too, and the selection's bar keeps Start next. Each fault list of
-   *  the priorities page and a priority's work table give their own; unset, the table opens as
-   *  a project's table does. */
+   *  Title takes that width too, and the selection's bar keeps Start next. `wrapTitles: true`
+   *  draws each row's title whole, however many lines it takes, where a project's table clamps
+   *  it to two lines that end in '…': a table read by its titles, as each fault list of the
+   *  priorities page and a priority's work table are. Each of those gives its own; unset, the
+   *  table opens as a project's table does. */
   layout?: {
     readonly key: string;
     readonly opens: readonly IssueTableColumnId[];
     readonly widths?: IssueTableWidths;
     readonly rowActions?: boolean;
     readonly pins?: readonly IssueTableColumnId[];
+    readonly wrapTitles?: boolean;
   };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
@@ -189,7 +192,8 @@ export function IssuesTable({
     userState.data,
     responsive.compact,
     columnsLayout,
-    priorityTitles
+    priorityTitles,
+    ownLayout?.wrapTitles === true
   );
 
   const model = useDataTable<Item>({

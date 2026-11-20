@@ -1,5 +1,5 @@
 import type { ColumnDef } from "@tanstack/react-table";
-import { createContext, type ReactNode, useContext } from "react";
+import { createContext, Fragment, type ReactNode, useContext } from "react";
 import { Link } from "react-router-dom";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import {
@@ -10,6 +10,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useMarkdownHeadline } from "../refs/markdown-engine";
 import { Timestamp } from "../refs/Timestamp";
 import { PriorityDescription } from "./PriorityDescription";
 import {
@@ -21,7 +22,8 @@ import {
 import { priorityPath } from "./priority-routes";
 import { columnDefs } from "./priority-table-model";
 
-/** Everything a row of the priorities table can do, which the page holds and the cells call. */
+/** Everything a row of the priorities table can do, which the page holds and the cells call,
+ *  and the box it is drawn in. */
 export interface PriorityRowActions {
   /** Whether this reader may write a priority: the add, the description and the drag are
    *  theirs alone, and every other reader sees the same rows without them. A title is renamed
@@ -46,6 +48,10 @@ export interface PriorityRowActions {
   readonly onDragEnd: () => void;
   /** One place up or down, which is the drag done from the keyboard. */
   readonly onMove: (item: PriorityItem, by: -1 | 1) => void;
+  /** Whether the table stands in a phone's box (`useTableLayout`'s `compact`), where it draws
+   *  the place and the title alone (`PRIORITY_PHONE_HIDDEN`), and the title's cell names what
+   *  the other columns hold. */
+  readonly compact: boolean;
 }
 
 /**
@@ -130,11 +136,34 @@ function OrderCell({ item }: { item: PriorityItem }) {
   );
 }
 
+/** The most of a description a closed row projects for its excerpt, in characters: more than two
+ *  lines of the Priority column hold at the widths a window gives it, so the two-line clamp is
+ *  what ends the excerpt in '…' where more follows, and where two lines would hold more, the cut
+ *  ends it so. */
+const EXCERPT_MAX = 400;
+
+/** The three counts a phone names under the title, by their columns' ids, with the field of the
+ *  row each reads. */
+const PHONE_COUNTS = [
+  ["in-flight", "inFlight"],
+  ["waiting", "waiting"],
+  ["parked", "parked"],
+] as const;
+
 function TitleCell({ item }: { item: PriorityItem }) {
   const actions = useRowActions();
   const open = actions.openId === item.priority.id;
   const { description, id, title } = item.priority;
   const keptDescription = actions.kept(id, description);
+  // An open row draws its whole description, and so does a closed one that keeps the reader's
+  // text beside it: the notice of a write another person's change refused is on the row whether
+  // it is open or not.
+  const whole = open || keptDescription.length > 0;
+  // A closed row's excerpt: the description's start, in plain words on one line - its paragraphs
+  // run together, its markdown read rather than shown, and a `dispatch://` reference written as
+  // its short form - which the projection every plain-text place takes of a stored text gives
+  // (`useMarkdownHeadline`). It is drawn once the projection has answered.
+  const excerpt = useMarkdownHeadline(undefined, EXCERPT_MAX, whole ? undefined : description);
   return (
     <div className="min-w-0 space-y-1">
       {/* The title is read here and renamed on the priority's own page, which it opens: a
@@ -147,10 +176,7 @@ function TitleCell({ item }: { item: PriorityItem }) {
       >
         <span className={`min-w-0 flex-1 break-words ${textPrimaryOnCanvas}`}>{title}</span>
       </Link>
-      {/* An open row draws its whole description, and so does a closed one that keeps the
-          reader's text beside it: the notice of a write another person's change refused is on
-          the row whether it is open or not. */}
-      {open || keptDescription.length > 0 ? (
+      {whole ? (
         <PriorityDescription
           canWrite={actions.canWrite}
           description={description}
@@ -159,15 +185,53 @@ function TitleCell({ item }: { item: PriorityItem }) {
           onKeptChange={(texts) => actions.onKeep(id, texts)}
           onSave={(next) => actions.onDescribe(item, next)}
         />
-      ) : item.summary === "" ? null : (
-        // A closed row shows the description's first line, muted, in at most two lines that
-        // end in '…' where it runs on; the whole line is its tooltip, and the open row shows
-        // the whole description in its editor.
-        <p className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`} title={item.summary}>
-          {item.summary}
+      ) : excerpt === undefined || excerpt.text === "" ? null : (
+        // Muted, in at most two lines that end in '…' where it runs on; the whole excerpt is its
+        // tooltip, and the open row shows the whole description in its editor.
+        <p className={`line-clamp-2 break-words text-xs ${textMutedOnCanvas}`} title={excerpt.text}>
+          {excerpt.text}
         </p>
       )}
+      {actions.compact ? <PhoneLine item={item} /> : null}
     </div>
+  );
+}
+
+/** What a phone names under a priority's title, in place of the columns it does not draw: the
+ *  owner, the three counts under their headers' words, and the newest event, each whole on a
+ *  line that wraps between them. */
+function PhoneLine({ item }: { item: PriorityItem }) {
+  const owner = item.priority.owner.trim();
+  const parts = [
+    ...(owner === "" ? [] : [<span key="owner">{owner}</span>]),
+    ...PHONE_COUNTS.map(([column, field]) => (
+      <span
+        className={`whitespace-nowrap tabular-nums ${item[field] === 0 ? textMutedOnCanvas : ""}`}
+        key={column}
+      >
+        {`${PRIORITY_COLUMNS_BY_ID.get(column)?.header} ${item[field]}`}
+      </span>
+    )),
+    <NewestEvent at={item.newest} key="newest" />,
+  ];
+  return (
+    <p className={`break-words text-xs ${textSecondaryOnCanvas}`}>
+      {parts.map((part, at) => (
+        <Fragment key={part.key}>
+          {at === 0 ? null : " · "}
+          {part}
+        </Fragment>
+      ))}
+    </p>
+  );
+}
+
+/** When anything under the priority last moved, or the words for never. */
+function NewestEvent({ at }: { at: string | null }) {
+  return at === null ? (
+    <span className={`text-xs ${textMutedOnCanvas}`}>{NEVER_MOVED}</span>
+  ) : (
+    <Timestamp at={at} className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`} />
   );
 }
 
@@ -220,15 +284,7 @@ export const PRIORITY_COLUMN_DEFS: ColumnDef<PriorityItem>[] = columnDefs<Priori
     },
     newest: {
       accessorFn: (item) => item.newest ?? "",
-      cell: ({ row }) =>
-        row.original.newest === null ? (
-          <span className={`text-xs ${textMutedOnCanvas}`}>{NEVER_MOVED}</span>
-        ) : (
-          <Timestamp
-            at={row.original.newest}
-            className={`whitespace-nowrap text-xs ${textMutedOnCanvas}`}
-          />
-        ),
+      cell: ({ row }) => <NewestEvent at={row.original.newest} />,
     },
   },
   PRIORITY_COLUMNS_BY_ID

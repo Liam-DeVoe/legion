@@ -18,6 +18,7 @@ import {
   PRIORITY_COLUMNS,
   PRIORITY_COLUMNS_BY_ID,
   PRIORITY_LAYOUT,
+  PRIORITY_PHONE_HIDDEN,
   PRIORITY_SORTING,
   type PriorityItem,
   rankMove,
@@ -55,8 +56,17 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
   const { params, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
   // On a desktop the title fills the box: it takes the width the other shown columns leave, so
-  // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`).
-  const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  // the table fits the window and nothing scrolls sideways (`PRIORITY_LAYOUT`'s `fills`). A
+  // phone's box draws the place and the title alone, whatever the reader shows, and the title's
+  // cell names what the others hold (`PRIORITY_PHONE_HIDDEN`); what the reader shows stays
+  // theirs, since a change under Columns writes the reader's own visibility, never this one.
+  const stored = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
+  const { compact } = stored.responsive;
+  const visibility = useMemo(
+    () => (compact ? { ...stored.visibility, ...PRIORITY_PHONE_HIDDEN } : stored.visibility),
+    [compact, stored.visibility]
+  );
+  const layout = { ...stored, visibility };
   const { attachAbove, boxWidth } = layout;
   const [openId, setOpenId] = useState<string>();
   const [dragging, setDragging] = useState<string>();
@@ -161,6 +171,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     () => ({
       canReorder,
       canWrite,
+      compact,
       dragging,
       kept: keptDescription,
       onDragEnd,
@@ -174,6 +185,7 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
     [
       canReorder,
       canWrite,
+      compact,
       dragging,
       keepDescription,
       keptDescription,
@@ -286,6 +298,9 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
             />
           )}
           scrollTestId="priorities-table-scroll"
+          // A phone draws `#` beside the one cell that holds the rest of the row, too narrow for
+          // a filter's touch target beside its sort's.
+          sortOnlyOnPhone="order"
         />
       </PriorityRowActionsContext.Provider>
     </section>

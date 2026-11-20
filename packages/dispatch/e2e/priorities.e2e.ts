@@ -486,12 +486,27 @@ test("the priorities page opens on the order, and each fault list is a tab of it
       await expect(await cell("Backlog, icebox")).toHaveText(counts[2] ?? "");
       await expect((await cell("Newest event")).locator("time")).toHaveCount(1);
     }
-    // A closed row shows the first line of its description and no more of it, under its title.
+    // A closed row shows the start of its description under its title, its paragraphs run
+    // together in a box at most two lines high that ends in '…': a two-line clamp that holds
+    // more than it shows. The opened row holds the whole of it, every paragraph (below).
     const firstRow = priorities.getByRole("row", { name: `#1 ${seed.titles[0]}` });
     await expect(firstRow).toContainText(
       "Every machine of the fleet runs the daemon, or the rollout is not done."
     );
-    await expect(firstRow).not.toContainText("It is finished when no machine is left");
+    await expect
+      .poll(() =>
+        firstRow.getByText(/^Every machine of the fleet/).evaluate((excerpt) => {
+          const style = getComputedStyle(excerpt);
+          const lines =
+            excerpt.getBoundingClientRect().height / Number.parseFloat(style.lineHeight);
+          return {
+            atMostTwoLines: Math.round(lines) <= 2,
+            clamp: style.webkitLineClamp,
+            holdsMore: excerpt.scrollHeight > excerpt.clientHeight,
+          };
+        })
+      )
+      .toEqual({ atMostTwoLines: true, clamp: "2", holdsMore: true });
 
     // At 1440 by 900 the table fits its box: no column runs past the box's right edge, and the
     // pager under the box is on the first screen.
@@ -1678,15 +1693,18 @@ test("at 1280 by 800 the priorities pages draw production's owners and descripti
     // or its title, and never as its `dispatch://` address.
     const summary = (await cellUnder(table, row, "Priority")).getByText(/^Start with/).first();
     await expect(summary).toBeVisible();
-    const closed = await summary.evaluate((element) => {
-      const style = getComputedStyle(element);
-      const lines = Math.round(
-        element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
-      );
-      const clamped = style.webkitLineClamp === "2" && element.scrollHeight > element.clientHeight;
-      const text = (element.textContent ?? "").trim();
-      return { atMostTwoLines: lines <= 2, endsInEllipsis: clamped || text.endsWith("…"), text };
-    });
+    const closed = await settledValue("the closed row's excerpt", () =>
+      summary.evaluate((element) => {
+        const style = getComputedStyle(element);
+        const lines = Math.round(
+          element.getBoundingClientRect().height / Number.parseFloat(style.lineHeight)
+        );
+        const clamped =
+          style.webkitLineClamp === "2" && element.scrollHeight > element.clientHeight;
+        const text = (element.textContent ?? "").trim();
+        return { atMostTwoLines: lines <= 2, endsInEllipsis: clamped || text.endsWith("…"), text };
+      })
+    );
     soft(
       { atMostTwoLines: closed.atMostTwoLines, endsInEllipsis: closed.endsInEllipsis },
       "a closed row draws the description in at most two lines ending in '…'"

@@ -323,6 +323,11 @@ export interface DataTableProps<Row> {
    *  (`useTableLayout`'s `compact`): the issues table's title, which a phone draws narrow beside
    *  the key. Every other header stands on one line there. */
   readonly stackedHeader?: string;
+  /** The column whose header offers its sort and no filter in a phone's box: the priorities
+   *  table's `#`, which a phone draws beside the one cell that holds the rest of the row, too
+   *  narrow for a filter's 44 px target beside its sort's without covering the next header's. A
+   *  desktop's box draws its filter. */
+  readonly sortOnlyOnPhone?: string;
 }
 
 /**
@@ -342,6 +347,7 @@ export function DataTable<Row>({
   renderGroup,
   renderRow,
   scrollTestId,
+  sortOnlyOnPhone,
   stackedHeader,
   trailingWidth = 0,
 }: DataTableProps<Row>): ReactNode {
@@ -395,6 +401,7 @@ export function DataTable<Row>({
                       setDragColumn={setDragColumn}
                       setOpenFilter={onOpenFilterChange}
                       setOrder={layout.setOrder}
+                      sortOnly={layout.responsive.compact && header.column.id === sortOnlyOnPhone}
                       stacked={layout.responsive.compact && header.column.id === stackedHeader}
                       unloaded={filterUnloaded?.get(header.column.id) ?? NONE_UNLOADED}
                     />
@@ -451,6 +458,7 @@ function TableHeaderCell<TData>({
   setDragColumn,
   setOpenFilter,
   setOrder,
+  sortOnly,
   stacked,
   unloaded,
 }: {
@@ -468,6 +476,8 @@ function TableHeaderCell<TData>({
   setDragColumn: (id: string | undefined) => void;
   setOpenFilter: (id: string | undefined) => void;
   setOrder: (next: string[]) => void;
+  /** Whether this header offers its sort and no filter (`DataTableProps.sortOnlyOnPhone`). */
+  sortOnly: boolean;
   /** Whether this header stands its filter under its words (`DataTableProps.stackedHeader`). */
   stacked: boolean;
   /** This column's filter values whose rows are not loaded yet. */
@@ -528,7 +538,7 @@ function TableHeaderCell<TData>({
         ) : (
           flexRender(column.columnDef.header, header.getContext())
         )}
-        {column.getCanFilter() ? (
+        {column.getCanFilter() && !sortOnly ? (
           <ColumnFilter
             column={column}
             counts={counts}
