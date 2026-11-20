@@ -66,9 +66,8 @@ export function AgentMessageComposer({
    *  frozen at Send either way. */
   hold: Sending;
   /** The messages of the session's conversation the row lists (`MentionComposer`'s `listed`),
-   *  or none where its host has not read them. A box that answers only its own thread's newest
-   *  message that stands (`standing`) is handed its thread's, so a refusal held for one its author
-   *  deleted since says that message was deleted (`useKeptDrafts`' `writtenElsewhere`). */
+   *  or none where its host has not read them, or where the box answers only its own thread's
+   *  newest message (`standing`), which leaves the page with the box. */
   listed?: ListedReplies;
   onCancelReply: () => void;
   /** One level out of the composer: the row it belongs to takes focus. The composer calls it on

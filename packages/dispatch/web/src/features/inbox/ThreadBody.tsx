@@ -52,7 +52,7 @@ import { AgentMessageComposer } from "../agents/AgentMessageComposer";
 import { agentReplyTo, newestAttempt } from "../agents/exchange-delivery";
 import { useMarkShownRepliesRead } from "../agents/unread";
 import type { ComposerOwner } from "../conversation/composer-model";
-import { listedReplies, rootOf } from "../conversation/conversation-model";
+import { rootOf } from "../conversation/conversation-model";
 import { deliveryMode, noDeliveryLine } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
@@ -554,9 +554,8 @@ function AcceptedAsTurn({ sessionId }: { sessionId: string }): ReactNode {
 /**
  * A one-off message the reader sent an agent session, with every message under it: the reader's
  * own follow-ups included, and a reply the session took as a turn of its live conversation saying
- * so. The composer replies under the thread's newest message that still stands, in the mode the
- * Agents page uses for a reply in that thread (`exchangeDelivery`), so a reply sent here behaves
- * as one sent there.
+ * so. The composer replies under the thread's newest message, in the mode the Agents page uses for
+ * a reply in that thread (`exchangeDelivery`), so a reply sent here behaves as one sent there.
  */
 function AgentThreadBody({
   openAtFirstUnread,
@@ -581,11 +580,7 @@ function AgentThreadBody({
   if (messages.isError) {
     return <p className={`mt-2 text-sm ${dangerText}`}>Could not load this conversation.</p>;
   }
-  // The thread's messages, root first. The box answers the newest that still stands: a message
-  // its author deleted takes no reply (`409 POST_DELETED`), so a delete moves the box back onto
-  // the newest message left standing, as a newer message moves it on.
-  const posts = read === undefined ? [] : [read.message, ...(read.replies ?? [])];
-  const newest = posts.filter((message) => postDeletion(message) === null).at(-1);
+  const newest = read === undefined ? undefined : ((read.replies ?? []).at(-1) ?? read.message);
   const turn = (message: MessageWithTrees): ThreadTurn =>
     messageTurn(
       message,
@@ -593,7 +588,7 @@ function AgentThreadBody({
         <AcceptedAsTurn sessionId={sessionId} />
       ) : undefined
     );
-  const turns = posts.map(turn);
+  const turns = read === undefined ? [] : [read.message, ...(read.replies ?? [])].map(turn);
   // The warning of a session whose capabilities hold no delivery mode; undefined for one that
   // takes a mode.
   const noDelivery = noDeliveryLine(agent?.capabilities ?? []);
@@ -601,14 +596,7 @@ function AgentThreadBody({
     <>
       <ThreadTurns
         composer={
-          agent === undefined || read === undefined ? null : newest === undefined ? (
-            // No message of the thread stands, so the thread draws no box, as a comment thread
-            // draws none under a deleted root (`CommentThreadBody`): a reply the reader kept for
-            // it is drawn itself, with Discard my draft. The box moved from message to message,
-            // so the thread cannot say which one a typed draft answered: a refused send names the
-            // author of its own (`replyTo`), and a typed draft names nobody.
-            <KeptReplyToDeleted mutationKey={sendKey} parentKind="message" />
-          ) : (
+          agent === undefined || read === undefined || newest === undefined ? null : (
             <div data-inbox-agent-composer="">
               {noDelivery !== undefined ? (
                 <>
@@ -621,14 +609,11 @@ function AgentThreadBody({
               {/* Keyed by the thread, as a comment thread's composer is (`CommentThreadBody`), and
                   its send named by it (`threadSendKey`): the draft, its uploads and its reply out
                   or refused are this thread's, and the session's other sends it shows are the
-                  ones answering this thread. It lists the thread's messages as they stand
-                  (`listed`), so a reply refused for one its author deleted since, which moved the
-                  box back onto an older one, says that message was deleted. */}
+                  ones answering this thread. */}
               <AgentMessageComposer
                 agent={agent}
                 hold={hold}
                 key={`composer:${thread.thread_id}`}
-                listed={listedReplies([read])}
                 onCancelReply={noReturn}
                 onClose={noReturn}
                 replyParent={newest}
