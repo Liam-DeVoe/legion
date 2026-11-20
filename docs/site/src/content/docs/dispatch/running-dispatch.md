@@ -865,6 +865,26 @@ delete from components c
 where not exists (select 1 from architecture_sources s where s.project_key = c.project_key);
 ```
 
+The release that partitions `embeddings` by project (migrations `20261120105330` and
+`20261120105818`) rolls into the running one, and then copies the table in the background while
+it serves. Its migrations take about a second: the first builds the new table empty beside the old
+one, and the second makes every later write of `embeddings` write both tables. The server's
+embeddings fill then copies the stored rows into the new table, in batches of 200, and swaps the
+two tables when it is done. On a bench of production's size (995,184 rows over 20 projects, 15.7
+GiB) the copy took 71 minutes and the swap held both tables for 247 ms: plan on about 71 minutes of
+copying, during which meaning search reads the old table, and one hold of about a quarter of a
+second, during which reads and writes of `embeddings` wait. The log says
+`dispatch: the embeddings partition copy began`, then `... is copying` every 30 seconds with the
+rows so far, then `... finished` with `rows` (read) and `inserted`, and last
+`dispatch: embeddings is partitioned by project: the copy is swapped in` with `held`, how long the
+swap held the tables. Before the deploy, make sure the database has free disk for a second copy of
+`embeddings` and its indexes. A swap that cannot take its locks within 5 seconds fails, and the
+pass is tried again about five minutes later. A swap that finds the two tables holding different
+row counts refuses, changes nothing, and names both counts. A project written with the `projects`
+table's triggers disabled (a restore with `--disable-triggers`) has no partition until its first
+item is written; a row of it stored with no project is refused with the statement that gives it
+one, `select embeddings_add_project_partition('<KEY>');`.
+
 ## The HTTP API
 
 `GET /api/v1` lists every API route with its method, who may call it, and a description. The

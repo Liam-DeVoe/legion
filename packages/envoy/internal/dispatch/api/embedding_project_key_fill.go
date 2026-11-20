@@ -34,8 +34,9 @@ const embeddingProjectKeyFillLease = "embeddings-project-key-fill"
 var embeddingProjectKeyFillRetry = 5 * time.Minute
 
 // RunEmbeddingProjectKeyFill makes store.FillEmbeddingProjectKeys' pass under
-// embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over,
-// whichever process finishes it. The boot starts it in the background (cmd/dispatch/main.go),
+// embeddingProjectKeyFillLease, and keeps trying for that lease until the labelling is over and
+// embeddings is the partitioned table (store.EmbeddingProjectKeyFillDone), whichever process
+// finishes it. The boot starts it in the background (cmd/dispatch/main.go),
 // which is where what it does and why it does not block the boot is written; this is the lease
 // around it. It lives here beside the other leased passes over the store rather than in store
 // itself, because duty's own tests read the store package, so a store that imported duty would
