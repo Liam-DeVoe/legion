@@ -595,8 +595,9 @@ func seedCopyRow(t *testing.T, tx pgx.Tx, key, parent, status string, seq int64,
 	if seq < 1 {
 		t.Fatalf("seed the copy row of %s at sequence %d: a Dispatch reading carries a sequence of 1 or more", key, seq)
 	}
-	if err := record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchIssueRow{
-		Key: key, Project: projectOf(key), Parent: parent, Status: status, Blockers: blockedBy, Seq: seq,
+	if err := record.NewStore().PutDispatchIssue(context.Background(), tx, record.DispatchReading{
+		Key: key, Project: projectOf(key), Seq: seq,
+		Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(blockedBy),
 	}); err != nil {
 		t.Fatalf("seed the copy row of %s: %v", key, err)
 	}

@@ -80,8 +80,8 @@ func closeIssue(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, parent, s
 func mirrorChild(t *testing.T, pool *pgxpool.Pool, key, parent, status string, seq int64, blockers ...string) {
 	t.Helper()
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchIssueRow{Key: key, Project: "LEGION", Status: status, Parent: parent,
-			Blockers: blockers, Seq: seq})
+		return record.NewStore().PutDispatchIssue(t.Context(), tx, record.DispatchReading{Key: key, Project: "LEGION", Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(blockers)})
 	})
 }
 

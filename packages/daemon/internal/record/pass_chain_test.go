@@ -63,7 +63,8 @@ func TestALoopAndAChainOver32LinksAreUnknown(t *testing.T) {
 	// copied writes the copy's row of key as a reading of Dispatch does.
 	copied := func(tx pgx.Tx, project, key, parent, status string, seq int64) {
 		t.Helper()
-		must(t, records.PutDispatchIssue(ctx, tx, DispatchIssueRow{Key: key, Project: project, Status: status, Parent: parent, Seq: seq}))
+		must(t, records.PutDispatchIssue(ctx, tx, DispatchReading{Key: key, Project: project, Seq: seq,
+			Status: Carry(status), Parent: Carry(parent), Blockers: Carry[[]string](nil)}))
 	}
 	// recorded is the daemon's record of key, at work under parent.
 	recorded := func(tx pgx.Tx, project, key, parent string, stands phase.Phase, status string) {

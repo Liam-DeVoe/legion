@@ -2585,6 +2585,38 @@ Run them only when every daemon of the database is stopped, and roll back every 
 The skills and role prompts that name the new phase ship with this release: the prompts are embedded in the `legion` binary, and the release links its plugin pair.
 A rollback moves each project's worker image back with its daemon image.
 
+#### Rolling back the release that fences each value of the copy of Dispatch's issues
+
+The daemon keeps a copy of each Dispatch issue of its projects in `dispatch_issues`.
+This release keeps, for each value of a row (its status, parent, blockers, labels and rank), the sequence of the Dispatch reading that wrote it.
+A reading changes a value only when its sequence is higher than the sequence of that value, or when no reading has written that value yet (sequence 0).
+Migration `20261120055717_dispatch_issue_value_sequences` adds the columns `labels`, `rank`, `status_seq`, `parent_seq`, `blockers_seq`, `labels_seq` and `rank_seq` to `dispatch_issues`, each with a default.
+It also adds an index on `dispatch_issues.parent`, and the table `dispatch_issue_refills`, which holds one mark for each project that has rows in the copy.
+The first boot of each project on this release takes the mark of that project.
+That boot removes the rows of the project from the copy, fills them again from the project's listing before its first decision, and sets `refilled_at` on the mark.
+It logs one line at info that names the project, the number of rows it removed, the number of rows the listing wrote, and each removed key that the listing did not hold.
+A later boot finds the mark set and refills nothing.
+
+**A rollback needs one statement.**
+The earlier release names none of the new columns, so it writes its rows as before, and each new column keeps its default or its last value.
+Each value that the earlier release writes therefore keeps an old sequence beside it.
+After a roll forward, a reading older than such a value can replace it, and the copy then holds a value that Dispatch has changed since.
+The statement below marks each project that has rows again, so the next boot of that project on this release refills its rows.
+Run it with every daemon of the database stopped, before the earlier image is pinned:
+
+```sql
+insert into public.dispatch_issue_refills (project) select distinct project from public.dispatch_issues where project <> '' on conflict (project) do update set refilled_at = null;
+```
+
+The same statement is the last paragraph of the migration's header, which `migrations.WayBack` returns.
+The refill makes no call to Dispatch of its own.
+At the next boot of each project on this release, the daemon deletes the rows of that project and writes one row for each issue of the listing that every boot reads.
+No other statement is necessary: the earlier release reads none of the new columns and the new table, so they can stay.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `dispatch_issues` and `dispatch_issue_refills` hold the rows of every project.
+A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
+Upgrade, and roll back, every daemon of one database in the same change.
 
 #### Rolling back below the release that trims an issue pod's volume
 
@@ -3117,6 +3149,7 @@ The migrations recorded above this one are these.
 20261117200337_update_ask_marks_at_delivery, of cybermonklabs/legion#4337, clears `claims.update_tasked_at` on each claim whose update ask of the round it records still waits in the outbox, and touches none of the six either, so the block holds over it; it alters no table and has no down file, so it leaves nothing for the block to reverse.
 20261119003157_conflict_reads_and_merge_forward, of cybermonklabs/legion#4464, writes the outbox's kind check again with `conflict_confirm` and `merge_forward` added to the plan record's list, deletes the queued `phase_ended` rows and adds `pull_requests.conflict_read` and `pull_requests.merge_forward`, and touches none of the six, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release that merges a conflicting head forward in its phase](#rolling-back-the-release-that-merges-a-conflicting-head-forward-in-its-phase).
 20261119185013_outbox_kinds_with_the_basis_seeds, of dispatch://INFRA-3320, writes the outbox's kind check again with `pending_basis_seed` and `reparent_seed` added to the merge forward's list and touches none of the six, so the block holds over it, and a rollback to a release before it deletes the rows of both kinds as that same section says.
+20261120055717_dispatch_issue_value_sequences, of dispatch://INFRA-4729, adds seven columns of `dispatch_issues`, an index on `dispatch_issues.parent` and the table `dispatch_issue_refills`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement, and a rollback to a release before it runs the statement of its own section, [Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues), before the earlier image is pinned.
 20261120091044_issue_holds_gate, of dispatch://INFRA-4730, adds `issues.holds_gate` at its default, false, sets it on every record whose key is its stored tree, and touches none of the six, so the block holds over it and leaves the column standing, which the earlier release names in no statement.
 20261120095128_issue_facts, of dispatch://INFRA-4730, adds six columns of `issues`, three of `claims` and two of `outbox` at their defaults, the tables `issue_lifecycles` and `tree_conversions`, opens an issue lifecycle for each issue a live claim names under an open tree lifecycle and binds its claims to it, and writes the outbox's kind check again with `retention_end` added to the basis seeds' list, and touches none of the six, so the block holds over it and leaves the columns and the tables standing, which the earlier release names in no statement.
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;

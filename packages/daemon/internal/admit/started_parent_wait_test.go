@@ -96,8 +96,9 @@ func spWaiting(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase, 
 func spMirror(t *testing.T, pool *pgxpool.Pool, key, status, parent string, seq int64, waits ...string) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		row := record.DispatchIssueRow{Key: key, Project: testProject, Status: status, Parent: parent, Blockers: waits, Seq: seq}
-		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+		reading := record.DispatchReading{Key: key, Project: testProject, Seq: seq,
+			Status: record.Carry(status), Parent: record.Carry(parent), Blockers: record.Carry(waits)}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, reading); err != nil {
 			t.Fatalf("write the mirror of %s: %v", key, err)
 		}
 	})
