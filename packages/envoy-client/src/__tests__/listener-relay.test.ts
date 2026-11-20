@@ -60,7 +60,7 @@ function podEnvironment(server: RelaySocketStandIn): EnvoyEnvironment {
 
 /** A relay socket for `session` at `server`, open once the first socket opens or `boundMs` pass;
  *  closed after the row. `heard.asks` counts each time the relay asks the credential for the
- *  upgrade's headers. */
+ *  upgrade's headers, and `heard.restored` each time the outage was told it ended. */
 async function opened(
   server: RelaySocketStandIn,
   session: string | (() => string),
@@ -68,6 +68,7 @@ async function opened(
     readonly logs?: string[];
     readonly told?: string[];
     readonly asks?: { count: number };
+    readonly restored?: { count: number };
     readonly boundMs?: number;
   } = {}
 ): Promise<ListenerRelay> {
@@ -83,7 +84,12 @@ async function opened(
           return credential.headers(...args);
         },
       },
-      outage: inboundUnavailable((why) => heard.told?.push(why)),
+      outage: inboundUnavailable(
+        (why) => heard.told?.push(why),
+        () => {
+          if (heard.restored !== undefined) heard.restored.count += 1;
+        }
+      ),
       log: (line) => heard.logs?.push(line),
     },
     AbortSignal.timeout(heard.boundMs ?? 20_000)
@@ -322,10 +328,11 @@ describe("a relay socket", () => {
     server.trades = "refuse";
     const told: string[] = [];
     const asks = { count: 0 };
+    const restored = { count: 0 };
     // The token client answers a refusal again with no trade until its own retry, 15 s or so
     // later (`RETRY_FIRST_WAIT_MS`, @legion/broker-client/token-client), and the relay asks it at
     // 1 s, 3 s, 7 s, 15 s and 31 s: the open comes on one of the last two.
-    const opening = opened(server, "ses_a", { told, asks, boundMs: 50_000 });
+    const opening = opened(server, "ses_a", { told, asks, restored, boundMs: 50_000 });
     await until(
       () => told.length > 0,
       5_000,
@@ -344,6 +351,8 @@ describe("a relay socket", () => {
     server.trades = "mint";
     await opening;
     expect(opens(server)).toHaveLength(1);
+    // The socket that opened ends the outage, and says so once.
+    expect(restored.count).toBe(1);
   }, 60_000);
 
   test("follows the session its name reads now, with that session's own token", async () => {
