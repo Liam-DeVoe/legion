@@ -398,7 +398,8 @@ marked with tags or annotations:
   A comma, an empty list, a name written with its owner, a repository named twice, a permission
   named twice, or an entry of another shape or level is refused `github-repositories-malformed`
   or `github-permissions-malformed`. No `agent-secrets` flag writes either tag: the program that
-  declares the secret does.
+  declares the secret does. `agent-secrets secret show` prints both (`github_repositories`,
+  `github_permissions`), and `secret list --json` carries them.
 - **`requesters`** is optional. It names the only people and services that may ask for the secret
   at all: people by the lowercase email they sign in with, services by the name the deployment
   registers them under, and a service's pods of one Dispatch project as `<service>/<PROJECT>`,
