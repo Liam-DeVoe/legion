@@ -12,7 +12,7 @@ import (
 // that holds a copy, with no scrape of the gauges: reading them changes nothing, and the record
 // keeps only what this process's passes last found waiting.
 func TestAHandedOverHeldCopyLeavesTheRecordWithoutAScrape(t *testing.T) {
-	held := newHeldCopies()
+	held := newHeldCopies(time.Now)
 	issue := "A-1"
 	event := model.Event{IssueKey: &issue}
 	stale := fallbackCopy{commentID: "stale", destination: "notifications.agent.s1"}
