@@ -394,11 +394,15 @@ func endIdleHolds(ctx context.Context, st *store.Store, project, issue string, l
 // release's words (workflow.ReleasedWakeTask, store.PodRelease.WakeTask), since the release takes
 // the pod.
 //
-// A record that cannot be written is logged: the pod is already released, and nothing undoes
-// that for want of a row.
-func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) {
+// The record is the release's one-way step too: it writes the release on its mark
+// (store.Store.RecordPodRelease), and the teardown records the release before any step that can
+// fail after the pod is gone. So a teardown that runs again after such a step failed finishes the
+// release and cannot cancel it (store.ReleaseDecision.PodTaken), and its record writes no second
+// row. A record that cannot be written is logged and answered as the teardown's error: the row
+// runs again, and until a record lands, the mark names no release.
+func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation uint64, suspended []claim.Role, bundleBytes int) error {
 	if r.supervisor == nil || r.supervisor.store == nil {
-		return
+		return nil
 	}
 	roles := make([]string, 0, len(suspended))
 	for _, role := range suspended {
@@ -410,7 +414,9 @@ func (r *outbox) recordPodRelease(ctx context.Context, issue string, generation 
 		At: time.Now().UTC(), BundleBytes: bundleBytes, WakeTask: workflow.ReleasedWakeTask,
 	}); err != nil {
 		r.log.Warn("outbox: could not record an issue pod's release", "issue", issue, "error", err)
+		return err
 	}
+	return nil
 }
 
 // releaseHold is the hold a cancel the store decided is recorded under, and the sentence the

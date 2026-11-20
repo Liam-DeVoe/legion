@@ -1317,6 +1317,83 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 	}
 }
 
+// clearRefusedOnce is the daemon's tree store with the teardown's last step refused once: the
+// first ClearIssueRelease answers an error, as a store that lost its connection would, and every
+// later one runs.
+type clearRefusedOnce struct {
+	outboxTrees
+	refused *bool
+}
+
+func (t clearRefusedOnce) ClearIssueRelease(ctx context.Context, project, issue string) error {
+	if !*t.refused {
+		*t.refused = true
+		return errors.New("the pool is gone")
+	}
+	return t.outboxTrees.ClearIssueRelease(ctx, project, issue)
+}
+
+// A release's teardown is one-way once the runtime has taken the pod (the reviewer's second
+// read-ahead of dispatch://INFRA-3589, D1). The teardown's record writes the release on the mark
+// before any step that can fail. Here the teardown's last step fails, so its row runs again. That
+// attempt finishes the release whatever happened meanwhile: it asks the runtime nothing, cancels
+// nothing, keeps the bundle of unpushed work for the pod that replaces this one, and records no
+// second release. Before, the attempt read the mark again: a claim an operator took over in
+// between made it cancel a release whose pod was gone, which deleted the bundle, and an attempt
+// with nothing new took the pod a second time and recorded a second release.
+func TestATeardownThatFailsAfterItsPodIsGoneFinishesOnItsNextAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		takeOver bool
+	}{
+		{name: "an operator took a claim over between the attempts", takeOver: true},
+		{name: "nothing changed between the attempts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			refused := false
+			rig.runner.trees = clearRefusedOnce{outboxTrees: rig.st, refused: &refused}
+			rig.w.releaseIdlePod(ctx, rig.issue.Key)
+			if _, err := rig.pool.Exec(ctx, `update outbox set next_at = now() + interval '1 hour' where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key); err != nil {
+				t.Fatalf("hold the teardown back: %v", err)
+			}
+			rig.drain(t)
+			if got := rig.machine.Claim(); !got.Released() || !rig.marked(t) || !rig.bundled(t) {
+				t.Fatalf("the claim = %s by %s, the mark stands = %t and the bundle is saved = %t; want the release saved and stopped, its teardown to come",
+					got.State, got.SuspendedBy, rig.marked(t), rig.bundled(t))
+			}
+			var teardown record.OutboxRow
+			if err := rig.pool.QueryRow(ctx, `select id, kind, issue, payload from outbox where issue = $1 and kind = 'issue_release'`,
+				rig.issue.Key).Scan(&teardown.ID, &teardown.Kind, &teardown.Issue, &teardown.Payload); err != nil {
+				t.Fatalf("read the teardown row: %v", err)
+			}
+			if err := rig.runner.execute(ctx, teardown); err == nil || !refused {
+				t.Fatalf("the teardown's first attempt = %v, want the refused last step's error", err)
+			}
+			if _, taken := rig.rt.reads(); taken != 1 || !rig.marked(t) {
+				t.Fatalf("after the first attempt the runtime took %d pods and the mark stands = %t; want the pod taken once and the mark left for the next attempt",
+					taken, rig.marked(t))
+			}
+			if tc.takeOver {
+				if _, err := rig.pool.Exec(ctx, `update claims set suspended_by = 'operator' where token = $1`, string(rig.token)); err != nil {
+					t.Fatalf("take the implementer's claim over as an operator: %v", err)
+				}
+			}
+
+			if err := rig.runner.execute(ctx, teardown); err != nil {
+				t.Fatalf("the teardown's next attempt: %v", err)
+			}
+			records := rig.records(t)
+			if _, taken := rig.rt.reads(); rig.marked(t) || !rig.bundled(t) || len(records.Releases) != 1 || taken != 1 {
+				t.Fatalf("after the next attempt the mark stands = %t, the bundle is saved = %t, the releases = %+v and the runtime took %d pods; want the release finished once: no mark, the bundle kept for the next pod, one release and one pod taken",
+					rig.marked(t), rig.bundled(t), records.Releases, taken)
+			}
+		})
+	}
+}
+
 // A turn that began after the release was marked — a direct message, a notice or a person's
 // answer reaching a live session — leaves no outbox row at all: what says it happened is the
 // claim, working rather than idle. The save stored the workspace from before that turn's edits,

@@ -772,6 +772,12 @@ func TestAReleasesMarkRecordsTheClaimsItsStopsSuspended(t *testing.T) {
 //
 // The wake taken before the mark is the mark's own high-water, so a release is never cancelled
 // by a wake that was over before it began.
+//
+// A release whose own row is recorded has taken its pod: the teardown records it once the runtime
+// has taken the pod, and the record writes the release on the mark (RecordPodRelease). A
+// teardown that reads such a mark is one run again after a later step failed, and it acts
+// whatever woke the pod since, since nothing undoes a pod that is gone (the reviewer's second
+// read-ahead of dispatch://INFRA-3589, D1). The role stop reads no record, and the wake cancels it.
 func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -783,19 +789,21 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 		unrecorded bool
 		want       ReleaseAct
 		cause      ReleaseCause
+		// teardown and teardownCause are the teardown's answer, where it is not the role stop's.
+		teardown      ReleaseAct
+		teardownCause ReleaseCause
 	}{
-		{name: "no wake since the mark", want: ReleaseActs},
+		{name: "no wake since the mark", want: ReleaseActs, teardown: ReleaseActs},
 		{name: "a wake for a claim an earlier release left released", woken: true,
-			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
-		// The lane records a release's own row last, after the roles are stopped and the Sandbox
-		// suspended, and a write that fails is only logged. So a wake between the stop and that
-		// row, and a wake of a release whose row the lane never wrote, reach a record where the
-		// newest release is the one before this one - the shape that refused every wake of a role
-		// the previous release had woken.
+			want: ReleaseCancel, cause: ReleaseCauseOvertaken, teardown: ReleaseActs},
+		// The lane records a release's own row after the roles are stopped and the Sandbox
+		// suspended. So a wake between the stop and that row, and a wake of a release whose row
+		// the lane never wrote, reach a record where the newest release is the one before this
+		// one - the shape that refused every wake of a role the previous release had woken.
 		{name: "a wake before the release's own row is recorded", woken: true, late: true,
-			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
+			want: ReleaseCancel, cause: ReleaseCauseOvertaken, teardown: ReleaseActs},
 		{name: "a wake of a release whose record the lane never wrote", woken: true, unrecorded: true,
-			want: ReleaseCancel, cause: ReleaseCauseOvertaken},
+			want: ReleaseCancel, cause: ReleaseCauseOvertaken, teardown: ReleaseCancel, teardownCause: ReleaseCauseOvertaken},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st := migratedStore(t)
@@ -848,8 +856,8 @@ func TestAWakeTakenAfterTheMarkCancelsTheRelease(t *testing.T) {
 			if err != nil {
 				t.Fatalf("IssueRelease: %v", err)
 			}
-			if teardown.Act != tc.want || teardown.Cause != tc.cause {
-				t.Fatalf("the teardown = %s for %s, want %s for %s", teardown.Act, teardown.Cause, tc.want, tc.cause)
+			if teardown.Act != tc.teardown || teardown.Cause != tc.teardownCause || teardown.PodTaken != !tc.unrecorded {
+				t.Fatalf("the teardown = %s for %s (pod taken %t), want %s for %s", teardown.Act, teardown.Cause, teardown.PodTaken, tc.teardown, tc.teardownCause)
 			}
 		})
 	}

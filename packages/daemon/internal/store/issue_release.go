@@ -105,12 +105,19 @@ func (c ReleaseCause) String() string {
 // release of a pod no role can use suspends none and saves no bundle, so its rows must be able
 // to tell what release they belong to. A decision that holds no mark — a row of a release that
 // is over — carries the zero of it, as it carries the zero of every other field.
+//
+// PodTaken is whether the release has taken its pod: its teardown recorded the release
+// (issue_releases.released_id, RecordPodRelease), which it does once the runtime has taken the pod
+// and before any later step. Only the teardown answers it (IssueRelease), always with ReleaseActs:
+// the teardown that runs again then finishes the steps that are left and takes no pod a second
+// time.
 type ReleaseDecision struct {
 	Act            ReleaseAct
 	Cause          ReleaseCause
 	Release        int64
 	Suspended      []claim.Role
 	SuspendsNoRole bool
+	PodTaken       bool
 }
 
 // releaseMark is the mark one release in flight left, as every row of that release reads it.
@@ -128,6 +135,9 @@ type releaseMark struct {
 	// kind is the release rule that wrote this mark, releaseKindIdle or releaseKindUnowned: the
 	// release of a quiet pod, or the release of a pod no role can use, which suspends no role.
 	kind string
+	// released is the pod_releases row the teardown recorded for this release once the runtime
+	// took the pod (RecordPodRelease), 0 while the pod stands.
+	released int64
 }
 
 // holds is whether row is one of the rows this mark's release queued. Every row of a release was
@@ -139,9 +149,9 @@ func (m releaseMark) holds(row int64) bool { return row >= m.first && row <= m.l
 // row no mark holds, which is a row of a release that is over, and otherwise the mark is the one
 // the row belongs to.
 func readReleaseMark(ctx context.Context, tx pgx.Tx, project, issue string, row int64) (mark releaseMark, held bool, err error) {
-	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind from issue_releases
-		where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
-		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind)
+	err = tx.QueryRow(ctx, `select id, first_row, boundary_row, last_row, started_row, wake_row, suspended, kind, released_id
+		from issue_releases where project = $1 and issue = $2`, project, issue).Scan(&mark.id, &mark.first, &mark.boundary,
+		&mark.last, &mark.started, &mark.wake, &mark.suspended, &mark.kind, &mark.released)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return releaseMark{}, false, nil
 	}
@@ -382,6 +392,13 @@ func (s *Store) IssueReleaseSave(ctx context.Context, project, issue string, row
 // claims the release suspended, which are the roles a finished release records and the claims a
 // cancel resumes.
 //
+// A release whose teardown recorded it has taken its pod (ReleaseDecision.PodTaken), and the
+// teardown's later steps failed: this row is that teardown run again. Nothing undoes a pod that is
+// gone, so the answer is ReleaseActs whatever the claims and the queue say now, and the teardown
+// finishes the steps that are left. A cancel then would resume the roles in a pod that is gone,
+// delete the bundle of unpushed work that the next pod restores, and drop the wakes the record
+// already counted.
+//
 // This is IssueSuspension's shape with its authorization inverted: a close acts only once its
 // issue has left the workflow or its tree lingers, and a release acts only while the issue is
 // still in the workflow and its tree is live. The two order against each other because each
@@ -401,6 +418,10 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 			return err
 		}
 		decision.Release, decision.Suspended, decision.SuspendsNoRole = mark.id, mark.roles(), mark.suspendsNoRole()
+		if mark.released != 0 {
+			decision.Act, decision.PodTaken = ReleaseActs, true
+			return nil
+		}
 		decision.Act, decision.Cause = ReleaseCancel, ReleaseCauseUnauthorized
 		var issueGeneration, rootGeneration int64
 		var issuePhase, status, rootPhase, rootStatus string

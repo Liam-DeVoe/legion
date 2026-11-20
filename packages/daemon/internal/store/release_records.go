@@ -159,15 +159,33 @@ type PodReleaseRecords struct {
 // nothing. The record holds no lock when it locks the mark, and only the mark when it locks the
 // pause row, so it cannot deadlock with a take, a cancel or a resume; PodRecords.TakePodWake
 // gives the whole lock order.
+//
+// The record is also the mark's one-way step: it writes the release's id on the mark
+// (issue_releases.released_id), in the transaction that inserts the row. The teardown records the
+// release once the runtime has taken the pod and before any later step (internal/daemon's
+// releaseIssue), so a mark that names its release is a release whose pod is gone. A teardown that
+// runs again after a later step failed reads it: IssueRelease answers ReleaseActs, and a cancel
+// refuses the mark (CancelIssueRelease). Its record answers the id the mark names and writes
+// nothing, so the release has one row, and the wakes it pointed at itself and retold stay as the
+// first record left them. With no mark, as in a record a test writes alone, there is nothing to
+// stamp, and each call writes a row.
 func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, error) {
 	if rel.Project == "" || rel.Issue == "" {
 		return 0, errors.New("a pod release record needs its project and issue")
 	}
 	var id int64
 	err := s.Tx(ctx, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `select 1 from issue_releases where project = $1 and issue = $2 for update`,
-			rel.Project, rel.Issue); err != nil {
+		id = 0
+		var recorded int64
+		err := tx.QueryRow(ctx, `select released_id from issue_releases where project = $1 and issue = $2 for update`,
+			rel.Project, rel.Issue).Scan(&recorded)
+		marked := err == nil
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("lock the release mark: %w", err)
+		}
+		if recorded != 0 {
+			id = recorded
+			return nil
 		}
 		if _, _, err := LockOpenPauseByTokenTx(ctx, tx, rel.Project); err != nil {
 			return err
@@ -186,6 +204,12 @@ func (s *Store) RecordPodRelease(ctx context.Context, rel PodRelease) (int64, er
 		}
 		if err := retellWakesUnderRelease(ctx, tx, rel.Project, rel.Issue, rel.WakeTask); err != nil {
 			return err
+		}
+		if marked {
+			if _, err := tx.Exec(ctx, `update issue_releases set released_id = $3 where project = $1 and issue = $2`,
+				rel.Project, rel.Issue, id); err != nil {
+				return fmt.Errorf("write the release on its mark: %w", err)
+			}
 		}
 		return endPodHoldStreaks(ctx, tx, rel.Project, rel.Issue, "")
 	})

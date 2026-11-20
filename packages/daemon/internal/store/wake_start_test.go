@@ -320,3 +320,102 @@ func TestACancelRetellsTheKeptStartOfAWakeWhoseClaimAnOperatorTookOver(t *testin
 		})
 	}
 }
+
+// The reviewer's second read-ahead of dispatch://INFRA-3589, D1: a release's record writes the
+// release on its mark, and that makes the teardown one-way. The teardown records the release once
+// the runtime has taken the pod, so a mark that names its release is a release whose pod is gone.
+// A second record answers the row the first wrote and writes no second row. The teardown's next
+// attempt is answered ReleaseActs, whatever happened since: here an operator took a claim of the
+// release over, which cancels a release whose pod still stands. A cancel of such a mark is refused
+// and leaves the mark and the bundle as they are.
+func TestARecordedReleaseIsNeverCancelled(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	boundary, stop, last := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	rel := PodRelease{Project: "legion", Issue: rootIssue, Generation: 1, Roles: []string{"architect", "implementer"}, At: time.Now().UTC()}
+	first, err := st.RecordPodRelease(ctx, rel)
+	if err != nil {
+		t.Fatalf("record the release: %v", err)
+	}
+	again, err := st.RecordPodRelease(ctx, rel)
+	if err != nil || again != first {
+		t.Fatalf("the teardown's second record = %d, %v; want the release %d the first wrote", again, err, first)
+	}
+	if n := pauseCount(t, st, `select count(*)::int from pod_releases where issue = $1`, rootIssue); n != 1 {
+		t.Fatalf("pod_releases holds %d rows of the release, want one", n)
+	}
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+
+	decision, err := st.IssueRelease(ctx, "legion", IssueReleased{Issue: rootIssue, Tree: rootIssue, IssueGeneration: 1,
+		TreeGeneration: 1, Row: last}, record.OutOfWorkflow)
+	if err != nil || decision.Act != ReleaseActs || !decision.PodTaken {
+		t.Fatalf("the teardown's next attempt = %s for %s (pod taken %t), %v; want it to act: the pod is gone", decision.Act, decision.Cause, decision.PodTaken, err)
+	}
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now()}); err == nil {
+		t.Fatal("a cancel of a release that took its pod went through, want it refused")
+	}
+	if !releaseMarked(t, st) {
+		t.Fatal("the refused cancel deleted the mark, want it left for the teardown to finish")
+	}
+}
+
+// D2 of the same read-ahead: the cancel deletes the resume of a wake of a role another path took
+// over (dropTakenOverWakes), but a pause's owed launch is no such wake. The stop transaction of a
+// project's pause takes it for a role whose launch the pause owes, and that resume is the record
+// that the pause still owes it, which the pause's resume settles and a cancel does not.
+func TestACancelKeepsThePausesOwedLaunchOfARoleAnOperatorTookOver(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	rootClaim(t, st, claim.RoleArchitect, supervise.StateIdle, "")
+	boundary, stop, _ := releaseTwoRolesThroughTheStore(t, st)
+	stoppedByTheRelease(t, st, claim.RoleImplementer, boundary)
+	stoppedByTheRelease(t, st, claim.RoleArchitect, stop)
+	pause, _ := pauseLegion(t, st, time.Now().UTC())
+	records := podRecords(t, st)
+	inTx(t, st, func(tx pgx.Tx) error {
+		if taken, err := records.TakePodWake(ctx, tx, rootIssue, claim.RoleImplementer, pods.WakePause, time.Now().UTC(), pause.ID); err != nil || !taken {
+			t.Fatalf("take the pause's owed launch of the implementer = %t, %v; want it taken", taken, err)
+		}
+		return nil
+	})
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateSuspended, supervise.SuspendedByOperator)
+
+	if _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow, ReleaseCancelPause{At: time.Now().UTC()}); err != nil {
+		t.Fatalf("CancelIssueRelease: %v", err)
+	}
+	if held, open := heldOpenResume(t, st, claim.RoleImplementer); !open || held != pause.ID {
+		t.Errorf("the implementer's open resume after the cancel = pause %d, open %t; want the pause's owed launch, held by pause %d", held, open, pause.ID)
+	}
+}
+
+// D3 of the same read-ahead: the delivery wake reads the claim as released from its machine,
+// outside the take's transaction, and a start can resume the role and be deleted before the take
+// reads the queued starts. So the take reads the claim's row too, and takes nothing unless the
+// record still holds the claim suspended as `released`. Here the record holds it idle: the take
+// answers NotReleased and records no resume. Once the claim is released again, the take takes
+// the wake.
+func TestADeliveryWakeTakesNothingForAClaimTheRecordHoldsLive(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	rootClaim(t, st, claim.RoleImplementer, supervise.StateIdle, "")
+	wake, err := st.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, time.Now().UTC(), 0)
+	if err != nil || wake.Taken || !wake.NotReleased {
+		t.Fatalf("the delivery wake of a claim the record holds idle = %+v, %v; want nothing taken and the claim named not released", wake, err)
+	}
+	if n := pauseCount(t, st, `select count(*)::int from pod_resumes where issue = $1`, rootIssue); n != 0 {
+		t.Fatalf("pod_resumes holds %d resumes after that wake, want none: no pod came back", n)
+	}
+	releasedClaim(t, st, claim.RoleImplementer)
+	wake, err = st.TakeDeliveryWake(ctx, "legion", rootIssue, releasedToken, 1, time.Now().UTC(), 0)
+	if err != nil || !wake.Taken || wake.NotReleased {
+		t.Fatalf("the delivery wake of the released claim = %+v, %v; want the wake taken", wake, err)
+	}
+}

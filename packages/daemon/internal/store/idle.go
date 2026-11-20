@@ -473,16 +473,22 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 			return err
 		}
 		cancelled = ReleaseCancelled{}
-		var release, wake, last int64
+		var release, wake, last, recorded int64
 		var suspended []string
 		var kind string
-		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row from issue_releases
-			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last)
+		err := tx.QueryRow(ctx, `select id, suspended, kind, wake_row, last_row, released_id from issue_releases
+			where project = $1 and issue = $2 for update`, project, issue).Scan(&release, &suspended, &kind, &wake, &last, &recorded)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
 			return err
+		}
+		// A release whose teardown recorded it has taken its pod (ReleaseDecision.PodTaken), and
+		// nothing undoes that: its teardown finishes it, and no cancel may resume its roles in a
+		// pod that is gone or delete the bundle the next pod restores.
+		if recorded != 0 {
+			return fmt.Errorf("the release of %s took its pod and was recorded as release %d, so it cannot be cancelled: its teardown finishes it", issue, recorded)
 		}
 		cancelled.SuspendsNoRole = kind == releaseKindUnowned
 		// The bundle this release saved goes with the mark, in this transaction. The pod it was
@@ -819,6 +825,11 @@ func releasedRoleNames(roles []releasedRole) []string {
 // acting under a close or a linger (decision 10 of dispatch://INFRA-3759), and it waits for an
 // operator's resume under an operator's suspension.
 //
+// A pause's owed launch is kept whole (kind pods.WakePause). The stop transaction of a project's
+// pause takes it for a role whose launch the pause owes (internal/daemon's projectPause.stopTx),
+// and the pause's resume runs its start. That resume is the record that the pause still owes the
+// launch (openPodResume), which no cancel of a release settles.
+//
 // That start's task was written for a session a release stopped, and it says that the release
 // took the pod. The release took none, and the role that the operator resumes reads that task. So,
 // before it deletes the resumes, the transaction rewrites that task through retell
@@ -841,8 +852,8 @@ func dropTakenOverWakes(ctx context.Context, tx pgx.Tx, project, issue string, s
 	if err := retellWakesOf(ctx, tx, project, issue, takenOver, wake, last, retell); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(ctx, `delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4)`,
-		project, issue, wake, takenOver); err != nil {
+	if _, err := tx.Exec(ctx, `delete from pod_resumes where project = $1 and issue = $2 and id > $3 and role = any($4)
+		and kind <> $5`, project, issue, wake, takenOver, pods.WakePause); err != nil {
 		return fmt.Errorf("delete the wakes taken while the release of %s stood of roles another path took over: %w", issue, err)
 	}
 	return nil

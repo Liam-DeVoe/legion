@@ -170,6 +170,9 @@ type DeliveryWake struct {
 	// StartQueued is a start that brings the role back, queued in the outbox (StartQueued): the
 	// call takes nothing, and that start resumes the role.
 	StartQueued bool
+	// NotReleased is a claim the record no longer holds as suspended by a release: the call took
+	// nothing, since something already brought the role back or took the claim over.
+	NotReleased bool
 }
 
 // TakeDeliveryWake takes the wake of the outbox's delivery wake (internal/daemon's
@@ -206,6 +209,21 @@ type DeliveryWake struct {
 // live and hands its delivery over. A start the workflow's wake queued is such a start too: that
 // wake recorded its resume, and its start brings the role back.
 //
+// The caller read the claim as released from its machine, outside this transaction, and a start
+// can run and finish between that read and the read of the queued starts: the cancel's start
+// resumes the role and is deleted. So the call reads the claim's row too, after the starts, and
+// takes nothing unless the record still holds the claim suspended as `released`. A start that
+// finished before the starts' read has written the claim's resume before it was deleted, so the
+// two reads cannot both miss it.
+//
+// How long a delivery waits for a queued start is that start's own fate. The start runs on its
+// lane like any row. Its failures, and those of an older row of the issue that it waits behind
+// (record's outboxInOrder), are logged by the failing row itself: an error at each attempt, and a
+// wait at WARN once its attempts pass the outbox's count (internal/daemon's waitWarnAttempts). A
+// start that finishes without acting, such as one that serves an earlier generation, is deleted,
+// and the delivery's next attempt takes the wake itself. So the delivery logs its own wait at
+// debug and adds no warning of its own.
+//
 // token is the claim the wake brings back, and the role it names is the role woken: a token that
 // names no role is an error. generation is the issue's generation, which a start that brings the
 // role back names. mark is the pause that held the outbox row the wake is taken for
@@ -235,6 +253,14 @@ func (s *Store) TakeDeliveryWake(ctx context.Context, project, issue string, tok
 		}
 		if wake.StartQueued, err = startQueued(ctx, tx, issue, role, generation); err != nil || wake.StartQueued {
 			return err
+		}
+		var released bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from claims where project = $1 and token = $2
+			and state = 'suspended' and suspended_by = 'released')`, project, string(token)).Scan(&released); err != nil {
+			return fmt.Errorf("read whether %s is still released: %w", token, err)
+		}
+		if wake.NotReleased = !released; wake.NotReleased {
+			return nil
 		}
 		pause, _, err := records.PauseOfWake(ctx, tx, issue, token, mark)
 		if err != nil {
