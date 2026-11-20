@@ -1042,7 +1042,7 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 		// both get.
 		newerLifetime int
 		// handedBack is the grant the request after is handed back: "newer", "older", or "" for
-		// none, with the request pending.
+		// none, with the request pending. Any other value names no grant of the row and fails it.
 		handedBack string
 		// newerPaused is whether the newer grant pauses once the secret has its row's owner: a
 		// release of it answers ErrGrantNotLive, where one of a grant that does not pause
@@ -1077,7 +1077,11 @@ func TestAPauseOnTheNewestGrantStopsTheReuse(t *testing.T) {
 			if again.GrantID != nil {
 				handed = "grant " + *again.GrantID
 			}
-			if want := map[string]string{"newer": newer, "older": older}[c.handedBack]; want != "" && (again.GrantID == nil || *again.GrantID != want) {
+			want, named := map[string]string{"": "", "newer": newer, "older": older}[c.handedBack]
+			if !named {
+				t.Fatalf("row %q: handedBack %q names no grant of the row; want \"newer\", \"older\" or \"\"", c.name, c.handedBack)
+			}
+			if want != "" && (again.GrantID == nil || *again.GrantID != want) {
 				t.Fatalf("Create once %s = state %q with %s; want the %s grant %s handed back (older %s, newer %s)", c.name, again.State, handed, c.handedBack, want, older, newer)
 			}
 			if c.handedBack == "" && (again.State != "pending" || again.GrantID != nil) {
