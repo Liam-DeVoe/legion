@@ -957,6 +957,62 @@ func TestAGrantMadeAfterTheEndPassWaitsForTheNextRequest(t *testing.T) {
 	}
 }
 
+// TestAGrantEndedAfterTheEndPassIsNotHandedBack: Create checks the live grants of the asked names
+// once (endMatchingLiveGrants), and reuseLiveGrant looks them up again before it hands one back.
+// So a grant that check left live, and that is revoked or expires before the reuse, is not handed
+// back, and the request asks afresh. With nothing in between, the reuse hands the same grant back,
+// which makes each refusal the revoke's or the expiry's doing.
+func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		between func(t *testing.T, m *Machine, enr, grantID string)
+		reused  bool
+	}{
+		{name: "nothing happens in between", between: func(*testing.T, *Machine, string, string) {}, reused: true},
+		{name: "the grant is revoked in between", between: func(t *testing.T, m *Machine, enr, grantID string) {
+			if err := m.RevokeGrant(context.Background(), grantID, enr); err != nil {
+				t.Fatalf("RevokeGrant: %v", err)
+			}
+		}},
+		{name: "the grant expires in between", between: func(t *testing.T, m *Machine, _, grantID string) {
+			if _, err := m.Store.Pool.Exec(context.Background(), `update grants set expires_at = now() - interval '1 hour' where id=$1`, grantID); err != nil {
+				t.Fatalf("backdate grant: %v", err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			m, enr, key, _ := newFixture(t)
+			ctx := context.Background()
+			names := []string{"AUTO_TOKEN"}
+			granted, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "", nil)
+			if err != nil || granted.GrantID == nil {
+				t.Fatalf("Create = %+v, %v; want an automatic grant", granted, err)
+			}
+			row, err := m.enrollment(ctx, enr)
+			if err != nil {
+				t.Fatalf("enrollment: %v", err)
+			}
+			set := m.Policy.Get()
+			checked, err := m.endMatchingLiveGrants(ctx, row, names, set)
+			if err != nil || len(checked) != 1 || checked[0].grantID != *granted.GrantID || checked[0].pause != nil {
+				t.Fatalf("endMatchingLiveGrants = %+v, %v; want the grant %s left live with no pause", checked, err, *granted.GrantID)
+			}
+
+			c.between(t, m, enr, *granted.GrantID)
+			got, ok, err := m.reuseLiveGrant(ctx, row, names, defaultLifetime(set, names, nil), checked)
+			if err != nil {
+				t.Fatalf("reuseLiveGrant once %s: %v", c.name, err)
+			}
+			if c.reused && (!ok || got.GrantID == nil || *got.GrantID != *granted.GrantID) {
+				t.Fatalf("reuseLiveGrant once %s = %+v, %t; want the grant %s handed back", c.name, got, ok, *granted.GrantID)
+			}
+			if !c.reused && ok {
+				t.Fatalf("reuseLiveGrant once %s = %+v; want no grant handed back", c.name, got)
+			}
+		})
+	}
+}
+
 // TestValuesHoldsNoPooledConnectionWhileReadingSecrets pins that Values reads a grant's names into
 // memory before fetching the first value, so no cursor (and its pooled connection) stays open
 // across a Secrets Manager read.
