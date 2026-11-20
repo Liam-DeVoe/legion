@@ -3,6 +3,8 @@ package api
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // dispatchCredentialServed is the `dispatchCredential` of a state body, as the plugin's reader sees
@@ -57,44 +59,58 @@ func TestTheStateServesTheDaemonsDispatchCredential(t *testing.T) {
 // A plugin below dispatchCredentialContract is served no `dispatchCredential`: one built before
 // sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
 // key it does not name, and one built after strips the key, so the strip is what keeps the object
-// from a caller that did not ask for it. The route authenticates nobody, so it knows that plugin
-// by the pod the request came from. The daemon's log says what was dropped, named here as a
-// literal rather than read from stateNarrowings, so a strip applied beside the table, which writes
-// no line, fails here.
+// from a caller that did not ask for it. The route authenticates nobody, so it knows that plugin by
+// the contract the request states, which every plugin from shapedAnswersContract on does, or else
+// by the pod the request came from, whose claims are read only below shapedAnswersContract
+// (podContracts). The daemon's log says what was dropped, named here as a literal rather than read
+// from stateNarrowings, so a strip applied beside the table, which writes no line, fails here.
 func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 	state := populatedState(t)
-	behind, narrowings := stateNarrowed(t, state, statePodAddr+":4100", podClaims(dispatchCredentialContract-1))
-	if credential, carried := dispatchCredentialServed(t, behind); carried {
-		t.Errorf("the pod below %d is served dispatchCredential %v, want no such key: the object is not its contract's",
-			dispatchCredentialContract, credential)
-	}
-	said := false
-	for _, line := range narrowings {
-		said = said || line.Dropped == "dispatchCredential"
-	}
-	if !said {
-		t.Errorf("a caller at %d was served no line saying it dropped dispatchCredential; the daemon wrote %+v",
-			dispatchCredentialContract-1, narrowings)
+	for _, behind := range []struct {
+		name   string
+		claims []supervise.Claim
+		stated int
+	}{
+		{name: "a caller stating the contract just below", claims: podClaims(memoryContract - 1), stated: dispatchCredentialContract - 1},
+		{name: "a pod whose plugin states no contract", claims: podClaims(shapedAnswersContract - 1)},
+	} {
+		remote := "192.0.2.1:4100"
+		if behind.stated == 0 {
+			remote = statePodAddr + ":4100"
+		}
+		body, narrowings := stateNarrowedStating(t, state, remote, behind.claims, behind.stated)
+		if credential, carried := dispatchCredentialServed(t, body); carried {
+			t.Errorf("%s is served dispatchCredential %v, want no such key: the object is not its contract's",
+				behind.name, credential)
+		}
+		said := false
+		for _, line := range narrowings {
+			said = said || line.Dropped == "dispatchCredential"
+		}
+		if !said {
+			t.Errorf("%s was served no line saying it dropped dispatchCredential; the daemon wrote %+v",
+				behind.name, narrowings)
+		}
 	}
 
-	at, narrowings := stateNarrowed(t, state, statePodAddr+":4100", podClaims(dispatchCredentialContract))
+	at, narrowings := stateNarrowedStating(t, state, "192.0.2.1:4100", podClaims(memoryContract-1), dispatchCredentialContract)
 	if _, carried := dispatchCredentialServed(t, at); !carried {
-		t.Errorf("the pod at %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
+		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
 	if len(narrowings) != 0 {
-		t.Errorf("the pod at %d is narrowed: %+v", dispatchCredentialContract, narrowings)
+		t.Errorf("a caller stating %d is narrowed: %+v", dispatchCredentialContract, narrowings)
 	}
 
-	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(dispatchCredentialContract-1))
+	operator, _ := stateNarrowed(t, state, "192.0.2.1:4100", podClaims(memoryContract-1))
 	if _, carried := dispatchCredentialServed(t, operator); !carried {
-		t.Errorf("the operator's own answer, in no pod, is served no dispatchCredential: %s", operator)
+		t.Errorf("the operator's own answer, in no pod and stating no contract, is served no dispatchCredential: %s", operator)
 	}
 }
 
 // dispatchCredentialContract is the contract whose entry in version.go added the key, and this
 // daemon's own contract is never below it: a caller at this contract is served the object.
 func TestTheDispatchCredentialContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedDispatchCredential = 196
+	const addedDispatchCredential = 199
 	if dispatchCredentialContract != addedDispatchCredential {
 		t.Fatalf("dispatchCredentialContract = %d, want %d, the contract whose entry in version.go added `dispatchCredential`",
 			dispatchCredentialContract, addedDispatchCredential)
