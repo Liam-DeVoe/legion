@@ -376,7 +376,7 @@ func (s *jjStep) dryRunFilled() ([]string, error) {
 		}
 		id, refusal, ok := jjNoAuthorCommit(stderr)
 		if !ok {
-			return nil, s.unreadable(jjFirstLine(stderr, code))
+			return nil, s.unreadable(jjErrorLine(stderr, code))
 		}
 		if slices.Contains(named, id) || slices.ContainsFunc(made, func(commit string) bool { return strings.HasPrefix(commit, id) }) {
 			return nil, s.unreadable(refusal)
@@ -749,13 +749,22 @@ func (s *jjStep) command(env, args []string) (stdout, stderr string, code int, e
 	return out.String(), errOut.String(), 0, nil
 }
 
-// jjFirstLine is the first line of output that is not blank, or what stands for it when there is
-// none: the line the step names when it cannot read a dry run that exited code.
-func jjFirstLine(output string, code int) string {
+// jjErrorLine is the line the step names when it cannot read a dry run that exited code: the
+// first line of output that starts with `Error: `, jj's error, which may follow a notice such as
+// the `Creating bookmark push-<change> for revision <change>` of `jj git push -c`; else the first
+// line that is not blank, or what stands for it when there is none.
+func jjErrorLine(output string, code int) string {
+	first := ""
 	for line := range strings.SplitSeq(output, "\n") {
-		if line = strings.TrimSpace(line); line != "" {
-			return line
+		if strings.HasPrefix(line, "Error: ") {
+			return strings.TrimSpace(line)
 		}
+		if first == "" {
+			first = strings.TrimSpace(line)
+		}
+	}
+	if first != "" {
+		return first
 	}
 	return fmt.Sprintf("the dry run exited %d and printed nothing", code)
 }
