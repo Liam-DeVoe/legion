@@ -113,6 +113,7 @@ function lookup(target: string, fake: FakeShape): unknown {
     "/api/v1/whoami": { kind: "agent", owner: "carol@example.com" },
     "/api/v1/projects": [{ key: "OWN" }, { key: "TGT" }],
     "/api/v1/projects/TGT/access": { project: "TGT", people: [] },
+    "/api/v1/projects/OWN/access": { project: "OWN", people: ["bob@outside.example"] },
     "/api/v1/issues?project=TGT&limit=50": { issues },
     "/api/v1/issues?project=OWN&limit=50": {
       issues: [{ key: "OWN-1", created_by: author, assignee: "carol@example.com" }],
@@ -205,6 +206,8 @@ interface SocketData {
 function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
   const feed = fake.feed ?? {};
   const memberPaths: string[] = [];
+  // Every request the full member's credential made: a runner must make none.
+  let fullRequests = 0;
   const fullFeeds: ServerWebSocket<SocketData>[] = [];
   const memberFeeds: ServerWebSocket<SocketData>[] = [];
   let events = 0;
@@ -217,6 +220,7 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       const member = request.headers.get("cookie") === memberCookie;
       const fullBrowser = request.headers.get("cookie") === fullCookie;
       const full = fullBrowser || request.headers.get("authorization") === `Bearer ${fullToken}`;
+      if (full) fullRequests += 1;
       if (request.headers.get("upgrade") !== null) {
         if (member && feed.memberRefusal !== undefined && url.pathname === "/ws/live") {
           return Response.json(feed.memberRefusal, { status: 404 });
@@ -308,7 +312,12 @@ function fakeDispatch(leaks: readonly Leak[], fake: FakeShape) {
       },
     },
   });
-  return { memberPaths, origin: `http://127.0.0.1:${server.port}`, server };
+  return {
+    memberPaths,
+    fullRequests: () => fullRequests,
+    origin: `http://127.0.0.1:${server.port}`,
+    server,
+  };
 }
 
 const servers: { stop: (closeActiveConnections?: boolean) => unknown }[] = [];
@@ -327,11 +336,13 @@ interface RunShape extends FakeShape {
   readonly rows?: readonly string[];
 }
 
-/** What one run of the sweep answered, and the paths of every request the member sent. */
+/** What one run of the sweep answered, the paths of every request the member sent, and how many
+ *  requests the full member's credential made. */
 interface SweptRun {
   readonly code: number;
   readonly stdout: string;
   readonly memberPaths: readonly string[];
+  readonly fullRequests: number;
 }
 
 /** One run of the sweep against a fake with `leaks` planted. */
@@ -367,7 +378,12 @@ async function sweep(leaks: readonly Leak[], shape: RunShape = {}): Promise<Swep
     from: import.meta.url,
   });
   fake.server.stop(true);
-  return { code: run.code, memberPaths: fake.memberPaths, stdout: run.stdout };
+  return {
+    code: run.code,
+    fullRequests: fake.fullRequests(),
+    memberPaths: fake.memberPaths,
+    stdout: run.stdout,
+  };
 }
 
 /** The `FAIL    ` lines of a run, without that prefix. */
@@ -833,7 +849,7 @@ describe.skipIf(withoutTools)("a run that proves nothing", () => {
       const { code, stdout } = await quietRun();
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain(
-        "\nUNKNOWN: nothing reached the member, but this run did not prove it:\n"
+        "\nUNKNOWN: nothing reached the member, but this run did not prove it, for the "
       );
       expect(stdout).toMatch(/^UNKNOWN \/ws\/doc\/\{room\}: /m);
       expect(stdout).toContain(
@@ -969,6 +985,176 @@ describe.skipIf(withoutTools)("the routes it calls", () => {
         return !memberPaths.some((path) => shape.test(decodeURIComponent(path)));
       });
       expect(unsent).toEqual([]);
+    },
+    rowLimit("short")
+  );
+});
+
+// The split: fills mode holds the full member's half where a full member's credential may be, a
+// runner the member's half where none may be, and a writer the live check's write. Each fake is
+// alike, so fills one fake answered serve a runner of another.
+describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () => {
+  const fillsDirectories = temporaryDirectories("restricted-sweep-fills");
+  const someRows = ["/api/v1/inbox", "/api/v1/issues/{key}/comments"];
+
+  /** A run of fills mode, and the file it was to write. Its proxy reads as the real one does, a
+   *  browser's person alone, so with no full member's cookie the proxy reads are blind. */
+  async function fills(leaks: readonly Leak[] = []) {
+    const file = join(fillsDirectories(), "fills.tsv");
+    const run = await sweep(leaks, {
+      env: {
+        SWEEP_MODE: "fills",
+        SWEEP_MEMBER: "bob@outside.example",
+        SWEEP_FILLS_FILE: file,
+        SWEEP_RESTRICTED_COOKIE: undefined,
+        SWEEP_WRITE_ISSUE: undefined,
+      },
+      proxyReadsCookies: true,
+      rows: someRows,
+    });
+    return { ...run, file };
+  }
+
+  /** A runner's run with FILE, its sockets served, and no full member's credential. */
+  function runner(file: string, leaks: readonly Leak[] = []) {
+    return sweep(leaks, {
+      env: {
+        SWEEP_FILLS_FILE: file,
+        SWEEP_FULL_TOKEN: undefined,
+        SWEEP_CONVERSATION_FILE: undefined,
+        SWEEP_WRITE_ISSUE: undefined,
+      },
+      feed: { doc: true, live: true },
+      rows: someRows,
+    });
+  }
+
+  test(
+    "fills mode writes the full member's half, makes no request as the member, and writes no credential",
+    async () => {
+      const { code, file, fullRequests, memberPaths, stdout } = await fills();
+      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("FILLS: ");
+      expect(code, stdout).toBe(0);
+      expect(memberPaths).toEqual([]);
+      expect(fullRequests).toBeGreaterThan(0);
+      const text = readFileSync(file, "utf8");
+      const lines = text.trimEnd().split("\n");
+      expect(lines[0]).toBe("restricted-sweep-fills\t1");
+      expect(lines).toContain("project\tTGT");
+      expect(lines).toContain("member\tbob@outside.example");
+      expect(lines).toContain("own\tOWN");
+      expect(lines).toContain(`going_run\t${tgt.goingRun}`);
+      expect(lines).toContain("can_fail\tGET /api/v1/issues/{key}/comments");
+      for (const secret of [fullToken, fullCookie, memberCookie])
+        expect(text).not.toContain(secret);
+      expect(/^[\t\n\x20-\x7e]*$/.test(text)).toBe(true);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a runner with those fills and no full member's credential passes, and prints its live window",
+    async () => {
+      const { file } = await fills();
+      const { code, fullRequests, stdout } = await runner(file);
+      expect(fullRequests).toBe(0);
+      expect(stdout).toMatch(
+        /^live window \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/m
+      );
+      expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments: 404 \(can fail\)$/m);
+      expect(stdout.trimEnd().split("\n").at(-1)).toMatch(
+        /^PASS: no route and neither socket gave the member a row of TGT; a writer's write delivered inside the live window \S+ \S+ proves the live check; blind, proven by the stack test before merge only: GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}, /
+      );
+      expect(code, stdout).toBe(0);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: the same runner, with a leak planted, fails.
+  test(
+    "the same runner fails where the member is answered a row of the project",
+    async () => {
+      const { file } = await fills();
+      const { code, stdout } = await runner(file, [
+        at(`/api/v1/issues/${tgt.issue}/comments`, 200, [{ id: tgt.comment }]),
+      ]);
+      expect(failures(stdout)).toEqual([
+        `GET /api/v1/issues/{key}/comments: the member is answered 200 holding ${tgt.comment}, a row of TGT: [{"id":"${tgt.comment}"}]`,
+      ]);
+      expect(code).toBe(1);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "fills mode that cannot prove a row writes no file, and is UNKNOWN",
+    async () => {
+      const { code, file, stdout } = await fills([]).then(async (first) => {
+        // A second run at the same path, where the lookup finds no handoff, must remove the first.
+        const run = await sweep([], {
+          env: {
+            SWEEP_MODE: "fills",
+            SWEEP_MEMBER: "bob@outside.example",
+            SWEEP_FILLS_FILE: first.file,
+            SWEEP_RESTRICTED_COOKIE: undefined,
+            SWEEP_WRITE_ISSUE: undefined,
+          },
+          omit: new Set(["handoff"]),
+          rows: someRows,
+        });
+        return { ...run, file: first.file };
+      });
+      expect(stdout.trimEnd().split("\n").at(-1)).toStartWith("UNKNOWN: no fills were written");
+      expect(stdout).toContain("\n  handoff: no issue of the first 1 holds a handoff\n");
+      expect(code).toBe(2);
+      expect(await Bun.file(file).exists()).toBe(false);
+    },
+    rowLimit("short")
+  );
+
+  test(
+    "a writer prints each write delivered to the full member's own feed, and exits 0",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        env: {
+          SWEEP_MODE: "writer",
+          SWEEP_WRITE_SECONDS: "3",
+          SWEEP_WRITE_EVERY: "1",
+          SWEEP_RESTRICTED_COOKIE: undefined,
+          SWEEP_CONVERSATION_FILE: undefined,
+        },
+        feed: { live: true },
+      });
+      const writes = stdout.split("\n").filter((line) => line.startsWith("write "));
+      expect(writes.length, stdout).toBeGreaterThan(0);
+      for (const line of writes) {
+        expect(line).toMatch(/^write \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ [0-9a-f-]{36} delivered$/);
+      }
+      expect(stdout.trimEnd().split("\n").at(-1)).toBe(
+        `WRITER: ${writes.length} writes, each delivered to the full member's own feed`
+      );
+      expect(code).toBe(0);
+    },
+    rowLimit("short")
+  );
+
+  // The control of the row above: a feed that is sent the project's events but not the comment.
+  test(
+    "a writer whose comment the full member's feed is not sent prints it not delivered, and exits 1",
+    async () => {
+      const { code, stdout } = await sweep([], {
+        env: {
+          SWEEP_MODE: "writer",
+          SWEEP_WRITE_SECONDS: "1",
+          SWEEP_WRITE_EVERY: "1",
+          SWEEP_RESTRICTED_COOKIE: undefined,
+          SWEEP_CONVERSATION_FILE: undefined,
+        },
+        feed: { live: true, noise: "another event of the project" },
+      });
+      expect(stdout).toMatch(/^write \S+ [0-9a-f-]{36} not delivered$/m);
+      expect(stdout.trimEnd().split("\n").at(-1)).toMatch(/^WRITER: \d+ writes, \d+ not delivered/);
+      expect(code).toBe(1);
     },
     rowLimit("short")
   );

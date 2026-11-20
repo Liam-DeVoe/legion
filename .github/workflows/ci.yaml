@@ -2621,8 +2621,8 @@ jobs:
               # e2e/acceptance/restricted-sweep.sh's kinds and calls to it; that script reads it row
               # by row.
               - 'packages/envoy/internal/dispatch/api/testdata/routes.txt'
-              # The GitHub proxy's `readable` expression, which restricted-sweep.test.ts:182-184
-              # (the new URL at :183) reads and holds the sweep's proxy reads to.
+              # The GitHub proxy's `readable` expression, which restricted-sweep.test.ts:305-307
+              # (the new URL at :306) reads and holds the sweep's proxy reads to.
               - 'packages/envoy/internal/dispatch/githubapi/proxy.go'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112

@@ -909,6 +909,30 @@ SWEEP_ORIGIN=https://dispatch.example SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-
   bash e2e/acceptance/restricted-sweep.sh
 ```
 
+Where no full member's credential may be, as on a public runner, the sweep splits in three. Fills
+mode (`SWEEP_MODE=fills`), where the full member's token is, does the full member's half: the
+lookup, the question and each row's can-fail call, and writes them to `SWEEP_FILLS_FILE` (ASCII
+`name<TAB>value` lines, at most 40 KiB, no credential, the target issue's title among them, as the
+search rows' text). It takes the member's login in `SWEEP_MEMBER`, and reads the member's own
+projects as the ones whose access lists name it. A runner, any run with `SWEEP_FILLS_FILE` and no
+`SWEEP_MODE`, does the member's half with the member's cookie alone, refuses a full member's
+credential, and refuses fills of another project or older than 55 minutes. It reads the member's
+live feed over a window it prints, `live window <W0> <W1>` (UTC), and makes no write. Writer mode
+(`SWEEP_MODE=writer`) runs beside it with the full member's token: it comments on
+`SWEEP_WRITE_ISSUE` every `SWEEP_WRITE_EVERY` seconds and prints `write <UTC> <id> delivered`, or
+`not delivered`, as each comment reaches the full member's own feed or does not. The runner's
+live check holds only once a delivered write falls strictly inside its window, which whoever ran
+both joins. The verdict is always a run's last line.
+
+```bash
+SWEEP_MODE=fills SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_MEMBER=<login> SWEEP_FULL_TOKEN=... \
+  SWEEP_CONVERSATION_FILE=<session id>/<slug> SWEEP_FILLS_FILE=fills.tsv bash e2e/acceptance/restricted-sweep.sh
+SWEEP_MODE=writer SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_WRITE_ISSUE=PRIV-12 SWEEP_FULL_TOKEN=... \
+  bash e2e/acceptance/restricted-sweep.sh &
+SWEEP_ORIGIN=... SWEEP_PROJECT=PRIV SWEEP_FILLS_FILE=fills.tsv SWEEP_RESTRICTED_COOKIE=... \
+  bash e2e/acceptance/restricted-sweep.sh
+```
+
 Every row's line says whether it can fail (the full member is answered the project's object
 otherwise than a missing one, or a row of it) or is `blind`. `PASS` (exit 0) needs every GET row
 filled and called, every kind of object found, at least one row that can fail and both sockets'
@@ -921,10 +945,11 @@ alone, against a fake Dispatch that keeps every route from the member but the on
 leak in, and holds the sweep to calling every GET row, read from what the fake was sent.
 `bun run test:harness e2e/__tests__/restricted-sweep.test.ts` holds its inputs, the kinds it fills
 wildcards with and the proxy reads it makes, and, given `DISPATCH_E2E_PG_BIN` or
-`DISPATCH_E2E_PG_IMAGE`, runs it against two stacks of the local harness: this checkout's server,
-where it passes, and the build of the newest commit with no read check, where it fails naming the
-route, a session's direct message, a GitHub proxy read and both sockets. CI's
-`dispatch-project-access` job runs those rows. That commit is read from git, never written down:
+`DISPATCH_E2E_PG_IMAGE`, runs it against stacks of the local harness, in one run and split: this
+checkout's server, where it passes and a writer's delivered write falls inside the runner's
+window, and the build of the newest commit with no read check, where it fails naming the route, a
+session's direct message, a GitHub proxy read and both sockets. CI's `dispatch-project-access`
+job runs those rows. That commit is read from git, never written down:
 the merge base of HEAD and `DISPATCH_E2E_SWEEP_BASE_BRANCH` (`origin/main` by default; while the
 read check's pull request is open, the branch it targets), or, once a squash merge has put the
 read check on that branch, the commit just before it. `DISPATCH_E2E_SWEEP_BASE` names the commit

@@ -21,10 +21,11 @@
  *    `<event>`: two servers number their events apart, and which events a caller is sent is the
  *    answer, not their numbers.
  *  - `watch` subscribes as `live` does and writes the ready file at the same moment, then prints
- *    every frame the server sent but heartbeats, each as the server wrote it, from the
- *    `events_start` frame until `<seconds>` after the written file appeared, however busy or quiet
- *    the feed was: what this caller was sent in that window. The driver has `writtenWithinMs` to
- *    make the written file. e2e/acceptance/restricted-sweep.sh runs it.
+ *    every frame the server sent but heartbeats, each as the server wrote it and the moment it
+ *    comes, from the `events_start` frame until `<seconds>` after the written file appeared,
+ *    however busy or quiet the feed was: what this caller was sent in that window, which a driver
+ *    may read while it runs. The driver has `writtenWithinMs` to make the written file.
+ *    e2e/acceptance/restricted-sweep.sh runs it.
  *
  *  Exit 0 for any answer, a refusal included; 1 when the server could not be reached or gave no
  *  answer within ten seconds (for `watch`, within ten seconds beyond the written file's wait and
@@ -295,11 +296,12 @@ function frameType(data: string): unknown {
   return typeof frame === "object" && frame !== null && "type" in frame ? frame.type : undefined;
 }
 
-/** What the event feed sends this caller in a window, as the frames it printed: the feed starts
- *  with no resume, the ready file says it has, and every frame but a heartbeat is kept as the
- *  server wrote it until `windowMs` after the written file appeared. A driver that makes no
- *  written file within `writtenWithinMs`, or a ready file that cannot be written, rejects the
- *  answer, which exits 1. A feed that closes first is answered at its close. */
+/** What the event feed sends this caller in a window, each frame printed the moment it comes, so
+ *  a driver reads the feed while it runs and a probe stopped early has printed all it was sent:
+ *  the feed starts with no resume, the ready file says it has, and every frame but a heartbeat is
+ *  printed as the server wrote it until `windowMs` after the written file appeared. A driver that
+ *  makes no written file within `writtenWithinMs`, or a ready file that cannot be written, rejects
+ *  the answer, which exits 1. A feed that closes first is answered at its close. */
 function watchAnswer(
   socket: WebSocket,
   readyFile: string,
@@ -307,7 +309,7 @@ function watchAnswer(
   windowMs: number
 ): Promise<string> {
   const answer = Promise.withResolvers<string>();
-  const lines: string[] = [];
+  const emit = (line: string) => console.log(line);
   // Once the answer is in, the wait for the written file and the window stop, so neither keeps
   // this process running past it.
   let done = false;
@@ -315,7 +317,7 @@ function watchAnswer(
   const settled = () => {
     done = true;
     clearTimeout(windowTimer);
-    answer.resolve(lines.join("\n"));
+    answer.resolve("");
   };
   const failed = (error: unknown) => {
     done = true;
@@ -337,10 +339,10 @@ function watchAnswer(
     socket.send(JSON.stringify({ type: "subscribe", sub: "e", view: { kind: "events" } }))
   );
   socket.addEventListener("message", (event) => {
-    if (typeof event.data !== "string") return;
+    if (done || typeof event.data !== "string") return;
     const type = frameType(event.data);
     if (type === "heartbeat") return;
-    lines.push(event.data);
+    emit(event.data);
     // The window follows the first `events_start` alone: a second one starts no second wait.
     if (type !== "events_start" || started) return;
     started = true;
@@ -349,7 +351,8 @@ function watchAnswer(
     }, failed);
   });
   socket.addEventListener("close", (event) => {
-    lines.push(`closed ${event.code} ${event.reason}`);
+    if (done) return;
+    emit(`closed ${event.code} ${event.reason}`);
     settled();
   });
   return answer.promise;
@@ -371,13 +374,13 @@ try {
     // However the wait ends, `watch`'s rejection included, the bound and the socket stop with it:
     // either would keep this process running, and the bound would print a second failure.
     try {
-      console.log(
-        await (mode === "doc"
-          ? documentAnswer(socket, third, fourth)
-          : mode === "live"
-            ? liveAnswer(socket, third, fourth)
-            : watchAnswer(socket, third, fourth, watchMs))
-      );
+      const answer = await (mode === "doc"
+        ? documentAnswer(socket, third, fourth)
+        : mode === "live"
+          ? liveAnswer(socket, third, fourth)
+          : watchAnswer(socket, third, fourth, watchMs));
+      // `watch` has printed its frames already, and answers nothing more.
+      if (mode !== "watch") console.log(answer);
     } finally {
       clearTimeout(timer);
       socket.close();

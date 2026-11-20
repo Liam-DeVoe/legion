@@ -98,9 +98,24 @@ describe("the inputs", () => {
       "UNKNOWN: SWEEP_PROJECT is no project key: tgt",
     ],
     [
-      "no full member's token",
+      "neither a full member's token nor a fills file",
       { SWEEP_FULL_TOKEN: undefined },
       "UNKNOWN: SWEEP_FULL_TOKEN is required",
+    ],
+    [
+      "a mode the sweep has none of",
+      { SWEEP_MODE: "runner" },
+      "UNKNOWN: SWEEP_MODE must be fills or writer",
+    ],
+    [
+      "fills mode with no member named",
+      { SWEEP_MODE: "fills", SWEEP_FILLS_FILE: "fills.tsv" },
+      "UNKNOWN: SWEEP_MEMBER is required in fills mode",
+    ],
+    [
+      "fills mode with no file to write",
+      { SWEEP_MODE: "fills", SWEEP_MEMBER: "bob@outside.example" },
+      "UNKNOWN: SWEEP_FILLS_FILE is required in fills mode",
     ],
     [
       "a cookie with no name",
@@ -136,6 +151,109 @@ describe("the inputs", () => {
     "an origin that answers nothing is UNKNOWN, not PASS",
     async () => {
       const { code, stdout } = await script(inputs);
+      expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+});
+
+/** A runner's fills, every one read before the first request: those it cannot read are refused by
+ *  name before it reaches the deployment, at a closed port here, and the last row, fills it reads,
+ *  is their control: it reaches the port. */
+describe("a runner's fills", () => {
+  const directories = temporaryDirectories("restricted-sweep-runner-fills");
+  const now = () => Math.floor(Date.now() / 1000);
+  /** Fills of TGT for bob made at MADE (Unix seconds), each line of `more` after them. */
+  const made = (madeAt: number, more: readonly string[] = []) =>
+    [
+      "restricted-sweep-fills\t1",
+      "project\tTGT",
+      `made_at\t${madeAt}`,
+      "member\tbob@outside.example",
+      "own\tOWN",
+      ...more,
+    ]
+      .map((line) => `${line}\n`)
+      .join("");
+  /** A runner's inputs with TEXT as its fills file, and no full member's credential. */
+  const runnerWith = (text: string | undefined) => {
+    const file = join(directories(), "fills.tsv");
+    if (text !== undefined) writeFileSync(file, text);
+    return {
+      SWEEP_ORIGIN: "http://127.0.0.1:9",
+      SWEEP_PROJECT: "TGT",
+      SWEEP_RESTRICTED_COOKIE: "dsession=a-restricted-members-cookie",
+      SWEEP_FILLS_FILE: file,
+    };
+  };
+
+  test.each([
+    [
+      "no file at the path",
+      undefined,
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE names no file this run can read",
+    ],
+    ["an empty file", "", {}, "UNKNOWN: SWEEP_FILLS_FILE is empty"],
+    [
+      "fills of another version",
+      "restricted-sweep-fills\t2\nproject\tTGT\n",
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE holds no fills of this sweep's version 1",
+    ],
+    [
+      "fills of another project",
+      "restricted-sweep-fills\t1\nproject\tOWN\n",
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE holds the fills of project OWN, not of TGT",
+    ],
+    [
+      "fills older than 55 minutes",
+      "stale",
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE was made 56 minutes ago, past 55",
+    ],
+    [
+      "a fill the sweep does not read",
+      "unread",
+      {},
+      "UNKNOWN: SWEEP_FILLS_FILE holds a fill this sweep does not read: bogus",
+    ],
+    [
+      "a full member's token beside the fills",
+      "fresh",
+      { SWEEP_FULL_TOKEN: "a-full-members-token" },
+      "UNKNOWN: a runner holds no full member's credential",
+    ],
+    [
+      "a full member's cookie beside the fills",
+      "fresh",
+      { SWEEP_FULL_COOKIE: "dsession=a-full-members-cookie" },
+      "UNKNOWN: a runner holds no full member's credential",
+    ],
+  ] as const)(
+    "%s is UNKNOWN, exit 2, named",
+    async (_what, text, change, message) => {
+      const contents =
+        text === "stale"
+          ? made(now() - 56 * 60 - 30)
+          : text === "unread"
+            ? made(now(), ["bogus\tvalue"])
+            : text === "fresh"
+              ? made(now())
+              : text;
+      const { code, stdout } = await script({ ...runnerWith(contents), ...change });
+      expect(stdout).toStartWith(message);
+      expect(code).toBe(2);
+    },
+    rowLimit("short")
+  );
+
+  test.skipIf(["curl", "jq", "bun"].some((tool) => hostTool(tool) === null))(
+    "fresh fills of the project are read, and the run goes on to the deployment",
+    async () => {
+      const { code, stdout } = await script(runnerWith(made(now())));
       expect(stdout).toContain("UNKNOWN: GET /api/v1/whoami as the member answered curl failed");
       expect(code).toBe(2);
     },
@@ -549,6 +667,57 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
         "UNKNOWN: the full member finds no issue of EMPTY, so no route can be filled with its objects"
       );
       expect(empty.code).toBe(2);
+    },
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
+  );
+
+  // The split, as the outside acceptance runs it: the fills written where the full member's token
+  // is, a runner with the member's cookie alone, and a writer beside it, stopped by its pid once
+  // the runner ends. The runner's live check holds only once a write the writer saw delivered
+  // falls strictly inside the window the runner read, which this row joins as the acceptance's
+  // tailnet leg does: as `YYYY-MM-DDTHH:MM:SSZ` strings.
+  test(
+    "split into fills and a runner with no full member's credential, the run passes, and a delivered write falls inside its window",
+    async () => {
+      const { fills, runner, writer } = (await stacks()).head.split;
+      expect(fills.stdout.trimEnd().split("\n").at(-1), fills.stdout).toStartWith("FILLS: ");
+      expect(fills.code).toBe(0);
+      expect(runner, fills.stdout).toBeDefined();
+      const runnerOut = runner?.stdout ?? "";
+      expect(runnerOut.trimEnd().split("\n").at(-1), runnerOut).toStartWith(
+        "PASS: no route and neither socket gave the member a row of TGT; a writer's write delivered inside the live window "
+      );
+      expect(runner?.code, runnerOut).toBe(0);
+      expect(linesOf(runnerOut, "not filled")).toEqual([]);
+      const window = /^live window (\S+) (\S+)$/m.exec(runnerOut);
+      expect(window, runnerOut).not.toBeNull();
+      const [w0 = "", w1 = ""] = [window?.[1], window?.[2]];
+      const writes = (writer?.stdout ?? "").split("\n").filter((line) => line.startsWith("write "));
+      expect(writes.length, writer?.stdout).toBeGreaterThan(0);
+      expect(
+        writes.filter((line) => !line.endsWith(" delivered")),
+        writer?.stdout
+      ).toEqual([]);
+      const inside = writes
+        .map((line) => line.split(" ")[1] ?? "")
+        .filter((stamp) => stamp > w0 && stamp < w1);
+      expect(inside.length, `${writer?.stdout}\nwindow ${w0} ${w1}`).toBeGreaterThan(0);
+    },
+    rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
+  );
+
+  test(
+    "split into fills and a runner on a build with no read check, the runner fails and names the route and the live socket",
+    async () => {
+      const { fills, runner } = (await stacks()).base.split;
+      expect(fills.code, fills.stdout).toBe(0);
+      const runnerOut = runner?.stdout ?? "";
+      expect(runnerOut.trimEnd().split("\n").at(-1), runnerOut).toMatch(
+        /^FAIL: \d+ answers gave the member what TGT holds, the first: GET \/api\/v1\/\S+: the member is answered 200 /
+      );
+      expect(runner?.code, runnerOut).toBe(1);
+      // The writer's comments reach the member's feed on a build with no read check.
+      expect(runnerOut).toMatch(/^FAIL {4}\/ws\/live: the member is sent an event holding /m);
     },
     rowLimit({ atOnce: ["twoStackBuild", "twoStackBuild", "twoStackBuild"] })
   );

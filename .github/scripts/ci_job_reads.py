@@ -2886,7 +2886,7 @@ GATES = [
          "restricted-sweep-judging.test.ts:33-41 (the new URL at :34), and e2e/acceptance/restricted-sweep.sh, "
          "which both run: the route index the sweep walks row by row"),
         (f"{ENVOY}/internal/dispatch/githubapi/proxy.go",
-         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:182-184, the new URL at :183: the GitHub "
+         "packages/dispatch/e2e/__tests__/restricted-sweep.test.ts:305-307, the new URL at :306: the GitHub "
          "proxy's readable expression, which the sweep's proxy reads are held to"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:128-129"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:12 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),

@@ -52,13 +52,27 @@ export interface SweepRun {
   readonly stderr: string;
 }
 
-/** What each child prints, by the build it serves: `head` its sweeps of TGT and EMPTY and the
- *  server's route probes as `routeprobes` printed them, `base` the commit it built and its sweep
- *  of TGT, and `keyed` (this checkout's build too) the key its target project is given and its
- *  sweep of that project. */
+/** The split, as the outside acceptance runs it: fills as the full member, then a runner with the
+ *  member's cookie alone beside a writer, which is stopped once the runner ends. A runner and a
+ *  writer run only where the fills were written. */
+export interface SplitRuns {
+  readonly fills: SweepRun;
+  readonly runner?: SweepRun;
+  readonly writer?: SweepRun;
+}
+
+/** What each child prints, by the build it serves: `head` its sweeps of TGT and EMPTY, its split
+ *  of TGT and the server's route probes as `routeprobes` printed them, `base` the commit it built,
+ *  its sweep of TGT and its split of TGT, and `keyed` (this checkout's build too) the key its
+ *  target project is given and its sweep of that project. */
 export interface StackRuns {
-  readonly head: { readonly target: SweepRun; readonly empty: SweepRun; readonly probes: string };
-  readonly base: { readonly base: string; readonly target: SweepRun };
+  readonly head: {
+    readonly target: SweepRun;
+    readonly empty: SweepRun;
+    readonly split: SplitRuns;
+    readonly probes: string;
+  };
+  readonly base: { readonly base: string; readonly target: SweepRun; readonly split: SplitRuns };
   readonly keyed: { readonly key: string; readonly target: SweepRun };
 }
 
@@ -76,6 +90,16 @@ function isSweepRun(value: unknown): value is SweepRun {
   );
 }
 
+/** Whether `value` is a split's answers as `SplitRuns` spells them. */
+function isSplitRuns(value: unknown): value is SplitRuns {
+  if (typeof value !== "object" || value === null) return false;
+  if (!("fills" in value) || !isSweepRun(value.fills)) return false;
+  return (
+    (!("runner" in value) || isSweepRun(value.runner)) &&
+    (!("writer" in value) || isSweepRun(value.writer))
+  );
+}
+
 /** Whether `value` is what the child of `which` prints. */
 function isRuns<Which extends keyof StackRuns>(
   which: Which,
@@ -87,12 +111,17 @@ function isRuns<Which extends keyof StackRuns>(
     return (
       "empty" in value &&
       isSweepRun(value.empty) &&
+      "split" in value &&
+      isSplitRuns(value.split) &&
       "probes" in value &&
       typeof value.probes === "string"
     );
   }
   return which === "base"
-    ? "base" in value && typeof value.base === "string"
+    ? "base" in value &&
+        typeof value.base === "string" &&
+        "split" in value &&
+        isSplitRuns(value.split)
     : "key" in value && typeof value.key === "string";
 }
 
@@ -485,29 +514,28 @@ interface Credentials {
   readonly conversationFile: string;
 }
 
-/** One run of the sweep against `origin` for `project`, unpaced and with a 5 s window, in an
- *  environment of these variables alone. */
-async function sweep(origin: string, project: string, credentials: Credentials): Promise<SweepRun> {
+/** One run of the sweep in an environment of `inputs` alone, beside PATH, HOME and TMPDIR, and
+ *  unpaced; an input set undefined is left out. `stop`, once it resolves, stops the run as a
+ *  driver stops a writer: SIGTERM to its exact process. */
+async function sweepWith(
+  inputs: Readonly<Record<string, string | undefined>>,
+  stop?: Promise<void>
+): Promise<SweepRun> {
+  const env: Record<string, string> = {
+    PATH: process.env.PATH ?? "",
+    HOME: process.env.HOME ?? "",
+    TMPDIR: tmpdir(),
+    SWEEP_PACE_SECONDS: "0",
+  };
+  for (const [name, value] of Object.entries(inputs)) if (value !== undefined) env[name] = value;
   const child = Bun.spawn(["bash", sweepScript], {
     cwd: dispatchPackage,
-    env: {
-      PATH: process.env.PATH ?? "",
-      HOME: process.env.HOME ?? "",
-      TMPDIR: tmpdir(),
-      SWEEP_ORIGIN: origin,
-      SWEEP_PROJECT: project,
-      SWEEP_WRITE_ISSUE: `${project}-1`,
-      SWEEP_FULL_TOKEN: credentials.token,
-      SWEEP_RESTRICTED_COOKIE: credentials.cookie,
-      SWEEP_FULL_COOKIE: credentials.fullCookie,
-      SWEEP_LIVE_SECONDS: "5",
-      SWEEP_CONVERSATION_FILE: credentials.conversationFile,
-      SWEEP_PACE_SECONDS: "0",
-    },
+    env,
     stderr: "pipe",
     stdout: "pipe",
   });
   const timer = setTimeout(() => child.kill("SIGKILL"), sweepMs);
+  void stop?.then(() => child.kill("SIGTERM"));
   try {
     const [stdout, stderr, code] = await Promise.all([
       new Response(child.stdout).text(),
@@ -517,6 +545,69 @@ async function sweep(origin: string, project: string, credentials: Credentials):
     return { code, stderr, stdout };
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** One run of the sweep against `origin` for `project`, in one process, with a 5 s window. */
+function sweep(origin: string, project: string, credentials: Credentials): Promise<SweepRun> {
+  return sweepWith({
+    SWEEP_ORIGIN: origin,
+    SWEEP_PROJECT: project,
+    SWEEP_WRITE_ISSUE: `${project}-1`,
+    SWEEP_FULL_TOKEN: credentials.token,
+    SWEEP_RESTRICTED_COOKIE: credentials.cookie,
+    SWEEP_FULL_COOKIE: credentials.fullCookie,
+    SWEEP_LIVE_SECONDS: "5",
+    SWEEP_CONVERSATION_FILE: credentials.conversationFile,
+  });
+}
+
+/** The split of `project` against `origin`, as `SplitRuns` says: the fills, written under
+ *  `scratch`, then the writer, commenting every second, and the runner, which holds no full
+ *  member's credential; the writer is stopped once the runner ends. */
+async function split(
+  origin: string,
+  project: string,
+  credentials: Credentials,
+  scratch: string
+): Promise<SplitRuns> {
+  const file = join(scratch, `fills-${project}.tsv`);
+  const fills = await sweepWith({
+    SWEEP_MODE: "fills",
+    SWEEP_ORIGIN: origin,
+    SWEEP_PROJECT: project,
+    SWEEP_MEMBER: bob,
+    SWEEP_FULL_TOKEN: credentials.token,
+    SWEEP_FULL_COOKIE: credentials.fullCookie,
+    SWEEP_CONVERSATION_FILE: credentials.conversationFile,
+    SWEEP_FILLS_FILE: file,
+  });
+  if (fills.code !== 0) return { fills };
+  const runnerDone = Promise.withResolvers<void>();
+  const writer = sweepWith(
+    {
+      SWEEP_MODE: "writer",
+      SWEEP_ORIGIN: origin,
+      SWEEP_PROJECT: project,
+      SWEEP_WRITE_ISSUE: `${project}-1`,
+      SWEEP_FULL_TOKEN: credentials.token,
+      SWEEP_WRITE_SECONDS: "600",
+      SWEEP_WRITE_EVERY: "1",
+    },
+    runnerDone.promise
+  );
+  try {
+    const runner = await sweepWith({
+      SWEEP_ORIGIN: origin,
+      SWEEP_PROJECT: project,
+      SWEEP_RESTRICTED_COOKIE: credentials.cookie,
+      SWEEP_FILLS_FILE: file,
+      SWEEP_LIVE_SECONDS: "5",
+    });
+    runnerDone.resolve();
+    return { fills, runner, writer: await writer };
+  } finally {
+    runnerDone.resolve();
   }
 }
 
@@ -614,6 +705,7 @@ if (import.meta.main) {
         runs = {
           target: await sweep(origin, "TGT", credentials),
           empty: await sweep(origin, "EMPTY", credentials),
+          split: await split(origin, "TGT", credentials, scratch),
           probes: run(
             [
               "go",
@@ -626,7 +718,12 @@ if (import.meta.main) {
           ),
         };
       } else {
-        runs = { base, target: await sweep(origin, "TGT", await seed(origin, stack.env)) };
+        const credentials = await seed(origin, stack.env);
+        runs = {
+          base,
+          target: await sweep(origin, "TGT", credentials),
+          split: await split(origin, "TGT", credentials, scratch),
+        };
       }
       console.log(JSON.stringify(runs));
     } finally {
