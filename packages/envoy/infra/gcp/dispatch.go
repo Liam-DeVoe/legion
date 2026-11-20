@@ -105,7 +105,7 @@ const (
 // counted pools and its permanent listeners. The listener's and the front door's pods open none.
 // TestDispatchConnectionsPerPodIsTheServers fails when a counted pool's size changes and this
 // does not.
-const dispatchConnectionsPerPod = 113
+const dispatchConnectionsPerPod = 114
 
 // Autopilot's bounds for the app pod's total request, the general-purpose compute class's for a pod
 // with pod anti-affinity, which every Dispatch pod carries, or with the safe-to-evict annotation,
@@ -202,6 +202,15 @@ type DispatchArgs struct {
 	// its email directly. It needs the sign-in inputs and is no member of their group, so a
 	// deployment that sets them leaves it unset and renders what it always rendered.
 	SignInOutside bool `pulumi:"signInOutside,optional"`
+	// ParentStatusRule renders DISPATCH_PARENT_STATUS_RULE=on, which turns on Dispatch's
+	// parent-status rule: Dispatch refuses a write that leaves a parent's status out of line with
+	// its children's, and at boot it runs the one-time fix of the pairs that break the rule. Set it
+	// only once every Legion daemon that writes to this Dispatch runs the release that sends the
+	// parent-status options. No process of the earlier setting may serve beside one with the new
+	// setting: at one replica the app's Recreate strategy stops the old pod before the new one
+	// starts, and at more replicas the app is scaled to zero first. Unset renders nothing, so a
+	// deployment that leaves it unset renders what it always rendered.
+	ParentStatusRule bool `pulumi:"parentStatusRule,optional"`
 	// PublicOrigin is the https origin Dispatch is served at when it has no front door: the
 	// address a reader is sent back to, DISPATCH_SERVER_URL and the url output, served by an
 	// entrance the deployment builds itself, such as a load balancer, which forwards to the app's
@@ -689,6 +698,7 @@ type dispatchSettings struct {
 	images                                      struct{ envoy, tailscale, proxy, tools string }
 	signIn                                      struct{ clientID, domain string }
 	signInOutside                               bool
+	parentStatusRule                            bool
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
@@ -1024,6 +1034,7 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 	return slices.Concat(dispatchTailnetInputs(args), dispatchSignInInputs(args), []dispatchInput{
 		{"outsideOrigin", args.OutsideOrigin != ""},
 		{"signInOutside", args.SignInOutside},
+		{"parentStatusRule", args.ParentStatusRule},
 		{"publicOrigin", args.PublicOrigin != ""},
 		{"iapAudience", args.IapAudience != nil},
 		{"loadBalancerSourceRanges", len(args.LoadBalancerSourceRanges) > 0},
@@ -1675,6 +1686,7 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.clientID = args.SignInClientId
 	s.signIn.domain = args.SignInDomain
 	s.signInOutside = args.SignInOutside
+	s.parentStatusRule = args.ParentStatusRule
 	s.outsideOrigin = outsideOrigin
 	s.publicOrigin = publicOrigin
 	s.iap = args.IapAudience != nil
