@@ -2,7 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -71,8 +73,12 @@ func (r *Runtime) ReleaseIssue(ctx context.Context, issue, tree string, authoriz
 // A failure after authorize answered that the pod goes and before that write — the Sandbox's
 // read, its decode, or its labels — is a runtime.PodUntouchedError: nothing of the pod or its
 // Sandbox has changed, and the release that authorize answered for ends its record of the take
-// (the daemon's releaseIssue). A failure from that write on is not one, since the write may have
-// been applied.
+// (the daemon's releaseIssue). So is that write's own failure where the API server answered it
+// with a refusal (refusedUnapplied) and the Sandbox was not Suspended already: the server stored
+// nothing, and the Sandbox and its pod stand as they stood. A Sandbox already Suspended is one
+// whose pod an earlier act is taking down, so its refused write leaves no pod standing. Any other
+// failure from that write on is not one: a write with no answer, or with a server error, may still
+// have been applied, and every later step comes after it.
 func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize func(context.Context) (bool, error), keep bool) error {
 	act := "suspend"
 	if keep {
@@ -113,6 +119,9 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 		pod = r.storedPod(name)
 	}
 	if _, err := r.suspendOver(ctx, s, pod, nil); err != nil {
+		if refusedUnapplied(err) && s.mode() != modeSuspended {
+			return &runtime.PodUntouchedError{Err: fmt.Errorf("%s issue %s: %w", act, issue, err)}
+		}
 		return fmt.Errorf("%s issue %s: %w", act, issue, err)
 	}
 	if _, err := r.awaitPodGone(ctx, s); err != nil {
@@ -141,6 +150,27 @@ func (r *Runtime) endIssuePod(ctx context.Context, issue, tree string, authorize
 	}
 	r.log.Info("sandbox runtime: deleted the closed issue's Sandbox and the role Secrets it owned", "issue", issue, "sandbox", name, "uid", s.UID)
 	return nil
+}
+
+// refusedUnapplied is whether err is the API server's refusal of a write, which it answers before
+// it stores anything: a status of 400 to 499 — a conflict (409), an invalid object or a failed
+// test of the uid (422), a forbidden verb (403), a throttled request (429) and every other client
+// error — but three. A 404 says the Sandbox is gone already, so no pod of it stands to keep. A
+// 408 (the request's own timeout) and a 410 (the object's version is gone) may or may not have
+// applied the write. A write with no answer (a timeout, a cut connection, a context that ended)
+// and a server error (500 to 599, a timeout of the server's among them) are not refusals either,
+// since the server may have applied the write.
+func refusedUnapplied(err error) bool {
+	var status apierrors.APIStatus
+	if !errors.As(err, &status) {
+		return false
+	}
+	switch code := status.Status().Code; code {
+	case http.StatusNotFound, http.StatusGone, http.StatusRequestTimeout:
+		return false
+	default:
+		return code >= 400 && code < 500
+	}
 }
 
 // deleteIssueSecrets deletes the seven Secrets that the issue Sandbox name owns, the provisioning

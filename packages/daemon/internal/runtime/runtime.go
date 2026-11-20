@@ -259,11 +259,13 @@ type IssueReleaser interface {
 
 // PodUntouchedError is the failure of an issue pod's teardown (IssueReleaser, IssueSuspender)
 // that came after authorize answered that the pod goes and before the runtime changed anything:
-// the read of the issue's Sandbox failed or could not be decoded, or the Sandbox names another
-// project, issue or tree. The pod and its Sandbox stand exactly as they stood. Every other
-// failure of a teardown past authorize may have changed them, since the first change is the
-// write that sets the Sandbox Suspended and a write that failed may still have been applied. The
-// daemon reads it to end the release's record that its teardown took the pod (the store's
+// the read of the issue's Sandbox failed or could not be decoded, the Sandbox names another
+// project, issue or tree, or the API server refused the write that sets the Sandbox Suspended
+// with a client error, a status it answers before it stores anything (a conflict, an invalid
+// object, a forbidden verb, a throttled request). The pod and its Sandbox stand exactly as they
+// stood. Every other failure of a teardown past authorize may have changed them, since the first
+// change is that write, and a write with no answer or a server error may still have been applied.
+// The daemon reads it to end the release's record that its teardown took the pod (the store's
 // issue_releases.taken_pod), so the row's next run reads the issue's claims again.
 type PodUntouchedError struct{ Err error }
 
