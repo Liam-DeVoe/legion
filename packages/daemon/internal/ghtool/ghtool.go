@@ -79,13 +79,12 @@ type Recorder interface {
 // the clock.
 //
 // The last two are the leak guard's, which every call passes before gh is handed anything
-// (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, its Check seam,
-// read at each call: a Kubernetes daemon's copy, installed at its pin (LeakCheck, which refuses
-// the call until the install lands). nil, a tmux daemon's, leaves the guard to resolve the
-// machine's check in Environ at every call, in the three places the check itself names
-// (leakguard's Resolve), and to refuse the call with the setup failure naming the missing check
-// where it finds none. The daemon states which of the two its runtime takes (internal/daemon's
-// answersTools).
+// (Answer.leakGuard). LeakCheck is the shared public leak check the guard runs, required and
+// asked at each call (LeakChecker), which hands the guard the check's path: a Kubernetes daemon's
+// copy, installed at its pin (LeakCheck, which refuses the call until an install lands), or a
+// tmux daemon's machine check, resolved in Environ at each call (MachineLeakCheck, which refuses
+// the call with the setup failure naming the missing check where the machine carries none). The
+// daemon states which of the two its runtime takes (internal/daemon's answersTools).
 // Environ is the daemon's own environment (os.Environ() form), of which the guard's own children —
 // the check, and the gh read of a repository's visibility — start from the names guardKeeps
 // allows; nil is this process's own, read at each call. It is the daemon's and not the call's: a
@@ -96,7 +95,7 @@ type Host struct {
 	Git        string
 	Legion     string
 	StateDir   string
-	LeakCheck  *LeakCheck
+	LeakCheck  LeakChecker
 	Environ    []string
 	Credential runtime.GitHubCredential
 	Calls      Recorder
@@ -136,6 +135,8 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 		return nil, fmt.Errorf("the gh tool's legion %q is not an absolute path", host.Legion)
 	case host.StateDir == "" || host.Credential == nil || host.Calls == nil || host.Log == nil || host.Now == nil:
 		return nil, errors.New("the gh tool's host lacks its state directory, credential, recorder, log or clock")
+	case host.LeakCheck == nil:
+		return nil, errors.New("the gh tool's host names no shared public leak check for its guard to run before every call")
 	case agent.Repository.IsZero():
 		return nil, fmt.Errorf("the gh tool for %s's %s: the issue's repository is unknown", agent.Issue, agent.Role)
 	}
@@ -232,9 +233,10 @@ const noRepository = "not a git repository"
 // allow list, whose refusal says how the tool is called: Usage), it submits a review the agent's
 // recorded round cannot decide (reviewOf: the record names no head, the review names no pull
 // request by repository and number, or names another commit_id), or it posts a comment or review
-// in a form the agent's footer cannot be added to; it is refused with gh never started too while
-// the host's check is not installed yet (LeakCheck.Check), with that setup failure, logged and
-// recorded as the guard's own refusals are; a review is refused after reading its pull
+// in a form the agent's footer cannot be added to; it is refused with gh never started too when
+// the host's check answers none (Host.LeakCheck: a Kubernetes daemon's not installed yet, a
+// machine that carries none), with that setup failure, logged and recorded as the guard's own
+// refusals are; a review is refused after reading its pull
 // request's head, with the review itself never run, when that head is not the one the agent's
 // recorded round read (Answer.headRefusal); a call is refused after reading gh's help, with the
 // command itself never run, when the gh directory it needs cannot be read for certain, or the
@@ -283,11 +285,9 @@ func Run(ctx context.Context, call Call) Result {
 	if why != "" {
 		return a.refuse(ctx, call.Seq, argv, started, why)
 	}
-	check := ""
-	if a.host.LeakCheck != nil {
-		if check, err = a.host.LeakCheck.Check(); err != nil {
-			return a.guardRefusal(ctx, call.Seq, run, started, "", err)
-		}
+	check, err := a.host.LeakCheck.Check()
+	if err != nil {
+		return a.guardRefusal(ctx, call.Seq, run, started, "", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, call.Bounds.GHCall)
 	defer cancel()

@@ -258,8 +258,8 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 
 // leakCheck writes script as the body of the stand-in shared public leak check this fixture's
 // calls are guarded by, recording in the fixture's record file, and replacing the one it started
-// with: the guard resolves the check at every call, so a call after this is checked by the new
-// one.
+// with at the same path: the guard runs what is at the check's path at every call, so a call after
+// this is checked by the new one.
 func (f *fixture) leakCheck(script string) {
 	f.t.Helper()
 	leakguardtest.Write(f.t, f.check, recordsIn(f.record, script))
@@ -403,7 +403,8 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 		}
 		tokens := &fakeTokens{}
 		host := Host{
-			GH: "/opt/gh/gh", Legion: "/opt/legion/legion", StateDir: stale, Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
+			GH: "/opt/gh/gh", Legion: "/opt/legion/legion", StateDir: stale, LeakCheck: installedAt("/opt/legion/leak-check/public-leak-check.sh"),
+			Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
 			Credential: appauth.GitHubCredential(tokens, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
 		}
 		answer, err := Open(context.Background(), host, tc.agent, question)
@@ -434,6 +435,27 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("%s: after Close %s = %v, want it gone", tc.app, dir, err)
 		}
+	}
+}
+
+// The check the guard runs is the host's to name (Host.LeakCheck), and never the guard's to
+// resolve: a host that names none is refused at Open, before any directory is made.
+func TestOpenRefusesAHostThatNamesNoLeakCheck(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state")
+	host := Host{
+		GH: "/opt/gh/gh", Legion: "/opt/legion/legion", StateDir: state, Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
+		Credential: appauth.GitHubCredential(&fakeTokens{}, servedRepositories, ghrepo.Renames{}, nil, nil, slog.New(slog.DiscardHandler)),
+	}
+	answer, err := Open(context.Background(), host, implementer, question)
+	const want = "the gh tool's host names no shared public leak check for its guard to run before every call"
+	if err == nil || err.Error() != want {
+		if answer != nil {
+			_ = answer.Close()
+		}
+		t.Fatalf("Open with no check opened an answer (%t) with the error %v; want the refusal %q", answer != nil, err, want)
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a refused Open made %s (%v), want nothing made", state, err)
 	}
 }
 
@@ -890,7 +912,7 @@ func TestACallNamingARenamedRepositoryRunsWithTheDirectoryOfTheOwnerHoldingIt(t 
 	moved := ghrepo.MustRenames(ghrepo.MustRename("acme/legacy", "Sjawhar/legion"))
 	host := Host{
 		GH: filepath.Join(standInGH(t, behaviour{}), "gh"), Legion: filepath.Join(root, "legion"), StateDir: filepath.Join(root, "state"),
-		Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
+		LeakCheck: installedAt(filepath.Join(root, "leak-check", "public-leak-check.sh")), Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
 		Credential: appauth.GitHubCredential(&fakeTokens{}, servedRepositories, moved, nil, nil, slog.New(slog.DiscardHandler)),
 	}
 	answer, err := Open(context.Background(), host, implementer, question)
@@ -1935,18 +1957,20 @@ func TestTheGuardReadsTheCallsRepositoryAndFiles(t *testing.T) {
 }
 
 // The guard is given the names of the daemon's environment that guardKeeps allows and no other
-// name of it: a secret of the daemon's own and a trust store stay out, and every allowed name the
-// daemon holds reaches the guard, and its gh read of the call's repository, with the daemon's value.
+// name of it: a secret of the daemon's own, a trust store and the variable naming the check (the
+// guard is handed the check's path, Host.LeakCheck) stay out, and every allowed name the daemon
+// holds reaches the guard, and its gh read of the call's repository, with the daemon's value.
 func TestTheGuardIsGivenOnlyTheAllowedNamesOfTheDaemonsEnvironment(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer\n"})
 	allowed := map[string]string{
-		leakguard.CheckVar: f.path, "HOME": t.TempDir(), "TMPDIR": t.TempDir(),
+		"HOME": t.TempDir(), "TMPDIR": t.TempDir(),
 		"TERM": "dumb", "TZ": "UTC", "LANG": "C", "LC_ALL": "C", "LC_MESSAGES": "C",
 		"HTTPS_PROXY": "http://proxy.invented:3128", "https_proxy": "http://proxy.invented:3128",
 		"NO_PROXY": "*", "no_proxy": "*",
 		"XDG_CONFIG_HOME": t.TempDir(), "XDG_CACHE_HOME": t.TempDir(), "XDG_DATA_HOME": t.TempDir(), "XDG_STATE_HOME": t.TempDir(),
 	}
-	keptOut := map[string]string{"LEGION_TEST_DAEMON_SECRET": "the daemon's own secret", "SSL_CERT_FILE": "/the/daemons/ca.pem"}
+	keptOut := map[string]string{"LEGION_TEST_DAEMON_SECRET": "the daemon's own secret", "SSL_CERT_FILE": "/the/daemons/ca.pem",
+		leakguard.CheckVar: f.path}
 	daemon := []string{"PATH=" + os.Getenv("PATH")}
 	for name, value := range allowed {
 		daemon = append(daemon, name+"="+value)

@@ -49,12 +49,9 @@ func servedCheck(t *testing.T, runs, record string) []byte {
 	})
 }
 
-// installedAt is a Kubernetes daemon's check once its install landed at check
-// (LeakCheck.Installed).
+// installedAt is a Kubernetes daemon's check once an install landed at check (LeakCheck.Install).
 func installedAt(check string) *LeakCheck {
-	installed := NewLeakCheck("leak-check-v18")
-	installed.Installed(check)
-	return installed
+	return &LeakCheck{tag: "leak-check-v18", installed: check}
 }
 
 // daemonEnviron is a daemon's own environment as the guard's children start from it (Host.Environ)
@@ -77,8 +74,9 @@ func daemonEnviron(t *testing.T, extra ...string) []string {
 // runtime's own reader at the pin (InstallLeakCheck): a call the installed check clears runs gh,
 // with no setup failure, in an environment that holds no check of its own. The install is a
 // pod's launcher's: one `--help` run of the served check, the tag recorded, at
-// <state_dir>/leak-check. Left to resolve a check itself, the same guard finds none there and
-// refuses every call with the setup failure naming it, gh never started.
+// <state_dir>/leak-check. Resolved in that environment, as a tmux daemon's check is
+// (MachineLeakCheck), there is none, and every call is refused with the setup failure naming it,
+// gh never started.
 func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 	const tag = "leak-check-v18"
 	runs, record := filepath.Join(t.TempDir(), "help-runs"), filepath.Join(t.TempDir(), "leak-check-record")
@@ -113,9 +111,10 @@ func TestACallRunsUnderTheCheckAKubernetesDaemonInstalled(t *testing.T) {
 		}
 	})
 
-	t.Run("no check named leaves the guard none to run", func(t *testing.T) {
+	t.Run("the daemon's environment resolves none", func(t *testing.T) {
 		f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
-		f.answer.host.LeakCheck, f.answer.host.Environ = nil, daemonEnviron(t)
+		environ := daemonEnviron(t)
+		f.answer.host.LeakCheck, f.answer.host.Environ = MachineLeakCheck{Environ: environ}, environ
 		got := f.run(1, argv...)
 		const want = "LEAK CHECK SETUP ERROR: the gh call: the shared public leak check could not be found"
 		if got.Ran || got.Exit != -1 || !strings.HasPrefix(got.Output, "refused: ") || !strings.Contains(got.Output, want) {
@@ -151,15 +150,19 @@ func TestAFailedInstallIsAnInstallErrorAndAFailedReadIsNot(t *testing.T) {
 }
 
 // A call that comes before a Kubernetes daemon's install lands is refused, gh never started, not
-// even for its help, with the setup failure naming the pin and why the install's last try failed,
-// recorded and logged as the guard's own refusals are. The first call after the install lands, in
-// the same answer, runs under the installed check.
+// even for its help, with the setup failure naming the pin and why the last try of the install
+// failed (LeakCheck.Install, which holds the try's error and returns it), recorded and logged as
+// the guard's own refusals are. The first call after a try lands, in the same answer, runs under
+// the check that try installed.
 func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) {
 	const tag = "leak-check-v18"
 	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
 	pending := NewLeakCheck(tag)
+	stateDir := t.TempDir()
 	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of " + leakguard.CheckSlug + " at " + tag + " with HTTP 502")
-	pending.Failed(cause)
+	if err := pending.Install(context.Background(), refusingSource{err: cause}, stateDir, slog.New(slog.DiscardHandler)); !errors.Is(err, cause) {
+		t.Fatalf("a try whose read failed = %v, want the read's own error", err)
+	}
 	f.answer.host.LeakCheck, f.answer.host.Environ = pending, daemonEnviron(t)
 	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
 
@@ -180,20 +183,53 @@ func TestACallBeforeTheInstallLandsIsRefusedAndTheNextAfterItRuns(t *testing.T) 
 		t.Errorf("the refusal logged %v; want one line naming the pending install", lines)
 	}
 
-	pending.Installed(f.path)
+	source := &standInSource{body: servedCheck(t, filepath.Join(t.TempDir(), "help-runs"), f.record)}
+	if err := pending.Install(context.Background(), source, stateDir, slog.New(slog.DiscardHandler)); err != nil {
+		t.Fatalf("a try the reader serves: %v", err)
+	}
 	if got := f.run(2, argv...); !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
 		t.Fatalf("gh %q after the install = %+v; want gh's answer, exit 0", argv, got)
 	}
 	if checked := f.checked(); !strings.Contains(checked, "checked gh-guard "+strings.Join(argv[:4], " ")) {
 		t.Errorf("the installed check recorded %q, want the call after the install", checked)
 	}
+	if check, err := pending.Check(); err != nil || check != filepath.Join(stateDir, "leak-check", leakguardtest.CheckName) {
+		t.Errorf("the check after the install = %q, %v; want the copy under %s", check, err, stateDir)
+	}
 }
 
-// A tmux daemon's gh tool names no check (Host.LeakCheck nil), so the guard resolves the machine's
-// own in the daemon's environment at each call, as the tmux runtime resolves a pane's at each
-// launch: a call runs the check the machine's pointer file names when the call is made, the next
-// call after the check was republished elsewhere runs the new copy, and a call made while the
-// machine carries none is refused with the setup failure naming the missing check, gh never run.
+// Once the daemon stops trying the install (LeakCheck.Stop), over a cause no wait changes, every
+// call is refused, gh never started, with the setup failure that says the check could not be
+// installed and is tried again only at the daemon's next boot, the cause underneath: never the
+// pending refusal, which says the daemon tries again.
+func TestACallAfterTheInstallStoppedIsRefusedSayingTheNextBootTriesAgain(t *testing.T) {
+	const tag = "leak-check-v18"
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	stopped := NewLeakCheck(tag)
+	cause := errors.New(leakguard.RefusalPrefix + "GitHub answered the read of " + leakguard.CheckSlug + " at " + tag + " with HTTP 404")
+	if err := stopped.Install(context.Background(), refusingSource{err: cause}, t.TempDir(), slog.New(slog.DiscardHandler)); !errors.Is(err, cause) {
+		t.Fatalf("a try whose read failed = %v, want the read's own error", err)
+	}
+	stopped.Stop(cause)
+	f.answer.host.LeakCheck, f.answer.host.Environ = stopped, daemonEnviron(t)
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	want := "refused: LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at " + tag + ", the pin " + leakguard.TagVariable +
+		" names, could not be installed, and the daemon tries the install again only at its next boot: " + cause.Error()
+	for seq := 1; seq <= 2; seq++ {
+		if got := f.run(seq, argv...); got.Ran || got.Exit != -1 || got.Output != want {
+			t.Fatalf("gh %q, call %d, after the install stopped = %+v; want the refusal %q, gh never run", argv, seq, got, want)
+		}
+	}
+	if ran := f.invocations(true); len(ran) != 0 {
+		t.Errorf("gh ran for a call refused after the install stopped: %+v", ran)
+	}
+}
+
+// A tmux daemon's gh tool resolves the machine's own check in the daemon's environment at each
+// call (MachineLeakCheck), as the tmux runtime resolves a pane's at each launch: a call runs the
+// check the machine's pointer file names when the call is made, the next call after the check was
+// republished elsewhere runs the new copy, and a call made while the machine carries none is
+// refused with the setup failure naming the missing check, gh never run.
 func TestEachCallRunsTheMachinesCheckAsItIsWhenTheCallIsMade(t *testing.T) {
 	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
 	configHome := t.TempDir()
@@ -210,8 +246,8 @@ func TestEachCallRunsTheMachinesCheckAsItIsWhenTheCallIsMade(t *testing.T) {
 	firstRecord, againRecord := filepath.Join(t.TempDir(), "first"), filepath.Join(t.TempDir(), "again")
 	first := leakguardtest.Write(t, t.TempDir(), recordsIn(firstRecord, checkPasses))
 	republished := leakguardtest.Write(t, t.TempDir(), recordsIn(againRecord, checkPasses))
-	f.answer.host.LeakCheck = nil
-	f.answer.host.Environ = []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + configHome, "XDG_STATE_HOME=" + t.TempDir()}
+	environ := []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + configHome, "XDG_STATE_HOME=" + t.TempDir()}
+	f.answer.host.LeakCheck, f.answer.host.Environ = MachineLeakCheck{Environ: environ}, environ
 	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
 	checked := func(record string) int {
 		t.Helper()
@@ -241,6 +277,41 @@ func TestEachCallRunsTheMachinesCheckAsItIsWhenTheCallIsMade(t *testing.T) {
 	}
 	if ran := f.invocations(false); len(ran) != 2 {
 		t.Errorf("gh ran %d calls, want the two the machine's check cleared: %+v", len(ran), ran)
+	}
+}
+
+// A tmux daemon's check is resolved in the daemon's own environment (Host.Environ), never under
+// the environment the guard's children run in (Answer.guardEnv), whose PATH has gh's directory in
+// front and which carries no PUBLIC_LEAK_CHECK: the check PUBLIC_LEAK_CHECK names in the daemon's
+// environment, on no PATH entry, is the one the guard runs, and a public-leak-check.sh in gh's
+// directory, on the guard's PATH alone, is never run.
+func TestTheMachinesCheckIsResolvedInTheDaemonsEnvironmentAndNotTheGuards(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	namedRecord, onGuardPathRecord := filepath.Join(t.TempDir(), "named"), filepath.Join(t.TempDir(), "on-guard-path")
+	named := leakguardtest.Write(t, t.TempDir(), recordsIn(namedRecord, checkPasses))
+	leakguardtest.Write(t, f.stand, recordsIn(onGuardPathRecord, checkPasses))
+	environ := []string{"PATH=/usr/bin:/bin", "HOME=" + t.TempDir(), "XDG_CONFIG_HOME=" + t.TempDir(), "XDG_STATE_HOME=" + t.TempDir(),
+		leakguard.CheckVar + "=" + named}
+	f.answer.host.LeakCheck, f.answer.host.Environ = MachineLeakCheck{Environ: environ}, environ
+	// Resolved in the guard's environment, the check would be the one in gh's directory.
+	if resolved, err := leakguard.New(leakguard.Options{Env: f.answer.guardEnv(t.TempDir())}).Resolve(); err != nil || filepath.Dir(resolved) != f.stand {
+		t.Fatalf("the guard's environment resolves %q, %v; want the check in gh's directory %s", resolved, err, f.stand)
+	}
+	argv := []string{"pr", "comment", "5", "-R", "acme/widgets", "--body", "Done."}
+	if got := f.run(1, argv...); !got.Ran || got.Exit != 0 || got.Output != "posted\n" {
+		t.Fatalf("gh %q = %+v; want gh's answer, exit 0", argv, got)
+	}
+	checked := func(record string) int {
+		t.Helper()
+		recorded, err := os.ReadFile(record)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		return bytes.Count(recorded, []byte("checked gh-guard "+strings.Join(argv[:4], " ")))
+	}
+	if byName, onGuardPath := checked(namedRecord), checked(onGuardPathRecord); byName != 1 || onGuardPath != 0 {
+		t.Fatalf("the call was checked %d times by the check %s names and %d by the one on the guard's PATH; want once by the named one alone",
+			byName, leakguard.CheckVar, onGuardPath)
 	}
 }
 

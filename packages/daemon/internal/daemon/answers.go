@@ -38,9 +38,9 @@ type answering struct {
 
 // attachAnswers builds the answer loop over its configuration (answersLoop), and under kubernetes
 // first installs the shared public leak check its gh tool's guard runs (answersTools), refusing
-// the boot only over a cause no wait changes (leakCheckPermanent). stop ends the install where it
-// still runs in the background and waits for it to end, which the daemon does as it stops.
-// Without `answers` it builds nothing, and stop does nothing.
+// the boot only over a cause that is not GitHub's trouble (appTransient). stop ends the install
+// where it still runs in the background and waits for it to end, which the daemon does as it
+// stops. Without `answers` it builds nothing, and stop does nothing.
 func (w *workflowRuntime) attachAnswers(ctx context.Context, cfg config.Config, p plan, s *supervision, st *store.Store) (stop func(), err error) {
 	if w.answers == nil {
 		return func() {}, nil
@@ -89,47 +89,49 @@ func (w *workflowRuntime) answersLoop(cfg config.Config, p plan, s *supervision,
 
 // answersTools is the answer loop's gh tool (ghTools): the daemon's host every answer opens under,
 // with the bounds of cfg's answers, and stop, which ends the check's install where it still runs
-// (installAnswersLeakCheck). The shared public leak check the host names, which the tool's guard
-// runs before every call (ghtool.Host.LeakCheck), comes from one place per runtime and from
+// (installAnswersLeakCheck). The shared public leak check the host names, which the tool hands
+// the guard at every call (ghtool.Host.LeakCheck), comes from one place per runtime and from
 // nowhere else:
 //
 //   - Under kubernetes, where boot read the pin (answersLeakCheck), it is the copy the daemon
 //     installs at that pin through rt's reader, which only the Agent Sandbox runtime holds and
 //     which every pod's launcher is pushed the check through (installAnswersLeakCheck). A
 //     Kubernetes daemon's environment holds none of the three places a check is resolved from.
-//   - Under tmux it names none, so the guard resolves the machine's own check in the daemon's
-//     environment at each call (leakguard's Resolve), as the tmux runtime resolves a pane's at
-//     each launch (runtime/tmux's resolveLeakCheck): an operator's machine installs, moves and
-//     republishes the check while the daemon runs. Boot refused a machine that carried none
-//     (answersLeakCheck); a call made once it carries none is refused with the setup failure
-//     naming the missing check.
+//   - Under tmux it is the machine's own check, resolved at each call in the daemon's own
+//     environment, the one the host names (ghtool.MachineLeakCheck), as the tmux runtime
+//     resolves a pane's at each launch (runtime/tmux's resolveLeakCheck): an operator's machine
+//     installs, moves and republishes the check while the daemon runs. Boot refused a machine
+//     that carried none (answersLeakCheck); a call made once it carries none is refused with the
+//     setup failure naming the missing check.
 func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p plan, rt runtime.Runtime, st *store.Store) (ghTools, func(), error) {
 	legion, err := os.Executable()
 	if err != nil {
 		return ghTools{}, nil, fmt.Errorf("resolve this daemon's executable for the gh tool's wrapper: %w", err)
 	}
-	var check *ghtool.LeakCheck
+	// environ is the daemon's own environment, which the guard runs the check and its own
+	// visibility read in (ghtool.Host), and which a tmux daemon's check is resolved in.
+	environ := os.Environ()
+	var check ghtool.LeakChecker = ghtool.MachineLeakCheck{Environ: environ}
 	stop := func() {}
 	if tag := p.answers.leakCheckTag; tag != "" {
 		sandboxed, ok := rt.(*sandbox.Runtime)
 		if !ok {
 			return ghTools{}, nil, fmt.Errorf("a Kubernetes daemon installs the gh tool's shared public leak check through the Agent Sandbox runtime's reader, not %T's", rt)
 		}
-		if check, stop, err = installAnswersLeakCheck(ctx, cfg.StateDir, tag, sandboxed.LeakCheck(), w.log); err != nil {
+		installed, stopInstall, err := installAnswersLeakCheck(ctx, cfg.StateDir, tag, sandboxed.LeakCheck(), w.log)
+		if err != nil {
 			return ghTools{}, nil, err
 		}
+		check, stop = installed, stopInstall
 	} else {
 		w.log.Info("answers: the gh tool's leak guard runs the machine's shared public leak check, resolved at each call", "check", p.answers.leakCheck)
 	}
-	// Environ is the daemon's own environment, which the guard runs the check and its own
-	// visibility read in (ghtool.Host), and which a tmux daemon's guard resolves the check in.
-	//
 	// Credential builds a role's bundle as a pane's is built, over the daemon's token source
 	// whole (w.apps), since a bundle reads the owners each App is installed on. It records what it
 	// read in no record of the daemon's (plan.installed, plan.left): those are what the daemon's
 	// launches and its drift check read, and an answer's bundle is neither.
 	host := ghtool.Host{
-		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir, LeakCheck: check, Environ: os.Environ(),
+		GH: p.answers.gh, Git: p.tools["git"], Legion: legion, StateDir: cfg.StateDir, LeakCheck: check, Environ: environ,
 		Credential: appauth.GitHubCredential(w.apps, p.repositories.Accepted, cfg.RepositoryRenames, nil, nil, w.log), Calls: st, Log: w.log, Now: time.Now,
 	}
 	return ghTools{host: host, bounds: cfg.Answers.Bounds}, stop, nil
@@ -142,13 +144,21 @@ func (w *workflowRuntime) answersTools(ctx context.Context, cfg config.Config, p
 // daemon reads a tag once for both. nil is a daemon with no GitHub App to read the check with,
 // refused as the runtime refuses the start of such a daemon's pods.
 //
-// The boot tries the install once. A cause no wait changes refuses the boot (leakCheckPermanent).
-// Every other failure is waited out, as the boot waits out GitHub's transient failures (run's boot
-// rule): the check is answered not installed, so the gh tool refuses each call with
-// the setup failure naming the pin and the last try's cause (ghtool.LeakCheck), and the install is
-// tried again in the background on appMintRetry's backoff, 5 s doubling to 30 s, each failed try
-// logged with its cause and the wait before the next, until one lands or ctx ends. stop ends that
-// and waits for it.
+// The boot makes one try of the install (ghtool.LeakCheck.Install). A cause that is not GitHub's
+// trouble refuses the boot, read by the boot App mint's own predicate (appTransient) over the
+// reader's failures as transientReads reports them: a tarball read answered 404, 401 or 403, a
+// tarball that does not pack, a tag the reader refuses, GitHub refusing the narrowing of the
+// read's token, an App with no installation on the check's owner, any other mint failure GitHub
+// did not report as its own trouble, and a failed install of what was read, the `--help` run of a
+// check that does not answer among them. GitHub's trouble is waited out, as the boot waits it out
+// (run's boot rule): the transport failing, the read's bound passing, an HTTP 5xx or 429 answer,
+// and a mint GitHub failed so. The check is then answered not installed, so the gh tool refuses
+// each call with the setup failure naming the pin and the last try's cause (ghtool.LeakCheck),
+// and the install is tried again in the background on appMintRetry's backoff, 5 s doubling to
+// 30 s, each failed try logged with its cause and the wait before the next, until one lands, one
+// meets a cause that is not GitHub's trouble, or ctx ends. Such a cause ends the install: it is
+// logged once at Error with the tag, and the gh tool refuses every call with it until the
+// daemon's next boot (ghtool.LeakCheck.Stop). stop ends the background install and waits for it.
 //
 // Every boot installs again, over what an earlier boot installed there (leakguard.InstallServed),
 // as each new launcher process installs over what its pod's directory held. So a re-pin, which
@@ -159,22 +169,13 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, reader s
 	if reader == nil {
 		return nil, nil, errors.New(leakguard.Cause("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil))
 	}
+	source := transientReads{reader: reader}
 	check := ghtool.NewLeakCheck(tag)
-	install := func(ctx context.Context) error {
-		installed, err := ghtool.InstallLeakCheck(ctx, reader, tag, stateDir, log)
-		if err != nil {
-			check.Failed(err)
-			return err
-		}
-		check.Installed(installed)
-		log.Info("answers: installed the shared public leak check the gh tool's leak guard runs", "tag", tag, "check", installed)
-		return nil
-	}
-	cause := install(ctx)
+	cause := check.Install(ctx, source, stateDir, log)
 	switch {
 	case cause == nil:
 		return check, func() {}, nil
-	case ctx.Err() != nil || leakCheckPermanent(cause):
+	case ctx.Err() != nil || !appTransient(cause):
 		return nil, nil, cause
 	}
 	installing, cancel := context.WithCancel(ctx)
@@ -191,7 +192,14 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, reader s
 				return
 			case <-wait.C:
 			}
-			if cause = install(installing); cause == nil || installing.Err() != nil {
+			cause = check.Install(installing, source, stateDir, log)
+			switch {
+			case cause == nil || installing.Err() != nil:
+				return
+			case !appTransient(cause):
+				check.Stop(cause)
+				log.Error("answers: the shared public leak check cannot be installed, so the gh tool refuses every call until the daemon's next boot; installing it no more",
+					"tag", tag, "error", cause)
 				return
 			}
 		}
@@ -199,22 +207,20 @@ func installAnswersLeakCheck(ctx context.Context, stateDir, tag string, reader s
 	return check, func() { cancel(); <-done }, nil
 }
 
-// leakCheckPermanent says whether err, a failed install of the shared public leak check
-// (installAnswersLeakCheck), has a cause no wait changes, which refuses a Kubernetes daemon's
-// boot: a tag not of the published shape (leakguard.ErrTagShape), which boot's read of the pin
-// refuses first (answersLeakCheck); GitHub refusing the narrowing of the read's token
-// (appauth.NarrowingRefused), which only the account's grant to the App changes; an App with no
-// installation on the check's owner (appauth.ErrNotInstalled), an answer about the owner that the
-// boot's own App mint refuses at once too (mintAtBoot); and a failure of
-// the install of what was read (ghtool.InstallError), the `--help` run of a check that does not
-// answer among them, since the reader keeps a read that succeeded and serves the next try the same
-// body. Everything else is waited out: the transport failing, the read's bound passing, any HTTP
-// answer to the tarball read, and a mint that failed any other way, GitHub's own trouble among
-// them. Each is told by its type, never by its sentence (leakguard.Source.Get).
-func leakCheckPermanent(err error) bool {
-	var install *ghtool.InstallError
-	return errors.Is(err, leakguard.ErrTagShape) || appauth.NarrowingRefused(err) || errors.Is(err, appauth.ErrNotInstalled) ||
-		errors.As(err, &install)
+// transientReads is reader as the daemon's own install reads it (installAnswersLeakCheck): a read
+// GitHub's trouble failed (leakguard.TransientRead) is reported as an *appauth.TransientError,
+// whose text is the read's own cause sentence, so the one predicate the daemon tells GitHub's
+// trouble by (appTransient) reads the tarball read as it reads the read's mint, whose own error
+// the refusal wraps. leakguard imports nothing of the App's, and the pods' launchers, which the
+// same reader serves, read no such line.
+type transientReads struct{ reader sandbox.LeakCheckReader }
+
+func (r transientReads) Get(ctx context.Context, tag string) (leakguard.Served, error) {
+	served, err := r.reader.Get(ctx, tag)
+	if leakguard.TransientRead(err) {
+		return served, &appauth.TransientError{Err: err}
+	}
+	return served, err
 }
 
 // recordFacts reads an agent's issue from the daemon's record for the change note: the status

@@ -120,7 +120,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) (GhAnswer, error) {
 func (g *Guard) ghCall(ctx context.Context, req GhRequest) ([]byte, bool, error) {
 	check, err := g.Resolve()
 	if err != nil {
-		return nil, false, &SetupFailure{What: WhatGhCall, Why: whyNoCheck, Err: err}
+		return nil, false, &SetupFailure{What: WhatGhCall, Why: WhyNoCheck, Err: err}
 	}
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})

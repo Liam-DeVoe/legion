@@ -438,7 +438,7 @@ func TestTheSharedChecksFailuresAreSetupFailures(t *testing.T) {
 		})
 		err := guard.Text(bound(t), TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		failed := setupFailure(t, err)
-		if failed.Why != whyNoCheck {
+		if failed.Why != WhyNoCheck {
 			t.Errorf("the setup failure is %q, want the missing check", failed.Error())
 		}
 	})

@@ -116,7 +116,7 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 	what := PushName(req.Remote)
 	check, err := g.Resolve()
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
+		return &SetupFailure{What: what, Why: WhyNoCheck, Err: err}
 	}
 	var lines strings.Builder
 	for _, update := range req.Updates {

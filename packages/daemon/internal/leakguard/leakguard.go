@@ -214,7 +214,7 @@ func (g *Guard) Text(ctx context.Context, req TextRequest) error {
 	const what = "the text"
 	check, err := g.Resolve()
 	if err != nil {
-		return &SetupFailure{What: what, Why: whyNoCheck, Err: err}
+		return &SetupFailure{What: what, Why: WhyNoCheck, Err: err}
 	}
 	if err := g.shared(ctx, what, child{
 		argv:  []string{check, "check-public-text", "-"},

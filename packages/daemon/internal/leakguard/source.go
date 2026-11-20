@@ -86,9 +86,10 @@ type Served struct {
 
 // Get answers the check at tag, read once for every caller (Source). Every error's text is one
 // cause sentence (Cause), and every error wraps what is underneath it where there is something:
-// ErrTagShape for a tag Get refuses, the mint's own error (Token), the transport's, the caller's
-// context's end, and the tarball's own failure. So a caller tells a refusal a later ask cannot
-// pass from one it can with errors.Is and errors.As, never from the sentence.
+// the mint's own error (Token), the transport's, the caller's context's end, and the tarball's
+// own failure. A refusal GitHub's trouble caused answers TransientRead, so a caller tells a
+// refusal a later ask may pass from one it cannot by that and by the mint's own error, with
+// errors.Is and errors.As, never from the sentence.
 //
 // A tag not of the published shape (shimwire.ValidLeakCheckTag) is refused before any token is
 // minted or any request made, since a tag becomes a path of a GitHub API endpoint. Otherwise Get
@@ -97,7 +98,7 @@ type Served struct {
 // and the read goes on for every other caller waiting on it.
 func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 	if !shimwire.ValidLeakCheckTag(tag) {
-		return Served{}, refused(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil), ErrTagShape)
+		return Served{}, refused(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil), nil)
 	}
 	r := s.reading(ctx, tag)
 	select {
@@ -108,15 +109,27 @@ func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 	}
 }
 
-// ErrTagShape is what Get's refusal of a tag not of the published shape leak-check-v<n> wraps: no
-// read at that tag is ever made, however often it is asked for.
-var ErrTagShape = errors.New("the tag is not of the published shape leak-check-v<n>")
+// TransientRead reports a refusal of Get that GitHub's trouble caused, which the same read may
+// pass when it is made again: no answer at all (the transport failing), the read's bound passing,
+// an HTTP 5xx or 429 answer, and a 401 where the Source forgets the token (Forget), since the next
+// read mints a fresh one. Every other refusal of Get is GitHub's answer or the daemon's own, and
+// reading again changes nothing: a tag not of the published shape, a 404 (the tag is missing), a
+// 401 the Source cannot forget, a 403, a tarball that does not pack, and a mint that failed, whose
+// own error underneath says whether it was GitHub's trouble (Token). This package imports nothing
+// of the App's, so the daemon carries this answer over to its own (internal/daemon's
+// transientReads).
+func TransientRead(err error) bool {
+	var refusal *readRefusal
+	return errors.As(err, &refusal) && refusal.transient
+}
 
 // readRefusal is a refusal of Get: sentence, its one cause sentence (Cause), is its whole text,
-// and under is the error underneath it, nil where there is none.
+// under is the error underneath it, nil where there is none, and transient says GitHub's trouble
+// caused it (TransientRead).
 type readRefusal struct {
-	sentence string
-	under    error
+	sentence  string
+	under     error
+	transient bool
 }
 
 func (r *readRefusal) Error() string { return r.sentence }
@@ -126,6 +139,11 @@ func (r *readRefusal) Unwrap() error { return r.under }
 // refused is the refusal whose text is sentence and which wraps under.
 func refused(sentence string, under error) error {
 	return &readRefusal{sentence: sentence, under: under}
+}
+
+// troubled is the refusal refused makes, of a read GitHub's trouble ended (TransientRead).
+func troubled(sentence string, under error) error {
+	return &readRefusal{sentence: sentence, under: under, transient: true}
 }
 
 // reading is the read at tag: the one kept or running, or a new one, started on a context
@@ -193,13 +211,19 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
+		// A 401 is GitHub no longer taking the token: a Source that forgets it mints a fresh one
+		// for the next read, so that read may succeed and the 401 is GitHub's trouble too.
+		forgot := response.StatusCode == http.StatusUnauthorized && s.Forget != nil
+		if forgot {
 			s.Forget()
 		}
 		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
 		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
 		if strings.TrimSpace(string(body)) != "" {
 			what += ": " + firstLine(string(body))
+		}
+		if forgot || response.StatusCode >= http.StatusInternalServerError || response.StatusCode == http.StatusTooManyRequests {
+			return Served{}, troubled(Cause(what, nil), nil)
 		}
 		return Served{}, refused(Cause(what, nil), nil)
 	}
@@ -217,11 +241,12 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	return Served{Tag: tag, Body: body, Frames: frames}, nil
 }
 
-// readFailure is the cause of a read that did not arrive: the bound's own sentence where the
-// read's bound ended it, and the transport's error otherwise.
+// readFailure is the cause of a read that did not arrive, GitHub's trouble either way
+// (TransientRead): the bound's own sentence where the read's bound ended it, and the transport's
+// error otherwise.
 func readFailure(ctx context.Context, tag string, bound time.Duration, err error) error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return refused(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", CheckSlug, tag, bound), nil), err)
+		return troubled(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", CheckSlug, tag, bound), nil), err)
 	}
-	return refused(Cause(fmt.Sprintf("the daemon could not read %s at %s", CheckSlug, tag), err), err)
+	return troubled(Cause(fmt.Sprintf("the daemon could not read %s at %s", CheckSlug, tag), err), err)
 }

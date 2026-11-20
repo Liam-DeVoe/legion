@@ -33,8 +33,10 @@ const (
 	checkWantsStdin    = 4 // the gh call reads standard input; buffer it and ask again
 )
 
-// whyNoCheck is the setup failure of a call that found no shared check at all.
-const whyNoCheck = "the shared public leak check could not be found"
+// WhyNoCheck is the setup failure of a call that found no shared check at all. It is exported
+// because the daemon's gh tool refuses a call with it when the machine's check resolves nowhere
+// (internal/ghtool's MachineLeakCheck), before the guard is handed any check.
+const WhyNoCheck = "the shared public leak check could not be found"
 
 // CheckVar is the environment variable that names the shared check, the first place Resolve
 // looks. It is exported because the daemon tells a pane the check it resolved under this name

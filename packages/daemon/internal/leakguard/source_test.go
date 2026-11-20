@@ -186,8 +186,8 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 }
 
 // A tag not of the published shape is refused before anything is minted or asked of GitHub: it
-// would otherwise become a path of a GitHub API endpoint. The refusal wraps ErrTagShape, which is
-// how a caller tells it from a read a later ask may pass.
+// would otherwise become a path of a GitHub API endpoint. The refusal is no TransientRead: no
+// read at that tag is ever made, however often it is asked for.
 func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	fake := serveCheck(t, func(w http.ResponseWriter, r *http.Request, _ string) { githubtest.Unexpected(t, w, r) })
 	var mints atomic.Int32
@@ -195,8 +195,8 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	for _, tag := range []string{"", "v15", "leak-check-v0", "leak-check-v015", "leak-check-v15/../../../user", "leak-check-v15\n", "LEAK-CHECK-V15"} {
 		_, err := source.Get(bound(t), tag)
 		want := RefusalPrefix + fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag)
-		if err == nil || err.Error() != want || !errors.Is(err, ErrTagShape) {
-			t.Errorf("the tag %q = %v, want %q wrapping ErrTagShape", tag, err, want)
+		if err == nil || err.Error() != want || TransientRead(err) {
+			t.Errorf("the tag %q = %v, want %q, no TransientRead", tag, err, want)
 		}
 	}
 	if minted := mints.Load(); minted != 0 || fake.total() != 0 {
@@ -357,7 +357,7 @@ func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 		}
 		return sourceToken, nil
 	}}
-	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence || !errors.Is(err, mintFailure) || errors.Is(err, ErrTagShape) {
+	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence || !errors.Is(err, mintFailure) || TransientRead(err) {
 		t.Fatalf("a failed mint = %v, want %q wrapping the mint's own error", err, RefusalPrefix+sentence)
 	}
 	if fake.total() != 0 {
@@ -381,6 +381,100 @@ func TestAReadThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
 	want := RefusalPrefix + "the daemon's read of theorem-labs/agent-infra at " + theTag + " did not finish within 50ms"
 	if err == nil || err.Error() != want {
 		t.Fatalf("a read that does not answer = %v, want %q", err, want)
+	}
+}
+
+// failingTransport fails every request with err before it reaches anything, as a connection
+// GitHub never answers does.
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
+
+// A refusal of Get is a TransientRead exactly where GitHub's trouble caused it, so the same read
+// may pass when it is made again: the transport failing, the read's bound passing, an HTTP 5xx or
+// 429 answer, and a 401 to a Source that forgets the token, whose next read mints a fresh one.
+// GitHub's answer about the read (a 404 for a tag the repository does not hold, a 401 to a Source
+// that cannot forget its token, a 403), a tarball that does not pack, a failed mint and a tag not
+// of the published shape are not, and neither is a caller that stopped waiting, whose own
+// context's end it wraps.
+func TestOnlyGitHubsTroubleIsATransientRead(t *testing.T) {
+	answered := func(status int) func(t *testing.T) (*Source, context.Context) {
+		return func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"message":"%s"}`+"\n", http.StatusText(status))
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		source    func(t *testing.T) (*Source, context.Context)
+		tag       string
+		transient bool
+	}{
+		{"HTTP 500", answered(http.StatusInternalServerError), theTag, true},
+		{"HTTP 502", answered(http.StatusBadGateway), theTag, true},
+		{"HTTP 503", answered(http.StatusServiceUnavailable), theTag, true},
+		{"HTTP 429", answered(http.StatusTooManyRequests), theTag, true},
+		{"the transport fails", func(t *testing.T) (*Source, context.Context) {
+			var mints atomic.Int32
+			source := sourceOver("https://api.invalid", &mints)
+			source.Client = &http.Client{Transport: failingTransport{err: errors.New("connection reset by peer")}}
+			return source, bound(t)
+		}, theTag, true},
+		{"the read's bound passes", func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(_ http.ResponseWriter, r *http.Request, _ string) { <-r.Context().Done() })
+			var mints atomic.Int32
+			source := sourceOver(fake.url, &mints)
+			source.ReadBound = 50 * time.Millisecond
+			return source, bound(t)
+		}, theTag, true},
+		{"HTTP 404, a tag the repository does not hold", answered(http.StatusNotFound), theTag, false},
+		{"HTTP 401 to a Source that forgets the token", func(t *testing.T) (*Source, context.Context) {
+			source, ctx := answered(http.StatusUnauthorized)(t)
+			source.Forget = func() {}
+			return source, ctx
+		}, theTag, true},
+		{"HTTP 401 to a Source that cannot forget its token", answered(http.StatusUnauthorized), theTag, false},
+		{"HTTP 403", answered(http.StatusForbidden), theTag, false},
+		{"a tarball with no leak-check directory", func(t *testing.T) (*Source, context.Context) {
+			raw := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+				leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},
+			})
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, false},
+		{"a failed mint", func(t *testing.T) (*Source, context.Context) {
+			return &Source{API: "https://api.invalid", Token: func(context.Context) (string, error) {
+				return "", errors.New("the daemon could not mint its read-only token for " + CheckSlug)
+			}}, bound(t)
+		}, theTag, false},
+		{"a tag not of the published shape", answered(http.StatusBadGateway), "leak-check-v015", false},
+		{"a caller that stopped waiting", func(t *testing.T) (*Source, context.Context) {
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			source := &Source{API: "https://api.invalid", Token: func(context.Context) (string, error) {
+				<-release
+				return "", errors.New("the mint the caller stopped waiting on")
+			}}
+			ctx, cancel := context.WithCancel(bound(t))
+			cancel()
+			return source, ctx
+		}, theTag, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, ctx := tc.source(t)
+			_, err := source.Get(ctx, tc.tag)
+			if err == nil || !strings.HasPrefix(err.Error(), RefusalPrefix) {
+				t.Fatalf("the read = %v, want a refusal in its cause sentence", err)
+			}
+			if got := TransientRead(err); got != tc.transient {
+				t.Fatalf("the refusal %q is a TransientRead %v, want %v", err, got, tc.transient)
+			}
+		})
 	}
 }
 

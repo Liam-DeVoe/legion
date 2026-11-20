@@ -316,7 +316,11 @@ var appMintAttempt = 15 * time.Second
 // attempt inside the 180 s Stage 3 gives a daemon to answer /healthz.
 var appMintRetry = bootprobe.Retry{Initial: 5 * time.Second, Max: 30 * time.Second, Attempts: 5}
 
-// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError).
+// appTransient is a failure GitHub reports as its own trouble (appauth.TransientError): the one
+// line the daemon draws between a failure a wait may end and one no wait changes, for the boot's
+// App reads and mints, its repository reads (bootReadTransient), and the install of the answer
+// loop's shared public leak check, whose tarball read is reported in the same type
+// (installAnswersLeakCheck's transientReads).
 func appTransient(err error) bool {
 	var transient *appauth.TransientError
 	return errors.As(err, &transient)

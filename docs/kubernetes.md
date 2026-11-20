@@ -1752,17 +1752,23 @@ So the tool runs only what is safe there, and decides before anything runs:
   — run in the daemon's environment rather than the call's, with the real gh and the routed owner's `GH_CONFIG_DIR` in front of it and no token of the daemon's own, so that read is the agent's App and never the `legion gh` wrapper, which would call a guard of its own.
 
 - **The check the guard runs.**
-  Each runtime has one rule for the check the guard runs (`ghtool.Host.LeakCheck`).
+  Each runtime has one rule for the check the guard runs (`ghtool.Host.LeakCheck`), which the tool asks for at every call and hands the guard, so the guard never resolves a check of its own.
   Under `runtime: kubernetes` the daemon hands the guard a copy it installs and runs itself, since its environment holds none of the three places a check is resolved from, and boot refuses to start without the tag it installs ([Worker image](#worker-image)):
   it reads the check at its own environment's `LEGION_LEAK_CHECK_TAG` through the reader every pod's launcher is pushed the check from, so one read of a tag serves both, installs it under `<state_dir>/leak-check/` with the launcher's own installer (`leakguard.InstallServed`: the unpack into a staging directory, the tag recorded, one `--help` run, the rename over what the directory held), and logs `answers: installed the shared public leak check the gh tool's leak guard runs` with the tag and the path.
-  A cause no wait changes refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`:
-  a tag not of the published shape, a daemon with no GitHub App, an App with no installation on the check's owner, GitHub refusing the reading permissions the read's token asks for, and a served check whose install fails, its `--help` run among them.
-  Any other failure boots the daemon all the same and leaves the install to the background: the read's transport failing, its time bound passing, any HTTP answer to the tarball read, and a token mint that failed some other way.
-  The daemon tries the install again 5 seconds later, doubling the wait up to 30 seconds, until it lands or the daemon stops, and logs each failed try as `answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again` with the tag, the wait (`retryIn`) and the cause.
+  A cause that is not GitHub's own trouble refuses the boot with the cause sentence a pod's start is refused with, `the shared public leak check could not be installed: …`, told as the boot's GitHub App mint tells it (`appTransient`, permanent unless GitHub reports its own trouble):
+  a tag not of the published shape, a daemon with no GitHub App, a tarball read GitHub answers 404 (the tag is missing) or 403, a tarball that holds no check, an App with no installation on the check's owner, GitHub refusing the reading permissions the read's token asks for, any other token mint GitHub does not report as its own trouble, and a served check whose install fails, its `--help` run among them.
+  GitHub's trouble boots the daemon all the same and leaves the install to the background: the read's transport failing, its time bound passing, an HTTP 5xx or 429 answer to the tarball read, a 401 to the token the read was made with, which the daemon then forgets so the next try mints a fresh one, and a token mint that failed as GitHub's trouble.
+  The daemon tries the install again 5 seconds later, doubling the wait up to 30 seconds, until it lands, a try meets a cause that is not GitHub's trouble, or the daemon stops, and logs each failed try as `answers: the shared public leak check is not installed, so the gh tool refuses every call until it is; installing it again` with the tag, the wait (`retryIn`) and the cause.
   Until the install lands, every `gh` call is refused before gh starts with the setup error naming the pin and the last try's cause, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, is not installed yet, …`, recorded and logged as the guard's own refusals are.
+  A try in the background that meets a cause that is not GitHub's trouble ends the install:
+  the daemon logs it once at Error, `answers: the shared public leak check cannot be installed, so the gh tool refuses every call until the daemon's next boot; installing it no more`, with the tag and the cause, and tries no more.
+  Every `gh` call from then on is refused with that cause, in a setup error that says so, `LEAK CHECK SETUP ERROR: the gh call: the shared public leak check at <tag>, the pin LEGION_LEAK_CHECK_TAG names, could not be installed, and the daemon tries the install again only at its next boot: …`.
   The first call after the install lands runs under the installed check.
   Every boot installs again over what the last one left, so a re-pin, which moves the image's pin and with it the daemon's environment, is the next boot's install of the new tag, logged as `answers: the install of <new tag> replaced the install of <old tag> at <dir>`.
-  Under `runtime: tmux` the daemon hands the guard no check, and the guard resolves the machine's own in the daemon's environment at each call, as the daemon resolves a pane's at each launch, since an operator's machine installs, moves and republishes the check while the daemon runs.
+
+- **The check under `runtime: tmux`.**
+  The check is the machine's own, which the tool resolves at each call in the daemon's own environment, as the daemon resolves a pane's at each launch (`PUBLIC_LEAK_CHECK`, then `public-leak-check.sh` on `PATH`, then the pointer file under the configuration home), since an operator's machine installs, moves and republishes the check while the daemon runs.
+  It never resolves the check in the environment the guard's children run in, whose `PATH` has gh's directory in front and which carries no `PUBLIC_LEAK_CHECK`.
   A call made while the machine carries none is refused with the setup error naming the missing check.
 
 ### The conversation stores
@@ -2823,7 +2829,7 @@ The statement takes these rows of every project the database holds.
 Where another project's daemon shares the database and stays on this release, add `and split_part(issue, '-', 1) = '<PROJECT>'`, the Dispatch project key the rolled-back daemon's issues carry, which is how `WaitingNotices` itself selects a project.
 What the delete costs is the notices themselves.
 The loop marked each question and each decision passed in the transaction that queued its notice (`processed_events`), so a roll forward queues neither again:
-a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, which a controller of this release reads at its start, and a deleted decision is not told again.
+a deleted question is still listed in `questionsForController`, among the newest 100, for seven days from its pass, in the state this release serves a caller at contract 183 or later, and a deleted decision is not told again.
 
 **The four tables need no statement.**
 This release creates `answer_tool_calls` (`20261106214000_answer_tool_calls`), `agent_conversations` (`20261106214001_agent_conversations`), and `answer_questions` and `answer_spend` (`20261106214002_answer_questions`).
