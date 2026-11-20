@@ -108,7 +108,7 @@ func TestTheStateServesAStandingWaitOnlyToACallerAtTheWaitContract(t *testing.T)
 // waitContract is the contract whose entry in version.go added the key, and this daemon's own
 // contract is never below it: a caller at this contract is served the wait.
 func TestWaitContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedWait = 183
+	const addedWait = 194
 	if waitContract != addedWait {
 		t.Fatalf("waitContract = %d, want %d, the contract whose entry in version.go added each claim view's wait",
 			waitContract, addedWait)

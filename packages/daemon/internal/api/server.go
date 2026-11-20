@@ -1233,7 +1233,7 @@ const entryTimesContract = 146
 const pauseContract = 178
 
 // waitContract is the daemon contract that added each claim view's `wait`, the wait the claim's
-// worker declared while it stands (version.go's 183, ClaimView.Wait), beside the two routes a
+// worker declared while it stands (version.go's 194, ClaimView.Wait), beside the two routes a
 // worker declares one and reports news through, and each merger's `hold`, the closed design gate
 // that holds it while the hold stands (ClaimView.Hold). A plugin below it is served every claim
 // view without either key: one built before sjawhar/legion#2788 reads the state with a strict
@@ -1245,7 +1245,7 @@ const pauseContract = 178
 // and below this contract is served the pause and no claim view's `wait` or `hold`. It is the
 // highest of the bands, this daemon's own contract, so the only caller served the wait and the
 // hold is one at it.
-const waitContract = 183
+const waitContract = 194
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

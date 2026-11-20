@@ -1330,12 +1330,12 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
-// Contract 183: a claim whose worker declared a wait that stands carries it on its view of the
+// Contract 194: a claim whose worker declared a wait that stands carries it on its view of the
 // state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
 // the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
 // The schema must name the key, since a key it does not name is stripped and the seat never sees
 // it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
-// and after. A daemon narrows it away for a caller below 183 (`api.withoutWait`), so a claim
+// and after. A daemon narrows it away for a caller below 194 (`api.withoutWait`), so a claim
 // without it parses, and a wait with no text — which the daemon never records — is refused.
 test("a claim carries its standing wait", () => {
   const state = fixture("state.json") as {
@@ -1368,12 +1368,12 @@ test("a claim carries its standing wait", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
-// Contract 183: a merger the closed design gate holds carries the hold on its view of the state,
+// Contract 194: a merger the closed design gate holds carries the hold on its view of the state,
 // which is what `read_record` reads an issue's record from: the gated step whose row holds it, the
 // document registered for that step, and the version of it that is with its reviewer. The schema
 // must name the key, since a key it does not name is stripped and the seat never sees it: the
 // golden carries it on LEGION-215's merger alone, and this reads it before the parse and after. A
-// daemon narrows it away for a caller below 183 (`api.withoutHold`), so a claim without it parses,
+// daemon narrows it away for a caller below 194 (`api.withoutHold`), so a claim without it parses,
 // and a hold that names no gated step, or a version below 1, is refused.
 test("a held merger carries the design gate's hold", () => {
   const state = fixture("state.json") as {

@@ -343,14 +343,14 @@ const legionClaimView = z.object({
    * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
    * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
    * stands — a fresh session, or a phase that moved. A caller in a pod whose plugin declares a
-   * contract below 183 is served the state with no such key at all (the daemon's `withoutWait`),
+   * contract below 194 is served the state with no such key at all (the daemon's `withoutWait`),
    * so every reader takes it as optional. */
   wait: legionWait.optional(),
   /** The closed design gate that holds this merger while the hold stands — the same rule the
    * outbox's fence reads, so it is present exactly while the daemon holds the merger's phase
    * start. Absent for every other claim: another role's, a merger whose issue is not in
    * `merging`, and a merger whose tree's gated steps stand open or have no registered row. A
-   * caller in a pod whose plugin declares a contract below 183 is served the state with no such
+   * caller in a pod whose plugin declares a contract below 194 is served the state with no such
    * key at all (the daemon's `withoutHold`), so every reader takes it as optional. */
   hold: legionHold.optional(),
 });

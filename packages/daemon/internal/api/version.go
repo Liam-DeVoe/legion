@@ -14,16 +14,18 @@ package api
 // number it was built against as `legion.daemonApiVersion` in its `package.json`, and the boot
 // gate (`internal/daemon/bootgate.go`) refuses to start unless the two are equal.
 //
-// Bump rule: a change to any of these surfaces bumps this constant. The same commit writes the
-// number in every other file that holds it: `legion.daemonApiVersion` in
-// `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`, and the two fixtures
+// Bump rule: a change to any of these surfaces raises this constant above the number its base
+// carries. The same commit writes the number in every other file that holds it:
+// `legion.daemonApiVersion` in `packages/pi-legion/package.json` and
+// `packages/claude-envoy/package.json`, and the two fixtures
 // that this package's golden tests write, `packages/contracts/fixtures/daemon-api/version.json`
 // and `packages/contracts/fixtures/daemon-api/state.json`. In `packages/daemon`,
 // `go test ./internal/api -run '^(TestDaemonAPIVersionGolden|TestStateGolden)$' -update` writes
 // the two fixtures. The plugin's test reads `version.json`, so that fixture holds this constant
 // and the plugin's field together.
 // `.github/scripts/check-daemon-api-contract.sh` refuses a change in which one of those files
-// disagrees with this constant.
+// disagrees with this constant, and, naming a free number, a change that touches the contract
+// below (that script's header says which edits do) and declares no number above its base's.
 //
 // 8: secrets broker enrollment -- AGENT_SECRETS_URL and AGENT_SECRETS_KEY_DIR on an enrolled pod's worker
 // container, and the shim's hello2.
@@ -911,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -922,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2453,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 183: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 194: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
 // own work, until a time it names, and the record shows each wait that stands. Two claim routes
 // are added, each authenticated by the registration's secret as `POST /legion/v1/claims/activity`
 // is and held to the session the claim records. `POST /legion/v1/claims/wait` (`api.WaitRequest`:
@@ -2467,7 +2478,7 @@ package api
 // `{ended: false, updateAsk: true}` for a key of the claim's own update ask, which ends nothing
 // and records nothing (record.IsUpdateAskKey). Each refuses a stale plugin's claim with the
 // stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
-// by a contract of its own: a plugin below 183 knows neither route and sends neither.
+// by a contract of its own: a plugin below 194 knows neither route and sends neither.
 // Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the
 // declaration's answer named) while its worker's wait stands (workflow.WaitStands): declared and
 // not ended, in the session, phase, generation and phase entry it was declared at, of a claim
@@ -2479,10 +2490,10 @@ package api
 // `version`) while the closed design gate holds that merger (workflow.HeldByDesignGate), so
 // `read_record` carries it, and the plain `legion state` prints one `holds:` line naming each.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 183 is served every claim view without the two keys (api's stateFor,
+// contract below 194 is served every claim view without the two keys (api's stateFor,
 // withoutWait and withoutHold), as a caller below 146, INFRA-2614's entry, is served the issues
 // without their entry times (withoutEntryTimes), and every older band as the rows of
-// stateNarrowings list it; they compose, and every reader from 183 on takes each key as optional
+// stateNarrowings list it; they compose, and every reader from 194 on takes each key as optional
 // (`packages/contracts/src/legion-api.ts`).
 // A plugin from 58 to 166 does not refuse either key, since every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
@@ -2495,16 +2506,17 @@ package api
 // are the two routes and the two keys above.
 // (This change declared 125, the lowest number above the base's 111 that no open pull request
 // declared, read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49. It took
-// 167, 170 and 176 at the forward merges of 2026-11-19, and takes 183 at the forward merge of
-// 2026-11-20 that brings main in at d36289cb84b1, which carries INFRA-3759's 178, the entry right
-// above and the number the base carries. Its narrowing stands above pauseContract's, so a pod at
-// 178 is served the pause and no claim view's `wait` or `hold`.
+// 167, 170 and 176 at the forward merges of 2026-11-19 and 183 at the first of 2026-11-20, and
+// takes 194 at the forward merge of 2026-11-20 that brings main in at 1c7c8253678f, which carries
+// #4543's 188, the entry right above and the number the base carries. Its narrowing stands above
+// pauseContract's, so a pod at 178 to 193 is served the pause and no claim view's `wait` or
+// `hold`.
 // .github/scripts/check-daemon-api-contract.sh, run as CI runs it on a tree declaring the base's
-// own 178 against main at d36289cb84b1 at 2026-11-20T01:35:51Z, refused it and named 183,
-// passing over 179 (#4392 and #4540), 180 (#4049 and #4175), 181 (#4273 and #4553) and 182
-// (#4495). Each of those is the number that head declared at that reading and no head's for good.
-// Read the base's own number and every open head again at the last push rather than from this
-// line, as
+// own 188 against main at 1c7c8253678f at 2026-11-20T11:14:01Z, refused it and named 194,
+// passing over 189 (#3831 and #4596), 190 (#4578), 191 (#4049, #4493, #4495, #4573 and #4592), 192
+// (#4175 and #4611) and 193 (#3659 and #4065). Each of those is the number that head declared at
+// that reading and no head's for good. Read the base's own number and every open head again at the
+// last push rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 183
+const DaemonAPIVersion = 194
