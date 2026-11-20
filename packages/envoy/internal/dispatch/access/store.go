@@ -320,8 +320,8 @@ func SetSlackChannels(ctx context.Context, tx pgx.Tx, ev *events.Broker, key str
 // lockSlackChannels takes, for the rest of tx, the one lock every write of a project's Slack
 // channels takes before it reads any project's list, so two writes naming one channel for two
 // private projects cannot both read the other's list as it was and both commit. It comes after the
-// project's owner lock (LockForAccessWrite, lockProject) in the order every access write takes its
-// locks, and no writer takes a project's owner lock after it.
+// project's owner lock (lockProject, which LockForAccessWrite also takes) in the order every access
+// write takes its locks, and a project's row is written only under that project's owner lock.
 func lockSlackChannels(ctx context.Context, tx pgx.Tx) error {
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('dispatch-slack-channel'), 0)`); err != nil {
 		return fmt.Errorf("lock the Slack channels: %w", err)
