@@ -139,6 +139,11 @@ func (p *sweepPath) hold(group []supervise.Claim) {
 		for _, s := range states {
 			s.drive(p, m, *c)
 		}
+		// A state's drive can leave the machine's own follow-up work in flight — the revoke of a
+		// let-go process's enrollment (supervise's Machine.revoke), which takes the machine's lock
+		// when it ends — and a row run under that lock answers ErrMachineBusy, so the claim is put
+		// to the path only once that work has ended.
+		m.Wait()
 		if len(states) > 0 {
 			*c = m.View().Claim
 		}
@@ -311,14 +316,20 @@ var sweepViewStates = []sweepViewState{
 				defer close(decided)
 				_ = m.Handle(p.rig.ctx, supervise.RequestSuspend{Claim: c.Token, By: supervise.SuspendedByOperator})
 			}()
+			// letGo ends the decision and waits for the work it leaves behind (Machine.Wait): the
+			// stop of a claim with an enrollment revokes it on a goroutine of the machine's, which
+			// takes the machine's lock when it ends, and a row run under that lock answers
+			// ErrMachineBusy.
 			letGo := func() {
 				close(rt.release)
 				<-decided
+				m.Wait()
 			}
 			select {
 			case <-rt.entered:
 			case <-decided:
 				close(rt.release)
+				m.Wait()
 				return m, nil
 			}
 			if !m.View().Stopping {
@@ -346,6 +357,7 @@ var sweepViewStates = []sweepViewState{
 			m := p.machine(deps, c)
 			_ = m.Handle(p.rig.ctx, supervise.StalePlugin{Claim: c.Token, Trigger: "sweep", Admitted: true})
 			if m.View().WakeWaiting == nil {
+				m.Wait()
 				return m, nil
 			}
 			return m, &sweepHeld{machine: m, end: m.Wait}
