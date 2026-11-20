@@ -401,10 +401,7 @@ describe("the writes and the reads of the world", () => {
     try {
       const own = await checkNamed(name).run(tree, unplanted);
       expect(own.map((hit) => [hit.at, hit.verdict])).toEqual([
-        [
-          "threads-closed-correct: the Implement App's push of .github/workflows/greet.yml",
-          "true",
-        ],
+        ["threads-closed-correct: the Implement App's push of .github/workflows/greet.yml", "true"],
         ["threads-closed-correct: the Review App's push of .github/workflows/greet.yml", "true"],
       ]);
       expect(instances(await checkNamed(name).run(tree, on))).toEqual([

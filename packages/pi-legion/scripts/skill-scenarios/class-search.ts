@@ -1030,18 +1030,25 @@ const reads: Check = {
     ),
 };
 
-/** The values a pinned read is made with in the world of the most routes after the run's writes. */
+/** The values a pinned read is made with in the world of the most routes after the run's writes:
+ * an approved world, whose create route answers the review 5002, holding a thread whose first
+ * comment is the one the reply below names (PLACES' `comment`), which accept's approval, leaving
+ * no thread, does not hold. */
 async function differences(worlds: Worlds): Promise<Hit[]> {
   const world =
     worlds
       .all()
-      .find((one) =>
-        one.routes.some(
-          (route) =>
-            route.match.includes("/reviews([ ?]|$)") &&
-            route.methods?.includes("POST") &&
-            JSON.stringify(route.stdout ?? "").includes("5002")
-        )
+      .find(
+        (one) =>
+          one.routes.some(
+            (route) =>
+              route.match.includes("/reviews([ ?]|$)") &&
+              route.methods?.includes("POST") &&
+              JSON.stringify(route.stdout ?? "").includes("5002")
+          ) &&
+          one.routes.some((route) =>
+            JSON.stringify(route.graph ?? "").includes(`"databaseId":${PLACES.comment}`)
+          )
       ) ?? richest(worlds);
   const dir = worlds.copy(world);
   const { repo, pr, head, base, branch } = world.world;
@@ -1062,7 +1069,7 @@ async function differences(worlds: Worlds): Promise<Hit[]> {
       "-f",
       `body=${SENT}`,
     ],
-    ["api", "-X", "POST", `${pulls}/comments/7001/replies`, "-f", `body=${SENT}`],
+    ["api", "-X", "POST", `${pulls}/comments/${PLACES.comment}/replies`, "-f", `body=${SENT}`],
   ]) {
     const done = await worlds.in(dir, argv);
     if (done.code !== 0)

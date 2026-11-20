@@ -2381,7 +2381,11 @@ describe("fixture_head_commit", () => {
 describe("round_world and the worlds' own text findings", () => {
   /** WORLD built with GUARD, with round_world stubbed: the arguments it was given, and what the
    * stub had to set for the rest of the world to build (round_world's own outputs). */
-  function built(world: string, guard: string, worldCase = guard === "" ? "correct" : "code-defect") {
+  function built(
+    world: string,
+    guard: string,
+    worldCase = guard === "" ? "correct" : "code-defect"
+  ) {
     const dir = freshDir(`world-text-${world}`);
     const result = bash(
       [
@@ -12142,7 +12146,9 @@ describe.skipIf(testPostgres === undefined || withoutGo)(
       expect(issueState(world)).toEqual(
         expectedState(world, "needs_review", "yes, from tester, implementer")
       );
-      expect(concerns(world)).toEqual(noConcern({ ...none, defect: true, codeDefectSentence: true }));
+      expect(concerns(world)).toEqual(
+        noConcern({ ...none, defect: true, codeDefectSentence: true })
+      );
     }, 300_000);
 
     // After the implementer's push, the first `dispatch results` an agent can run reads what

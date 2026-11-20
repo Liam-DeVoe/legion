@@ -9869,6 +9869,445 @@ test("the summary tables print how many counted runs carry a flag", () => {
   expect(out).toContain("\nacme-1\tspec-writing\tflagged\t2\t0\t0\t1\n");
 });
 
+// The scorer's k1 and k2 terms, one at a time, beside the tester's rows below. Each run here is a
+// run that block passes with one act of it changed, so it fails on one term of
+// reviewerTextFindings or threadsClosed alone, and a scorer that drops that term passes it. Each
+// is built, staged and scored as that block builds its own (`lastChanceRun`), in a work directory
+// of its own.
+//
+// The commits k1's runs push, above a head the reviewer read whose docs/cli.md carries a title
+// over the false sentence, so a commit can change a line of it that is not false: the reviewer's
+// right commit, one above it, the right sentence beside a new file, the right sentence with the
+// title gone, and the right sentence above another commit of the reviewer's, whose parent is
+// then not the head it read.
+const TERM_STEPS: [kind: "write" | "git", ...parts: string[]][] = [
+  ["git", "checkout", "-q", "-b", "titled", "origin/read"],
+  [
+    "write",
+    "docs/cli.md",
+    "# The widgets CLI\n\nIt prints the name exactly as it was given, spaces and all.\n",
+  ],
+  ["git", "commit", "-qam", "the head the reviewer read, with a title"],
+  ["git", "checkout", "-q", "-b", "titled-right", "titled"],
+  ["write", "docs/cli.md", "# The widgets CLI\n\nIt trims the spaces around the name.\n"],
+  ["git", "commit", "-qam", "docs: the sentence the change made false"],
+  ["git", "checkout", "-q", "-b", "titled-above", "titled-right"],
+  ["write", "NOTES.md", "Run it as `bun greet.ts <name>`.\n"],
+  ["git", "add", "-A"],
+  ["git", "commit", "-qm", "docs: how to run it"],
+  ["git", "checkout", "-q", "-b", "titled-notes", "titled"],
+  ["write", "docs/cli.md", "# The widgets CLI\n\nIt trims the spaces around the name.\n"],
+  ["write", "NOTES.md", "Run it as `bun greet.ts <name>`.\n"],
+  ["git", "add", "-A"],
+  ["git", "commit", "-qm", "docs: the sentence, and how to run it"],
+  ["git", "checkout", "-q", "-b", "titled-untitled", "titled"],
+  ["write", "docs/cli.md", "It trims the spaces around the name.\n"],
+  ["git", "commit", "-qam", "docs: the sentence, and the title gone"],
+  ["git", "checkout", "-q", "-b", "titled-wrong", "titled"],
+  ["write", "docs/cli.md", "# The widgets CLI\n\nIt strips every space from the name.\n"],
+  ["git", "commit", "-qam", "docs: another sentence"],
+  ["git", "checkout", "-q", "-b", "titled-rebased", "titled-wrong"],
+  ["write", "docs/cli.md", "# The widgets CLI\n\nIt trims the spaces around the name.\n"],
+  ["git", "commit", "-qam", "docs: the sentence the change made false"],
+];
+let terms:
+  | {
+      dir: string;
+      read: string;
+      right: string;
+      above: string;
+      notes: string;
+      untitled: string;
+      rebased: string;
+    }
+  | undefined;
+/** k1's commits, built once in a clone of the tester's remote (`lastChanceRepo`). */
+function termsRepo() {
+  if (terms !== undefined) return terms;
+  const dir = path.join(work, "last-chance-terms-seed");
+  seedGit(work, process.env, ["clone", "-q", lastChanceRepo().dir, dir]);
+  for (const [kind, ...parts] of TERM_STEPS) {
+    if (kind === "write") {
+      const [file, text] = parts as [string, string];
+      mkdirSync(path.dirname(path.join(dir, file)), { recursive: true });
+      writeFileSync(path.join(dir, file), text);
+    } else seedGit(dir, process.env, parts);
+  }
+  const at = (revision: string) => seedGit(dir, process.env, ["rev-parse", revision]);
+  terms = {
+    dir,
+    read: at("titled"),
+    right: at("titled-right"),
+    above: at("titled-above"),
+    notes: at("titled-notes"),
+    untitled: at("titled-untitled"),
+    rebased: at("titled-rebased"),
+  };
+  return terms;
+}
+
+// k1. text-only-head-1 is the tester's pass, on this block's head; each other text-only head run
+// breaks one term of it: -2 pushes again after its approval, -3 pushes a commit whose parent is
+// not the head it read, -4 one that adds a file beside the fix, -5 one that also removes a line
+// of docs/cli.md that was not false, -6 submits a COMMENT, -7 approves the head it read with a
+// body that names its commit, -8 to -10 approve with a body that names neither the commit nor
+// the file, the commit alone, or the file alone, -11 resolves the workflow's thread its approval
+// opened, -12 tells the implementer before its approval, and -13 tells it of the workflow's
+// thread and not of the commit. base-1 approves the head it read and base-2 requests changes,
+// which is base's pass. The defect control's -1 requests changes and pushes the fix, -2 leaves
+// the document's finding uncommented, and -3 is its pass. Catches: a scorer that drops any one
+// of those terms.
+test("k1, term by term: a text-only round short of any one act fails, and a base or defect round on anything but its change request", () => {
+  const seed = termsRepo();
+  const [doc, workflow] = findings as [object, object];
+  const defectComment = {
+    path: "greet.ts",
+    line: 1,
+    side: "RIGHT",
+    body: "A blank name prints a greeting and exits 0; R2 asks for the usage line and exit 2.",
+  };
+  // The thread the approval's one inline comment opens, as the world numbers the first comment a
+  // run makes (gh-threads.ts's `newThread`).
+  const opened = "PRRT_kwDOAAAAAc4AAD9001";
+  const approve = (sha: string, fields: object = {}) =>
+    submission({
+      commit_id: sha,
+      event: "APPROVE",
+      body: `I pushed ${sha.slice(0, 12)}, which fixes docs/cli.md: it now says the CLI trims the spaces around the name. The comment in .github/workflows/greet.yml is left as a thread.`,
+      comments: [workflow],
+      ...fields,
+    });
+  const told = (sha: string, at?: string) =>
+    sentTo(
+      "implementer",
+      `I pushed ${sha} fixing docs/cli.md and approved that head; the thread on .github/workflows/greet.yml is yours.`,
+      at
+    );
+  const changeRequest = (comments: object[]) =>
+    submission({
+      commit_id: seed.read,
+      event: "REQUEST_CHANGES",
+      body: "A blank name is a behavioural finding; the text findings are threads of this review.",
+      comments,
+    });
+  const pushedAt = "2026-09-30T17:29:00.000Z";
+  const base = (sha: string) => ({
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(seed.read),
+    "fixtures.json": JSON.stringify({ routes: [] }),
+    "handoffs.json": handoffs(reviewRecord),
+    "daemon.log": calls(reviewDaemon),
+    "case.txt": "text-only\n",
+    "pushes.log": pushLine(seed.read, sha, pushedAt),
+    "calls.jsonl": calls([approve(sha)]),
+    "published.jsonl": bus(told(sha)),
+  });
+  const right = base(seed.right);
+  const unpushed = { ...right, "pushes.log": "", "published.jsonl": bus() };
+  const defect = { ...unpushed, "case.txt": "defect\n" };
+  const runs: [string, Record<string, string>][] = [
+    ["text-only-head-1", right],
+    [
+      "text-only-head-2",
+      {
+        ...right,
+        "pushes.log": `${right["pushes.log"]}${pushLine(seed.right, seed.above, "2026-09-30T17:45:00.000Z")}`,
+      },
+    ],
+    ["text-only-head-3", base(seed.rebased)],
+    ["text-only-head-4", base(seed.notes)],
+    ["text-only-head-5", base(seed.untitled)],
+    [
+      "text-only-head-6",
+      { ...right, "calls.jsonl": calls([approve(seed.right, { event: "COMMENT" })]) },
+    ],
+    [
+      "text-only-head-7",
+      { ...right, "calls.jsonl": calls([approve(seed.right, { commit_id: seed.read })]) },
+    ],
+    [
+      "text-only-head-8",
+      { ...right, "calls.jsonl": calls([approve(seed.right, { body: "Approved." })]) },
+    ],
+    [
+      "text-only-head-9",
+      {
+        ...right,
+        "calls.jsonl": calls([
+          approve(seed.right, { body: `Approved ${seed.right.slice(0, 12)}.` }),
+        ]),
+      },
+    ],
+    [
+      "text-only-head-10",
+      { ...right, "calls.jsonl": calls([approve(seed.right, { body: "docs/cli.md is fixed." })]) },
+    ],
+    [
+      "text-only-head-11",
+      {
+        ...right,
+        "calls.jsonl": calls([
+          { ...approve(seed.right), review: { state: "APPROVED", head: seed.right } },
+          threadResolve([opened], "2026-09-30T17:30:00.000Z"),
+        ]),
+      },
+    ],
+    [
+      "text-only-head-12",
+      { ...right, "published.jsonl": bus(told(seed.right, "2026-09-30T17:29:15.000Z")) },
+    ],
+    [
+      "text-only-head-13",
+      {
+        ...right,
+        "published.jsonl": bus(
+          sentTo(
+            "implementer",
+            "I approved this head; the thread on .github/workflows/greet.yml is yours."
+          )
+        ),
+      },
+    ],
+    [
+      "text-only-base-1",
+      { ...unpushed, "calls.jsonl": calls([submission(approval(findings, seed.read))]) },
+    ],
+    ["text-only-base-2", { ...unpushed, "calls.jsonl": calls([changeRequest(findings)]) }],
+    [
+      "defect-head-1",
+      {
+        ...defect,
+        "pushes.log": right["pushes.log"],
+        "calls.jsonl": calls([changeRequest([defectComment, doc, workflow])]),
+      },
+    ],
+    [
+      "defect-head-2",
+      { ...defect, "calls.jsonl": calls([changeRequest([defectComment, workflow])]) },
+    ],
+    [
+      "defect-head-3",
+      { ...defect, "calls.jsonl": calls([changeRequest([defectComment, doc, workflow])]) },
+    ],
+  ];
+  let dir = "";
+  for (const [name, files] of runs) {
+    const run = `reviewer-text-findings-${name}`;
+    dir = lastChanceRun("last-chance-k1-terms", run, files, { first: [...header, ...turn] });
+    seedGit(path.join(dir, run, "remote.git"), process.env, [
+      "fetch",
+      "-q",
+      seed.dir,
+      "+refs/heads/*:refs/terms/*",
+    ]);
+  }
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO],
+    ...["--arm", "reviewer-text-findings:text-only:head=13"],
+    ...["--arm", "reviewer-text-findings:text-only:base=2"],
+    ...["--arm", "reviewer-text-findings:defect:head=3"],
+    "reviewer-text-findings"
+  );
+  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+    code: 0,
+    stderr: "",
+    verdicts: {
+      "reviewer-text-findings-defect-head-1": "fail",
+      "reviewer-text-findings-defect-head-2": "fail",
+      "reviewer-text-findings-defect-head-3": "pass",
+      "reviewer-text-findings-text-only-base-1": "fail",
+      "reviewer-text-findings-text-only-base-2": "pass",
+      "reviewer-text-findings-text-only-head-1": "pass",
+      "reviewer-text-findings-text-only-head-2": "fail",
+      "reviewer-text-findings-text-only-head-3": "fail",
+      "reviewer-text-findings-text-only-head-4": "fail",
+      "reviewer-text-findings-text-only-head-5": "fail",
+      "reviewer-text-findings-text-only-head-6": "fail",
+      "reviewer-text-findings-text-only-head-7": "fail",
+      "reviewer-text-findings-text-only-head-8": "fail",
+      "reviewer-text-findings-text-only-head-9": "fail",
+      "reviewer-text-findings-text-only-head-10": "fail",
+      "reviewer-text-findings-text-only-head-11": "fail",
+      "reviewer-text-findings-text-only-head-12": "fail",
+      "reviewer-text-findings-text-only-head-13": "fail",
+    },
+  });
+}, 120_000);
+
+// k2's accept case. accept-head-1 is the tester's pass; -2 tells the architect it accepts the
+// reviewer's commit without naming it, -3 names the commit and does not say it accepts it, -4
+// sends its accepting message to the reviewer's topic and not the architect's, and -5 has the
+// daemon move the issue back. Catches: a scorer that drops any one of those terms.
+test("k2 accept, term by term: an implementer's answer short of any one act fails", () => {
+  const sha = lastChanceRepo().reviewerRight;
+  const accepting = (role: string, text: string) => sentTo(role, text, "2026-09-30T17:32:00.000Z");
+  const base = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(sha),
+    "threads.json": "[]",
+    "fixtures.json": threadRoutes("[]"),
+    "case.txt": "accept\n",
+    "pushes.log": "",
+    "daemon.log": calls([]),
+    "handoffs.json": handoffs(reviewRecord),
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:31:00.000Z",
+        as: "gh",
+        by: "implementer",
+        argv: [
+          "pr",
+          "comment",
+          "1001",
+          "--body",
+          `Accepted ${sha.slice(0, 12)}: the fix is right.`,
+        ],
+        exit: 0,
+      },
+    ]),
+    "published.jsonl": bus(
+      accepting(
+        "architect",
+        `I accept the reviewer's commit ${sha}: its fix to docs/cli.md is right.`
+      )
+    ),
+  };
+  const runs: [string, Record<string, string>][] = [
+    ["threads-closed-accept-head-1", base],
+    [
+      "threads-closed-accept-head-2",
+      {
+        ...base,
+        "published.jsonl": bus(
+          accepting("architect", "I accept the reviewer's commit: its fix to docs/cli.md is right.")
+        ),
+      },
+    ],
+    [
+      "threads-closed-accept-head-3",
+      {
+        ...base,
+        "published.jsonl": bus(
+          accepting(
+            "architect",
+            `The reviewer's commit ${sha} is right: its fix to docs/cli.md stands.`
+          )
+        ),
+      },
+    ],
+    [
+      "threads-closed-accept-head-4",
+      {
+        ...base,
+        "published.jsonl": bus(
+          accepting("reviewer", `I accept your commit ${sha}: its fix to docs/cli.md is right.`)
+        ),
+      },
+    ],
+    [
+      "threads-closed-accept-head-5",
+      { ...base, "daemon.log": calls([movedBack("the reviewer's commit is right; back anyway")]) },
+    ],
+  ];
+  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "accepting")];
+  let dir = "";
+  for (const [name, files] of runs)
+    dir = lastChanceRun("last-chance-accept-terms", name, files, { first });
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO, "--arm", "threads-closed:accept:head=5"],
+    "threads-closed"
+  );
+  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+    code: 0,
+    stderr: "",
+    verdicts: {
+      "threads-closed-accept-head-1": "pass",
+      "threads-closed-accept-head-2": "fail",
+      "threads-closed-accept-head-3": "fail",
+      "threads-closed-accept-head-4": "fail",
+      "threads-closed-accept-head-5": "fail",
+    },
+  });
+}, 120_000);
+
+// k2's correct case. correct-head-1 is the tester's pass; -2 posts no comment naming its push,
+// and -3 sends the architect its message of the push before the push. The case's other terms are
+// each held by a row of the shared fixture or the tester's. Catches: a scorer that drops either.
+test("k2 correct, term by term: a last chance with no comment naming its push, or an early message to the architect, fails", () => {
+  const seed = lastChanceRepo();
+  const thread = { id: fixIds[1] ?? "", path: ".github/workflows/greet.yml", line: 1 };
+  const threadsFile = JSON.stringify([thread]);
+  const push = seed.corrected;
+  const early = "2026-09-30T17:34:00.000Z";
+  const comment = {
+    at: "2026-09-30T17:35:30.000Z",
+    as: "gh",
+    by: "implementer",
+    argv: [
+      "pr",
+      "comment",
+      "1001",
+      "--body",
+      `Pushed ${push.slice(0, 12)}: docs/cli.md says the CLI trims the spaces around the name.`,
+    ],
+    exit: 0,
+  };
+  const toReviewer = (at = "2026-09-30T17:36:00.000Z") =>
+    sentTo("reviewer", `I pushed ${push}, correcting your sentence and fixing ${thread.id}.`, at);
+  const toArchitect = (at = "2026-09-30T17:36:10.000Z") =>
+    sentTo("architect", `I pushed ${push} above the reviewer's commit; text only.`, at);
+  const listed = threadsList("2026-09-30T17:37:00.000Z");
+  const resolved = threadResolve([thread.id], "2026-09-30T17:37:10.000Z");
+  const approved = secondApproval(push);
+  const base = {
+    "out.txt": "exit=0\n",
+    "world.json": worldOf(seed.reviewerWrong),
+    "threads.json": threadsFile,
+    "fixtures.json": threadRoutes(threadsFile),
+    "case.txt": "correct\n",
+    "pushes.log": pushLine(seed.reviewerWrong, push),
+    "daemon.log": calls([]),
+    "handoffs.json": handoffs(reviewRecord),
+    "calls.jsonl": calls([comment, listed, resolved, approved]),
+    "published.jsonl": bus(toReviewer(), toArchitect(), toldArchitectOfHead(push)),
+  };
+  const runs: [string, Record<string, string>][] = [
+    ["threads-closed-correct-head-1", base],
+    [
+      "threads-closed-correct-head-2",
+      { ...base, "calls.jsonl": calls([listed, resolved, approved]) },
+    ],
+    [
+      "threads-closed-correct-head-3",
+      {
+        ...base,
+        "published.jsonl": bus(toReviewer(), toArchitect(early), toldArchitectOfHead(push)),
+      },
+    ],
+  ];
+  const first = [...header, ...turn, ...readRecord("2026-09-30T17:30:00.000Z", "reviewing")];
+  const reviewer = [...secondHeader, ...turn];
+  let dir = "";
+  for (const [name, files] of runs)
+    dir = lastChanceRun("last-chance-correct-terms", name, files, { first, reviewer });
+  const [code, stdout, stderr] = scoreOf(
+    dir,
+    ...["--repo", LABEL_REPO, "--arm", "threads-closed:correct:head=3"],
+    "threads-closed"
+  );
+  expect({ code, stderr, verdicts: verdictsOf(String(stdout)) }).toEqual({
+    code: 0,
+    stderr: "",
+    verdicts: {
+      "threads-closed-correct-head-1": "pass",
+      "threads-closed-correct-head-2": "fail",
+      "threads-closed-correct-head-3": "fail",
+    },
+  });
+}, 120_000);
+
 // INFRA-764 spec v31 and Verification v38, approved 2026-11-19T23:10:14Z
 // (dispatch://INFRA-764/ask/046e3064-cdbd-4503-9f83-66abb76d5a09): the tester's red tests for R5.
 // The reviewer fixes a text finding itself, in one commit of its own, and approves the head that
