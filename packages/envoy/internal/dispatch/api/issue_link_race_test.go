@@ -24,7 +24,9 @@ const heldLinkLock = 4209012
 // then has two issues, and the statement gives it to the lesser key. With the lock of the pull
 // request (lockLinkedPullRequests), B waits for A to commit, and its check then reads A's row:
 // the PATCH is refused with 409 EXTERNAL_LINK_TAKEN naming the first issue, and the create
-// answers the first issue as the issue of owner/repo#7, as it does for a link stored before it.
+// answers as it does for a link stored before it: the first issue holds owner/repo#7 and is of
+// another project than the one acme/tools maps to, so 400 EXTERNAL_PROJECT_MISMATCH names its
+// project (answerExistingExternalIssue).
 //
 // The first issue is in project OTHER and the second in CORE, which acme/tools maps to, so no
 // owner lock the two writes would share (an issue's, or the create's of its project) orders B
@@ -174,8 +176,8 @@ func TestTwoLinkWritesAtOnceStoreOnePullRequestOnOneIssue(t *testing.T) {
 					t.Fatalf("write B of /issues/7 to %s: status=%d body=%s, want 409 EXTERNAL_LINK_TAKEN naming %s", two, b.Code, b.Body.String(), one)
 				}
 			case "create":
-				if b.Code != http.StatusOK || !strings.Contains(b.Body.String(), one) {
-					t.Fatalf("the create for acme/tools#7: status=%d body=%s, want 200 naming %s, the issue that holds it", b.Code, b.Body.String(), one)
+				if b.Code != http.StatusBadRequest || !strings.Contains(b.Body.String(), `"code":"EXTERNAL_PROJECT_MISMATCH"`) || !strings.Contains(b.Body.String(), "project OTHER") {
+					t.Fatalf("the create for acme/tools#7: status=%d body=%s, want 400 EXTERNAL_PROJECT_MISMATCH naming project OTHER, the project of %s, which holds it", b.Code, b.Body.String(), one)
 				}
 			}
 		})

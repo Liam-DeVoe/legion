@@ -24,8 +24,10 @@ body: |-
     key comes first in byte order. Two writes at the same moment are held to the same rule: each
     link write, and the create that `dispatch issue --external` makes, waits for any other write
     of a link to the same pull request to finish before it checks, so the second is refused with
-    `409 EXTERNAL_LINK_TAKEN`, or the create answers the issue that holds the link, and never are
-    both forms stored.
+    `409 EXTERNAL_LINK_TAKEN`, or the create answers as it does once the link is stored: the issue
+    that holds it, or `400 EXTERNAL_PROJECT_MISMATCH` where that issue is of another project. Both
+    forms are never stored. Before, a create whose own write found the link taken answered the
+    issue that holds it, whatever its project.
 
     A pull request whose URL an issue links is that issue's in any repository, also one the issue
     does not resolve to: the results compare the issue's checks with its head, and the timeline

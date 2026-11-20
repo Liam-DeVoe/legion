@@ -158,27 +158,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 	if input.External != "" {
 		existingKey, err := s.resolveIssueRef(r.Context(), input.External)
 		if err == nil {
-			var existingProject string
-			if err := s.deps.Store.Pool.QueryRow(r.Context(), `
-				select project_key from issues where key = $1
-			`, existingKey).Scan(&existingProject); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if existingProject != input.Project {
-				writeError(
-					w,
-					"EXTERNAL_PROJECT_MISMATCH",
-					http.StatusBadRequest,
-					fmt.Sprintf(
-						"external issue project %s must match repository settings project %s",
-						existingProject,
-						input.Project,
-					),
-				)
-				return
-			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.answerExistingExternalIssue(w, r, existingKey, input.Project, actor)
 			return
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
@@ -525,7 +505,7 @@ func (s *server) createIssue(w http.ResponseWriter, r *http.Request) {
 				s.writeHandlerError(w, err)
 				return
 			}
-			s.respondWithExistingExternalIssue(w, r, existingKey, input.Project, actor)
+			s.answerExistingExternalIssue(w, r, existingKey, input.Project, actor)
 			return
 		}
 		// The link is GitHub's /issues/ form of the number, which GitHub also serves a pull
@@ -725,6 +705,38 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 	check := *outcome.Check
 	check.outcome, check.reason = nearCopyNotMade, nearCopyNotMadeUnrecorded
 	return nearCopyOutcome{NearCopyCheck: nearCopyCheckUnrecorded(outcome.Refuse[0]), Check: &check}
+}
+
+// answerExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds, as
+// existingKey: with that issue where it is of project, and else with 400
+// EXTERNAL_PROJECT_MISMATCH naming both projects, since the create asked for an issue of project.
+// The create answers so wherever it finds the issue: before it writes, and after its write found
+// the link taken by a write that committed in between, so a create racing a link write answers as
+// a create after it does.
+func (s *server) answerExistingExternalIssue(
+	w http.ResponseWriter,
+	r *http.Request,
+	existingKey string,
+	project string,
+	actor model.Actor,
+) {
+	var existingProject string
+	if err := s.deps.Store.Pool.QueryRow(r.Context(), `
+		select project_key from issues where key = $1
+	`, existingKey).Scan(&existingProject); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if existingProject != project {
+		writeError(
+			w,
+			"EXTERNAL_PROJECT_MISMATCH",
+			http.StatusBadRequest,
+			fmt.Sprintf("external issue project %s must match repository settings project %s", existingProject, project),
+		)
+		return
+	}
+	s.respondWithExistingExternalIssue(w, r, existingKey, project, actor)
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds
