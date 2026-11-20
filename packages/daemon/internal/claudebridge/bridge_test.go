@@ -2123,6 +2123,91 @@ func TestALostAnswersRepeatAcceptedDuringARunIsHeldAndRunsNextOnce(t *testing.T)
 	}
 }
 
+// The plan's decision 9: a number held as accepted is a new offer at a newer revision of it only
+// while its text has not reached Claude Code. A text held through a turn the bridge did not start
+// was never written to it: where the daemon writes the number's value again meanwhile — it took the
+// task back, or only wrote the value again —, that turn's end starts nothing of the held text, the
+// take is made at the newer revision once Claude Code is idle, and the text that answer carries
+// runs, once.
+func TestTakeOfATextHeldThroughATurnIsMadeAgainAtANewerRevisionAndRunsOnce(t *testing.T) {
+	d := newTaskDaemon(t)
+	answered := make(chan struct{})
+	answer := sync.OnceFunc(func() { close(answered) })
+	t.Cleanup(answer)
+	d.answerTake = func(take claim.TakeRequest) (int, any) {
+		if take.Revision == 1 {
+			<-answered
+			return accepted("say the task")
+		}
+		return accepted("say the task taken again")
+	}
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+	inbox := r.dialInbox()
+
+	inbox.deliver("ev1", "wait r1")
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 1)
+	r.runFollowedByOneOfItsOwn(d, inbox)
+	r.waitFor("the take to reach the daemon", func() bool { return len(d.takesMade()) == 1 })
+	answer()
+	r.logged("the daemon accepted the take of task 7 during a turn")
+
+	// The daemon writes the number's value again while the text is held: the value is reported
+	// seen at once, and asked about only once the turn has ended.
+	r.handTask(testTask, 2)
+	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.quiet()
+	r.open()
+	r.expect("agent_end", nil)
+	if report := d.reportOf(2); report.Task != 0 {
+		t.Fatalf("the turn Claude Code started by itself was reported %+v, want a turn of no task", report)
+	}
+	r.expect("agent_start", nil)
+	r.untilTurnEnds()
+	if report := d.reportOf(3); report.Task != testTask {
+		t.Fatalf("the turn after it was reported %+v, want the turn of task %d", report, testTask)
+	}
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1", "7 at 2"}) {
+		t.Errorf("the bridge asked to take %q, want task 7 at revision 1 and again at revision 2", takes)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"wait r1", backgroundTurn, "say the task taken again"}) {
+		t.Fatalf("Claude Code read %q, want the two cards and then the newer answer's text once", texts)
+	}
+}
+
+// Once the text is written to Claude Code a newer revision of its number changes nothing, also
+// while Claude Code has not taken the text yet: the bridge starts the task's turn as it writes the
+// text (startTask), asks nothing while that turn runs, and holds the number finished from the
+// turn's end (the run-end mark). The text runs once (plan review round 68: a guard keyed on Claude
+// Code having begun the turn would hand the text a second time here).
+func TestTakeOfANewerRevisionBeforeClaudeCodeTakesTheTextHandsNothingMore(t *testing.T) {
+	d := newTaskDaemon(t)
+	d.answerTake = func(claim.TakeRequest) (int, any) { return accepted("held r1") }
+	r := newTakingRig(t, d, "", daemonCalls{})
+	r.handReady()
+
+	r.handTask(testTask, 1)
+	r.expect("agent_start", nil)
+	r.handTask(testTask, 2)
+	r.waitFor("the newer value to be reported seen", func() bool { return len(d.seenReports()) == 2 })
+	r.quiet()
+
+	r.release("r1")
+	r.untilTurnEnds()
+	if report := d.reportOf(1); report.Task != testTask {
+		t.Fatalf("the turn was reported %+v, want the turn of task %d", report, testTask)
+	}
+	r.quiet()
+	if takes := pairsOf(t, d.takesMade()); !slices.Equal(takes, []string{"7 at 1"}) {
+		t.Errorf("the bridge asked to take %q, want task 7 once", takes)
+	}
+	if texts := r.userTexts(); !slices.Equal(texts, []string{"held r1"}) {
+		t.Fatalf("Claude Code read %q, want the task's text once", texts)
+	}
+}
+
 // The daemon refuses a take before the claim's ready has answered, so the bridge asks for none
 // before claude-envoy's ready line, and its ready gate holds every Envoy delivery until that line,
 // whatever value it holds (the plan's decision 16): claude-envoy writes the reading of claims/task

@@ -400,11 +400,12 @@ export default function legionExtension(pi: PiApi): void {
   // idle, one setting up a prompt it already took (a card's turn or a person's input, between its
   // `prompt` and its `agent_start`). The follow-up joins the run that setup starts, the first run
   // to start after the accept, which the take counts as the task's turn (`runStarted`), as the
-  // daemon does, so its end names the task's number.
-  const runTask = (text: string): void => {
-    if (paneContext?.isIdle?.() === false) pi.sendUserMessage(text, { deliverAs: "followUp" });
-    else pi.sendUserMessage(text);
-  };
+  // daemon does, so its end names the task's number. The host's answer is the take's to read: it
+  // rejects when the host dropped the text before its turn began (`PiApi.sendUserMessage`).
+  const runTask = (text: string): void | Promise<void> =>
+    paneContext?.isIdle?.() === false
+      ? pi.sendUserMessage(text, { deliverAs: "followUp" })
+      : pi.sendUserMessage(text);
 
   // A root architect's or phase worker's claim, and the operator-launched controller's.
   const claimSession = createClaimSession({

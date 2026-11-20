@@ -49,6 +49,22 @@ import { takeTaskSignals, taskTurnMark } from "./task-values";
  * run's last step has stopped, `getFollowUpMessages`, and goes on with no `agent_end` or
  * `agent_start` between), so the task would run inside a run whose end names no task.
  *
+ * An accepted number's text reaches the host when the take hands it over (`run`), and from then
+ * on a newer revision of that number changes nothing: the daemon answers its take with the same
+ * text until the task finishes, and the host runs the text once, also when the newer revision
+ * comes while the host sets the text up before its `agent_start` (the first prompt's recall can
+ * take 30 seconds). Until the text has reached the host, a newer revision of its number is a new
+ * offer (the plan's decision 9). A text held through a run the worker did not start was never
+ * handed over, so it is let go at that revision, which the take asks about once the host is idle.
+ * A text the host dropped before its turn started — `run`'s answer rejects, as Oh My Pi's
+ * `pi.sendUserMessage` does for a message it drops before its turn begins, the abort a compaction
+ * makes of a prompt the host is setting up among them — leaves the take asking at the number's
+ * next revision. The next accepted answer's text goes to the host once, at idle: one that came
+ * while the host still held the text it then dropped goes in that text's place at the drop. The
+ * daemon answers such a take afresh where it took the task back (a provider error's ladder, R5's
+ * second wait, a compaction) and with the same text where it only wrote the value again. A
+ * follow-up's answer settles once the host has queued it, so a drop of one after that is not seen.
+ *
  * A seen report or a take is sent through `sendUntilAnswered` (`./daemon-client`): one the daemon
  * gave no answer to — a refused, reset or closed connection, an unreachable host or network, a
  * connect or read timeout, a DNS failure, a fetch's network error, no answer within
@@ -77,9 +93,13 @@ export interface TaskTakeLog {
 export interface TaskTakeDeps {
   readonly daemon: Pick<LegionDaemonClient, "taskSeen" | "take">;
   readonly caller: ClaimCaller;
-  /** Runs an accepted take's text as the turn's user message, in the form that starts a turn on
-   * an idle host and waits behind a setup or a compaction that runs. */
-  readonly run: (text: string) => void;
+  /**
+   * Runs an accepted take's text as the turn's user message, in the form that starts a turn on
+   * an idle host and waits behind a setup or a compaction that runs. Its answer, where the host
+   * gives one, rejects when the host dropped the text before its turn started, as Oh My Pi's
+   * `pi.sendUserMessage` does (`PiApi.sendUserMessage`).
+   */
+  readonly run: (text: string) => void | Promise<void>;
   /** Sets the task-turn mark for the claim's session, or clears it. */
   readonly setPending: (pending: boolean) => void;
   readonly log: TaskTakeLog;
@@ -154,7 +174,10 @@ interface Sending {
 /**
  * Where the take the daemon last accepted stands: none; its text held until the run going when
  * it was accepted has ended (`during` is the number of the task whose turn that run is, where it
- * is one's); its text sent, its turn not started; or its turn running.
+ * is one's); its text handed to the host, its turn not started; or its turn running. A handed
+ * text carries the count of its hand-over (`handing`), so a drop of an earlier one changes nothing,
+ * and `again`, the text of an accepted answer to a take at a newer revision of its number that
+ * came while the host held the text, which goes to the host in its place should the host drop it.
  */
 type Accepted =
   | { readonly kind: "none" }
@@ -164,7 +187,12 @@ type Accepted =
       readonly text: string;
       readonly during: number | undefined;
     }
-  | { readonly kind: "sent"; readonly number: number }
+  | {
+      readonly kind: "sent";
+      readonly number: number;
+      readonly handing: number;
+      readonly again: string | undefined;
+    }
   | { readonly kind: "running"; readonly number: number };
 
 const NONE: Accepted = { kind: "none" };
@@ -191,8 +219,10 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
   const asked = new Set<string>();
   let armed = false;
   let busy = false;
-  // Where the take the daemon last accepted stands (`Accepted`).
+  // Where the take the daemon last accepted stands (`Accepted`), and how many texts it has handed
+  // the host.
   let accepted: Accepted = NONE;
+  let handings = 0;
   let seeing: Sending | undefined;
   let taking: Sending | undefined;
   let marked = false;
@@ -236,6 +266,34 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
     );
   };
 
+  /**
+   * The host dropped the text of hand-over `handing` before that text's turn started: the text
+   * never reached it, so a newer revision of its number is a new offer. The text of an accepted
+   * answer at such a revision that came while the host held the dropped one goes to the host now,
+   * once; with none, the take asks at the number's next revision, and the text its accepted answer
+   * carries goes to the host.
+   */
+  const dropped = (handing: number, error: unknown): void => {
+    if (closed || accepted.kind !== "sent" || accepted.handing !== handing) return;
+    const { number, again } = accepted;
+    log.warn("legion: the host dropped an accepted take's text before its turn started", {
+      task: number,
+      error: messageFor(error),
+    });
+    if (again === undefined) accepted = NONE;
+    else hand(number, again);
+    settle();
+  };
+
+  /** Hands an accepted take's text to the idle host (`run`): from here it has reached the host,
+   *  unless the host's answer to it rejects before the text's turn starts (`dropped`). */
+  const hand = (number: number, text: string): void => {
+    handings += 1;
+    const handing = handings;
+    accepted = { kind: "sent", number, handing, again: undefined };
+    Promise.resolve(deps.run(text)).then(undefined, (error: unknown) => dropped(handing, error));
+  };
+
   const answered = (value: TaskValue, answer: LegionTake): void => {
     log.info("legion: the daemon answered a take", {
       task: value.number,
@@ -247,14 +305,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       case "accepted":
         // The daemon answers a take of the number it accepted with the same text until that task
         // finishes, whether or not its turn has started: a take sent again at a newer revision
-        // of the same number, before the task's turn, during it, or after its end was reported
-        // with no provider error (`runEnded`) and until that report is refused, runs nothing more.
-        if (
-          !owed(value) ||
-          ((accepted.kind === "held" || accepted.kind === "sent") &&
-            accepted.number === value.number) ||
-          turnRunning(accepted) === value.number
-        ) {
+        // of a number whose text has reached the host, before the task's turn (while the host
+        // sets the text up), during it, or after its end was reported with no provider error
+        // (`runEnded`) and until that report is refused, runs nothing more. While the host holds
+        // the text unstarted, the answer is kept for the host's drop of it (`dropped`).
+        if (!owed(value) || turnRunning(accepted) === value.number) return;
+        if (accepted.kind === "sent" && accepted.number === value.number) {
+          accepted = { ...accepted, again: answer.text };
           return;
         }
         // Nothing goes into a busy worker: a text accepted while a run is going waits for that
@@ -268,8 +325,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
             during: turnRunning(accepted),
           };
         } else {
-          accepted = { kind: "sent", number: value.number };
-          deps.run(answer.text);
+          hand(value.number, answer.text);
         }
         return;
       case "dropped":
@@ -345,6 +401,13 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       return;
     }
     held = value;
+    // A newer write of the number whose accepted text is held, a text never handed to the host, is
+    // a new offer: the held text is let go, and the take at this value, made once the host is idle,
+    // brings the text that runs. The run going keeps its own task, if it is one's.
+    if (accepted.kind === "held" && accepted.number === value.number) {
+      accepted =
+        accepted.during === undefined ? NONE : { kind: "running", number: accepted.during };
+    }
     replace(keyOf(value));
     reportSeen(value);
   };
@@ -409,9 +472,7 @@ export function createTaskTake(deps: TaskTakeDeps): TaskTake {
       // end names no task (`ended` is that run's own task, if any), and the text starts the next
       // run, the task's.
       if (accepted.kind === "held") {
-        const { text } = accepted;
-        accepted = { kind: "sent", number: accepted.number };
-        deps.run(text);
+        hand(accepted.number, accepted.text);
       } else if (accepted.kind === "running") {
         accepted = NONE;
       }
@@ -456,7 +517,7 @@ export interface ClaimTaskTake {
 export function takeClaimTask(deps: {
   readonly daemon: Pick<LegionDaemonClient, "task" | "taskSeen" | "take">;
   readonly caller: ClaimCaller;
-  readonly run: (text: string) => void;
+  readonly run: TaskTakeDeps["run"];
   readonly log: TaskTakeLog;
 }): ClaimTaskTake {
   const { daemon, caller, log } = deps;

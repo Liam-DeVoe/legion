@@ -57,6 +57,15 @@ import (
 //     plan's decisions 8 and 9), and the held text then starts a turn of its own when Claude Code
 //     is idle, ahead of every queued delivery: the task's turn on both sides, whose report names
 //     the number;
+//   - a held text has not reached Claude Code, so a newer value of its number — the daemon took
+//     the task back, or only wrote its value again — is a new offer (the plan's decision 9): the
+//     held text is let go (valueHanded), the take is made at that value once Claude Code is idle,
+//     and the text its accepted answer carries runs, once. A text the bridge writes to Claude Code
+//     has reached it: the bridge starts the task's turn as it writes the text (startTask), so no
+//     newer value is asked about while Claude Code still sets that text up, and the turn's end
+//     holds the number finished (below). Nothing of the daemon's drops a written text: the daemon
+//     compacts no Claude Code claim (internal/api's compact refuses it CLAIM_NOT_ON_OMP), and the
+//     bridge serves no abort (fromDaemon);
 //   - an `accepted` answer for a number the claim is owed no more — one a finished line or the
 //     run-end mark raised while the take was being sent — runs nothing;
 //   - when a task's turn ends with no provider error, its number is held finished (the run-end
@@ -143,8 +152,11 @@ func (b *bridge) unasked() bool {
 // with says the claim finished, the highest of which the bridge holds. A value newer than the one
 // held replaces it, and with it every seen report and take still being sent for another pair
 // (replace); one that names a task is reported seen at once, owed or not; and Claude Code in no
-// turn takes it once the ready line came (idle). A value no newer than the one held changes
-// nothing but the finished number: the same value relayed again is not a new ask.
+// turn takes it once the ready line came (idle). A newer value of the task whose accepted text is
+// held through a turn, a text never written to Claude Code, is a new offer (the plan's decision 9):
+// the held text is let go, and the take of this value, made once Claude Code is idle, brings the
+// text that runs. A value no newer than the one held changes nothing but the finished number: the
+// same value relayed again is not a new ask.
 func (b *bridge) valueHanded(v taskValue, finished uint64) {
 	if b.daemon == nil {
 		b.log.Printf("ignoring task %d's value: this pane names no daemon to take it from", v.number)
@@ -161,6 +173,10 @@ func (b *bridge) valueHanded(v taskValue, finished uint64) {
 			b.log.Printf("task %d's value reached the inbox at revision %d", v.number, v.revision)
 		default:
 			b.log.Printf("task %d's value reached the inbox at revision %d; that task is finished, so it is reported seen and not taken", v.number, v.revision)
+		}
+		if b.heldTask != 0 && v.number == b.heldTask {
+			b.heldText, b.heldTask = "", 0
+			b.log.Printf("task %d's held text is let go: its take is made again at revision %d once Claude Code is idle", v.number, v.revision)
 		}
 		if v.number != 0 {
 			b.reportSeen(v)

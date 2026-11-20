@@ -209,7 +209,9 @@ function takingHost(options: Pick<Parameters<typeof claimHost>[0], "register" | 
         take = createTaskTake({
           daemon: { taskSeen: async () => undefined, take: async () => ACCEPTED },
           caller: claimCaller(registered, SESSION),
-          run: (text) => turns.push(text),
+          run: (text) => {
+            turns.push(text);
+          },
           setPending: taskTurnMark(SESSION),
           log: { info: () => undefined, warn: () => undefined },
         });

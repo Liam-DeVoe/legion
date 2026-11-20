@@ -93,8 +93,9 @@ export function createControllerSession(deps: {
   readonly daemon: () => LegionDaemonClient;
   readonly persistedTranscript: PersistedTranscript;
   readonly pi: PiApi;
-  /** Sends an accepted take's text as the turn's user message. */
-  readonly runTask: (text: string) => void;
+  /** Sends an accepted take's text as the turn's user message; the host's answer rejects when the
+   *  host dropped the text before its turn began (`TaskTakeDeps.run`). */
+  readonly runTask: (text: string) => void | Promise<void>;
   readonly exitProcess: (code: number) => never;
 }): ControllerSession {
   const { daemon, persistedTranscript, pi } = deps;
