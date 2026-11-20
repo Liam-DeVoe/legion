@@ -168,9 +168,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	// record is read again rather than taken from the snapshot above, because closing the
 	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
 	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose plan has no acceptance step (record.HoldForChildren), whose retro then starts
-	// (startHeldRetro). The two waits never stand on one ancestor: one awaits its merge, the
-	// other has not reached it.
+	// parent whose plan has no acceptance step (record.HoldForChildren): the fact's settle starts
+	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
+	// it.
 	for _, ancestor := range above {
 		current, err := e.store.Issue(ctx, tx, ancestor.Key)
 		if err != nil {
@@ -180,9 +180,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			continue
 		}
 		if err := e.closeAwaitingMerge(ctx, tx, *current); err != nil {
-			return err
-		}
-		if err := e.startHeldRetro(ctx, tx, *current); err != nil {
 			return err
 		}
 	}

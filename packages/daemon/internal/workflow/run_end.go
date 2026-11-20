@@ -89,16 +89,21 @@ func (e *Engine) OpenFact(ctx context.Context) context.Context {
 	return record.WithIssueWrites(ctx)
 }
 
-// SettleFact ends each run the fact left over (runOver), once the fact's last handler has applied
-// it, in its transaction: the runs of each issue the fact touched, and of each member of a tree
-// whose root the fact wrote and which lingers, or whose linger it closed (intake.Settler). A
-// second settle of one fact settles nothing.
+// SettleFact settles the record the fact left, once its last handler has applied it, in its
+// transaction (intake.Settler): first each parent held before its retro whose tree the fact wrote
+// an issue of is released where nothing beneath it is open (releaseHeldParents), and then each run
+// the fact left over ends (runOver): the runs of each issue the fact touched, the released parents
+// among them, and of each member of a tree whose root the fact wrote and which lingers, or whose
+// linger it closed. A second settle of one fact settles nothing.
 func (e *Engine) SettleFact(ctx context.Context, tx pgx.Tx) error {
 	runs, ok := ctx.Value(factRunsKey{}).(*factRuns)
 	if !ok || runs.settled {
 		return nil
 	}
 	runs.settled = true
+	if err := e.releaseHeldParents(ctx, tx, record.IssuesWritten(ctx)); err != nil {
+		return err
+	}
 	return e.settleRuns(ctx, tx, runs, record.IssuesWritten(ctx), nil)
 }
 

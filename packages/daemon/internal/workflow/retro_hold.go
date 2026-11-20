@@ -17,8 +17,8 @@ import (
 // nothing for every other move. A parent's head proves its children's merged work, and
 // a task with no step acceptance:owner has no sign-off to refuse a parent while one of them runs
 // (SIGNOFF_CHILD_IN_WORKFLOW), so such a parent is held before its retro instead (transition),
-// from retro for its children (record.HoldForChildren), until the last of them leaves
-// (startHeldRetro). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
+// from retro for its children (record.HoldForChildren), until none of them is open beneath it
+// (releaseHeldParents). The hold stands in place of the retro, which keeps no slot (record.KeepsSlot
 // reads record.StandsAt), so the parent holds none of the slots its children may need. An issue
 // with no plan rows walks today's line, whose retro follows the owner's acceptance, so it is never
 // held so.
@@ -41,11 +41,50 @@ func retroHeldNotice(parent string, beneath []string) record.Notice {
 			"; Legion starts the retro when the last one leaves.", parent, strings.Join(beneath, ", "))}
 }
 
+// releaseHeldParents is the one place a parent held before its retro for the issues beneath it
+// (record.HoldForChildren) is released, at the settle of every fact and of every other
+// transaction the daemon settles (SettleFact, intake.OpenSettlers): each such parent of each tree
+// in which the fact wrote an issue (record.IssuesWritten) has its retro started where nothing
+// beneath it is in the workflow and its tree runs (startHeldRetro). Every change of what stands
+// beneath a parent is the write of an issue of the parent's tree: an issue beneath it that leaves
+// the workflow (leave), a re-parent in Dispatch that moves one out from under it (admit's
+// recordObservation), the parent itself handed over as a root of its own with its hold and its
+// plan once its old root's linger closes (admit's readmit), and the promotion or the reopen of a
+// root, which makes a tree that ran nothing run again. So nothing can leave a parent held with
+// nothing open beneath it in a tree that runs, and the hold's refusal of a retry always names an
+// issue still open beneath it (RetryOfHeldParent). Each tree is read once, and a fact that wrote
+// no issue reads nothing.
+func (e *Engine) releaseHeldParents(ctx context.Context, tx pgx.Tx, written []string) error {
+	var trees []string
+	for _, key := range written {
+		issue, err := e.store.Issue(ctx, tx, key)
+		if err != nil {
+			return err
+		}
+		if issue != nil && !slices.Contains(trees, issue.Tree) {
+			trees = append(trees, issue.Tree)
+		}
+	}
+	for _, tree := range trees {
+		members, err := e.store.TreeIssues(ctx, tx, tree)
+		if err != nil {
+			return err
+		}
+		for _, member := range members {
+			if err := e.startHeldRetro(ctx, tx, member); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // startHeldRetro starts the retro of parent where it is held before it for the issues beneath it
-// (record.HoldForChildren) and the last of them has left the workflow (openBeneath is empty), in
-// the transaction of that leave (leave, which runs this on every ancestor of the issue that
-// leaves); every other issue it leaves as it stands. Nothing runs while parent's tree lingers, as
-// no transition does.
+// (record.HoldForChildren), nothing beneath it is in the workflow (openBeneath is empty) and its
+// tree runs (record.TreeRunning), in the transaction whose settle finds it so (releaseHeldParents);
+// every other issue it leaves as it stands. A tree that runs nothing, one whose root lingers or
+// waits in the line for its tree to open, starts no retro, as it runs no transition: the promotion
+// or the reopen that runs it again writes its root, and that settle starts the retro.
 //
 // The hold is cleared and parent stands in its retro, where its task already stands ({retro 0},
 // moveTask at the hold). The retro's Dispatch status is queued through Engine.status, since the
@@ -60,7 +99,11 @@ func (e *Engine) startHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if !record.HeldForChildren(parent) || !record.InWorkflow(parent) {
 		return nil
 	}
-	if lingers, err := record.TreeLingers(ctx, e.store, tx, parent.Tree); err != nil || lingers {
+	root, err := e.store.Issue(ctx, tx, parent.Tree)
+	if err != nil || root == nil {
+		return err
+	}
+	if running, err := record.TreeRunning(ctx, e.store, tx, *root, e.cfg.Steps); err != nil || !running {
 		return err
 	}
 	if beneath, err := e.openBeneath(ctx, tx, parent); err != nil || len(beneath) > 0 {

@@ -2557,7 +2557,7 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // `retro-held` is a parent whose plan has no acceptance step, held before its retro because it
 // passed its last step while issues beneath it are still in the workflow (workflow's
 // beneathRetro, retroHeldNotice; HoldForChildren). Its reason names each of them, and that the
-// retro starts when the last one leaves (workflow's startHeldRetro).
+// retro starts when the last one leaves (workflow's releaseHeldParents).
 //
 // `plan-not-taken` is a plan an earlier owner gave for an issue, which its first step did not take
 // (workflow's passOverEarlierOwners, tellPassedOver): its giver is no architect of the issue's tree

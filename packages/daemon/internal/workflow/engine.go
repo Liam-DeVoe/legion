@@ -2384,7 +2384,7 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // acceptance step while beneath, the issues beneath it, are still in the workflow (beneathRetro):
 // the task moves to its retro's place and the issue stands in held for its children
 // (record.HoldForChildren) instead. The hold writes no status, since held has none, starts no
-// retro, which the last of them to leave starts (startHeldRetro), and keeps the last step's
+// retro, which starts once none of them is open beneath it (releaseHeldParents), and keeps the last step's
 // handoff for the retro's task, which no clear of a handoff takes. The architect is told the pass
 // and the hold. No role is told that its phase ended (phaseEnded): only a head that conflicts with
 // its base sends that, and its move goes back to implementing, never into the retro.
