@@ -74,3 +74,33 @@ func TestTheStopWaitsOnNoPeerInItsHandshake(t *testing.T) {
 		t.Fatal("the stand-in's stop left the silent peer's connection open")
 	}
 }
+
+// TestAConnectionAcceptedAfterTheCloseIsClosed: a connection the listener hands over once closeAll
+// has run - one the kernel accepted before the close, taken by a server's Accept only after it - is
+// closed at once, and Accept answers net.ErrClosed, as the closed listener's own Accept would. It
+// would otherwise reach the server untracked, and a peer silent on it would hold Stop as before.
+func TestAConnectionAcceptedAfterTheCloseIsClosed(t *testing.T) {
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	// A pipe takes no deadline once its other end has closed, so the peer's goes first.
+	if err := peer.SetReadDeadline(time.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	owned := &ownedListener{Listener: &oneConnListener{conn: conn}}
+	owned.closeAll()
+	got, err := owned.Accept()
+	if got != nil || !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("Accept after closeAll = %v, %v; want no connection and net.ErrClosed", got, err)
+	}
+	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
+		t.Fatalf("the peer of the connection accepted after closeAll read %v; want io.EOF, its connection closed", err)
+	}
+}
+
+// oneConnListener is a listener whose Accept hands over conn, as a listener does a connection the
+// kernel accepted before its close.
+type oneConnListener struct{ conn net.Conn }
+
+func (l *oneConnListener) Accept() (net.Conn, error) { return l.conn, nil }
+func (l *oneConnListener) Close() error              { return nil }
+func (l *oneConnListener) Addr() net.Addr            { return l.conn.LocalAddr() }
