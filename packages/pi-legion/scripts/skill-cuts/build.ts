@@ -15,10 +15,11 @@
  *       the cut's base> --copies <R4 out dir> --count <count dir> --reprofile <cases.jsonl>
  *       --out <new cases.jsonl>
  *   bun scripts/skill-cuts/build.ts build-tasks --config <skill-cuts.json> --key-file <file>
- *       --skill <dir> --store <db>... --out <tasks.jsonl>
+ *       --skill <dir> --store <db>... --out <tasks.jsonl> [--profiles-out <dir> --copies <R4
+ *       out dir> --count <count dir> --context-session <store>:<hash>]
  *   bun scripts/skill-cuts/build.ts build-tasks --first-read --config <skill-cuts.json>
  *       --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>]
- *       --out <tasks.jsonl>
+ *       --out <tasks.jsonl> [--profiles-out <dir> --copies <R4 out dir> --count <count dir>]
  *
  * **build-cases.** `--sessions` holds the candidate sessions, one JSON line each:
  * `{"store", "hash", "path"?}`, `hash` the file hash count.sql names a file by (16 hex characters
@@ -277,8 +278,19 @@
  * **build-tasks --first-read** (plan, R6 "Positive control") writes the control's need tasks from
  * the sessions file of the skill, unchosen: see `buildControlTasks`.
  *
+ * **--profiles-out** (both modes; the architect's decision of 2026-11-20T20:06Z): each task runs
+ * in the rebuilt context of the session it came from. For each task from a session, the session
+ * is pulled again and its profile rebuilt as build-cases rebuilds a case's at the session's start
+ * (`sessionProfile`: the context, `caseProfile` from every read of its branch with `--copies` and
+ * `--count`, a subagent's recorded system prompt and tools), less the tested skill, and written
+ * to `<dir>/<task id>.json` (load.ts's LoadProfile); the task line's `profile` is its path. A
+ * written task takes the profile of `--context-session <store>:<hash>` (required in the reader's
+ * mode; rebuilt before any reader call, and a session that gives none fails the build). The
+ * summary's `profiles` records the context session, each task's profile and its evidence, and why
+ * a task has none. A finished build gets none afterwards: profiles come with a fresh `--out`.
+ *
  * Exit status: 0 written; 1 failed; 2 refused before any store read or model call; 3 stopped at
- * `--budget-usd`, with the cases built so far written.
+ * `--budget-usd`, with the cases built so far written; 4 stopped by the stop rule, the same.
  */
 import { createHash } from "node:crypto";
 import {
@@ -705,7 +717,8 @@ async function eachStoreRow(
     if (rule < 0) {
       if (!/^-[-+]*$/.test(text)) return;
       if (line === 1) fault = "psql output: no header rule (a line of dashes under a header)";
-      else if (!/^-+$/.test(text)) fault = `psql output line ${line}: the table has more than one column`;
+      else if (!/^-+$/.test(text))
+        fault = `psql output line ${line}: the table has more than one column`;
       else rule = line;
       return;
     }
@@ -1081,7 +1094,9 @@ function slimMessage(message: SessionMessage): SessionMessage {
     }
     if (n !== 0 || message.role !== "toolResult") return [];
     const header = skillHeaderPath(block.text ?? "");
-    return [{ type: block.type, ...(header === undefined ? {} : { text: `[Skill file: ${header}]\n` }) }];
+    return [
+      { type: block.type, ...(header === undefined ? {} : { text: `[Skill file: ${header}]\n` }) },
+    ];
   });
   return {
     role: message.role,
@@ -1143,7 +1158,8 @@ export function readTranscript(spool: string, chunk = SPOOL_CHUNK): Transcript {
     const item = items[index];
     if (item === undefined) throw new Error(`the transcript has no message ${index}`);
     const read = messageOf(whole(item.line));
-    if (read === undefined) throw new Error(`line ${item.line.line} of the transcript holds no message`);
+    if (read === undefined)
+      throw new Error(`line ${item.line.line} of the transcript holds no message`);
     return read;
   };
   const entryAt = (at: number): SessionEntry | undefined => {
@@ -2547,7 +2563,7 @@ async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<Profil
 const BUILD_CASES_USAGE =
   "usage: build.ts build-cases --config <skill-cuts.json> --key-file <file> --cut <id> --skill <name> --old <dir> --sessions <file> --seed <n> --copies <dir> --count <dir> --out <cases.jsonl> [--max <n>] [--budget-usd <n>] [--concurrency <n>] [--stop-projected-usd <n>] [--stop-after-sessions <n>] [--stop-zero-case-usd <n>]\n       build.ts build-cases --config <skill-cuts.json> --old <dir> --copies <dir> --count <dir> --reprofile <cases.jsonl> --out <new cases.jsonl>";
 const BUILD_TASKS_USAGE =
-  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl>\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl>";
+  "usage: build.ts build-tasks --config <skill-cuts.json> --key-file <file> --skill <dir> --store <db>... --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir> --context-session <store>:<hash>]\n       build.ts build-tasks --first-read --config <skill-cuts.json> --key-file <file> --skill <dir> --sessions <sessions.jsonl> --seed <n> [--max <n>] --out <tasks.jsonl> [--profiles-out <dir> --copies <dir> --count <dir>]";
 
 /** One candidate session of the sessions file. */
 const Candidate = z.strictObject({
@@ -2715,6 +2731,143 @@ interface SessionRecord {
   audit?: { verdict: string; reason: string };
 }
 
+/** A store as a session's context reads it: its name and its context. */
+interface StoreContext {
+  readonly name: string;
+  readonly context: string;
+}
+
+/**
+ * A session's context as build-cases rebuilds it: a subagent's (`subagent:<agent>`), from its
+ * recorded `session_init`; else, for a Legion store, the store's context and the session's role
+ * (`sessionRole`, the module comment's "The role"); else the store's context. With the evidence of
+ * it, the Legion project and the `session_init` line; or why it has none.
+ */
+function sessionContext(
+  store: StoreContext,
+  t: Transcript,
+  transcriptPath: string
+):
+  | {
+      readonly context: string;
+      readonly project: string | undefined;
+      readonly evidence: Evidence[];
+      readonly init: SessionInit | undefined;
+    }
+  | { readonly drop: DropReason; readonly detail: string } {
+  const project = store.context.startsWith("legion:")
+    ? store.context.slice("legion:".length)
+    : undefined;
+  const evidence: Evidence[] = [];
+  const init = sessionInit(t.entries);
+  if (init === null) return { drop: "bad-session-init", detail: DROP_REASONS["bad-session-init"] };
+  if (init !== undefined) {
+    evidence.push(
+      {
+        item: `subagent ${init.agent}`,
+        source: `the session's session_init line names the agent ${init.agent}; its parent session is another transcript, and the store's context is ${store.context}`,
+      },
+      {
+        item: "the recorded system prompt and tools",
+        source: `the session's session_init line records the system prompt it was given (${init.systemPrompt.length} blocks) and its ${init.tools.length} tools (${init.tools.join(", ")}); the case carries them, and the capture sends that prompt with only the skill's listing line changed per arm, and only those tools`,
+      }
+    );
+    return { context: `subagent:${init.agent}`, project, evidence, init };
+  }
+  if (project !== undefined) {
+    // sessionRole reads the text of the first user message, of the first custom message and of
+    // each Envoy message; those are read whole, the rest stay light.
+    const all = t.items.map((item) => item.slim);
+    const firstUser = all.findIndex((message) => message.role === "user");
+    const firstCustom = all.findIndex((message) => message.role === "custom");
+    const roleMessages = all.map((message, index) =>
+      index === firstUser ||
+      index === firstCustom ||
+      (message.role === "custom" && message.customType === "envoy-message")
+        ? t.message(index)
+        : message
+    );
+    const found = sessionRole(t.branch, roleMessages, transcriptPath);
+    if ("detail" in found) return { drop: "no-role", detail: found.detail };
+    evidence.push({ item: `role ${found.role}`, source: found.how });
+    return { context: `${store.context}:${found.role}`, project, evidence, init };
+  }
+  evidence.push({ item: "no role", source: `the store's context is ${store.context}` });
+  return { context: store.context, project, evidence, init };
+}
+
+/** A session's start and working directory, from its header, or why it has none. */
+function sessionHeader(
+  t: Transcript
+):
+  | { readonly sessionStart: string; readonly cwd: string | undefined }
+  | { readonly drop: DropReason; readonly detail: string } {
+  const header = t.entries.find((entry) => entry.type === "session");
+  const sessionStart = header?.timestamp;
+  if (
+    sessionStart === undefined ||
+    !z.iso.datetime({ offset: true }).safeParse(sessionStart).success
+  ) {
+    return { drop: "no-header", detail: "no session line with an ISO timestamp" };
+  }
+  return { sessionStart, cwd: typeof header?.cwd === "string" ? header.cwd : undefined };
+}
+
+/** A load test's profile of one session (load.ts's LoadProfile: cases.ts's Profile and the
+ *  context), the evidence for each part, and the secrets taken out of it. */
+export interface SessionProfile {
+  readonly profile: Profile & { readonly context: string };
+  readonly evidence: Evidence[];
+  readonly secretsRemoved: number;
+}
+
+/**
+ * The load test's profile of the session whose transcript is in `spool` (the file `transcriptPath`
+ * of `store`), rebuilt as build-cases rebuilds a case's at the session's start: its context
+ * (`sessionContext`), and `caseProfile` from every read of its branch, so the units its host had,
+ * at their commits then, their plugins and the context files; a subagent's recorded system prompt
+ * (its secrets taken out) and tools. The tested skill `skill` is left out of the skills, since the
+ * load test installs it. Throws, naming why, when the session gives none.
+ */
+async function sessionProfile(
+  run: ProfileRun,
+  store: StoreContext,
+  transcriptPath: string,
+  spool: string,
+  skill: string
+): Promise<SessionProfile> {
+  const t = readTranscript(spool);
+  const header = sessionHeader(t);
+  if ("drop" in header) throw new Error(`${header.drop}: ${header.detail}`);
+  const rebuilt = sessionContext(store, t, transcriptPath);
+  if ("drop" in rebuilt) throw new Error(`${rebuilt.drop}: ${rebuilt.detail}`);
+  const { context, project, evidence, init } = rebuilt;
+  const profiled = await caseProfile(run, {
+    store: store.name,
+    context: store.context,
+    project,
+    sessionStart: header.sessionStart,
+    cwd: header.cwd,
+    recordedPrompt: init !== undefined,
+    reads: shownReads(t.items.map((item) => item.slim)),
+  });
+  const secrets = scrubbed({ systemPrompt: init?.systemPrompt });
+  const recorded =
+    init === undefined || secrets.value.systemPrompt === undefined
+      ? {}
+      : { systemPrompt: secrets.value.systemPrompt, tools: init.tools };
+  return {
+    profile: {
+      ...profiled.profile,
+      ...recorded,
+      skills: profiled.profile.skills.filter((each) => each.name !== skill),
+      context,
+    },
+    evidence: [...evidence, ...profiled.evidence],
+    secretsRemoved: secrets.removed,
+  };
+}
+
 /** The case of one session's transcript, pulled into the file `spool`, or why it gives none.
  *  Adds what the reader spent and what its restatement check read to `record`. Throws NotNeeded
  *  before a reader call once `session.stopped` is set. The transcript is read from the spool
@@ -2734,15 +2887,9 @@ async function caseOf(
   } catch (error) {
     return drop("unparseable", messageFor(error));
   }
-  const { entries } = t;
-  const header = entries.find((entry) => entry.type === "session");
-  const sessionStart = header?.timestamp;
-  if (
-    sessionStart === undefined ||
-    !z.iso.datetime({ offset: true }).safeParse(sessionStart).success
-  ) {
-    return drop("no-header", "no session line with an ISO timestamp");
-  }
+  const header = sessionHeader(t);
+  if ("drop" in header) return drop(header.drop, header.detail);
+  const { sessionStart } = header;
   // Every message, light: what the scans of the whole session read.
   const allMessages = t.items.map((item) => item.slim);
   const reads = skillReads(allMessages, run.skill);
@@ -2797,46 +2944,9 @@ async function caseOf(
 
   // The context: a subagent's, from its recorded session_init; else, for a Legion store, the
   // session's role (the module comment, "The role").
-  let context = store.context;
-  const project = store.context.startsWith("legion:")
-    ? store.context.slice("legion:".length)
-    : undefined;
-  const evidence: Evidence[] = [];
-  const init = sessionInit(entries);
-  if (init === null) {
-    return drop("bad-session-init", DROP_REASONS["bad-session-init"]);
-  }
-  if (init !== undefined) {
-    context = `subagent:${init.agent}`;
-    evidence.push(
-      {
-        item: `subagent ${init.agent}`,
-        source: `the session's session_init line names the agent ${init.agent}; its parent session is another transcript, and the store's context is ${store.context}`,
-      },
-      {
-        item: "the recorded system prompt and tools",
-        source: `the session's session_init line records the system prompt it was given (${init.systemPrompt.length} blocks) and its ${init.tools.length} tools (${init.tools.join(", ")}); the case carries them, and the capture sends that prompt with only the skill's listing line changed per arm, and only those tools`,
-      }
-    );
-  } else if (project !== undefined) {
-    // sessionRole reads the text of the first user message, of the first custom message and of
-    // each Envoy message; those are read whole, the rest stay light.
-    const firstUser = allMessages.findIndex((message) => message.role === "user");
-    const firstCustom = allMessages.findIndex((message) => message.role === "custom");
-    const roleMessages = allMessages.map((message, index) =>
-      index === firstUser ||
-      index === firstCustom ||
-      (message.role === "custom" && message.customType === "envoy-message")
-        ? t.message(index)
-        : message
-    );
-    const found = sessionRole(t.branch, roleMessages, transcriptPath);
-    if ("detail" in found) return drop("no-role", found.detail);
-    context = `${store.context}:${found.role}`;
-    evidence.push({ item: `role ${found.role}`, source: found.how });
-  } else {
-    evidence.push({ item: "no role", source: `the store's context is ${store.context}` });
-  }
+  const rebuilt = sessionContext(store, t, transcriptPath);
+  if ("drop" in rebuilt) return drop(rebuilt.drop, rebuilt.detail);
+  const { context, project, evidence, init } = rebuilt;
   record.context = context;
 
   // The case reader, window by window, from the read's call on: each window at most
@@ -2877,7 +2987,7 @@ async function caseOf(
     context: store.context,
     project,
     sessionStart,
-    cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
+    cwd: header.cwd,
     recordedPrompt: init !== undefined,
   };
   let reachable: ProfileResult;
@@ -3631,10 +3741,7 @@ async function buildCases(argv: readonly string[], io: BuildIo): Promise<number>
         : Number(values["stop-after-sessions"]),
     zeroCaseUsd: dollars("stop-zero-case-usd", values["stop-zero-case-usd"], STOP_ZERO_CASE_USD),
   };
-  if (
-    values["stop-after-sessions"] !== undefined &&
-    !/^\d+$/.test(values["stop-after-sessions"])
-  ) {
+  if (values["stop-after-sessions"] !== undefined && !/^\d+$/.test(values["stop-after-sessions"])) {
     throw new Refused(
       `--stop-after-sessions ${values["stop-after-sessions"]} is not a whole number`
     );
@@ -4027,6 +4134,12 @@ const FoundRow = z.strictObject({
   store: z.string(),
   day: z.string(),
   pathHash: z.string().regex(/^[0-9a-f]{64}$/),
+  /** The file hash sessions.sql finds the file by (`fileHash`), so `--profiles-out` can pull the
+   *  session; a row an older build-tasks found has none. */
+  hash: z
+    .string()
+    .regex(/^[0-9a-f]{16}$/)
+    .optional(),
   text: z.string(),
 });
 type FoundRow = z.infer<typeof FoundRow>;
@@ -4123,6 +4236,237 @@ function spread<T>(items: readonly T[], max: number): T[] {
   return Array.from({ length: max }, (_, n) => items[Math.floor((n * items.length) / max)] as T);
 }
 
+/** What `--profiles-out` asks of a build-tasks run: where each task's profile goes, what the
+ *  profiles are rebuilt from (build-cases' own ProfileRun: the configuration, `--copies`,
+ *  `--count` and GitHub), and, for written tasks, the session whose profile they take. */
+interface ProfilesPlan {
+  readonly dir: string;
+  readonly run: ProfileRun;
+  readonly contextSession: { readonly store: string; readonly hash: string } | undefined;
+}
+
+/** The `--profiles-out` plan of `values`, checked before any store read or model call, or
+ *  undefined when no profile is asked for. `written` says whether the run can write tasks, which
+ *  take `--context-session`'s profile. */
+function profilesPlan(
+  values: Readonly<Record<string, unknown>>,
+  config: SkillCutsConfig,
+  io: BuildIo,
+  written: boolean
+): ProfilesPlan | undefined {
+  const dir = values["profiles-out"];
+  if (typeof dir !== "string") {
+    for (const flag of ["copies", "count", "context-session"]) {
+      if (values[flag] !== undefined) {
+        throw new Refused(`--${flag} goes with --profiles-out only. ${BUILD_TASKS_USAGE}`);
+      }
+    }
+    return undefined;
+  }
+  const copiesDir = values.copies;
+  const countDir = values.count;
+  if (typeof copiesDir !== "string" || typeof countDir !== "string") {
+    throw new Refused(
+      `--profiles-out needs --copies and --count, the copies output and the count build-cases reads. ${BUILD_TASKS_USAGE}`
+    );
+  }
+  const named = values["context-session"];
+  let contextSession: ProfilesPlan["contextSession"];
+  if (written) {
+    if (typeof named !== "string") {
+      throw new Refused(
+        `--profiles-out needs --context-session <store>:<hash>, the session whose profile a written task takes. ${BUILD_TASKS_USAGE}`
+      );
+    }
+    const match = /^([^:\s]+):([0-9a-f]{16})$/.exec(named);
+    if (match === null) {
+      throw new Refused(`--context-session ${named} is not <store>:<16 hex characters>`);
+    }
+    const [, store = "", hash = ""] = match;
+    try {
+      storeNamed(config, store);
+    } catch (error) {
+      throw new Refused(messageFor(error));
+    }
+    contextSession = { store, hash };
+  } else if (named !== undefined) {
+    throw new Refused("--first-read writes no written task, so it takes no --context-session");
+  }
+  const copies = readCopies(copiesDir);
+  return {
+    dir,
+    contextSession,
+    run: {
+      config,
+      copies,
+      github: new GithubReads(io.gh, copies.branches),
+      placer: readPlacer(config, countDir, copiesDir),
+    },
+  };
+}
+
+/** The profile of the file `filePath` of `store`, pulled into `spool` and rebuilt by
+ *  `sessionProfile`. Throws, naming why, when the session gives none. */
+async function pulledProfile(
+  run: ProfileRun,
+  store: string,
+  filePath: string,
+  spool: string,
+  skill: string
+): Promise<SessionProfile> {
+  const { bytes } = await pullTranscript(run.config.psqlCommand, store, filePath, spool);
+  if (bytes === 0) throw new Error("the pull returned no row");
+  return sessionProfile(run, storeNamed(run.config, store), filePath, spool, skill);
+}
+
+/** The context session of a run and its profile, the one each written task takes. */
+interface ContextProfile {
+  readonly store: string;
+  readonly hash: string;
+  readonly pathHash: string;
+  readonly built: SessionProfile;
+}
+
+/** The context session's profile, rebuilt before any reader call, or undefined when the plan
+ *  names no context session. Throws when the session gives none. */
+async function contextProfile(
+  plan: ProfilesPlan,
+  spool: string,
+  skill: string
+): Promise<ContextProfile | undefined> {
+  if (plan.contextSession === undefined) return undefined;
+  const { store, hash } = plan.contextSession;
+  const named = `--context-session ${store}:${hash}`;
+  const { paths } = await resolvePaths(plan.run.config.psqlCommand, store, [hash]);
+  const filePath = paths.get(hash);
+  if (filePath === undefined) throw new Error(`${named}: sessions.sql gives no file of this hash`);
+  try {
+    return {
+      store,
+      hash,
+      pathHash: pathHash(filePath),
+      built: await pulledProfile(plan.run, store, filePath, spool, skill),
+    };
+  } catch (error) {
+    throw new Error(`${named}: ${messageFor(error)}`);
+  }
+}
+
+/** A task line as build-tasks writes it, with the profile `--profiles-out` gives it. */
+interface TaskLine {
+  readonly id: string;
+  readonly source: "session" | "written";
+  readonly profile?: string;
+}
+
+/** The session a task came from: its store, its file hash, and its path when it is known. */
+interface TaskSession {
+  readonly store: string;
+  readonly hash: string | undefined;
+  readonly path?: string;
+}
+
+/**
+ * Writes the profile of each task of `tasks` to `<plan.dir>/<task id>.json` (load.ts's
+ * LoadProfile) and gives each task its path as `profile`: a task from a session (`sessions`, by
+ * task id) the profile of that session rebuilt (`pulledProfile`, pulled into `spool`), a written
+ * task the context session's. A task whose profile cannot be rebuilt keeps no `profile`, and the
+ * record of it says why. Returns the tasks, the record of each, and the sessions.sql queries it
+ * made for the paths.
+ */
+async function writeProfiles<T extends TaskLine>(
+  plan: ProfilesPlan,
+  tasks: readonly T[],
+  sessions: ReadonlyMap<string, TaskSession>,
+  context: ContextProfile | undefined,
+  spool: string,
+  skill: string,
+  io: BuildIo
+): Promise<{ tasks: T[]; notes: Record<string, unknown>[]; queries: number }> {
+  mkdirSync(plan.dir, { recursive: true });
+  const paths = new Map<string, string>();
+  const wanted = new Map<string, string[]>();
+  for (const each of sessions.values()) {
+    if (each.path !== undefined || each.hash === undefined) continue;
+    wanted.set(each.store, [...(wanted.get(each.store) ?? []), each.hash]);
+  }
+  let queries = 0;
+  for (const [store, hashes] of wanted) {
+    const resolved = await resolvePaths(plan.run.config.psqlCommand, store, hashes);
+    queries += resolved.queries;
+    for (const [hash, filePath] of resolved.paths) paths.set(`${store}\0${hash}`, filePath);
+  }
+  const notes: Record<string, unknown>[] = [];
+  const out: T[] = [];
+  for (const task of tasks) {
+    let built: SessionProfile | undefined;
+    let failed = "no --context-session gives a written task its profile";
+    if (task.source === "written") built = context?.built;
+    else {
+      const session = sessions.get(task.id);
+      const filePath =
+        session?.path ??
+        (session?.hash === undefined ? undefined : paths.get(`${session.store}\0${session.hash}`));
+      if (session === undefined || session.hash === undefined) {
+        failed = "the message it came from records no file hash (an older build-tasks found it)";
+      } else if (filePath === undefined) {
+        failed = "sessions.sql gives no file of its hash";
+      } else {
+        try {
+          built = await pulledProfile(plan.run, session.store, filePath, spool, skill);
+        } catch (error) {
+          failed = messageFor(error);
+        }
+      }
+    }
+    if (built === undefined) {
+      notes.push({ task: task.id, from: task.source, profile: null, failed });
+      io.err(`build-tasks: ${task.id}: no profile: ${failed}`);
+      out.push(task);
+      continue;
+    }
+    const file = path.resolve(plan.dir, `${task.id}.json`);
+    writeWhole(file, `${JSON.stringify(built.profile, null, 2)}\n`);
+    notes.push({
+      task: task.id,
+      from: task.source === "written" ? "context-session" : "session",
+      profile: file,
+      context: built.profile.context,
+      skills: built.profile.skills.length,
+      ...(task.source === "written"
+        ? {}
+        : { secretsRemoved: built.secretsRemoved, evidence: built.evidence }),
+    });
+    out.push({ ...task, profile: file });
+  }
+  return { tasks: out, notes, queries };
+}
+
+/** What a summary records of a run's profiles: where they are, the context session (with the
+ *  evidence of its profile), each task's, and the sessions.sql queries for their paths. */
+function profilesRecord(
+  plan: ProfilesPlan,
+  context: ContextProfile | undefined,
+  written: { notes: Record<string, unknown>[]; queries: number }
+): Record<string, unknown> {
+  return {
+    dir: path.resolve(plan.dir),
+    contextSession:
+      context === undefined
+        ? null
+        : {
+            store: context.store,
+            hash: context.hash,
+            pathHash: context.pathHash,
+            context: context.built.profile.context,
+            secretsRemoved: context.built.secretsRemoved,
+            evidence: context.built.evidence,
+          },
+    tasks: written.notes,
+    sessionQueries: written.queries,
+  };
+}
+
 /** `skill-cuts build-tasks`. */
 async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number> {
   const values = parse(
@@ -4137,6 +4481,10 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       sessions: { type: "string" },
       seed: { type: "string" },
       max: { type: "string" },
+      "profiles-out": { type: "string" },
+      copies: { type: "string" },
+      count: { type: "string" },
+      "context-session": { type: "string" },
     },
     BUILD_TASKS_USAGE
   );
@@ -4168,6 +4516,7 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         : path.basename(path.resolve(given.skill)),
     description: typeof fields.description === "string" ? fields.description : "",
   };
+  const plan = profilesPlan(values, config, io, true);
   // An earlier run of the same inputs at --out: its terms and every query it recorded are kept,
   // with the messages those queries found (`<out>.found.jsonl`), and the build goes on from the
   // first query it did not record. A finished build is left as it is.
@@ -4200,6 +4549,11 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
     }
   }
   writeWhole(foundFile, found.map((row) => `${JSON.stringify(row)}\n`).join(""));
+  // The profile written tasks take, rebuilt before any reader call: a session that gives none
+  // stops the build here.
+  const spools = plan === undefined ? undefined : spoolDir(given.out);
+  const spool = spools === undefined ? "" : path.join(spools, "profile.jsonl");
+  const context = plan === undefined ? undefined : await contextProfile(plan, spool, skill.name);
   const gateway = readerGateway(config, given["key-file"]);
   const spend = () => addSpend(priorSpend, gateway.spend());
   let terms = prior?.terms;
@@ -4250,7 +4604,13 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
         );
         const lines = rows.map((each) => {
           const row = TaskRow.parse(each);
-          return { store, day, pathHash: pathHash(row.path), text: row.text };
+          return {
+            store,
+            day,
+            pathHash: pathHash(row.path),
+            hash: fileHash(row.path),
+            text: row.text,
+          };
         });
         // The query's messages are appended whole before the summary records the query; a run
         // that goes on from a kill between the two leaves them out and runs the query again.
@@ -4311,7 +4671,21 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
       pathHash: message.pathHash,
     };
   });
-  writeWhole(given.out, tasks.map((task) => `${JSON.stringify(task)}\n`).join(""));
+  // Each task's profile, when asked for: a session task's rebuilt from its session, a written
+  // task's the context session's.
+  const sessions = new Map<string, TaskSession>();
+  for (const [n, task] of kept.entries()) {
+    const message = task.from === "session" ? byId.get(task.messageId) : undefined;
+    if (message !== undefined)
+      sessions.set(`t${n + 1}`, { store: message.store, hash: message.hash });
+  }
+  const profiled =
+    plan === undefined
+      ? undefined
+      : await writeProfiles(plan, tasks, sessions, context, spool, skill.name, io);
+  if (spools !== undefined) rmSync(spools, { recursive: true, force: true });
+  const lines = profiled?.tasks ?? tasks;
+  writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
   const count = (label: string, source: string) =>
     tasks.filter((task) => task.label === label && task.source === source).length;
   writeWhole(
@@ -4345,6 +4719,9 @@ async function buildTasks(argv: readonly string[], io: BuildIo): Promise<number>
             written: count("near-miss", "written"),
           },
         },
+        ...(plan === undefined || profiled === undefined
+          ? {}
+          : { profiles: profilesRecord(plan, context, profiled) }),
         readerSpend: spend(),
       },
       null,
@@ -4461,6 +4838,7 @@ async function buildControlTasks(
         : path.basename(path.resolve(given.skill)),
     description: typeof fields.description === "string" ? fields.description : "",
   };
+  const plan = profilesPlan(values, config, io, false);
   const candidates = readCandidates(given.sessions, config);
   const order = blindOrder(candidates, given.seed).map(({ item }) => item);
   const keyOf = (each: { store: string; hash: string }) => `${each.store}\0${each.hash}`;
@@ -4728,7 +5106,22 @@ async function buildControlTasks(
     store: row.store,
     pathHash: row.pathHash,
   }));
-  writeWhole(given.out, tasks.map((task) => `${JSON.stringify(task)}\n`).join(""));
+  // Each task's profile, when asked for: rebuilt from the session its request came from.
+  const sessionsOf = new Map<string, TaskSession>();
+  for (const [n, row] of kept.entries()) {
+    const candidate = order.find((each) => keyOf(each) === keyOf(row));
+    sessionsOf.set(`t${n + 1}`, {
+      store: row.store,
+      hash: row.hash,
+      path: candidate?.path ?? paths.get(keyOf(row)),
+    });
+  }
+  const profiled =
+    plan === undefined
+      ? undefined
+      : await writeProfiles(plan, tasks, sessionsOf, undefined, spool, skill.name, io);
+  const lines = profiled?.tasks ?? tasks;
+  writeWhole(given.out, lines.map((task) => `${JSON.stringify(task)}\n`).join(""));
   write(true, {
     tasks: kept.map((row, n) => ({
       id: `t${n + 1}`,
@@ -4738,6 +5131,9 @@ async function buildControlTasks(
     })),
     droppedNeed: dropped.length,
     dropped,
+    ...(plan === undefined || profiled === undefined
+      ? {}
+      : { profiles: profilesRecord(plan, undefined, profiled) }),
   });
   rmSync(foundFile, { force: true });
   rmSync(spools, { recursive: true, force: true });

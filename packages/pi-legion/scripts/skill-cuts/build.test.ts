@@ -910,6 +910,12 @@ beforeAll(() => {
     const store = files.store_a ?? {};
     store[controlPath(name)] = controlText(name);
   }
+  // The sessions the tasks query's rows come from: each is F1 as the good session has it, so its
+  // rebuilt profile is the good case's.
+  for (const row of TASK_ROWS) {
+    const store = files.store_a ?? {};
+    store[row.path] = sessionText("good");
+  }
   writeFileSync(
     path.join(setupDir, "store.json"),
     JSON.stringify({
@@ -2529,9 +2535,7 @@ test("the stop rule stops a build with no case once --stop-after-sessions are de
   const out = path.join(scratch, "stop-sessions", "cases.jsonl");
   const lines: string[] = [];
   const args = buildArgs(sessions, out, "1", "--max", "15", "--concurrency", "1");
-  expect(await main(args, io(lines))).toBe(
-    EXIT.stoppedByCost
-  );
+  expect(await main(args, io(lines))).toBe(EXIT.stoppedByCost);
   const stopped = {
     rule: "stop-projected-usd",
     sessions: STOP_AFTER_SESSIONS,
@@ -2551,9 +2555,7 @@ test("the stop rule stops a build with no case once --stop-after-sessions are de
   const from = recorder.requests.length;
   const logged = readFileSync(psqlLog, "utf8").length;
   const again: string[] = [];
-  expect(await main(args, io(again))).toBe(
-    EXIT.stoppedByCost
-  );
+  expect(await main(args, io(again))).toBe(EXIT.stoppedByCost);
   expect(again.join("")).toContain(`${STOP_AFTER_SESSIONS} sessions decided there (0 cases)`);
   expect(recorder.requests.length).toBe(from);
   expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
@@ -2566,7 +2568,15 @@ test("the stop rule stops a build with no case as soon as --stop-zero-case-usd i
   const sessions = sessionsFile("stop-usd.jsonl", names);
   const out = path.join(scratch, "stop-usd", "cases.jsonl");
   const lines: string[] = [];
-  const args = buildArgs(sessions, out, "1", "--concurrency", "1", "--stop-zero-case-usd", "0.0001");
+  const args = buildArgs(
+    sessions,
+    out,
+    "1",
+    "--concurrency",
+    "1",
+    "--stop-zero-case-usd",
+    "0.0001"
+  );
   expect(await main(args, io(lines))).toBe(EXIT.stoppedByCost);
   const summary = summaryOf(out);
   const stopped = stoppedOf(out);
@@ -2674,9 +2684,10 @@ test("the pull reads the store command's output row by row with psqlRows' checks
       });
       expect(readFileSync(spool, "utf8")).toBe("a\n");
     } else {
-      expect({ n, error: await pullTranscript(command, "store_a", "/x", spool).catch(String) }).toEqual(
-        { n, error: `Error: ${fault}` }
-      );
+      expect({
+        n,
+        error: await pullTranscript(command, "store_a", "/x", spool).catch(String),
+      }).toEqual({ n, error: `Error: ${fault}` });
     }
   }
   // A command that fails is reported as failing, whatever it printed.
@@ -2686,4 +2697,195 @@ test("the pull reads the store command's output row by row with psqlRows' checks
   expect(
     await pullTranscript(failing, "store_a", "/x", path.join(dir, "failing.jsonl")).catch(String)
   ).toBe("Error: the store command exited 3: psql: error: gone");
+});
+
+/** The profile load.ts's load test takes for a task from session `name`: build-cases' profile of
+ *  that session's case, less the tested skill, with the case's context. */
+function caseLoadProfile(cases: readonly Case[], name: string): Record<string, unknown> {
+  const c = cases.find((each) => each.source.pathHash === pathHash(sessionPath(name)));
+  if (c === undefined) throw new Error(`build-cases built no case of ${name}`);
+  return {
+    ...c.profile,
+    skills: c.profile.skills.filter((each) => each.name !== "alpha"),
+    context: c.context,
+  };
+}
+
+/** The cases build-cases builds of the good and legion sessions, for the profile rows. */
+async function profileCases(): Promise<Case[]> {
+  const out = path.join(scratch, "profile-cases", "cases.jsonl");
+  if (!existsSync(out)) {
+    const sessions = sessionsFile("profile-cases.jsonl", ["good", "legion"]);
+    expect(await main(buildArgs(sessions, out, "1"), io([]))).toBe(EXIT.ok);
+  }
+  return loadCases(out, old);
+}
+
+/** The profile files of the tasks of `out`, by task id. */
+function profilesOf(out: string): Record<string, unknown> {
+  return Object.fromEntries(
+    tasksOf(out).map((task) => [
+      String(task.id),
+      JSON.parse(readFileSync(String(task.profile), "utf8")) as unknown,
+    ])
+  );
+}
+
+test("build-tasks --profiles-out gives each session task build-cases' profile of its session, less the tested skill, and each written task the --context-session's", async () => {
+  const cases = await profileCases();
+  const dir = path.join(scratch, "profiles-pick");
+  const out = path.join(scratch, "profiles-pick-tasks", "tasks.jsonl");
+  const legion = fileHash(sessionPath("legion"));
+  const args = [
+    "build-tasks",
+    "--config",
+    config,
+    "--key-file",
+    keyFile,
+    "--skill",
+    old,
+    "--store",
+    "store_a",
+    "--out",
+    out,
+    "--profiles-out",
+    dir,
+    "--copies",
+    copiesDir,
+    "--count",
+    countDir,
+    "--context-session",
+    `store_b:${legion}`,
+  ];
+  const lines: string[] = [];
+  expect(await main(args, io(lines))).toBe(EXIT.ok);
+  const tasks = tasksOf(out);
+  expect(tasks.filter((task) => task.source === "session")).toHaveLength(2);
+  expect(tasks.filter((task) => task.source === "written")).toHaveLength(8);
+  for (const task of tasks) expect(task.profile).toBe(path.resolve(dir, `${task.id}.json`));
+  const good = caseLoadProfile(cases, "good");
+  const written = caseLoadProfile(cases, "legion");
+  expect(good).not.toEqual(written);
+  expect(profilesOf(out)).toEqual(
+    Object.fromEntries(
+      tasks.map((task) => [String(task.id), task.source === "session" ? good : written])
+    )
+  );
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.profiles.contextSession).toMatchObject({
+    store: "store_b",
+    hash: legion,
+    pathHash: pathHash(sessionPath("legion")),
+    context: written.context,
+  });
+  expect(
+    summary.profiles.tasks.map((each: { task: string; from: string }) => [each.task, each.from])
+  ).toEqual(
+    tasks.map((task) => [task.id, task.source === "session" ? "session" : "context-session"])
+  );
+  expect(existsSync(`${out}.spool`)).toBe(false);
+}, 120_000);
+
+test("build-tasks --first-read --profiles-out gives each control task build-cases' profile of its session, less the tested skill", async () => {
+  const cases = await profileCases();
+  const names = Object.keys(CONTROL_SESSIONS);
+  const sessions = controlSessionsFile("profiles-control.jsonl", names, ["c-two"]);
+  const dir = path.join(scratch, "profiles-control");
+  const out = path.join(scratch, "profiles-control-tasks", "tasks.jsonl");
+  const args = [
+    ...controlArgs(sessions, out, "1", "--max", "10"),
+    "--profiles-out",
+    dir,
+    "--copies",
+    copiesDir,
+    "--count",
+    countDir,
+  ];
+  expect(await main(args, io([]))).toBe(EXIT.ok);
+  const tasks = tasksOf(out);
+  expect(tasks).toHaveLength(3);
+  // Each control session is F1 with its first request replaced, so its profile is the good case's.
+  const good = caseLoadProfile(cases, "good");
+  expect(profilesOf(out)).toEqual(Object.fromEntries(tasks.map((task) => [String(task.id), good])));
+  const summary = JSON.parse(readFileSync(`${out}.summary.json`, "utf8"));
+  expect(summary.profiles.contextSession).toBeNull();
+  expect(existsSync(`${out}.spool`)).toBe(false);
+}, 120_000);
+
+test("build-tasks refuses --profiles-out without --copies and --count, or without --context-session in the reader's mode, the profile flags without --profiles-out, and --context-session with --first-read, before any read", async () => {
+  const out = path.join(scratch, "profiles-refused", "tasks.jsonl");
+  const pick = ["build-tasks", "--config", config, "--key-file", keyFile, "--skill", old];
+  const sessions = controlSessionsFile("profiles-refused.jsonl", ["c-one"]);
+  const from = recorder.requests.length;
+  const logged = readFileSync(psqlLog, "utf8").length;
+  const rows: [string[], string][] = [
+    [
+      [...pick, "--store", "store_a", "--out", out, "--profiles-out", out],
+      "--profiles-out needs --copies and --count",
+    ],
+    [
+      [...pick, "--store", "store_a", "--out", out, "--profiles-out", out, "--copies", copiesDir],
+      "--profiles-out needs --copies and --count",
+    ],
+    [
+      [
+        ...pick,
+        "--store",
+        "store_a",
+        "--out",
+        out,
+        "--profiles-out",
+        out,
+        "--copies",
+        copiesDir,
+        "--count",
+        countDir,
+      ],
+      "--profiles-out needs --context-session <store>:<hash>",
+    ],
+    [
+      [...pick, "--store", "store_a", "--out", out, "--copies", copiesDir],
+      "--copies goes with --profiles-out only",
+    ],
+    [
+      [
+        ...pick,
+        "--store",
+        "store_a",
+        "--out",
+        out,
+        "--profiles-out",
+        out,
+        "--copies",
+        copiesDir,
+        "--count",
+        countDir,
+        "--context-session",
+        "store_b:nothex",
+      ],
+      "--context-session store_b:nothex is not <store>:<16 hex characters>",
+    ],
+    [
+      [
+        ...controlArgs(sessions, out, "1"),
+        "--profiles-out",
+        out,
+        "--copies",
+        copiesDir,
+        "--count",
+        countDir,
+        "--context-session",
+        `store_a:${fileHash(controlPath("c-one"))}`,
+      ],
+      "--first-read writes no written task, so it takes no --context-session",
+    ],
+  ];
+  for (const [args, why] of rows) {
+    const lines: string[] = [];
+    expect({ why, code: await main(args, io(lines)) }).toEqual({ why, code: EXIT.refused });
+    expect(lines.join("\n")).toContain(why);
+  }
+  expect(recorder.requests.length).toBe(from);
+  expect(readFileSync(psqlLog, "utf8").length).toBe(logged);
+  expect(existsSync(out)).toBe(false);
 });
