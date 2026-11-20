@@ -1187,7 +1187,10 @@ func repositoryUnreadable(err error) bool {
 // stored (2026-11-19T17:09:59Z, cybermonklabs/legion#4490, "context canceled"). A failure of
 // Dispatch's own database before or after GitHub's answer is ErrReadThroughNotStored, which the
 // read-time caller answers by giving its claim back (CommitPullReads.ReleaseAcrossProcesses); a
-// failure of GitHub's is not, since GitHub was asked and the claim bounds how often it is.
+// failure of GitHub's is not, since GitHub was asked and the claim bounds how often it is. That
+// holds for GitHub's rate limit on a pull request's commit messages too, which comes after the
+// pull request's head is written (storePullRequestFacts): it is answered as GitHub's limit, not
+// as a read that stored nothing.
 func ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
@@ -1225,6 +1228,9 @@ func ReadThroughCommitPulls(
 			}
 		}
 		if _, err := storePullRequestFacts(ctx, pool, client, token, canonical, repoFull, pull, &now, began, false, false); err != nil {
+			if limited, ok := githubapp.AsRateLimit(err); ok {
+				return written, atHead, limited
+			}
 			return written, atHead, readThroughNotStored(err)
 		}
 		written++
@@ -1239,16 +1245,22 @@ func ReadThroughCommitPulls(
 }
 
 // ReadThroughTimeout bounds one read-through (ReadThroughCommitPulls) from its first read to its
-// last write. It is the bound intakeMessageTimeout gives the same work for one envelope: a read
-// of GitHub's pull requests (githubapp.RequestTimeout each call, githubPageAttempts each page),
-// the pages of commit messages a pull request needs, and the head write. A var so a test can
-// shrink it; nothing outside a test writes it.
-var ReadThroughTimeout = time.Minute
+// last write. What it waits for is GitHub's answers in turn, each bounded by
+// githubapp.RequestTimeout (20 s): the installation token, the list of the commit's pull requests,
+// and for a pull request whose texts name no held issue the first page of its commit messages,
+// with Dispatch's own statements, which a healthy database answers in milliseconds, between them.
+// Three such calls are a minute, so a read-through that GitHub answers within each call's bound
+// writes the first pull request's head inside it; a slower read ends there, and a later read asks
+// again once the claim it took has passed. It is intakeMessageTimeout's bound for the same work of
+// one envelope.
+const ReadThroughTimeout = time.Minute
 
 // ErrReadThroughNotStored marks a read-through that failed in Dispatch's own database: before it
 // asked GitHub (the canonical name, the start of the read) or after GitHub answered (a stored
 // row read, the write of a pull request's facts). No claim of the read may outlast it: what
-// GitHub answered, or would have, is not stored, and nothing but another read stores it.
+// GitHub answered, or would have, is not stored, and nothing but another read stores it. A
+// failure of GitHub's, its rate limit on a pull request's commit messages among them, is never
+// marked so.
 var ErrReadThroughNotStored = errors.New("the read-through's answer was not stored")
 
 // readThroughNotStored marks err as ErrReadThroughNotStored, keeping err itself inside the mark.
