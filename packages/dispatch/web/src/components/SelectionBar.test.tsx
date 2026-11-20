@@ -328,8 +328,8 @@ test("the bar going with a control the reader scrolled out of sight hands the fo
 /** Three rows, each a `div` carrying the row marker and its mark - where the Inbox draws an
  *  `<li>`, a row by the same rule (`ROW_SELECTOR`) - a control of the page's own outside them,
  *  and the bar over them: the page the hand-off is read on when a refetch, not the reader,
- *  empties the selection. The rows sit in no scroll box, so a loss the reader did not cause
- *  leaves the focus on the body rather than pulled into any row. */
+ *  empties the selection. A loss the reader did not cause leaves the focus on the body rather
+ *  than pulled into any row. */
 function MarkedTable({
   count,
   returnFocus,

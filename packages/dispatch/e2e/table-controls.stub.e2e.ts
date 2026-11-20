@@ -6,7 +6,7 @@
  *
  *  Every row reads what the page draws over one fixed answer - a box's height, a computed
  *  colour, the `data-control` values in the document - so each runs against a recording rather
- *  than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer"). The Agents page
+ *  than against a harness (packages/dispatch/README.md, "The stubbed layer"). The Agents page
  *  and the Delivery page are read in `table-controls.e2e.ts` instead: a recording freezes a
  *  session's last-seen time and the delivery window's dates, so neither has a first row to
  *  measure to ten minutes after a re-recording. Everything that needs seeded counts, a write or

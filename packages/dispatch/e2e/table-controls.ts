@@ -29,7 +29,7 @@ export type SurfaceName =
 
 /** The six a recording can answer: the Agents page and the Delivery page are read on the real
  *  stack alone, because a recording freezes a session's last-seen time and the delivery
- *  window's dates (`packages/dispatch/AGENTS.md`, "The stubbed layer"). */
+ *  window's dates (`packages/dispatch/README.md`, "The stubbed layer"). */
 export const STUBBABLE_SURFACES: readonly SurfaceName[] = [
   "Inbox",
   "Inbox drawer",

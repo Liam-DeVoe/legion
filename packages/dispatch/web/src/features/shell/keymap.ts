@@ -259,13 +259,13 @@ export function takesText(element: Element): boolean {
   return element.tagName === "TEXTAREA";
 }
 
-/** Whether a `change` on `element` is the commit on blur of the text typed in it, rather than the
+/** Whether a `change` or an `input` on `element` is typing or its commit on blur, rather than the
  *  reader's pick: on an `<input>` whose value is typed text alone (`COMMIT_ON_BLUR_TYPES`), a
- *  `<textarea>`, or a content-editable element. Every other control fires its `change` at the
- *  pick - a `<select>`, a checkbox, a radio, a file, range or color input, a date or time box -
- *  so the page's focus rescue reads that `change` as a press of the reader's (`focus-place.ts`'s
- *  `isPress`). An `<input>` of the button family or of type hidden fires no `change`; it is
- *  answered false, so a `change` on one would read as a pick. */
+ *  `<textarea>`, or a content-editable element. Every other control fires both at the pick - a
+ *  `<select>`, a checkbox, a radio, a file, range or color input, a date or time box - so the
+ *  page's focus rescue reads either as a press of the reader's (`focus-place.ts`'s `isPress`). An
+ *  `<input>` of the button family or of type hidden fires neither; it is answered false, so one
+ *  sent to it would read as a pick. */
 export function commitsOnBlur(element: Element): boolean {
   if (element instanceof HTMLInputElement) {
     return COMMIT_ON_BLUR_TYPES[element.type] === true;

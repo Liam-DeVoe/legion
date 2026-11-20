@@ -199,7 +199,7 @@ ci_filter_coverage.py's ENV_ALLOWED and stay in the browser step's `env:`; the
 multiprocess job's pinned build step, "Build the Dispatch server", is read under dispatch-browser.yaml's own `env:` and
 defaults, so neither may grow a name outside that set.
 
-The browser step's budget, its `timeout-minutes: 9`, is measured, on the two runs of the head that sharded this
+The browser step's first budget, 9 minutes, was measured on the two runs of the head that sharded this
 suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
 in shard order, in seconds:
 

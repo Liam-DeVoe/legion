@@ -273,7 +273,8 @@ test("a group's buttons stay held after its write lands, until the live update c
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const removed = { ...crew, sessions: ["s9"], updated_at: "2026-10-11T00:01:00Z" };
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
   const { draw, queryClient } = renderEditor([crew]);
@@ -305,7 +306,8 @@ test("a group's buttons stay held after its write lands, until the live update c
 test("a group's buttons held for a live update that never comes are free again at the write deadline", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
-  // Held, and given inside `act` after the press, as packages/dispatch/AGENTS.md's act rule says.
+  // Held, and given inside `act` after the press, as docs/testing.md ("The act rule of a Dispatch
+  // unit test") says.
   const answer = Promise.withResolvers<DeliverySessionGroup>();
   const update = spyOn(api, "updateDeliverySessionGroup").mockReturnValue(answer.promise);
   const { queryClient } = renderEditor([crew]);

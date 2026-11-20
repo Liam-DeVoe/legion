@@ -2,11 +2,11 @@ import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import userEvent, { type UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { listOf, panelOf, rows, textBoxes } from "../../__tests__/list-picks";
+import { listOf, panelOf, pick, rows, textBoxes } from "../../__tests__/list-picks";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -255,13 +255,6 @@ test("with no default assignee picked, New project files nothing", async () => {
   }
 });
 
-/** Opens the list `trigger` names and picks `login` once the people are read. The new-project
- *  form offers the same people, so the option is read in the panel this trigger opened. */
-async function pickPerson(user: UserEvent, trigger: HTMLElement, login: string): Promise<void> {
-  await user.click(trigger);
-  await user.click(await within(panelOf(trigger)).findByRole("option", { name: login }));
-}
-
 // A row's Retry is of the project's newest save. Here the reader stopped a save of alice, picked
 // alice again and stopped that save too, so the two picks read alike. A default assignee is a
 // `PUT`, which sends no key, so Dispatch could not tell the two apart and keeps nothing under
@@ -292,13 +285,13 @@ test("Retry after two stopped saves of the same default assignee makes the newer
     const control = await screen.findByLabelText("Default assignee of CORE");
     await waitFor(() => expect(control).not.toBeDisabled());
 
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
     // A `PUT` carries no `Idempotency-Key`: the key a call is handed in its bounds is the page's
     // own name for the press the call is of, and what these lines compare is which press it is.
     const firstPress = putDefault.mock.calls[0]?.[2]?.key;
 
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await tick(0);
     const secondPress = putDefault.mock.calls.at(-1)?.[2]?.key;
     expect(secondPress).not.toBe(firstPress);
@@ -394,7 +387,7 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
     );
     const control = await screen.findByLabelText("Default assignee of CORE");
     await waitFor(() => expect(control).not.toBeDisabled());
-    await pickPerson(user, control, "alice@example.com");
+    await pick(user, "Default assignee of CORE", "alice@example.com");
     await stopTheLateWrite(queryClient);
 
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
