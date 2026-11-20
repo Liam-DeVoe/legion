@@ -9,17 +9,21 @@
 // reconciliation retried while the keeper launches the controller reads them, and the store holds
 // the controller's claim launching, as the supervisor stores it before the launch begins. What the
 // proof stands in for lies outside the sweep: the agent is a sleep stub (no model, Dispatch or
-// NATS), the App tokens are placeholders, no repository is mapped, and GitHub is a stand-in in this
-// process (controllerSweepKindGitHub), so the runtime's reads of the leak check and its index stay
-// in this process.
+// NATS), the App tokens are placeholders, no repository is mapped, the providers Secret an
+// operator keeps is one the driver writes (controllerSweepKindProviders), and GitHub is a stand-in
+// in this process (controllerSweepKindGitHub), so the runtime's reads of the leak check and its
+// index stay in this process. That stand-in serves the check at whatever tag the worker image
+// pins, and the controller's launch holds it to having served the check to the read lease.
 package daemon
 
 import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -71,6 +76,7 @@ type controllerSweepLive struct {
 	sandboxes dynamic.ResourceInterface
 	pvcs      typedcorev1.PersistentVolumeClaimInterface
 	pods      typedcorev1.PodInterface
+	github    *leakguardtest.Releases
 }
 
 // TestTheControllerOrphanSweepLive launches the project controller and sweeps at grace 0 with the
@@ -126,6 +132,19 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Every pod the runtime launches mounts the providers Secret, which an operator keeps and no
+	// runtime writes (controllerSweepKindProviders). The negative control's driver, on the same
+	// cluster, finds the one the first driver made.
+	secrets := clients.CoreV1().Secrets(k.Namespace)
+	providers := controllerSweepKindProviders(cfg, project)
+	_, err = secrets.Create(ctx, providers, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		_, err = secrets.Update(ctx, providers, metav1.UpdateOptions{})
+	}
+	if err != nil {
+		t.Fatalf("the providers Secret %s: %v", providers.Name, err)
+	}
+	fmt.Printf("   providers Secret %s holds %v, as an operator keeps it\n", providers.Name, slices.Sorted(maps.Keys(providers.Data)))
 	st, err := store.Open(ctx, cfg.PostgresDSN)
 	if err != nil {
 		t.Fatal(err)
@@ -140,6 +159,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		name: sandbox.SandboxName(token), volume: sandbox.IssueClaimName(token),
 		sandboxes: dyn.Resource(controllerSweepLiveSandboxes).Namespace(k.Namespace),
 		pvcs:      clients.CoreV1().PersistentVolumeClaims(k.Namespace), pods: clients.CoreV1().Pods(k.Namespace),
+		github: controllerSweepKindGitHub(t),
 	}
 	resolve := func(presented string) (claim.Token, uint64, bool, bool, error) {
 		if presented != r.bootToken {
@@ -155,7 +175,7 @@ func TestTheControllerOrphanSweepLive(t *testing.T) {
 		for range listener.Events() {
 		}
 	}()
-	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, controllerSweepKindGitHub(t), log); err != nil {
+	if r.rt, err = controllerSweepKindRuntime(ctx, cfg, listener, st, r.github.URL, log); err != nil {
 		t.Fatalf("the Sandbox runtime: %v", err)
 	}
 
@@ -222,7 +242,11 @@ func (r *controllerSweepLive) putClaim(state supervise.ClaimState) {
 }
 
 // launch stores the controller's claim launching and launches it through the runtime, then holds
-// the API server to a Sandbox of the controller's name owning its volume claim and the launched pod.
+// the proof's GitHub to having served the check's tarball to the read lease, and the API server to
+// a Sandbox of the controller's name owning its volume claim and the launched pod. The launch
+// installs the check its worker image pins before its start frame, and each image this repository
+// builds pins one (worker.Dockerfile's ARG LEAK_CHECK_TAG), so a launch served no check did not
+// take the path a pinned image's launch takes.
 func (r *controllerSweepLive) launch(known []runtime.Known) {
 	r.t.Helper()
 	r.putClaim(supervise.StateLaunching)
@@ -234,6 +258,11 @@ func (r *controllerSweepLive) launch(known []runtime.Known) {
 	if err != nil {
 		r.t.Fatalf("Spawn %s: %v", r.token, err)
 	}
+	tags, err := controllerSweepKindCheckServed(r.github)
+	if err != nil {
+		r.t.Fatalf("the controller's launch: %v", err)
+	}
+	fmt.Printf("   the proof's GitHub served the check's tarball to the read lease at %v\n", tags)
 	s := r.sandbox()
 	if s == nil {
 		r.t.Fatalf("the controller's launch returned %+v, and the API server holds no Sandbox %s", loc.Sandbox, r.name)

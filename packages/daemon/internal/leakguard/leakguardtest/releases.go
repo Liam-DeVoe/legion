@@ -19,9 +19,12 @@ import (
 // asset by the id that list gives it, `GET /repos/<repository>/releases/assets/<id>`. The asset
 // route answers the asset's bytes to a request that asks for application/octet-stream, as GitHub
 // streams them, and the asset's JSON to any other, as GitHub does
-// (https://docs.github.com/en/rest/releases/assets#get-a-release-asset). Every request must carry
-// the stand-in's bearer token (githubtest.Spec's Token); a route of no release, and a release of
-// another tag, fail the test.
+// (https://docs.github.com/en/rest/releases/assets#get-a-release-asset). Once ServeTarball is
+// called it also stands in for the repository's tarball route, which the daemon reads the check
+// itself through, so a reader that reads the check and its index under one REST root, as the
+// daemon's runtime does, reads both here. Every request must carry the stand-in's bearer token
+// (githubtest.Spec's Token); a route the stand-in does not serve, and a release of another tag,
+// fail the test.
 //
 // The repository and the tag are the caller's, since this package imports the guard not at all
 // (the package comment): the guard's tests hand it the guard's own repository.
@@ -33,10 +36,19 @@ type Releases struct {
 	repository string
 	tag        string
 
-	mu     sync.Mutex
-	lastID int64
-	asset  *publishedAsset
-	asked  []Asked
+	mu      sync.Mutex
+	lastID  int64
+	asset   *publishedAsset
+	tarball *servedTarball
+	asked   []Asked
+	served  []Asked
+}
+
+// servedTarball is what the repository's tarball route answers (ServeTarball): the tarball's bytes
+// at every tag holds holds.
+type servedTarball struct {
+	holds func(tag string) bool
+	body  []byte
 }
 
 // publishedAsset is the release's one asset: its id, its name, the bytes it holds and when it was
@@ -91,15 +103,41 @@ func (r *Releases) Asked() []Asked {
 	return slices.Clone(r.asked)
 }
 
+// ServeTarball makes the stand-in answer GitHub's tarball route of its repository,
+// `GET /repos/<repository>/tarball/<tag>`, with body at every tag holds holds, and with GitHub's
+// 404 at any other, as GitHub answers a ref the repository does not have. Until it is called, a
+// request of that route fails the test, as a request of any route the stand-in does not serve
+// does.
+func (r *Releases) ServeTarball(holds func(tag string) bool, body []byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tarball = &servedTarball{holds: holds, body: slices.Clone(body)}
+}
+
+// TarballsServed is every request the stand-in answered with the tarball's bytes (ServeTarball),
+// in the order it answered them.
+func (r *Releases) TarballsServed() []Asked {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.served)
+}
+
 func (r *Releases) record(request *http.Request) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.asked = append(r.asked, Asked{
-		Path: request.URL.Path, Authorization: request.Header.Get("Authorization"), Accept: request.Header.Get("Accept"),
-	})
+	r.asked = append(r.asked, askedOf(request))
+}
+
+// askedOf is request as the stand-in records it.
+func askedOf(request *http.Request) Asked {
+	return Asked{Path: request.URL.Path, Authorization: request.Header.Get("Authorization"), Accept: request.Header.Get("Accept")}
 }
 
 func (r *Releases) handle(w http.ResponseWriter, request *http.Request) {
+	if tag, isTarball := strings.CutPrefix(request.URL.Path, "/repos/"+r.repository+"/tarball/"); isTarball && request.Method == http.MethodGet {
+		r.answerTarball(w, request, tag)
+		return
+	}
 	route, routed := strings.CutPrefix(request.URL.Path, "/repos/"+r.repository+"/releases/")
 	if !routed || request.Method != http.MethodGet {
 		githubtest.Unexpected(r.t, w, request)
@@ -134,6 +172,27 @@ func (r *Releases) handle(w http.ResponseWriter, request *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/octet-stream")
 	_, _ = w.Write(asset.body)
+}
+
+// answerTarball answers a read of the repository's tarball at tag (ServeTarball), recording each
+// one it answers with the tarball's bytes.
+func (r *Releases) answerTarball(w http.ResponseWriter, request *http.Request, tag string) {
+	r.mu.Lock()
+	tarball := r.tarball
+	held := tarball != nil && tarball.holds(tag)
+	if held {
+		r.served = append(r.served, askedOf(request))
+	}
+	r.mu.Unlock()
+	switch {
+	case tarball == nil:
+		githubtest.Unexpected(r.t, w, request)
+	case !held:
+		notFound(w, "https://docs.github.com/rest/repos/contents#download-a-repository-archive-tar")
+	default:
+		w.Header().Set("Content-Type", "application/x-gzip")
+		_, _ = w.Write(tarball.body)
+	}
 }
 
 // release is GitHub's answer for the release that holds asset: a prerelease that is never the
