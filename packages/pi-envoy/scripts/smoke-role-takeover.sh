@@ -762,7 +762,7 @@ row5_omp() {
 # that second process is refused under that id now, and the claim it makes is decided on the
 # standing claim rather than on the predecessor it names.
 row6_predecessor() {
-  local role q p z z2 instance_c instance_d
+  local role q p z z2 instance_c instance_d holder holder_instance
   role="$(role_for r6)"
   q="$(session_for r6q)"
   p="$(session_for r6p)"
@@ -817,10 +817,16 @@ row6_predecessor() {
   end_row
 
   begin_row "R8 row 5 — an Oh My Pi move in the refused process is refused too"
-  # The rows before left the role under P, and this move's claim names P only while it is: where
-  # one of them failed and C took the role under Z, C's move names Z, its own. So the row reads
-  # that first, and fails naming where the role is rather than on a claim C never made.
-  expect "the role is still held under P, the predecessor this move's claim names" "$(role_holder "$role")" "$p"
+  # The rows before left the role under P with D's process, and this move's claim names P only
+  # while D holds it there: where one of them failed and C took the role, under Z or under P, the
+  # move is weighed on C's own claim. So the row reads that first, the session and the process, and
+  # fails naming where the role is rather than on a claim C never made. C is an Oh My Pi process
+  # whose heartbeat only this script ticks, so it has made no claim since the fork's, which the
+  # row before weighed, and there is no window to weigh before this read.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is still held under P, the predecessor this move's claim names" "$holder" "$p"
+  expect "process D still holds it" "$holder_instance" "$instance_d"
   # D answers again right before the move, as it did before the fork: the move's claim names P,
   # which is live only while D has registered it inside the window.
   renew_omp omp-d "$p"
@@ -835,8 +841,11 @@ row6_predecessor() {
 
   begin_row "A5 — after the holder exits, the refused Oh My Pi process takes the role on its next session event"
   # As in the move row: the holder whose exit this row turns on holds the role under P only where
-  # the rows before left it there, so the row reads that first.
-  expect "the role is still held under P when its holder exits" "$(role_holder "$role")" "$p"
+  # the rows before left it there with D's process, so the row reads that first.
+  holder="$(role_holder "$role")"
+  holder_instance="$(role_instance "$role")"
+  expect "the role is still held under P when its holder exits" "$holder" "$p"
+  expect "process D still holds it when it exits" "$holder_instance" "$instance_d"
   send omp-d '{"op":"shutdown"}'
   expect_true "process D's session left the registry when it shut down" \
     wait_for "$listener_wait_timeout" unregistered "$p"

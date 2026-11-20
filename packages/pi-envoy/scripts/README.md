@@ -192,9 +192,10 @@ the two rows. A row that waits the window out waits for the listener to say so, 
 
 Eighteen rows are printed, each with its outcome. A row that starts from where an earlier row of
 its scenario left the role (the release after the Oh My Pi takeover, the move and the holder's
-exit in A5 scenario 1, and the `/clear` handoff of A5 scenario 2) first reads that the role is
-there, so where the earlier row failed, the later one fails naming where the role is and not on
-a claim that was never made:
+exit in A5 scenario 1, and the `/clear` handoff of A5 scenario 2) first reads which session and
+which process hold the role, so where the earlier row failed, the later one fails naming where the
+role is, or the window where A5 scenario 2's holder lapsed between the rows, and not on a claim
+that was never made:
 
 - **row 1**, twice — a claim under the id that holds the role is granted because nobody renewed
   the standing claim inside the live window: an Oh My Pi plugin reload, and a Claude Code channel
