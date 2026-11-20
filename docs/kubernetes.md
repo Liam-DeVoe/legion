@@ -5124,7 +5124,7 @@ A claim whose suspension was held for that turn's end is suspended instead, as i
 
 The record costs one API write per generation started, the annotation's patch (844 bytes in the runtime's tests, with Dispatch and the broker unset), where a start in a running issue pod made none before.
 The kind job's Stage 4b tests drive both cases with real agents in issue pods:
-`address-moved-env-same-pod` hands the pods another address of the same Envoy listener (`TestStage4bDaemonRestartsOnTheKindRigLive`), and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bStreamMoveAndControllerOnTheKindRigLive`), both in `packages/daemon/internal/daemon/stage4b_kind_live_test.go`.
+`address-moved-env-same-pod` hands the pods another address of the same Envoy listener (`TestStage4bDaemonRestartsOnTheKindRigLive`), and `address-moved-stream-new-pod` swaps the daemon's API and worker-stream ports (`TestStage4bStreamMoveOnTheKindRigLive`), both in `packages/daemon/internal/daemon/stage4b_kind_live_test.go`.
 
 ### A shell on an issue's disk
 
@@ -7401,7 +7401,7 @@ It has no pod create or delete and no PVC verb (LEGION-206 Requirement 8).
 ### The test on a kind cluster
 
 `TestStage4bSandboxTreeOnTheKindRigLive` (`packages/daemon/internal/daemon/stage4b_kind_live_test.go`) drives an issue tree through the Go daemon on this runtime, in a kind cluster with Agent Sandbox and gVisor, against Dispatch, the Envoy listener and NATS built from the checkout and a fake GitHub, with real agents on a Messages stand-in, one subtest per checkpoint.
-Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses and at another address of the listener, and `TestStage4bStreamMoveAndControllerOnTheKindRigLive` onto a moved worker stream and under `controller: daemon`.
+Two more tests of the same file start from the claims that tree holds and restart the daemon over them: `TestStage4bDaemonRestartsOnTheKindRigLive` at the same addresses, at another address of the listener and under `controller: daemon`, and `TestStage4bStreamMoveOnTheKindRigLive` onto a moved worker stream.
 Each brings up a rig of its own, since one rig running every checkpoint runs past the time a part of the kind job has.
 The kind job of `ci.yaml` runs the three in its `tree-stage4b`, `tree-stage4b-restart` and `tree-stage4b-move` parts.
 

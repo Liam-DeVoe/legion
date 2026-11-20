@@ -13,9 +13,9 @@
 // 2 parked free the slots, and tree 2 takes one. Tree 1's planner completes planning through the
 // `legion` tool, so its implementer starts in the same pod. TestStage4bSandboxTreeOnTheKindRigLive
 // drives that tree, then ends one role's generation and loses its pod. The daemon's restarts start
-// from the claims that tree holds at the end of it, seeded (newStage4bRunningTree): two restarts
-// in TestStage4bDaemonRestartsOnTheKindRigLive and two in
-// TestStage4bStreamMoveAndControllerOnTheKindRigLive. The model is the rig's stand-in, which
+// from the claims that tree holds at the end of it, seeded (newStage4bRunningTree): three restarts
+// in TestStage4bDaemonRestartsOnTheKindRigLive, the last under `controller: daemon`, and one in
+// TestStage4bStreamMoveOnTheKindRigLive. The model is the rig's stand-in, which
 // answers every turn with a WAITING line and the turns a checkpoint scripts with a call of the
 // tool the checkpoint names.
 //
@@ -90,9 +90,9 @@ type stage4bLive struct {
 
 // TestStage4bSandboxTreeOnTheKindRigLive drives tree 1 and its children through the checkpoints of
 // the stage 4b proof up to one role's end and its pod's loss, each a subtest. The daemon's restarts
-// are TestStage4bDaemonRestartsOnTheKindRigLive's and
-// TestStage4bStreamMoveAndControllerOnTheKindRigLive's, each on a rig of its own: one rig running
-// all fourteen checkpoints runs past the kind job's part budget.
+// are TestStage4bDaemonRestartsOnTheKindRigLive's and TestStage4bStreamMoveOnTheKindRigLive's,
+// each on a rig of its own: one rig running all fourteen checkpoints runs past the kind job's part
+// budget.
 func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 	// A token lives seventeen minutes, so the daemon's refresh, which comes at least fifteen
 	// minutes before a lease's expiry, comes inside the run. A quiet pod is kept thirty minutes,
@@ -115,20 +115,23 @@ func TestStage4bSandboxTreeOnTheKindRigLive(t *testing.T) {
 }
 
 // TestStage4bDaemonRestartsOnTheKindRigLive restarts the daemon over a running tree at the same
-// addresses, then handing the pods another address of the listener.
+// addresses, then handing the pods another address of the listener, then under `controller:
+// daemon`. The controller's restart reads nothing of the tree, so it runs here, where it keeps
+// each part under the budget: on CI run 44766893801 it took 185 s, and the part that ran it with
+// the stream move took 24.0 minutes of its 24 minutes 21 seconds.
 func TestStage4bDaemonRestartsOnTheKindRigLive(t *testing.T) {
 	r := newStage4bRunningTree(t)
 	r.checkpoint("restart-mid-tree", r.restartMidTree)
 	r.checkpoint("address-moved-env-same-pod", r.addressMovedEnvSamePod)
+	r.checkpoint("controller", r.controllerCheck)
 }
 
-// TestStage4bStreamMoveAndControllerOnTheKindRigLive restarts the daemon over a running tree with
-// its API and worker stream ports swapped, then under `controller: daemon`, and judges the shape of
-// every pod it ran.
-func TestStage4bStreamMoveAndControllerOnTheKindRigLive(t *testing.T) {
+// TestStage4bStreamMoveOnTheKindRigLive restarts the daemon over a running tree with its API and
+// worker stream ports swapped, so every pod is replaced onto the moved stream, and judges the
+// shape of every pod it ran.
+func TestStage4bStreamMoveOnTheKindRigLive(t *testing.T) {
 	r := newStage4bRunningTree(t)
 	r.checkpoint("address-moved-stream-new-pod", r.addressMovedStreamNewPod)
-	r.checkpoint("controller", r.controllerCheck)
 	r.checkpoint("pod-shape", r.podShape)
 }
 
@@ -557,9 +560,21 @@ var agentGhEnv = []string{leakguard.CheckVar, "LEGION_GH_PATH", "LEGION_GH_OWNER
 // agentShell runs script in role's namespaces of pod with agentGhEnv as role's agent holds it
 // (agentEnviron), so a command there meets what the agent's own bash would.
 func (r *stage4bLive) agentShell(pod string, role claim.Role, script string) (string, error) {
-	env, err := r.agentEnviron(pod, role)
+	in := func(command ...string) (string, error) { return r.roleExec(pod, role, command...) }
+	out, err := agentShellIn(in, script)
 	if err != nil {
-		return "", fmt.Errorf("read the %s's agent environment in %s: %w", role, pod, err)
+		return "", fmt.Errorf("the %s's agent shell in %s: %w", role, pod, err)
+	}
+	return out, nil
+}
+
+// agentShellIn runs script through in, an exec that sees the agent's processes (a role's
+// namespaces, or the controller's container), with agentGhEnv as the agent there holds it
+// (agentEnvironIn).
+func agentShellIn(in func(command ...string) (string, error), script string) (string, error) {
+	env, err := agentEnvironIn(in)
+	if err != nil {
+		return "", fmt.Errorf("read the agent's environment: %w", err)
 	}
 	var exports strings.Builder
 	for _, name := range agentGhEnv {
@@ -567,13 +582,18 @@ func (r *stage4bLive) agentShell(pod string, role claim.Role, script string) (st
 			fmt.Fprintf(&exports, "export %s='%s'; ", name, strings.ReplaceAll(value, "'", `'\''`))
 		}
 	}
-	return r.roleExec(pod, role, "sh", "-c", exports.String()+script)
+	return in("sh", "-c", exports.String()+script)
 }
 
-// agentEnviron is the environment of role's agent in pod, the child of its worker-shim, one
-// NAME=value a line.
+// agentEnviron is the environment of role's agent in pod (agentEnvironIn in role's namespaces).
 func (r *stage4bLive) agentEnviron(pod string, role claim.Role) ([]string, error) {
-	out, err := r.roleExec(pod, role, "sh", "-c", `for d in /proc/[0-9]*; do [ "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] && shim=${d##*/}; done
+	return agentEnvironIn(func(command ...string) (string, error) { return r.roleExec(pod, role, command...) })
+}
+
+// agentEnvironIn is the environment of the agent in, an exec that sees its processes: the child
+// of its worker-shim, one NAME=value a line.
+func agentEnvironIn(in func(command ...string) (string, error)) ([]string, error) {
+	out, err := in("sh", "-c", `for d in /proc/[0-9]*; do [ "$(tr '\0' '\n' 2>/dev/null <"$d/cmdline" | sed -n 2p)" = worker-shim ] && shim=${d##*/}; done
 [ -n "$shim" ] || exit 1
 for d in /proc/[0-9]*; do [ "$(cut -d' ' -f4 "$d/stat" 2>/dev/null)" = "$shim" ] && { tr '\0' '\n' <"$d/environ"; exit 0; }; done
 exit 1`)
@@ -992,23 +1012,37 @@ func (r *stage4bLive) controllerCheck() {
 	if controllerPod == "" {
 		t.Fatalf("the daemon's claims hold no controller in a pod")
 	}
-	viewer, err := r.kubectl("exec", controllerPod, "-c", "controller", "--", "sh", "-c", "gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login")
+	// The controller's gh run as its agent runs it: an exec into the container carries none of
+	// the agent's gh environment (agentGhEnv), which `legion gh` refuses to run without.
+	inController := func(command ...string) (string, error) {
+		out, err := r.kubectl(append([]string{"exec", controllerPod, "-c", "controller", "--"}, command...)...)
+		return strings.TrimSpace(out), err
+	}
+	viewer, err := agentShellIn(inController, "gh api graphql -f query='{viewer{login}}' --jq .data.viewer.login")
 	if err != nil || strings.TrimSpace(viewer) != r.review.Slug+"[bot]" {
 		t.Errorf("the controller's gh answered viewer %q (%v), want the review App's %s[bot]", viewer, err, r.review.Slug)
 	}
 	tick := "tick on " + r.cfg.Project
 	r.await("'"+tick+"' to reach the controller's session", 5*time.Minute, func() bool { return len(r.model.requests(since, tick)) > 0 })
-	open := regexp.MustCompile(`openCapabilities[^\[]*\[([^\]]*)\]`)
+	// pi-envoy renders a delivery into the session as TOON, where the tick's list reads
+	// `openCapabilities[<n>]: <name>,<name>` on one line (envoy-client's renderInbound), which the
+	// request body carries inside a JSON string, so the line ends at its escaped newline.
+	open := regexp.MustCompile(`openCapabilities\[(\d+)\]: ([^\\"]*)`)
+	lists := 0
 	for _, seen := range r.model.requests(since, tick) {
 		for _, found := range open.FindAllStringSubmatch(seen.body, -1) {
-			names := strings.FieldsFunc(found[1], func(c rune) bool { return c == ',' || c == '"' || c == ' ' || c == '\\' })
+			lists++
+			names := strings.Split(found[2], ",")
 			sort.Strings(names)
-			if !slices.Equal(names, []string{"secrets"}) && !slices.Equal(names, []string{"pool-capacity", "secrets"}) {
-				t.Errorf("a tick delivery carries openCapabilities %v, not secrets with or without pool-capacity", names)
+			if found[1] != strconv.Itoa(len(names)) || (!slices.Equal(names, []string{"secrets"}) && !slices.Equal(names, []string{"pool-capacity", "secrets"})) {
+				t.Errorf("a tick delivery carries %q, not openCapabilities of secrets with or without pool-capacity", found[0])
 			}
 		}
 	}
-	r.note("the controller (session %s) runs in pod %s as %s and was told %q", state.ControllerLocator.SessionID, controllerPod, strings.TrimSpace(viewer), tick)
+	if lists == 0 {
+		t.Errorf("no tick delivery the controller's session sent the model carries an openCapabilities line, where the kind deployment always leaves secrets open")
+	}
+	r.note("the controller (session %s) runs in pod %s as %s and was told %q, with %d openCapabilities lines read", state.ControllerLocator.SessionID, controllerPod, strings.TrimSpace(viewer), tick, lists)
 }
 
 // pod-shape: every issue pod the watch recorded ready, deleted ones included, has the shape: the

@@ -1,5 +1,5 @@
 // The rig the daemon's whole-tree kind tests share: TestStage4bSandboxTreeOnTheKindRigLive,
-// TestStage4bDaemonRestartsOnTheKindRigLive and TestStage4bStreamMoveAndControllerOnTheKindRigLive
+// TestStage4bDaemonRestartsOnTheKindRigLive and TestStage4bStreamMoveOnTheKindRigLive
 // of stage4b_kind_live_test.go, and
 // TestTheClaudeCodeImplementerInAnIssuePodRegistersRunsThePinnedBridgeAndResumesLive of
 // claude_backend_kind_live_test.go. The kind job of ci.yaml runs each on the rig of
