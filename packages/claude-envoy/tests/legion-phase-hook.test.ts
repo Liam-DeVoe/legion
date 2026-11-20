@@ -354,25 +354,132 @@ test("a timer that decides not to remind clears the wake and sends a report", as
   }
 })
 
-// A server Claude Code restarts inside one `claude` process has read no `${background_tasks}`
-// yet, and a background task the last `Stop` saw may still be running: a report of no background
-// work would let the idle release take the pod under it. So a timer that clears the wake before
-// this server's first `Stop` reports nothing, and once a `Stop` has run, the timer's report
-// repeats what that `Stop` saw.
-test("a timer that clears the wake before this server's first Stop reports nothing, and after a Stop it repeats what that Stop saw", async () => {
-  const { endpoint, reports, asked, boot, close } = await harness({
+// The report a timer sends after it clears the wake says what this launch's own background work
+// is, from the reading the record keeps of it (`backgroundReading`). A launch moves the claim's
+// generation and clears the daemon's stored report, and no task of the process it replaced
+// outlives that process, so a fresh launch reports no background work, and reports it even when
+// its first turn ended in a `StopFailure`, which reports nothing itself: a claim never reported
+// holds its pod. A server Claude Code restarts inside one `claude` process keeps the claim's
+// generation and repeats that generation's reading, since a task the last `Stop` saw may still be
+// running. `StopFailure` carries no `${background_tasks}`, so a refused turn that ran a tool
+// counts as leaving background work. Every case here ends on a timer whose check finds nothing
+// owed.
+
+/** A launch's background reading as the record holds it: the claim's own launch unless
+ * `generation` names another. */
+function backgroundReading(
+  backgroundWork: boolean,
+  toolSince: boolean,
+  generation = implementer.generation,
+): Record<string, unknown> {
+  return { backgroundReading: { generation, backgroundWork, toolSince } }
+}
+
+test("a fresh launch whose first turn ends in StopFailure is reported by the timer that follows, with no background work", async () => {
+  const { endpoint, record, reports, asked, boot, close } = await harness({
     record: recorded("active", 0),
     claim: implementer,
     owed: owesNothing,
   })
   try {
     boot()
-    await waitFor(async () => asked.length === 1, "the resume timer to ask the daemon")
-    // Nothing is sent, so there is no condition to wait for: one of the file's fixed waits,
-    // three times the 20 ms resume delay.
-    await Bun.sleep(60)
+    // The claim's task starts the launch's first turn, which the provider refuses before it ran
+    // any tool.
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: Overloaded",
+      }),
+    ).toEqual({})
     expect(reports).toEqual([])
+    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
 
+    await waitFor(async () => reports.length === 1, "the refused turn's timer's report")
+    expect(asked).toHaveLength(1)
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({ running: false, kinds: [] })
+  } finally {
+    await close()
+  }
+})
+
+test("a fresh launch whose refused turn ran a tool is reported by the timer as background work", async () => {
+  const { endpoint, record, reports, boot, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "Implement LEGION-208." })
+    // The tool may have started a background task, and the `StopFailure` that ends the turn
+    // cannot say whether it did.
+    await endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+    expect(await record()).toMatchObject(backgroundReading(false, true))
+    expect(
+      await endpoint.handle({
+        event: "StopFailure",
+        lastAssistantMessage: "API Error: Overloaded",
+      }),
+    ).toEqual({})
+    await waitFor(async () => reports.length === 1, "the refused turn's timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+    // The record keeps it, so a server restarted before the next `Stop` reports it too.
+    expect(await record()).toMatchObject(backgroundReading(true, false))
+  } finally {
+    await close()
+  }
+})
+
+test("a server restarted inside its launch repeats that launch's background work from its first timer", async () => {
+  const { reports, boot, close } = await harness({
+    record: recorded("active", 0, backgroundReading(true, false)),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
+    // No `Stop` has reached this server: the resume timer's report is all it sends.
+    boot()
+    await waitFor(async () => reports.length === 1, "the resume timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({
+      running: true,
+      kinds: ["claude-background-task"],
+    })
+  } finally {
+    await close()
+  }
+})
+
+test("a relaunch whose record holds the background work of the launch before it reports none", async () => {
+  const relaunched: ClaimCapability = { ...implementer, generation: implementer.generation + 1 }
+  const { reports, boot, close } = await harness({
+    record: recorded("active", 0, backgroundReading(true, false, implementer.generation)),
+    claim: relaunched,
+    owed: owesNothing,
+  })
+  try {
+    boot()
+    await waitFor(async () => reports.length === 1, "the resume timer's report")
+    expect(reports[0]?.activity.phase).toEqual({ nextReminderAt: null })
+    expect(reports[0]?.activity.backgroundWork).toEqual({ running: false, kinds: [] })
+  } finally {
+    await close()
+  }
+})
+
+test("a timer that clears the wake after a Stop repeats the background work that Stop saw", async () => {
+  const { endpoint, record, reports, close } = await harness({
+    record: recorded("active", 0),
+    claim: implementer,
+    owed: owesNothing,
+  })
+  try {
     // The running task puts the worker in its quiet wait, whose timer the daemon answers that the
     // claim owes nothing: that timer clears the wake and reports the task the `Stop` saw.
     await endpoint.handle({
@@ -385,6 +492,8 @@ test("a timer that clears the wake before this server's first Stop reports nothi
       running: true,
       kinds: ["claude-background-task"],
     })
+    // The reading a server restarted after this `Stop` repeats.
+    expect(await record()).toMatchObject(backgroundReading(true, false))
     await waitFor(async () => reports.length === 2, "the timer's report")
     expect(reports[1]?.activity.phase).toEqual({ nextReminderAt: null })
     expect(reports[1]?.activity.backgroundWork).toEqual({
@@ -695,7 +804,13 @@ test("a ready_for_update answer blocks no Stop: the answering turn ends, and not
     // Claude Code's own `PostToolUse` for the call that answered: the worker ran a real tool
     // call, which does not take the wait back.
     expect(await endpoint.handle({ event: "PostToolUse" })).toEqual({})
-    expect(await record()).toEqual({ state: "waiting", count: 0, reported: false })
+    // It may have started a background task, so the launch's reading notes a tool since.
+    expect(await record()).toEqual({
+      state: "waiting",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
 
     const answered = "Pushed everything and answered; waiting for the new pod."
     expect(await endpoint.handle({ event: "Stop", lastAssistantMessage: answered })).toEqual({})
@@ -840,14 +955,26 @@ test("a helper agent's tool call is not the worker working, and does not reset t
     claim: implementer,
   })
   try {
+    // A helper's call is noted in the launch's background reading all the same: it may have
+    // started a background task too.
     for (const event of ["PostToolUse", "PostToolUseFailure"]) {
       expect(await endpoint.handle({ event, toolName: "Bash", agentId: "agent-7" })).toEqual({})
-      expect(await record()).toEqual({ state: "active", count: 2, reported: false })
+      expect(await record()).toEqual({
+        state: "active",
+        count: 2,
+        reported: false,
+        ...backgroundReading(false, true),
+      })
     }
     expect(await endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })).toEqual(
       {},
     )
-    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(await record()).toEqual({
+      state: "active",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
   } finally {
     await close()
   }
@@ -862,7 +989,12 @@ test("a tool call that failed is work too, and resets the count", async () => {
     expect(
       await endpoint.handle({ event: "PostToolUseFailure", toolName: "Bash", agentId: "" }),
     ).toEqual({})
-    expect(await record()).toEqual({ state: "active", count: 0, reported: false })
+    expect(await record()).toEqual({
+      state: "active",
+      count: 0,
+      reported: false,
+      ...backgroundReading(false, true),
+    })
   } finally {
     await close()
   }
