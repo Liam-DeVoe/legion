@@ -1086,7 +1086,8 @@ export class DispatchApiClient {
   }
 
   /** Makes group `name` with its writer as owner, or writes its members again for its owner
-   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). */
+   *  (`403 GROUP_OWNER_REQUIRED` for anyone else). This and the delete below need the `person`
+   *  and `approve` scopes, as the access-list writes do. */
   putAccessGroup(
     name: string,
     input: Body<"/api/v1/access-groups/{name}", "put">,

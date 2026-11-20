@@ -173,16 +173,7 @@ func TestTheAccessListWritesNeedTheApproveScope(t *testing.T) {
 	for _, write := range writes {
 		call := write.method + " " + write.path
 		before, access := allEvents(t, database), readAccess(t, handler, "alice")
-		refused := agentRequest(t, handler, write.method, write.path, write.body, personOnly)
-		if refused.Code != http.StatusForbidden {
-			t.Fatalf("%s with alice's person token: %d %s, want 403", call, refused.Code, refused.Body.String())
-		}
-		if body := decodeBody[refusalAnswer](t, refused); body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
-			t.Fatalf("%s with alice's person token: the refusal = %+v, want %s naming the approve scope", call, body, codeScopeRequired)
-		}
-		if got, want := refused.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
-			t.Fatalf("%s with alice's person token: the challenge = %q, want %q", call, got, want)
-		}
+		wantApproveRefusal(t, agentRequest(t, handler, write.method, write.path, write.body, personOnly), call)
 		if after, now := allEvents(t, database), readAccess(t, handler, "alice"); after != before || !slices.Equal(now.People, access.People) ||
 			!slices.Equal(now.Groups, access.Groups) || now.Owner != access.Owner || now.Visibility != access.Visibility {
 			t.Fatalf("the refused %s moved events from %d to %d and the access from %+v to %+v", call, before, after, access, now)
@@ -194,6 +185,22 @@ func TestTheAccessListWritesNeedTheApproveScope(t *testing.T) {
 	}
 	if got := readAccess(t, handler, "alice"); got.Owner != accessDave || len(got.People) != 0 || len(got.Groups) != 0 {
 		t.Fatalf("after the approving token's changes ACC's access = %+v, want dave's project with empty lists", got)
+	}
+}
+
+// wantApproveRefusal fails the test unless response is the scope gate's refusal of a credential
+// holding `person` alone on a row that needs `approve`: 403 OAUTH_SCOPE_REQUIRED naming approve,
+// under RFC 6750's insufficient_scope challenge.
+func wantApproveRefusal(t *testing.T, response *httptest.ResponseRecorder, call string) {
+	t.Helper()
+	if response.Code != http.StatusForbidden {
+		t.Fatalf("%s with alice's person token: %d %s, want 403", call, response.Code, response.Body.String())
+	}
+	if body := decodeBody[refusalAnswer](t, response); body.Code != codeScopeRequired || !strings.Contains(body.Error, model.ScopeApprove) {
+		t.Fatalf("%s with alice's person token: the refusal = %+v, want %s naming the approve scope", call, body, codeScopeRequired)
+	}
+	if got, want := response.Header().Get("WWW-Authenticate"), insufficientScopeChallenge(model.ScopeApprove); got != want {
+		t.Fatalf("%s with alice's person token: the challenge = %q, want %q", call, got, want)
 	}
 }
 

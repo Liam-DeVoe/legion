@@ -466,7 +466,7 @@ type routeScopeSet []string
 //
 // These are the routes Dispatch refused every bearer token on until INFRA-1017, and two scopes
 // decide them now: `person`, "this credential acts as its person", which every row here needs,
-// and `approve`, the right to settle what a person settles, which the sixteen rows below that
+// and `approve`, the right to settle what a person settles, which the eighteen rows below that
 // decide a credential, a sign-in, a review, a token or who may see a project need as well. A
 // person's browser, their personal tokens and their machine logins hold both; the shared token, a
 // pod's service-account token, a project-scoped session's token and a broker-issued token that
@@ -491,8 +491,6 @@ var routeScopes = map[string]routeScopeSet{
 	"PUT /api/v1/projects/{key}/default-assignee":            {model.ScopePerson},
 	"GET /api/v1/projects/{key}/access":                      {model.ScopePerson},
 	"GET /api/v1/access-groups":                              {model.ScopePerson},
-	"PUT /api/v1/access-groups/{name}":                       {model.ScopePerson},
-	"DELETE /api/v1/access-groups/{name}":                    {model.ScopePerson},
 	"GET /api/v1/users":                                      {model.ScopePerson},
 	"GET /api/v1/people/{login}/nodes":                       {model.ScopePerson},
 	"GET /api/v1/inbox":                                      {model.ScopePerson},
@@ -556,14 +554,18 @@ var routeScopes = map[string]routeScopeSet{
 	// The review that names the version its caller read settles what the review above settles,
 	// with that version as a guard.
 	"POST /api/v1/artifacts/{id}/versions/{number}/reviews": {model.ScopePerson, model.ScopeApprove},
-	// A project's access list, its visibility and its owner decide who may see the project, so a
-	// change to any of them settles what its owner settles: a credential holding person alone -
-	// a broker token from a copied sign-in file among them - reads the list and changes none of it.
+	// A project's access list, its visibility and its owner decide who may see the project, and so
+	// does a group a private project's list names: its members are who it admits, its owner who
+	// changes that, and deleting it takes it off every list. A change to any of them settles what
+	// an owner settles, so a credential holding person alone - a broker token from a copied
+	// sign-in file among them - reads the lists and groups and changes none of them.
 	"PATCH /api/v1/projects/{key}/access":                 {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/people/{email}":    {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/projects/{key}/access/people/{email}": {model.ScopePerson, model.ScopeApprove},
 	"PUT /api/v1/projects/{key}/access/groups/{name}":     {model.ScopePerson, model.ScopeApprove},
 	"DELETE /api/v1/projects/{key}/access/groups/{name}":  {model.ScopePerson, model.ScopeApprove},
+	"PUT /api/v1/access-groups/{name}":                    {model.ScopePerson, model.ScopeApprove},
+	"DELETE /api/v1/access-groups/{name}":                 {model.ScopePerson, model.ScopeApprove},
 }
 
 // readScopeRoutes is every route a read-only token may call, by "<method> <pattern>": a token the
@@ -730,8 +732,8 @@ func (s *server) routes() []apiRoute {
 		{http.MethodPut, "/api/v1/projects/{key}/access/groups/{name}", authAny, "Name a group on a project's access list; a group admits only its members who are full members. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED); a group no row holds is 404 GROUP_NOT_FOUND; a list of 500 people and groups is 409 ACCESS_LIST_FULL. Appends project.access_changed and answers the project's access. Needs the person and approve scopes.", s.putProjectAccessGroup},
 		{http.MethodDelete, "/api/v1/projects/{key}/access/groups/{name}", authAny, "Take a group off a project's access list; one it does not name leaves it as it was. Only the project's owner calls it (403 PROJECT_OWNER_REQUIRED). Appends project.access_changed and answers the project's access. Needs the person and approve scopes.", s.deleteProjectAccessGroup},
 		{http.MethodGet, "/api/v1/access-groups", authAny, "Every group an access list can name, by name: {name, owner, members, not_signed_in}, its owner the full member who made it, its members' emails sorted, and the members nobody has signed in as yet, whom the group admits only once they sign in as full members; [] for none. The owner may hand the group to another full member. Needs the person scope.", s.listAccessGroups},
-		{http.MethodPut, "/api/v1/access-groups/{name}", authAny, "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person scope.", s.putAccessGroup},
-		{http.MethodDelete, "/api/v1/access-groups/{name}", authAny, "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person scope.", s.deleteAccessGroup},
+		{http.MethodPut, "/api/v1/access-groups/{name}", authAny, "Make a group or write it again {members, owner?}: name is lowercase letters, digits, dots, underscores and dashes, at most 63, and members the emails of the people it holds, exactly (at most 1000). The first write makes the group and its writer becomes its owner; after that only the owner writes it (403 GROUP_OWNER_REQUIRED), and owner gives it to another full member. A restricted member cannot make a group (403 RESTRICTED_MEMBER), a member who is a restricted member is 400 GROUP_MEMBER_RESTRICTED, and a bad name or email is 400 PROJECT_ACCESS_INPUT. Appends access_group.changed and answers the group. Needs the person and approve scopes.", s.putAccessGroup},
+		{http.MethodDelete, "/api/v1/access-groups/{name}", authAny, "Delete a group, which takes it off every access list that named it; only its owner calls it (403 GROUP_OWNER_REQUIRED), and a group no row holds is 404 GROUP_NOT_FOUND. Appends project.access_changed for each such list and access_group.changed, and answers 204. Needs the person and approve scopes.", s.deleteAccessGroup},
 		{http.MethodGet, "/api/v1/access/projects/{key}", authAny, "The membership answer the secrets broker reads: {project, visibility, owner, person, member_kind, visible, slack_channels} for ?person= (full, restricted, or none for a login nobody has signed in with; left out, member_kind is none and visible says whether the project is public): whether the read rule lets that person see the project at a browser, a person with no people row read as a full member, and slack_channels, the owner's list, [] for none. It names no repositories. A project the person cannot see still answers 200; an unknown key is 404 PROJECT_NOT_FOUND. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it, with its projected token; every other caller is 403 ACCESS_ACCOUNT_REQUIRED.", s.getAccessProject},
 		{http.MethodGet, "/api/v1/access/person", authAny, "One person's member kind as the membership answer spells it: {person, member_kind} for ?person= (full, restricted, or none for a login nobody has signed in with); no person is 400 INVALID_QUERY. Only a service account DISPATCH_ACCESS_ACCOUNTS names reads it; every other caller is 403 ACCESS_ACCOUNT_REQUIRED.", s.getAccessPerson},
 		{http.MethodPut, "/api/v1/projects/{key}/gated-steps", authAny, "Publish the design-gate steps the Legion deployment that serves this project gates {steps}: a list of decisions, criteria and spec, in the order it gates them, or [] for a deployment that gates none. The deployment's daemon writes it at every boot; a publish of the list the row already holds changes nothing and appends no event. A body without steps, or one naming anything else, is 400 INVALID_PROJECT, and an unknown project 404 PROJECT_NOT_FOUND. It declares no personal scope: the credential the deployment configured writes it, as it does the issue PATCH.", s.putProjectGatedSteps},

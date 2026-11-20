@@ -43,8 +43,8 @@ export type ActorOrigin = z.output<typeof ActorOriginSchema>;
  *  the credential's own person on every route a person reaches through the dashboard, and
  *  `approve` settles what a person settles — a document review, the answer of an approval ask, a
  *  machine-login decision or revoke, minting, changing or revoking a personal token, and a change
- *  to a project's access list, visibility or owner. A credential holding `approve` holds `person`
- *  too. */
+ *  to a project's access list, visibility or owner or to a group an access list can name. A
+ *  credential holding `approve` holds `person` too. */
 export const DISPATCH_SCOPES = ["person", "approve"] as const;
 export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 
