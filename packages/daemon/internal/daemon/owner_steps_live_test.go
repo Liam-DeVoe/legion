@@ -44,9 +44,6 @@ import (
 // are the implementer and then the reviewer.
 var ownerStepsPlan = []string{"implementer", "reviewer"}
 
-// ownerStepsDefault is the project's default steps, which the driver's project names none of.
-var ownerStepsDefault = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
-
 // ownerStepsLive is one run of the proof: the rig over four issues of one project, and the
 // person's CLI over the same rig (reads).
 type ownerStepsLive struct {

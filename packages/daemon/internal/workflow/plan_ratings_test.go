@@ -20,34 +20,24 @@ import (
 )
 
 // todaysDefaultSteps is the five steps of today's default plan, typed here rather than read from
-// DefaultSteps: this file is the oracle of what that list is, so a change of the production list
-// fails here instead of following it.
+// the production list: this file is the oracle of what that list is, so a change of the production
+// list fails here instead of following it.
 var todaysDefaultSteps = []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}
 
-// The place of a phase's step is read from the steps, never stated: a list without the tester shows
-// it, since the place logic takes the steps as a parameter: the reviewer moves up to place 3, and
-// testing runs no step of that list. Today's places, each with its role and type, are held by
-// TestStepOfIsTodaysSequence (steps_test.go), which stepOf answers from DefaultSteps. Nothing global
-// is swapped: DefaultSteps answers a fresh copy, so a caller that changes the slice it got changes
-// no later answer.
-func TestStepOfReadsTheDefaultSteps(t *testing.T) {
-	if steps, want := DefaultSteps(), todaysDefaultSteps; !slices.Equal(steps, want) {
-		t.Fatalf("DefaultSteps() = %q, want %q", steps, want)
+// A run with no plan rows walks today's default steps as the task default's (todaysWalk), and its
+// plan node names them, whatever the configured project's default steps say: a project's
+// `default_steps` read later by the loader does not reach them. Today's places, each with its role
+// and type, are held by TestStepOfIsTodaysSequence (steps_test.go). Nothing global is swapped:
+// RunsByDefault answers a fresh copy, so a caller that changes the slice it got changes no later
+// answer.
+func TestARunWithNoPlanRowsWalksTodaysDefaultSteps(t *testing.T) {
+	issue := record.Issue{Key: "LEGION-208", Generation: 1}
+	if node := planNode(issue, todaysWalk()); len(node.Tasks) != 1 || node.Tasks[0].ID != "default" || !slices.Equal(node.Tasks[0].Steps, todaysDefaultSteps) ||
+		node.Source != record.PlanSourceDefault || node.PlanDocument != nil {
+		t.Fatalf("the plan node of a run with no plan rows = %+v, want the task default of %q from the source default", node, todaysDefaultSteps)
 	}
-
-	withoutTester := slices.DeleteFunc(config.Project{}.RunsByDefault(), func(step plan.Step) bool { return step.Role == "tester" })
-	if place, role, typ, ok := stepIn(withoutTester, phase.Reviewing); !ok || place.Place != 3 || role != "reviewer" || typ != "review" {
-		t.Errorf("the reviewing step of %q = %+v, role %q, type %q, ok %v; want place 3 under the reviewer, of type review",
-			stepWords(withoutTester), place, role, typ, ok)
-	}
-	if place, role, _, ok := stepIn(withoutTester, phase.Testing); ok {
-		t.Errorf("the testing step of %q = %+v, role %q; want none, since no step of that list is the tester's", stepWords(withoutTester), place, role)
-	}
-	// A retro and a merge are no step of any list: the kind tells them apart, at place 0.
-	for at, kind := range map[phase.Phase]string{phase.Retro: "retro", phase.Merging: "merge"} {
-		if place, _, _, ok := stepIn(nil, at); !ok || place != (record.StepPlace{Task: "default", Kind: kind}) {
-			t.Errorf("the %s step of no list = %+v, ok %v; want kind %s at place 0", at, place, ok, kind)
-		}
+	if !slices.Equal(todaysWalk().Line, phase.Order) {
+		t.Fatalf("today's walk runs %v, want today's line %v", todaysWalk().Line, phase.Order)
 	}
 
 	changed := config.Project{}.RunsByDefault()

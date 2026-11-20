@@ -61,8 +61,8 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 	seedOwnersPlan(t, pool, root.Key, 0)
 
 	w := walkOf(t, pool, engine, root.Key)
-	if w.Stored || !slices.Equal(w.Line, phase.Order) || len(w.Steps) != 0 {
-		t.Fatalf("the walk of %s with no plan rows of its run = %+v, want today's line %v, not stored", root.Key, w, phase.Order)
+	if w.Stored || w.Task != "default" || !slices.Equal(w.Line, phase.Order) || len(w.Steps) != 5 || w.Steps[0].Role != "planner" || w.Steps[4].AgentKey != "owner" {
+		t.Fatalf("the walk of %s with no plan rows of its run = %+v, want today's line %v on today's five steps of the task default, not stored", root.Key, w, phase.Order)
 	}
 
 	seedOwnersPlan(t, pool, root.Key, root.Generation)

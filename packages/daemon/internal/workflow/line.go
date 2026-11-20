@@ -6,6 +6,7 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -15,10 +16,12 @@ import (
 // plan rows (record.Store.Plan at the issue's generation) walks the line of its one task's steps
 // (plan.Line): each step runs as the phase of its role, then Legion's own retro and merge. A run
 // with none, which is every issue that ran before plan rows existed, walks today's line,
-// phase.Order, with Stored false, and its table is Table, row for row. Every behaviour that
-// differs from today reads Stored and nothing else.
+// phase.Order, as the steps of the task default (todaysSteps), with Stored false, and its table is
+// Table, row for row. Every behaviour that differs from today reads Stored and nothing else; the
+// steps of both are read the same way (placeOnWalk).
 //
-// Line and Steps are read only: an unstored walk's Line is phase.Order itself.
+// Line and Steps are read only: an unstored walk's Line is phase.Order itself, and its Steps are
+// todaysSteps itself.
 type Walk struct {
 	// Stored says whether the run has plan rows.
 	Stored bool
@@ -28,7 +31,7 @@ type Walk struct {
 	// Text is the text of the task's block (record.PlanTask.BlockText), which a step's worker is
 	// told (standingPart); "" where the run has no plan rows.
 	Text string
-	// Steps are the task's steps, by place from 1; nil where the run has no plan rows.
+	// Steps are the task's steps, by place from 1: todaysSteps where the run has no plan rows.
 	Steps []record.PlanStep
 	// Line is the phases the task walks: one for each step, then retro and merging.
 	Line []phase.Phase
@@ -46,13 +49,24 @@ type Walk struct {
 // Deployment the walk reads a stored step's phase from.
 var builtinDeployment = plan.Deployment{Roles: plan.BuiltinRoles()}
 
-// walk is the walk of issue's run: its plan rows, or today's line with Stored false. A run whose
-// rows hold no task or more than one, or a step whose role runs as no phase, is an error: no plan
-// this release takes writes one (plan.Validate, plan.Supported).
+// todaysSteps is the steps of the task default of a run with no plan rows, which walks today's
+// line, phase.Order: the default steps of a project that names none (config.Project.RunsByDefault),
+// never the configured project's, so such a run walks today's line whatever `default_steps` says,
+// and its places, and the ids of its records, stay where the release before put them. They are
+// read once.
+var todaysSteps = planSteps("", 0, defaultTask, config.Project{}.RunsByDefault())
+
+// todaysWalk is the walk of a run with no plan rows: the task default walking todaysSteps on
+// today's line, phase.Order, with Stored false.
+func todaysWalk() Walk { return Walk{Task: defaultTask, Steps: todaysSteps, Line: phase.Order} }
+
+// walk is the walk of issue's run: its plan rows, or today's line with Stored false
+// (todaysWalk). A run whose rows hold no task or more than one, or a step whose role runs as no
+// phase, is an error: no plan this release takes writes one (plan.Validate, plan.Supported).
 func (e *Engine) walk(ctx context.Context, tx pgx.Tx, issue record.Issue) (Walk, error) {
 	stored, err := e.store.Plan(ctx, tx, issue.Key, issue.Generation)
 	if err != nil || stored == nil {
-		return Walk{Task: defaultTask, Line: phase.Order}, err
+		return todaysWalk(), err
 	}
 	if len(stored.Tasks) != 1 {
 		return Walk{}, fmt.Errorf("walk %s at generation %d: its plan holds %d tasks, and this release walks one", issue.Key, issue.Generation, len(stored.Tasks))

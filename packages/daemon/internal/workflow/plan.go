@@ -10,56 +10,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
-
-// stepWork is the role whose step works phase p, as a step of a plan names it (the part before a
-// step's `:key`), and the type of that work; ok is false for a phase no step of a plan works.
-func stepWork(p phase.Phase) (role stepRole, typ stepType, ok bool) {
-	switch p {
-	case phase.Planning:
-		return "planner", "planning", true
-	case phase.Implementing:
-		return "implementer", "implementation", true
-	case phase.Testing:
-		return "tester", "testing", true
-	case phase.Reviewing:
-		return "reviewer", "review", true
-	case phase.Accepting:
-		return "acceptance", "review", true
-	}
-	return "", "", false
-}
-
-// stepIn is the step phase p runs as a step of the task default whose steps are steps: the place
-// its count of starts is kept under, whose Place is its place in the task (from 1 for a step, 0 for
-// a retro or a merge, which no plan names, so the kind tells those two apart), its role and its
-// type ("" for a retro or a merge, whose role stepOfWalk names for every task). A working phase's
-// step is the first step of steps whose role works it, at one plus its index. A phase no step of
-// steps works, and a phase that runs no step — admitted, awaiting a person, held, done — answers
-// ok false.
-func stepIn(steps []plan.Step, p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
-	switch p {
-	case phase.Retro, phase.Merging:
-		act, _ := Walk{}.PlaceOf(p)
-		role, typ, ok = stepOfWalk(Walk{}, act)
-		return record.StepPlace{Task: defaultTask, Kind: act.Kind}, role, typ, ok
-	}
-	role, typ, ok = stepWork(p)
-	if !ok {
-		return record.StepPlace{}, "", "", false
-	}
-	for i, named := range steps {
-		if stepRole(named.Role) == role {
-			return record.StepPlace{Task: defaultTask, Kind: record.PlaceStep, Place: i + 1}, role, typ, true
-		}
-	}
-	return record.StepPlace{}, "", "", false
-}
 
 // planRecordNamespace is the namespace of every plan record's id.
 var planRecordNamespace = uuid.NewSHA1(uuid.NameSpaceOID, []byte("legion-plan-record"))
@@ -79,14 +34,10 @@ func PlanID(issue string, generation uint64) string {
 // each later version Legion takes (planGiven): Dispatch replaces all four fields for a version
 // above the one it holds. Both read w with its plan rows: the start's first step writes them
 // (planFirstStep), and a version taken is one. A run with no plan rows walks today's line, so its
-// node is the task default of DefaultSteps: a hand-over's carry of an orphan that ran before plans
+// node is the task default of todaysSteps: a hand-over's carry of an orphan that ran before plans
 // (WritePlan).
 func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node := record.PlanRecord{ID: PlanID(issue.Key, issue.Generation), Generation: issue.Generation, Source: record.PlanSourceDefault}
-	if !w.Stored {
-		node.Tasks = []record.PlanRecordTask{{ID: defaultTask, Steps: DefaultSteps()}}
-		return node
-	}
 	if w.Version.Source == record.PlanSourceOwner {
 		node.Source, node.PlanDocument = record.PlanSourceOwner, &record.PlanDocument{ArtifactID: w.Version.ArtifactID, Version: w.Version.Version}
 	}
@@ -97,12 +48,6 @@ func planNode(issue record.Issue, w Walk) record.PlanRecord {
 	node.Tasks = []record.PlanRecordTask{{ID: w.Task, Steps: stepWords(steps)}}
 	return node
 }
-
-// DefaultSteps is the steps of the task default of a run with no plan rows, which walks today's
-// line (stepOf), each a role or `role:key` as a plan writes it: the default steps of a project
-// that names none (config.Project.RunsByDefault), whatever the configured project's say, as the
-// plan node of such a run names them (planNode).
-func DefaultSteps() []string { return stepWords(config.Project{}.RunsByDefault()) }
 
 // stepWords is steps as a plan writes them, each `role` or `role:key`.
 func stepWords(steps []plan.Step) []string {

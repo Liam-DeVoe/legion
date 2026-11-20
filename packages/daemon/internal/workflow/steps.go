@@ -9,15 +9,16 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/steprecord"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// defaultTask is the one task of today's fixed phases: until an issue carries a plan of its own,
-// every step of it is a step of this task.
-const defaultTask = "default"
+// defaultTask is the id of the one task of an issue whose owner gives no plan (plan.DefaultTask):
+// the task of the project's default steps, and of today's steps of a run with no plan rows
+// (todaysSteps), under which the steps of each are recorded.
+const defaultTask = plan.DefaultTask
 
 // StepAgent is what the daemon reads of a step's agent where it writes the step's end, the one
 // write of a step's record that names either field (endRun): the session its claim records now,
@@ -38,16 +39,6 @@ type (
 	stepRole string
 	stepType string
 )
-
-// stepOf is the step a phase runs as a step of the task default (stepIn): the step of a run with
-// no plan rows, which walks today's line (stepAt). Its steps are the default steps of a project
-// that names none (config.Project.RunsByDefault), never the configured project's: such a run
-// walks today's line whatever `default_steps` says, so its places, and the ids of its records,
-// stay where the release before put them. A held issue's step is the step of the phase its
-// hold is from (record.StandsAt), which the caller reads.
-func stepOf(p phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
-	return stepIn(config.Project{}.RunsByDefault(), p)
-}
 
 // stepOfWalk is the step w's task runs at place, a place of w's line (Walk.PlaceOf): the role and
 // the type the plan's rows record for the step (record.PlanStep), or the role that runs Legion's
@@ -100,16 +91,12 @@ func stepAt(w Walk, issue record.Issue, at phase.Phase) (standing, bool) {
 }
 
 // placeOnWalk is the step the run whose walk is w runs while its issue stands in at: the place its
-// count of starts is kept under, whose Place is its place in the task, its role and its type. A run
-// with plan rows runs the step of its one task at the place at holds on the task's line
-// (stepOfWalk), under the task's id, so an owner's plan of `implementer reviewer` records its
-// implementer at step 1 of its own task and has no step 3, 4 or 5. A run with none runs today's
-// step of the task default (stepOf), so an issue that ran before plan rows keeps the ids of its
-// records.
+// count of starts is kept under, whose Place is its place in the task, its role and its type: the
+// step of its one task at the place at holds on the task's line (stepOfWalk), under the task's id.
+// An owner's plan of `implementer reviewer` records its implementer at step 1 of its own task and
+// has no step 3, 4 or 5, and a run with no plan rows runs today's steps of the task default
+// (todaysSteps), so an issue that ran before plan rows keeps the ids of its records.
 func placeOnWalk(w Walk, at phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
-	if !w.Stored {
-		return stepOf(at)
-	}
 	stands, ok := w.PlaceOf(at)
 	if !ok {
 		return record.StepPlace{}, "", "", false

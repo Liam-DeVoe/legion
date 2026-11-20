@@ -71,7 +71,7 @@ func TestACarriedRootsNewRunWritesItsPlan(t *testing.T) {
 		t.Fatalf("the carried root after the hand-over = %#v, want a tree of its own at generation 2 in accepting: the case's premise", stands)
 	}
 	want := record.PlanRecord{ID: workflow.PlanID(root, 2), Generation: 2, Source: "default",
-		Tasks: []record.PlanRecordTask{{ID: "default", Steps: workflow.DefaultSteps()}}}
+		Tasks: []record.PlanRecordTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
 	if plans := planRecordsOf(t, pool, root); len(plans) != 1 || !reflect.DeepEqual(plans[0], want) {
 		t.Fatalf("the carry queued the plans %+v, want the one plan of its new run %+v", plans, want)
 	}
