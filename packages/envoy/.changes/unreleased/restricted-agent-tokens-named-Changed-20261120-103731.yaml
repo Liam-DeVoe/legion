@@ -14,9 +14,10 @@ body: |-
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. Taking a restricted member off a
   project's access list that names them now records that Dispatch owes the broker the revocation of
-  every machine login they approved, and Dispatch pays it after the removal commits, again until the
-  broker confirms (table `machine_login_revocations`, migration 20261120150130); the removal never
-  waits on the broker, and a removal from a list that does not name the person owes nothing.
+  every machine login they approved before the removal, and Dispatch pays it after the removal
+  commits, again until the broker confirms (table `machine_login_revocations`, migration
+  20261120150130); a login they approve after the owner puts them back survives it. The removal
+  never waits on the broker, and a removal from a list that does not name the person owes nothing.
 time: 2026-11-20T10:37:31Z
 custom:
     Issue: restricted-agent-tokens-named

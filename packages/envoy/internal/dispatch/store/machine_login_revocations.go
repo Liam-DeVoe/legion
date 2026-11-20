@@ -12,8 +12,8 @@ import (
 // MachineLoginRevocations is the revocations of restricted members' machine logins Dispatch owes
 // the secrets broker (migration 20261120150130): a removal from an access list records one in its
 // own transaction (RecordMachineLoginRevocation), and the server's revocation loop claims it, pays it
-// by revoking every machine login the member approved for their own machines, and settles it once
-// the broker confirms every revoke.
+// by revoking the machine logins the member approved for their own machines before the removal, and
+// settles it once the broker confirms every revoke.
 type MachineLoginRevocations struct {
 	pool *Pool
 }
@@ -23,11 +23,14 @@ func NewMachineLoginRevocations(pool *Pool) *MachineLoginRevocations {
 	return &MachineLoginRevocations{pool: pool}
 }
 
-// OwedMachineLoginRevocation is one revocation owed: the address, as people.email holds it, and
-// the generation of it a claim read, which a settlement names.
+// OwedMachineLoginRevocation is one revocation owed: the address, as people.email holds it, the
+// generation of it a claim read, which a settlement names, and when the removal that owes it was
+// recorded, on the database's clock: the pass ends only the logins the person approved before then,
+// so a login approved after the person was put back on a list survives it.
 type OwedMachineLoginRevocation struct {
 	Email      string
 	Generation int64
+	RecordedAt time.Time
 }
 
 // RecordMachineLoginRevocation records in tx that Dispatch owes the broker the revocation of every
@@ -62,7 +65,7 @@ func (m *MachineLoginRevocations) Claim(ctx context.Context, retry time.Duration
 		update machine_login_revocations r set tried_at = now()
 		from picked
 		where r.email = picked.email
-		returning r.email, r.generation
+		returning r.email, r.generation, r.recorded_at
 	`, retry.Seconds(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim the owed machine-login revocations: %w", err)
@@ -85,6 +88,26 @@ func (m *MachineLoginRevocations) Settle(ctx context.Context, owed OwedMachineLo
 		return false, fmt.Errorf("settle the revocation of %s's machine logins: %w", owed.Email, err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// Sendable reports whether a pass may still call the broker for owed, which it claimed: the row is
+// still owed at the generation the claim read (Settle's condition), and its claim (tried_at, on the
+// database's clock) is younger than within. A pass gives within as the retry window less the broker
+// client's own bound on a call and asks before every call it makes for the row, its list and each
+// revoke, so it starts no call its own client would let run past the moment another process may
+// claim the row again; a row past it is left for the next claim, which lists only the logins not
+// yet revoked, and one a removal recorded again since is not sent under the earlier generation.
+func (m *MachineLoginRevocations) Sendable(ctx context.Context, owed OwedMachineLoginRevocation, within time.Duration) (bool, error) {
+	var sendable bool
+	err := m.pool.QueryRow(ctx, `
+		select exists (select 1 from machine_login_revocations
+			where email = $1 and generation = $2 and done_at is null
+				and tried_at > clock_timestamp() - make_interval(secs => $3))
+	`, owed.Email, owed.Generation, within.Seconds()).Scan(&sendable)
+	if err != nil {
+		return false, fmt.Errorf("read whether the revocation of %s's machine logins may still be sent: %w", owed.Email, err)
+	}
+	return sendable, nil
 }
 
 // NextDue is how long until a claim with retry can take an owed revocation, on the database's

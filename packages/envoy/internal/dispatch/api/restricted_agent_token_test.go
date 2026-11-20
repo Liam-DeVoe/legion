@@ -411,6 +411,48 @@ func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
 	}
 }
 
+// TestALoginApprovedAfterThePersonIsPutBackSurvivesThePass: the revocation a removal owes ends the
+// machine logins the person approved before the removal, and none approved since. alice takes erin
+// off ACC's list and puts her back before any pass of the broker revocation loop; erin approves a
+// new machine login and trades it for ACC; then the pass runs. Her login from before the removal is
+// revoked, its session token introspecting not active, and her new login is not: its session token
+// stays active and its refresh is answered.
+//
+// Control: revoke every login the broker lists for the person, as the head before this row did, and
+// erin's new token introspects not active and her new refresh is refused, each named.
+func TestALoginApprovedAfterThePersonIsPutBackSurvivesThePass(t *testing.T) {
+	r := newRestrictedTokenRig(t)
+	ctx := t.Context()
+	before, beforeDevice, _ := r.approvedLogin(t, accessErin, "erin-laptop")
+	beforeToken := r.sessionToken(t, before, beforeDevice, "erin-agent", "ACC")
+
+	if removed := dispatchRequest(t, r.dispatch, http.MethodDelete, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); removed.Code != http.StatusOK {
+		t.Fatalf("alice takes erin off ACC's list: %d %s, want 200", removed.Code, removed.Body.String())
+	}
+	if listed := dispatchRequest(t, r.dispatch, http.MethodPut, "/api/v1/projects/ACC/access/people/"+accessErin, nil, "alice"); listed.Code != http.StatusOK {
+		t.Fatalf("alice puts erin back on ACC's list: %d %s, want 200", listed.Code, listed.Body.String())
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(r.database.Pool).Owing(ctx, accessErin); err != nil || !owed {
+		t.Fatalf("the revocation of erin's machine logins is owed %t (%v) before any pass, want owed", owed, err)
+	}
+	after, afterDevice, _ := r.approvedLogin(t, accessErin, "erin-desktop")
+	afterToken := r.sessionToken(t, after, afterDevice, "erin-agent-2", "ACC")
+
+	r.server.revokeBrokerDebts(ctx)
+	if r.introspect(t, beforeToken).Active {
+		t.Errorf("erin's token from the login she approved before her removal introspects active after the pass, want it ended")
+	}
+	if !r.introspect(t, afterToken).Active {
+		t.Errorf("erin's token from the login she approved after she was put back introspects not active after the pass, want it untouched")
+	}
+	if _, err := r.client.Refresh(t, after.key, afterDevice); err != nil {
+		t.Errorf("the refresh of the login erin approved after she was put back: %v, want it answered", err)
+	}
+	if owed, _, err := store.NewMachineLoginRevocations(r.database.Pool).Owing(ctx, accessErin); err != nil || owed {
+		t.Errorf("the revocation of erin's machine logins is owed %t (%v) after the pass, want it settled", owed, err)
+	}
+}
+
 // TestARestrictedMemberRevokesTheirOwnMachineLogin runs the member-served list and revoke on the
 // real broker. erin, a restricted member, lists at her browser her one machine login, and carol's
 // is not in her list. Her revoke of carol's login is 403 RESTRICTED_MEMBER and carol's agent's
