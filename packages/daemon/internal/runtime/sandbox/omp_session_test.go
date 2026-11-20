@@ -90,6 +90,47 @@ func TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose(t *testing.T) {
 	}
 }
 
+// A claim that records its session and no file (dispatch://INFRA-4108) is resumed by that id in a
+// pod that trades as in any other: the agent command carries entry 189's one `--resume=<id>` and
+// no `--session-id`, through a launcher that looks the id up (resumeSession) and through one that
+// has the agent's own command resolve it (ResumeByAgent) alike, and the session the runtime
+// answers for the launch, which the daemon registers for the pod, is that id and no fresh one.
+func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		options []rigOption
+		byAgent bool
+		named   string
+	}{
+		{"through a launcher that looks the id up", []rigOption{exchangeKeyed(), withResumesBySession()}, false, resumeSessionID},
+		{"through the agent's own lookup", []rigOption{exchangeKeyed()}, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newRig(t, nil, tc.options...)
+			first := g.spawn(workerSpec(t))
+			spec := byIDSpec(t)
+			spec.ResumeByAgent = tc.byAgent
+			resumed, err := g.r.Resume(g.ctx, &first, spec)
+			if err != nil {
+				t.Fatalf("Resume of session %s by its id: %v", resumeSessionID, err)
+			}
+			start := lastStart(t, g, workerToken)
+			if got, want := sessionWords(start.Argv), []string{"--resume=" + resumeSessionID}; !slices.Equal(got, want) {
+				t.Errorf("the agent command names its session as %q, want %q alone", got, want)
+			}
+			if start.ResumeSession != tc.named || start.ResumeFile != "" {
+				t.Errorf("the start command names session %q and file %q, want session %q and no file", start.ResumeSession, start.ResumeFile, tc.named)
+			}
+			if err := start.Validate(); err != nil {
+				t.Errorf("the launcher refuses the start command: %v", err)
+			}
+			if session, named := g.r.LaunchSession(resumed); !named || session != resumeSessionID {
+				t.Errorf("LaunchSession of the resumed launch = %q, %t; want the recorded session %s", session, named, resumeSessionID)
+			}
+		})
+	}
+}
+
 // A claim that recorded a session file and no session id beside it is resumed by the id its
 // file's name gives, `<timestamp>_<id>.jsonl` (the claim's file-id name, supervise.RecordedHolds):
 // its Oh My Pi starts with `--resume <id>`, and the start command still names the file. A recorded

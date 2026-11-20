@@ -2464,13 +2464,56 @@ package api
 // (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
 // and #4581 declares 187.)
 //
-// 192: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 189: a pod's launcher resumes a session named by its id alone (dispatch://INFRA-4108). A claim
+// can record a session and no file of it: the issue close of every release from `legion-v18.0.1`
+// up to, and not including, `legion-v20.5.0` cleared the file and kept the id
+// (`clearIssueResumePath`), and a launch of such a claim spawned a fresh agent, which the
+// same-agent fence refused at every try until the claim failed. The start frame
+// (`shimwire.LauncherStart`, `launcher_start`) gains the optional member `resumeSession`, the id
+// of the session the child resumes where the daemon holds no file of it, and the launcher's hello
+// (`shimwire.LauncherHello`, `launcher_hello`) gains `resumesBySession`, the launcher's word that
+// it looks such an id up in the session table: it takes the newest row whose path ends in
+// `_<id>.jsonl` (`ompsessions.FindByID`), puts that path in the argv's one `--resume=<id>`, and
+// answers `session: gone` where the table holds no such row. `LauncherStart.Validate` refuses a
+// frame naming both `resumeFile` and `resumeSession`, an id that is not a single path element, and
+// an argv that does not hold `--resume=<resumeSession>` exactly once.
+//
+// The skew is safe in both directions. A launcher older than this entry ignores `resumeSession`
+// and sends no `resumesBySession`, so the daemon never names a session to it
+// (`launchers.resumesBySession`, sandbox's `relaunch`, which answers
+// `runtime.ErrSessionLookupUnavailable` before it sends anything): the daemon starts the agent
+// with `--resume=<session id>` in its own command instead, which Oh My Pi resolves in the table
+// itself, and names no session and no file to that launcher. An older daemon sends no
+// `resumeSession`, and a launcher of this entry answers its frames as before. The number moves
+// because the image probe pairs a daemon with a worker image by this number (entry 144), so a
+// daemon of this entry boots only on an image whose launcher says `resumesBySession`, and a
+// launcher older than it is left only in a pod kept from before the boot.
+//
+// The same change adds the notice kind `session-forgotten`, to the issue's architect and to the
+// controller, for a claim that forgot its session after a start through such an older launcher
+// did not register (`workflow.Engine.sessionLost`, `record.validNoticeKinds`). An outbox payload
+// is decoded strictly, so no daemon of an earlier release decodes such a row, and one row fails
+// `GET /legion/v1/state` for the whole project, as the `volume-near-full` entry above says of its
+// own kind. The way back of this change's migration
+// (`store/migrations/20261120042902_claim_agent_resume_generation.up.sql`) deletes those rows
+// before a rollback. No shape of `GET /legion/v1/state` moves.
+// (This entry takes 189, the lowest number above main's 188 that no open pull request declared
+// when the merge of 2026-11-20 brought main in at b1b4e281ec0a: a reading of `const
+// DaemonAPIVersion` at refs/pull/<n>/head, made between 2026-11-20T12:23:12Z and 12:28:35Z, for
+// each of the 109 open pull requests, of 267, whose file list names this file or is longer than
+// one read lists, found 188 declared by 12 of them, 190 by #4578, 191 by six, 192 by seven, 193 by
+// #3659, #3712, #4065 and #4553 as well as by this change's own earlier head, 194 by #3831 and
+// #4030, and nothing at 189. Read the base's own number and every open pull request again at the
+// next merge rather than from this line.)
+//
+// 196: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: in a pod that
 // carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
 // session id and starts it with `--session-id <id>`, or with `--resume <id>` when it resumes the
-// role, and no path (sandbox's agentArgv); a launch into a pod that carries no exchange identity
-// keeps `--resume=<file>`. The worker environment: a role in a pod that carries the identity is
+// role by its recorded file, and no path (sandbox's agentArgv); a launch into a pod that carries no
+// exchange identity keeps `--resume=<file>`. A resume of a session the claim records with no file
+// keeps entry 189's one `--resume=<id>` in either pod, and a launch that trades runs under that id. The worker environment: a role in a pod that carries the identity is
 // told `DISPATCH_TOKEN_BROKER=1` under the setting, which the image's Dispatch client reads as the
 // order to trade, and no `DISPATCH_TOKEN_FILE`, since its start carries no Dispatch token
 // (sandbox's mainEnvironment); a launch into a pod built before the identity carries the token of
@@ -2482,8 +2525,8 @@ package api
 // token, which a deployment waits to see at zero before it removes
 // `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
 // block the plugin parses loosely (35 above), and moves no number.
-// A plugin before 192 reads the state with a strict schema that knows no `dispatchCredential` and
-// refuses the whole body for it, so a caller from a pod whose claims record a contract below 192
+// A plugin before 196 reads the state with a strict schema that knows no `dispatchCredential` and
+// refuses the whole body for it, so a caller from a pod whose claims record a contract below 196
 // is served the state without the key (api's stateFor, withoutDispatchCredential), as a caller
 // below 146 is served the issues without the entry times; 151 moves no strictly parsed shape of
 // the state and narrows nothing.
@@ -2494,15 +2537,17 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
 // of an older image carries no exchange identity, so it keeps the argv and the credential it had,
 // and its pod's update round replaces the pod.
-// (This change takes 192, the lowest number above main's 188 that no open pull request declared
-// when the forward merge of 2026-11-20 brought main in at 1c7c825367, which declares 188 (#4543,
+// (This change takes 196, the lowest number above main's 189 that no open pull request declared
+// when the forward merge of 2026-11-20 brought main in at a4cd4949fc, which declares 189 (#4581,
 // the entry above); it had declared 165, then 175 from the merge that brought main in at
 // a16c218ee3, then 179 from the merge that brought main in at 506395beea, then 182 from the merge
-// that brought main in at c7e1cbd532. `.github/scripts/check-daemon-api-contract.sh`, which reads
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, read 189 (#3831,
-// #4592, #4596), 190 (#4493, #4578) and 191 (#4495) above 188 at 2026-11-20T10:31Z. Read the
-// base's own number and every open pull request again at the next merge rather than from this
-// line, as
+// that brought main in at c7e1cbd532, then 192 from the merge that brought main in at 1c7c825367.
+// `.github/scripts/check-daemon-api-contract.sh`, which reads `const DaemonAPIVersion` at
+// refs/pull/<n>/head for every open pull request, read 190 (#4578), 191 (#2230, #4049, #4495,
+// #4573), 192 (#3993, #4173, #4175, #4182, #4193, #4273, #4580 and this change's own head before
+// this merge), 193 (#3659, #3712, #4065, #4432, #4553), 194 (#3831, #4030) and 195 (#4493,
+// #4590) above 189 at 2026-11-20T16:11Z. Read the base's own number and every open pull request
+// again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 192
+const DaemonAPIVersion = 196
