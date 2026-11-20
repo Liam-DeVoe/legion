@@ -308,7 +308,9 @@ const askBodySQL = `(e.payload->>'question') || ' ' || ask_search_suffix(e.paylo
 // ask's event ($6, askTypes) it reads the ask's body (askBodySQL), and null of every other event.
 // Each read of a payload's value as a uuid is guarded, so a payload no rule can read reaches the
 // rules, which name it, rather than failing the statement. Its project is the one the log names
-// for it: its own, its issue's or its document's.
+// for it: its own, its issue's or its document's. Its document is the one that owns it, for an
+// event of a document of no issue, through which presentBody finds the later events of a comment
+// on that document.
 const readEventsQuery = `
 with candidates as (
        select e.id, e.type, e.issue_key, e.artifact_id, e.project_key, e.seq, e.created_at, e.payload,
@@ -333,7 +335,8 @@ with candidates as (
        select c.*, sum(c.payload_size + c.row_body_size) over (order by c.id) as running,
               row_number() over (order by c.id) as n, count(*) over () as candidates
          from candidates c)
-select s.id, s.type, s.issue_key, coalesce(s.project_key, i.project_key, ar.project_key, ''), s.seq,
+select s.id, s.type, s.issue_key, s.artifact_id::text,
+       coalesce(s.project_key, i.project_key, ar.project_key, ''), s.seq,
        s.created_at, s.payload, s.ask_body, s.payload_size, s.row_body_size, s.candidates
   from sized s
   left join public.issues i on i.key = s.issue_key
@@ -459,6 +462,61 @@ func (f *filler) batch(ctx context.Context, safe int64) (batchResult, error) {
 	return result, nil
 }
 
+// insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
+// statement. Each row's body is its version's Body, and its vector is made with the functions the
+// items' own search triggers call, so the vector of a version of an unchanged item equals the
+// item's search column: an issue's from its key, its title and the markdown of the version of its
+// primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
+// message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
+// the question, a space and ask_search_suffix of the options and the answer that the ask's
+// trigger reads too, as readEventsQuery made it (askBodySQL).
+const insertVersionsQuery = `
+	insert into public.search_text_versions
+	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	        spec_artifact_id, spec_version, search)
+	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
+	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
+	       case r.kind
+	         when 'issue' then issue_search_vector(r.id, r.body,
+	           (select a.markdown from public.artifact_versions a
+	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
+	         else search_vector('', search_text(r.body))
+	       end
+	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
+	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
+	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
+	             spec_artifact_id, spec_version)`
+
+// insertVersions writes versions as rows of the keyword table in tx, in one statement
+// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
+// row is never written twice: a version whose (kind, id, event_seq) the table holds fails the
+// statement.
+func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
+	if len(versions) == 0 {
+		return nil
+	}
+	n := len(versions)
+	kinds, ids, projects, bodies, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
+	issueKeys, specArtifacts := make([]*string, n), make([]*string, n)
+	eventIDs, seqs, specVersions := make([]int64, n), make([]int32, n), make([]*int32, n)
+	startedAts := make([]time.Time, n)
+	for index, v := range versions {
+		kinds[index], ids[index], issueKeys[index], projects[index] = v.Kind, v.ID, v.IssueKey, v.ProjectKey
+		eventIDs[index], seqs[index], startedAts[index] = v.EventID, v.EventSeq, v.StartedAt
+		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
+		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
+	}
+	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
+		bodyFroms, specArtifacts, specVersions)
+	if err != nil {
+		return fmt.Errorf("write %d keyword versions: %w", n, err)
+	}
+	if tag.RowsAffected() != int64(n) {
+		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
+	}
+	return nil
+}
+
 // lockCursor locks the cursor row for tx, creating it at no event where none is, and answers the
 // cursor, the created_at of the event at it, and the reach stored. A row a reset emptied and wrote
 // again while this lock waited is gone from the lock's snapshot, so it is read again.
@@ -532,7 +590,7 @@ func (f *filler) readEvents(ctx context.Context, tx pgx.Tx, cursor, safe int64) 
 		var e event
 		var payload []byte
 		var taken int64
-		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody,
+		if err := rows.Scan(&e.ID, &e.Type, &e.IssueKey, &e.ArtifactID, &e.Project, &e.Seq, &e.CreatedAt, &payload, &e.AskBody,
 			&e.PayloadBytes, &e.RowBodyBytes, &taken); err != nil {
 			return nil, 0, fmt.Errorf("keyword fill: read the events after event %d: %w", cursor, err)
 		}

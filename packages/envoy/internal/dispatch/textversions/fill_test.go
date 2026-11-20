@@ -394,7 +394,7 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 		for _, issue := range issues {
 			retitles = append(retitles, issue.Event("issue.updated", issue.Title+", then audit the verifiers"))
 		}
-		for _, id := range commitEvents(t, database, broker, retitles...) {
+		for _, id := range textversionstest.CommitEvents(t, database, broker, retitles...) {
 			want = append(want, textversionstest.Written{ID: id, Versions: 1})
 		}
 		for _, issue := range issues[:newVersions] {
@@ -625,23 +625,6 @@ func writeSpecVersion(t *testing.T, database *store.Store, broker *events.Broker
 		t.Fatalf("commit version %d of %s's primary document: %v", number, issue.Key, err)
 	}
 	return textversionstest.Written{ID: appended[0], Versions: 1}
-}
-
-// commitEvents appends events through the broker in a transaction of their own, in order
-// (textversionstest.AppendEvents), and answers their ids.
-func commitEvents(t *testing.T, database *store.Store, broker *events.Broker, appended ...model.Event) []int64 {
-	t.Helper()
-	ctx := t.Context()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the events: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	ids := textversionstest.AppendEvents(t, tx, broker, appended...)
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the events: %v", err)
-	}
-	return ids
 }
 
 // takeFillHold takes the fill's hold for a new holder, released once the test ends, and answers

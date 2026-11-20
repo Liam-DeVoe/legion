@@ -73,6 +73,16 @@ var versionRules = map[string]rule{
 	"ask.answered":     askVersion,
 }
 
+// laterTextChanges names, of each kind of post, the event types that change its text after the
+// event that created it. A post's present row holds the text of one of its events only where no
+// committed event of these types of the same post comes after that one (presentBody). A
+// comment's is comment.edited, which INFRA-1523's edit and delete types join once their rules
+// come; no build edits a message, so a message has none yet, and its types go here once one does.
+var laterTextChanges = map[string][]string{
+	kindComment: {"comment.edited"},
+	kindMessage: nil,
+}
+
 // unchangingTypes names each event type that changes no searchable text, with the reason.
 var unchangingTypes = map[string]string{
 	"issue.claimed":                             "an issue's claim is its state, not its text",
@@ -398,13 +408,14 @@ type decided struct {
 // What an event does not hold is read from the item's rows, in the same transaction:
 //
 //   - A post whose event cut its body (body_truncated) takes it whole, in this order: from its
-//     present row when that shows no later change, a comment whose edited_at is null or at or
-//     before the event's created_at (an edit stores its transaction's now(), its event's
-//     created_at) and an issue message, which no build edits (bodyFromRow); for a
-//     comment.created, from revision 1 of its blocks when every block of that revision was
-//     inserted by the comment's own transaction (firstRevisionBody, bodyFromBlocks); else it
-//     keeps the event's text (bodyFromCut), with a warning naming the item and the event, and
-//     counts in Cut. An edit whose whole body equals its latest version's starts no version.
+//     present row where, in the one snapshot that reads the row, no committed event of the post
+//     after the event changes its text (laterTextChanges: a comment's comment.edited, and none
+//     of an issue message's, which no build edits), so the row still holds the text the event
+//     wrote (presentBody, bodyFromRow); for a comment.created, from revision 1 of its blocks when
+//     every block of that revision was inserted by the comment's own transaction
+//     (firstRevisionBody, bodyFromBlocks); else it keeps the event's text (bodyFromCut), with a
+//     warning naming the item and the event, and counts in Cut. An edit whose whole body equals
+//     its latest version's starts no version.
 //   - An issue.created whose primary document's version 1 was not written at its created_at, by
 //     the create's own transaction, still holds that version, with a warning naming the issue.
 //   - An issue event before any version of its issue, which only a log that lacks the issue's
@@ -747,44 +758,72 @@ func readIssueRows(ctx context.Context, tx pgx.Tx, key string, at time.Time) (is
 }
 
 // wholeBody gives v, a version of a post whose event e cut its body, the whole body from the
-// first source that holds it (decideVersions), or keeps the event's text (bodyFromCut), which
-// complete warns of where it keeps v.
+// first source that holds it (decideVersions): the post's present row where no later event of
+// the post changes its text (presentBody), then, for a comment.created, revision 1 of its blocks
+// (firstRevisionBody). Else it keeps the event's text (bodyFromCut), which complete warns of
+// where it keeps v.
 func (d *decider) wholeBody(ctx context.Context, e event, v *version) error {
-	switch v.Kind {
-	case kindComment:
-		var body string
-		var editedAt *time.Time
-		err := d.tx.QueryRow(ctx, `select body, edited_at from public.comments where id = $1::uuid`, v.ID).Scan(&body, &editedAt)
-		switch {
-		case err == nil && (editedAt == nil || !editedAt.After(e.CreatedAt)):
-			v.Body, v.BodyFrom = body, bodyFromRow
-			return nil
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read comment %s: %w", v.ID, err)
+	body, found, err := presentBody(ctx, d.tx, e, v.Kind, v.ID)
+	if err != nil {
+		return err
+	}
+	if found {
+		v.Body, v.BodyFrom = body, bodyFromRow
+		return nil
+	}
+	if e.Type == "comment.created" {
+		body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
+		if err != nil {
+			return err
 		}
-		if e.Type == "comment.created" {
-			body, ok, err := firstRevisionBody(ctx, d.tx, v.ID, e.CreatedAt)
-			if err != nil {
-				return err
-			}
-			if ok {
-				v.Body, v.BodyFrom = body, bodyFromBlocks
-				return nil
-			}
-		}
-	case kindMessage:
-		var body string
-		err := d.tx.QueryRow(ctx, `select body from public.messages where id = $1::uuid`, v.ID).Scan(&body)
-		switch {
-		case err == nil:
-			v.Body, v.BodyFrom = body, bodyFromRow
+		if ok {
+			v.Body, v.BodyFrom = body, bodyFromBlocks
 			return nil
-		case !errors.Is(err, pgx.ErrNoRows):
-			return fmt.Errorf("read message %s: %w", v.ID, err)
 		}
 	}
 	v.BodyFrom = bodyFromCut
 	return nil
+}
+
+// presentBodyQuery reads the body of post $1 from its present row in the table its kind names
+// (%s), where no event after the one read, of the event's owner (issue $2, or document $3 for a
+// comment on a document of no issue) at a seq above that event's ($4), is of a type that changes
+// the post's text ($5, laterTextChanges) and names the post: the row and the later events are
+// read in the statement's one snapshot, so a row that answers holds the text the event wrote, and
+// no row answers where a later event changes it or the post has no row. The later events are read
+// through the owner's unique (issue_key, seq) or (artifact_id, seq) index, from the event's seq
+// up, not through the log: an owner's events take their ids and their seqs in the same order,
+// since each append takes the owner's lock before either and holds it until its transaction ends
+// (events.Broker), so they are the owner's events whose id is above the event's.
+const presentBodyQuery = `
+	select p.body from public.%s p
+	 where p.id = $1::text::uuid
+	   and not exists (
+	         select from public.events l
+	          where (l.issue_key = $2 and l.seq > $4 or l.artifact_id = $3::uuid and l.seq > $4)
+	            and l.type = any($5::text[])
+	            and l.payload->>'id' = $1)`
+
+// presentBodyQueries is presentBodyQuery of each kind of post, over the table of its rows.
+var presentBodyQueries = map[string]string{
+	kindComment: fmt.Sprintf(presentBodyQuery, "comments"),
+	kindMessage: fmt.Sprintf(presentBodyQuery, "messages"),
+}
+
+// presentBody reads the whole body of post id of kind, whose event e cut it, from the post's
+// present row where that row holds the text e wrote: where no committed event of the post after
+// e changes its text (presentBodyQuery). found is false where one does, and where the post has no
+// row.
+func presentBody(ctx context.Context, tx pgx.Tx, e event, kind, id string) (string, bool, error) {
+	var body string
+	err := tx.QueryRow(ctx, presentBodyQueries[kind], id, e.IssueKey, e.ArtifactID, e.Seq, laterTextChanges[kind]).Scan(&body)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "", false, nil
+	case err != nil:
+		return "", false, fmt.Errorf("read %s %s: %w", kind, id, err)
+	}
+	return body, true, nil
 }
 
 // firstRevisionQuery reads the blocks of revision 1 of comment $1, the comment's first indexing,
@@ -945,59 +984,4 @@ func latestVersions(ctx context.Context, tx pgx.Tx, items []item) (map[item]*ver
 		return nil, fmt.Errorf("read the latest keyword versions of %d items: %w", len(items), err)
 	}
 	return latest, nil
-}
-
-// insertVersionsQuery writes the rows of decided versions, given as parallel arrays, in one
-// statement. Each row's body is its version's Body, and its vector is made with the functions the
-// items' own search triggers call, so the vector of a version of an unchanged item equals the
-// item's search column: an issue's from its key, its title and the markdown of the version of its
-// primary document the row names (issue_search_vector, 20261105145242), and a comment's, a
-// message's or an ask's from its body (search_vector over search_text, 0087), an ask's body being
-// the question, a space and ask_search_suffix of the options and the answer that the ask's
-// trigger reads too, as readEventsQuery made it (askBodySQL).
-const insertVersionsQuery = `
-	insert into public.search_text_versions
-	       (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
-	        spec_artifact_id, spec_version, search)
-	select r.kind, r.id, r.issue_key, r.project_key, r.event_id, r.event_seq, r.started_at, r.body,
-	       r.body_from, r.spec_artifact_id::uuid, r.spec_version,
-	       case r.kind
-	         when 'issue' then issue_search_vector(r.id, r.body,
-	           (select a.markdown from public.artifact_versions a
-	             where a.artifact_id = r.spec_artifact_id::uuid and a.number = r.spec_version))
-	         else search_vector('', search_text(r.body))
-	       end
-	  from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::integer[],
-	              $7::timestamptz[], $8::text[], $9::text[], $10::text[], $11::integer[])
-	       as r (kind, id, issue_key, project_key, event_id, event_seq, started_at, body, body_from,
-	             spec_artifact_id, spec_version)`
-
-// insertVersions writes versions as rows of the keyword table in tx, in one statement
-// (insertVersionsQuery), and writes nothing for none. Each row's body is its version's Body. A
-// row is never written twice: a version whose (kind, id, event_seq) the table holds fails the
-// statement.
-func insertVersions(ctx context.Context, tx pgx.Tx, versions []version) error {
-	if len(versions) == 0 {
-		return nil
-	}
-	n := len(versions)
-	kinds, ids, projects, bodies, bodyFroms := make([]string, n), make([]string, n), make([]string, n), make([]string, n), make([]string, n)
-	issueKeys, specArtifacts := make([]*string, n), make([]*string, n)
-	eventIDs, seqs, specVersions := make([]int64, n), make([]int32, n), make([]*int32, n)
-	startedAts := make([]time.Time, n)
-	for index, v := range versions {
-		kinds[index], ids[index], issueKeys[index], projects[index] = v.Kind, v.ID, v.IssueKey, v.ProjectKey
-		eventIDs[index], seqs[index], startedAts[index] = v.EventID, v.EventSeq, v.StartedAt
-		bodies[index], bodyFroms[index] = v.Body, v.BodyFrom
-		specArtifacts[index], specVersions[index] = v.SpecArtifactID, v.SpecVersion
-	}
-	tag, err := tx.Exec(ctx, insertVersionsQuery, kinds, ids, issueKeys, projects, eventIDs, seqs, startedAts, bodies,
-		bodyFroms, specArtifacts, specVersions)
-	if err != nil {
-		return fmt.Errorf("write %d keyword versions: %w", n, err)
-	}
-	if tag.RowsAffected() != int64(n) {
-		return fmt.Errorf("write %d keyword versions: the insert wrote %d", n, tag.RowsAffected())
-	}
-	return nil
 }

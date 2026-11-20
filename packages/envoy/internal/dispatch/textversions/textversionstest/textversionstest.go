@@ -2,11 +2,11 @@
 // the keyword table, search_text_versions, which the fill of package textversions writes from
 // the event log: the project and the issues the tests' events name (SeedProject, SeedIssue,
 // InsertIssue), an issue's events (WrittenIssue.Event, WrittenIssue.InsertVersion) and their
-// append through the broker (AppendEvents), an issue's run of events of every type a keyword rule
-// reads (WriteIssue), the rows the fill wrote for given events (RowsOf, RequireRowsOf,
-// RequireOnlyRowsOf, AwaitRows) and the fill's cursor (Cursor). A later rules version or a change
-// of the schema changes them here, once, for the tests of textversions, of the API and of the
-// dispatch command.
+// append through the broker (AppendEvents, and in a transaction of their own CommitEvents), an
+// issue's run of events of every type a keyword rule reads (WriteIssue), the rows the fill wrote
+// for given events (RowsOf, RequireRowsOf, RequireOnlyRowsOf, AwaitRows) and the fill's cursor
+// (Cursor). A later rules version or a change of the schema changes them here, once, for the tests
+// of textversions, of the API and of the dispatch command.
 //
 // It is an ordinary package rather than a _test.go file because Go cannot share test-only code
 // across packages; only tests import it. It does not import textversions, whose own tests import
@@ -226,6 +226,25 @@ func AppendEvents(t testing.TB, tx pgx.Tx, broker *events.Broker, appended ...mo
 		return nil
 	}); err != nil {
 		t.Fatalf("append %d events: %v", len(appended), err)
+	}
+	return ids
+}
+
+// CommitEvents appends events through broker in a transaction of their own, in order
+// (AppendEvents), commits it and answers their ids in the same order. It fails the test on any
+// error. A transaction it does not commit is rolled back on context.Background(), so a test whose
+// context is done still ends it.
+func CommitEvents(t testing.TB, database *store.Store, broker *events.Broker, appended ...model.Event) []int64 {
+	t.Helper()
+	ctx := t.Context()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction of %d events: %v", len(appended), err)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	ids := AppendEvents(t, tx, broker, appended...)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit %d events: %v", len(appended), err)
 	}
 	return ids
 }

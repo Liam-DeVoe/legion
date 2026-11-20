@@ -291,6 +291,7 @@ type fixtureEvent struct {
 	ID                         int64           `json:"id"`
 	Type                       string          `json:"type"`
 	IssueKey                   *string         `json:"issue_key"`
+	ArtifactID                 *string         `json:"artifact_id"`
 	Project                    string          `json:"project"`
 	Seq                        int32           `json:"seq"`
 	CreatedAt                  time.Time       `json:"created_at"`

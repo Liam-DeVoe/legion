@@ -24,13 +24,14 @@ import (
 // payload as the event wrote it, of an ask's event the ask's body, which the fill's read of the
 // log makes in SQL, and the bytes that read counted of it against the batch's bound.
 type event struct {
-	ID        int64
-	Type      string
-	IssueKey  *string // the issue the event belongs to; nil for an event of no issue
-	Project   string  // the key of its project; "" for an event of no project
-	Seq       int32   // its seq in its owner's order
-	CreatedAt time.Time
-	Payload   json.RawMessage
+	ID         int64
+	Type       string
+	IssueKey   *string // the issue the event belongs to; nil for an event of no issue
+	ArtifactID *string // the document of no issue the event belongs to; nil for any other event
+	Project    string  // the key of its project; "" for an event of no project
+	Seq        int32   // its seq in its owner's order
+	CreatedAt  time.Time
+	Payload    json.RawMessage
 	// AskBody is the body of an ask's event as readEventsQuery reads it (askBodySQL): the
 	// question, a space and ask_search_suffix of the options and the answer, made by the SQL
 	// function the ask's own search column reads. It is nil for an event of any other type, and

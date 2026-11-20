@@ -2184,11 +2184,11 @@ func requireNoKeywordFillWrite(t *testing.T, database *store.Store, when string)
 }
 
 // writeKeywordFillComments commits count comment.created events of textversionstest.Issue, each a
-// new comment and so one version, appended through the broker as the routes append them
-// (textversionstest.AppendEvents), at most 500 to a transaction, and answers their ids in order.
+// new comment and so one version, appended through the broker as the routes append them, at most
+// 500 to a transaction of their own (textversionstest.CommitEvents), and answers their ids in
+// order.
 func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []int64 {
 	t.Helper()
-	ctx := context.Background()
 	broker := events.NewBroker()
 	issue := textversionstest.Issue
 	actor := model.Actor{Kind: "user", ID: "alice"}
@@ -2201,17 +2201,7 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 			comments = append(comments, model.Event{IssueKey: &issue, Type: "comment.created", Actor: actor,
 				Payload: map[string]any{"id": uuid.NewString(), "issue_key": issue, "body": body}})
 		}
-		func() {
-			tx, err := database.Pool.Begin(ctx)
-			if err != nil {
-				t.Fatalf("begin the comments' transaction: %v", err)
-			}
-			defer func() { _ = tx.Rollback(context.Background()) }()
-			ids = append(ids, textversionstest.AppendEvents(t, tx, broker, comments...)...)
-			if err := tx.Commit(ctx); err != nil {
-				t.Fatalf("write %d comments: %v", inThisOne, err)
-			}
-		}()
+		ids = append(ids, textversionstest.CommitEvents(t, database, broker, comments...)...)
 		written += inThisOne
 	}
 	return ids
