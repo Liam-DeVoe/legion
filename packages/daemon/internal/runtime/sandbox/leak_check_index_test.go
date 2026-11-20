@@ -117,11 +117,17 @@ func (c *countedReads) Read(ctx context.Context) (leakguard.Index, error) {
 // launcher process does across a reconnect. refuse has it refuse each slice of the index with that
 // cause, and silent has it take each slice and answer none, as a launcher whose install failed, or
 // is still running when the daemon's hop ends, does. hold, when set, has it close holding as the
-// first slice of the index arrives and answer that slice only once hold is closed.
+// first slice of the index arrives and answer that slice only once hold is closed. stall has its
+// first connection read nothing at all until the daemon closes it, as a launcher too slow to take
+// a slice within the daemon's bound does, so the daemon's write of that slice is cut. redials has
+// it connect again whenever the daemon closes its connection while the test runs, as the pod's
+// launcher does a second later (ServeLauncher's `default: return`).
 type indexLauncher struct {
 	refuse        string
 	silent        bool
 	hold, holding chan struct{}
+	stall         bool
+	redials       bool
 
 	mu        sync.Mutex
 	sent      []shimwire.Frame
@@ -129,9 +135,30 @@ type indexLauncher struct {
 	held      map[string]map[int][]byte
 }
 
-func (l *indexLauncher) serve(conn net.Conn) {
+// closeNotice is the daemon's end of a fake launcher connection, which closes closed when the
+// daemon closes the connection, so the fake can tell that close from its own test's end.
+type closeNotice struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *closeNotice) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+func (l *indexLauncher) serve(conn net.Conn, closed <-chan struct{}) {
 	writer := shimwire.NewWriter(conn)
 	if writer.WriteFrame(shimwire.LauncherState{}) != nil {
+		return
+	}
+	l.mu.Lock()
+	stall := l.stall
+	l.stall = false
+	l.mu.Unlock()
+	if stall {
+		<-closed
 		return
 	}
 	reader := shimwire.NewReader(conn)
@@ -215,15 +242,25 @@ func (l *indexLauncher) installs() []string {
 
 // connectIndexLauncher accepts l as token's launcher in the pod podUID, its hello saying it takes
 // the index where takes is set, and serves the connection on a pipe whose launcher end l answers.
+// Where l redials, a connection the daemon closes while the test runs is followed by another.
 func connectIndexLauncher(t *testing.T, d *launchers, token claim.Token, podUID string, takes bool, l *indexLauncher) *launcherSession {
 	t.Helper()
 	session := d.accept(token, testTree, rigNow, shimwire.LauncherHello{
 		PodUID: podUID, LauncherID: "launcher-of-" + podUID, LeakCheckIndex: takes,
 	})
-	server, peer := net.Pipe()
+	pipe, peer := net.Pipe()
+	server := &closeNotice{Conn: pipe, closed: make(chan struct{})}
+	var ending atomic.Bool
 	t.Cleanup(func() { _ = server.Close(); _ = peer.Close() })
+	// Cleanups run last first, so the test's end is marked before its pipes close.
+	t.Cleanup(func() { ending.Store(true) })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
-	go l.serve(peer)
+	go func() {
+		l.serve(peer, server.closed)
+		if l.redials && !ending.Load() {
+			connectIndexLauncher(t, d, token, podUID, takes, l)
+		}
+	}()
 	return session
 }
 
@@ -445,20 +482,29 @@ func TestAStartWaitsForThePollsPushToTheSameLauncher(t *testing.T) {
 	}
 }
 
-// A push of the index that fails — the launcher refuses it, or answers nothing within the hop's
-// bound — is logged as a warning naming why, and the role's start is sent and answered all the
-// same: the check in that pod reads the index it holds, or UNKNOWN with none, and says why. The
-// silent launcher's hop is cut to 50ms so the test does not wait out the production bound; the
-// refusing one's keeps that bound, since it answers.
+// A push of the index that fails — the launcher refuses it, answers nothing within the hop's
+// bound, or takes no slice within it, so the daemon's write is cut and the connection closed — is
+// logged as a warning naming why, and the role's start is sent and answered all the same: the
+// check in that pod reads the index it holds, or UNKNOWN with none, and says why. A launcher whose
+// connection the daemon closed connects again, as the pod's launcher does, and the start goes to
+// that connection. The two slow launchers' hop is cut to 50ms so the test does not wait out the
+// production bound; the refusing one's keeps that bound, since it answers.
+//
+// slices is what the launcher reads of the index: a slice for the refusing launcher, none for the
+// one that reads nothing until its connection is closed, and either for the silent one, whose
+// slice the 50ms can cut while it is still being written on a loaded machine — after which it is
+// the case of the launcher that took no slice.
 func TestAFailedIndexPushDoesNotRefuseTheStart(t *testing.T) {
 	const refusal = "the index folder could not be written: no space left on device"
 	for name, tc := range map[string]struct {
 		launcher *indexLauncher
 		hop      time.Duration
+		slices   string
 		want     string
 	}{
-		"the launcher refuses the index":            {launcher: &indexLauncher{refuse: refusal}, want: refusal},
-		"the launcher answers nothing within a hop": {launcher: &indexLauncher{silent: true}, hop: 50 * time.Millisecond, want: "within 50ms"},
+		"the launcher refuses the index":            {launcher: &indexLauncher{refuse: refusal}, slices: "taken", want: refusal},
+		"the launcher answers nothing within a hop": {launcher: &indexLauncher{silent: true, redials: true}, hop: 50 * time.Millisecond, slices: "either", want: "within 50ms"},
+		"the launcher takes no slice within a hop":  {launcher: &indexLauncher{stall: true, redials: true}, hop: 50 * time.Millisecond, slices: "none", want: "within 50ms"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			a := testIndex(rigNow)
@@ -476,8 +522,11 @@ func TestAFailedIndexPushDoesNotRefuseTheStart(t *testing.T) {
 				t.Fatalf("the start failed with %v, want it started after the failed push", err)
 			}
 			frames := tc.launcher.frames()
-			if countOf(frames, shimwire.TypeLauncherStart) != 1 || countOf(frames, shimwire.TypeLauncherLeakCheckIndex) == 0 {
-				t.Fatalf("the launcher was sent %v, want a slice of the index and then the start", frameTypes(frames))
+			if countOf(frames, shimwire.TypeLauncherStart) != 1 || frames[len(frames)-1].FrameType() != shimwire.TypeLauncherStart {
+				t.Fatalf("the launcher was sent %v, want the start last and once", frameTypes(frames))
+			}
+			if got := countOf(frames, shimwire.TypeLauncherLeakCheckIndex); (tc.slices == "taken" && got == 0) || (tc.slices == "none" && got != 0) {
+				t.Fatalf("the launcher read %v, want %s slice of the index before the start", frameTypes(frames), map[string]string{"taken": "a", "none": "no"}[tc.slices])
 			}
 			if held := session.installedLeakCheckIndex(); held != "" {
 				t.Fatalf("the daemon holds the launcher on %q after the failed push, want none", held)
