@@ -849,9 +849,10 @@ export function createConsumerDelivery(options: ConsumerDeliveryOptions): Consum
  * listener named one; a `stream_recreated` always states `previous_stream`, the stream that was
  * replaced, with `stream`, the one that replaced it, and never `retention_hours`. So a reader
  * tells the two apart by which of `retention_hours` and `previous_stream` the notice states. The
- * step its reader takes is in `envoy_inbox`'s description (`tool-contract.ts`).
+ * step its reader takes is in `envoy_inbox`'s description (`tool-contract.ts`), which its kind
+ * names (`notice-text.ts`).
  */
-export const GAP_NOTICE = noticeKind("envoy", "messages may be missing", [
+export const GAP_NOTICE = noticeKind("envoy", "messages may be missing (envoy_inbox)", [
   "stream",
   "previous_stream",
   "retention_hours",
@@ -876,11 +877,13 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
  * refused, by one of the reasons `ErrorWireSchema.reason` lists (`transport.ts`), or it failed, so
  * nothing reaches it until a later registration is accepted. `error` is the listener's own
  * message, which carries its machine-readable reason. The step its reader takes is in
- * `envoy_inbox`'s description (`tool-contract.ts`).
+ * `envoy_inbox`'s description (`tool-contract.ts`), which its kind names.
  */
-export const INBOUND_UNAVAILABLE_NOTICE = noticeKind("envoy", "Envoy inbound unavailable", [
-  "error",
-]);
+export const INBOUND_UNAVAILABLE_NOTICE = noticeKind(
+  "envoy",
+  "Envoy inbound unavailable (envoy_inbox)",
+  ["error"]
+);
 
 /**
  * The inbound-unavailable notice for `why`, the listener's own message, built once for every host.
@@ -895,9 +898,13 @@ export function inboundUnavailableNoticeText(why: string): string {
  * accepted again: without it the outage notice is the last word the session has, and a session
  * that recovered a few seconds later reads itself as deaf for its life. The event has no fact
  * beyond its kind, so the notice states only its kind. The step its reader takes is in
- * `envoy_inbox`'s description (`tool-contract.ts`).
+ * `envoy_inbox`'s description (`tool-contract.ts`), which its kind names.
  */
-export const INBOUND_RESTORED_NOTICE = noticeKind("envoy", "Envoy inbound restored", []);
+export const INBOUND_RESTORED_NOTICE = noticeKind(
+  "envoy",
+  "Envoy inbound restored (envoy_inbox)",
+  []
+);
 
 /** The inbound-restored notice, built once for every host. Each host shows it where it shows a
  *  gap notice. */

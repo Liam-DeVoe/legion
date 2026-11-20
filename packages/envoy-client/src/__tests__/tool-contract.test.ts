@@ -211,8 +211,10 @@ describe("envoyToolSpecs", () => {
 
   // Envoy's own notices hold only their facts (R2 of dispatch://INFRA-3686), so the one step
   // each one's reader takes is in the description of the tool that reader holds, keyed by the kind
-  // the notice states as `notice: <kind>`. The session-id notice and the wake for unread cards are
-  // pi-envoy's (`src/envoy-notices.ts`), which this package cannot import.
+  // the notice states as `notice: <kind>`, and the kind ends with that tool's name, since a host
+  // that mounts the tool as a device shows only the first line of its description. The session-id
+  // notice and the wake for unread cards are pi-envoy's (`src/envoy-notices.ts`), which this
+  // package cannot import.
   test("gives the step of each of Envoy's own notices, keyed by the notice's kind", () => {
     const steps = [
       ["envoy_inbox", GAP_NOTICE.kind, "read the live source of each thing you wait on"],
@@ -222,7 +224,7 @@ describe("envoyToolSpecs", () => {
         "read live sources until a registration is accepted; what the stream stored arrives then",
       ],
       ["envoy_inbox", INBOUND_RESTORED_NOTICE.kind, "rely on Envoy messages again"],
-      ["envoy_inbox", "unread messages", "read each card above the notice"],
+      ["envoy_inbox", "unread messages (envoy_inbox)", "read each card above the notice"],
       [
         "envoy_inbox",
         MESSAGE_NOT_SHOWN_NOTICE.kind,
@@ -230,13 +232,15 @@ describe("envoyToolSpecs", () => {
       ],
       [
         "envoy_whoami",
-        "session id changed",
+        "session id changed (envoy_whoami)",
         "run envoy_whoami again and send the new id to your peers",
       ],
     ] as const;
     for (const [tool, kind, step] of steps) {
+      expect(kind, tool).toEndWith(` (${tool})`);
       const description = envoyToolSpecs.find((spec) => spec.name === tool)?.description ?? "";
-      const sentence = new RegExp(`On notice: ${kind}(?:, [^,.]+)?, ${step}\\.`);
+      const named = kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const sentence = new RegExp(`On notice: ${named}(?:, [^,.]+)?, ${step}\\.`);
       expect(description, `${tool}: ${kind}`).toMatch(sentence);
     }
   });

@@ -71,14 +71,16 @@ const TOPIC_GUIDE =
   "whatsapp.<phone>.<jid>.<kind>; envoy.exceptions.<original-topic>.";
 
 // The step a reader takes on each of Envoy's own notices, keyed by the kind the notice's first
-// field states (`notice: <kind>`): the notices hold only their facts (`notice-text.ts`). The
-// session-id notice's step is in envoy_whoami's description.
+// field states (`notice: <kind>`), which ends with the name of the tool whose description holds
+// the step: the notices hold only their facts (`notice-text.ts`). The session-id notice's step is
+// in envoy_whoami's description.
 const ENVOY_NOTICE_STEPS =
-  "On notice: messages may be missing, whatever its cause, read the live source of each thing " +
-  "you wait on. On notice: Envoy inbound unavailable, read live sources until a registration is " +
-  "accepted; what the stream stored arrives then. On notice: Envoy inbound restored, rely on " +
-  "Envoy messages again. On notice: unread messages, read each card above the notice. On notice: " +
-  "message not shown, read it now with the command its read_with names.";
+  "On notice: messages may be missing (envoy_inbox), whatever its cause, read the live source of " +
+  "each thing you wait on. On notice: Envoy inbound unavailable (envoy_inbox), read live sources " +
+  "until a registration is accepted; what the stream stored arrives then. On notice: Envoy " +
+  "inbound restored (envoy_inbox), rely on Envoy messages again. On notice: unread messages " +
+  "(envoy_inbox), read each card above the notice. On notice: message not shown (envoy_inbox), " +
+  "read it now with the command its read_with names.";
 
 export type { SchemaApi, ToolArgumentsShape } from "@legion/contracts";
 
@@ -264,7 +266,7 @@ export const envoyToolSpecs = [
     name: "envoy_whoami",
     description:
       "Returns this session's Envoy identity: session ID, machine ID, port, and directory. session_id is the address a reply reaches. Where a host runs a task subagent inside its parent's process, such a subagent registers no Envoy session of its own, so its session_id is the parent session that spawned it and the result says so. " +
-      "On notice: session id changed, run envoy_whoami again and send the new id to your peers.",
+      "On notice: session id changed (envoy_whoami), run envoy_whoami again and send the new id to your peers.",
     arguments: () => ({}),
     operation: EnvoyToolOperation.whoami,
   },

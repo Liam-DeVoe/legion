@@ -85,7 +85,9 @@ carries `by`, `at`, `field`, `rest` and `more`, in that order and escaped, each 
 set; a card sets `by` and `at` only where its own fields do not name the author and the time, and
 not where the object that holds the words' field, below the payload's own fields, has a `by` or an
 `at` of its own (a project-paused card's `pause` names who paused and when, so its reason's block
-names neither).
+names neither). By the same rule it sets `more` only where that object says no `more` of its own:
+a catch-up's kept decision says it in its row, as every decision whose words were cut does, so
+the decision's answer block does not.
 `splitWordsBlocks` splits a card, or a daemon text, into the part before its blocks, which TOON's
 `decode` reads, and the blocks, and checks each tag against the rule.
 

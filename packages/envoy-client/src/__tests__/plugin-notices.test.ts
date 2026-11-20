@@ -106,5 +106,5 @@ test("every plugin notice states its fields", () => {
 
 // The inbound-restored notice declares no field, so its text is its root and its kind line, whole.
 test("the inbound-restored notice states its kind alone", () => {
-  expect(inboundRestoredNoticeText()).toBe("envoy:\n  notice: Envoy inbound restored");
+  expect(inboundRestoredNoticeText()).toBe(`envoy:\n  notice: ${INBOUND_RESTORED_NOTICE.kind}`);
 });

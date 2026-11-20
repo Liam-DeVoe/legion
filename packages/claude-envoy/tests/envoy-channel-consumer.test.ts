@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { legacyAgentSubject } from "@legion/contracts"
+import { GAP_NOTICE } from "@legion/envoy-client/consumer-delivery"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import {
   type DeliveryRequest,
@@ -576,7 +577,7 @@ test("a gap the registration reports is told once, through the notice path", asy
     const notices = notifier.written.filter((written) => written.eventId === undefined)
     expect(notices).toHaveLength(1)
     expect(noticeFields(notices[0]?.content ?? "")).toMatchObject({
-      notice: "messages may be missing",
+      notice: GAP_NOTICE.kind,
       retention_hours: "72",
     })
   } finally {

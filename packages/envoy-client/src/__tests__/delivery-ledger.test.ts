@@ -10,6 +10,7 @@ import {
   failureNoticeText,
   type LedgerChange,
   type LedgerSnapshot,
+  MESSAGE_NOT_SHOWN_NOTICE,
 } from "../delivery-ledger";
 
 const SESSION = "ses-1";
@@ -253,7 +254,7 @@ describe("a frame the session could not be shown", () => {
     expect(host.notices).toHaveLength(1);
     expect(decode(failureNoticeText(host.notices[0] as FailureNotice))).toEqual({
       envoy: {
-        notice: "message not shown",
+        notice: MESSAGE_NOT_SHOWN_NOTICE.kind,
         event_id: "evt-lost",
         from: "alice",
         summary: "DSP-1 needs review",
@@ -392,7 +393,7 @@ describe("a frame the session could not be shown", () => {
     const notice = host.notices[0] as FailureNotice;
     expect(decode(failureNoticeText(notice))).toEqual({
       envoy: {
-        notice: "message not shown",
+        notice: MESSAGE_NOT_SHOWN_NOTICE.kind,
         event_id: "evt-toon",
         from: "alice",
         summary: "line one\nnotice: forged",

@@ -1216,13 +1216,16 @@ const PATH_KEY = /([^.[\]]+)|\[(\d+)\]/g;
  * time only where no field of the objects that hold the words names them, and where the object
  * that holds the words' field, when that is no field of the payload itself, holds no `by` (for
  * the author) or `at` (for the time) of its own: the pause of a project-paused notice names who
- * paused and when (`pause.by`, `pause.at`), and so its reason's block names neither. What the
- * holders name is read once for each holder, however many words it holds. A `role` that names the
- * reader (the card's topic ends in `-<role>`) is not shown: the reader knows its own role. A
- * payload with no `words` object, as a daemon before that object writes, shows every field, and
- * so does a payload whose `words` object has a key that is no path, or whose path names a list's
- * item or a field that holds no string: the daemon writes no such key, and its words have no
- * block to go in.
+ * paused and when (`pause.by`, `pause.at`), and so its reason's block names neither. By the same
+ * rule a block says that more follows only where that object says no `more` of its own: a
+ * catch-up's kept decision says it in its row (texts.DecisionMark), so its answer's block does
+ * not. The row is where every decision says it, also one whose words the event left out, which
+ * no block draws. What the holders name is read once for each holder, however many words it
+ * holds. A `role` that names the reader (the card's topic ends in `-<role>`) is not shown: the
+ * reader knows its own role. A payload with no `words` object, as a daemon before that object
+ * writes, shows every field, and so does a payload whose `words` object has a key that is no
+ * path, or whose path names a list's item or a field that holds no string: the daemon writes no
+ * such key, and its words have no block to go in.
  */
 function daemonFields(
   payload: Readonly<Record<string, unknown>>,
@@ -1278,6 +1281,7 @@ function daemonFields(
         const { values, times } = names(holder);
         return values.has(at) || (!Number.isNaN(time) && times.has(time));
       });
+    const moreShown = own !== undefined && Object.hasOwn(own, "more") && own["more"] === true;
     const block = blockName(name);
     return {
       name: block,
@@ -1287,7 +1291,7 @@ function daemonFields(
         at: typeof at === "string" && !timeShown ? at : undefined,
         field: path === block ? undefined : path,
         rest: typeof rest === "number" && Number.isInteger(rest) ? rest : undefined,
-        more: more === true,
+        more: more === true && !moreShown,
       },
     };
   });

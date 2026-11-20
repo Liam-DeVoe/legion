@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { decode } from "@toon-format/toon";
-import { type ConsumerGapNotice, gapNoticeText } from "../consumer-delivery";
+import { type ConsumerGapNotice, GAP_NOTICE, gapNoticeText } from "../consumer-delivery";
 import { closeReplayedRemoval } from "../delivery-ledger";
 
 const ISSUE = "notifications.dispatch.issue.DSP-1.>";
@@ -105,7 +105,7 @@ describe("a gap notice", () => {
       })
     ).toEqual({
       envoy: {
-        notice: "messages may be missing",
+        notice: GAP_NOTICE.kind,
         stream: "stream-new",
         previous_stream: "stream-old",
       },
@@ -113,7 +113,7 @@ describe("a gap notice", () => {
     expect(
       card({ kind: "retention_gap", stream: undefined, retentionHours: 72, message: "too old" })
     ).toEqual({
-      envoy: { notice: "messages may be missing", retention_hours: 72 },
+      envoy: { notice: GAP_NOTICE.kind, retention_hours: 72 },
     });
   });
 

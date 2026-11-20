@@ -9,7 +9,10 @@ import { encode } from "@toon-format/toon";
  * id or a command. No field holds words that are the same in every notice of its kind. The step a
  * reader takes on one of Envoy's own notices is in the description of the tool it reads with
  * (`envoy_inbox`, `envoy_whoami`: `tool-contract.ts`), keyed by the notice's kind, not in the
- * notice.
+ * notice. The kind ends with that tool's name in parentheses (`messages may be missing
+ * (envoy_inbox)`): a host that mounts a tool as a device, as Oh My Pi mounts an extension's tool
+ * at `xd://<name>`, shows the model only the first line of its description until the model opens
+ * the device, so the kind line says which one holds the step.
  *
  * Each kind is declared once, where its notice is built (`noticeKind`), and `noticeText` writes a
  * notice of it from a value for each field the kind declares.

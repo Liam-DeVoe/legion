@@ -3231,15 +3231,18 @@ describe("what a card carries", () => {
         expect(block?.field, where).toBe(path === name ? undefined : path);
         expect<unknown>(block?.text, where).toBe(holdersOf(sample.payload, keys).at(-1)?.[name]);
         expect(block?.rest, where).toBe(entry.rest);
-        expect(block?.more, where).toBe(entry.more === true ? true : undefined);
         // The author and the time of these words, from their own entry in `words`: on the block,
         // or as a field of an object that holds the words, such as the kept decision's own row,
         // or by the object that holds the words' field below the payload's own fields, where it
-        // has a `by` or an `at` of its own, as the pause names who paused and when.
+        // has a `by` or an `at` of its own, as the pause names who paused and when. That more
+        // follows, from the entry too: on the block, unless that object says `more` itself, as a
+        // kept decision's row does.
         const holders = holdersOf(envoy.message, keys);
         const own = holders.length > 1 ? holders.at(-1) : undefined;
         const ownBy = own?.["by"] !== undefined;
         const ownAt = own?.["at"] !== undefined;
+        const ownMore = own?.["more"] === true;
+        expect(block?.more, where).toBe(entry.more === true && !ownMore ? true : undefined);
         const held = holders
           .flatMap((holder) => Object.values(holder))
           .filter((value): value is string => typeof value === "string");

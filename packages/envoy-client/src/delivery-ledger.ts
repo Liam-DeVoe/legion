@@ -435,9 +435,9 @@ export function storedText(content: string, publishedAt: string): string {
  * summary and publish time, the error that kept it from the session, and what reads it
  * (`read_with`: the `dispatch read` command or the `envoy_inbox` tool). The message does not come
  * back on its own; the step its reader takes is in `envoy_inbox`'s description
- * (`tool-contract.ts`).
+ * (`tool-contract.ts`), which its kind names.
  */
-export const MESSAGE_NOT_SHOWN_NOTICE = noticeKind("envoy", "message not shown", [
+export const MESSAGE_NOT_SHOWN_NOTICE = noticeKind("envoy", "message not shown (envoy_inbox)", [
   "event_id",
   "from",
   "summary",
