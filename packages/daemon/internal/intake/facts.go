@@ -1887,7 +1887,7 @@ func (act TaskAct) words() (does, call string) {
 // never moved again, so each refuses every act with the one code, the code of a stop of a done
 // task. Every refusal of a finished task is made here, so the workflow judges the state once for
 // each act: a version of the plan (versionRefusal) and the owner's stop (taskStopped).
-func FinishedTask(issue, task, state string, act TaskAct) *Refusal {
+func FinishedTask(issue, task string, state record.TaskState, act TaskAct) *Refusal {
 	var stands string
 	switch state {
 	case record.TaskDone:

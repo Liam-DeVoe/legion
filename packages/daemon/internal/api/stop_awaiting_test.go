@@ -71,9 +71,9 @@ func TestAStopOfATaskWhoseRootWaitsOnAPersonIsRefused(t *testing.T) {
 
 // planTaskStates is the state of each task of key's plan at generation 1, by task, as the
 // daemon's store holds them: empty where it holds no plan rows.
-func planTaskStates(t *testing.T, h *harness, key string) map[string]string {
+func planTaskStates(t *testing.T, h *harness, key string) map[string]record.TaskState {
 	t.Helper()
-	states := map[string]string{}
+	states := map[string]record.TaskState{}
 	if err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
 		stored, err := record.NewStore().Plan(context.Background(), tx, key, 1)
 		if err != nil || stored == nil {

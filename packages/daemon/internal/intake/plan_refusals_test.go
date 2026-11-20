@@ -92,7 +92,7 @@ func TestThePlanRefusalsSayWhy(t *testing.T) {
 	}
 	// A task that is neither done nor left has its work still before it, so no act on it is
 	// refused TASK_DONE.
-	for _, state := range []string{record.TaskWaiting, record.TaskRunning, record.TaskStopped} {
+	for _, state := range []record.TaskState{record.TaskWaiting, record.TaskRunning, record.TaskStopped} {
 		for _, act := range []TaskAct{ChangeOfTask, StopOfTask} {
 			if got := FinishedTask("LEGION-208", "a", state, act); got != nil {
 				t.Fatalf("FinishedTask of a task %s = %+v, want no refusal", state, got)

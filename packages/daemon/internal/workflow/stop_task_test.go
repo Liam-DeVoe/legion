@@ -356,7 +356,9 @@ func TestStopTaskHoldsTheIssueAndStopsTheStep(t *testing.T) {
 		const doneText = "is done, so nothing of it is left to stop. This stop changed nothing."
 		const leftText = "left the workflow with its issue before it was done, so nothing of it is left to stop. This stop changed nothing."
 		for _, tc := range []struct {
-			name, key, status, state, want string
+			name, key, status string
+			state             record.TaskState
+			want              string
 		}{
 			{name: "a child's task that is done", key: "LEGION-209", status: "done", state: record.TaskDone, want: "task a of LEGION-209 " + doneText},
 			{name: "a child's task that left the workflow with its issue", key: "LEGION-209", status: "backlog", state: record.TaskLeft, want: "task a of LEGION-209 " + leftText},

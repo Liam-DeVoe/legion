@@ -46,7 +46,7 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 	for i, word := range words {
 		role, key, _ := strings.Cut(word, ":")
 		steps = append(steps, record.PlanStep{Issue: v.Issue, Generation: generation, Task: "a", Position: i + 1, Role: role,
-			AgentKey: key, Type: string(roles[role].Type)})
+			AgentKey: key, Type: roles[role].Type})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, steps)
@@ -550,8 +550,8 @@ func TestTheWalkTakesItsTaskByTheStoresOneRule(t *testing.T) {
 		v := record.PlanVersion{Issue: root.Key, Generation: root.Generation, Version: 3, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
 			GivenBy: claim.Token(treeRoleToken(t, root.Key, claim.RoleArchitect)), GivenAt: stepClock}
 		steps := []record.PlanStep{
-			{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: string(plan.TypeImplementation)},
-			{Issue: root.Key, Generation: root.Generation, Task: "b", Position: 1, Role: "implementer", Type: string(plan.TypeImplementation)},
+			{Issue: root.Key, Generation: root.Generation, Task: "a", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
+			{Issue: root.Key, Generation: root.Generation, Task: "b", Position: 1, Role: "implementer", Type: plan.TypeImplementation},
 		}
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{first, second}, steps)
 	})

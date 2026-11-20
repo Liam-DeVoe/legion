@@ -124,7 +124,7 @@ func runsTheDefaultTask(key string) func(*testing.T, *pgxpool.Pool, *Admission, 
 			var steps []record.PlanStep
 			for i, step := range (config.Project{}).RunsByDefault() {
 				steps = append(steps, record.PlanStep{Issue: key, Generation: stored.Generation, Task: "default", Position: i + 1, Role: step.Role,
-					AgentKey: step.Key, Type: string(roles[step.Role].Type)})
+					AgentKey: step.Key, Type: roles[step.Role].Type})
 			}
 			v := record.PlanVersion{Issue: key, Generation: stored.Generation, Source: record.PlanSourceDefault, GivenAt: fixedNow}
 			task := record.PlanTask{Issue: key, Generation: stored.Generation, Task: "default", BlockText: "The project's default steps.",

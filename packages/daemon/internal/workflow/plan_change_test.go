@@ -116,7 +116,7 @@ func stepsOfTask(stored *record.StoredPlan, task string) []string {
 		if step.AgentKey != "" {
 			word += ":" + step.AgentKey
 		}
-		words = append(words, word+"/"+step.Type)
+		words = append(words, word+"/"+string(step.Type))
 	}
 	return words
 }
@@ -471,12 +471,13 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		// The issue's leave writes its task done at a close and left at any other status
 		// (leaveState), and the issue done with it.
 		for _, tc := range []struct {
-			state, status, message string
+			state           record.TaskState
+			status, message string
 		}{
 			{record.TaskDone, "done", "task a of LEGION-208 is done, so nothing of it is left to change. This plan changed nothing."},
 			{record.TaskLeft, "backlog", "task a of LEGION-208 left the workflow with its issue before it was done, so nothing of it is left to change. This plan changed nothing."},
 		} {
-			t.Run(tc.state, func(t *testing.T) {
+			t.Run(string(tc.state), func(t *testing.T) {
 				pool := migratedPool(t)
 				engine := returnEngine()
 				apply := applyFacts(t, pool, engine)
@@ -539,7 +540,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	steps := make([]record.PlanStep, len(defaults))
 	for i, step := range defaults {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: plan.DefaultTask, Position: i + 1, Role: step.Role,
-			AgentKey: step.Key, Type: string(builtinDeployment.Roles[step.Role].Type)}
+			AgentKey: step.Key, Type: builtinDeployment.Roles[step.Role].Type}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)
@@ -676,7 +677,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 type walkStanding struct {
 	phase    phase.Phase
 	place    record.TaskPlace
-	state    string
+	state    record.TaskState
 	versions []string
 	steps    []string
 }

@@ -190,7 +190,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 // left at any other status (backlog, icebox, triage), where the issue goes out before its task is
 // done. Either way the task keeps its place. A task that already left at an earlier leave of its
 // run, done or left, keeps the state that leave wrote, since nothing moves it again.
-func leaveState(w Walk, status string) string {
+func leaveState(w Walk, status string) record.TaskState {
 	switch {
 	case w.State == record.TaskDone || w.State == record.TaskLeft:
 		return w.State

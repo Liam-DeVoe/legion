@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 )
 
 // The plan of an issue is three tables (store migration 20261117034837_issue_plans): the versions
@@ -32,15 +33,18 @@ const (
 	PlanSourceDefault = "default"
 )
 
-// The states of a task (PlanTask.State). A task whose issue leaves the workflow before the task is
-// done is left: it keeps its place, and the reason it was stopped for where it was stopped, and
-// nothing starts it again, since a todo opens a new run with rows of its own.
+// TaskState is the state of a task (PlanTask.State). A task whose issue leaves the workflow before
+// the task is done is left: it keeps its place, and the reason it was stopped for where it was
+// stopped, and nothing starts it again, since a todo opens a new run with rows of its own.
+type TaskState string
+
+// The states of a task, each the word plan_tasks.state stores.
 const (
-	TaskWaiting = "waiting"
-	TaskRunning = "running"
-	TaskDone    = "done"
-	TaskStopped = "stopped"
-	TaskLeft    = "left"
+	TaskWaiting TaskState = "waiting"
+	TaskRunning TaskState = "running"
+	TaskDone    TaskState = "done"
+	TaskStopped TaskState = "stopped"
+	TaskLeft    TaskState = "left"
 )
 
 // The kinds of act a task stands at (TaskPlace.Kind), which are the kinds the count of starts keys
@@ -125,21 +129,21 @@ type PlanTask struct {
 	// default steps it runs (plan.StepsOf), not steps its block names: a later version is compared
 	// with the block as it was given, which names none (plan.ChangedTasks).
 	StepsByDefault bool
-	State          string
+	State          TaskState
 	StoppedReason  string
 	Place          TaskPlace
 	Counts         ReturnCounts
 }
 
-// PlanStep is one step of a task, at its place from 1: the role that runs it, the step's type and
-// the agent key the plan names for it ("" for none).
+// PlanStep is one step of a task, at its place from 1: the role that runs it, the type of its
+// role's work (plan.Type) and the agent key the plan names for it ("" for none).
 type PlanStep struct {
 	Issue      string
 	Generation uint64
 	Task       string
 	Position   int
 	Role       string
-	Type       string
+	Type       plan.Type
 	AgentKey   string
 }
 
@@ -480,7 +484,7 @@ func (s *Postgres) DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, gen
 // task whose issue leaves the workflow keeps why it was stopped, the one record of why it was not
 // done. A place no task can stand at, a step the task does not have, a task the plan does not
 // hold and a task that left the workflow, which nothing moves again, are refused.
-func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error {
+func (s *Postgres) MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error {
 	describe := fmt.Sprintf("move task %s of %s at generation %d to %s %d, %s", task, issue, generation, place.Kind, place.Position, state)
 	switch state {
 	case TaskWaiting, TaskRunning, TaskDone, TaskLeft:

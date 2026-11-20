@@ -38,8 +38,8 @@ func TestALateFailNamingAStepOffItsTasksLineIsRefusedNotFailed(t *testing.T) {
 			GivenBy: architect.token, GivenAt: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}
 		task := record.PlanTask{Issue: root, Generation: 1, Task: "a", PlanVersion: 3, BlockText: "Build the widget.", State: record.TaskWaiting}
 		steps := []record.PlanStep{
-			{Issue: root, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: string(roles["implementer"].Type)},
-			{Issue: root, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: string(roles["reviewer"].Type)},
+			{Issue: root, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: roles["implementer"].Type},
+			{Issue: root, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: roles["reviewer"].Type},
 		}
 		if err := store.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {
 			return err

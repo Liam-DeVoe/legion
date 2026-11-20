@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -93,7 +94,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	version := record.PlanVersion{Issue: key, Generation: generation, Source: record.PlanSourceDefault, GivenAt: fixedNow.Add(-time.Hour)}
 	tasks := []record.PlanTask{{Issue: key, Generation: generation, Task: "default", BlockText: "The project's default steps.",
 		StepsByDefault: true, State: record.TaskDone}}
-	types := []string{"planning", "implementation", "testing", "review", "review"}
+	types := []plan.Type{plan.TypePlanning, plan.TypeImplementation, plan.TypeTesting, plan.TypeReview, plan.TypeReview}
 	steps := make([]record.PlanStep, len(todaysDefaultRoles))
 	for i, role := range todaysDefaultRoles {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: "default", Position: i + 1, Role: role, Type: types[i]}

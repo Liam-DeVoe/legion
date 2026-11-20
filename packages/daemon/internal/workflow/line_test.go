@@ -76,11 +76,11 @@ func TestAWalkWithNoRowsIsTodaysLine(t *testing.T) {
 // that place derives, nil when it does. The phase and the task's row are read in one select, so
 // the two are the store's at one moment; want is the phase the move should have reached, which
 // holds the derivation (issuePhaseOf) to the line as well as to itself.
-func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place record.TaskPlace, state string, want phase.Phase) error {
+func taskStands(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, place record.TaskPlace, state record.TaskState, want phase.Phase) error {
 	t.Helper()
 	var got string
 	var stood record.TaskPlace
-	var stoodState string
+	var stoodState record.TaskState
 	if err := pool.QueryRow(t.Context(), `select i.phase, t.running_kind, t.position, t.state from issues i
 		join plan_tasks t on t.issue = i.key and t.generation = i.generation where i.key = $1`, key).
 		Scan(&got, &stood.Kind, &stood.Position, &stoodState); err != nil {

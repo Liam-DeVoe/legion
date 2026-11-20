@@ -110,7 +110,7 @@ func seedOwnersPlanAtAcceptance(t *testing.T, tx pgx.Tx, key string, givenBy cla
 	var steps []record.PlanStep
 	for i, step := range []plan.Step{{Role: "implementer"}, {Role: "reviewer"}, {Role: "acceptance", Key: "owner"}} {
 		steps = append(steps, record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: step.Role, AgentKey: step.Key,
-			Type: string(roles[step.Role].Type)})
+			Type: roles[step.Role].Type})
 	}
 	store := record.NewStore()
 	if err := store.PutPlan(ctx, tx, v, []record.PlanTask{task}, steps); err != nil {

@@ -16,7 +16,7 @@ import (
 // from 1, 0 for none) and its pass.
 type taskStanding struct {
 	task  string
-	state string
+	state record.TaskState
 	place int
 	pass  int
 }

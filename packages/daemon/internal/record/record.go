@@ -2122,7 +2122,7 @@ type Store interface {
 	DeleteTasks(ctx context.Context, tx pgx.Tx, issue string, generation uint64, tasks []string) error
 	// MoveTask writes where task stands and its state, which is not stopped (StopTask), and
 	// clears a stop's reason.
-	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state string) error
+	MoveTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task string, place TaskPlace, state TaskState) error
 	// StopTask writes task stopped for reason, at the place it stands.
 	StopTask(ctx context.Context, tx pgx.Tx, issue string, generation uint64, task, reason string) error
 	// ReturnCounts is the counts of returns of task: on the task for a generation with plan rows,

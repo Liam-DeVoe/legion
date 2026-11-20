@@ -32,19 +32,16 @@ type StepAgent struct {
 }
 
 // stepRole is the role a step's record names, the worker of the step as Dispatch reads it
-// ("acceptance" for accepting's architect), and stepType the type of its work ("" for a retro or a
-// merge). Each is a type of its own, so no call can give a step's role, its type and its agent,
-// three texts, in another order (stepWrite).
-type (
-	stepRole string
-	stepType string
-)
+// ("acceptance" for accepting's architect), a type of its own, so no call can give a step's role,
+// its type (plan.Type, "" for a retro or a merge) and its agent, three texts, in another order
+// (stepWrite).
+type stepRole string
 
 // stepOfWalk is the step w's task runs at place, a place of w's line (Walk.PlaceOf): the role and
 // the type the plan's rows record for the step (record.PlanStep), or the role that runs Legion's
 // own retro or merge, which no plan names and which has no type. A step place the task's steps do
 // not hold, and a task at no act, run no step.
-func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ stepType, ok bool) {
+func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ plan.Type, ok bool) {
 	switch place.Kind {
 	case record.PlaceRetro:
 		return "implementer", "", true
@@ -53,7 +50,7 @@ func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ stepType, ok
 	case record.PlaceStep:
 		if place.Position >= 1 && place.Position <= len(w.Steps) {
 			named := w.Steps[place.Position-1]
-			return stepRole(named.Role), stepType(named.Type), true
+			return stepRole(named.Role), named.Type, true
 		}
 	}
 	return "", "", false
@@ -64,7 +61,7 @@ func stepOfWalk(w Walk, place record.TaskPlace) (role stepRole, typ stepType, ok
 type standing struct {
 	place record.StepPlace
 	role  stepRole
-	typ   stepType
+	typ   plan.Type
 	at    phase.Phase
 }
 
@@ -96,7 +93,7 @@ func stepAt(w Walk, issue record.Issue, at phase.Phase) (standing, bool) {
 // An owner's plan of `implementer reviewer` records its implementer at step 1 of its own task and
 // has no step 3, 4 or 5, and a run with no plan rows runs today's steps of the task default
 // (todaysSteps), so an issue that ran before plan rows keeps the ids of its records.
-func placeOnWalk(w Walk, at phase.Phase) (place record.StepPlace, role stepRole, typ stepType, ok bool) {
+func placeOnWalk(w Walk, at phase.Phase) (place record.StepPlace, role stepRole, typ plan.Type, ok bool) {
 	stands, ok := w.PlaceOf(at)
 	if !ok {
 		return record.StepPlace{}, "", "", false
@@ -410,7 +407,7 @@ func stepClaim(issue record.Issue, key string, role claim.Role) (claim.Token, er
 
 // stepWrite is the identity of one run of a step of issue: the fields every write of its record
 // carries.
-func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ stepType, agent string, starts int64) record.StepRecord {
+func stepWrite(issue record.Issue, place record.StepPlace, role stepRole, typ plan.Type, agent string, starts int64) record.StepRecord {
 	return record.StepRecord{ID: StepID(issue.Key, issue.Generation, place, starts), Task: place.Task,
 		Step: place.Place, Kind: place.Kind, Role: string(role), Type: string(typ), Agent: agent, Generation: issue.Generation}
 }

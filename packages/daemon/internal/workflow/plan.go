@@ -130,7 +130,7 @@ func planSteps(issue string, generation uint64, task string, steps []plan.Step) 
 	rows := make([]record.PlanStep, len(steps))
 	for i, step := range steps {
 		rows[i] = record.PlanStep{Issue: issue, Generation: generation, Task: task, Position: i + 1, Role: step.Role,
-			Type: string(builtinDeployment.Roles[step.Role].Type), AgentKey: step.Key}
+			Type: builtinDeployment.Roles[step.Role].Type, AgentKey: step.Key}
 	}
 	return rows
 }

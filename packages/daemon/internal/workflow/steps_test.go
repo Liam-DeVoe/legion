@@ -6,6 +6,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -17,7 +18,7 @@ func TestStepOfIsTodaysSequence(t *testing.T) {
 	type step struct {
 		place record.StepPlace
 		role  stepRole
-		typ   stepType
+		typ   plan.Type
 	}
 	want := map[phase.Phase]step{
 		phase.Planning:     {record.StepPlace{Task: "default", Kind: "step", Place: 1}, "planner", "planning"},

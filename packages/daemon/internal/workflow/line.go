@@ -38,7 +38,7 @@ type Walk struct {
 	Line []phase.Phase
 	// State and Place are where the task stands (record.PlanTask); zero where the run has no
 	// plan rows, whose place is the issue's phase alone.
-	State string
+	State record.TaskState
 	Place record.TaskPlace
 	// StoppedReason is why a stopped task was stopped (record.PlanTask.StoppedReason), by its owner
 	// or by a failed step; "" for a task that is not stopped.
@@ -127,7 +127,7 @@ func (w Walk) steps() []phase.Phase {
 // or merging at the task's retro or merge; and admitted for a task at no act, which has not
 // started. A task stopped or held keeps its place, and the hold overlays this phase
 // (record.Hold.From). A step place the line does not hold derives no phase.
-func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
+func issuePhaseOf(w Walk, place record.TaskPlace, state record.TaskState) phase.Phase {
 	if state == record.TaskDone || state == record.TaskLeft {
 		return phase.Done
 	}
@@ -153,7 +153,7 @@ func issuePhaseOf(w Walk, place record.TaskPlace, state string) phase.Phase {
 // the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
 // move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
 // itself.
-func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, state string) error {
+func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, state record.TaskState) error {
 	if !w.Stored {
 		issue.Phase = to
 		return nil
@@ -277,7 +277,7 @@ func (w Walk) returnTarget(from phase.Phase) (phase.Phase, bool) {
 		return "", false
 	}
 	for i, step := range w.Steps[:at.Position-1] {
-		if step.Type == string(plan.TypeImplementation) {
+		if step.Type == plan.TypeImplementation {
 			return w.steps()[i], true
 		}
 	}

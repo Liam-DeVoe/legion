@@ -165,7 +165,9 @@ func TestATodoOnAStoppedRootStartsItsTaskAtStepOne(t *testing.T) {
 	// task keeps its state, its place and its reason, the implementer's entry stands, no start of the
 	// implementer is queued, and no step record or status is written.
 	for _, tc := range []struct {
-		name, status, state, reason string
+		name, status string
+		state        record.TaskState
+		reason       string
 	}{
 		{"a task that is done", "done", record.TaskDone, ""},
 		{"a task that left the workflow with its issue", "backlog", record.TaskLeft, stopsBy},
