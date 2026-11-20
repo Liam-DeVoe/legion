@@ -1,7 +1,7 @@
 ---
 title: Postgres store and migrations
 parent: dispatch-server
-depends_on: [dispatch-auth, dispatch-duty, dispatch-model]
+depends_on: [dispatch-api, dispatch-auth, dispatch-duty, dispatch-events, dispatch-model]
 paths: [packages/envoy/internal/dispatch/store, packages/envoy/internal/dispatch/store/migrations, packages/envoy/internal/pgmigrate, packages/envoy/internal/dispatch/workflowstore, packages/envoy/internal/dispatch/textversions]
 ---
 The schema every other package reads and writes through: ordered migrations applied in one transaction each at boot, the pool, and the session and people rows — which is why it imports `auth`. The boot's migration lock goes back through `duty.FreeSessionLockThenReset`, which returns the connection to the pool only once Postgres has freed the lock — which is why it imports `duty`. `internal/pgmigrate` holds the runner's rules, which the secrets broker's runner shares: the whole migration set is refused before anything applies when two files share a version or a file is misnamed or unreadable, and every migration's lock waits are bounded at five seconds. `internal/pgmigrate` reads migration and census SQL as Postgres 18's lexer does.
@@ -32,4 +32,4 @@ A reset of the event log (`events.EventLogWasReset`) empties both tables and sta
 It refuses a later cut with `store.TextVersionsNotReachedError`, which names the reach.
 The reach is the latest time at or before which every event has its rows, an event that a transaction still open will commit included.
 `store.ComputeTextVersionsReach` takes the earliest of the oldest open transaction that can write an event, the oldest event above the cursor, and the time less 1 s.
-The fill imports `events`, for the horizon and the reset check, and `sessionanswers`, for the pause.
+The fill imports `events` (`dispatch-events`), for the horizon and the reset check, and `sessionanswers` (`dispatch-api`), for the pause, which is why both are among this note's `depends_on`.
