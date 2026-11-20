@@ -59,7 +59,7 @@ func TestAProxyThatCannotReachTheSessionDatabaseIsAStoreFaultAndTheNextStartResu
 			createSessionTables(t, dsn)
 			database, dialer := sessionDatabaseAt(t, dsn)
 			shortenResumeLookup(t)
-			refused := refusedDial(t)
+			refused := testdb.RefusedDial(t)
 			var down atomic.Bool
 			var dials atomic.Int32
 			down.Store(true)
@@ -321,7 +321,7 @@ func TestAClaudeCodeChildsOwnExitIsItsOwnWhateverItsKeeperMet(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dsn, dsnFile := testdb.DSNFile(t, "legion_launcher_claude_own_exit_test")
 			database, dialer := sessionDatabaseAt(t, dsn)
-			refused := refusedDial(t)
+			refused := testdb.RefusedDial(t)
 			var refusing atomic.Bool
 			dialer.check = func() error {
 				if refusing.Load() {
@@ -394,34 +394,38 @@ func TestALookupWhoseLastAttemptTheBoundCutsShortKeepsTheDatabasesLastAnswer(t *
 // child's own connections decide it: a dial the database refuses, a served connection it resets.
 // With no fault there, and under a URL file no proxy serves, the launcher asks the store once
 // after the exit, and a store that refuses it or answers that it cannot take a connection now
-// (57P03) marks the exit too. A child that exits while the store answers exits as itself. Under
-// the proxy the child is the test binary dialing its socket as Oh My Pi does
-// (TestLauncherStoreChild); under a URL file it is a shell, since what those cases test is how the
-// launcher reads an exit, and one case runs the pinned Oh My Pi itself, which exits at once on a
-// store that refuses it.
+// (57P03) marks the exit too: under the proxy, the ask's own dial the database refused, after a
+// child it served. A child that exits while the store answers exits as itself, and so does a child
+// that ends at 0 on a store that fails it. Under the proxy the child is the test binary dialing its
+// socket as Oh My Pi does (TestLauncherStoreChild); under a URL file it is a shell, since what
+// those cases test is how the launcher reads an exit, and one case runs the pinned Oh My Pi itself,
+// which exits at once on a store that refuses it.
 func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *testing.T) {
 	for name, tc := range map[string]struct {
 		// proxied is whether the generation has a proxy of its own, and target, given the test
 		// database's URL, the URL of the store its child and the launcher reach.
 		proxied bool
 		target  func(t *testing.T, dsn string) string
-		// refuseChild is whether the proxy's dials after the proof dial are refused; send is what
-		// the proxied child writes on its connection.
-		refuseChild bool
-		send        string
+		// refuseFrom is the first of the proxy's dials it refuses, 0 for none: the proof dial is
+		// the first, the child's own the second, the launcher's ask at the exit the third. send is
+		// what the proxied child writes on its connection.
+		refuseFrom int32
+		send       string
 		// shell, when set, is the URL-file child, run by /bin/sh; omp runs the pinned Oh My Pi.
 		shell string
 		omp   bool
 		code  int
 		want  shimwire.SessionRefusal
 	}{
-		"under the proxy, the child's own connection is refused": {proxied: true, refuseChild: true, code: 1,
+		"under the proxy, the child's own connection is refused": {proxied: true, refuseFrom: 2, code: 1,
 			want: shimwire.SessionStoreUnreachable},
 		"under the proxy, the database resets the child's connection": {proxied: true, send: breakMarker, code: 1,
 			target: func(t *testing.T, dsn string) string { return testdb.Breaking(t, dsn, breakMarker, true) },
 			want:   shimwire.SessionStoreUnreachable},
 		"under the proxy, the instance cannot take a connection now (57P03)": {proxied: true, code: 1,
 			target: startingUp, want: shimwire.SessionStoreUnreachable},
+		"under the proxy, the database serves the child, then refuses the launcher's ask": {proxied: true, refuseFrom: 3, code: 1,
+			want: shimwire.SessionStoreUnreachable},
 		"control: under the proxy, the store answers a child that fails": {proxied: true, code: 1},
 		"under a URL file, the store refuses the pinned Oh My Pi and the launcher": {omp: true, code: 1,
 			target: func(t *testing.T, _ string) string { return refusingURL(t) }, want: shimwire.SessionStoreUnreachable},
@@ -429,6 +433,8 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 			target: startingUp, want: shimwire.SessionStoreUnreachable},
 		"control: under a URL file, the store answers a child that fails":      {shell: "exit 3", code: 3},
 		"control: under a URL file, the store answers and the child ends at 0": {shell: "exit 0"},
+		"control: under a URL file, the store cannot take a connection now and the child ends at 0": {shell: "exit 0",
+			target: startingUp},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dsn := testdb.Database(t, "legion_launcher_child_store_test")
@@ -442,12 +448,10 @@ func TestAChildThatExitsOnAStoreThatStoppedAnsweringItExitsAsAStoreFault(t *test
 			argv := []string{"/bin/sh", "-c", tc.shell}
 			if tc.proxied {
 				database, dialer := sessionDatabaseAt(t, target)
-				refused := refusedDial(t)
-				// The proof dial is the start's check; every dial after it is the child's own, or
-				// the launcher's ask at its exit.
+				refused := testdb.RefusedDial(t)
 				var dials atomic.Int32
 				dialer.check = func() error {
-					if dials.Add(1) > 1 && tc.refuseChild {
+					if n := dials.Add(1); tc.refuseFrom > 0 && n >= tc.refuseFrom {
 						return refused
 					}
 					return nil
@@ -578,18 +582,6 @@ func replaceURLFile(file, dsn string) error {
 // password: the dial is refused before any login.
 func refusingURL(t *testing.T) string {
 	return "postgres://legion@" + testdb.RefusedAddress(t) + "/none?sslmode=disable&connect_timeout=1"
-}
-
-// refusedDial is the error a real dial of testdb.RefusedAddress gives, which the fake connector
-// answers as the Cloud SQL connector answers an instance that refuses it.
-func refusedDial(t *testing.T) error {
-	t.Helper()
-	conn, err := net.Dial("tcp", testdb.RefusedAddress(t))
-	if err == nil {
-		_ = conn.Close()
-		t.Fatal("a dial of an address nothing listens on was answered")
-	}
-	return err
 }
 
 // withPassword is dsn with its password replaced by password.

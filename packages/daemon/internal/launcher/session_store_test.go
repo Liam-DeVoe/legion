@@ -217,6 +217,28 @@ func TestAResumeUnderSQLStorageWaitsOutAnUnreachableSessionDatabase(t *testing.T
 	}
 }
 
+// A launcher's Config.SessionLookup bounds a resume's lookup in place of the daemon's own thirty
+// seconds (resumeLookupTimeout, which this test leaves as it is): a store that refuses every
+// attempt refuses the start once that bound is out, naming it.
+func TestALaunchersSessionLookupBoundsTheResumesLookup(t *testing.T) {
+	g := newSessionRig(t, Config{SessionLookup: time.Second})
+	urlFile := filepath.Join(t.TempDir(), "dsn")
+	if err := replaceURLFile(urlFile, refusingURL(t)); err != nil {
+		t.Fatal(err)
+	}
+	command := g.childStart(3, filepath.Join(t.TempDir(), "marker"), nil)
+	command.Env = append(command.Env, ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+urlFile)
+	command.ResumeFile = filepath.Join(t.TempDir(), "sessions", "2026-10-08T12-00-00-000Z_0012.jsonl")
+	started := time.Now()
+	got := g.start(command)
+	if got.OK || got.Session != shimwire.SessionStoreUnreachable || !strings.Contains(got.Error, "attempts in 1s") {
+		t.Fatalf("start = %#v, want a store fault naming the attempts in 1s", got)
+	}
+	if took := time.Since(started); took > 15*time.Second {
+		t.Fatalf("the start was refused after %s, want the one second the launcher was given", took)
+	}
+}
+
 // createSessionTables makes Oh My Pi's two tables in the database at dsn, as the first Oh My Pi
 // that opens it does.
 func createSessionTables(t *testing.T, dsn string) {

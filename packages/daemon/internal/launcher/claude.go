@@ -44,25 +44,38 @@ const saveTimeout = 10 * time.Second
 // record by a rename, so anything else is a file the keeper rewrites whole.
 const tailWindow = 4096
 
-// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included;
-// a test shortens it. A start's whole budget is the proof dial, at most proofTimeout (StopGrace/2),
-// then this lookup: 35 s at the daemon's defaults, inside its wait on the start, its boot timeout
-// plus its stop grace (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected
-// as that wait begins, which is every relaunch into a running pod. Only a launcher that connects late
-// in a new pod's boot window has less: at least the grace remains, and the proof's half of it is
-// still inside.
+// resumeLookupTimeout bounds the session table lookup a resume's start waits on, retries included,
+// where the launcher's Config.SessionLookup names no bound; a test of this package shortens it. A
+// start's whole budget is the proof dial, at most proofTimeout (StopGrace/2), then this lookup: 35 s
+// at the daemon's defaults, inside its wait on the start, its boot timeout plus its stop grace
+// (120 s + 10 s: runtime/sandbox's relaunch), whenever the launcher is connected as that wait
+// begins, which is every relaunch into a running pod. Only a launcher that connects late in a new
+// pod's boot window has less: at least the grace remains, and the proof's half of it is still
+// inside.
 var resumeLookupTimeout = 30 * time.Second
 
 // resumeLookupBackoff is the wait before each retry of a session table lookup that could not reach
-// the database, doubling up to its last value until resumeLookupTimeout; a test shortens it.
+// the database, doubling up to its last value until the lookup's bound; a test shortens it.
 var resumeLookupBackoff = []time.Duration{500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second}
 
 // sessionDial is how the launcher reaches a generation's session database, for a resume's lookup
 // (sessionWritten) and for the keeper alike: through clientURL, the generation's own database
 // through the socket its proxy has already bound, or with none through the URL file the child's
 // environment names (DSNFileVariable), read afresh at each connection, since that file is a
-// projection something else may replace.
-type sessionDial struct{ clientURL, dsnFile string }
+// projection something else may replace. bound is how long a lookup on it asks, retries included:
+// the launcher's Config.SessionLookup, and resumeLookupTimeout when that is zero (lookup).
+type sessionDial struct {
+	clientURL, dsnFile string
+	bound              time.Duration
+}
+
+// lookup is how long a lookup through d asks the database, retries included.
+func (d sessionDial) lookup() time.Duration {
+	if d.bound > 0 {
+		return d.bound
+	}
+	return resumeLookupTimeout
+}
 
 // newSessionDial is the session database a generation's environment names, refused when it has no
 // database of its own and names no URL file.
@@ -95,15 +108,15 @@ func (d sessionDial) connect(ctx context.Context) (*pgx.Conn, error) {
 
 // dial opens a connection on which ready succeeds, the caller's to close. One that cannot be
 // opened, or on which ready fails, is asked again after each of resumeLookupBackoff's waits until
-// resumeLookupTimeout, as a database that is briefly unreachable must not fail the launch; a URL
-// file that is missing or empty is refused at once. parent's end (the container's stop) ends the
-// wait as the timeout does. The refusal wraps the last answer the database gave (%w), so whoever
-// reads it can tell a store that refused or never answered from one that answered with a refusal
-// (ompsessions.StoreFault): an attempt the bound or the stop cut short says nothing the one
+// the lookup's bound (lookup), as a database that is briefly unreachable must not fail the launch;
+// a URL file that is missing or empty is refused at once. parent's end (the container's stop) ends
+// the wait as the timeout does. The refusal wraps the last answer the database gave (%w), so
+// whoever reads it can tell a store that refused or never answered from one that answered with a
+// refusal (ompsessions.StoreFault): an attempt the bound or the stop cut short says nothing the one
 // before it did not, and stands only where no attempt ended on its own. A wait the stop ended
 // wraps the stop's own error too, which is no fault of the store's.
 func (d sessionDial) dial(parent context.Context, ready func(context.Context, *pgx.Conn) error) (*pgx.Conn, error) {
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := context.WithTimeout(parent, d.lookup())
 	defer cancel()
 	var last error
 	for attempt := 0; ; attempt++ {
@@ -126,7 +139,7 @@ func (d sessionDial) dial(parent context.Context, ready func(context.Context, *p
 			if errors.Is(parent.Err(), context.Canceled) {
 				return nil, fmt.Errorf("%w (after %d attempts; the start was stopped: %w)", last, attempt+1, parent.Err())
 			}
-			return nil, fmt.Errorf("%w (after %d attempts in %s)", last, attempt+1, resumeLookupTimeout)
+			return nil, fmt.Errorf("%w (after %d attempts in %s)", last, attempt+1, d.lookup())
 		case <-time.After(resumeLookupBackoff[min(attempt, len(resumeLookupBackoff)-1)]):
 		}
 	}
@@ -222,7 +235,7 @@ type keptState struct {
 // not in a database. It checks the session's paths and connects nothing: a resume's transcript is
 // resume, which must be `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl` for the session's own id
 // (claudelaunch.ResumeSession), and a fresh one is found once Claude Code writes it (find).
-func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*claudeKeeper, error) {
+func newClaudeKeeper(env []string, resume, clientURL string, lookup time.Duration, log io.Writer) (*claudeKeeper, error) {
 	session := envValue(env, claudelaunch.SessionVariable)
 	if session == "" || envValue(env, ompsessions.StorageVariable) != ompsessions.SQLStorage {
 		return nil, nil
@@ -244,6 +257,7 @@ func newClaudeKeeper(env []string, resume, clientURL string, log io.Writer) (*cl
 	if err != nil {
 		return nil, refuse("%v", err)
 	}
+	sessions.bound = lookup
 	k := &claudeKeeper{log: log, sessions: sessions, configDir: configDir, session: session,
 		appendRow: ompsessions.Append, replaceRow: ompsessions.Replace, quit: make(chan struct{}), done: make(chan struct{}),
 		transcript: &keptFile{lines: true, marker: resume == "", keptState: keptState{saved: ompsessions.Absent}},
@@ -278,7 +292,7 @@ func (k *claudeKeeper) open(parent context.Context, conn *pgx.Conn) error {
 		closeSessions(conn)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(parent, resumeLookupTimeout)
+	ctx, cancel := context.WithTimeout(parent, k.sessions.lookup())
 	defer cancel()
 	if conn != nil && ompsessions.CreateTables(ctx, conn) != nil {
 		closeSessions(conn)

@@ -89,6 +89,11 @@ type Config struct {
 	// SessionDatabase names, or "" for the pod itself (sessionproxy.Config.NewDialer). Nil is the
 	// Cloud SQL connector's, which is the only one a pod uses; a test passes a fake.
 	SessionDialer func(ctx context.Context, account string) (sessionproxy.Dialer, error)
+	// SessionLookup bounds a resume's lookup of its session in the session table, and a Claude
+	// Code keeper's own dial of that table, retries included (sessionDial.lookup). Zero is the
+	// daemon's own bound, resumeLookupTimeout; a test of the whole chain shortens it, so a start
+	// the store does not answer is refused in seconds.
+	SessionLookup time.Duration
 	// LeakCheckDir is where the launcher installs the shared public leak check the daemon serves
 	// it; "" is leakguard.InstallDir, the one directory every role's shim reads it from. A test
 	// names a temporary one.
@@ -886,13 +891,13 @@ func (m *manager) start(ctx context.Context, command shimwire.LauncherStart) shi
 	// A Claude Code child's session is kept in the session table (claudeKeeper): the order is
 	// the resume's lookup, which decides the recreated-workspace notice from the row's last save,
 	// then the restore of the session's files from their rows, then the child, then the saves.
-	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.stderr); err != nil {
+	if keeper, err = newClaudeKeeper(env, command.ResumeFile, clientURL, m.cfg.SessionLookup, m.stderr); err != nil {
 		return abandon(err)
 	}
 	recreated := false
 	var sessions *pgx.Conn
 	if command.ResumeFile != "" {
-		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.stderr); err != nil {
+		if recreated, sessions, err = resumable(ctx, env, command.ResumeFile, clientURL, m.cfg.SessionLookup, m.stderr); err != nil {
 			return abandon(proxiedStoreFault(proxy, err))
 		}
 	}
@@ -1124,12 +1129,13 @@ func failedExit(exit shimwire.LauncherExit) bool {
 // nil for an exit of the child's own. First the child's own connections, as proxy, the
 // generation's, saw them at the exit: the latest event of the database's own, a dial it refused or
 // never answered or a served connection it ended, with no dial that reached it since
-// (sessionproxy.Proxy.Fault). With no proxy, witnessed, the latest store fault the generation's
-// store witness met from the child's start to its exit (storeWitness), so a store that failed the
-// child's first open and answered again before the ask below still reads as the store's. With no
-// fault there, the launcher asks the store once, as the child would, within bound, half of what
-// the child's grace leaves, as the proxy's proof dial is bounded by half of it (storeAnswers):
-// through the proxy's socket that ask's own dial is one more event the proxy records.
+// (sessionproxy.Proxy.Fault). With no proxy, witnessed, the fault the latest look of the
+// generation's store witness met (storeWitness): a fault no later look found over overlaps the exit,
+// so a store that failed the child's open and answered again only after the witness's last look
+// still reads as the store's, and one a later look found answering does not. With no fault there,
+// the launcher asks the store once, as the child would, within bound, half of what the child's
+// grace leaves, as the proxy's proof dial is bounded by half of it (storeAnswers): through the
+// proxy's socket that ask's own dial is one more event the proxy records.
 func childExitFault(store sessionDial, proxy *sessionproxy.Proxy, witnessed error, bound time.Duration) error {
 	if proxy != nil {
 		if fault := proxy.Fault(); fault != nil {
@@ -1461,11 +1467,12 @@ func endSession(proxy *sessionproxy.Proxy, dir string) {
 // only what was pushed. A workspace with no record, or a child with no workspace (the controller),
 // was not. A record that cannot be read, which an init container killed mid-write can leave, only
 // decides that notice: it is written to log and taken as no record, and the resume goes ahead.
-func resumable(ctx context.Context, env []string, file, clientURL string, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
+func resumable(ctx context.Context, env []string, file, clientURL string, lookup time.Duration, log io.Writer) (recreated bool, conn *pgx.Conn, err error) {
 	sessions, err := newSessionDial(env, clientURL)
 	if err != nil {
 		return false, nil, fmt.Errorf("resume session %s: %v", file, err)
 	}
+	sessions.bound = lookup
 	written, conn, err := sessionWritten(ctx, sessions, file)
 	if err != nil {
 		return false, nil, err

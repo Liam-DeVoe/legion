@@ -365,8 +365,11 @@ func storeFaultRigOf(t *testing.T, omp string, stopGrace time.Duration, claude *
 		o.BootTimeout = 2 * time.Minute
 	}))
 	spec := workerSpec(t)
-	dialer := &storeDialer{address: address}
-	cfg := launcher.Config{StopGrace: 10 * time.Second, SessionDatabase: database, SessionDialer: dialer.build}
+	dialer := &storeDialer{address: address, refused: testdb.RefusedDial(t)}
+	// A start the store does not answer is refused once the lookup's bound is out: three seconds,
+	// as the launcher's own tests take, rather than the daemon's thirty, since what these cases
+	// test is the minute's wait and the same session after it, not how long a lookup asks.
+	cfg := launcher.Config{StopGrace: 10 * time.Second, SessionLookup: 3 * time.Second, SessionDatabase: database, SessionDialer: dialer.build}
 	if stopGrace > 0 {
 		cfg.StopGrace = stopGrace
 	}
@@ -463,11 +466,12 @@ func seedSession(t *testing.T, dsn, path string) {
 
 // storeDialer stands in for the Cloud SQL connector: each dial reaches the test's Postgres at
 // address, or the address reach named in its place, unless refuseFrom names a dial from which on
-// every dial is refused by the host, or stall holds every dial until its context ends, as an
-// instance that never answers does. The dials are counted from 1: a resume's are the proof dial,
-// the launcher's own lookup, then the child's.
+// every dial is refused by the host, with refused, the error a real refused dial gave, or stall
+// holds every dial until its context ends, as an instance that never answers does. The dials are
+// counted from 1: a resume's are the proof dial, the launcher's own lookup, then the child's.
 type storeDialer struct {
 	address    string
+	refused    error
 	reached    atomic.Pointer[string]
 	refuseFrom atomic.Int32
 	stall      atomic.Bool
@@ -481,7 +485,7 @@ func (d *storeDialer) Dial(ctx context.Context, _ string) (net.Conn, error) {
 		return nil, ctx.Err()
 	}
 	if from := d.refuseFrom.Load(); from > 0 && n >= from {
-		return refusedDial()
+		return nil, d.refused
 	}
 	address := d.address
 	if reached := d.reached.Load(); reached != nil {
@@ -505,22 +509,6 @@ func (d *storeDialer) answer() {
 	d.refuseFrom.Store(0)
 	d.stall.Store(false)
 	d.reached.Store(nil)
-}
-
-// refusedDial is a real dial of a TCP address nothing listens on any more, which the host refuses.
-func refusedDial() (net.Conn, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return nil, err
-	}
-	address := listener.Addr().String()
-	_ = listener.Close()
-	conn, err := net.Dial("tcp", address)
-	if err == nil {
-		_ = conn.Close()
-		return nil, fmt.Errorf("a dial of %s, where nothing listens, was answered", address)
-	}
-	return nil, err
 }
 
 // realLauncher is a real `legion launcher` (launcher.Run) for one role, started for every pod the
