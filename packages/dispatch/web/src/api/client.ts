@@ -1915,9 +1915,12 @@ export class DispatchApiClient {
     return this.read("/api/v1/credential-grants", {}, { approver: "me" });
   }
 
-  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator. The
-   *  operator's revoke of an automatic grant also ends that session's other automatic grants of
-   *  those secrets and makes it ask before it gets them again. */
+  /** Revoke a grant as the signed-in viewer, its approver or its enrollment's operator, whatever
+   *  project it touches. The operator's revoke of an automatic grant also ends that session's other
+   *  automatic grants of those secrets and makes it ask before it gets them again. A grant whose
+   *  approver is anyone, revoked by a viewer named nowhere on it, is 404 when it belongs to a
+   *  private project the viewer may not see, and 503 `PROJECT_ACCESS_UNAVAILABLE` while the broker
+   *  cannot ask Dispatch. */
   async revokeCredentialGrant(grantId: string, bounds: WriteBounds): Promise<void> {
     await this.post("/api/v1/credential-grants/{id}/revoke", { id: grantId }, undefined, bounds);
   }
@@ -1926,9 +1929,10 @@ export class DispatchApiClient {
    *  before anybody decided it, which the list keeps until somebody dismisses it. Dispatch names
    *  the viewer as the person dismissing, and the request then leaves every list for good, a
    *  shared one's included. The broker refuses one the viewer's list does not hold (403
-   *  `NOT_APPROVER`), one that can still be decided (409 `RECORD_PENDING`) and one that was
-   *  decided, or cancelled before its deadline (409 `RECORD_TERMINAL`); a second dismissal
-   *  answers the first one's values. */
+   *  `NOT_APPROVER`), one of a private project the viewer may not see (404, as an id no request
+   *  has, and 503 `PROJECT_ACCESS_UNAVAILABLE` while it cannot ask Dispatch), one that can still
+   *  be decided (409 `RECORD_PENDING`) and one that was decided, or cancelled before its deadline
+   *  (409 `RECORD_TERMINAL`); a second dismissal answers the first one's values. */
   async dismissCredentialRequest(recordId: string, bounds: WriteBounds): Promise<void> {
     await this.post(
       "/api/v1/credential-requests/{id}/dismiss",
