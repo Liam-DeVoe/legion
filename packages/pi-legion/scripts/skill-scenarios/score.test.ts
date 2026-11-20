@@ -1,6 +1,6 @@
 import { beforeAll, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import { cliRefusals } from "@legion/envoy-client/dispatch-cli";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -4187,16 +4187,26 @@ const rigFunction = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
  * run of its world is given. */
 const redFacts: Record<string, object> = (() => {
   const worlds = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l"];
-  const printed = Bun.spawnSync([
-    "bash",
-    "-c",
-    `${rigFunction("red_world_table")}\n${rigFunction("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`,
-    "-",
-    ...worlds,
-  ]);
-  if (printed.exitCode !== 0) throw new Error(`red_world: ${printed.stderr.toString()}`);
-  const lines = printed.stdout.toString().trim().split("\n");
-  return Object.fromEntries(worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")]));
+  // The script goes to bash as a file, not as `bash -c SCRIPT`: Linux refuses any one argument
+  // over 131,072 bytes, and a script of rig.sh's functions grows with rig.sh (rig.test.ts's
+  // scriptFile, whose builtWorld CI run 44728976046 refused with E2BIG). It is written at load,
+  // before the beforeAll that makes `work`, so into a directory of its own.
+  const dir = mkdtempSync(path.join(tmpdir(), "skill-scenarios-red-world-"));
+  const script = path.join(dir, "red-world.sh");
+  try {
+    writeFileSync(
+      script,
+      `${rigFunction("red_world_table")}\n${rigFunction("red_world")}\nfor world in "$@"; do red_world "$world" || exit; done`
+    );
+    const printed = Bun.spawnSync(["bash", script, ...worlds]);
+    if (printed.exitCode !== 0) throw new Error(`red_world: ${printed.stderr.toString()}`);
+    const lines = printed.stdout.toString().trim().split("\n");
+    return Object.fromEntries(
+      worlds.map((world, index) => [world, JSON.parse(lines[index] ?? "")])
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 })();
 /** The check red_fixture pairs with the red where the head carries an aggregate over a lane: the
  * lane under the red aggregate in `g`, the aggregate beside the red lane in `i` and `j`. */

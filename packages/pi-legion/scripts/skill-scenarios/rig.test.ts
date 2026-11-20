@@ -90,19 +90,12 @@ function keyFile(mode: number): string {
   return file;
 }
 function route(dir: string, env: Record<string, string>, model = "") {
-  const result = Bun.spawnSync(
-    [
-      "bash",
-      "-c",
-      `route_model_id=claude-opus-4-8\n${fn("install_model_route")}\n${fn("install_provider_route")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
-      "-",
-      root,
-      dir,
-      model,
-    ],
-    { env: { ...childEnv, ...env } }
+  const result = runScript(
+    `route_model_id=claude-opus-4-8\n${fn("install_model_route")}\n${fn("install_provider_route")}\ninstall_model_route "$1" skills-test "$2" "$3"`,
+    [root, dir, model],
+    { ...childEnv, ...env }
   );
-  return { code: result.exitCode, stderr: result.stderr.toString() };
+  return { code: result.code, stderr: result.stderr };
 }
 
 describe("install_model_route", () => {
@@ -418,17 +411,60 @@ describe("cmd_profile's Oh My Pi", () => {
   });
 });
 
+/** SCRIPT in a file of its own, for `bash FILE ARGS`, never `bash -c SCRIPT`: Linux refuses any
+ * one argument over 131,072 bytes (MAX_ARG_STRLEN), and a script of rig.sh's functions grows with
+ * rig.sh. builtWorld's reached 133,179 bytes at 2af25c16, and CI's pi-legion job refused it with
+ * E2BIG (run 44728976046); a pod cannot show that refusal, since gVisor enforces no such limit.
+ * The file is in a directory of its own under tmpdir() rather than under `work`, because
+ * builtWorld runs at load (RED_HEAD), before the beforeAll that makes `work`; the caller removes
+ * it once bash has exited (removeScript). */
+function scriptFile(script: string): string {
+  const file = path.join(mkdtempSync(path.join(tmpdir(), "skill-scenarios-script-")), "script.sh");
+  writeFileSync(file, script);
+  return file;
+}
+const removeScript = (file: string) => rmSync(path.dirname(file), { recursive: true, force: true });
+/** Runs SCRIPT under bash with ARGS as $1... and ENV as its environment, from a file
+ * (scriptFile) removed once bash has exited. `wrap` turns the argv into the one spawned
+ * (ownGroup). */
+function runScript(
+  script: string,
+  args: string[],
+  env: Record<string, string>,
+  wrap = (argv: string[]) => argv
+) {
+  const file = scriptFile(script);
+  try {
+    const result = Bun.spawnSync(wrap(["bash", file, ...args]), { env });
+    return {
+      code: result.exitCode,
+      stdout: result.stdout.toString(),
+      stderr: result.stderr.toString(),
+    };
+  } finally {
+    removeScript(file);
+  }
+}
+/** runScript as a child this test awaits, never a synchronous one, so a listener of the row
+ * answers what the script publishes while it runs. */
+async function runScriptAsync(script: string, args: string[], env: Record<string, string>) {
+  const file = scriptFile(script);
+  try {
+    const child = Bun.spawn(["bash", file, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stdout, stderr };
+  } finally {
+    removeScript(file);
+  }
+}
 /** Runs SCRIPT (rig.sh functions and a call of them) under bash with ARGS as $1..., in an
  * environment of PATH and the test's own HOME. */
 function bash(script: string, args: string[] = [], env: Record<string, string> = {}) {
-  const result = Bun.spawnSync(["bash", "-c", script, "-", ...args], {
-    env: { ...childEnv, ...env },
-  });
-  return {
-    code: result.exitCode,
-    stdout: result.stdout.toString(),
-    stderr: result.stderr.toString(),
-  };
+  return runScript(script, args, { ...childEnv, ...env });
 }
 let dirs = 0;
 /** A new directory under the test's work directory. */
@@ -437,6 +473,16 @@ function freshDir(name: string): string {
   mkdirSync(dir, { recursive: true });
   return dir;
 }
+
+// INFRA-1303: catches a helper that hands bash its script as one argument, which Linux refuses
+// over 131,072 bytes (MAX_ARG_STRLEN): CI run 44728976046 failed builtWorld's 133,179-byte script
+// with E2BIG. gVisor enforces no such limit, so this row fails only on a real kernel, as on
+// GitHub's runner; a pod cannot show it red.
+test("the test's bash runs a script larger than one argument may be", () => {
+  const script = `${"# padding\n".repeat(14_000)}printf '%s:%s' "$1" "$2"`;
+  expect(Buffer.byteLength(script)).toBeGreaterThan(131_072);
+  expect(bash(script, ["a", "b"])).toEqual({ code: 0, stdout: "a:b", stderr: "" });
+});
 
 // cmd_profile records the label's commit in built-from with checkout_commit. A git worktree holds
 // no .jj, and jj alone printed an empty commit line for it.
@@ -637,16 +683,8 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
       stdout: "ignore",
       stderr: "ignore",
     });
-  const groupBash = (script: string, args: string[], procRoot: string) => {
-    const result = Bun.spawnSync(ownGroup(["bash", "-c", script, "-", ...args]), {
-      env: { ...childEnv, proc_root: procRoot },
-    });
-    return {
-      code: result.exitCode,
-      stdout: result.stdout.toString(),
-      stderr: result.stderr.toString(),
-    };
-  };
+  const groupBash = (script: string, args: string[], procRoot: string) =>
+    runScript(script, args, { ...childEnv, proc_root: procRoot }, ownGroup);
 
   // Catches: a walk that hands grep every /proc/<pid>/environ at once, which under the force
   // (scripts/e2e/lib/arg-max-force.sh) cannot start and names nothing. The force cannot hold under
@@ -2083,23 +2121,12 @@ function paneListener(run: string, listener: string) {
  * awaits, never a synchronous one, so the listener of the row answers the publish while it runs. */
 async function redReport(run: string, listener: string) {
   paneListener(run, listener);
-  const child = Bun.spawn(
-    [
-      "bash",
-      "-c",
-      `${fn("fail")}\n${fn("note")}\n${fn("red_report")}\nR=$1 here=$2\nred_report`,
-      "-",
-      run,
-      import.meta.dir,
-    ],
-    { env: childEnv, stdout: "pipe", stderr: "pipe" }
+  const { code, stdout, stderr } = await runScriptAsync(
+    `${fn("fail")}\n${fn("note")}\n${fn("red_report")}\nR=$1 here=$2\nred_report`,
+    [run, import.meta.dir],
+    childEnv
   );
-  const [stdout, stderr, exit] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exit !== 0) throw new Error(`red_report: ${stderr}`);
+  if (code !== 0) throw new Error(`red_report: ${stderr}`);
   return stdout;
 }
 
@@ -2108,23 +2135,12 @@ async function redReport(run: string, listener: string) {
  * run's pane.env names, where it names one. The shell runs as a child this test awaits, as
  * redReport's does, so the listener of the row answers the publish while it runs. */
 async function settleRerun(run: string) {
-  const child = Bun.spawn(
-    [
-      "bash",
-      "-c",
-      `${fn("fail")}\n${fn("note")}\n${fn("rerun_settle")}\nR=$1 here=$2\nrerun_settle`,
-      "-",
-      run,
-      import.meta.dir,
-    ],
-    { env: childEnv, stdout: "pipe", stderr: "pipe" }
+  const { code, stdout, stderr } = await runScriptAsync(
+    `${fn("fail")}\n${fn("note")}\n${fn("rerun_settle")}\nR=$1 here=$2\nrerun_settle`,
+    [run, import.meta.dir],
+    childEnv
   );
-  const [stdout, stderr, exit] = await Promise.all([
-    new Response(child.stdout).text(),
-    new Response(child.stderr).text(),
-    child.exited,
-  ]);
-  if (exit !== 0) throw new Error(`rerun_settle: ${stderr}`);
+  if (code !== 0) throw new Error(`rerun_settle: ${stderr}`);
   return stdout;
 }
 
