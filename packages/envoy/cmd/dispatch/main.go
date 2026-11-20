@@ -1087,17 +1087,43 @@ func main() {
 	announcer := startup.New(startup.Deps{Pool: database.Pool, Publisher: announcements})
 
 	routesHandler, background := routes.New(appCtx)
-	// waitFill waits for the keyword fill to stop once ctx is cancelled, which releases its hold
-	// through the pool as it stops. The fill's goroutine starts once the server listens (below),
-	// and there is nothing to wait for before. The fill itself starts only once the registry of
-	// live server processes admits this process (serving, below). So a process that the registry
-	// refuses, or that stops while it waits for admission, cancels ctx, and the fill returns
-	// having taken nothing and written nothing.
-	waitFill := func() {}
-	// exitAfterIntakes ends a process that started its intakes, and maybe its keyword fill's
-	// goroutine, and will not serve: it stops them, releasing the intakes' holds, and exits 1. The
-	// fill holds nothing then, since it waits for an admission that no such process got. The
-	// deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
+	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
+	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
+	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
+	// serves and fills, its passes woken by every commit that wrote an event (its own wake on
+	// api.EventsChannel, above), and every other process stands by for the hold, woken by a
+	// hold's release and a 10 s retry. A lease taken per pass (duty.RunWoken) would move the fill
+	// between processes from pass to pass, and the pause each batch asks first reads the answers
+	// reads of the process that writes (answersLatency). Its goroutine starts here, once all it
+	// runs with exists, but the fill takes nothing and writes nothing until serving closes, after
+	// the server listens and the registry of live server processes admits this process
+	// (joinRegistry, below). So it never runs inside a migration, and never in a process that the
+	// registry refuses or is still waiting to admit: its pause reads the answers reads this process
+	// serves, and a process the registry has not admitted serves none. Every way out from here
+	// waits for the fill (waitFill) only once ctx is cancelled, or exits without waiting for it:
+	// once ctx is cancelled, a fill still waiting for serving returns at once, having taken
+	// nothing, and a serving fill commits or rolls back its batch in flight and releases its hold
+	// through the pool, before the pool closes.
+	serving := make(chan struct{})
+	fillStopped := make(chan struct{})
+	go func() {
+		defer close(fillStopped)
+		if err := textversions.Run(ctx, textversions.Config{
+			Leases:   textVersionsLeases,
+			Horizon:  background.EventHorizon(),
+			Latency:  answersLatency,
+			Serving:  serving,
+			Events:   textVersionsEventsWake,
+			Released: textVersionsReleasedWake,
+		}); err != nil {
+			slog.Error("dispatch: start the keyword fill", "error", err)
+		}
+	}()
+	// waitFill waits for the keyword fill to stop; only a cancelled ctx stops it.
+	waitFill := func() { <-fillStopped }
+	// exitAfterIntakes ends a process that started its intakes and its keyword fill and will not
+	// serve: it cancels ctx, waits for both to stop, which releases the intakes' holds, and exits
+	// 1. The deferred stop (stopIntakesOnExit) does not run on an os.Exit, so every exit here goes
 	// through this.
 	exitAfterIntakes := func() {
 		cancel()
@@ -1148,38 +1174,6 @@ func main() {
 		slog.Error("dispatch: listen", "addr", boot.ListenAddr, "error", err)
 		exitAfterIntakes()
 	}
-	// The keyword fill (textversions.Run) writes search_text_versions, the keyword table of each
-	// past version of the searchable text, from the event log. It is a held duty, not a loop woken
-	// per pass: one process holds its duty.Hold (search-text-versions-fill) for as long as it
-	// serves and fills, its passes woken by every commit that wrote an event (its own wake on
-	// api.EventsChannel, above), and every other process stands by for the hold, woken by a
-	// hold's release and a 10 s retry. A lease taken per pass (duty.RunWoken) would move the fill
-	// between processes from pass to pass, and the pause each batch asks first reads the answers
-	// reads of the process that writes (answersLatency). Its goroutine starts here, once the
-	// server's socket answers, so every way out from here waits for it: exitAfterIntakes, the stop
-	// while the process waits for admission, and the background wait (waitBackground). The fill
-	// itself starts only once serving closes, after the server listens AND the registry of live
-	// server processes admitted this process (joinRegistry, below). So it never runs inside a
-	// migration, and never in a process that the registry refuses or is still waiting to admit:
-	// its pause reads the answers reads this process serves, and a process the registry has not
-	// admitted serves none. As it stops, its batch in flight commits or rolls back and it releases
-	// its hold, before the pool closes.
-	serving := make(chan struct{})
-	fillStopped := make(chan struct{})
-	waitFill = func() { <-fillStopped }
-	go func() {
-		defer close(fillStopped)
-		if err := textversions.Run(ctx, textversions.Config{
-			Leases:   textVersionsLeases,
-			Horizon:  background.EventHorizon(),
-			Latency:  answersLatency,
-			Serving:  serving,
-			Events:   textVersionsEventsWake,
-			Released: textVersionsReleasedWake,
-		}); err != nil {
-			slog.Error("dispatch: start the keyword fill", "error", err)
-		}
-	}()
 	// The registry row carries the document schema numbers this build reads and creates,
 	// which every process's document socket admission reads; the identity of its embedder, "" with
 	// none, the same string the embedding queue compares stored vectors with, from which every
