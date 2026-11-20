@@ -39,6 +39,18 @@
  *    then the store's context), from `--count` and `--copies`, the two attribute.ts made the
  *    sessions file from. The session is kept only when they place the read at a copy of the cut's
  *    repository; one they place at another copy, or at none, is dropped with the rule named.
+ *
+ *    Every check that needs no model's answer runs here, before the session's first reader call,
+ *    so a session such a check drops costs no reader spend: the placement; the model and thinking
+ *    level, when none the session sets from the read on can give its step a model, a level Oh My
+ *    Pi takes, or a model the gateway serves (each the drop the step's own check makes); the
+ *    session's role or subagent context; the lines a case may name (step 4); and the profile at
+ *    the session's start (below), built from every read the reader can reach: when no unit of
+ *    those reads ships the cut repository's copy of the skill, no step's profile installs it. The
+ *    checks of the step and its line (its model, the compaction and by-path reads before it, the
+ *    line in the base text and in the read, a quote or restatement of it, and the profile of the
+ *    reads before it) need the reader's answer, so they run after it and before the restatement
+ *    check's and the audit's readers.
  * 4. The case reader (`skill-cuts read --prompt case`) is offered only the lines of the skill's base
  *    text (`--old`) that a case may name: those of each file that the session's own successful
  *    reads of that file hold whole (the text after its `[Skill file: …]` line, each line trimmed,
@@ -933,6 +945,13 @@ function modelChange(entry: SessionEntry): string | undefined {
   return entry.type === "model_change" && typeof entry.model === "string" ? entry.model : undefined;
 }
 
+/** The thinking level a `thinking_level_change` entry names, or undefined for any other entry. */
+function thinkingChange(entry: SessionEntry): string | undefined {
+  return entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string"
+    ? entry.thinkingLevel
+    : undefined;
+}
+
 /** `model`'s id and whether a route of the gateway serves it, by the read count's rule
  *  (attribute.ts's `sessionModel`): a thinking suffix left out, its id (the text after the last
  *  `/`, whatever gateway or provider names it) is one of `servedIds`. */
@@ -1604,11 +1623,20 @@ const MEMBER_ACTIONS: Readonly<Record<string, true>> = {
   installs: true,
 };
 
+/** A case's profile, the evidence for each part, and `shipped`: each copy some unit of the
+ *  profile ships (`<repo>\0<name>`), whether or not a copy of its name came first. */
+interface ProfileResult {
+  readonly profile: Profile;
+  readonly evidence: Evidence[];
+  readonly shipped: ReadonlySet<string>;
+}
+
+/** Why a profile is refused: it installs no copy of the cut repository's skill. */
+const notInstalled = (run: Pick<CaseRun, "skill" | "cut">) =>
+  `the profile installs no ${run.skill} of ${run.cut.repo} at the session's start`;
+
 /** The profile of a case, with the evidence for each part. Throws when a GitHub read fails. */
-async function caseProfile(
-  run: ProfileRun,
-  input: ProfileInput
-): Promise<{ profile: Profile; evidence: Evidence[] }> {
+async function caseProfile(run: ProfileRun, input: ProfileInput): Promise<ProfileResult> {
   const { copies, github } = run;
   const evidence: Evidence[] = [];
   const commits = new Map<string, string>();
@@ -1747,8 +1775,10 @@ async function caseProfile(
 
   const skills = new Map<string, Omit<ProfileSkill, "commit">>();
   const plugins = new Map<string, { repo: string; path: string; name: string; why: string }>();
+  const shipped = new Set<string>();
   /** Adds `copy` to the profile's skills, or says why not: a copy of its name came first. */
   const install = (copy: Omit<ProfileSkill, "commit">, how: string): boolean => {
+    shipped.add(`${copy.repo}\0${copy.name}`);
     const known = skills.get(copy.name);
     if (known === undefined) {
       skills.set(copy.name, copy);
@@ -1955,6 +1985,7 @@ async function caseProfile(
   return {
     profile: { skills: profileSkills, plugins: profilePlugins, contextFiles: profileFiles },
     evidence,
+    shipped,
   };
 }
 
@@ -2175,15 +2206,27 @@ async function caseOf(
     );
   }
 
-  // The models: the step's must be one the gateway serves, and the step comes after the read, so
-  // a session none of whose models from the read on is served gives no case, and no reader reads
-  // it.
+  // The model and thinking level: the step's are the last before it, and the step comes after the
+  // read, so each is the one in effect at the read or one set after it. A session that gives the
+  // step no model, no thinking level Oh My Pi takes, or no model the gateway serves, whichever
+  // step the reader finds, gives no case, and no reader reads it; the step's own checks, below,
+  // would drop it for the same reason.
   const models = new Set(record.model === undefined ? [] : [record.model]);
+  const levels = [lastBefore(t.branch, firstAt, thinkingChange)];
   for (const entry of t.branch.slice(firstAt + 1)) {
     const model = modelChange(entry);
     if (model !== undefined) models.add(model);
+    const level = thinkingChange(entry);
+    if (level !== undefined) levels.push(level);
   }
-  if (models.size > 0 && ![...models].some((model) => served(model, run.servedIds).served)) {
+  if (models.size === 0) return drop("no-model", "no model_change");
+  if (
+    record.model !== undefined &&
+    !levels.some((level) => level !== undefined && Thinking.safeParse(level).success)
+  ) {
+    return drop("no-model", "no thinking level Oh My Pi takes");
+  }
+  if (![...models].some((model) => served(model, run.servedIds).served)) {
     return drop("model-not-served", notServed([...models], run.servedIds));
   }
 
@@ -2245,6 +2288,33 @@ async function caseOf(
       "no-common-line",
       `the session's successful reads of ${read.join(", ")} hold no whole line of the base text`
     );
+  }
+
+  // The profile at the session's start, before any reader reads the session. The case's profile
+  // is built from the reads before its step, which the reader has not found yet; those are among
+  // the reads the reader can reach, and fewer reads install fewer units. So when no unit of the
+  // reads it can reach ships the skill of the cut's repository, no step's profile installs it, and
+  // the session is dropped as the step's profile check would drop it. A GitHub read that fails
+  // here is the step's read too.
+  const profileInput = {
+    store: store.name,
+    context: store.context,
+    project,
+    sessionStart,
+    cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
+    recordedPrompt: init !== undefined,
+  };
+  let reachable: ProfileResult;
+  try {
+    reachable = await caseProfile(run, {
+      ...profileInput,
+      reads: shownReads(readable.map((item) => item.message)),
+    });
+  } catch (error) {
+    return drop("profile-failed", messageFor(error));
+  }
+  if (!reachable.shipped.has(`${run.cut.repo}\0${run.skill}`)) {
+    return drop("not-cut-copy", notInstalled(run));
   }
   const hidden = skillReadResults(allMessages, run.skill);
   const shown = (index: number, message: SessionMessage): CaseInput["messages"][number] => ({
@@ -2343,13 +2413,7 @@ async function caseOf(
   // it, and runs on no other.
   const model = lastBefore(t.branch, stepItem.at, modelChange);
   if (model !== undefined) record.model = model;
-  const thinking = Thinking.safeParse(
-    lastBefore(t.branch, stepItem.at, (entry) =>
-      entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string"
-        ? entry.thinkingLevel
-        : undefined
-    )
-  );
+  const thinking = Thinking.safeParse(lastBefore(t.branch, stepItem.at, thinkingChange));
   if (model === undefined || !thinking.success) {
     return drop(
       "no-model",
@@ -2406,28 +2470,18 @@ async function caseOf(
     );
   }
 
-  // The profile.
-  let profiled: { profile: Profile; evidence: Evidence[] };
+  // The profile: from the reads before the step. Its GitHub reads were made for the reads the
+  // reader could reach, so they are made once.
+  let profiled: ProfileResult;
   try {
-    profiled = await caseProfile(run, {
-      store: store.name,
-      context: store.context,
-      project,
-      reads: shownReads(messages),
-      sessionStart,
-      cwd: typeof header?.cwd === "string" ? header.cwd : undefined,
-      recordedPrompt: init !== undefined,
-    });
+    profiled = await caseProfile(run, { ...profileInput, reads: shownReads(messages) });
   } catch (error) {
     return drop("profile-failed", messageFor(error));
   }
   if (
     !profiled.profile.skills.some((each) => each.name === run.skill && each.repo === run.cut.repo)
   ) {
-    return drop(
-      "not-cut-copy",
-      `the profile installs no ${run.skill} of ${run.cut.repo} at the session's start`
-    );
+    return drop("not-cut-copy", notInstalled(run));
   }
 
   const digest = lastBefore(t.branch, stepItem.at, (entry) =>
@@ -2685,7 +2739,7 @@ async function reprofileCases(
       continue;
     }
     const agents = c.profile.contextFiles.find((file) => file.path === "AGENTS.md");
-    let profiled: { profile: Profile; evidence: Evidence[] };
+    let profiled: ProfileResult;
     try {
       profiled = await caseProfile(run, {
         store: store.name,
@@ -2703,7 +2757,7 @@ async function reprofileCases(
       continue;
     }
     if (!profiled.profile.skills.some((each) => each.name === c.skill && each.repo === cut.repo)) {
-      leave(`the profile installs no ${c.skill} of ${cut.repo} at the session's start`);
+      leave(notInstalled({ skill: c.skill, cut }));
       continue;
     }
     const old = c.evidence ?? [];

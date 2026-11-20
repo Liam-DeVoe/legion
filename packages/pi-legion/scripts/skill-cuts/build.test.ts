@@ -262,6 +262,9 @@ const SESSIONS: Record<
   // count's reads of store_a come from a unit of acme/skills, those of store_c from acme/other's.
   context: { store: "store_a", change: readFrom("/mnt/loaded/alpha") },
   "context-other": { store: "store_c", change: readFrom("/mnt/loaded/alpha") },
+  // A read the prefix table places at the cut's copy, through a plugin whose manifest acme/skills
+  // did not hold at the session's start: its profile ships no alpha.
+  unshipped: { store: "store_a", change: readFrom("/opt/acme-tools/skills/alpha") },
   secret: {
     store: "store_a",
     change: (lines) =>
@@ -830,6 +833,13 @@ beforeAll(() => {
       ["/opt/legion/pi-acme/dist/skills/alpha/", "acme/skills", "skills/alpha", "alpha", pkg],
       ["/opt/legion/pi-acme/dist/skills/beta/", "acme/skills", "skills/beta", "beta", pkg],
       ["/opt/legion/pi-acme/dist/skills/newer/", "acme/skills", "skills/newer", "newer", pkg],
+      [
+        "/opt/acme-tools/skills/alpha/",
+        "acme/skills",
+        "skills/alpha",
+        "alpha",
+        "plugin:acme-tools (acme/skills:plugins/acme-tools/.claude-plugin/plugin.json)",
+      ],
     ])
   );
   const installer = (
@@ -1589,6 +1599,19 @@ describe("build-cases over every made-up session", () => {
     expect(shownLines(offered("skill-md-only")).map((each) => each.file)).toEqual(["SKILL.md"]);
   });
 
+  test("a session the profile check drops makes no reader request: the profile at the session's start is checked before the first reader call", () => {
+    const record = summaryOf(out).sessions.find(
+      (each) => each.hash === fileHash(sessionPath("unshipped"))
+    );
+    expect(record).toMatchObject({
+      reason: "not-cut-copy",
+      detail: "the profile installs no alpha of acme/skills at the session's start",
+      readerUsd: 0,
+    });
+    expect(record?.windows).toBeUndefined();
+    expect(requests.some((each) => each.body.includes("(case unshipped)"))).toBe(false);
+  });
+
   test("a session whose reads hold no line of the base text is dropped as no-common-line, with no reader call", () => {
     const record = summaryOf(out).sessions.find(
       (each) => each.hash === fileHash(sessionPath("no-common"))
@@ -1658,7 +1681,7 @@ describe("build-cases over every made-up session", () => {
       "no-read": 1,
       "no-step": 1,
       "no-common-line": 1,
-      "not-cut-copy": 3,
+      "not-cut-copy": 4,
       "no-role": 1,
       "bad-session-init": 1,
       unparseable: 1,
@@ -1682,6 +1705,7 @@ describe("build-cases over every made-up session", () => {
     expect(reasonOf("switched-model")).toBe("model-not-served");
     expect(reasonOf("read-lacks-line")).toBe("line-not-in-read");
     expect(reasonOf("no-common")).toBe("no-common-line");
+    expect(reasonOf("unshipped")).toBe("not-cut-copy");
     // Every reader call is counted: one case reader call a window of each session the reader
     // reached, one restatement call a window of each case checked (READER_TRIES for the window
     // whose answer was refused, none for the case with too many windows, up to the window of a
