@@ -289,6 +289,12 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 	google, machineAccount := config.personSignIns != nil, ""
 	if google {
 		machineAccount = config.personSignIns.machineAccount
+		// BROKER_VM_SERVICES, the one map main gives the enrollment service and the request
+		// machine: the service newExchangeSet's Google entry names. Without it no launcher
+		// credential a trade mints for this machine, a person's sign-in's among them,
+		// authenticates at a launcher route (enroll.Service.AuthenticateLauncher).
+		vmServices := map[string]string{machineAccount: "leaver-machine"}
+		enr.VMServicesByAccount, reqMachine.VMServicesByAccount = vmServices, vmServices
 	}
 	entries := newExchangeSet(t, google, machineAccount)
 	providerOptions := []ProviderOption{func(c *providerConfig) { c.exchange = entries }}
