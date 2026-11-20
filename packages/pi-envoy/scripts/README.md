@@ -163,8 +163,13 @@ claim is kept while its holder's session reads short of `gone`, which is what le
 other row's holder in its role. The rows still read the listener's own word for each outcome — a claim
 granted, a `409`, or the lookup's `404` — which reads the same whether a standing claim lapsed
 where it stood or a pass had already removed it, and a row whose claimant must be refused is
-decided inside the window, its holder having answered for the claim immediately before. A row
-that waits the window out waits for the listener to say so, never for a sleep.
+decided inside the window, its holder having answered for the claim immediately before. No
+process start sits between that answer and the claim, since a client's start on a loaded machine
+can outlast the ten seconds: the holder answers once the claimant's process is up, or, for a
+Claude Code channel server, which claims as it boots, on every pass until it has claimed. Each
+such row then reads how old that answer was when the claim was weighed, off the two proxies'
+logs, and fails naming the window where it was not inside it. A row that waits the window out
+waits for the listener to say so, never for a sleep.
 
 Eighteen rows are printed, each with its outcome:
 
@@ -331,16 +336,21 @@ because no client in the checkout can be made to send them (`old_register`, `old
 
 The clients themselves, in the third sourced file `smoke-role-takeover.sh` brings in, beside the
 Bun drivers it starts: a recording proxy and a process per client (`start_proxy`, `start_omp`,
-`start_claude`), the stdin and stdout one command is sent and answered over (`client_fifo`,
-`client_ready`, `send`), the readers of each client's proxy log — the claims it made
-(`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
+`start_claude`, which is `launch_claude`, a start not waited for, and then `claude_started`, which
+waits until the channel server answers a tool, since the listener has the session's registration
+before the server's start ends and the server answers every tool "still starting" until then:
+`claude_answers_tools`), the stdin and stdout one command is sent and answered over
+(`client_fifo`, `client_ready`, `send`), the readers of each client's proxy log — the claims it
+made (`claim_status`, `claim_holder`, `first_claim_status`, `first_claim_holder`, `made_claim`,
 `claim_count`), the registrations it sent (`instance_id`, `registered_at`,
 `first_registered_at`), the requests of either kind (`claim_writes`), its deregistration
-(`delete_answer`) and its hand-backs (`release_status`, `release_instance`, `released`) — and the
-two ways a row makes a holder answer for its claim (`renew_omp`, `renew_claude`). It is sourced,
-never run: it starts no process of its own, and it reads the scratch directory, the driver
-directory, the checkout, the listener and natsd URLs, the Oh My Pi client's windows, the two
-client timeouts and the run id that the smoke sets.
+(`delete_answer`), its hand-backs (`release_status`, `release_instance`, `released`) and how old
+a holder's renewal was when a claim was weighed against it (`renewal_age`) — and the ways a row
+makes a holder answer for its claim (`renew_omp`, `renew_claude`, and
+`renew_claude_until_claimed`, which renews again and again while a launched channel server boots,
+until it has claimed). It is sourced, never run: it starts no process of its own, and it reads
+the scratch directory, the driver directory, the checkout, the listener and natsd URLs, the Oh My
+Pi client's windows, the two client timeouts and the run id that the smoke sets.
 
 ## skill-scenarios/rig.sh
 

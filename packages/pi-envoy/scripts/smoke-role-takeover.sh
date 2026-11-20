@@ -118,8 +118,12 @@ readonly omp_pass_deadline_ms=30000
 # ENVOY_SESSION_LIVE_WINDOW is how long a registration keeps a session live and, with it, how long
 # a claim stands renewed: the rows where a second process takes over wait it out, so it is seconds
 # rather than the five minutes a deployment runs. It is the whole budget between a holder's last
-# registration and a claimant's claim in the rows where the holder must still be answering, so it
-# is set well past what a Claude Code channel server costs to start.
+# registration and a claimant's claim in the rows where the holder must still be answering, and no
+# process start may sit inside it: a client's start on a loaded machine has taken 11 s and 26 s.
+# So the holder answers once the claimant's process is up and before it claims, or, where the
+# claimant claims as it boots, on every pass until it has claimed, and each such row reads how old
+# that answer was when the claim was weighed (`expect_renewed_inside`) and fails naming the window
+# where it was not inside it.
 #
 # ENVOY_ROLE_CLAIM_REAP_INTERVAL is the role claim reaper's period, short so that every row is
 # swept several times. The one claim the reaper frees in this run is the one a hand-back marked:
@@ -132,11 +136,11 @@ readonly omp_pass_deadline_ms=30000
 # The rows that wait a window out still prove what they claim, and the reaper is why they are
 # worth driving at all. A row where a claimant must be refused is decided inside the window: the
 # holder answers for its claim immediately before the claim is made, so no pass can have touched
-# it. A row where the role must move reads the listener's own word for the move — the lookup's
-# 404 (`role_unrenewed`), or a claim granted — and that word reads the same whether the standing
-# claim lapsed where it stood or a pass had already removed it. In both the role went to the
-# process that kept asking for it, and in neither did it go to a process while another was still
-# answering for the claim.
+# it, and the row checks that it did. A row where the role must move reads the listener's own
+# word for the move — the lookup's 404 (`role_unrenewed`), or a claim granted — and that word
+# reads the same whether the standing claim lapsed where it stood or a pass had already removed
+# it. In both the role went to the process that kept asking for it, and in neither did it go to a
+# process while another was still answering for the claim.
 readonly session_live_window=10s
 readonly live_window_seconds="${session_live_window%s}"
 readonly role_claim_reap_interval=2s
@@ -151,6 +155,10 @@ readonly takeover_timeout=90
 # restarted process's first registration, the role lookup and the session listing have one
 # deployment heartbeat, 90 s, to name the same holder.
 readonly live_restart_window=90
+# How long a Claude Code process is given, from its launch, to boot and make its first claim while
+# the holder it is weighed against keeps answering for its claim: the 120 s `claude_started` gives
+# a boot, and the listener_wait_timeout a first claim was given after it.
+readonly claude_first_claim_timeout=$((120 + listener_wait_timeout))
 
 refuse() {
   printf 'smoke-role-takeover: %s\n' "$1" >&2
@@ -351,6 +359,25 @@ expect_true() {
   [[ -n "$current_failure" ]] || current_failure="$what"
 }
 
+# expect_renewed_inside WHAT CLAIMANT SESSION PREVIOUS HOLDER HOLDER_SESSION: the row's own check
+# that the claim it needs refused was weighed inside the live window of the holder's last answer
+# (renewal_age in clients.sh), so a holder that went unrenewed fails the row by WHAT and not by a
+# refusal the listener was right not to give. The age read is noted; one nobody could read fails.
+expect_renewed_inside() {
+  local what="$1" age verdict
+  shift
+  age="$(renewal_age "$@")"
+  if [[ -z "$age" ]]; then
+    verdict="unread: the proxy logs hold no such claim, or no registration of the holder before it"
+  elif ((age < live_window_seconds * 1000)); then
+    verdict="inside"
+    note "   the holder's last answer was at most ${age} ms old when the claim was answered"
+  else
+    verdict="past it: the holder's last answer was ${age} ms old when the claim was answered"
+  fi
+  expect "$what" "$verdict" "inside"
+}
+
 evidence() {
   current_evidence="$1"
 }
@@ -501,6 +528,12 @@ row1_omp() {
 # the row proves is that it keeps asking — each heartbeat presses the record again — and is
 # granted the role one window later, rather than being left roleless for the life of the
 # process (dispatch://INFRA-783).
+#
+# The first server is killed once the restarted one has claimed, not before it boots: it answers
+# for its claim while the other boots, so that first claim is weighed inside the window however
+# long the boot took. The listener sees the same restart either way — a last renewal from the
+# first process, then a claim from the second — except that a boot in between, which a loaded
+# machine stretches past the run's ten seconds, would hand the claim a window already spent.
 row1_claude() {
   local role session state first second
   role="$(role_for r1cc)"
@@ -512,20 +545,23 @@ row1_claude() {
   send cc-restart-1 "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "the first channel server holds the role" "$(role_holder "$role")" "$session"
   first="$(instance_id cc-restart-1 "$session")"
-  # The claim is renewed at the last moment this server has: the window the restarted server
-  # must make its first claim inside starts here, and this row is about a claim made inside it.
-  renew_claude cc-restart-1
-  send cc-restart-1 '{"op":"kill"}'
-  expect_true "the session is still registered after the server is gone" registered "$session"
 
   # On the short heartbeat: the row turns on the claim being pressed again, which is what each
-  # heartbeat does. Nothing renews the gone server's claim meanwhile — a registration renews
-  # only a claim its own process holds — so the window runs out under the restarted server's own
-  # registrations.
-  start_claude cc-restart-2 "$session" "$state" "$claude_heartbeat_ms"
+  # heartbeat does. Nothing renews the gone server's claim once it is killed — a registration
+  # renews only a claim its own process holds — so the window runs out under the restarted
+  # server's own registrations.
+  launch_claude cc-restart-2 "$session" "$state" "$claude_heartbeat_ms"
+  renew_claude_until_claimed "$claude_first_claim_timeout" cc-restart-1 cc-restart-2 "$session" "$session" || true
+  send cc-restart-1 '{"op":"kill"}'
+  claude_started cc-restart-2
   # A listener that grants the claim and one that refuses it both answer it; a listener that
-  # never sees one leaves the status below empty, which is the row's failure to report.
-  wait_for "$listener_wait_timeout" made_claim cc-restart-2 "$session" "$session" || true
+  # never sees one leaves the claim unmade, which is the row's failure to report.
+  expect_true "the restarted server made its first claim within ${claude_first_claim_timeout}s of its launch, while the first one answered for its claim" \
+    made_claim cc-restart-2 "$session" "$session"
+  expect "the killed server sent no deregistration, as a crash sends none" \
+    "$(delete_answer cc-restart-1 "$session" deleted)" ""
+  expect_renewed_inside "the restarted server's first claim was weighed inside the live window of the first one's last answer" \
+    cc-restart-2 "$session" "$session" cc-restart-1 "$session"
   second="$(instance_id cc-restart-2 "$session")"
   expect "the restarted server is another client instance" \
     "$([[ -n "$second" && "$second" != "$first" ]] && echo different || echo same)" "different"
@@ -717,10 +753,20 @@ row6_predecessor() {
   instance_d="$(instance_id omp-d "$p")"
 
   start_omp omp-c
+  # D answers for its claim now that C is up and before C's first claim: C's start of P reads P's
+  # registry entry, which names the role, and claims it under P (`desiredRole` in
+  # extensions/envoy.ts) — a second process under the holder's own id, weighed on D's renewal
+  # alone. Answered before C's process started, that renewal was as old as the start when C
+  # claimed, and starts of 11 s and 26 s on a loaded machine handed C the role.
+  renew_omp omp-d "$p"
   send omp-c "$(jq -nc --arg s "$p" '{op:"start",session:$s,roles:[]}')"
   instance_c="$(instance_id omp-c "$p")"
   expect "process C is another client instance" \
     "$([[ -n "$instance_c" && "$instance_c" != "$instance_d" ]] && echo different || echo same)" "different"
+  wait_for "$listener_wait_timeout" made_claim omp-c "$p" "" || true
+  expect "process C's resume of P claims the role under P and is refused" "$(claim_status omp-c "$p" "")" "409"
+  expect_renewed_inside "C's resume claim was weighed inside the live window of D's last answer" \
+    omp-c "$p" "" omp-d "$p"
   # C registered P last, which is what a predecessor read would find; D answers again here, so
   # the predecessor C is about to name is live and is D's.
   renew_omp omp-d "$p"
@@ -780,14 +826,19 @@ row5_claude() {
   send cc-a "$(jq -nc --arg r "$role" '{op:"tool",name:"envoy_role_set",args:{role:$r}}')"
   expect "process A holds the role under X" "$(role_holder "$role")" "$x"
   instance_a="$(instance_id cc-a "$x")"
-  # A answers for its claim here rather than on a timer of its own: this row needs A's claim to
-  # be inside the live window when B claims, and the row below needs B to have registered X
-  # last, which two servers heartbeating against each other would settle by coin toss.
-  renew_claude cc-a
   # B shares A's plugin data directory, as two `claude` processes of one user do, so it reads the
-  # role record A wrote for X and claims it back under that same id as it boots.
-  start_claude cc-b "$x" "$state" "$claude_heartbeat_ms"
-  wait_for "$listener_wait_timeout" made_claim cc-b "$x" "$x" || true
+  # role record A wrote for X and claims it back under that same id as it boots. A answers for its
+  # claim here rather than on a timer of its own, on every pass while B boots and until B has made
+  # that claim: this row needs A's claim to be inside the live window when B claims, however long
+  # B's boot took, and the row below needs B to have registered X last, which two servers
+  # heartbeating against each other would settle by coin toss.
+  launch_claude cc-b "$x" "$state" "$claude_heartbeat_ms"
+  renew_claude_until_claimed "$claude_first_claim_timeout" cc-a cc-b "$x" "$x" || true
+  claude_started cc-b
+  expect_true "process B made its first claim within ${claude_first_claim_timeout}s of its launch, while A answered for its claim" \
+    made_claim cc-b "$x" "$x"
+  expect_renewed_inside "B's first claim was weighed inside the live window of A's last answer" \
+    cc-b "$x" "$x" cc-a "$x"
   # A answers for its claim again, now that B has made its first: B asks again on each heartbeat
   # from here, and this row is what happens while the holder is still answering — the role stays
   # with A's process, and B's asking changes nothing.
