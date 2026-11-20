@@ -2319,11 +2319,11 @@ test("the state golden counts the claims the stale-plugin lane has left, and the
   }
 });
 
-// The daemon's Dispatch credential under `dispatch_token_broker` (contract 182): the golden names
+// The daemon's Dispatch credential under `dispatch_token_broker` (contract 192): the golden names
 // the daemon's session and the two counts a deployment reads before it removes
 // `dispatch_token_transition_file`, and the time of the last transition launch is null before the
 // first. The key is not required: a daemon without the setting writes none, and a daemon at this
-// contract leaves it off the state it serves a caller whose pod's plugin is older than 182
+// contract leaves it off the state it serves a caller whose pod's plugin is older than 192
 // (`api.stateFor`, `withoutDispatchCredential`). What is refused is a count that is not a whole
 // number of launches, or a credential with no session.
 test("the state golden names the daemon's Dispatch credential, and the key may be absent", () => {

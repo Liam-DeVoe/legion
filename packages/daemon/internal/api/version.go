@@ -913,10 +913,9 @@ package api
 // composer, `internal/runtime/spendattrs.go`'s SpendResourceAttributes, called from
 // `internal/runtime/sandbox/manifest.go`'s roleOperatorEnv and `internal/runtime/tmux/spawn.go`'s
 // panePairs), so every launch's resource attributes name the issue it serves rather than the
-// deployment alone. Both keys reach the spend collector today, and its keep-list of six theorem.*
-// resource attributes drops every other key, so no spend row names an issue yet. A row grouped by
-// issue follows when the collector keeps them, which dispatch://INFRA-1835 adds to that list. The
-// detector that reads the value assigns last-wins, which is why the daemon's pairs are
+// deployment alone. A deployment's collector may keep a fixed list of resource attributes, so a
+// spend row can be grouped by issue only when the collector keeps legion.issue and legion.role.
+// The detector that reads the value assigns last-wins, which is why the daemon's pairs are
 // written after the operator's; a pair the launch holds no fact for is left out rather than
 // written empty, so the project controller's launch, which serves no issue, carries `legion.role`
 // alone. The name stays the operator's to set — the runtime composes the value, it does not own
@@ -924,7 +923,7 @@ package api
 // second pair of that name is the one the C library's lookup answers with, and both configuration
 // loaders refuse an operator value the agent's OpenTelemetry detector would throw on
 // (runtime.SpendAttributesRefusal): that throw is caught with an empty hand, so one malformed
-// member costs the launch every attribute of the variable, the operator's own theorem.project
+// member costs the launch every attribute of the variable, the operator's own project attribute
 // among them. The pane environment and the worker container's environment are surfaces of this
 // contract, which is why an environment change takes a number at all: the boot gate refuses to
 // start against an installed plugin declaring another number, and `legion probe-image` refuses an
@@ -2455,7 +2454,17 @@ package api
 // between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
 // and none declaring 178.)
 //
-// 182: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
+// 188: #4543 -- no wire shape changes. Entry 64's prose no longer names one deployment's spend
+// collector or its attribute prefix: it says that a spend row can be grouped by issue only when a
+// deployment's collector keeps `legion.issue` and `legion.role`. Every route, the state, and the
+// pane and container environments are as 178 has them. The number moves because
+// `.github/scripts/check-daemon-api-contract.sh` reads any edit of this history as a contract
+// change, and the boot gate and `legion probe-image` refuse a daemon and a plugin that declare
+// different numbers, so the two still move together.
+// (This entry takes 188, above main's 178: #4175 declares 185, #4495 and #4573 declare 186,
+// and #4581 declares 187.)
+//
+// 192: dispatch://INFRA-4425 -- under `dispatch_token_broker` a role trades its pod's exchange
 // identity at the secrets broker for a Dispatch token of its own session, and the daemon names
 // that session, which moves three surfaces this number names. The agent's argv: in a pod that
 // carries the exchange identity (sandbox's launch.trades) the daemon chooses each Oh My Pi role's
@@ -2473,8 +2482,8 @@ package api
 // token, which a deployment waits to see at zero before it removes
 // `dispatch_token_transition_file`. The settings block's `dispatch_token_broker` is a key of the
 // block the plugin parses loosely (35 above), and moves no number.
-// A plugin before 182 reads the state with a strict schema that knows no `dispatchCredential` and
-// refuses the whole body for it, so a caller from a pod whose claims record a contract below 182
+// A plugin before 192 reads the state with a strict schema that knows no `dispatchCredential` and
+// refuses the whole body for it, so a caller from a pod whose claims record a contract below 192
 // is served the state without the key (api's stateFor, withoutDispatchCredential), as a caller
 // below 146 is served the issues without the entry times; 151 moves no strictly parsed shape of
 // the state and narrows nothing.
@@ -2485,16 +2494,15 @@ package api
 // `legion probe-image` hold the daemon to an image built from this contract. A role in a kept pod
 // of an older image carries no exchange identity, so it keeps the argv and the credential it had,
 // and its pod's update round replaces the pod.
-// (This change takes 182, the lowest number above main's 178 that no open pull request declared
-// when the forward merge of 2026-11-20 brought main in at c7e1cbd532, which declares 178 (#4115,
+// (This change takes 192, the lowest number above main's 188 that no open pull request declared
+// when the forward merge of 2026-11-20 brought main in at 1c7c825367, which declares 188 (#4543,
 // the entry above); it had declared 165, then 175 from the merge that brought main in at
-// a16c218ee3, then 179 from the merge that brought main in at 506395beea. A reading of `const
-// DaemonAPIVersion` at refs/pull/<n>/head for each of the 243 open pull requests, made between
-// 2026-11-20T01:10:11Z and 01:15:26Z, found 176 (#4030, #4173, #4180, #4182, #4193, #4251, #4259,
-// #4261, #4269, #4290), 177 (#4017), 178 (#3831, #4552, #4554), 179 (#4540 and this change's own
-// head before this merge), 180 (#4049, #4175) and 181 (#4553) declared above 175, and nothing
-// above 181. Read the base's own number and every open pull request again at the next merge rather
-// than from this line, as
+// a16c218ee3, then 179 from the merge that brought main in at 506395beea, then 182 from the merge
+// that brought main in at c7e1cbd532. `.github/scripts/check-daemon-api-contract.sh`, which reads
+// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request, read 189 (#3831,
+// #4592, #4596), 190 (#4493, #4578) and 191 (#4495) above 188 at 2026-11-20T10:31Z. Read the
+// base's own number and every open pull request again at the next merge rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 182
+const DaemonAPIVersion = 192

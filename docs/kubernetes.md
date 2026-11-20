@@ -7650,7 +7650,7 @@ each issue's pod (every role of it alike) and the image probe's.
   — but a mount there would still land on what that init container writes, so it is refused here rather than left to fail in a pod).
   `legion config check` runs the same check.
   `OTEL_RESOURCE_ATTRIBUTES` is composed here rather than refused, as `PI_CONFIG_FILES` is:
-  the operator sets the attributes their deployment's spend is billed under (`theorem.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
+  the operator sets the attributes their deployment's spend is billed under (`acme.project=widgets`), and each launch carries them with its own `legion.issue` and `legion.role` after them.
   The agent's OpenTelemetry detector assigns last-wins, so the daemon's pairs come last, and a launch spec may not set the name.
   A spend row names an arm (`legion.arms`, below), an issue or a role where the collector keeps it.
   The project controller's pod serves no issue and carries the role alone, and the image probe's container, which runs no role either, keeps the operator's value as the operator wrote it.
@@ -8425,7 +8425,7 @@ Its role is told `DISPATCH_TOKEN_BROKER=1` and no `DISPATCH_TOKEN_FILE`, and its
 The trade proves the role's own agent-secrets key, `$AGENT_SECRETS_KEY_DIR/key.pem`, which the role's pod-session registration names.
 A key file that cannot be read fails the trade, naming its path, and no fresh key takes its place (`packages/broker-client/src/environment.ts`).
 An Oh My Pi role in such a pod runs under a session id the daemon chose, as a Claude Code role does ([Operator configuration](#operator-configuration), under `exchange_audience`).
-The worker image's half of this is daemon API contract 182, so the boot gate and `legion probe-image` refuse a worker image built from an earlier contract.
+The worker image's half of this is daemon API contract 192, so the boot gate and `legion probe-image` refuse a worker image built from an earlier contract.
 
 **The transition file.**
 A pod's volumes are fixed when the pod is created, so a pod built before the setting carries no exchange identity, and its roles have nothing to trade until its update round replaces it.
