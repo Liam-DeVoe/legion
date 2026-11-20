@@ -867,6 +867,35 @@ test("a holds answer of a turn that ended with no Stop is not noted in the next 
   }
 })
 
+// Claude Code may fire `UserPromptSubmit` for a message the bridge injects while a turn runs, so
+// the reset there keeps a holds read still in flight: its answer is at most
+// `HOLDS_READ_BOUND_MS` old, and dropping it would put R2's note a minute past its bound.
+test("a UserPromptSubmit while a holds read is in flight still gives one note from that read's answer", async () => {
+  const reading = Promise.withResolvers<Record<string, unknown>>()
+  const { endpoint, taskReads, answered, close } = await harness({
+    record: recorded("open", 0),
+    claim: implementer,
+    claimsTask: () => reading.promise,
+  })
+  const toolCall = () => endpoint.handle({ event: "PostToolUse", toolName: "Bash", agentId: "" })
+  try {
+    // The worker's call starts the read, whose answer the daemon holds back; the prompt comes
+    // while it is in flight, and the answer after it.
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+    await endpoint.handle({ event: "UserPromptSubmit", prompt: "A message for LEGION-208." })
+    reading.resolve({ task: null, finished: 3, holds: [{ role: "tester", task: 7 }] })
+    await waitFor(async () => answered() === 1, "the holds read's answer")
+
+    // The next call notes the take that answer names, and the one after notes nothing.
+    expect(await toolCall()).toEqual(noted(heldTakeNote("tester", 7)))
+    expect(await toolCall()).toEqual({})
+    expect(taskReads).toHaveLength(1)
+  } finally {
+    await close()
+  }
+})
+
 // Rows S5 and S17 of dispatch://INFRA-4130: a helper agent's tool call is not the worker, which
 // alone can end the turn a note asks it to end. It asks the bridge nothing, starts no holds read,
 // and uses up no note: the worker's own next call carries them.

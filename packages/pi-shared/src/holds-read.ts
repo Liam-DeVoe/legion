@@ -36,6 +36,15 @@ export interface HoldsRead {
   /** The holder's turn ended: what this turn's reads named is dropped, and so is the answer of
    * a read still unanswered, since the daemon accepts each take they name at that end. */
   readonly turnEnded: () => void;
+  /**
+   * A turn of the holder started: what an earlier read named is dropped, and a read still
+   * unanswered is kept, its answer returned by the first call after it comes, since that answer is
+   * at most {@link HOLDS_READ_BOUND_MS} old and so still names what the daemon holds. It does not
+   * move the count of turns `turnEnded` moves. Claude Code's phase hook calls it at
+   * `UserPromptSubmit` rather than `turnEnded`, because Claude Code may fire that event for a
+   * message injected while a turn runs, which ends no turn.
+   */
+  readonly turnStarted: () => void;
 }
 
 /** The claim's holds read: a read is bounded at {@link HOLDS_READ_BOUND_MS}, and one that fails
@@ -75,6 +84,9 @@ export function createHoldsRead(deps: {
     },
     turnEnded: () => {
       turn += 1;
+      held = [];
+    },
+    turnStarted: () => {
       held = [];
     },
   };

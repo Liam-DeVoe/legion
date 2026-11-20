@@ -72,3 +72,43 @@ test("a read that fails is handed to failed and names nothing, and the next star
   expect(holdsRead.holds()).toEqual([{ role: "tester", task: 7 }]);
   expect(failures).toEqual([refused]);
 });
+
+// `turnStarted` beside `turnEnded`, on the read alone: claude-envoy's phase hook calls it at
+// `UserPromptSubmit`, which Claude Code may fire for a message injected while a turn runs.
+test("turnStarted drops an earlier answer and keeps a read in flight", async () => {
+  let now = Date.parse("2026-11-19T20:00:00Z");
+  // Each read's answer, held back until the case gives it.
+  const readings: { promise: Promise<LegionTask>; resolve: (reading: LegionTask) => void }[] = [];
+  const holdsRead = createHoldsRead({
+    daemon: {
+      task: () => {
+        const reading = Promise.withResolvers<LegionTask>();
+        readings.push(reading);
+        return reading.promise;
+      },
+    },
+    caller: () => caller,
+    now: () => now,
+    failed: () => undefined,
+  });
+
+  // An answer an earlier read gave, not returned yet, is dropped: the next call returns nothing
+  // of it, and starts no read inside the minute.
+  expect(holdsRead.holds()).toEqual([]);
+  readings[0]?.resolve(HOLDING);
+  await readings[0]?.promise;
+  holdsRead.turnStarted();
+  expect(holdsRead.holds()).toEqual([]);
+  expect(readings).toHaveLength(1);
+
+  // A read still in flight is kept: its answer, given after the turn started, is returned by the
+  // next call, once.
+  now += 60_000;
+  expect(holdsRead.holds()).toEqual([]);
+  expect(readings).toHaveLength(2);
+  holdsRead.turnStarted();
+  readings[1]?.resolve(HOLDING);
+  await readings[1]?.promise;
+  expect(holdsRead.holds()).toEqual([{ role: "tester", task: 7 }]);
+  expect(holdsRead.holds()).toEqual([]);
+});
