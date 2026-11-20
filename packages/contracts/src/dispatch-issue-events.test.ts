@@ -47,6 +47,8 @@ const PAYLOADS: Record<string, { written: unknown; read?: typeof IssueEventPaylo
   "issue.released": { written: IssueReleasedEventPayloadSchema },
 };
 
+const FORCED_CREATE = "on an issue.created alone";
+
 /** Each key a schema declares that Dispatch never writes on these events, by the object that
  *  declares it, with the reason: the Go test's `neverWritten` says the same of the Go types. An
  *  example that carries one fails. */
@@ -67,11 +69,12 @@ const NEVER: Record<string, Record<string, string>> = {
     trees: "the outbox publishes the event log's row, which holds no trees",
   },
   "issue.updated payload": {
-    forced: "on an issue.created alone",
+    forced: FORCED_CREATE,
     references_changed_truncated:
       "an issue.updated names at most 41 issues: its parent and its blockers before and after the patch, 20 at most each, below the 100 of a kind that truncates",
     references_changed_truncated_kinds: "as references_changed_truncated",
   },
+  "issue.updated payload read": { forced: FORCED_CREATE },
   "user actor": {
     act: "set by Dispatch's actingPerson alone, which no issue handler calls",
   },
@@ -206,14 +209,33 @@ const OLDER = (what: string) =>
   `the written schema reads an event retained from a Dispatch older than ${what}, which carries none`;
 const OMITTED = (field: string) =>
   `Go writes it only when it holds something (${field}, omitempty), and no example needs it empty`;
+/** A frame a reader takes, by the schema that reads it tolerantly, with the type whose writes the
+ *  strict schema beside it holds the examples to. */
+const TOLERANT = (reader: string, written: string) =>
+  `${reader} is a reader's tolerant reading, which takes a frame lacking it so a valid header is not discarded; ${written}, which Go writes on every event, is held to the examples`;
+const OWNERLESS =
+  "Go's model.Event.IssueKey is a pointer, null on an event no issue owns (a priority's write, DispatchEvent's priority.* members); an issue event names its issue";
 
 /**
- * Each empty form - a key absent, a key null - that a payload schema of these events takes and no
- * example holds, by the place (`<object>.<key>`) and the form, with the reason the schema takes
- * it. Every other form a payload schema takes must be one an example holds: so a payload key made
- * optional or nullable where Go always writes it fails here.
+ * Each empty form - a key absent, a key null - that a schema the examples are read through takes
+ * and no example holds, by the place (`<object>.<key>`) and the form, with the reason the schema
+ * takes it. Every other form such a schema takes - the envelope's, the event's, a payload's and a
+ * tolerant reader's, at every depth - must be one an example holds: so a key made optional or
+ * nullable where Go always writes it fails here.
  */
 const WIDER: Record<string, { absent?: string; null?: string }> = {
+  "envelope.payload": { absent: OMITTED("listenerwire.Envelope.Payload") },
+  "event.issue_key": { null: OWNERLESS },
+  "frame.issue_key": { null: OWNERLESS },
+  "frame.artifact_id": {
+    absent: TOLERANT("DispatchEventSchema", "the event's artifact_id (PublishedEventSchema)"),
+  },
+  "frame.project": {
+    absent: TOLERANT("DispatchEventSchema", "the event's project (PublishedEventSchema)"),
+  },
+  "frame.actor.id": {
+    absent: TOLERANT("DispatchEventSchema", "the actor's id (ActorSchema, model.Actor.ID)"),
+  },
   "issue.updated payload.advances": {
     absent: OLDER("priorities"),
     null: "Go writes a nil list as null (model.Issue.Advances has no omitempty); an issue read fills it, so these events hold []",
@@ -227,6 +249,19 @@ const WIDER: Record<string, { absent?: string; null?: string }> = {
   "issue.updated payload.created_by": {
     null: "Go's model.Issue.CreatedBy is a pointer, which the API document declares nullable (the spellings test pairs the two); every issue holds its creator since migration 0001 (the Go test's neverEmpty)",
   },
+  ...Object.fromEntries(
+    ["title", "labels", "status", "priority", "rank", "route", "changed", "ancestors"].map(
+      (key) => [
+        `issue.updated payload read.${key}`,
+        {
+          absent: TOLERANT(
+            "IssueEventPayloadSchema",
+            `the payload's ${key} (WrittenIssueEventPayloadSchema)`
+          ),
+        },
+      ]
+    )
+  ),
   "user actor.proven": {
     absent:
       "an actor stored before the proven mark carries none (model.Actor.Proven), and a payload carries stored actors: an older issue's created_by, a claim taken before the mark",
@@ -238,16 +273,18 @@ const WIDER: Record<string, { absent?: string; null?: string }> = {
 };
 
 /** The name each object of the schemas is known by in NEVER, UNHELD, WIDER and the problems; an
- *  object not named here (an `advances` entry) is named by where it is. The reading schema of an
- *  update's payload reads the object the written one writes, so it takes that object's name. */
+ *  object not named here (an `advances` entry) is named by where it is. Each name is one schema's:
+ *  a reader's schema has a name of its own, so a WIDER reason for what a tolerant reader takes
+ *  never excuses the same form in the written schema (the walk refuses one name for two). */
 const LABELS = new Map<unknown, string>([
   [objectSchema(EnvelopeSchema, "EnvelopeSchema"), "envelope"],
   [objectSchema(PublishedEventSchema, "PublishedEventSchema"), "event"],
+  [objectSchema(DispatchEventSchema, "DispatchEventSchema"), "frame"],
   [
     objectSchema(WrittenIssueEventPayloadSchema, "WrittenIssueEventPayloadSchema"),
     "issue.updated payload",
   ],
-  [objectSchema(IssueEventPayloadSchema, "IssueEventPayloadSchema"), "issue.updated payload"],
+  [objectSchema(IssueEventPayloadSchema, "IssueEventPayloadSchema"), "issue.updated payload read"],
   [
     objectSchema(IssueClaimEventPayloadSchema, "IssueClaimEventPayloadSchema"),
     "issue.claimed payload",
@@ -303,8 +340,11 @@ function parsed(
 test("the issue events Dispatch publishes are envelopes, events and payloads these schemas read, every key, value and form declared", async () => {
   const walk = new ExampleWalk({ never: NEVER, labels: LABELS, absentTable: "ABSENT" });
   const examples: WalkedExample[] = EXAMPLES.map((file) => ({ name: file, absent: ABSENT[file] }));
-  const strict = { tolerant: false, forms: false };
-  const reader = { tolerant: true, forms: false };
+  // The walk holds each key of every schema an example is read through to the forms the examples
+  // hold (WIDER): one that takes a key absent or null where Go always writes it fails, the
+  // envelope's, the event's and a tolerant reader's as well as a payload's.
+  const strict = { tolerant: false };
+  const reader = { tolerant: true };
   for (const example of examples) {
     const file = example.name;
     const path = new URL(`../../daemon/internal/intake/testdata/dispatch/${file}`, import.meta.url);
@@ -328,13 +368,8 @@ test("the issue events Dispatch publishes are envelopes, events and payloads the
     if (readPayload !== undefined) expect(readPayload).toEqual(event.payload);
     walk.walk(EnvelopeSchema, envelope, example, "envelope", "envelope", strict);
     walk.walk(PublishedEventSchema, event, example, "event", "event", strict);
-    walk.walk(DispatchEventSchema, event, example, "event", "event", reader);
-    // The payload's keys are held to their forms too (WIDER): a payload schema that takes a key
-    // absent or null where Go always writes it fails.
-    walk.walk(written, event.payload, example, "event.payload", `${event.type} payload`, {
-      tolerant: false,
-      forms: true,
-    });
+    walk.walk(DispatchEventSchema, event, example, "event", "frame", reader);
+    walk.walk(written, event.payload, example, "event.payload", `${event.type} payload`, strict);
     if (payload.read !== undefined) {
       // The reading schema keeps each key it declares, as Dispatch wrote it, and each key it
       // declares is one the example holds, unless NEVER or ABSENT names it: so a reader of a key

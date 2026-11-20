@@ -18,11 +18,15 @@ import { objectSchema, objectShape, schemaNode, takes } from "./schema-inspectio
  *   unless the test's table names the value at one of the places the set is read, with the
  *   reason. The sets of the union members no example takes count too. So a schema that drops a
  *   value fails to parse the example that holds it, and one that gains a value fails here.
- * - **Forms** (`widenings`). Each key of an object a walk reads with `forms` must be refused
- *   absent, and refused null, by its schema, unless some example holds it in that form or the
- *   test's table names the form with the reason the schema takes it. So a schema that starts
- *   taking a form its writer never writes - a required key made optional, a value made nullable
- *   - fails here.
+ * - **Forms** (`widenings`). Each key of every object a walk reads must be refused absent, and
+ *   refused null, by its schema, unless some example holds it in that form or the test's table
+ *   names the form with the reason the schema takes it. So a schema that starts taking a form
+ *   its writer never writes - a required key made optional, a value made nullable - fails here,
+ *   whichever schema it is: an envelope's, an event's, a payload's or a tolerant reader's.
+ *
+ * Every exception is by the name of the object it is for (`labels`, or the place the walk reaches
+ * an unnamed object at), so each name must be one schema's: two schemas the walk reads under one
+ * name, which an exception for one would excuse in the other, fail too.
  */
 
 /** One example a walk reads: its name in the problems, and each key a schema declares that the
@@ -38,17 +42,16 @@ export interface WalkRules {
    *  declares it, with the reason. */
   readonly never: Readonly<Record<string, Readonly<Record<string, string>>>>;
   /** The name each object schema is known by; an object not named here is named by the place
-   *  the walk reaches it at. */
+   *  the walk reaches it at. A name is one schema's. */
   readonly labels: ReadonlyMap<unknown, string>;
   /** What the test calls its table of `absent` entries, as the problems name it. */
   readonly absentTable: string;
 }
 
 /** How a walk reads its value: `tolerant` for a reader's schema, which keeps the keys it declares
- *  and passes the others over, and `forms` to hold each key's empty forms (`widenings`). */
+ *  and passes the others over. */
 export interface WalkMode {
   readonly tolerant: boolean;
-  readonly forms: boolean;
 }
 
 /** One closed set of values a schema declares: its values, the places it is read at, and the
@@ -105,9 +108,9 @@ function valueSet(
 
 /**
  * The walks of one test over its examples, and the problems they found. `walk` reads one value of
- * an example with the schema it is read by; once every value is walked, `staleExceptions`, and
- * for a test that asks for them `unheldValues` and `widenings`, add what only every walk together
- * can show.
+ * an example with the schema it is read by; once every value is walked, `staleExceptions` and
+ * `widenings`, and for a test that asks for them `unheldValues`, add what only every walk
+ * together can show.
  */
 export class ExampleWalk {
   /** Each problem the walks found, in the order they found it. */
@@ -116,6 +119,9 @@ export class ExampleWalk {
   private readonly excused = new Map<string, Set<string>>();
   private readonly values = new Map<unknown, ValueSet>();
   private readonly forms = new Map<string, KeyForms>();
+  /** The schema each name stands for, as the walks met it, and each name met for two. */
+  private readonly named = new Map<string, unknown>();
+  private readonly namedTwice = new Set<string>();
 
   constructor(private readonly rules: WalkRules) {}
 
@@ -196,6 +202,15 @@ export class ExampleWalk {
   ): void {
     if (!isObject(value)) return;
     const label = this.rules.labels.get(schema) ?? name;
+    const known = this.named.get(label);
+    if (known === undefined) {
+      this.named.set(label, schema);
+    } else if (known !== schema && !this.namedTwice.has(label)) {
+      this.namedTwice.add(label);
+      this.problems.push(
+        `two schemas are read as the ${label}, so an exception for one would excuse the other: give each a name of its own`
+      );
+    }
     const declared = this.declared.get(label) ?? new Set<string>();
     this.declared.set(label, declared);
     const never = this.rules.never[label] ?? {};
@@ -203,7 +218,7 @@ export class ExampleWalk {
       declared.add(key);
       const at = `${path}.${key}`;
       const written = never[key] === undefined;
-      if (mode.forms && written) this.form(schema, value, `${label}.${key}`, key);
+      if (written) this.form(schema, value, `${label}.${key}`, key);
       if (key in value) {
         if (!written) {
           this.problems.push(

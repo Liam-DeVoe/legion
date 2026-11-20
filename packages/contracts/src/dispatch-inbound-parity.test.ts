@@ -1340,11 +1340,39 @@ const TARGETED_ABSENT: Record<string, string> = {
   "event.payload.payload_omitted": "the outbox sets it on a stand-in alone (outbox/batch.go)",
 };
 
+const FRAME_TOLERANT =
+  "DispatchEventSchema reads a frame tolerantly, so a frame lacking it keeps its header; Go writes it on every event (model.Event, model.Actor), and the issue event examples hold PublishedEventSchema to that";
+const ISSUE_LESS =
+  "a pointer, null where no issue owns the message: one sent to a session outside any issue (POST /api/v1/agents/{session_id}/messages)";
+
+/** Each empty form - a key absent, a key null - that a reading schema of the targeted-delivery
+ *  fixture takes and the fixture does not hold, by the schema's key and the form, with the reason
+ *  the schema takes it. Every other form a reading schema takes must be the fixture's (the walk's
+ *  `widenings`), so a key a reader makes optional or nullable where Dispatch always writes it, or
+ *  an entry here for a form the fixture holds or the schema refuses, fails here by name. */
+const TARGETED_WIDER: Record<string, { absent?: string; null?: string }> = {
+  "DispatchEventSchema.issue_key": { null: `Go's model.Event.IssueKey is ${ISSUE_LESS}` },
+  "DispatchEventSchema.artifact_id": { absent: FRAME_TOLERANT },
+  "DispatchEventSchema.project": { absent: FRAME_TOLERANT },
+  "DispatchEventSchema.actor.id": { absent: FRAME_TOLERANT },
+  "DispatchTargetedMessagePayloadSchema.issue_key": {
+    null: `Go's model.Message.IssueKey is ${ISSUE_LESS}`,
+  },
+  "DispatchTargetedMessagePayloadSchema.broadcast_id": {
+    absent:
+      "a frame is untrusted, so neither its broadcast_id nor that one is absent proves anything (dispatch-api-targeted.ts)",
+  },
+  "DispatchTargetedMessagePayloadSchema.reply_block": {
+    absent:
+      "a message from a Dispatch older than the field carries none (dispatch-api-messages.ts)",
+  },
+};
+
 test("the targeted-delivery fixture carries every key its reading schemas declare", () => {
   const walk = new ExampleWalk({ never: {}, labels: new Map(), absentTable: "TARGETED_ABSENT" });
   const fixture = { name: "the targeted-delivery fixture", absent: TARGETED_ABSENT };
   // Each schema is a reader's, which keeps the keys it declares and passes the others over.
-  const reader = { tolerant: true, forms: false };
+  const reader = { tolerant: true };
   const { event, delivery } = targetedDeliveryFixture;
   walk.walk(DispatchEventSchema, event, fixture, "event", "DispatchEventSchema", reader);
   walk.walk(
@@ -1364,5 +1392,6 @@ test("the targeted-delivery fixture carries every key its reading schemas declar
     reader
   );
   walk.staleExceptions([fixture]);
+  walk.widenings(TARGETED_WIDER);
   expect(walk.problems).toEqual([]);
 });

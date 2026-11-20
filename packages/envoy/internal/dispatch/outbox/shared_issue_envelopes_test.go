@@ -131,12 +131,13 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 		VerificationArtifactID: "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a02",
 		PlanArtifactID:         "0d6f4a52-7d1e-4c1b-9a51-3c2b8e6f7a03",
 	}
-	// The patch took the child from todo, alice's, blocked by CAPTURE-2 and with no advances.
+	// The patch took the child from todo, alice's and blocked by CAPTURE-2, advancing only the
+	// priority its parent states, which the patch did not move, and gave it one of its own.
 	unpatched := child
 	unpatched.Status = "todo"
 	unpatched.Assignee = new("alice@example.com")
 	unpatched.BlockedBy = []string{"CAPTURE-2"}
-	unpatched.Advances = []model.IssueAdvance{}
+	unpatched.Advances = []model.IssueAdvance{{ID: "contracts-inherited-from-parent", Inherited: true}}
 	unpatched.UpdatedAt = at("2026-11-19T06:10:00Z")
 	moved := updated(unpatched, child, model.ReferenceChanges{Targets: []model.ChangedReference{{Kind: "issue", ID: "CAPTURE-5"}}})
 	moved.Ancestors = []string{"CAPTURE-1"}
@@ -216,8 +217,9 @@ func sharedIssueEnvelopes(t *testing.T) []sharedIssueEnvelope {
 				CreatedAt: at("2026-11-19T06:20:00.5Z"), Payload: linksAgain},
 		},
 		{
-			// The close appended its issue.updated as seq 10 and this release, of the claim the
-			// child held, as seq 11, both with the closing person as their actor (api.patchIssue).
+			// The close appended its issue.closed as seq 10 (api.patchIssue appends issue.closed
+			// for a status moved to done) and this release, of the claim the child held, as seq 11,
+			// both with the closing person as their actor.
 			file: "issue-released-closed.json", number: 3, lastSeq: 10,
 			event: model.Event{ID: 4790, IssueKey: new("CAPTURE-3"), Type: "issue.released", Actor: person,
 				CreatedAt: *closed.ClosedAt, Payload: model.IssueClaimEventPayload{
