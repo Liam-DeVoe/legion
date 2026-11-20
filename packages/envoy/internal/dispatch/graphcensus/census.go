@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -656,7 +657,7 @@ func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreRe
 // test passes one: it is how a test commits a write between two of the census's reads and asks
 // whether the reads after it still answer the snapshot the first one took. Nil runs nothing.
 func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind func(ctx context.Context, kind string) error) (*StoreReport, error) {
-	conn, err := connect(ctx, databaseURL, applicationName)
+	conn, err := store.Connect(ctx, databaseURL, applicationName)
 	if err != nil {
 		return nil, err
 	}

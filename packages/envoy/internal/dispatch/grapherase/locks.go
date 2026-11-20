@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 )
 
 // eraseOwnerAttempts is how many tries lockInStoreOrder makes at reading which owner rows the
@@ -148,9 +149,10 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []stri
 
 // lockProjectionRows takes every projection row of the node `for update`, the level the delete of
 // each in apply takes, right after the node's row and before the erase reads under its locks or
-// writes anything: table by table in projectedTables' order, and by key within each. R17 has a
-// node's row taken before any projection row whose foreign key names it, and every writer of
-// these rows that takes an owner row takes it before them, which the erase already holds.
+// writes anything: table by table in graphstore.ProjectedTables' order, and by key within each.
+// R17 has a node's row taken before any projection row whose foreign key names it, and every
+// writer of these rows that takes an owner row takes it before them, which the erase already
+// holds.
 //
 // Taking them here, and not when apply deletes them, is what orders the erase against a writer
 // that holds one of them and no owner row: the block index tick's window arm takes a comment's
@@ -160,7 +162,7 @@ func (e *Erasure) lockOwnersThenNode(ctx context.Context, tx pgx.Tx, left []stri
 // for the erase while the erase waited for it, until Postgres ended one of them. Here the erase
 // waits at the row holding no row the arm writes, and the arm commits first.
 func lockProjectionRows(ctx context.Context, tx pgx.Tx, kind, id string) error {
-	for _, held := range projectedTables {
+	for _, held := range graphstore.ProjectedTables {
 		if _, err := tx.Exec(ctx, `select 1 from `+held.Table+` where node_kind = $1 and node_address = $2 order by `+
 			held.Key+` for update`, kind, id); err != nil {
 			return fmt.Errorf("lock the %s rows of %s:%s: %w", held.Table, kind, id, err)

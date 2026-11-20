@@ -333,7 +333,7 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 	rows, err := tx.Query(ctx, `
 		select seq, from_kind, from_id, kind, to_kind, to_id, from_kind = $1 and from_id = $2
 		from graph_tuples
-		where (from_kind = $1 and from_id = $2) or (to_kind = $1 and to_id = $2)
+		where `+graphstore.EitherSideOfNode+`
 		order by seq`, e.Kind, e.ID)
 	if err != nil {
 		return fmt.Errorf("read the tuples of %s:%s: %w", e.Kind, e.ID, err)
@@ -370,7 +370,7 @@ func (e *Erasure) readTuples(ctx context.Context, tx pgx.Tx, read *erasedRead) e
 // its block at every version.
 func (e *Erasure) readRows(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
 	read.listing.rows = append(read.listing.rows, fmt.Sprintf("delete graph_nodes %s:%s", e.Kind, e.ID))
-	for _, held := range projectedTables {
+	for _, held := range graphstore.ProjectedTables {
 		rows, err := tx.Query(ctx, `select row(`+held.Key+`)::text from `+held.Table+
 			` where node_kind = $1 and node_address = $2 order by `+held.Key, e.Kind, e.ID)
 		if err != nil {
@@ -465,13 +465,17 @@ func (e *Erasure) readAncestors(ctx context.Context, tx pgx.Tx, read *erasedRead
 	return nil
 }
 
-// readAncestorTexts reads the text each of those blocks held at every version and keeps each the
-// redaction rewrites, with the text as it leaves it.
+// readAncestorTexts reads the text each of those blocks held at every version the node's block
+// stood in (blockStoodIn), and keeps each the redaction rewrites, with the text as it leaves it.
+// At a version the node's block did not stand in - one before a version made it, or after one
+// dropped it - the block holding it held none of its text, so the same words there are that
+// block's own, and stay as they are.
 func (e *Erasure) readAncestorTexts(ctx context.Context, tx pgx.Tx, read *erasedRead, holding []string) error {
 	rows, err := tx.Query(ctx, `
 		select t.block_id, t.version, t.text from document_block_texts t
-		where t.artifact_id = $1::uuid and t.block_id = any($2::text[]) and t.text is not null
-		order by t.block_id, t.version`, read.document.artifact, holding)
+		where t.artifact_id = $1::uuid and t.block_id = any($4::text[]) and t.text is not null
+		  and `+blockStoodIn("t.artifact_id", "t.version")+`
+		order by t.block_id, t.version`, read.document.artifact, read.texts, read.blockID, holding)
 	if err != nil {
 		return fmt.Errorf("read the texts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -497,14 +501,17 @@ func (e *Erasure) readAncestorTexts(ctx context.Context, tx pgx.Tx, read *erased
 // rewrites, with the excerpt as it leaves it: cut from the redacted text of the version the row
 // records its text at, the way the indexer cuts one (refs.IndexBlocks), and redacted in place
 // where that rewrite does not reach it - a block whose text document_block_texts does not hold.
+// An excerpt cut from a version the node's block did not stand in (blockStoodIn) is cut from a
+// text readAncestorTexts leaves as it is, and stays as it is with it.
 func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *erasedRead, holding []string) error {
 	rows, err := tx.Query(ctx, `
 		select b.block_id, b.node_id, b.excerpt, b.changed_version,
 		       (select t.text from document_block_texts t
-		        where t.artifact_id = b.artifact_id and t.block_id = b.block_id and t.version = b.changed_version)
+		        where t.artifact_id = b.artifact_id and t.block_id = b.block_id and t.version = b.changed_version),
+		       `+blockStoodIn("b.artifact_id", "b.changed_version")+`
 		from document_blocks b
-		where b.artifact_id = $1::uuid and b.block_id = any($2::text[])
-		order by b.block_id`, read.document.artifact, holding)
+		where b.artifact_id = $1::uuid and b.block_id = any($4::text[])
+		order by b.block_id`, read.document.artifact, read.texts, read.blockID, holding)
 	if err != nil {
 		return fmt.Errorf("read the excerpts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
 	}
@@ -512,16 +519,20 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 		blockID, nodeID, excerpt string
 		version                  int32
 		text                     *string
+		stood                    bool
 	}
 	held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (storedExcerpt, error) {
 		var stored storedExcerpt
-		err := row.Scan(&stored.blockID, &stored.nodeID, &stored.excerpt, &stored.version, &stored.text)
+		err := row.Scan(&stored.blockID, &stored.nodeID, &stored.excerpt, &stored.version, &stored.text, &stored.stood)
 		return stored, err
 	})
 	if err != nil {
 		return fmt.Errorf("read the excerpts of the blocks holding %s:%s: %w", e.Kind, e.ID, err)
 	}
 	for _, stored := range held {
+		if stored.text != nil && !stored.stood {
+			continue
+		}
 		cut := redactBlockQuote(stored.excerpt, read.texts, e.marker())
 		if stored.text != nil {
 			redacted := redactBlockQuote(*stored.text, read.texts, e.marker())
@@ -537,15 +548,32 @@ func (e *Erasure) readAncestorExcerpts(ctx context.Context, tx pgx.Tx, read *era
 	return nil
 }
 
-// readVersions reads every version of the node's own document the erase deletes, and answers the
-// (artifact, number) pairs the deletes take. A version goes when the erased block stood in it
-// holding an erased text; the listing says so for each.
+// blockStoodIn is the test of whether the node's block stood in one version of its document
+// holding an erased text, over the statement's own spellings of that document and that version's
+// number, with the erased texts bound as $2 and the block's id as $3. It is the one reading of
+// which versions held the block: the versions the run deletes (readVersions), and the versions of
+// a block holding it at which the run redacts that block's text and excerpt (readAncestorTexts,
+// readAncestorExcerpts).
 //
 // The block stood in a version when its newest document_block_texts row at or before that
 // version holds the text. The indexer writes a block's row only at a version that made, changed,
 // restored or dropped it (refs.IndexBlocks), so a version that carries the block unchanged has no
 // row of its own, and the block's text in it is the one its last row recorded; a row with no text
 // is the version that dropped the block, after which it stands in none until a row restores it.
+func blockStoodIn(document, version string) string {
+	return `exists (select 1 from (select own.text from document_block_texts own
+	                              where own.artifact_id = ` + document + ` and own.block_id = $3 and own.version <= ` + version + `
+	                              order by own.version desc limit 1) newest
+	               where newest.text is not null
+	                 and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in newest.text) > 0))`
+}
+
+// readVersions reads every version of the node's own document the erase deletes, and answers the
+// (artifact, number) pairs the deletes take. A version goes when the erased block stood in it
+// holding an erased text; the listing says so for each.
+//
+// Whether the block stood in a version is read off its own rows of document_block_texts
+// (blockStoodIn).
 //
 // A version whose markdown holds the text only where another block of the document stands is
 // that block's text and stays: the whole version row would take the other block's words away
@@ -561,11 +589,7 @@ func (e *Erasure) readVersions(ctx context.Context, tx pgx.Tx, read *erasedRead)
 	}
 	rows, err := tx.Query(ctx, `
 		select v.number,
-		       exists (select 1 from (select t.text from document_block_texts t
-		                              where t.artifact_id = v.artifact_id and t.block_id = $3 and t.version <= v.number
-		                              order by t.version desc limit 1) newest
-		               where newest.text is not null
-		                 and exists (select 1 from unnest($2::text[]) as erased(text) where position(erased.text in newest.text) > 0)),
+		       `+blockStoodIn("v.artifact_id", "v.number")+`,
 		       exists (select 1 from document_indexed_versions i
 		               where i.artifact_id = v.artifact_id and i.version = v.number)
 		from artifact_versions v
@@ -781,8 +805,8 @@ func (e *Erasure) ownerRows(ctx context.Context, tx pgx.Tx) (events.OwnerRows, e
 // artifacts row - the owner docs' lockArtifactOwner finds and events.LockOwnerRows takes. A node
 // no row projects stands under none.
 func nodeOwners(ctx context.Context, tx pgx.Tx, kind, id string) (events.OwnerRows, error) {
-	arms := make([]string, len(projectedTables))
-	for index, held := range projectedTables {
+	arms := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
 		issue := "null::text"
 		if held.Issue != "" {
 			issue = held.Issue
@@ -875,7 +899,7 @@ func projectionRows(reference referencingColumn, table string) string {
 // one), so a plan cached without the node's kind still reaches that index
 // (TestTheBlockersReadProbesEachStatingNodeOnce).
 func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead) error {
-	for _, held := range projectedTables {
+	for _, held := range graphstore.ProjectedTables {
 		references, err := referencesTo(ctx, tx, held.Table)
 		if err != nil {
 			return err
@@ -895,8 +919,8 @@ func (e *Erasure) readBlockers(ctx context.Context, tx pgx.Tx, read *erasedRead)
 			}
 		}
 	}
-	projected := make([]string, len(projectedTables))
-	for index, held := range projectedTables {
+	projected := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
 		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
 	}
 	rows, err := tx.Query(ctx, `

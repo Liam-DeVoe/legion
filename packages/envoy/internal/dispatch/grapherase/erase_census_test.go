@@ -241,8 +241,8 @@ func TestTheEraseRefusesAPersonWhoseProvedSessionsCommentStands(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seeded := seedCommentsOnlyTheyName(t, database)
-	projected := make([]string, len(projectedTables))
-	for index, held := range projectedTables {
+	projected := make([]string, len(graphstore.ProjectedTables))
+	for index, held := range graphstore.ProjectedTables {
 		projected[index] = `exists (select 1 from ` + held.Table + ` p where p.node_kind = t.from_kind and p.node_address = t.from_id)`
 	}
 	var aliases, stated int64
