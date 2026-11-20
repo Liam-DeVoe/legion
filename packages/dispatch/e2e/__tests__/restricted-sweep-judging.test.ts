@@ -499,11 +499,10 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
 
   // Every form a person or an agent cites the project's items by, each in the member's own row
   // (an OWN item of their inbox). Where a person wrote it - inside prose of a `body`, or as the
-  // whole `body` and `title` of an OWN comment whose whole text, or first line, is the link - it
-  // names no row of the project and the run is no FAIL; only the plain key, which is itself a
-  // marker, counts there, and only whole. As the whole value of a member the server writes
-  // (`member`: a `ref`, an `href`, a `url`) each form is a row, which names its key. The rows of
-  // the two kinds are each other's controls.
+  // whole `body` and `title` of an OWN comment whose whole text, or first line, is the link or the
+  // bare key - it names no row of the project and the run is no FAIL. As the whole value of a
+  // member the server writes (`member`: a `ref`, an `href`, a `url`) each form is a row, which
+  // names its key. The rows of the two kinds are each other's controls.
   const forms: { form: string; text: string; marker: string; member: string }[] = [
     { form: "a plain issue key", text: tgt.issue, marker: tgt.issue, member: "ref" },
     { form: "a reference", text: `${scheme}${tgt.issue}`, marker: tgt.issue, member: "ref" },
@@ -534,7 +533,7 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
     rowLimit("short")
   );
 
-  test.each(forms.filter(({ form }) => form !== "a plain issue key"))(
+  test.each(forms)(
     "$form as the whole body and title a person wrote is no FAIL",
     async ({ text }) => {
       const { stdout } = await sweep(
@@ -543,22 +542,6 @@ describe.skipIf(withoutTools)("each judging rule, alone", () => {
       );
       expect(failures(stdout)).toEqual([]);
       expect(stdout).toContain("\nok      GET /api/v1/inbox: 200, no row of TGT (can fail)\n");
-    },
-    rowLimit("short")
-  );
-
-  // The plain key is a marker itself, so the whole body a person wrote counts when it is the key.
-  test(
-    "a plain issue key as the whole body a person wrote is a FAIL naming it",
-    async () => {
-      const item = ownItem({ body: tgt.issue });
-      const { code, stdout } = await sweep([at("/api/v1/inbox", 200, item)], {
-        rows: ["/api/v1/inbox"],
-      });
-      expect(failures(stdout)).toEqual([
-        `GET /api/v1/inbox: the member is answered 200 holding ${tgt.issue}, a row of TGT: ${JSON.stringify(item)}`,
-      ]);
-      expect(code).toBe(1);
     },
     rowLimit("short")
   );
@@ -1063,7 +1046,7 @@ describe.skipIf(withoutTools)("the split into fills, a runner and a writer", () 
       );
       expect(stdout).toMatch(/^ok {6}GET \/api\/v1\/issues\/\{key\}\/comments: 404 \(can fail\)$/m);
       expect(stdout.trimEnd().split("\n").at(-1)).toMatch(
-        /^PASS: no route and neither socket gave the member a row of TGT; a writer's write delivered inside the live window \S+ \S+ proves the live check; blind, proven by the stack test before merge only: GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}, /
+        /^PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window \S+ \S+, which the tailnet leg joins; blind, proven by the stack test before merge only: GET \/api\/github\/rest\/repos\/\{owner\}\/\{repo\}\/pulls\/\{number\}, /
       );
       expect(code, stdout).toBe(0);
     },

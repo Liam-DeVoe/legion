@@ -978,19 +978,21 @@ write_markers
 # function of the string, the markers file and whether a person wrote the string. A string is
 # one when it is, whole, the project's key or a value the lookup found (an issue key, an id, the
 # issue's title, a session of the project alone). A string a person wrote - the value of a member
-# such as `body`, `title` or `snippet` (`text` in the markers file) - counts only so: a member's
-# own comment may cite the project's items by any form, its whole body a link or its first line
-# one, and the route index's own text names example keys of any project. Any other string with no
-# whitespace in it is a value the server wrote - a key, an id, a reference, a path or a URL - and
-# it is one too when the key, an issue key of the project or a found value stands in it as a whole
-# part between separators (`/ : # ? & =`) or its ends: `KEY-12/spec`, a reference prefix and
-# `KEY-12`, `/issues/KEY-12`, `/projects/KEY`, a dashboard URL, `session:<id>`. A member this
-# rule does not name as a person's is read as the server's, so a new text member fails closed.
+# such as `body`, `title` or `snippet` (`text` in the markers file) - counts no key and no issue
+# key, even whole: a member's own comment may cite the project's items by any form, its whole
+# body or its first line one key, and the route index's own text names example keys of any
+# project; it counts only a found value, whole. Any other string with no whitespace in it is a
+# value the server wrote - a key, an id, a reference, a path or a URL - and it is one too when the
+# key, an issue key of the project or a found value stands in it as a whole part between
+# separators (`/ : # ? & =`) or its ends: `KEY-12/spec`, a reference prefix and `KEY-12`,
+# `/issues/KEY-12`, `/projects/KEY`, a dashboard URL, `session:<id>`. A member this rule does not
+# name as a person's is read as the server's, so a new text member fails closed.
 # shellcheck disable=SC2016 # the `$` names in it are jq's variables, never the shell's
 readonly row_rule='
   def row($m; $written):
     . as $s
-    | if $s == $m.key or $m.values[$s] != null then $s
+    | if $written and ($s == $m.key or ($s | test($m.issue))) then empty
+      elif $s == $m.key or $m.values[$s] != null then $s
       elif $written or ($s | test("\\s")) then empty
       else first(
           ($s | splits($m.separator)
@@ -1741,7 +1743,7 @@ if [ -s "$work/missing" ] || [ -s "$work/unknown" ]; then
 fi
 verdict="PASS: no route and neither socket gave the member a row of $project"
 if [ "$mode" = runner ] && [ -n "$window_line" ]; then
-  verdict="$verdict; a writer's write delivered inside the live window $window_line proves the live check"
+  verdict="$verdict; the live check holds once a writer's delivered write falls inside the live window $window_line, which the tailnet leg joins"
 fi
 if [ -s "$work/blind-proxy" ]; then
   verdict="$verdict; blind, proven by the stack test before merge only: $(paste -s -d ',' "$work/blind-proxy" | sed 's/,/, /g')"

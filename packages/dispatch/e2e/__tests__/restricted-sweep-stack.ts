@@ -402,6 +402,9 @@ async function seed(
     // comment by its first line.
     `https://dispatch.example/issues/${first}`,
     `${prefix}${first}\nThe plan is there.`,
+    // A comment that is the bare key, and one whose first line is.
+    first,
+    `${first}\nThe plan is there.`,
   ]) {
     await send(origin, asCarol, "POST", "/api/v1/issues/OWN-1/comments", 201, { body });
   }

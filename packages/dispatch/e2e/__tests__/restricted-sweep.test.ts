@@ -685,7 +685,7 @@ describe.skipIf(withoutStacks)("against the local stack", () => {
       expect(runner, fills.stdout).toBeDefined();
       const runnerOut = runner?.stdout ?? "";
       expect(runnerOut.trimEnd().split("\n").at(-1), runnerOut).toStartWith(
-        "PASS: no route and neither socket gave the member a row of TGT; a writer's write delivered inside the live window "
+        "PASS: no route and neither socket gave the member a row of TGT; the live check holds once a writer's delivered write falls inside the live window "
       );
       expect(runner?.code, runnerOut).toBe(0);
       expect(linesOf(runnerOut, "not filled")).toEqual([]);
