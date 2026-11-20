@@ -1760,13 +1760,14 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
-      # The stack's own Postgres, the copy the browser step below names as DISPATCH_E2E_PG_IMAGE,
+      # The stack's own Postgres, the copy the browser steps below name as DISPATCH_E2E_PG_IMAGE,
       # pulled here for the reason the Playwright copy is pulled above: e2e/harness-postgres.ts
       # starts the stack's server with a `docker run` of that digest, which pulls an image the
-      # runner does not hold inside the browser step's own budget. The digest is written in both
-      # steps and must be the same in both; where they part, the pull here buys nothing and the
-      # browser step pulls again. A failed pull is a fault of this repository's own package, so
-      # it fails here and says so (.github/scripts/check-download-retry.sh's exception (a)).
+      # runner does not hold inside a browser step's own budget. The digest is written three
+      # times, here and in the two browser steps (the normal order and the reverse), and the three
+      # must stay the same; where they part, the pull here buys nothing and a browser step pulls
+      # again. A failed pull is a fault of this repository's own package, so it fails here and
+      # says so (.github/scripts/check-download-retry.sh's exception (a)).
       - name: Pull the visual stack's Postgres copy
         # Measured inside the browser step, where the `docker run` made this pull: 7-10 s to the
         # stack's first listener over the 14 passing runs the browser step's key below reads,
