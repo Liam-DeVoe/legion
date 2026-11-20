@@ -1,7 +1,8 @@
 package launcher
 
 import (
-	"bufio"
+	"context"
+	"errors"
 	"net"
 	"os"
 	"os/exec"
@@ -9,10 +10,13 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testdeadline"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // testPGScript is the worker image's script, which every other test of this file's package runs a
@@ -250,10 +254,11 @@ type scriptCall struct {
 	line string
 }
 
-// takeCalls answers the calls recorded since the last take, and empties the record.
-func (r *scriptRig) takeCalls() []scriptCall {
+// recorded answers the calls recorded since the last take, and leaves the record as it is. A line a
+// wrapper is still writing has no newline yet and is left out until it has one.
+func (r *scriptRig) recorded() []scriptCall {
 	r.t.Helper()
-	file, err := os.Open(r.calls)
+	text, err := os.ReadFile(r.calls)
 	if os.IsNotExist(err) {
 		return nil
 	}
@@ -261,20 +266,70 @@ func (r *scriptRig) takeCalls() []scriptCall {
 		r.t.Fatal(err)
 	}
 	var calls []scriptCall
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		at, line, _ := strings.Cut(scanner.Text(), " ")
+	for _, line := range strings.SplitAfter(string(text), "\n") {
+		if !strings.HasSuffix(line, "\n") {
+			continue
+		}
+		at, call, _ := strings.Cut(strings.TrimSuffix(line, "\n"), " ")
 		seconds, err := strconv.ParseInt(at, 10, 64)
 		if err != nil {
-			r.t.Fatalf("a call line %q has no clock", scanner.Text())
+			r.t.Fatalf("a call line %q has no clock", line)
 		}
-		calls = append(calls, scriptCall{at: seconds, line: line})
+		calls = append(calls, scriptCall{at: seconds, line: call})
 	}
-	file.Close()
-	if err := os.Remove(r.calls); err != nil {
+	return calls
+}
+
+// takeCalls answers the calls recorded since the last take, and empties the record.
+func (r *scriptRig) takeCalls() []scriptCall {
+	r.t.Helper()
+	calls := r.recorded()
+	if err := os.Remove(r.calls); err != nil && !os.IsNotExist(err) {
 		r.t.Fatal(err)
 	}
 	return calls
+}
+
+// postmaster answers the pid the server of the rig's data directory wrote on the first line of its
+// postmaster.pid.
+func (r *scriptRig) postmaster() int {
+	r.t.Helper()
+	text, err := os.ReadFile(filepath.Join(r.dir, "data", "postmaster.pid"))
+	if err != nil {
+		r.t.Fatalf("no server of the rig's data directory wrote its pid: %v", err)
+	}
+	first, _, _ := strings.Cut(string(text), "\n")
+	pid, err := strconv.Atoi(strings.TrimSpace(first))
+	if err != nil {
+		r.t.Fatalf("the server's postmaster.pid begins %q, which is no pid", first)
+	}
+	return pid
+}
+
+// held says whether pid is stopped by a signal: the state /proc/<pid>/stat gives after the command
+// in parentheses, read as zombie reads it.
+func held(pid int) bool {
+	body, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return false
+	}
+	_, after, ok := strings.Cut(string(body), ") ")
+	return ok && strings.HasPrefix(after, "T")
+}
+
+// untilAnswered asks condition every testwait.Poll until it holds, and answers false once ctx ends
+// first. ctx is the test's testdeadline.Answered context, so the wait has no bound of its own: what
+// it waits for may be slow on a loaded machine, and one that never comes fails at the test's
+// deadline, naming the wait.
+func untilAnswered(ctx context.Context, condition func() bool) bool {
+	for !condition() {
+		select {
+		case <-ctx.Done():
+			return condition()
+		case <-time.After(testwait.Poll):
+		}
+	}
+	return true
 }
 
 // scriptBound is one bound a wait of the script was given: the wait, the clock it started at, and
@@ -322,9 +377,12 @@ func (r *scriptRig) bounds(calls []scriptCall) []scriptBound {
 // Every wait of legion-testpg takes what its caller's deadline leaves, and has no bound of its own:
 // the connections through the DSN and to the port, the cluster's lock, and the server's start and
 // stop, run here against this machine's real PostgreSQL. With no deadline none has a bound: 0 for
-// PGCONNECT_TIMEOUT and pg_isready, no -w for flock, and pg_ctl's largest count. And a cluster an
-// initdb left part way, as a stop of the script's process group during a slow initdb leaves one,
-// is made again by the next start, which names what it removed; a whole cluster is never made again
+// PGCONNECT_TIMEOUT and pg_isready, no -w for flock, and pg_ctl's largest count. Once the deadline
+// has passed, stop still asks for the shutdown and ends at once, waiting on nothing (pg_ctl
+// --no-wait). And a cluster an initdb left part way, as a stop of the script's process group during
+// a slow initdb leaves one, is made again by the next start, which names what it removed: the part
+// in initdb's own directory, and a data directory holding PG_VERSION and no global/pg_control, as an
+// initdb of an earlier layout, which wrote in place, left one. A whole cluster is never made again
 // or removed.
 func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *testing.T) {
 	r := newScriptRig(t)
@@ -421,5 +479,118 @@ func TestLegionTestPGWaitsTakeTheCallersDeadlineAndAPartInitdbIsMadeAgain(t *tes
 	}
 	if stops := r.bounds(r.takeCalls()); len(stops) != 1 || stops[0].value != "214748364" {
 		t.Errorf("legion-testpg stop with no deadline ran %v, want one pg_ctl stop given 214748364", stops)
+	}
+
+	// The steps below take what the test binary's deadline leaves, less its cleanup reserve: the
+	// script is told it as its caller's deadline, and the test's own waits below (for the hold, the
+	// late stop and the server's exit) end at it. With no test deadline (-timeout 0) none has one.
+	ctx, cancel := testdeadline.Answered(t, context.Background())
+	defer cancel()
+	answered, _ := ctx.Deadline()
+
+	// A data directory holding PG_VERSION and no global/pg_control: initdb writes PG_VERSION first
+	// and pg_control in its bootstrap step, so an initdb of an earlier layout, which wrote in place,
+	// left this when it was stopped before that step. PG_VERSION alone is no whole cluster: the next
+	// start names the directory, removes it, runs initdb again and serves.
+	data := filepath.Join(r.dir, "data")
+	if err := os.RemoveAll(data); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(data, "global"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(data, "marker-of-the-part")
+	for path, text := range map[string]string{filepath.Join(data, "PG_VERSION"): "16\n", part: ""} {
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out, err = r.ensure(answered)
+	if err != nil {
+		t.Fatalf("legion-testpg ensure over a data directory holding PG_VERSION and no global/pg_control = %v: %s; want that directory removed, initdb run again and the DSN served; the server's log ends:\n%s", err, out, r.serverLog())
+	}
+	if !strings.Contains(out, "removing "+data+", which holds no whole cluster") {
+		t.Errorf("legion-testpg ensure over a data directory holding PG_VERSION and no global/pg_control said %q, want that directory named as removed", out)
+	}
+	if _, err := os.Stat(part); !os.IsNotExist(err) {
+		t.Errorf("a file of the data directory holding PG_VERSION and no global/pg_control is still there after the next ensure (%v): the directory was not removed", err)
+	}
+	initdb := false
+	for _, call := range r.takeCalls() {
+		initdb = initdb || strings.HasPrefix(call.line, "initdb ")
+	}
+	if !initdb {
+		t.Error("legion-testpg ensure over a data directory holding PG_VERSION and no global/pg_control ran no initdb")
+	}
+	if answer, err := exec.Command("psql", "-X", "-w", "-tAq", r.dsn(), "-c", "select 1").CombinedOutput(); err != nil || strings.TrimSpace(string(answer)) != "1" {
+		t.Fatalf("the DSN does not answer after ensure over a data directory holding PG_VERSION and no global/pg_control: %v: %s", err, answer)
+	}
+
+	// The caller's deadline has passed: stop still asks for the shutdown and does not wait for it
+	// (pg_ctl --no-wait), so it ends at once. The test holds the postmaster (SIGSTOP) from before the
+	// stop until the stop has returned, so a stop that waits for the server cannot end while it is
+	// held. Once the record shows pg_ctl stop given anything but --no-wait, the hold is let go, so
+	// such a stop fails here rather than at the test's deadline. Let go, the server leaves: the
+	// shutdown was asked for.
+	pid := r.postmaster()
+	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		t.Fatalf("holding the postmaster %d: %v", pid, err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			_ = syscall.Kill(pid, syscall.SIGCONT)
+		}
+	}
+	t.Cleanup(release)
+	if !untilAnswered(ctx, func() bool { return held(pid) }) {
+		t.Fatalf("the postmaster %d was still not stopped by the test's SIGSTOP at the test's deadline", pid)
+	}
+	type result struct {
+		out string
+		err error
+	}
+	stopped := make(chan result, 1)
+	go func() {
+		out, err := r.run("stop", time.Now().Add(-time.Second))
+		stopped <- result{out, err}
+	}()
+	var stop result
+	waited := ""
+	for ended := false; !ended; {
+		select {
+		case stop = <-stopped:
+			ended = true
+		case <-ctx.Done():
+			if waited == "" {
+				waited = "the test's deadline, less its cleanup reserve, passed while it ran"
+			}
+			release()
+			stop, ended = <-stopped, true
+		case <-time.After(testwait.Poll):
+			for _, b := range r.bounds(r.recorded()) {
+				if b.wait == "pg_ctl stop" && b.value != "none" && waited == "" {
+					waited = "its pg_ctl stop was given --timeout " + strconv.Quote(b.value) + " in place of --no-wait, so it waited for the server"
+					release()
+				}
+			}
+		}
+	}
+	if waited != "" {
+		t.Errorf("legion-testpg stop with its caller's deadline passed did not end while the server was held: %s; want it to ask for the shutdown and end at once", waited)
+	}
+	if stop.err != nil {
+		t.Errorf("legion-testpg stop with its caller's deadline passed = %v: %s", stop.err, stop.out)
+	}
+	if stops := r.bounds(r.takeCalls()); len(stops) != 1 || stops[0].wait != "pg_ctl stop" || stops[0].value != "none" {
+		t.Errorf("legion-testpg stop with its caller's deadline passed ran %v, want one pg_ctl stop given --no-wait (none)", stops)
+	}
+	release()
+	if !untilAnswered(ctx, func() bool {
+		_, err := os.Stat(filepath.Join(data, "postmaster.pid"))
+		return os.IsNotExist(err) && (errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) || zombie(pid))
+	}) {
+		t.Fatalf("the server (postmaster %d) still ran at the test's deadline after legion-testpg stop with its caller's deadline passed: the stop did not ask for its shutdown; the server's log ends:\n%s", pid, r.serverLog())
 	}
 }
