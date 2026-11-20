@@ -14,7 +14,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -319,18 +318,10 @@ func (s *roleSend) kept(result roles.Resolution, kept keptRoleCopy) {
 	s.settle(sendKept)
 }
 
-// unresolved answers a first resolution of the holder that did not resolve, as GET
-// /v1/roles/<role> answers it: a claim record no read can decode (store.ErrMalformedRoleClaim) is
-// the 500 that names it, and any other failure - a read that did not answer within its cap or
-// sendRequestBudget among them - the bus-unavailable 503, or the 413 or 400 a refused key gets.
-// Each is recorded under its own outcome.
+// unresolved answers a first resolution of the holder that did not resolve, as a failed read of
+// the role's claim is answered (refuseRoleClaimRead), each under its own outcome.
 func (s *roleSend) unresolved(err error) {
-	switch {
-	case errors.Is(err, store.ErrMalformedRoleClaim):
-		s.record.refuseRoleClaimUnreadable(s.w, s.role, err)
-	default:
-		s.record.refuseBusUnavailable(s.w, err)
-	}
+	refuseRoleClaimRead(s.w, s.record, s.role, err)
 	s.settle(sendFailed)
 }
 

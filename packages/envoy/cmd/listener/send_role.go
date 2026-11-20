@@ -66,10 +66,13 @@ func answerRoleSend(ctx context.Context, w http.ResponseWriter, d *listenerDeps,
 	return true
 }
 
-// refuseRoleClaimRead answers a marked send whose read of its role's claim failed, as GET
-// /v1/roles/<role> answers it: a claim record no read can decode (store.ErrMalformedRoleClaim) is
-// the 500 that names it, and any other failure the bus-unavailable 503. answerRoleSend's claim
-// read and handOffOrKeepRoleSend's resolution of the holder are answered alike.
+// refuseRoleClaimRead answers a read of a role's claim that failed, as GET /v1/roles/<role>
+// answers it: a claim record no read can decode (store.ErrMalformedRoleClaim) is the 500 that
+// names it, and any other failure - a read that did not answer within its cap or
+// sendRequestBudget among them - the bus-unavailable 503, or the 413 or 400 a refused key gets
+// (requestRecord.refuseBusUnavailable). answerRoleSend's claim read, handOffOrKeepRoleSend's
+// resolution of the holder and the publish route's first resolution (roleSend.unresolved) are
+// answered alike.
 func refuseRoleClaimRead(w http.ResponseWriter, record *requestRecord, role string, err error) {
 	if errors.Is(err, store.ErrMalformedRoleClaim) {
 		record.refuseRoleClaimUnreadable(w, role, err)
@@ -139,27 +142,26 @@ func handOffOrKeepRoleSend(ctx context.Context, w http.ResponseWriter, d *listen
 	}
 	reportRoleWake(d, d.delivery.logger, item.Role)
 	charge.woke()
-	if live {
-		keepRoleSend(w, d, record, charge, item, target, holder, expectsReplyAnswer(request.ExpectsReply))
-		return
-	}
-	handed, err := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
-		envelope: *item, roleToken: item.Role, stampSender: true,
-		optedOut: optedOutOfHandoff(request.MessageBody),
-	})
-	switch {
-	case err != nil:
-		record.refuseBusUnavailable(w, err)
-	case handed != nil:
-		record.accept(w, listenerwire.SendResponse{
-			Envelope:     handed.Envelope,
-			ExpectsReply: expectsReplyAnswer(request.ExpectsReply),
-			Recipient:    handed.TargetSession,
-			Duplicate:    handed.duplicate,
+	if !live {
+		handed, err := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+			envelope: *item, roleToken: item.Role, stampSender: true,
+			optedOut: optedOutOfHandoff(request.MessageBody),
 		})
-	default:
-		keepRoleSend(w, d, record, charge, item, target, holder, expectsReplyAnswer(request.ExpectsReply))
+		if err != nil {
+			record.refuseBusUnavailable(w, err)
+			return
+		}
+		if handed != nil {
+			record.accept(w, listenerwire.SendResponse{
+				Envelope:     handed.Envelope,
+				ExpectsReply: expectsReplyAnswer(request.ExpectsReply),
+				Recipient:    handed.TargetSession,
+				Duplicate:    handed.duplicate,
+			})
+			return
+		}
 	}
+	keepRoleSend(w, d, record, charge, item, target, holder, expectsReplyAnswer(request.ExpectsReply))
 }
 
 // keepRoleSend keeps item, a send marked with its role whose claim names holder rather than the
