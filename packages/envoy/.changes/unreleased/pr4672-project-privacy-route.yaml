@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  The secrets broker answers `GET /v1/project-privacy`, a listener's read of which Dispatch
+  projects are private, for each privacy decision it makes. The caller presents its own platform
+  identity token, as on the broker's other routes, and only an account `BROKER_NATS_SERVICES`
+  binds to a listener is answered; every other caller whose token verifies is `403 not_listener`.
+  Each call asks Dispatch once (`BROKER_PROJECT_ACCESS_URL`), with no cache and nothing kept, and
+  answers `{"projects":[{"project","slack_channels","slack_channels_changed_at"}]}` in key order.
+  Any failure of that read, and a broker with no `BROKER_PROJECT_ACCESS_URL`, is
+  `502 dispatch_unavailable`, never a list. At most 64 calls ask Dispatch at once in one broker;
+  the next is `503 busy` at once.
+time: 2026-11-20T23:16:34Z
+custom:
+    Issue: pr4672
