@@ -465,3 +465,32 @@ func TestCensusAdmitsThePartitionMigrationsOverALargeEmbeddings(t *testing.T) {
 		t.Errorf("the census admitted a rename of a %d-byte embeddings at a %d-byte limit: this test's admission proves nothing", embeddings, limit)
 	}
 }
+
+// Once embeddings is the partitioned table, a migration that rewrites it is held to the census's
+// limit by the size its partitions hold, as it was by the size of the table before: a partitioned
+// table holds no row of its own, and read as one table it measures 0 bytes, which would admit a
+// rewrite of every vector the deployment holds. The limit is injected at one byte under
+// embeddings' partitions' size, so the test needs no gigabyte.
+func TestTheCensusStillGuardsEmbeddingsOnceItIsPartitioned(t *testing.T) {
+	ctx := context.Background()
+	database, _ := openPartitionTestStore(t, 50)
+	if _, err := database.FillEmbeddingProjectKeys(ctx); err != nil {
+		t.Fatalf("partition embeddings: %v", err)
+	}
+	requirePartitioned(t, database, true)
+	var held int64
+	if err := database.Pool.QueryRow(ctx, `select sum(pg_total_relation_size(relid))::bigint from pg_partition_tree('embeddings')`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	rewrite := migrationsThrough(t, 1<<62)
+	rewrite["migrations/29991231235959_rewrite_embeddings.up.sql"] = &fstest.MapFile{Data: []byte("update embeddings set dead = dead;")}
+	rewrite["migrations/29991231235959_rewrite_embeddings.census.sql"] = &fstest.MapFile{Data: []byte("select 0;")}
+	report, err := census(ctx, database.Pool.Config().ConnString(), rewrite, pgmigrate.CensusOptions{TableLimit: held - 1})
+	if err != nil {
+		t.Fatalf("census: %v", err)
+	}
+	if got := refusals(report); len(got) != 1 || !strings.Contains(got[0], "embeddings is ") {
+		t.Errorf("a rewrite of the partitioned embeddings, whose partitions hold %d bytes, at a %d-byte limit: refusals %v, want one naming embeddings' size:\n%s",
+			held, held-1, got, reportText(report))
+	}
+}
