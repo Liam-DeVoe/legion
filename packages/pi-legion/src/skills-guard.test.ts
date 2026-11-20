@@ -2,8 +2,8 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { LEGION_HELD_REASONS } from "@legion/contracts/legion-api";
 import {
+  LEGION_HELD_REASONS,
   LEGION_PLAN_RATING_LEAST,
   LEGION_PLAN_RATING_MOST,
   LEGION_PLAN_REASON_MAX,
@@ -637,4 +637,109 @@ test("the retro skill names the rating's fields, its refusals, its scale and its
   ]) {
     expect(retro).toContain(token);
   }
+});
+
+// A task's `Steps:` line can leave out the tester, the reviewer or `acceptance:owner`, and each
+// text below says what the steps it keeps do in their place. A pin binds a condition to its duty
+// within one clause (`[^.;]*`), or within one field of the body template (`[^*]*`, which stops at
+// the next `**Field:**`): `collapsed` makes a file one line, so a bare `.*` would match from a word
+// at its top to one at its end. Each file's missing duties are listed together. This shows the text
+// ships, never that a role follows it.
+function lacks(relative: string, duties: RegExp[]) {
+  const text = collapsed(path.join(staged, relative));
+  return duties.filter((duty) => !duty.test(text)).map((duty) => `${relative} lacks ${duty}`);
+}
+
+test("an implementer and owner task is accepted on the evidence its steps give", () => {
+  const missing = lacks("legion-architect/references/acceptance.md", [
+    /`acceptance:owner` enters `accepting`/,
+    /has a tester step[^.;]*--phase test/,
+    /`dispatch results --issue <issue>`[^.;]*the last step's head/,
+    /has a reviewer step[^.;]*approval/,
+    /no tester step[^.;]*the implementer's evidence/,
+  ]);
+  expect(missing).toEqual([]);
+});
+
+test("an implementer and reviewer task has the implementer prove the surface and the reviewer read it", () => {
+  expect([
+    ...lacks("legion-worker/SKILL.md", [/no tester step[^.;]*the implementer's evidence serves/]),
+    ...lacks("legion-worker/references/ci-checks.md", [
+      /implementer with no tester step[^.;]*real surface/,
+    ]),
+    ...lacks("legion-worker/references/merge-gate.md", [
+      /no tester step[^.;]*the implementer's evidence[^.;]*read/,
+    ]),
+  ]).toEqual([]);
+});
+
+test("an implementer and tester task gives the reviewer's body lines and bot threads to the implementer", () => {
+  expect([
+    ...lacks("legion-worker/references/pr-body.md", [
+      /\*\*Look at first:\*\*[^*]*no reviewer step[^*]*implementer/,
+      /\*\*Not proven \/ risk:\*\*[^*]*no reviewer step[^*]*implementer/,
+      /\*\*Threads:\*\*[^*]*no reviewer step[^*]*implementer resolves/,
+      /\*\*Thermo:\*\*[^*]*`thermonuclear pair: not run \(no reviewer step in this task\)`/,
+      /no reviewer step[^.;]*instead of[^.;]*docs-only/,
+      /no reviewer step[^.;]*retro[^.;]*Not proven \/ risk/,
+    ]),
+    ...lacks("legion-worker/references/review-threads.md", [
+      /no reviewer step[^.;]*implementer lists unresolved bot threads[^.;]*retro/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [
+      /no reviewer step[^.;]*no Legion approval/,
+      /without `acceptance:owner`[^.;]*last step starts retro/,
+    ]),
+  ]).toEqual([]);
+  const merger = collapsed(
+    path.join(REPO_ROOT, "packages", "daemon", "internal", "prompts", "roles", "merger.md")
+  );
+  expect(merger).toMatch(
+    /Steps line names no reviewer step[^.]*base's rules require an approving review/
+  );
+  expect(merger).toMatch(/do not merge, do not approve[^.]*do not return the task/);
+  expect(merger).toMatch(/Wait, and tell the owner of the task[^.]*which review is missing/);
+});
+
+test("an issue runs the default steps unless its architect registers a plan before its first step", () => {
+  expect([
+    ...lacks("legion-architect/SKILL.md", [
+      /references\/plan\.md`[^.;]*register/,
+      /`register_plan`[^.;]*before `register_gate`/,
+      /no registered plan[^.;]*default steps/,
+    ]),
+    ...lacks("legion-worker/SKILL.md", [/default task[^.;]*tester[^.;]*reviewer[^.;]*acceptance/]),
+  ]).toEqual([]);
+});
+
+// The admission table is read raw, since each of its rows is a line, and it lists the contract's
+// held reasons in the contract's order.
+test("the controller reads every held reason, and a stopped task's phase in its report", () => {
+  const admission = readFileSync(
+    path.join(staged, "legion-controller", "references", "admission.md"),
+    "utf8"
+  );
+  const held = [...admission.matchAll(/^\| `([a-z_]+)` \|/gm)].map(([, reason]) => reason);
+  expect(held).toEqual([...LEGION_HELD_REASONS]);
+  expect(admission).toMatch(
+    /\| `children_before_retro` \|[^|]*without `acceptance:owner`[^|]*\|[^|]*last `heldBy`[^|]*starts retro/
+  );
+  expect(admission).toMatch(
+    /\| `task_stopped` \|[^|]*no step[^|]*\|[^|]*`register_plan`[^|]*root's `todo`[^|]*first step/
+  );
+  const report = lacks("legion-controller/references/daily-report.md", [
+    /`task_stopped`[^.;]*`heldFrom`/,
+  ]);
+  expect(report).toEqual([]);
+});
+
+test("retro reads only the handoffs its task has, and answers bot threads with no reviewer step", () => {
+  const missing = lacks("legion-retro/SKILL.md", [
+    /Read the evidence[^.;]*the implementer's handoff/,
+    /tester's handoff[^.;]*has a tester step/,
+    /--phase review[^.;]*has a reviewer step/,
+    /no reviewer step[^.;]*unresolved bot threads/,
+    /no reviewer step[^.;]*review-thread replies and resolutions/,
+  ]);
+  expect(missing).toEqual([]);
 });

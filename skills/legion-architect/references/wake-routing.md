@@ -1,11 +1,11 @@
 # Wake routing
 
-Read this when a wake reaches you. A wake about an issue reaches its own architect while that
-architect holds its role, else the nearest one above that does. A `child-status` or `child-closed`,
-and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the
-child. Your role prompt describes each notice; this table says what to do. "Section N" is that
-section of `skill://legion-architect`. Where a row says to ask a person, a child's own architect
-sends the question to the architect above it.
+Read this when a wake reaches you.
+A wake about an issue reaches its own architect while that architect holds its role, else the nearest one above that does.
+A `child-status` or `child-closed`, and a `worker-died` or `worker-stalled` about a child's own architect, reach the architect above the child.
+Your role prompt describes each notice; this table says what to do.
+"Section N" is that section of `skill://legion-architect`.
+Where a row says to ask a person, a child's own architect sends the question to the architect above it.
 
 | Wake | What to do |
 | --- | --- |
@@ -13,9 +13,12 @@ sends the question to the architect above it.
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in `skill://legion-architect/references/design-gate.md`) and end your turn. One for an older version came late: answer its reason if the latest version does not. |
 | `carried-gate-opened` | The gate this root carried opened. Start nothing and release nothing for it. |
-| `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). A reviewer's `APPROVED`: section 6. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
+| `phase-finished` | The next phase already started. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
+| `retro-held` | The task has no `acceptance:owner` step and the parent waits before retro for open children. Run each named issue to done or park it under the rule. |
+| `task-stopped` | Read the failed step's report, or the stated owner stop. Give a later plan version that changes the task, or end the work as `skill://legion-architect/references/plan.md` says. |
+| `plan-not-taken` | The first step took another plan. To run the earlier one, stop the current task and register that plan again as `skill://legion-architect/references/plan.md` says. |
 | `pr-blocked` | The review round cap is reached: decide in this turn, as "A capped pull request" below says. |
-| `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for the reviewer's approval of the new head ("A conflicting head" in `skill://legion-architect/references/acceptance.md`). |
+| `checks-red` | The daemon asked the implementer to merge the base forward; the issue stays in the phase the notice names. Start nothing; in `accepting`, wait for an approval of the new head only where the task has a reviewer step. |
 | `review-stuck` | No review decides the round, or the approval is of other code: tell the reviewer on the notice's `topic` to approve the head or request changes; ask a person when it answers again with no review. GitHub will not merge the head: no `topic`, and its `reason` names the merge state, each check run with its conclusion and each commit status with its state; sort it as your role prompt says. |
 | `pr-merged` | Merged, not closed: it waits to reach `merging`, or for the issues beneath it. Start nothing. |
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts (`park_child` then `rerun_child`) or ends, and give the reason. A phase worker makes the repository change. |
@@ -37,20 +40,20 @@ sends the question to the architect above it.
 
 ## A capped pull request
 
-A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by
-`<n>`. Tester fails and requests for changes are what it counts. Read what every counted round
-found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
+A `pr-blocked` reason reads `<n> rounds counted, <m> conflict rounds not counted`: judge the cap by `<n>`.
+Tester fails and requests for changes are what it counts.
+Read what every counted round found, choose one, act on it, and post the rounds you read and the choice as a `dispatch comment`:
 
-- **Narrow**: the change is sound but each round finds more around it. Tell the implementer and the
-  reviewer which checks the next round answers, dropping no requirement. A correctness finding or
-  a clear fix in a touched file stays in this pull request.
-- **Split**: part of the work cannot settle here. On a child, it becomes a child of this issue's
-  parent (a child's own architect sends it up with `envoy_publish`); that parent's architect files
-  it after the red-team check with `--blocked-by <this issue>` and releases it at once. On the
-  root, open a `dispatch ask`; the part stays a requirement until the person's answer says
-  otherwise.
-- **Accept the rounds**: each round found less than the one before, and the last found no defect
-  in the change itself. A later notice accepts again only when its round found less.
+- **Narrow**: the change is sound but each round finds more around it.
+  Tell the implementer and the reviewer which checks the next round answers, dropping no requirement.
+  A correctness finding or a clear fix in a touched file stays in this pull request.
 
-A finding that changes what the spec requires or a check proves is also a spec change ("After
-approval" in `skill://legion-architect/references/design-gate.md`), never instead of the choice.
+- **Split**: part of the work cannot settle here.
+  On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`);
+  that parent's architect files it after the red-team check with `--blocked-by <this issue>` and releases it at once.
+  On the root, open a `dispatch ask`; the part stays a requirement until the person's answer says otherwise.
+
+- **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.
+  A later notice accepts again only when its round found less.
+
+A finding that changes what the spec requires or a check proves is also a spec change ("After approval" in `skill://legion-architect/references/design-gate.md`), never instead of the choice.
