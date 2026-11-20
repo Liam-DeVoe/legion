@@ -1043,7 +1043,8 @@
     "gates": {
       "design": [
         "spec"
-      ]
+      ],
+      "hold": "merge"
     },
     "github_apps": {
       "implement": {

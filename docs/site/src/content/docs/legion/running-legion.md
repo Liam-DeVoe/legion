@@ -1081,7 +1081,7 @@ command or writing a file:
 
 ```sh
 legion config check --config legion.yaml
-# Config OK: project=WIDGETS design-gate-steps=spec
+# Config OK: project=WIDGETS design-gate-steps=spec design-gate-hold=merge
 ```
 
 Then start it:

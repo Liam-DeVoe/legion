@@ -255,6 +255,17 @@ gates:
                                        # refused at load. legion config check prints the resolved
                                        # list, design-gate-steps=decisions,criteria, or
                                        # design-gate-steps=none when the list is empty.
+  hold: merge                          # what a new version of an approved document of a gated
+                                       # step holds until a person approves that version, or
+                                       # until an exact undo. merge, the default, holds the
+                                       # merger's start and the first phase of each issue that
+                                       # has not started. Every running phase goes on. work also
+                                       # holds the running work of the tree: no phase starts,
+                                       # and the daemon stops each phase worker of the tree and
+                                       # keeps its session. The architects go on. Any other
+                                       # value is refused at load. A daemon release before this
+                                       # key refuses it as an unknown key of gates. legion
+                                       # config check prints the word, design-gate-hold=merge.
 github_apps:
   implement:
     app_id: "100001"
