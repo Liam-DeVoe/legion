@@ -42,10 +42,15 @@
 #     ended and how long it took. When none succeeded, one `::error::` names the kind, the command
 #     and how each attempt ended, and says whether the network or the command itself is what
 #     failed; the script exits 1.
-#   * It is a POSIX sh script and needs only timeout(1), mkfifo, tee and grep, so a Dockerfile's
-#     RUN runs it on the images the required jobs build: Debian's and Ubuntu's (dash, coreutils)
-#     and Alpine's (BusyBox's sh and timeout, whose `timeout` signals the command alone, so the
-#     attempt sends the SIGKILL itself after KILL_AFTER seconds too).
+#   * The streams pass through a FIFO each, and the attempt ends when their last writer has. A
+#     process the command leaves holding them (a daemon an install starts, a child left in the
+#     background) is waited for only as long as the attempt's bound leaves, then ended by its
+#     process group, SIGTERM then SIGKILL KILL_AFTER seconds later, and named, so no attempt
+#     outlasts its bound and its kill.
+#   * It is a POSIX sh script and needs only timeout(1), mkfifo, tee, grep, sed, cut, readlink and
+#     /proc, so a Dockerfile's RUN runs it on the images the required jobs build: Debian's and
+#     Ubuntu's (dash, coreutils) and Alpine's (BusyBox's sh and timeout, whose `timeout` signals the
+#     command alone, so the attempt sends the SIGKILL itself after KILL_AFTER seconds too).
 #
 # NETWORK_FAULT. The words each kind's client prints when the network or the server failed it,
 # measured on 2026-11-20 against a refused port, a server that resets each connection and one that
@@ -175,17 +180,29 @@ die() {
   exit 1
 }
 
+# group_of <pid>: sets `pgrp` to the process group of a process, read from /proc with no process
+# started (so a scan of every process stays cheap), or returns 1 where it is gone.
+group_of() {
+  pgrp=
+  stat=
+  read -r stat < "/proc/$1/stat" 2> /dev/null || return 1
+  set -- ${stat##*) }
+  pgrp=$3
+}
+
 # network-install.sh --attempt <marker> <seconds before SIGKILL> -- <command…>: one attempt's
 # command, which timeout(1) runs. It runs the command with the caller's standard input (handed in
 # on descriptor 3, since a command a POSIX shell starts in the background reads /dev/null), and
 # when timeout's SIGTERM reaches it, it writes <marker>, passes the signal to the command, and
 # sends the command SIGKILL <seconds before SIGKILL> later where it is still running (the sleep
 # that waits for that holds none of the command's streams, so the caller's copies of them end with
-# the command). It exits with the command's status.
+# the command). It exits with the command's status. It writes its process group, which timeout(1)
+# gave it and its command, to <marker>.group, where the caller looks for what the command left.
 if [ "${1:-}" = --attempt ]; then
   marker=$2
   kill_after=$3
   shift 4
+  group_of "$$" && echo "$pgrp" > "$marker.group"
   child=
   killer=
   trap 'echo fired > "$marker"; if [ -n "$child" ]; then kill -TERM "$child" 2> /dev/null || :; (sleep "$kill_after"; kill -KILL "$child" 2> /dev/null || :) < /dev/null > /dev/null 2>&1 & killer=$!; fi' TERM
@@ -225,10 +242,41 @@ command_text=$*
 work=$(mktemp -d "${TMPDIR:-/tmp}/network-install.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 mkfifo "$work/out" "$work/err"
+group_of "$$" || :
+own_group=$pgrp
+
+# end_holders <signal>: each process of the attempt's process group (or of this script's own, where
+# the attempt's timeout(1) made none, as BusyBox's does not) that still holds the command's two
+# streams after the attempt ended (a daemon an install started, a child it left in the background),
+# sent <signal> by that process group (by its pid alone where the group is this script's own), and
+# named in $work/held once. While one holds them the copies do not end, nor this script with them.
+end_holders() {
+  attempt_group=
+  read -r attempt_group < "$work/fired.group" 2> /dev/null || :
+  for proc in /proc/[0-9]*; do
+    pid=${proc#/proc/}
+    case $pid in "$copy_out" | "$copy_err" | "$$") continue ;; esac
+    group_of "$pid" || continue
+    [ "$pgrp" = "$attempt_group" ] || [ "$pgrp" = "$own_group" ] || continue
+    for fd in "$proc"/fd/*; do
+      [ "$fd" -ef "$work/out" ] || [ "$fd" -ef "$work/err" ] || continue
+      name=?
+      read -r name < "$proc/comm" 2> /dev/null || :
+      grep -qx "$pid" "$work/held.pids" 2> /dev/null ||
+        { echo "$pid" >> "$work/held.pids"; echo "$name (pid $pid, process group $pgrp)" >> "$work/held"; }
+      if [ "$pgrp" != "$own_group" ]; then
+        kill -s "$1" -- "-$pgrp" 2> /dev/null || :
+      else
+        kill -s "$1" "$pid" 2> /dev/null || :
+      fi
+      break
+    done
+  done
+}
 endings=
 attempt=1
 while :; do
-  rm -f "$work/fired"
+  rm -f "$work/fired" "$work/fired.group"
   : > "$work/output"
   # The command's own two streams pass through, each copied into one file the fault words are read from.
   tee -a "$work/output" < "$work/out" &
@@ -239,8 +287,31 @@ while :; do
   status=0
   timeout -k "$KILL_AFTER" "$bound" sh "$0" --attempt "$work/fired" "$KILL_AFTER" -- "$@" 3<&0 \
     > "$work/out" 2> "$work/err" || status=$?
+  ended=$(date +%s)
+  # The copies end when the last writer of the two streams has; a process the command left holding
+  # them is waited for only as long as the attempt's bound leaves, then ended by its process group
+  # (KILL_AFTER seconds after SIGTERM, KILL), so the attempt still ends inside its bound and its kill.
+  : > "$work/held"
+  (
+    left=$((started + bound - ended))
+    while [ "$left" -gt 0 ]; do sleep 1; left=$((left - 1)); done
+    end_holders TERM
+    left=$KILL_AFTER
+    while [ "$left" -gt 0 ] && kill -0 "$copy_out" 2> /dev/null; do sleep 1; left=$((left - 1)); done
+    end_holders KILL
+    sleep 1
+    # A holder the scan could not reach (one that left both process groups) still ends nothing of
+    # this script's: the copies themselves end, and the attempt with them.
+    kill "$copy_out" "$copy_err" 2> /dev/null || :
+  ) < /dev/null > /dev/null 2>&1 &
+  watchdog=$!
   wait "$copy_out" "$copy_err" || :
-  took=$(($(date +%s) - started))
+  kill "$watchdog" 2> /dev/null || :
+  wait "$watchdog" 2> /dev/null || :
+  took=$((ended - started))
+  if [ -s "$work/held" ]; then
+    echo "network-install $kind: attempt $attempt left $(sed ':a;N;$!ba;s/\n/, /g' "$work/held") holding its output when it exited, and its bound ended them: $command_text" >&2
+  fi
   if [ "$status" -eq 0 ]; then
     echo "network-install $kind: attempt $attempt of $ATTEMPTS finished in ${took} s: $command_text" >&2
     exit 0

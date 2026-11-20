@@ -154,6 +154,23 @@ check "ran twice" "$(is "$(count "$work/hang-once.count")" 2)"
 check "says the first attempt timed out" "$(contains "$out" "^network-install apt: attempt 1 timed out after 10 s")"
 check "says the second finished" "$(contains "$out" "^network-install apt: attempt 2 of 3 finished")"
 
+# A command that exits at once and leaves a child holding its standard output (a daemon an install
+# starts): the script waits for that child only as long as the bound leaves, then ends it by its
+# process group and names it. ONCE (10 s), for the reason ONCE has: the command must end inside it
+# however slow the runner, and the holder is waited on until it ends.
+echo "case: an install that leaves a process holding its output returns at its bound and names it"
+run_install "leaves a holder" apt -- "$standin" "$work/leaves.count" leaves
+check "exits 0, as the command did" "$(is "$status" 0)"
+check "names the holder by name, pid and process group" \
+  "$(contains "$out" "^network-install apt: attempt 1 left sleep (pid $(cat "$work/leaves.count.held"), process group [0-9]*) holding its output when it exited, and its bound ended them")"
+held=$(cat "$work/leaves.count.held")
+# Gone, or a zombie its new parent has not reaped yet: it holds no stream either way.
+held_state=$( (sed 's/.*) //' "/proc/$held/stat" || true) 2> /dev/null | cut -c1)
+check "and ended it" "$(is "$(case "$held_state" in "" | Z) echo gone ;; *) echo alive ;; esac)" gone)"
+# The holder is kept out of the stand-ins' pid list so the case, and not stop_standins, sees whether
+# the script ended it; one the script left is ended here, while /proc names it that sleep.
+if [ "$(tr '\0' ' ' < "/proc/$held/cmdline" 2> /dev/null)" = "$real_sleep 1000 " ]; then kill -KILL "$held"; fi
+
 seam "$ENDS"
 echo "case: an install that fails by itself is not tried again, and the network is not blamed"
 run_install "fails by itself" bun -- "$standin" "$work/fail.count" fail
