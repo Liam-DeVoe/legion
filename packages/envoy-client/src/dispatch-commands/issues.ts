@@ -23,6 +23,7 @@ import {
   type DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
+  DispatchWriteKept,
   DispatchWriteLandedError,
   DispatchWriteUnsettledError,
 } from "../dispatch-http";
@@ -46,7 +47,7 @@ import {
   stringArg,
 } from "./context";
 import { dispatchAnswered, refusalWithCode, withAccount, writeMayHaveLanded } from "./failures";
-import { heldFor, heldWriteLine } from "./held";
+import { heldFor, heldWriteLine, keptWriteResult } from "./held";
 import { linkFor } from "./links";
 import { claimText, holdsSession, liveAgents, progressText, routeText } from "./render-issue";
 import { notSubscribed } from "./results";
@@ -256,6 +257,25 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   }
 }
 
+/** The closing reason `dispatch issue-update` posts ahead of its update: its id and reference,
+ *  and `held` where Dispatch's reviewer holds it. */
+interface ClosingNote {
+  readonly id: string;
+  readonly ref: string;
+  readonly held: HeldState | undefined;
+}
+
+/** A closing reason that posted, as a change of the update's line. */
+function reasonPosted(note: ClosingNote): string {
+  return `reason posted as message ${note.id} (${note.ref})`;
+}
+
+/** The line of a closing reason the reviewer holds (`held`), which opens the result: it is not
+ *  on the issue `key` until it posts. */
+function heldReasonLine(held: HeldState, note: ClosingNote, key: string): string {
+  return heldWriteLine(held, "message", note.id, ` (${note.ref}), the closing reason of ${key}`);
+}
+
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, issue } = context;
@@ -303,9 +323,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
     );
   }
-  let closingNote:
-    | { readonly id: string; readonly ref: string; readonly held: HeldState | undefined }
-    | undefined;
+  let closingNote: ClosingNote | undefined;
   if (reason !== undefined) {
     try {
       const message = await client.message(issueKey, { body: reason, actor });
@@ -375,6 +393,18 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     // The update is this call's own last write: one that landed without its answer is the
     // call's landing, which the caller reports as done.
     if (error instanceof DispatchWriteLandedError) throw error;
+    // Dispatch kept the update beside the held issue, to run right after it posts: the call did
+    // what it was asked, and the executor prints the kept write. A reason, held or posted first,
+    // is named before it.
+    if (error instanceof DispatchWriteKept) {
+      if (closingNote === undefined) throw error;
+      const kept = keptWriteResult(error, [
+        closingNote.held === undefined
+          ? `${issueKey}: ${reasonPosted(closingNote)}`
+          : heldReasonLine(closingNote.held, closingNote, issueKey),
+      ]);
+      return { ...kept, details: { ...kept.details, message: closingNote.id } };
+    }
     // A URL links exactly one issue. A server from before EXTERNAL_LINK_TAKEN answers the
     // unique-index violation with 500 INTERNAL, which names nothing; say what it means. A
     // gateway's 500 page is not that answer, and gets no such reading. A 500 can also come after
@@ -419,7 +449,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const changes = [
     ...(closingNote === undefined || closingNote.held !== undefined
       ? []
-      : [`reason posted as message ${closingNote.id} (${closingNote.ref})`]),
+      : [reasonPosted(closingNote)]),
     ...(status === undefined ? [] : [`status ${before.status} -> ${after.status}`]),
     ...(title === undefined ? [] : [`title "${after.title}"`]),
     ...(labels === undefined
@@ -485,14 +515,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     text: [
       ...(closingNote?.held === undefined
         ? []
-        : [
-            heldWriteLine(
-              closingNote.held,
-              "message",
-              closingNote.id,
-              ` (${closingNote.ref}), the closing reason of ${after.key}`
-            ),
-          ]),
+        : [heldReasonLine(closingNote.held, closingNote, after.key)]),
       `${after.key}: ${changes.join("; ")}${await notSubscribed(issueTopic(after.key), input.subscriptions)}`,
       ...adviceLines,
     ].join("\n"),

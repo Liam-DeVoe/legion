@@ -1,4 +1,5 @@
 import type { HeldEditInput, HeldRead, HeldState } from "@legion/contracts";
+import type { DispatchWriteKept } from "../dispatch-http";
 import { type CommandContext, type DispatchToolResult, optionalString, stringArg } from "./context";
 
 /**
@@ -77,6 +78,25 @@ export function heldWriteLine(held: HeldState, kind: string, id: string, names: 
       ? `\`dispatch held ${id}\` reads it and what the reviewer found; a finding also reaches you as a message of its own.`
       : `\`dispatch held ${id}\` reads it.`,
   ].join(" ");
+}
+
+/**
+ * What a command prints for its write Dispatch kept beside a held text its path names
+ * (`DispatchWriteKept`): Dispatch accepted the write and runs it right after that text posts, so
+ * the command did what it was asked. `before`, the lines of what the command wrote ahead of that
+ * write, comes first.
+ */
+export function keptWriteResult(
+  kept: DispatchWriteKept,
+  before: readonly string[] = []
+): DispatchToolResult {
+  return {
+    text: [
+      ...before,
+      `Kept ${heldFor(kept.held)}: Dispatch keeps this write as ${kept.id} and runs it right after that text posts. \`dispatch held ${kept.id}\` reads it.`,
+    ].join("\n"),
+    details: { kept: kept.id, held: kept.held },
+  };
 }
 
 /** What a held text's read prints: its state, its wording, the findings and the rewrite. */

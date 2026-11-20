@@ -784,6 +784,16 @@ next version), or the closing reason of `issue-update --status done` (the close 
 the issue's messages for the reason, then close with one that points at it). The close's own
 `PATCH` landing this way is the command's write, and exits 0.
 
+A write whose path names a text Dispatch's reviewer holds and that has not posted (an issue, an
+ask, a comment or a message) is kept by Dispatch and runs right after that text posts: Dispatch
+answers it `202` with `{id, held}` alone, `held.waits_on` naming the held text. The client reads
+no such answer as the route's payload and throws `DispatchWriteKept` (`method`, `url`, the kept
+`id` and `held`), which is no refusal and no `DispatchServiceError`. The `dispatch` command prints
+one line for it, `Kept until held text <waits_on> posts: Dispatch keeps this write as <id> and runs
+it right after that text posts.`, with `dispatch held <id>` to read it, and exits 0. A picture
+upload ahead of the command's own write that is kept fails the command, saying the picture was not
+uploaded yet, since the call's text has no address for it until it is.
+
 Successful write responses may include `advice`. The executor preserves that object as
 `details.advice` and appends short pointers after the subscription/follow suffix: a primary spec
 with no decision blocks, three or more session writes without a human response (with stronger

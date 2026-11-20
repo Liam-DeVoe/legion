@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  A write whose path names a text Dispatch's reviewer holds, which has not posted (an issue, an
+  ask, a comment or a message), is kept by Dispatch and runs right after that text posts. Dispatch
+  answers such a write `202` with only the id it keeps the write under and `held`. Commands read
+  that answer as their own: `dispatch result` failed, and `dispatch artifact`,
+  `dispatch issue-update`, `dispatch claim` and the other writes on such a text printed fields
+  that were not there. Now `DispatchClient` throws `DispatchWriteKept` for that answer, with the
+  method, the URL, the kept id and `held`, and the command prints
+  `Kept until held text <id> posts: Dispatch keeps this write as <kept id> and runs it right after
+  that text posts.` with `dispatch held <kept id>`, and exits 0. `dispatch issue-update` with a
+  reason names its closing reason first. A picture that Dispatch keeps fails its call before the
+  call's own write, and says that the picture was not uploaded yet.

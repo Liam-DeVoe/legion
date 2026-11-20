@@ -308,6 +308,61 @@ export class DispatchWriteHeld extends Error {
   }
 }
 
+/**
+ * A write Dispatch kept beside a held text its path names (an issue, an ask, a comment or a
+ * message its reviewer holds, which has not posted): Dispatch answered it 202 with `HeldDeferred`,
+ * the id the write is kept under and `held`, whose `waits_on` names that text, and runs the write
+ * right after that text posts (`holdRequest`, packages/envoy/internal/dispatch/api/held_replay.go).
+ * The write was accepted, so this is no refusal; it carries none of the route's own answer, so no
+ * caller can read one. `url` is the request's URL as a text names it (`requestForText`).
+ */
+export class DispatchWriteKept extends Error {
+  override readonly name = "DispatchWriteKept";
+
+  constructor(
+    readonly method: string,
+    readonly url: string,
+    /** The id Dispatch keeps the write under, which `GET /api/v1/held/{id}` reads. */
+    readonly id: string,
+    readonly held: HeldState & { readonly waits_on: string }
+  ) {
+    super(
+      `${method} ${url} was kept as ${id}, and Dispatch runs it right after held text ${held.waits_on} posts`
+    );
+  }
+}
+
+/**
+ * The kept write's answer `answer` is (`DispatchWriteKept`): 202 whose body is an object of
+ * exactly `id` and `held`, `held.waits_on` a text's id. Undefined for any other answer, the
+ * reviewer's own hold of a write among them, which is the route's whole shape with `held` beside
+ * it (`Holdable`). Dispatch answers every kept write `posting` with no deadline (`holdRequest`),
+ * which `held` reads where its own `state` or `deadline` is not one.
+ */
+function keptAnswer(
+  status: number,
+  answer: unknown
+): { readonly id: string; readonly held: HeldState & { readonly waits_on: string } } | undefined {
+  if (status !== 202 || typeof answer !== "object" || answer === null) return undefined;
+  if (Object.keys(answer).length !== 2 || !("id" in answer) || !("held" in answer)) {
+    return undefined;
+  }
+  const { id, held } = answer;
+  if (typeof id !== "string" || typeof held !== "object" || held === null) return undefined;
+  const waitsOn = "waits_on" in held ? held.waits_on : undefined;
+  if (typeof waitsOn !== "string" || waitsOn === "") return undefined;
+  const state = "state" in held ? held.state : undefined;
+  const deadline = "deadline" in held ? held.deadline : undefined;
+  return {
+    id,
+    held: {
+      state: typeof state === "string" ? state : "posting",
+      deadline: typeof deadline === "string" ? deadline : null,
+      waits_on: waitsOn,
+    },
+  };
+}
+
 /** How a `DispatchClient` sends its requests, each its default where unset. */
 export interface DispatchClientOptions {
   readonly signal?: AbortSignal | undefined;
@@ -2917,7 +2972,8 @@ export class DispatchClient {
    * read as `open-asks`' answer told a session that nothing waited on it). A write Dispatch made
    * whose answer is gone — `409 IDEMPOTENCY_KEY_COMMITTED`, or a replayed 2xx reading
    * `IDEMPOTENCY_ANSWER_NOT_KEPT` (`answerNotKept`) — is a `DispatchWriteLandedError`, neither a
-   * refusal nor a payload.
+   * refusal nor a payload. A write Dispatch kept beside a held text, to run right after it posts
+   * (`keptAnswer`), is a `DispatchWriteKept`: its answer is no payload of the route's either.
    */
   async #response<T>(method: string, url: string, response: Response): Promise<T> {
     const text = await response.text();
@@ -2965,6 +3021,15 @@ export class DispatchClient {
         response.status,
         method,
         requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING)
+      );
+    }
+    const kept = isReadMethod(method) ? undefined : keptAnswer(response.status, payload);
+    if (kept !== undefined) {
+      throw new DispatchWriteKept(
+        method,
+        requestForText(this.#baseUrl, url, DISPATCH_URL_SETTING),
+        kept.id,
+        kept.held
       );
     }
     return payload as T;
