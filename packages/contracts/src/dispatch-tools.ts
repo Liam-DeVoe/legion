@@ -7,7 +7,7 @@ import {
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
 } from "./dispatch-api-limits";
-import { dispatchRouteToolSpecs } from "./dispatch-route-tools";
+import { dispatchRouteToolSpecs, resultRecordArguments } from "./dispatch-route-tools";
 
 export { personToolSpecs } from "./dispatch-route-tools";
 
@@ -755,6 +755,12 @@ const RELATED_CHECK_RESULT =
   "which items it found and how it searched, that it searched and found nothing, or that no " +
   "check was made, why, and the dispatch search to run instead.";
 
+/**
+ * Every Dispatch tool behind the `dispatch` command: `@legion/envoy-client` derives one command per
+ * spec and one flag per field (`src/dispatch-command.ts`). The specs written here come first, each
+ * served by a command written by hand, then the route-bound specs of `dispatch-route-tools.ts`,
+ * each served by its route binding.
+ */
 export const dispatchToolSpecs = [
   {
     name: "dispatch_issue",
@@ -1753,48 +1759,7 @@ export const dispatchToolSpecs = [
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE).optional(),
-      check: z
-        .string()
-        .describe(
-          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
-        )
-        .optional(),
-      role: z
-        .string({ max: 32 })
-        .describe(
-          "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
-        )
-        .optional(),
-      verdict: z.enum(["pass", "fail"]).describe("Whether the check passed.").optional(),
-      commit: z
-        .string()
-        .describe("The 40-character lowercase hex commit the check ran at.")
-        .optional(),
-      surface: z.string().describe("Where a person reaches the change.").optional(),
-      run: z.string().describe("The command that proved it.").optional(),
-      observed: z.string().describe("What the command printed.").optional(),
-      negative_control: z
-        .string()
-        .describe("The deliberately broken input and the refusal seen.")
-        .optional(),
-      failed: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run failed; 0 by default.")
-        .optional(),
-      skipped: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run skipped; 0 by default.")
-        .optional(),
-      excluded: z
-        .number({ int: true, min: 0 })
-        .describe("Cases the run excluded; 0 by default.")
-        .optional(),
-      screenshots: z
-        .array(z.string())
-        .describe(
-          "dispatch:// references to image documents of this issue or of the check's issue."
-        )
-        .optional(),
+      ...resultRecordArguments(z, (field) => field.optional()),
       retract: z
         .string()
         .describe(

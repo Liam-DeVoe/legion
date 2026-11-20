@@ -67,7 +67,9 @@ var issueExpectableFields = map[string]bool{
 // holds every one: a write back undoing another write puts its value back only while the issue
 // still holds what that write left, decided under the lock the update itself takes, so a change
 // another writer makes in between is never written over. Values are compared as the issue's own
-// read answers them, whatever their spelling (goingIssueFieldValue, goingSameJSON).
+// read answers them, whatever their spelling (goingIssueFieldValue, goingSameJSON). One 409
+// ISSUE_CHANGED refuses the whole write, naming what each field that changed holds now; a
+// condition naming a field no update writes (issueExpectableFields) is 400 INVALID_ISSUE.
 func issueExpectationRefusal(issue model.Issue, expect map[string]json.RawMessage) error {
 	if len(expect) == 0 {
 		return nil

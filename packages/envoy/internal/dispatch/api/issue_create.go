@@ -700,8 +700,11 @@ func (outcome nearCopyOutcome) unrecorded() nearCopyOutcome {
 }
 
 // respondWithExistingExternalIssue answers a create naming a GitHub issue Dispatch already holds
-// with that issue. Nothing was created, so no related-item check is made, and the result says so
-// (and the check is recorded as not made, reason already_exists).
+// with that issue, 200 where a create that made its issue answers 201: before the create where the
+// reference already resolves, and from the create's own transaction where another create of the
+// reference committed first (its external link's unique violation). Nothing was created, so no
+// related-item check is made, and the result says so (and the check is recorded as not made,
+// reason already_exists).
 func (s *server) respondWithExistingExternalIssue(
 	w http.ResponseWriter,
 	r *http.Request,

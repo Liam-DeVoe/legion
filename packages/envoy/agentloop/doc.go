@@ -1,6 +1,9 @@
-// Package agentloop runs a model and the tools it calls: the model loop of the secrets broker
-// (internal/broker), and the only import of Grafana's AI SDK for Go in this repository. It is
-// the engine and nothing more. It keeps no conversation store, carries no tools of its own and
+// Package agentloop runs a model and the tools it calls, and is the only import of Grafana's AI
+// SDK for Go in this repository. Dispatch's server (cmd/dispatch) runs the command bar's answer
+// and decision calls through it, cmd/going-bakeoff the decision-model bake-off, and the secrets
+// broker its judge (internal/broker/judge). The Legion daemon's module compiles it in one test
+// alone (packages/daemon/internal/sharedloop), which is why it sits outside internal/. It is the
+// engine and nothing more. It keeps no conversation store, carries no tools of its own and
 // routes nothing: a caller hands it an endpoint, a model, the messages, the tools the model may
 // call and the bounds of the run, and reads back the reply, every step and what the run cost.
 //

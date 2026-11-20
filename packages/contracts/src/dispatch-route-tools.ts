@@ -1,12 +1,16 @@
 import type { DispatchToolRoute, DispatchToolSpec } from "./dispatch-tools";
+import type { SchemaApi, SchemaNode } from "./tool-schema";
 
 /**
  * The Dispatch tools that call one route of the server's route table as it stands, each by the
  * route binding it carries (`DispatchToolSpec.routes`): which arguments fill the path, which go
  * in the query and which in the JSON body. `@legion/envoy-client` serves every one of them with
- * one generic command, and the Dispatch server runs them through one generic translation, so
- * none needs a hand-written command or translator. They cover each route a person can call that
- * no hand-written spec in `dispatch-tools.ts` calls, which the server's
+ * one generic command (`src/dispatch-commands/route-tools.ts`), which calls the first route the
+ * arguments fill and prints its JSON answer compact, and the Dispatch server runs them through one
+ * generic translation (`goingTranslateBound`, `internal/dispatch/api/going_tools.go`), so none
+ * needs a hand-written command or translator. `scripts/gen-go-tools.ts` emits each binding into
+ * Go as `contracts.DispatchTool.Routes`. They cover each route a person can call that no
+ * hand-written spec in `dispatch-tools.ts` calls, which the server's
  * `TestEveryPersonRouteHasATool` holds the table to.
  *
  * This module imports nothing from `dispatch-tools.ts` at run time: that module spreads this
@@ -39,6 +43,63 @@ function send(
   binding: Omit<DispatchToolRoute, "method" | "path"> = {}
 ) {
   return [{ method, path, ...binding }] as const satisfies readonly DispatchToolRoute[];
+}
+
+/**
+ * The arguments of a result's record beside the issue it is recorded on: the check, who ran it,
+ * its verdict, its commit, and what the run read. `dispatch_check_result` sends them as the dry
+ * run's body, and `dispatch_result` (`dispatch-tools.ts`) takes them as a record's. `required` is
+ * applied to each one a record must carry: the dry run keeps them required, and `dispatch_result`
+ * makes them optional, since it also retracts a result with none of them and its own validation
+ * requires them of a record.
+ */
+export function resultRecordArguments<E extends SchemaNode<E>>(
+  z: SchemaApi<E>,
+  required: (field: E) => E
+) {
+  return {
+    check: required(
+      z
+        .string()
+        .describe(
+          "The check block's id, or its canonical reference dispatch://KEY/artifact/verification-md#b-<id> when the id is not unique among the issue's Verification document and those of the issues above it."
+        )
+    ),
+    role: required(
+      z
+        .string({ max: 32 })
+        .describe(
+          "Who ran it: implementer, tester, reviewer. At most 32 characters of a-z and -, printed in the pull-request line."
+        )
+    ),
+    verdict: required(z.enum(["pass", "fail"]).describe("Whether the check passed.")),
+    commit: required(
+      z.string().describe("The 40-character lowercase hex commit the check ran at.")
+    ),
+    surface: z.string().describe("Where a person reaches the change.").optional(),
+    run: z.string().describe("The command that proved it.").optional(),
+    observed: z.string().describe("What the command printed.").optional(),
+    negative_control: z
+      .string()
+      .describe("The deliberately broken input and the refusal seen.")
+      .optional(),
+    failed: z
+      .number({ int: true, min: 0 })
+      .describe("Cases the run failed; 0 by default.")
+      .optional(),
+    skipped: z
+      .number({ int: true, min: 0 })
+      .describe("Cases the run skipped; 0 by default.")
+      .optional(),
+    excluded: z
+      .number({ int: true, min: 0 })
+      .describe("Cases the run excluded; 0 by default.")
+      .optional(),
+    screenshots: z
+      .array(z.string())
+      .describe("dispatch:// references to image documents of this issue or of the check's issue.")
+      .optional(),
+  };
 }
 
 export const dispatchRouteToolSpecs = [
@@ -93,6 +154,40 @@ export const dispatchRouteToolSpecs = [
     routes: get("/api/v1/projects/{key}/related", {
       params: { key: "project" },
       query: ["title", "text", "exclude_issues", "keywords_only"],
+    }),
+  },
+  {
+    name: "dispatch_check_result",
+    example: {
+      issue: "DSP-1",
+      check: "k1",
+      role: "implementer",
+      verdict: "pass",
+      commit: "1111111111111111111111111111111111111111",
+    },
+    description:
+      "Show the pull-request body line a record of one result of one check would print, and record nothing: the dry run of dispatch result. Dispatch refuses the arguments as it refuses the record before it writes; a closed issue, a screenshot and a check reworded while the record writes are refused by the record alone. Use it to see the line before the result is recorded.",
+    arguments: (z) => ({
+      issue: z.string().describe(ISSUE_KEY),
+      ...resultRecordArguments(z, (field) => field),
+    }),
+    strict: true,
+    routes: send("POST", "/api/v1/issues/{key}/results/dry-run", {
+      params: { key: "issue" },
+      body: [
+        "check",
+        "role",
+        "verdict",
+        "commit",
+        "surface",
+        "run",
+        "observed",
+        "negative_control",
+        "failed",
+        "skipped",
+        "excluded",
+        "screenshots",
+      ],
     }),
   },
   {
@@ -1430,9 +1525,9 @@ export const dispatchRouteToolSpecs = [
  * The tools the command bar calls as the person it acts for, which no command of the `dispatch`
  * command line offers: each one's route is a person's own move, and Dispatch refuses an agent's
  * token at it. They bind their routes as `dispatchRouteToolSpecs` do, and `scripts/gen-go-tools.ts`
- * emits them into the Dispatch server's tool table beside the others, but they are no member of
- * `dispatchToolSpecs`, which is the command line's. Each description is written for the bar's
- * model.
+ * emits them into the Dispatch server's tool table, `contracts.DispatchTools`, after the others,
+ * where the command bar reads them; but they are no member of `dispatchToolSpecs`, which is the
+ * command line's. Each description is written for the bar's model.
  */
 export const personToolSpecs = [
   {

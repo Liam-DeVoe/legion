@@ -4,11 +4,14 @@
  * bound of that stream is declared here once, and generated into Go (`contracts.Going*`), so the
  * server that writes a frame and the page that reads it cannot drift apart.
  *
- * The frames' shapes are written by hand here and in Go (`going_decision.go`, `going/blocks.go`,
- * `going_reads.go`), since a frame union is no OpenAPI response. `fixtures/going/` holds the two
- * together: the server's own Go test writes each frame's data there
- * (`TestTheGoingFrameFixturesAreWhatTheServerWrites`), and `going.test.ts` holds every fixture to
- * the types below key for key, so a field one side gains or loses fails a test.
+ * The frames' shapes (`GoingDecisionEvent`, `GoingProposalEvent`, `GoingBlockEvent`,
+ * `GoingRosterEvent` and their parts) are written by hand here and in Go (`going_decision.go`,
+ * `going/blocks.go`, `going_reads.go`), since a frame union is no OpenAPI response.
+ * `fixtures/going/` holds the two together: the server's own Go test writes each frame's data
+ * there from the server's types and fails where a fixture differs from them
+ * (`go test ./internal/dispatch/api -run TestTheGoingFrameFixturesAreWhatTheServerWrites -update`
+ * in `packages/envoy` rewrites them), and `going.test.ts` holds every fixture to the types below
+ * key for key, so a field one side gains or loses fails a test.
  */
 
 /** The frame carrying the next piece of the answer's text, in the order the model wrote it.

@@ -737,6 +737,7 @@ var goingReadTools = map[string]goingReadTool{
 	"dispatch_read_block_schema":                 {},
 	"dispatch_check_markdown":                    {},
 	"dispatch_find_related":                      {},
+	"dispatch_check_result":                      {},
 	"dispatch_list_repo_mappings":                {},
 	"dispatch_check_app_installation":            {},
 	"dispatch_list_architecture_sources":         {},
