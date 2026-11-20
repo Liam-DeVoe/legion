@@ -1887,6 +1887,38 @@ describe("health: rule 20, unmodelled write", () => {
     );
   });
 
+  // The residual of the architect's ruling of 2026-11-20T10:05Z: production's `legion gh` refuses
+  // a write whose repository GitHub answers 404 to the leak guard's read of its visibility, exit 2
+  // before gh runs (main's since #4551, leakguard's `NotFound`), and the world does not model it. A
+  // write naming another repository of the world's owner passes the world's owner refusal, which
+  // refuses another owner alone (gh-standin.ts's `ownerRefusal`), meets no route, since a write's
+  // route reads its endpoint whole, and the stand-in records it `unrouted`, exit 1. Catches: a rule
+  // that judges only the writes naming the world's own repository, so a run that met the residual
+  // read healthy.
+  test("a write to another repository of the world's owner, recorded as answered by nothing, is unmodelled", () => {
+    const unrouted = { route: null, handler: "unrouted", exit: 1 };
+    const writes: string[][] = [
+      ["api", "--method", "POST", "repos/example/gadgets/issues", "-f", "title=a note"],
+      [
+        "api",
+        "--method",
+        "POST",
+        "repos/example/gadgets/pulls/1001/comments/7001/replies",
+        "-f",
+        "body=fixed",
+      ],
+      ["pr", "comment", "1001", "-R", "example/gadgets", "--body", "a note"],
+    ];
+    for (const [index, argv] of writes.entries())
+      expect([
+        argv,
+        unmodelledWrite({ dir: run(`other-repository-${index}`, [call(argv, unrouted)]) }),
+      ]).toEqual([
+        argv,
+        `unmodelled write: calls.jsonl:2, \`gh ${argv.join(" ")}\` of the reviewer, exited 1: no route or answer of the world models it, so it was refused 404 where GitHub takes it`,
+      ]);
+  });
+
   // A record written before the stand-in modelled the four write spellings INFRA-764's class
   // search of writes found answered a success that kept nothing (2026-11-18): the create of
   // `…/reviews?x=1` by the create route's frozen answer (`route`), a PATCH of `…/pulls/<n>?x=1`

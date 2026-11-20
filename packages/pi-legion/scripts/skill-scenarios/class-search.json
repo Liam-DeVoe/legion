@@ -63,6 +63,14 @@
       "ruled": "2026-11-19T14:07Z",
       "words": "The world answers one merge state to every viewer. Production gave the review App `BLOCKED` and the implement App `CLEAN` on cybermonklabs/legion#4461 (reads of 12:55Z to 13:00Z on 2026-11-19, head `21dc91c7`, carrying three review App commits); the pull request then merged through the queue at 14:02:33Z as `73e417f113`. GitHub's rule behind the per-viewer answer is not known, so it is not modelled. Reviewers and the implementer can see different states in production only where a reviewer reads the merge state after its own approval. A batch that loses a run to it is what pays for a model.",
       "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; gh-threads.ts's `mergeStateOf`"
+    },
+    {
+      "name": "the wrapper's refusal of a write whose repository GitHub answers 404",
+      "check": "stand-ins: a behaviour a stand-in declares not modelled",
+      "at": "gh-standin\\.ts:\\d+ The wrapper's refusal of a write whose repository GitHub answers 404 .* is not modelled: a write naming another repository of the world's owner passes the owner refusal below, meets no route ",
+      "ruled": "2026-11-20T10:05Z",
+      "words": "`legion gh`'s refusal of a write whose repository GitHub answers 404 to the leak guard's read of its visibility, exit 2 before gh runs (main's since #4551, leakguard's `NotFound`). A write naming another repository of the world's owner passes the world's owner refusal, meets no route and is answered `unrouted`, `gh: Not Found (HTTP 404)` and exit 1. A run that makes one is unhealthy (`rig.sh health`'s rule 20, `unmodelled write`), and the run is replaced. No other write meets the refusal: the world's own repository exists, a write naming another owner is refused exit 2 before any route reads it, and the world's repository is no fork.",
+      "source": "packages/pi-envoy/scripts/README.md, \"Which of the world's answers are pinned, and to what\"; health.ts's rule 20"
     }
   ],
   "unreachable": [
@@ -149,12 +157,6 @@
       "check": "stand-ins: a behaviour a stand-in declares not modelled",
       "at": "daemon-standin\\.ts:\\d+ What the daemon tells the roles of a head's CI is not modelled: .* Unreachable: no run's Envoy publishes a checks settlement, ",
       "reason": "rig.sh unsets every ENVOY_* variable of its caller's environment at its start, and its start_listener starts each label's listener with ENVOY_API_TOKEN, ENVOY_LISTEN_HOST, ENVOY_MACHINE_ID, NATS_URLS and PORT alone, no ENVOY_WEBHOOKS, so webhook.LoadWebhookConfig enables no GitHub route, the listener's ciStore is nil and cistore.StartSummaryLoop, the one publisher of a pr.<n>.checks settlement, never starts; and rig.sh's concluded_checks gives every head of every world test, lint and CodeQL completed with success, so no check of a world runs on or is skipped"
-    },
-    {
-      "name": "the wrapper's refusal of a write whose repository GitHub answers 404",
-      "check": "stand-ins: a behaviour a stand-in declares not modelled",
-      "at": "gh-standin\\.ts:\\d+ The wrapper's refusal of a write whose repository GitHub answers 404 .* is not modelled\\. Unreachable: the only repository a run's world serves is its own, ",
-      "reason": "rig.sh's fixture_write gives each world one repository, its own, which exists (visibility public), so the leak guard's read of it is answered public and never 404; gh-standin.ts's ownerRefusal refuses a write naming an owner outside the world's project exit 2 before any route reads it; a write naming another repository of the world's owner meets no route, is recorded unrouted, and health.ts's rule 20 (unmodelledWrite) makes the run unhealthy, and an unhealthy run is replaced; and fixture_write's repository is fork:false, so cmd/legion's forkUpstreamDir is never asked"
     }
   ],
   "searches": [

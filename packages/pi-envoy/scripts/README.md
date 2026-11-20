@@ -1203,7 +1203,7 @@ measurement each, named where the answer is described: a reply to a reply filed 
 one App's update of another's review, GitHub's 404 body for an endpoint it does not serve, and
 the merge state of an approved, green head on a merge-queue base. A few are stated as
 unmeasured: GitHub's 404 for another App's read of a pending review by id, and the
-rule-violation lines of a refused push beyond the three measured. Seven differences are named
+rule-violation lines of a refused push beyond the three measured. Eight differences are named
 residuals rather than defects, each an answer the world cannot give as production gives it:
 
 - `remote.origin.vcs`, the key that carries the world's remote. No production clone has it. The
@@ -1244,6 +1244,18 @@ residuals rather than defects, each an answer the world cannot give as productio
   Reviewers and the implementer can see different states in production only where a reviewer
   reads the merge state after its own approval. If a batch loses a run to it, that count buys the
   model (the architect's ruling of 2026-11-19T14:07Z).
+- `legion gh`'s refusal of a write whose repository GitHub answers 404 to the leak guard's read of
+  its visibility, exit 2 before gh runs, saying that GitHub answers 404 for the repository (main's
+  since #4551, leakguard's `NotFound`, where the guard's setup error refused it before). A write
+  naming another repository of the world's owner passes the world's owner refusal
+  (`gh-standin.ts`'s `ownerRefusal`, which refuses another owner alone), meets no route, since a
+  write's route reads its endpoint whole, and is answered `unrouted`: `gh: Not Found (HTTP 404)`,
+  exit 1. A run that makes one is unhealthy from that write on (`rig.sh health`'s rule 20,
+  `unmodelled write`), and the run is replaced (the architect's ruling of 2026-11-20T10:05Z). No
+  other write meets the refusal: the world's own repository exists, so the guard's read of it is
+  answered `public` (`fixture_write`); a write naming another owner is refused exit 2 before any
+  route reads it; and the world's repository is no fork (`fork:false`), so the credential helper's
+  answer for a fork (`forkUpstreamDir`) is never asked.
 
 **A read with no pin, and an answer this section and the sections below do not name, is not
 claimed to answer as production does.**
@@ -1965,16 +1977,6 @@ Stated limits, each known and kept so:
   `unrouted`), which health reads as a refusal the scenario does not declare; a call carrying a
   refused option that the world routes is answered by that route, where production's wrapper
   refuses it.
-- Nor is the wrapper's refusal of a write whose repository GitHub answers 404 to the leak guard's
-  read of its visibility, exit 2 saying that GitHub answers 404 for the repository (main's since
-  #4551, leakguard's `NotFound`, where the guard's setup error refused it before). No world reaches
-  it: the only repository a world serves is its own, which exists, so the guard's read of it is
-  answered `public` (`fixture_write`); a write naming an owner outside the world's project is
-  refused exit 2 before any route reads it (`gh-standin.ts`'s `ownerRefusal`); a write naming
-  another repository of the world's owner meets no route, is recorded `unrouted`, and health's
-  unmodelled-write rule makes the run unhealthy, so it is replaced; and the world's repository is
-  no fork (`fork:false`), so the credential helper's answer for a fork (`forkUpstreamDir`) is never
-  asked (`class-search.json`'s unreachable entries).
 - Of gh's reads of the pull request, `gh pr list --search` is refused as a call the world does not
   model (`gh: Not Found (HTTP 404)`, recorded `unrouted`), and `--template`, `--web`, and `gh pr
   diff`'s `--patch`, `--exclude` and `--color always` are not read: such a call is answered as if
