@@ -352,7 +352,7 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 		case holdRefusal(err):
 			// A suspension above the caller took the claim over since the read at the request,
 			// so the forget kept the session, and the hold is the answer: the caller's resume
-			// would be refused it, and only its holder starts the claim now.
+			// would be refused it, and only its holder, or the operator, starts the claim now.
 			s.log.Warn("api: a suspension above the caller took the claim over before the fresh session's forget, which kept its session",
 				"claim", token, "session", session, "stopped", stopped, "error", err)
 			s.refuseHold(w, token, freshSessionOp, by, err, outcome)

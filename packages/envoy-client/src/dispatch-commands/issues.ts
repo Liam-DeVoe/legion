@@ -562,10 +562,13 @@ export async function relatedCommand(context: CommandContext): Promise<DispatchT
   };
 }
 
-/** What in a label can split an issue's one-line row or forge a part of it: the ` · ` that parts
- *  the row, the `, ` that parts the labels, and a line break. Dispatch trims only a label's ends
- *  (`normalizeIssueLabels`), so a label holding one is printed quoted, as JSON quotes it. */
-const LABEL_BREAKS_ROW = /[·,\r\n]/;
+/** What in a title or a label can split an issue's one-line row or forge a part of it: the ` · `
+ *  that parts the row, the `, ` that parts the labels, a `"` that opens or closes a quoted part,
+ *  and a line break. Dispatch trims only a title's ends (`issue_create.go`, `issue_patch.go`) and a
+ *  label's (`normalizeIssueLabels`), so one holding any of them is printed quoted, as JSON quotes
+ *  it: a title holding ` · child of ACME-9` then cannot read as a child's row, and a reader that
+ *  skips what is in quotes skips each quoted part whole. */
+const BREAKS_ROW = /[·,"\r\n]/;
 
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -640,13 +643,14 @@ export async function issuesCommand(context: CommandContext): Promise<DispatchTo
             ...rows.map((row) => {
               const progress = progressText(row.progress, " · ");
               return (
-                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ${row.title}` +
+                `${row.key} [${row.status}]${row.priority === null ? "" : ` P${row.priority}`} ` +
+                (BREAKS_ROW.test(row.title) ? JSON.stringify(row.title) : row.title) +
                 // The help says each row carries its parent and labels: a root names no parent, so
                 // a reader of the text tells the open roots from their children.
                 (row.parent ? ` · child of ${row.parent}` : "") +
                 (row.labels.length === 0
                   ? ""
-                  : ` · labels ${row.labels.map((label) => (LABEL_BREAKS_ROW.test(label) ? JSON.stringify(label) : label)).join(", ")}`) +
+                  : ` · labels ${row.labels.map((label) => (BREAKS_ROW.test(label) ? JSON.stringify(label) : label)).join(", ")}`) +
                 (row.open_asks === 0
                   ? ""
                   : ` · ${row.open_asks} open ${row.open_asks === 1 ? "ask" : "asks"}`) +

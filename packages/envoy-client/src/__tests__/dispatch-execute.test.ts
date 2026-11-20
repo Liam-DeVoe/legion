@@ -3170,6 +3170,68 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  // The row prints a title by the same rule as a label, since Dispatch trims only a title's ends
+  // too. The owner audit reads a row with no ` · child of <KEY>` outside quotes as a root.
+  describe("dispatch_issues quotes a title as it quotes a label", () => {
+    /** The rows a page of `issues` prints, past the count line. */
+    const rowsOf = async (
+      issues: Array<{ key: string; title: string; parent: string | null; labels: string[] }>
+    ) => {
+      const fetchImpl = async (_url: RequestInfo | URL): Promise<Response> =>
+        response({
+          issues: issues.map((issue) => ({
+            ...issue,
+            status: "todo",
+            priority: null,
+            rank: "b",
+            assignee: null,
+            updated_at: "2026-09-13T00:00:00Z",
+            last_seq: 1,
+            open_asks: 0,
+            progress: { tasks: null, children: null },
+            claim: null,
+            route: null,
+            route_status: null,
+            route_holder: null,
+          })),
+          total: issues.length,
+          limit: 50,
+          offset: 0,
+        });
+      const result = await executeDispatchTool({
+        tool: "dispatch_issues",
+        args: { project: "ACME" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return result.text.split("\n").slice(1);
+    };
+    /** What the owner audit reads of `row`: the row with each JSON-quoted part taken out. */
+    const outsideQuotes = (row: string) => row.replace(/"(?:[^"\\]|\\.)*"/g, "");
+
+    test("a root whose title holds ` · child of <KEY>` prints it quoted, so it reads as a root", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-3", title: "Fix x · child of ACME-9", parent: null, labels: [] },
+      ]);
+      expect(rows).toEqual(['ACME-3 [todo] "Fix x · child of ACME-9"']);
+      expect(outsideQuotes(rows[0] ?? "")).not.toContain(" · child of");
+    });
+
+    // A `"` is quoted too, so the quotes on a row stay balanced: a raw title holding one `"`, then
+    // a quoted label, would put the child's own ` · child of <KEY>` inside quotes.
+    test("a child whose title holds a quote prints it quoted, so its parent stays outside quotes", async () => {
+      const rows = await rowsOf([
+        { key: "ACME-4", title: 'Say "hi', parent: "ACME-1", labels: ["a · b"] },
+      ]);
+      expect(rows).toEqual(['ACME-4 [todo] "Say \\"hi" · child of ACME-1 · labels "a · b"']);
+      expect(outsideQuotes(rows[0] ?? "")).toContain(" · child of ACME-1");
+    });
+  });
+
   // A list row has no liveness of its own, so it used to judge a claim by membership of the
   // agent list alone - and that list carries unresponsive sessions now, because an unresponsive
   // session keeps its claims. Such a holder then read as plainly holding on the list while

@@ -2525,8 +2525,8 @@ package api
 // migration 20261115060739: it holds against the daemon's rules as the operator's does, its own
 // resume lifts it, and the operator's suspension outranks it. So the operator claim routes'
 // `suspendedBy` and `suspensionHeldBy` gain the value `controller`, which only the operator's
-// bearer reads. The controller's resume, suspend, stop and retry, and its fresh session, are
-// refused a claim the operator's own suspension holds, held for a turn or landed, with `409
+// bearer reads. The controller's resume_claim, suspend, stop and retry, and its fresh session,
+// are refused a claim the operator's own suspension holds, held for a turn or landed, with `409
 // SUSPENDED_BY_OPERATOR`, nothing of the claim changed; its compaction is not, and answers such a
 // claim in its own codes. Its retry and resume of a claim stored working that no such suspension
 // holds are refused `409 CLAIM_IN_A_TURN`. An architect gets the same six operations — these
