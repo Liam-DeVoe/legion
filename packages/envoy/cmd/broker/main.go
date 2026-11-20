@@ -33,7 +33,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode/utf8"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
@@ -60,7 +59,6 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/reread"
-	"github.com/sjawhar/envoy/internal/broker/rulehost"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/wake"
@@ -220,23 +218,26 @@ func main() {
 	// run's, so a production start that names any of them is refused here rather than running
 	// a broker that mints against a stand-in or dials an address no production proxy may.
 	fatal(refuseAirlockTestSettingsInProduction(cfg, fakeSecrets))
-	// The airlock's rules, read here beside the port-0 refusal: before the database is migrated,
-	// before the socket is bound and before anything reaches for AWS, so a pod given a file it
-	// cannot read or cannot serve refuses to start instead of running without the rules its
-	// operator believes are in force. The file is read once; a change to it rolls the pods.
-	rules, err := readAirlockRules(cfg.AirlockRulesFile)
+	// The profiles, read here beside the port-0 refusal: before the database is migrated, before
+	// the socket is bound and before anything reaches for AWS, so a pod given a file it cannot
+	// read or cannot serve refuses to start instead of running without the profiles its operator
+	// believes are in force. The file is read once; a change to it rolls the pods. The airlock's
+	// rules are the profiles' proxy blocks, which the proxy port, every release and the judge
+	// read alike.
+	profiles, err := readProfiles(cfg.ProfilesFile, serviceNames(cfg))
 	fatal(err)
+	proxyRules := profiles.ProxyRules()
 	// And the proxy's certificate authority, built in the same breath and refused the same way:
 	// the key beside the certificate, which the proxy port signs each bound host's certificate
-	// with, and the certificate itself, which every release of a name the rules hold back hands
-	// the command as the one thing it trusts the proxy by. It is the last thing about the
+	// with, and the certificate itself, which every release of a name a proxy block holds back
+	// hands the command as the one thing it trusts the proxy by. It is the last thing about the
 	// airlock that can refuse a boot - a file that is not a certificate, a key that is not that
 	// certificate's, or a certificate that is no authority would leave every bound host's
 	// handshake failing for every command, found out one command at a time - so it is read
 	// before the database is migrated, before the socket is bound and before anything reaches
 	// for AWS. nil for a deployment with no airlock, which binds no proxy port.
 	var airlockCA *airlockproxy.Authority
-	if cfg.AirlockRulesFile != "" {
+	if cfg.ProfilesFile != "" {
 		if airlockCA, err = airlockproxy.NewAuthority(cfg.AirlockCACertFile, cfg.AirlockCAKeyFile); err != nil {
 			// Named by the two variables an operator sets, since what the refusal under this
 			// is about is the files they name.
@@ -341,9 +342,10 @@ func main() {
 	// reads are counted with every read after them; broker_unservable_secrets, which reads the
 	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
-	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
-	// policy version is the one it has today.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+	// profiles.Digest is "" for every name no profile holds, and so for every secret when no
+	// profiles file was named, which leaves such a deployment's policy version where it is today;
+	// an edit of a profile's entry moves it, and so ends that name's grants.
+	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: profiles.Digest,
 		StoreReads: policy.NewStoreReads(registry)}
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
@@ -415,7 +417,7 @@ func main() {
 		},
 		Listen: listenTCP(cfg.ListenAddr),
 		// The proxy port, bound by the same boot and only for a deployment that has an
-		// airlock: without a rules file no name is ever held back, so there is nothing for a
+		// airlock: without a profiles file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
 		// The metrics port, bound by the same boot after the other two, on every deployment.
@@ -462,11 +464,11 @@ func main() {
 	// The broker's one read of Dispatch, where BROKER_JUDGE_DISPATCH_URL names one: the request
 	// machine and the model judge share it, its token cache and its client.
 	dispatch := judgeDispatch(cfg)
-	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, rules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
+	reqMachine := newRequestMachine(cfg, st, current, secretStore, enr.Replay, proxyRules, airlockCACertificate, secrets.NewRetry(registry), dispatch)
 	// The model judge, on ctx rather than on serving: a run writes a grant, so an in-flight one
 	// has to end at the first SIGTERM, before the drain, leaving its request pending for the
 	// person who decides it today rather than approving it while the pod is going away.
-	wireJudge(ctx, cfg, rules, reqMachine, dispatch)
+	wireJudge(ctx, cfg, proxyRules, reqMachine, dispatch)
 	credentialLifetime := time.Duration(cfg.LauncherCredentialSeconds) * time.Second
 	oauthStore := oauthstore.New(st.Pool)
 	oauthStore.Reused = enroll.RevokeReusedCredential
@@ -699,13 +701,13 @@ func main() {
 		WriteTimeout:      writeTimeout,
 		IdleTimeout:       2 * time.Minute,
 	}
-	// The airlock's proxy port, for a deployment that has one: the same rules file every
+	// The airlock's proxy port, for a deployment that has one: the same proxy rules every
 	// release reads, the same request machine the API decides with - the proxy's two reads are
 	// its AirlockConnection and AirlockValues - and the authority built at the top of main.
 	var proxy *airlockproxy.Server
 	if started.AirlockListener != nil {
 		proxy = airlockproxy.New(airlockproxy.Options{
-			Rules:  rules,
+			Rules:  proxyRules,
 			Grants: reqMachine,
 			CA:     airlockCA,
 			Idle:   time.Duration(cfg.AirlockIdleSeconds) * time.Second,
@@ -1028,99 +1030,53 @@ func airlockTestResolver(hosts map[string]netip.Addr) func(context.Context, stri
 	}
 }
 
-// parseRulesFile reads and parses one airlock rules file: os.ReadFile's own error for a path
-// that cannot be read, which names the path, and airlock.Parse's refusal under the file's name
-// for a file that is not an airlock rules file, since that refusal carries the parse position
-// and not the path. It validates nothing, because its two callers validate different files:
-// the boot validates the file it is about to serve (readAirlockRules), and airlock-check
-// validates the new file alone and reads the old one as it is.
-func parseRulesFile(path string) (airlock.Rules, error) {
+// readProfilesFile reads one profiles file through parse: policy.ParseProfiles for a file about to
+// be served, and policy.DecodeProfiles for the file in force that `profiles check` compares a
+// change against. A path that cannot be read is os.ReadFile's own error, which names the path,
+// and a file parse refuses is that refusal under the file's name, since the refusal names the
+// profile and the field, or the parse position, and not the path.
+func readProfilesFile(path string, parse func([]byte) (policy.Profiles, error)) (policy.Profiles, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return airlock.Rules{}, err
+		return policy.Profiles{}, err
 	}
-	rules, err := airlock.Parse(data)
+	profiles, err := parse(data)
 	if err != nil {
-		return airlock.Rules{}, fmt.Errorf("%s: %w", path, err)
+		return policy.Profiles{}, fmt.Errorf("%s: %w", path, err)
 	}
-	return rules, nil
+	return profiles, nil
 }
 
-// validateRulesFile is everything the broker refuses an airlock rules file for, in one place so
-// that the boot and airlock-check refuse the same file in the same words: a host rulehost.Refusal
-// refuses, then airlock.Validate's answer, which is the Lean model's, then the two refusals that
-// are this program's own and not that model's — an entry whose name is not a name a session can
-// ask for, and guidance longer than the judge is shown (maxGuidanceRunes). The hosts come first
-// because rulehost.Refusal names each host's reason and repeats no text of the file but the form
-// to write, where Validate's refusal of a host airlock.HostShapeOK refuses quotes the host as
-// written; and because that grammar serves a host only where HostShapeOK accepts it, Validate then
-// refuses no host. So a file with two faults reports its first bad host, by entry and then by
-// position, ahead of any other fault Validate finds (a repeated name, a judge above 900 seconds,
-// another kind). An entry with no hosts has no host to refuse, and Validate accepts it: it says
-// who decides its key and binds the value nowhere. The host refusals rulehost.Refusal adds to
-// HostShapeOK are this program's own and not the Lean model's.
-//
-// Rules.Lookup compares an entry's name with a released name exactly, and a released name is
-// always of policy.NameToSlug's form, so an entry written "legion_slack_bot_token" or
-// "LEGION-SLACK-BOT-TOKEN" matches no release at all: the broker would hand the command the real
-// value of the very secret the file was reviewed as holding back. The check is here rather than
-// in airlock.Validate because the airlock knows nothing of how a secret is named under the
-// policy's prefix, and config.go refuses BROKER_AZURE_LOGIN_SECRET by the same NameToSlug.
-func validateRulesFile(rules airlock.Rules) error {
-	for i, s := range rules.Secrets {
-		for j, h := range s.Hosts {
-			if why := rulehost.Refusal(h); why != "" {
-				return fmt.Errorf("secrets[%d] %q: hosts[%d] %s", i, s.Name, j, why)
-			}
-		}
-	}
-	if err := airlock.Validate(rules); err != nil {
-		return err
-	}
-	for i, s := range rules.Secrets {
-		if _, err := policy.NameToSlug(s.Name); err != nil {
-			return fmt.Errorf("secrets[%d] %q: %w, so the entry matches no name a session can ask for and holds nothing back", i, s.Name, err)
-		}
-		if n := utf8.RuneCountInString(s.Guidance); n > maxGuidanceRunes {
-			return fmt.Errorf("secrets[%d] %q: guidance is %d characters, longer than the %d the judge is shown", i, s.Name, n, maxGuidanceRunes)
-		}
-	}
-	return nil
-}
-
-// maxGuidanceRunes is the longest guidance a rules entry may give the judge. The judge shows the
-// whole text to its model beside the request's reason and what Dispatch holds of it, all within
-// one bounded prompt, so a text past this would be cut rather than read; it is refused instead,
-// at the boot and in airlock-check, where its author reads why.
-const maxGuidanceRunes = 2000
-
-// readAirlockRules reads the airlock's rules file, the path BROKER_AIRLOCK_RULES_FILE names. An
-// empty path is a deployment with no airlock, and answers empty rules, whose Digest is "" for
-// every secret. Anything else refuses the boot: a path that cannot be read, a file airlock.Parse
-// will not read as JSON (whose refusal names the parse position), and a file validateRulesFile
-// refuses (whose refusal names the entry). Each refusal names the variable beside what that
-// reader said about the file, since the airlock package names a rules file no way but by its
-// contents. Extracted from main so a test can drive it without exiting the test process.
-func readAirlockRules(path string) (airlock.Rules, error) {
+// readProfiles reads the profiles file, the path BROKER_PROFILES_FILE names, as the boot serves
+// it: policy.ParseProfiles, which holds each profile to the file's shape in the words
+// `profiles check` refuses it in too, and then Profiles.CheckRequesters, which reads each
+// requester service against the deployment's registered services, a setting `profiles check`
+// has no reader of. An empty path is a deployment with no profiles, and answers no profile, no
+// proxy rule and a Digest of "" for every name. Anything else refuses the boot: a path that
+// cannot be read, a file that is not JSON (whose refusal names the parse position), and a profile
+// either reader refuses (whose refusal names the profile and the field). Each refusal names the
+// setting beside what the reader said, since the policy package names a profiles file no way
+// but by its contents.
+func readProfiles(path string, services []string) (policy.Profiles, error) {
 	if path == "" {
-		return airlock.Rules{}, nil
+		return policy.Profiles{}, nil
 	}
-	rules, err := parseRulesFile(path)
+	profiles, err := readProfilesFile(path, policy.ParseProfiles)
 	if err != nil {
-		return airlock.Rules{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE: %w", err)
+		return policy.Profiles{}, fmt.Errorf("BROKER_PROFILES_FILE: %w", err)
 	}
-	if err := validateRulesFile(rules); err != nil {
-		return airlock.Rules{}, fmt.Errorf("BROKER_AIRLOCK_RULES_FILE %s: %w", path, err)
+	if err := profiles.CheckRequesters(services); err != nil {
+		return policy.Profiles{}, fmt.Errorf("BROKER_PROFILES_FILE: %s: %w", path, err)
 	}
-	return rules, nil
+	return profiles, nil
 }
 
 // airlockListen is brokerBoot.ListenAirlock in production: the bind on
-// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment that names no rules file. Nil rather
+// BROKER_AIRLOCK_LISTEN_ADDR, and nil for a deployment that names no profiles file. Nil rather
 // than a bind of the default address, because a broker with no airlock holds back no name, so a
 // proxy port there would be a port that authenticates nobody and carries nothing.
 func airlockListen(cfg config.Config) func() (net.Listener, error) {
-	if cfg.AirlockRulesFile == "" {
+	if cfg.ProfilesFile == "" {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
@@ -1183,8 +1139,9 @@ func airlockCACertificatePEM(ca *airlockproxy.Authority) string {
 // names, for each service account BROKER_POD_OPERATORS maps, the person a pod enrolled under its
 // login acts for, and, for each google-service-account secret, the one account the deployment
 // binds it to and so the only one its release mints a token for. A grant lasts the lifetime its
-// request signed, or until its session ends. rules and caCertificate are the airlock's, read at
-// boot: a name the rules name is released as placeholders, and every such release carries the
+// request signed, or until its session ends. rules are the profiles' proxy blocks
+// (policy.Profiles.ProxyRules) and caCertificate the airlock's authority, both read at boot: a
+// name a proxy block holds is released as placeholders, and every such release carries the
 // proxy's URL and this certificate. retry is the one retry policy and process-wide retry budget
 // of the three minters that call an upstream over HTTP (main's is secrets.NewRetry on the
 // process's registry, which broker_mint_attempts_total is counted on), so a GitHub brownout that
@@ -1604,8 +1561,8 @@ func checkSignInClient(ctx context.Context, signIn approval.SignIn, st *store.St
 	}
 }
 
-// endSessionsCommand and versionsCommand are two of the three arguments the broker takes in place
-// of serving; the third is airlockCheckCommand (airlockcheck.go).
+// endSessionsCommand and versionsCommand are two of the three subcommands the broker takes in
+// place of serving; the third is `profiles check` (profilesCommand, profilescheck.go).
 const (
 	endSessionsCommand = "end-sessions"
 	versionsCommand    = "versions"
@@ -1613,8 +1570,9 @@ const (
 
 // runSubcommand runs the subcommand args name and answers its exit code. It is every argument
 // this binary takes: an unknown name, a missing or malformed argument to a name it knows, is
-// refused with 2 and a usage line, never a fall-through to serving. There are three names, so a
-// switch still reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
+// refused with 2 and a usage line, never a fall-through to serving. A removed subcommand is
+// refused the same way, naming the one that replaced it. There are four names, so a switch still
+// reads as one thing (cmd/dispatch/subcommands.go keeps a table for its eleven).
 func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case endSessionsCommand:
@@ -1629,11 +1587,19 @@ func runSubcommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 2
 		}
 		return versions(ctx, stdout, stderr)
-	case airlockCheckCommand:
-		return airlockCheck(args[1:], stdout, stderr)
+	case profilesCommand:
+		if len(args) < 2 || args[1] != profilesCheckCommand {
+			fmt.Fprintln(stderr, profilesCheckUsage)
+			return 2
+		}
+		return runProfilesCheck(args[2:], stdout, stderr)
+	case removedAirlockCheckCommand:
+		fmt.Fprintf(stderr, "broker: %s is removed: the airlock's rules are the proxy blocks of the profiles file now; check that file with broker %s\n",
+			removedAirlockCheckCommand, profilesCheckForm)
+		return 2
 	}
-	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s <file> [--against <old file>], and broker with no argument serves\n",
-		args[0], endSessionsCommand, versionsCommand, airlockCheckCommand)
+	fmt.Fprintf(stderr, "broker: unknown subcommand %q; the subcommands are %s <login>, %s and %s, and broker with no argument serves\n",
+		args[0], endSessionsCommand, versionsCommand, profilesCheckForm)
 	return 2
 }
 

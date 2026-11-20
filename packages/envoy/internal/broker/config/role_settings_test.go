@@ -44,6 +44,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_SIGNIN_CLIENT_SECRET": givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN":          givesNone("a removed setting, refused when set"),
 	"BROKER_ENVOY_TOKEN_FILE":     givesNone("a removed setting, refused when set"),
+	"BROKER_AIRLOCK_RULES_FILE":   givesNone("a removed setting, refused when set"),
 
 	"BROKER_DATABASE_URL": givesNone("the database's URL"),
 	"BROKER_SIGNIN":       givesNone("the person sign-in's switch"),
@@ -54,7 +55,7 @@ var settingRoles = map[string]settingRole{
 	"BROKER_MACHINE_LOGIN_URL":             givesNone("a page's URL"),
 	"BROKER_SECRETS_STORE":                 givesNone("a secret store"),
 	"BROKER_SECRETS_PREFIX":                givesNone("a secret-name prefix"),
-	"BROKER_AIRLOCK_RULES_FILE":            givesNone("a file path"),
+	"BROKER_PROFILES_FILE":                 givesNone("a file path"),
 	"BROKER_AIRLOCK_LISTEN_ADDR":           givesNone("a listen address"),
 	"BROKER_AIRLOCK_PROXY_URL":             givesNone("the airlock proxy's URL"),
 	"BROKER_AIRLOCK_CA_CERT_FILE":          givesNone("a file path"),
@@ -204,7 +205,7 @@ func TestEveryBrokerSettingLoadReadsIsMarked(t *testing.T) {
 // switch, BROKER_SIGNIN unset (parseSignIn reads the sign-in's settings) and off
 // (parseSignInSwitch reads each setting it refuses beside it). Each sets every condition Load
 // puts in front of a read: BROKER_ENVOY_URL, which reads BROKER_ENVOY_ACCOUNT_TOKEN_FILE, and
-// BROKER_AIRLOCK_RULES_FILE with its proxy URL and CA files, which reads KUBERNETES_SERVICE_HOST.
+// BROKER_PROFILES_FILE with its proxy URL and CA files, which reads KUBERNETES_SERVICE_HOST.
 // Each must load, since a refused configuration stops reading.
 func settingsLoadReads(t *testing.T) map[string]bool {
 	t.Helper()
@@ -212,7 +213,7 @@ func settingsLoadReads(t *testing.T) map[string]bool {
 		e["BROKER_ENVOY_URL"] = "https://listener.example"
 		e["BROKER_ENVOY_ACCOUNT_TOKEN_FILE"] = "/var/run/secrets/tokens/envoy"
 		for name, value := range airlockEnv() {
-			if strings.HasPrefix(name, "BROKER_AIRLOCK_") {
+			if strings.HasPrefix(name, "BROKER_AIRLOCK_") || name == "BROKER_PROFILES_FILE" {
 				e[name] = value
 			}
 		}

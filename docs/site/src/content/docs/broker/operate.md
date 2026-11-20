@@ -1001,8 +1001,10 @@ of the Workspace or out of `BROKER_SIGNIN_DOMAIN` first.
 ### Running a subcommand
 
 The broker takes three subcommands, `end-sessions`, `versions` ([A migration recorded under
-another file](#a-migration-recorded-under-another-file)) and `airlock-check`; anything else is
-refused with a usage line, and `envoy-broker` with no argument serves. `end-sessions` and
+another file](#a-migration-recorded-under-another-file)) and `profiles check`, which reads the
+file `BROKER_PROFILES_FILE` names and needs no setting; the removed `airlock-check` is refused
+naming `profiles check`, anything else is refused with a usage line, and `envoy-broker` with no
+argument serves. `end-sessions` and
 `versions` read the broker's settings and sign in to its database as the server does, and bind no
 listener, so either runs in any one-off process of the image that has what the serving broker has:
 

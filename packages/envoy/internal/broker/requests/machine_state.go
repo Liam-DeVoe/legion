@@ -331,10 +331,11 @@ type Machine struct {
 	// which a release calls for each such value it read and hands to nobody (giveBack, heldBack,
 	// release.go). A type with none, and a Machine with no map, leaves such a value to lapse.
 	GiveBacks map[string]GiveBack
-	// Airlock is the airlock's rules as the broker read them at boot
-	// (BROKER_AIRLOCK_RULES_FILE), and the zero value for a deployment with no rules file. A
-	// granted name the rules name is released as placeholders rather than as its value
-	// (Values), and the proxy port puts the real value back into the requests the entry allows.
+	// Airlock is the airlock's rules as the broker read them at boot: the proxy blocks of the
+	// profiles file (BROKER_PROFILES_FILE, policy.Profiles.ProxyRules), and the zero value for a
+	// deployment with no profiles file. A granted name the rules name is released as placeholders
+	// rather than as its value (Values), and the proxy port puts the real value back into the
+	// requests the entry allows.
 	Airlock airlock.Rules
 	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
 	// AirlockCACertificate the PEM certificate of its certificate authority

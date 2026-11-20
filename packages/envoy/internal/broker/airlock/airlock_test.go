@@ -25,15 +25,23 @@ const validFile = `{
   ]
 }`
 
-// TestParseValidFile reads every field of an entry, and keeps apart the two meanings the
+// decodeRules reads a rules file into Rules through Decode, as every test here that needs a
+// file's entries reads one.
+func decodeRules(data []byte) (Rules, error) {
+	var rules Rules
+	err := Decode(data, &rules)
+	return rules, err
+}
+
+// TestDecodeValidFile reads every field of an entry, and keeps apart the two meanings the
 // format gives an absent list and an empty one.
-func TestParseValidFile(t *testing.T) {
-	rules, err := Parse([]byte(validFile))
+func TestDecodeValidFile(t *testing.T) {
+	rules, err := decodeRules([]byte(validFile))
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatalf("Decode: %v", err)
 	}
 	if len(rules.Secrets) != 3 {
-		t.Fatalf("parsed %d entries, want 3: %+v", len(rules.Secrets), rules.Secrets)
+		t.Fatalf("decoded %d entries, want 3: %+v", len(rules.Secrets), rules.Secrets)
 	}
 	github := rules.Secrets[0]
 	if github.Name != "github" || github.Kind != "azure" {
@@ -59,14 +67,14 @@ func TestParseValidFile(t *testing.T) {
 	}
 }
 
-// TestParseNotJSON: the error names the byte offset the decoder stopped at and the line and
+// TestDecodeNotJSON: the error names the byte offset the decoder stopped at and the line and
 // column that offset falls on, because a person reads the file by line and column.
-func TestParseNotJSON(t *testing.T) {
+func TestDecodeNotJSON(t *testing.T) {
 	// Byte 16 is the "x": one for "{", one for the newline, then 13 bytes of line 2.
 	data := []byte("{\n  \"secrets\": x\n}")
-	_, err := Parse(data)
+	_, err := decodeRules(data)
 	if err == nil {
-		t.Fatal("Parse of a file that is not JSON: no error")
+		t.Fatal("Decode of a file that is not JSON: no error")
 	}
 	for _, want := range []string{"byte offset 16", "line 2", "column 14"} {
 		if !strings.Contains(err.Error(), want) {
@@ -75,11 +83,11 @@ func TestParseNotJSON(t *testing.T) {
 	}
 }
 
-// TestParseWrongType: a field of the wrong type names its position too.
-func TestParseWrongType(t *testing.T) {
-	_, err := Parse([]byte("{\n  \"secrets\": {\"name\": \"a\"}\n}"))
+// TestDecodeWrongType: a field of the wrong type names its position too.
+func TestDecodeWrongType(t *testing.T) {
+	_, err := decodeRules([]byte("{\n  \"secrets\": {\"name\": \"a\"}\n}"))
 	if err == nil {
-		t.Fatal("Parse of secrets as an object: no error")
+		t.Fatal("Decode of secrets as an object: no error")
 	}
 	for _, want := range []string{"secrets", "byte offset", "line 2", "column 14"} {
 		if !strings.Contains(err.Error(), want) {
@@ -88,38 +96,58 @@ func TestParseWrongType(t *testing.T) {
 	}
 }
 
-// TestParseUnknownField: a field this broker does not know is refused, so a file written
+// TestDecodeUnknownField: a field this broker does not know is refused, so a file written
 // for a later broker is not served with that field's rule missing.
-func TestParseUnknownField(t *testing.T) {
-	_, err := Parse([]byte(`{"secrets": [{"name": "a", "hosts": ["h"], "lifetime": 5}]}`))
+func TestDecodeUnknownField(t *testing.T) {
+	_, err := decodeRules([]byte(`{"secrets": [{"name": "a", "hosts": ["h"], "lifetime": 5}]}`))
 	if err == nil {
-		t.Fatal("Parse of a file with an unknown field: no error")
+		t.Fatal("Decode of a file with an unknown field: no error")
 	}
 	if !strings.Contains(err.Error(), `unknown field "lifetime"`) {
 		t.Errorf("error %q does not name the unknown field", err)
 	}
 }
 
-// TestParseSecondValue: a file whose one object is followed by another value is refused,
-// because json.Decoder would read the first and drop the second, and an author who wrote
-// two would believe both were in force.
-func TestParseSecondValue(t *testing.T) {
-	_, err := Parse([]byte("{\"secrets\": []}\n{\"secrets\": [{\"name\": \"a\", \"hosts\": [\"h\"]}]}\n"))
-	if err == nil {
-		t.Fatal("Parse of a file with two JSON values: no error")
+// TestDecodeRefusesWhatFollowsTheObject: a file whose one object is followed by anything but
+// white space is refused, naming where that starts. json.Decoder would read the first object and
+// drop the rest: an author who wrote a second object would believe both were in force, and one
+// whose object ends at a stray bracket meant it to go on. A file that is empty, or that ends
+// inside its object, holds no object at all, and says so rather than naming the decoder's EOF.
+func TestDecodeRefusesWhatFollowsTheObject(t *testing.T) {
+	for name, c := range map[string]struct {
+		data string
+		want []string
+	}{
+		"a second object":           {"{\"secrets\": []}\n{\"secrets\": [{\"name\": \"a\", \"hosts\": [\"h\"]}]}\n", []string{"goes on after its one JSON object", "line 2, column 1"}},
+		"a stray closing brace":     {"{\"secrets\": []}\n}\n", []string{"goes on after its one JSON object", "line 2, column 1"}},
+		"a stray closing bracket":   {"{\"secrets\": []}\n  ]", []string{"goes on after its one JSON object", "line 2, column 3"}},
+		"a word after the object":   {"{\"secrets\": []} done", []string{"goes on after its one JSON object", "line 1, column 17"}},
+		"an empty file":             {"", []string{"empty", "no JSON object"}},
+		"a file of white space":     {"\n  \n", []string{"empty", "no JSON object"}},
+		"a file that ends too soon": {"{\"secrets\": [\n", []string{"ends inside its JSON object"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodeRules([]byte(c.data))
+			if err == nil {
+				t.Fatalf("Decode(%q): no error", c.data)
+			}
+			for _, want := range c.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("Decode(%q) = %q, which does not say %q", c.data, err, want)
+				}
+			}
+		})
 	}
-	if !strings.Contains(err.Error(), "a second JSON value follows the rules") {
-		t.Errorf("error %q does not name the second value", err)
-	}
-	if !strings.Contains(err.Error(), "line 2") {
-		t.Errorf("error %q does not name the line the second value starts on", err)
+	// The control: white space after the object is no second value.
+	if _, err := decodeRules([]byte("{\"secrets\": []}\n\n")); err != nil {
+		t.Fatalf("Decode of one object and a trailing newline: %v", err)
 	}
 }
 
 func TestValidate(t *testing.T) {
-	valid, err := Parse([]byte(validFile))
+	valid, err := decodeRules([]byte(validFile))
 	if err != nil {
-		t.Fatalf("Parse: %v", err)
+		t.Fatalf("Decode: %v", err)
 	}
 	if err := Validate(valid); err != nil {
 		t.Fatalf("Validate of a valid file: %v", err)
@@ -223,6 +251,23 @@ func TestValidate(t *testing.T) {
 			}},
 			want: []string{`secrets[1]`, "repeated"},
 		},
+		{
+			// An entry is a proxy block, which binds its value to the hosts it names: one that
+			// names none would hold a value back and carry it nowhere.
+			name: "an entry with no host",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "slack", Hosts: []string{"slack.com"}},
+				{Name: "release", Judge: new(uint32(600)), Guidance: "grant for releases"},
+			}},
+			want: []string{`secrets[1]`, `"release"`, "the entry names no host"},
+		},
+		{
+			name: "an entry with an empty host list",
+			rules: Rules{Secrets: []SecretRule{
+				{Name: "a", Hosts: []string{}},
+			}},
+			want: []string{`secrets[0]`, `"a"`, "the entry names no host"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -246,10 +291,6 @@ func TestValidate(t *testing.T) {
 		{"kind aws", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "aws"}}}},
 		{"kind azure", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"h"}, Kind: "azure"}}}},
 		{"no secret at all", Rules{}},
-		// An entry with no host says who decides a key the airlock binds nowhere: its judge
-		// and the judge's guidance, for a key whose value is released to the command.
-		{"an entry with no host", Rules{Secrets: []SecretRule{{Name: "a", Judge: new(uint32(600)), Guidance: "grant for releases"}}}},
-		{"an entry with an empty host list", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{}}}}},
 		{"a name", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"slack.com"}}}}},
 		{"a suffix", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"*.googleapis.com"}}}}},
 		{"a name with digits in all but its last label", Rules{Secrets: []SecretRule{{Name: "a", Hosts: []string{"1e100.net", "*.0.example.com"}}}}},

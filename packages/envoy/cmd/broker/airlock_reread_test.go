@@ -6,8 +6,8 @@
 // DropName, because what this row is about is the wiring between the two.
 //
 // What it reads is the audit trail: every read the proxy makes writes one grant.used row marked
-// airlock, which is the same row a session's own release writes. The rules file the broker is
-// given allows no method or path at all, so every request through the proxy is refused by the
+// airlock, which is the same row a session's own release writes. The profile the broker is given
+// allows no method or path at all, so every request through the proxy is refused by the
 // airlock's own decision — which runs after the values are read — and the row needs no service
 // for the proxy to reach.
 package main
@@ -120,8 +120,8 @@ func TestARereadOfASecretReachesTheAirlocksProxy(t *testing.T) {
 		"BROKER_AIRLOCK_CA_KEY_FILE=" + keyFile,
 		"BROKER_AIRLOCK_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_AIRLOCK_TEST_RESOLVE=" + boundHost + "=" + boundAddress,
-		"BROKER_AIRLOCK_RULES_FILE=" + airlockRulesFile(t,
-			`{"secrets": [{"name": "`+secretName+`", "hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}]}`),
+		"BROKER_PROFILES_FILE=" + profilesFile(t,
+			`{"profiles": [{"name": "`+secretName+`", "proxy": {"hosts": ["`+boundHost+`"], "headers": ["authorization"], "allow": []}}]}`),
 	}})
 	requireHealthy(t, broker.Addr)
 	proxyAddr := airlockProxyAddr(t, broker)

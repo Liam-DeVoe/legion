@@ -1004,18 +1004,21 @@ nothing. To end every session's automatic access to a secret, change its tags
 
 ## The airlock
 
-A deployment can keep a secret's value from its sessions altogether. The broker reads a rules
-file when it starts (`BROKER_AIRLOCK_RULES_FILE`, an `airlock.json`), which names, for each
-secret it covers, the hosts that secret's value may reach, the request headers that may carry it
+A deployment can keep a secret's value from its sessions altogether. The broker reads a profiles
+file when it starts (`BROKER_PROFILES_FILE`, a `profiles.json`), and each profile's `proxy` block
+is one entry of the airlock's rules, under that profile's name: it names the hosts that
+profile's value may reach, the request headers that may carry it
 (`authorization`, unless the entry names others) and, where the entry gives them, the methods and
 path prefixes it may travel on
 (`packages/envoy/internal/broker/airlock`). An entry may also give a `judge` of so many seconds:
 the longest grant of that secret the model judge may approve, at most 900, and with it a
 `guidance`, the instruction the judge decides the key on, which is no part of the entry's
-fingerprint, so writing or changing it ends no grant ([The model judge](#the-model-judge)). An
-entry with no `hosts` binds the value nowhere: it says only who decides the key, and its value is
-released to the command as a key with no entry is. Those hosts carry no port, so an entry binds a
-name on port 443 alone, and another port of that name is another service the proxy tunnels unread.
+fingerprint, so writing or changing it ends no grant ([The model judge](#the-model-judge)). Every
+entry names at least one host: an entry with no `hosts` would hold the value back and carry it
+nowhere, so the broker refuses to start with a file that holds one, and
+`envoy-broker profiles check` refuses that file too. Those hosts carry no port, so an entry binds
+a name on port 443 alone, and another port of that name is another service the proxy tunnels
+unread.
 A host is written in one form, the one every request for it is compared in: a DNS host name of
 letters, digits and hyphens between single dots, with no label longer than 63 characters,
 starting or ending with a hyphen, or holding `--` as its third and fourth characters other than
@@ -1025,7 +1028,7 @@ its punycode (`xn--bcher-kva.example`, not `bücher.example`), and a last label 
 number (`foo.123` and `foo.0x` are refused, `123.foo` is read). Case does not matter: the proxy
 compares hosts without regard to it, so `API.GitHub.com` is the same host as `api.github.com`
 and is served. The broker refuses to start with a file that writes a host any other way, and
-`airlock-check` refuses that file too, naming the form to write where there is one:
+`envoy-broker profiles check` refuses that file too, naming the form to write where there is one:
 `api.github.com` for `api.github.com.`, and the punycode for a Unicode name. Every host the
 airlock's own validation refuses is among these, so that validation refuses no host after them.
 What a host in another spelling would do if it were served depends on the spelling:
@@ -1053,7 +1056,7 @@ authority to trust that proxy by, a proxy password, and, for each name, a placeh
 placeholder of each slot of the value, and the hosts the entry binds. A placeholder is
 `agent-secrets-placeholder-` and 32 letters and digits, minted for that one grant and name. The
 file is the deployment's own, and the broker reads it once at start, so a change to it rolls the
-brokers; `envoy-broker airlock-check <file> [--against <old file>]` says whether a broker would
+brokers; `envoy-broker profiles check <file> [--against <old file>]` says whether a broker would
 serve a file, and what that file adds and removes against the one in force.
 
 What the command gets is the placeholder and the way to spend it. `agent-secrets NAME -- command`
@@ -1134,10 +1137,10 @@ What the airlock does not stop is as much of the design as what it does:
 - A private address that reaches the proxy is refused, because the proxy runs beside the broker,
   whose own identity reads every secret. So is an address inside the broker cluster's own
   Service, pod and node ranges, which the deployment names in `BROKER_AIRLOCK_CLUSTER_RANGES`
-  beside `BROKER_AIRLOCK_RULES_FILE`: a Service range can be public address space, as GKE's
+  beside `BROKER_PROFILES_FILE`: a Service range can be public address space, as GKE's
   default `34.118.224.0/20` is, so no private-address rule covers its ClusterIPs. In a cluster
   (`KUBERNETES_SERVICE_HOST` set to a non-empty value; empty or unset is outside a cluster), a
-  broker with a rules file refuses to start without that setting, or when no range in it holds
+  broker with a profiles file refuses to start without that setting, or when no range in it holds
   that address. A command that needs such a call sets its own `NO_PROXY` entry for that name.
 
 - A value an agent received before its secret went behind the airlock keeps working until its
@@ -1260,9 +1263,8 @@ a request is a setting of its keys, in the airlock rules file:
 - **Nobody**: an agent-tier key is granted at once to the sessions its tags allow, as before.
 - **The judge**: a key whose rules entry has a `judge` value, the longest lifetime in seconds the
   judge may grant, and no `admin` tag. The entry may also carry `guidance`: the key owner's
-  instruction saying when the judge should grant it. An entry with no `hosts` binds the value
-  nowhere and only says who decides; its value is released to the command as a key with no entry
-  is.
+  instruction saying when the judge should grant it. The entry names at least one host, as every
+  entry does, so the value of a key the judge decides stays behind the airlock.
 - **A person**: every other key, and every administrator's key whatever the rules file says. The
   person decides on the broker page, as before.
 

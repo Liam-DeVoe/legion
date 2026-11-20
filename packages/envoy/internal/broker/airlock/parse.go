@@ -5,31 +5,43 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
-// Parse reads an airlock.json file. A field the broker does not know is refused rather than
-// ignored, so a broker from before a new field refuses a file that uses it instead of
-// serving the file with that field's rule missing. Anything after the file's one JSON object
-// is refused for the same reason: a second value no reader applies would be a rule its author
-// believes is in force. Parse does not validate the file it read; the caller calls Validate.
-func Parse(data []byte) (Rules, error) {
+// Decode reads data, a file of one JSON object, into v: Rules, or the profiles file the broker
+// reads its proxy blocks from (policy.ParseProfiles), whose blocks are this package's entries
+// under a profile's name. It is the one strict reader of those files, so each refuses the same
+// faults in the same words.
+//
+// A field v does not know is refused rather than ignored, so a broker from before a new field
+// refuses a file that uses it instead of serving the file with that field's rule missing.
+// Anything after the file's one JSON object but white space is refused for the same reason: a
+// second value no reader applies would be a rule its author believes is in force, and an object
+// that ends at a stray bracket is one its author meant to go on. Decode does not validate what it
+// read; the caller does (Validate, for Rules).
+func Decode(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
-	var rules Rules
-	if err := dec.Decode(&rules); err != nil {
-		return Rules{}, parseError(data, err)
+	if err := dec.Decode(v); err != nil {
+		return parseError(data, err)
 	}
-	if dec.More() {
-		return Rules{}, fmt.Errorf("a second JSON value follows the rules, at %s", position(data, dec.InputOffset()+1))
+	// More steps over the white space after the object, so the offset is where whatever follows
+	// it starts. Token then reads that, and answers io.EOF only when nothing does: a second value
+	// and a stray closing bracket alike are something.
+	dec.More()
+	at := dec.InputOffset() + 1
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("the file goes on after its one JSON object, at %s", position(data, at))
 	}
-	return rules, nil
+	return nil
 }
 
 // parseError names the place the decoder stopped at, which is what a person needs to find
 // it in the file: the byte offset encoding/json counts, and the line and column that offset
 // falls on. An unknown field carries no offset in Go's error, so there that error's own
-// text is the whole report.
+// text is the whole report. A file that ends before its object does carries none either, and
+// says which of the two it is: empty, or cut off inside the object.
 func parseError(data []byte, err error) error {
 	var syntax *json.SyntaxError
 	var wrongType *json.UnmarshalTypeError
@@ -44,8 +56,12 @@ func parseError(data []byte, err error) error {
 		return fmt.Errorf("%s is not a %s, at %s", field, wrongType.Type, position(data, wrongType.Offset))
 	case strings.HasPrefix(err.Error(), "json: unknown field "):
 		return errors.New(strings.TrimPrefix(err.Error(), "json: "))
+	case errors.Is(err, io.EOF):
+		return errors.New("the file is empty: it holds no JSON object")
+	case errors.Is(err, io.ErrUnexpectedEOF):
+		return fmt.Errorf("not JSON: the file ends inside its JSON object, at %s", position(data, int64(len(data))+1))
 	default:
-		return fmt.Errorf("not an airlock rules file: %s", err)
+		return fmt.Errorf("not one JSON object: %s", err)
 	}
 }
 

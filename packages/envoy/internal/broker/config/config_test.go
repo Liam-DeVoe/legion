@@ -400,17 +400,17 @@ func TestLoadReadsTrustedProxyHeaderOptionally(t *testing.T) {
 	}
 }
 
-// TestLoadReadsTheAirlockRulesFileOptionally pins that BROKER_AIRLOCK_RULES_FILE is optional —
-// unset is "", a deployment with no airlock — and that a path given is read as written. Load
-// opens nothing: the broker reads the file itself at start, where a file it cannot read refuses
-// the boot.
-func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
+// TestLoadReadsTheProfilesFileOptionally pins that BROKER_PROFILES_FILE is optional — unset is
+// "", a deployment with no profiles and so no proxy — and that a path given is read as written.
+// Load opens nothing: the broker reads the file itself at start, where a file it cannot read
+// refuses the boot.
+func TestLoadReadsTheProfilesFileOptionally(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "" {
-		t.Fatalf("AirlockRulesFile = %q, want empty when BROKER_AIRLOCK_RULES_FILE is unset", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "" {
+		t.Fatalf("ProfilesFile = %q, want empty when BROKER_PROFILES_FILE is unset", cfg.ProfilesFile)
 	}
 
 	e := airlockEnv()
@@ -418,27 +418,41 @@ func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.AirlockRulesFile != "/etc/broker/airlock.json" {
-		t.Fatalf("AirlockRulesFile = %q, want /etc/broker/airlock.json", cfg.AirlockRulesFile)
+	if cfg.ProfilesFile != "/etc/broker/profiles.json" {
+		t.Fatalf("ProfilesFile = %q, want /etc/broker/profiles.json", cfg.ProfilesFile)
 	}
 }
 
-// airlockEnv is validEnv with the airlock in force: a rules file and the three settings its
+// TestLoadRefusesTheAirlockRulesFileSetting: the airlock's rules are the proxy blocks of the
+// profiles file now, so a deployment still setting BROKER_AIRLOCK_RULES_FILE is refused naming
+// the setting that replaces it, rather than started with no proxy and every name the old file
+// held back released as its value. It is refused beside the new setting too.
+func TestLoadRefusesTheAirlockRulesFileSetting(t *testing.T) {
+	for name, e := range map[string]map[string]string{"alone": validEnv(), "beside BROKER_PROFILES_FILE": airlockEnv()} {
+		e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+		_, err := Load(env(e))
+		if err == nil || err.Error() != "BROKER_AIRLOCK_RULES_FILE is removed; replaced by BROKER_PROFILES_FILE" {
+			t.Errorf("Load with BROKER_AIRLOCK_RULES_FILE set %s = %v; want it refused, naming BROKER_PROFILES_FILE", name, err)
+		}
+	}
+}
+
+// airlockEnv is validEnv with the airlock in force: a profiles file and the three settings its
 // proxy cannot run without.
 func airlockEnv() map[string]string {
 	e := validEnv()
-	e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+	e["BROKER_PROFILES_FILE"] = "/etc/broker/profiles.json"
 	e["BROKER_AIRLOCK_PROXY_URL"] = "http://broker.legion.svc:13381"
 	e["BROKER_AIRLOCK_CA_CERT_FILE"] = "/etc/broker/airlock-ca/tls.crt"
 	e["BROKER_AIRLOCK_CA_KEY_FILE"] = "/etc/broker/airlock-ca/tls.key"
 	return e
 }
 
-// TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile: a broker that reads the rules but
-// cannot proxy would hold back every name the file names and release nothing in their place, so
-// each missing setting refuses the boot by name. With no rules file there is no proxy and the
-// four are ignored, whatever they say.
-func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
+// TestTheAirlocksProxySettingsAreRequiredWithAProfilesFile: a broker that reads profiles but
+// cannot proxy would hold back every name a proxy block names and release nothing in their place,
+// so each missing setting refuses the boot by name. With no profiles file there is no proxy and
+// the four are ignored, whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredWithAProfilesFile(t *testing.T) {
 	if _, err := Load(env(airlockEnv())); err != nil {
 		t.Fatalf("Load with the airlock fully configured: %v", err)
 	}
@@ -446,22 +460,22 @@ func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
 		e := airlockEnv()
 		delete(e, missing)
 		_, err := Load(env(e))
-		if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
-			t.Errorf("Load without %s = %v; want a refusal naming the rules file and the missing setting", missing, err)
+		if err == nil || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("Load without %s = %v; want a refusal naming the profiles file and the missing setting", missing, err)
 		}
 	}
 
-	// No rules file: the same configuration minus the file, and minus every proxy setting, is
+	// No profiles file: the same configuration minus the file, and minus every proxy setting, is
 	// accepted, and so is one that still names the listen address and the idle bound.
 	e := validEnv()
 	e["BROKER_AIRLOCK_LISTEN_ADDR"] = "127.0.0.1:13999"
 	e["BROKER_AIRLOCK_IDLE_SECONDS"] = "60"
 	cfg, err := Load(env(e))
 	if err != nil {
-		t.Fatalf("Load with no rules file: %v", err)
+		t.Fatalf("Load with no profiles file: %v", err)
 	}
 	if cfg.AirlockProxyURL != "" || cfg.AirlockCACertFile != "" || cfg.AirlockCAKeyFile != "" {
-		t.Errorf("with no rules file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
+		t.Errorf("with no profiles file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
 	}
 	if cfg.AirlockListenAddr != "127.0.0.1:13999" || cfg.AirlockIdleSeconds != 60 {
 		t.Errorf("airlock listen addr = %q and idle = %d; want 127.0.0.1:13999 and 60", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
@@ -1630,7 +1644,7 @@ func TestSessionAccountPairsRefuseABadEntry(t *testing.T) {
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
 // refuses to start naming the variable, rather than running with its rules silently ignored. The
 // reason names both halves of what replaced it: the tags each secret's owner and tier come from,
-// and BROKER_AIRLOCK_RULES_FILE, the file the broker does read, for the other question.
+// and BROKER_PROFILES_FILE, the file the broker does read, for the other question.
 func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 	for name, value := range map[string]string{
 		"BROKER_RULES_FILE":           "/r.yaml",
@@ -1640,8 +1654,8 @@ func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 		e := validEnv()
 		e[name] = value
 		_, err := Load(env(e))
-		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
-			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_AIRLOCK_RULES_FILE", name, err)
+		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_PROFILES_FILE") {
+			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_PROFILES_FILE", name, err)
 		}
 	}
 }
