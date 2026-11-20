@@ -678,7 +678,10 @@ const RESULT_SHAPE_RULE =
  *  third shape, named by project. */
 function resultProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
-  if (input.project !== undefined) {
+  // Destructured, not read as `input.project`: claude-envoy compiles this file under
+  // noPropertyAccessFromIndexSignature, and Biome asks for no `input["project"]`.
+  const { project, verdict } = input;
+  if (project !== undefined) {
     const others = RESULT_NOT_PROJECT_FIELDS.filter((field) => input[field] !== undefined);
     if (others.length > 0) {
       return `${RESULT_PROJECT_RULE} This call also carries ${others.join(", ")}.`;
@@ -689,7 +692,7 @@ function resultProblem(value: unknown): string | undefined {
     }
     return undefined;
   }
-  if (input.verdict === "could_not_run") {
+  if (verdict === "could_not_run") {
     return "verdict could_not_run goes with project alone: a role's result of a check of a Verification document is pass or fail.";
   }
   const carried = RESULT_RECORD_FIELDS.filter((field) => input[field] !== undefined);
@@ -723,15 +726,16 @@ const RESULTS_OWNER_RULE =
  *  them: one owner, and each form's own arguments alone. */
 function resultsProblem(value: unknown): string | undefined {
   const input = value as Record<string, unknown>;
-  if ((input.issue === undefined) === (input.project === undefined)) {
+  const { issue, project, commit } = input;
+  if ((issue === undefined) === (project === undefined)) {
     return RESULTS_OWNER_RULE;
   }
-  if (input.project !== undefined) {
+  if (project !== undefined) {
     const issueOnly = ["at", "brief"].filter((field) => input[field] !== undefined);
     if (issueOnly.length > 0) {
       return `With project, the read takes commit, check and json alone, and this call also carries ${issueOnly.join(", ")}.`;
     }
-    if (input.commit === undefined) {
+    if (commit === undefined) {
       return "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.";
     }
     return undefined;

@@ -697,7 +697,9 @@ export async function specCheckResultCommand(
 function specCheckResultLine(result: SpecCheckResult): string {
   const { predicate, subject } = result.attestation;
   const leg = predicate.leg === "" ? "no leg" : `leg ${printable(predicate.leg)}`;
-  const commit = subject?.[0]?.digest?.gitCommit ?? "an unnamed commit";
+  // Destructured: claude-envoy compiles this file under noPropertyAccessFromIndexSignature.
+  const { gitCommit } = subject?.[0]?.digest ?? {};
+  const commit = gitCommit ?? "an unnamed commit";
   return `- #${result.seq} ${printable(predicate.check)}: ${printable(predicate.verdict)}. Job ${printable(predicate.job)}, ${leg}, run ${printable(predicate.run.run_id)} attempt ${predicate.run.attempt}, commit ${printable(commit)}.`;
 }
 
