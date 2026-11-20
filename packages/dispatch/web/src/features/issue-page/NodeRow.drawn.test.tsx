@@ -1740,7 +1740,8 @@ test("a focused row under the view row that stays is placed below it, and one be
       scrollBy,
       "the focused row was left under the view row that stays"
     ).toHaveBeenCalledTimes(1);
-    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 8 });
+    // The move goes through readers-place.ts's moveTheScroll, which scrolls the page by (0, dy).
+    expect(scrollBy).toHaveBeenCalledWith(0, 10 - 44 - 8);
     under.unmount();
     scrollBy.mockClear();
     render(<FocusedRowAt top={60} />).unmount();
@@ -1759,7 +1760,7 @@ test("a focused row under the view row that stays is placed the step it is given
   try {
     render(<FocusedRowAt below={20} top={10} />).unmount();
     expect(scrollBy).toHaveBeenCalledTimes(1);
-    expect(scrollBy).toHaveBeenCalledWith({ top: 10 - 44 - 20 });
+    expect(scrollBy).toHaveBeenCalledWith(0, 10 - 44 - 20);
   } finally {
     scrollBy.mockRestore();
     document.documentElement.style.removeProperty("scroll-padding-top");

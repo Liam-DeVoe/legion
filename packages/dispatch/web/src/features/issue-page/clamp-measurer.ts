@@ -1,5 +1,7 @@
 import { flushSync } from "react-dom";
 
+import { moveTheScroll } from "../doc/readers-place";
+
 /** The prototype's `CUT_LINES`: how many lines of an agent's words or an answered question a row
  *  draws before it cuts them. */
 const CUT_LINES = 6;
@@ -334,7 +336,7 @@ class ClampMeasurer {
       flushSync(() => this.#write(read));
       if (anchor.element.isConnected) {
         const moved = anchor.element.getBoundingClientRect().top - anchor.top;
-        if (moved !== 0) window.scrollBy({ behavior: "instant", top: moved });
+        if (moved !== 0) moveTheScroll(anchor.element, moved);
       }
     }
     if (this.#due.size > 0) this.#frame = window.requestAnimationFrame(this.#measure);

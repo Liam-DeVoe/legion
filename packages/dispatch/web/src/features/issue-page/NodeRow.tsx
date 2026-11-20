@@ -28,6 +28,7 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../theme/classes";
+import { moveTheScroll } from "../doc/readers-place";
 import { useAgentText } from "../refs/AgentName";
 import { buildReferencePath, parseNodeReference } from "../refs/routes";
 import { agentRoleWord } from "./agent-role";
@@ -535,7 +536,7 @@ function belowWhatStays(element: HTMLElement, below: number): void {
   const stays = Number.parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop);
   if (!Number.isFinite(stays)) return;
   const top = element.getBoundingClientRect().top;
-  if (top < stays) window.scrollBy({ top: top - stays - below });
+  if (top < stays) moveTheScroll(element, top - stays - below);
 }
 
 /** The kinds of node the page draws no tag for: what somebody said, which is the conversation's
