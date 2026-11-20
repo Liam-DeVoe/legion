@@ -22,6 +22,7 @@ import { legacyPinnedIds, useAgentPinWrite, usePinnedAgents } from "./features/a
 import { totalUnreadReplies, unreadRepliesLabel } from "./features/agents/unread";
 import { draftStoresSignedIn, draftStoresSignedOut } from "./features/conversation/unsent-drafts";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
+import { loadEditorLibrary, loadTransportModules } from "./features/doc/document-chunks";
 import { TextAskCardHost } from "./features/doc/TextAskCardHost";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { InboxDrawerHost, InboxHost, loadInboxChunk } from "./features/inbox/InboxHost";
@@ -152,18 +153,14 @@ const ProjectPage = lazyChunk(loadProjectPage);
 const DocumentPage = lazyChunk(loadDocumentPage);
 
 /** The chunks the live document pulls as it renders, which the route chunk does not carry: the
- *  editor's own library (`features/doc/editor.ts`, `loadEditorLibrary`) and the Yjs transport it
- *  connects over (`features/doc/connection.ts`, `loadDocumentTransport`). Each is the import its
- *  own module names for `ProofDocument`, started here rather than named again, so the preload
- *  and the render cannot pull different chunks. A landing that draws a document always reaches
- *  both, so this fetches no byte such a landing does not fetch anyway. */
-const loadDocumentChunks = () =>
-  Promise.all([
-    import("./features/doc/editor").then(({ loadEditorLibrary }) => loadEditorLibrary()),
-    import("./features/doc/connection").then(({ loadDocumentTransport }) =>
-      loadDocumentTransport()
-    ),
-  ]);
+ *  editor's own library and the Yjs transport it connects over, each the list
+ *  `features/doc/document-chunks.ts` names for `ProofDocument`'s two modules (`editor.ts`,
+ *  `connection.ts`), started here rather than named again, so the preload and the render cannot
+ *  pull different chunks. This module imports that list directly, so the chunks are asked for
+ *  at once, beside the landing read, and not after the two modules' own chunks have come down
+ *  and run. A landing that draws a document always reaches both, so this fetches no byte such a
+ *  landing does not fetch anyway. */
+const loadDocumentChunks = () => Promise.all([loadEditorLibrary(), loadTransportModules()]);
 
 /** The issue tabs whose panel draws a live document, and so the tabs that reach the chunks
  *  above: the Spec, which is the tab a bare `/issues/<key>` opens on, and the two role

@@ -5,6 +5,7 @@ import type { BlockSchema } from "../../api/types";
 import { requestMermaidDrawing } from "../refs/mermaid-diagrams";
 import { importWhenOnline, renderChunk } from "../shell/chunk-loads";
 import type { AnchoredBlock } from "./ask-block";
+import { loadEditorLibrary } from "./document-chunks";
 import type { WatchPicture } from "./picture-view";
 import { MARKS_MAP_NAME } from "./roots";
 import type { AskBlockHost } from "./typed-block-drawing";
@@ -44,26 +45,16 @@ export const editorAttributes = {
 } as const;
 
 // The editor library sits behind `import()` so the issue route ships none of it until a
-// document mounts; `importWhenOnline` holds the retry policy for a chunk that fails offline.
-// Every editor's mermaid blocks (the live document, a read-only one, a past version) draw through
-// `requestMermaidDrawing`, in the Mermaid worker comments use, never on the page's thread.
+// document mounts; `importWhenOnline` holds the retry policy for a chunk that fails offline, and
+// `document-chunks.ts` names its chunks once, for this module and for the entry's start of them
+// beside a landing read. Every editor's mermaid blocks (the live document, a read-only one, a
+// past version) draw through `requestMermaidDrawing`, in the Mermaid worker comments use, never on
+// the page's thread.
 //
 // Dispatch's own node views travel with it (`ask-block.ts`): they are written against
 // ProseMirror's `DOMSerializer`, `Plugin` and `PluginKey`, so a page that imported them to call
 // them after the editor existed would parse a quarter of a megabyte of the editor's library
 // before its first paint - which is the very thing this `import()` is here to prevent.
-/** The editor's own chunks, named once: `createEditor` below awaits them when a document mounts,
- *  and the entry starts the same import beside the landing read of a page that draws a document
- *  (`app.tsx`, `preloadRouteChunk`), so the chunk comes down while that read is out rather than
- *  after its answer. Calling it twice costs one download: a module is fetched and parsed once. */
-export const loadEditorLibrary = () =>
-  importWhenOnline(() =>
-    Promise.all([
-      import("@legion/proof-editor"),
-      import("./ask-block"),
-      import("@legion/proof-editor/style.css"),
-    ])
-  );
 
 export const createEditor: CreateEditor = async (root, options) => {
   // `renderChunk` and not a bare call: this runs when a document mounts, so a reader is waiting

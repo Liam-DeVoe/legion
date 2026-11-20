@@ -45,19 +45,23 @@
  * window that ends somewhere else.
  *
  * What the row holds besides the waves. Each page's own route chunk is asked for before the
- * landing read answers. The entry starts it beside that read, before React renders anything
- * (`web/src/app.tsx`, `preloadRouteChunk`, called from `web/src/main.tsx`); without that start,
- * `AuthGate` draws its skeleton until the landing read answers and the router asks for the chunk
- * only then, so the page's own reads wait on a chunk as well as on the landing. A chunk is no
- * read, so the waves alone would not see that start go. A landing on an issue tab other than the
- * Spec has its tab's chunk started there too (`preloadRouteChunk`'s tab arm, through
- * `web/src/features/issue/tab-chunks.ts`), so the tab landing's route chunk is that tab's own:
- * without the start, the tab's panel asks for its chunk only once the page has rendered, after
- * the landing read has answered. A landing that draws a document - the issue page and the
- * document page - has the document's chunks started there as well (`loadDocumentChunks`: the
- * editor's library and the Yjs transport, in one call), so its transport chunk is asked for
- * before the landing read answers too; without that start, the transport comes down only once
- * the document mounts.
+ * landing read is sent. The entry starts it beside that read, before React renders anything
+ * (`web/src/app.tsx`, `preloadRouteChunk`, called from `web/src/main.tsx`), and React's first
+ * render is what sends the read; without that start, `AuthGate` draws its skeleton until the
+ * landing read answers and the router asks for the chunk only then, so the page's own reads wait
+ * on a chunk as well as on the landing. Start against start, and not against the read's answer:
+ * on a server that answers the landing read in a few dozen milliseconds, a chunk asked for after
+ * some round trip of its own lands after that answer whatever the entry does, and the row would
+ * then hold the entry to a race. A chunk is no read, so the waves alone would not see that start
+ * go. A landing on an issue tab other than the Spec has its tab's chunk started there too
+ * (`preloadRouteChunk`'s tab arm, through `web/src/features/issue/tab-chunks.ts`), so the tab
+ * landing's route chunk is that tab's own: without the start, the tab's panel asks for its chunk
+ * only once the page has rendered, after the landing read has answered. A landing that draws a
+ * document - the issue page and the document page - has the document's chunks started there as
+ * well (`loadDocumentChunks`: the editor's library and the Yjs transport, each list named in
+ * `web/src/features/doc/document-chunks.ts`), so its transport chunk is asked for before the
+ * landing read is sent too; without that start, the transport comes down only once the document
+ * mounts.
  *
  * A reader who turned the new issue page on draws the whole shell, on every page, through a chunk
  * of its own (`web/src/features/issue-page/frame-chunk.ts`): the frame shell, which holds the new
@@ -179,13 +183,12 @@ interface Landing {
    *  is a context of its own. */
   readonly prepare?: (context: BrowserContext) => Promise<void>;
   /** For a landing that draws a live document, the Yjs transport's chunk, which the entry starts
-   *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`).
-   *  It is a chunk of that start whose name stands whether or not the start is there: without
-   *  it, `features/doc/editor.ts` and `features/doc/connection.ts` fold into `ProofDocument`'s
-   *  chunk, while the libraries they import stay chunks of their own. The start asks for the
-   *  editor's library and the transport in one call, so one of its chunks asked in time shows
-   *  that the start ran. The row holds the entry to this one because Yjs is the library the
-   *  transport cannot open a document without. */
+   *  beside the landing read with the editor's library (`web/src/app.tsx`, `loadDocumentChunks`,
+   *  over the two lists `web/src/features/doc/document-chunks.ts` names). It is a chunk whose name
+   *  stands whether or not the start is there: the libraries those lists import are chunks of
+   *  their own either way. The start asks for the editor's library and the transport in one
+   *  call, so one of its chunks asked in time shows that the start ran. The row holds the entry
+   *  to this one because Yjs is the library the transport cannot open a document without. */
   readonly documentChunk?: RegExp;
   /** R3's bound on the whole landing, where it sets one. It sets one for the issue page alone. */
   readonly bounds?: { readonly reads: number; readonly waves: number };
@@ -596,22 +599,22 @@ test("a cold landing draws each page from at most two waves of reads", async ({ 
       faults.push(`the ${landing.name} sent no landing read to time its route chunk against`);
     } else if (measurement.routeChunk === undefined) {
       faults.push(`the ${landing.name} never asked for its route chunk`);
-    } else if (measurement.routeChunk.at >= landingRead.respondedAt) {
+    } else if (measurement.routeChunk.at >= landingRead.startedAt) {
       faults.push(
         `the ${landing.name} asked for its route chunk ${measurement.routeChunk.path} at ` +
-          `${stamp(measurement.routeChunk.at)}, after the landing read answered at ` +
-          `${stamp(landingRead.respondedAt)}: the entry no longer starts it beside that read ` +
+          `${stamp(measurement.routeChunk.at)}, after the landing read was sent at ` +
+          `${stamp(landingRead.startedAt)}: the entry no longer starts it beside that read ` +
           "(web/src/app.tsx, preloadRouteChunk)"
       );
     }
     if (landing.documentChunk !== undefined && landingRead !== undefined) {
       if (measurement.documentChunkAt === undefined) {
         faults.push(`the ${landing.name} never asked for its document's transport chunk`);
-      } else if (measurement.documentChunkAt >= landingRead.respondedAt) {
+      } else if (measurement.documentChunkAt >= landingRead.startedAt) {
         faults.push(
           `the ${landing.name} asked for its document's transport chunk at ` +
-            `${stamp(measurement.documentChunkAt)}, after the landing read answered at ` +
-            `${stamp(landingRead.respondedAt)}: the entry no longer starts the document's chunks ` +
+            `${stamp(measurement.documentChunkAt)}, after the landing read was sent at ` +
+            `${stamp(landingRead.startedAt)}: the entry no longer starts the document's chunks ` +
             "beside that read (web/src/app.tsx, preloadRouteChunk, loadDocumentChunks)"
         );
       }

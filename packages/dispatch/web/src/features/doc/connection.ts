@@ -4,7 +4,7 @@ import type { Awareness } from "y-protocols/awareness";
 import type { Doc } from "yjs";
 
 import { reconnectDelayMs } from "../../api/live-socket";
-import { importWhenOnline } from "../shell/chunk-loads";
+import { loadTransportModules } from "./document-chunks";
 import type { PendingState, PendingSync } from "./pending-sync";
 
 const presenceColors = ["#0284c7", "#7c3aed", "#c2410c", "#047857", "#be123c", "#4338ca"] as const;
@@ -114,7 +114,8 @@ export function wsUrl(artifactId: string): string {
 }
 
 // Hocuspocus and Yjs load with the first document that connects, not with the issue route: the
-// same lazy boundary `createEditor` puts around the editor itself. The connect they resolve to is
+// same lazy boundary `createEditor` puts around the editor itself, named once in
+// `document-chunks.ts`, where the entry starts it too. The connect they resolve to is
 // synchronous, so a host has one place to react to the connection.
 export async function loadDocumentTransport(): Promise<ConnectDocument> {
   const [
@@ -122,14 +123,7 @@ export async function loadDocumentTransport(): Promise<ConnectDocument> {
     { Doc },
     { openPendingEdits },
     { startPendingSync },
-  ] = await importWhenOnline(() =>
-    Promise.all([
-      import("@hocuspocus/provider"),
-      import("yjs"),
-      import("./pending-edits"),
-      import("./pending-sync"),
-    ])
-  );
+  ] = await loadTransportModules();
   return (artifactId, callbacks) => {
     const doc = new Doc();
     let destroyed = false;
