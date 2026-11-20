@@ -24,7 +24,10 @@ body: |-
   token, and its cut.
 
   A read-only token's read of `GET /api/v1/issues/{key}/results` asks GitHub the same questions as
-  a writer's read and gives the same answer. It stores nothing.
+  a writer's read made at the same moment, and gives the same answer. It stores nothing: it keeps
+  GitHub's answers in the process's memory, which is empty after a restart, at most 1,024 of them
+  in each of its two memories. A memory logs one WARN when it first drops an answer at that bound,
+  and the metric `envoy_dispatch_read_only_answers_dropped_total` counts every drop.
 time: 2026-11-20T02:56:20Z
 custom:
   Issue: pr4557
