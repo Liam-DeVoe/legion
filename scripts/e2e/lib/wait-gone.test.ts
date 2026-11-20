@@ -30,17 +30,19 @@ import { scriptFunctions } from "./script-functions";
 const lib = import.meta.dir;
 const e2e = join(lib, "..");
 const root = join(e2e, "..", "..");
-const dir = temporaryDirectory("wait-gone-test");
-const holderPath = join(dir, "holder.py");
-const pidsFile = join(dir, "started.pids");
 // Each case's own timeout, the one fixed time this file sets, and what every wait a case needs an
 // answer from runs to: END (caseEnd below) is that timeout counted from the case's start, less
 // what the case does after the wait, so that a wait that never ends fails the case with its own
 // line before bun stops it. A bound that is itself what a case checks (a 2 s deadline the wait must
 // run to, a grace of 1 s) keeps its own value, and a mutant of wait-gone.sh shows the case fails
-// when the bound is not kept.
+// when the bound is not kept. It is set before temporaryDirectory registers its hooks: bun takes a
+// hook's timeout when the hook is registered, and the directory's removal, a few hundred files
+// and the fake /proc trees, took more than bun's 5 s default on a loaded devbox.
 const caseTimeoutMs = 300_000;
 setDefaultTimeout(caseTimeoutMs);
+const dir = temporaryDirectory("wait-gone-test");
+const holderPath = join(dir, "holder.py");
+const pidsFile = join(dir, "started.pids");
 let caseStart = Date.now();
 beforeEach(() => {
   caseStart = Date.now();
@@ -150,10 +152,13 @@ afterAll(() => {
 });
 
 // The shell every harness runs above its body. Paths come in through the environment, so no
-// harness's own command line names a run's work directory (run_processes reads command lines).
-// Its EXIT trap ends what it started; a TERM (bun's, on a timeout) runs that trap too.
+// harness's own command line names a run's work directory. Its EXIT trap ends what it started; a
+// TERM (bun's, on a timeout) runs that trap too. Each stand-in's start is recorded in started_at,
+// as a rig's start_process records each service (lib/process-tree.sh's record_start), so the
+// rig's stop_pid, which signals a pid only while it is that process, stops it.
 const prelude = `set -u
 . "$ROOT/scripts/e2e/lib/wait-gone.sh"
+declare -A started_at=()
 started=()
 trap 'for p in \${started[@]+"\${started[@]}"}; do builtin kill -KILL "$p" 2>/dev/null; done; wait 2>/dev/null' EXIT
 trap 'exit 143' TERM
@@ -168,6 +173,7 @@ holder() {
   local start=''
   process_start "$!" start || true
   echo "$! $start" >>"$PIDS"
+  [ -z "$start" ] || started_at[$!]=$start
   printf -v "$name" '%s' "$!"
   for _ in $(seq 1 600); do [ -s "$file" ] && break; sleep 0.05; done
   [ -s "$file" ] || { echo "the stand-in $name wrote no port" >&2; exit 2; }
@@ -184,6 +190,15 @@ drop_kill() {
     case " $* " in *" KILL "* | *" -KILL "* | *" -9 "*) [[ " $* " == *" $spare "* ]] && return 0 ;; esac
     builtin kill "$@"
   }
+}
+# own_proc_root PID...: a proc root of these processes alone, a link to /proc/PID for each
+# (lib/proc-root.ts's form), so a sweep's walk (procs_naming, through proc_root) reads them and not
+# every process of the host.
+own_proc_root() {
+  local r p
+  r=$(mktemp -d "$DIR/proc.XXXXXX")
+  for p in "$@"; do ln -s "/proc/$p" "$r/$p"; done
+  printf '%s' "$r"
 }
 `;
 
@@ -216,6 +231,14 @@ function values(out: string) {
   );
 }
 
+// What kill_gone names a stand-in by when it could not wait it out: its pid and holder.py's own path,
+// whatever runs python3. A python3 that is a wrapper (a mise shim) execs /usr/bin/python3 by its
+// full path, so the interpreter's name on the command line is not `python3` there.
+const holderPattern = holderPath.replace(/[.*+?^$|()[\]{}\\]/g, "\\$&");
+function standIn(pid: string) {
+  return `pid ${pid} \\([^)]*${holderPattern}[^)]*\\)`;
+}
+
 let dirs = 0;
 function freshDir(name: string) {
   const made = join(dir, `${name}-${++dirs}`);
@@ -224,10 +247,22 @@ function freshDir(name: string) {
 }
 
 describe("wait_gone and kill_gone", () => {
-  test("a sleep given SIGTERM is gone at once", () => {
-    const r = bash(`sleep 30 & started+=("$!")
-kill_gone TERM "$END" "$!"; echo "rc=$?"`);
-    expect(values(r.stdout).rc).toBe("0");
+  test("a sleep given SIGTERM is gone at once: the wait returns within a read of its exit", () => {
+    // An observer reads the sleep's /proc entry in a loop of builtins alone, and writes the moment
+    // it reads it gone (no entry, or a zombie): its exit. wait_gone reads its targets every 100 ms,
+    // so it returns within one read of that moment; the bound gives the box's scheduling 900 ms more,
+    // where a wait that slept seconds between reads would return seconds late.
+    const r = bash(`gone=$(mktemp -u "$DIR/gone.XXXXXX")
+sleep 30 & s=$!; started+=("$s")
+( while { read -r st <"/proc/$s/stat"; } 2>/dev/null && [[ \${st##*) } != Z* ]]; do :; done
+  echo "$(now_ms)" >"$gone" ) &
+kill_gone TERM "$END" "$s"; echo "rc=$?"
+echo "returned_ms=$(now_ms)"
+wait "$!"
+echo "gone_ms=$(<"$gone")"`);
+    const v = values(r.stdout);
+    expect(v.rc).toBe("0");
+    expect(Number(v.returned_ms) - Number(v.gone_ms)).toBeLessThan(1000);
   });
 
   test("a process that ignores SIGTERM is still there at the deadline, named, and gone given SIGKILL", () => {
@@ -272,11 +307,40 @@ kill -CONT "$parent"`);
     // to END and returned 1.
   });
 
-  test("a whole process group given SIGKILL is gone", () => {
-    const r = bash(`setsid bash -c 'sleep 30 & sleep 30 & wait' & g=$!; started+=("$g")
-sleep 0.3
-kill_gone KILL "$END" "-$g"; echo "rc=$?"`);
-    expect(values(r.stdout).rc).toBe("0");
+  // A group's member that leaves late, and one that SIGKILL has not ended: what kill_label and
+  // stop_label (envoy-session-delivery.sh), replace-blocks.sh's stop_instance and dev-stack.test.sh's
+  // cleanup wait on before their next step meets the group's port, session or directory.
+  test("a process group whose member drains for 2 s after SIGTERM is gone, every member, when the wait returns", () => {
+    const r = bash(`setsid bash -c 'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' & g=$!; started+=("$g")
+until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ]; do sleep 0.05; done
+start=$(now_ms)
+kill_gone TERM "$END" "-$g"; echo "rc=$?"
+echo "ms=$(($(now_ms) - start))"
+kill -0 -- "-$g" 2>/dev/null && echo still=yes`);
+    const v = values(r.stdout);
+    expect(v.rc).toBe("0");
+    expect(v.still).toBeUndefined();
+    expect(Number(v.ms)).toBeGreaterThanOrEqual(1500);
+  });
+
+  test("a process group with a member SIGKILL has not ended is waited for to the deadline and named", () => {
+    const r = bash(`setsid bash -c 'sleep 30 & wait' & g=$!; started+=("$g")
+until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ]; do sleep 0.05; done
+drop_kill "-$g"
+deadline=$((EPOCHSECONDS + 2))
+kill_gone KILL "$deadline" "-$g"; echo "rc=$?"
+echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "group=$g"
+builtin kill -KILL -- "-$g" 2>/dev/null`);
+    const v = values(r.stdout);
+    expect(v.rc).toBe("1");
+    expect(Number(v.ended_ms)).toBeGreaterThanOrEqual(Number(v.deadline) * 1000);
+    expect(Number(v.ended_ms)).toBeLessThan(Number(v.deadline) * 1000 + 4000);
+    expect(r.stderr).toMatch(
+      new RegExp(
+        `^process group ${v.group} still has a process at its deadline, [0-9]+\\.[0-9] s after its SIGKILL$`,
+        "m"
+      )
+    );
   });
 
   test("a pid with no process is gone", () => {
@@ -511,7 +575,7 @@ echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "pid=$h"`);
     expect(Number(v.ended_ms)).toBeLessThan(Number(v.deadline) * 1000 + 4000);
     expect(r.stderr).toMatch(
       new RegExp(
-        `^pid ${v.pid} \\(python3 .*holder\\.py.*\\) is still in the process table at its deadline, [0-9.]+ s after its SIGKILL$`,
+        `^${standIn(v.pid)} is still in the process table at its deadline, [0-9.]+ s after its SIGKILL$`,
         "m"
       )
     );
@@ -531,7 +595,7 @@ note() { :; }
 fail() { echo "FAIL $*"; exit 1; }
 . "$ROOT/scripts/e2e/lib/rig.sh"`;
 
-  test("port: lib/rig.sh's stop_pid, given the port as Stage 4b's restarts give it, of a daemon that ignores SIGTERM, then Stage 4b's ports_free", () => {
+  test("port: lib/process-tree.sh's stop_pid, given the port as Stage 4b's restarts give it, of a daemon that ignores SIGTERM, then Stage 4b's ports_free", () => {
     const work = freshDir("port");
     const r = bash(
       `${rig}
@@ -548,11 +612,32 @@ echo free=yes`,
     expect(r.stdout).toBe("free=yes\n");
   });
 
+  test("port: lib/process-tree.sh's stop_pid of an empty PID signals nothing and still waits for its TARGETs, to the deadline, naming one still held", () => {
+    const r = bash(
+      `. "$ROOT/scripts/e2e/lib/process-tree.sh"
+holder h term=ignore
+start=$(now_ms)
+deadline=$((EPOCHSECONDS + 2))
+stop_pid "" "$deadline" "port:$h_port"; echo "rc=$?"
+echo "ended_ms=$(now_ms)"; echo "deadline=$deadline"; echo "port=$h_port"
+listening "$h_port" && echo listening=yes`
+    );
+    const v = values(r.stdout);
+    expect(v.rc).toBe("1");
+    expect(Number(v.ended_ms)).toBeGreaterThanOrEqual(Number(v.deadline) * 1000);
+    expect(v.listening).toBe("yes");
+    expect(r.stderr).toMatch(
+      new RegExp(`^port ${v.port} is still listened on \\(.*\\) at its deadline`, "m")
+    );
+  });
+
   test("port: Stage 4b's restart_daemon waits for the ports a child of the daemon still holds before it starts the new one", () => {
     const work = freshDir("restart-child");
     const r = bash(
       `${rig}
 ${stage4b("ports_free")}
+${stage4b("stop_daemon_ports")}
+${stage4b("restart_stop")}
 ${stage4b("restart_daemon")}
 write_legion_config() { :; }
 start_daemon() { ports_free "$port_daemon" "$port_worker_stream" && echo started=yes; }
@@ -565,11 +650,33 @@ restart_daemon`,
     expect(r.stdout).toBe("started=yes\n");
   });
 
-  test("process table: Stage 2's stop_pid of a daemon that drains for a second on SIGTERM, then the next run's refuse_leftovers reads the table", () => {
+  test("port: Stage 4b's cleanup stops its daemon with stop_daemon_ports, which waits for the ports a child of the daemon still holds, then the next run's ports_free", () => {
+    // The next run's prerequisites read the fixed ports 13372 and 13373 (ports_free), so the
+    // teardown waits for the ports themselves, not the daemon's pid alone.
+    expect(stage4b("cleanup")).toMatch(/^\s*\[ -z "\$daemon_pid" \] \|\| stop_daemon_ports$/m);
+    const work = freshDir("cleanup-child");
+    const r = bash(
+      `${rig}
+${stage4b("ports_free")}
+${stage4b("stop_daemon_ports")}
+stop_pid_grace=1
+for t in 1 2 3; do
+  holder daemon_pid child=1 pids="$PIDS"
+  port_daemon=$daemon_pid_port port_worker_stream=$daemon_pid_port
+  stop_daemon_ports || echo "trial $t: stop_daemon_ports returned 1"
+  ports_free "$port_daemon" "$port_worker_stream"
+done
+echo free=yes`,
+      { WORK: work }
+    );
+    expect(r.stdout).toBe("free=yes\n");
+  });
+
+  test("process table: lib/process-tree.sh's stop_pid, which Stage 2's cleanup runs, of a daemon that drains for a second on SIGTERM, then the next run's refuse_leftovers reads the table", () => {
     const work = freshDir("table-stage2");
     const r = bash(
-      `. "$ROOT/scripts/e2e/lib/leftovers.sh"
-${stage2("stop_pid")}
+      `. "$ROOT/scripts/e2e/lib/process-tree.sh"
+. "$ROOT/scripts/e2e/lib/leftovers.sh"
 fail() { echo "FAIL $*"; exit 1; }
 for t in 1 2 3; do
   holder d term=slow:1 threads=8 mib=256
@@ -582,22 +689,38 @@ echo gone=yes`,
     expect(r.stdout).toBe("gone=yes\n");
   });
 
-  test("lock: a run's stop_box_login_processes of a pane whose child holds the inherited lock, then the next run's take_box_login_lock", () => {
-    // As a stage proof holds it: the run takes the lock, so every pane it starts, and every process
-    // a pane starts, inherits the locked descriptor. The run ends after its teardown (the subshell
-    // below), and the next run takes the lock.
+  // A box-login run as a stage proof makes one: the run marks itself (LEGION_E2E_RUN), takes the
+  // lock, and starts its panes; its teardown is stop_box_login_run, and the next run's first step is
+  // take_box_login_lock. The sweep reads a proc root of the run's own pane (own_proc_root), not the
+  // host's every process.
+  const boxLogin = `. "$ROOT/scripts/e2e/lib/box-login.sh"
+box_login_stop_grace=1
+# run_as WORK: this shell is the box-login run under WORK, its lock at WORK/lock.
+run_as() {
+  mkdir -p "$1"
+  export LEGION_E2E_RUN=$1
+  box_login_lock_file=$1/lock
+}
+# next_run_takes_lock LOCKFILE: a fresh shell, as the next run is, takes the lock and lets it go.
+next_run_takes_lock() {
+  box_login_lock_file=$1 bash -c '. "$ROOT/scripts/e2e/lib/box-login.sh"; take_box_login_lock' 2>/dev/null
+}`;
+
+  test("lock: a run's stop_box_login_run of a pane whose child holds the inherited lock, then the next run's take_box_login_lock", () => {
+    // Every pane the run starts, and every process a pane starts, inherits the locked descriptor
+    // here. The run ends after its teardown (the subshell below), and the next run takes the lock.
     const d = freshDir("lock");
     const r = bash(
-      `. "$ROOT/scripts/e2e/lib/box-login.sh"
-box_login_stop_grace=1
+      `${boxLogin}
 for t in 1 2 3; do
   (
-    box_login_lock_file=$D/lock.$t
+    run_as "$D/run.$t"
     take_box_login_lock || exit 1
     holder pane term=ignore threads=8 mib=256 child=1 pids="$PIDS"
-    stop_box_login_processes "$pane" || echo "trial $t: the stop returned 1"
+    proc_root=$(own_proc_root "$pane")
+    stop_box_login_run "$LEGION_E2E_RUN" || echo "trial $t: the stop returned 1"
   )
-  box_login_lock_file=$D/lock.$t bash -c '. "$ROOT/scripts/e2e/lib/box-login.sh"; take_box_login_lock' 2>/dev/null || echo "trial $t: refused"
+  next_run_takes_lock "$D/run.$t/lock" || echo "trial $t: refused"
 done
 echo took=yes`,
       { D: d }
@@ -605,29 +728,66 @@ echo took=yes`,
     expect(r.stdout).toBe("took=yes\n");
   });
 
-  test("lock: a pane SIGKILL has not ended is waited for to the deadline and named, never left holding the lock unsaid", () => {
-    const lock = join(freshDir("lock-stays"), "box-login.lock");
+  test("lock: a second box-login run is refused until the first run's last pane is gone, though the pane holds no copy of the run's descriptor, as a tmux pane holds none", () => {
+    // A tmux pane holds no copy of the run's lock descriptor (the tmux server does), so the lock
+    // alone cannot tell that the panes are gone: the teardown must give up the lock only once they
+    // are. The pane drains for 4 s after its SIGTERM, inside a 5 s grace; a second run tries the lock every 0.1 s from
+    // the moment the teardown starts, and an observer writes the moment the pane is gone. Neither
+    // holds the run's descriptor either: each is started with it closed in it alone (a
+    // {varname}>&- on the call itself would close it in this shell for good). The proc root holds
+    // this shell too, so the sweep's walk still lists a process once the pane is gone.
+    const d = freshDir("lock-order");
     const r = bash(
-      `. "$ROOT/scripts/e2e/lib/box-login.sh"
-box_login_stop_grace=1
-holder pane term=ignore lock="$LOCK"
+      `${boxLogin}
+box_login_stop_grace=5
+run_as "$D/run"
+take_box_login_lock || exit 1
+eval "holder pane term=slow:4 $box_login_lock_fd>&-"
+proc_root=$(own_proc_root "$pane" "$$")
+( exec {box_login_lock_fd}>&-
+  while { read -r st <"/proc/$pane/stat"; } 2>/dev/null && [[ \${st##*) } != Z* ]]; do :; done
+  echo "$(now_ms)" >"$D/pane-gone" ) &
+observer=$!
+( exec {box_login_lock_fd}>&-
+  for _ in $(seq 1 300); do
+    if next_run_takes_lock "$D/run/lock"; then echo "$(now_ms)" >"$D/took"; exit 0; fi
+    sleep 0.1
+  done ) &
+second=$!
+stop_box_login_run "$D/run"; echo "rc=$?"
+wait "$observer" "$second"
+echo "gone_ms=$(<"$D/pane-gone")"
+echo "took_ms=$(cat "$D/took" 2>/dev/null)"`,
+      { D: d }
+    );
+    const v = values(r.stdout);
+    expect(v.rc).toBe("0");
+    expect(v.took_ms).not.toBe("");
+    expect(Number(v.took_ms)).toBeGreaterThanOrEqual(Number(v.gone_ms));
+  });
+
+  test("lock: a pane SIGKILL has not ended is waited for to the deadline and named, never left holding the lock unsaid", () => {
+    const d = freshDir("lock-stays");
+    const r = bash(
+      `${boxLogin}
+run_as "$D/run"
+take_box_login_lock || exit 1
+holder pane term=ignore
+proc_root=$(own_proc_root "$pane")
 drop_kill "$pane"
 start=$(now_ms)
-stop_box_login_processes "$pane"; echo "rc=$?"
+stop_box_login_run "$D/run"; echo "rc=$?"
 echo "ms=$(($(now_ms) - start))"
 echo "pid=$pane"`,
-      { LOCK: lock }
+      { D: d }
     );
     const v = values(r.stdout);
     expect(v.rc).toBe("1");
     expect(Number(v.ms)).toBeGreaterThanOrEqual(10_000);
-    const pid = v.pid;
     expect(r.stderr).toMatch(
-      new RegExp(
-        `^pid ${pid} \\(python3 .*holder\\.py.*\\) is still in the process table at its deadline`,
-        "m"
-      )
+      new RegExp(`^${standIn(v.pid)} is still in the process table at its deadline`, "m")
     );
+    expect(r.stderr).toContain(`lock ${d}/run/lock is still held at its deadline`);
   });
 
   test("directory: the verifiers proof's cleanup of a Dispatch that drains into $work for 2 s, then the next run's rm -rf", () => {
@@ -672,23 +832,31 @@ cleanup`,
     expect(r.stdout).toContain("serving\nshutdown-complete\n");
   });
 
-  test("process table: Stage 3's sweep of a run's process with threads and memory, then its read of the table", () => {
+  test("process table: Stage 3's sweep of a run's process with threads and memory, then its read of the table and the next run's", () => {
     const work = freshDir("table");
-    // The checkpoint's own lines, from its sweep to its read of the table.
+    // The checkpoint's own lines, from its sweep to its read of the table. The run's processes carry
+    // its mark, and the sweep reads a proc root of the stand-in alone; the next run's refuse_leftovers
+    // reads the pid's own /proc entry (leftover_started), which still lists a process SIGKILL has
+    // not finished ending.
     const script = readFileSync(join(e2e, "stage3-devbox-workflow.sh"), "utf8");
     const block =
-      /^kill_gone KILL .*\$\(run_processes\)[^\n]*\n[\s\S]*?a proof process remains"\n/m.exec(
+      /^stop_marked_processes "\$work" \|\|[^\n]*\n[\s\S]*?a proof process remains[^\n]*\n/m.exec(
         script
       );
     expect(block).not.toBeNull();
     const r = bash(
       `${rig}
+. "$ROOT/scripts/e2e/lib/leftovers.sh"
 docker() { :; }
 tmux() { return 1; }
 pg_container=none nats_container=none ptoken=none
+export LEGION_E2E_RUN=$WORK
 for t in 1 2 3; do
-  holder p cwd="$WORK" term=ignore threads=8 mib=1024
+  holder p term=ignore threads=8 mib=1024
+  # This shell too, so the walk lists a process (an unmarked one) once the stand-in is gone.
+  proc_root=$(own_proc_root "$p" "$$")
   ${block?.[0]}
+  leftover_started "$p" >/dev/null && echo "trial $t: the next run's refuse_leftovers would read pid $p as running"
 done
 echo swept=yes`,
       { WORK: work }
@@ -703,6 +871,8 @@ echo swept=yes`,
         `${rig}
 write_legion_config() { :; }
 start_daemon() { echo started=yes; }
+${stage4b("stop_daemon_ports")}
+${stage4b("restart_stop")}
 ${stage4b("restart_daemon")}
 stop_pid_grace=0
 holder daemon_pid term=${stays ? "ignore" : "default"}
@@ -716,11 +886,11 @@ restart_daemon`,
     const pid = values(stays.stdout).pid;
     expect(values(stays.stdout).started).toBeUndefined();
     expect(stays.stdout).toContain(
-      `FAIL the daemon (pid ${pid}) did not stop or its ports are still held (named above); its replacement would meet its ports`
+      `FAIL the daemon (pid ${pid}) did not stop or its ports are still held (named above); its restart would meet its ports`
     );
     expect(stays.stderr).toMatch(
       new RegExp(
-        `^pid ${pid} \\(python3 .*holder\\.py.*\\) is still in the process table at its deadline`,
+        `^${standIn(pid)} is still in the process table at its deadline`,
         "m"
       )
     );
