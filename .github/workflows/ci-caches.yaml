@@ -585,7 +585,10 @@ jobs:
   # family's does: a fetch reads the module graph, so an entry keyed on the Go version alone would
   # hold the versions of the push that filled it, and its reader would fetch on every run what
   # moved since. The superseded job below deletes the entry each fill replaced, so each job names
-  # its key and whether it filled it under the output names that job reads.
+  # its key and whether it filled it under the output names that job reads. Each of the five
+  # saves only on main (`github.ref == 'refs/heads/main'`, the ref every reader's restore can
+  # read): a fill dispatched on another ref fetches and saves nothing, since over the repository's
+  # 10 GB a branch's entries evict main's, which every other run restores.
   #
   # go-fetch-text-checks: text-checks' fetch, in both workspaces (packages/envoy/infra/go.work binds
   # that module and packages/envoy; the root go.work binds packages/envoy and packages/daemon),
@@ -623,7 +626,7 @@ jobs:
         if: steps.go-fetch-text-checks.outputs.cache-hit != 'true'
         run: .github/scripts/go-fetch.sh file .github/go-fetch/text-checks.txt
 
-      - if: steps.go-fetch-text-checks.outputs.cache-hit != 'true'
+      - if: steps.go-fetch-text-checks.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -664,7 +667,7 @@ jobs:
         if: steps.go-fetch-lint.outputs.cache-hit != 'true'
         run: .github/scripts/go-fetch.sh file .github/go-fetch/lint.txt
 
-      - if: steps.go-fetch-lint.outputs.cache-hit != 'true'
+      - if: steps.go-fetch-lint.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -704,7 +707,7 @@ jobs:
         if: steps.go-fetch-test.outputs.cache-hit != 'true'
         run: .github/scripts/go-fetch.sh file .github/go-fetch/test.txt
 
-      - if: steps.go-fetch-test.outputs.cache-hit != 'true'
+      - if: steps.go-fetch-test.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -744,7 +747,7 @@ jobs:
         if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true'
         run: .github/scripts/go-fetch.sh file .github/go-fetch/private-names-port.txt
 
-      - if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true'
+      - if: steps.go-fetch-private-names-port.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -787,7 +790,7 @@ jobs:
           .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds-same.txt
           .github/scripts/go-fetch.sh file .github/go-fetch/dispatch-two-builds.txt
 
-      - if: steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true'
+      - if: steps.go-fetch-dispatch-two-builds.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
