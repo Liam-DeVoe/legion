@@ -1202,7 +1202,7 @@ RACE_DOCS_SCRIPT = ('mkdir -p "$RUNNER_TEMP/go-test-json"\n'
 # The same package under Go's cleanup detector. GODEBUG is a GO* name, which is outside
 # ENV_ALLOWED wherever it is set, so this step too is pinned whole rather than reduced.
 FINALIZERS_STEP = "Test the document service under the cleanup detector"
-FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 27m ./internal/dispatch/docs/"
+FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 28m ./internal/dispatch/docs/"
 # Every lane whose tests start a Dispatch process sizes its Postgres service in its CEILING_STEP,
 # which runs .github/scripts/pg-connection-ceiling.sh. The check reads the step's run: line, not
 # what the script runs, so each such gate declares the script, and the go run on the script's line
@@ -1662,8 +1662,9 @@ class RaceJob(NamedTuple):
 # (dispatch://INFRA-1075, check 6224bb0e), and from the dispatch run at each later head, which
 # may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
 # open-items.md). Each -timeout is the smallest whole minute at which that call's slowest
-# package's slowest reading takes at most half of it: cmd/listener 686.0 s (run 44657415021, job
-# 136039518500), 686.0 / 30 = 22.87, so 23m; internal/dispatch/api 1,154.1 s (run 44687712471 at
+# package's slowest reading takes at most half of it: cmd/listener 812.3 s (run 44717243297 at
+# 66058706, job 136223826856), against 680.5 s and 686.0 s in the pair (jobs 136026780235 and
+# 136039518500), 812.3 / 30 = 27.08, so 28m; internal/dispatch/api 1,154.1 s (run 44687712471 at
 # 56f4dabc, job 136126011060), against 1,123.8 s and 1,118.6 s in the pair (jobs 136026779922
 # and 136039518473), 1,154.1 / 30 = 38.47, so 39m; and internal/dispatch/docs 1,603.9 s (run
 # 44657322918, job 136026779859), 1,603.9 / 30 = 53.46, so 54m. Each figure is read from that
@@ -1673,7 +1674,7 @@ ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the "
             "NATS credentials and the NATS auth service",
-            "23m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
+            "28m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True),
                     RacePackage("natscred"), RacePackage("internal/broker/natscallout"))),
@@ -4135,7 +4136,7 @@ GATES = [
     # claim different steps and do not collide.
     gate("envoy_go_race_docs", "envoy-go-docs-finalizers", runs=[ceiling_run("envoy-go-docs-finalizers")], exact=[
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
-            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 27m ./internal/dispatch/docs/", {}),
+            (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 28m ./internal/dispatch/docs/", {}),
         ]),
     ], reads=ceiling_reads("envoy-go-docs-finalizers") + setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")
        + service_settings("envoy-go-docs-finalizers")),

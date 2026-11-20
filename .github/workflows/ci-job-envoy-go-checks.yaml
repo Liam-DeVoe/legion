@@ -60,14 +60,20 @@ jobs:
     # runs 44657322918 and 44657415021 at 8cfd2682, by the rule envoy-go's comment gives
     # (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head, which may
     # raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
-    # open-items.md). The job's bound is its slowest time, 988 s in run 44687712471 at 56f4dabc
-    # (job 136126010901), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
-    # and run 44657415021, job 136039517954), 16.47 minutes, plus the largest -timeout of its go
-    # test calls, the alone step's 2m, plus 6: 16.47 + 2 + 6 = 24.47, so 25. Its other go
-    # commands are builds, the darwin vet and two `go run`s, which run no test binary and carry no
-    # -timeout. The step that tests the API's wall-clock measurements alone is in this pair too,
-    # and its comment gives its reading.
-    timeout-minutes: 25
+    # open-items.md). The job's bound is its slowest time, 1,208 s in run 44717243297 at 66058706
+    # (job 136223826114), against 830 s and 853 s in the pair (run 44657322918, job 136026780288,
+    # and run 44657415021, job 136039517954) and 988 s in run 44687712471 at 56f4dabc (job
+    # 136126010901), 20.13 minutes, plus the largest -timeout of its go test calls, the alone
+    # step's 2m, plus 6: 20.13 + 2 + 6 = 28.13, so 29. Its other go commands are builds, the
+    # darwin vet and two `go run`s, which run no test binary and carry no -timeout. The step that
+    # tests the API's wall-clock measurements alone is in this pair too, and its comment gives its
+    # reading. The steps that grew, against run 44657415021: the daemon-release-gate.sh verdict
+    # test 162 s against 11 s (main's #4449 added its cases; 137 s at 56f4dabc); the autodeploy.sh
+    # test 62 s against 13 s, loadtest/vm 190 s against 153 s and loadtest/cluster 184 s against
+    # 168 s (main's #4387 changed deploy/scripts and both load-test drivers; 13 s, 155 s and 169 s
+    # at 56f4dabc); and the darwin vet 194 s against 143 s and the API's wall-clock step 178 s
+    # against 140 s, unattributed.
+    timeout-minutes: 29
     # The Postgres the API's alone step runs against, as envoy-go-race-api's: the same image, the
     # same settings on the server's own command line and the same health check. envoy-go's own
     # service says what each setting buys and why this container can do without durability

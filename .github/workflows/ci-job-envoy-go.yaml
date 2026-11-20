@@ -39,11 +39,13 @@ jobs:
     # which is swept the same way and may raise a limit but never lower one (the architect's rule
     # of 2026-11-20, the issue's open-items.md). Run 44687712471 at 56f4dabc raised five:
     # envoy-go-race-api's --timeout and timeout-minutes, envoy-go-docs-finalizers' -timeout and
-    # timeout-minutes, and envoy-go-checks' timeout-minutes, and the comment on each gives that
-    # run's reading. Every other limit is the pair's, and the table below and the comment on each
-    # give the pair's reading. The pair ran envoy-go-checks on x64 (ubuntu-24.04) and the other
-    # five jobs on arm64 (ubuntu-24.04-arm), where main's #4308 moved them, as the pairs at
-    # 31649808 and ae055610 did; every pair before those ran on x64.
+    # timeout-minutes, and envoy-go-checks' timeout-minutes. Run 44717243297 at 66058706 raised
+    # five: envoy-go-race's -timeout and timeout-minutes, and again envoy-go-docs-finalizers'
+    # -timeout and timeout-minutes and envoy-go-checks' timeout-minutes. The comment on each gives
+    # the reading of the run that set it. Every other limit is the pair's, and the table below
+    # and the comment on each give the pair's reading. The pair ran envoy-go-checks on x64
+    # (ubuntu-24.04) and the other five jobs on arm64 (ubuntu-24.04-arm), where main's #4308
+    # moved them, as the pairs at 31649808 and ae055610 did; every pair before those ran on x64.
     #
     # A call's -timeout is the smallest whole minute at which its slowest package, on the slower
     # run of the pair, takes at most half of it: that package's time divided by 30, rounded up.

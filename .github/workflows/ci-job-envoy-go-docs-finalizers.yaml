@@ -32,19 +32,20 @@ env:
 jobs:
   envoy-go-docs-finalizers:
     runs-on: ubuntu-24.04-arm
-    # The step's -timeout 27m must fire before the runner cancels the job, so a hung test prints
+    # The step's -timeout 28m must fire before the runner cancels the job, so a hung test prints
     # the dump that names it. Both numbers come from the final measurement pair, runs 44657322918
     # and 44657415021 at 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at
     # each later head, which may raise a limit and never lower one (the architect's rule of
     # 2026-11-20, the issue's open-items.md), by this job's own rule: the step's deadline is the
     # smallest whole minute at which the package's slowest time is at most 60 % of it, and the
-    # job's bound is six minutes above that. The package's `ok` line read 951.6 s in run
-    # 44687712471 at 56f4dabc (job 136126010942), whose job took 1,013 s, against 926.9 s in run
-    # 44657415021 (job 136039518265) and 920.3 s in run 44657322918 (job 136026780616), the pair;
-    # 951.6 / 36 = 26.43, so 27m (951.6 s is 58.7 % of 27m and would be 61.0 % of 26m), and
-    # 27 + 6 = 33. Measure again before changing either: a package that has grown past 60 % of
-    # its deadline is a deadline to raise, not a flake to re-run.
-    timeout-minutes: 33
+    # job's bound is six minutes above that. The package's `ok` line read 1,004.5 s in run
+    # 44717243297 at 66058706 (job 136223826640), whose job took 1,064 s, against 926.9 s in run
+    # 44657415021 (job 136039518265) and 920.3 s in run 44657322918 (job 136026780616), the pair,
+    # and 951.6 s in run 44687712471 at 56f4dabc (job 136126010942); 1,004.5 / 36 = 27.90, so 28m
+    # (1,004.5 s is 59.8 % of 28m and would be 62.0 % of 27m), and 28 + 6 = 34. Measure again
+    # before changing either: a package that has grown past 60 % of its deadline is a deadline to
+    # raise, not a flake to re-run.
+    timeout-minutes: 34
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -103,7 +104,7 @@ jobs:
       # and the count of services the tests left alive is the half of this job that no detector
       # of Go's reports.
       - name: Test the document service under the cleanup detector
-        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 27m ./internal/dispatch/docs/
+        run: GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 28m ./internal/dispatch/docs/
         working-directory: packages/envoy
 
       - name: Report ci-ok when this job decides a merge-group run

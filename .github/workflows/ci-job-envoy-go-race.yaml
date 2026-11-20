@@ -35,20 +35,24 @@ jobs:
     # R6 sizes both numbers from the final measurement pair, runs 44657322918 and 44657415021 at
     # 8cfd2682 (dispatch://INFRA-1075, check 6224bb0e), and the dispatch run at each later head,
     # which may raise a limit and never lower one (the architect's rule of 2026-11-20, the issue's
-    # open-items.md). Run 44687712471 at 56f4dabc (job 136126011379) read cmd/listener at 679.7 s
-    # and the job at 920 s, under the pair's, so it raised neither. The step's -timeout is the
-    # smallest whole minute at which its slowest package, on the slower run of the pair, takes at
-    # most half of it: cmd/listener, 686.0 s (run 44657415021, job 136039518500), 686.0 / 30 =
-    # 22.87, so 23m.
-    # The job's bound is its larger time in the pair, 939 s (run 44657415021, job 136039518500),
-    # 15.65 minutes, plus that -timeout plus 6: 15.65 + 23 + 6 = 44.65, so 45. The limit must
-    # fire before the runner cancels the job, so a hung test prints the dump that names it. The
-    # pair ran this job on arm64 (ubuntu-24.04-arm), where cmd/listener took 680.5 s and 686.0 s;
-    # the pair at 4f1f4436 read it at 585.3 s at most, on x64 (ubuntu-24.04). natscred and the
-    # NATS auth service (internal/broker/natscallout), which main added to the step after that
-    # earlier pair (#4139), are in this pair: 31.1 s and 101.3 s at most. So is the step that
-    # tests the wall-clock measurements alone, whose comment gives its reading.
-    timeout-minutes: 45
+    # open-items.md). The step's -timeout is the smallest whole minute at which its slowest
+    # package's slowest reading takes at most half of it: cmd/listener, 812.3 s in run
+    # 44717243297 at 66058706 (job 136223826856), against 680.5 s and 686.0 s in the pair (run
+    # 44657322918, job 136026780235, and run 44657415021, job 136039518500); 812.3 / 30 = 27.08,
+    # so 28m. The package grew because main's #4387 added 22 top-level tests to it, 135.4 s of
+    # summed elapsed time in that run's stream, while the 646 tests that run and the pair both
+    # hold took 793.3 s against 797.4 s and 804.1 s. Run 44687712471 at 56f4dabc (job
+    # 136126011379) read cmd/listener at 679.7 s and the job at 920 s, under the pair's.
+    # The job's bound is its slowest time, 1,048 s (run 44717243297, job 136223826856), against
+    # 916 s and 939 s in the pair (jobs 136026780235 and 136039518500), 17.47 minutes, plus that
+    # -timeout plus 6: 17.47 + 28 + 6 = 51.47, so 52. The limit must fire before the runner
+    # cancels the job, so a hung test prints the dump that names it. The pair and both dispatch
+    # runs since it ran this job on arm64 (ubuntu-24.04-arm); the pair at 4f1f4436 read
+    # cmd/listener at 585.3 s at most, on x64 (ubuntu-24.04). natscred and the NATS auth service
+    # (internal/broker/natscallout), which main added to the step after that earlier pair (#4139),
+    # are in this pair: 31.1 s and 101.3 s at most. So is the step that tests the wall-clock
+    # measurements alone, whose comment gives its reading.
+    timeout-minutes: 52
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -135,7 +139,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
           s=0
-          go test -json -race -count=1 -timeout 23m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/broker/natscallout/ > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
+          go test -json -race -count=1 -timeout 28m ./internal/dispatch/delivery/... ./internal/dispatch/store/... ./internal/bus/ ./cmd/listener/ ./internal/store/ ./internal/session/ ./internal/kvwatch/... ./natscred/ ./internal/broker/natscallout/ > "$RUNNER_TEMP/go-test-json/race.json" || s=$?
           if [ "$s" -eq 0 ]; then
             jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race.json"
           else
