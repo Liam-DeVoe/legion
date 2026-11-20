@@ -36,6 +36,7 @@
     "LEGION_GH_OWNERS_DIR": "/var/run/legion/gh",
     "LEGION_GH_PATH": "/usr/local/bin/gh",
     "LEGION_ISSUE": "LEGION-208",
+    "LEGION_LEAK_CHECKER_MANIFEST_SHA256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
     "LEGION_PROJECT": "legion",
     "LEGION_ROLE": "tester",
     "LEGION_STATE_DIR": "/var/run/legion/state",
