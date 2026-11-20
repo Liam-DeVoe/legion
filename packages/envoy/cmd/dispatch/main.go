@@ -216,6 +216,10 @@ type bootConfig struct {
 	// and /healthz says only that one exists, naming none (reportPrivateProjects,
 	// unprovisionedPrivateProjectReason).
 	PrivateProjects []string
+	// PrivateProjectsIgnored is each entry of DISPATCH_PRIVATE_PROJECTS that is no project key, in
+	// the order given: never read as a key, and logged at boot as one ERROR line each
+	// (reportIgnoredPrivateProjects).
+	PrivateProjectsIgnored []string
 	// AgentSecretsURL is DISPATCH_AGENT_SECRETS_URL, the secrets broker's API; empty means the
 	// credential-request feature is off. AgentSecretsTokenFile is
 	// DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, the file holding Dispatch's own projected
@@ -283,6 +287,7 @@ func main() {
 		slog.Error("dispatch: resolve boot config", "error", err)
 		os.Exit(1)
 	}
+	reportIgnoredPrivateProjects(boot.PrivateProjectsIgnored)
 	// The registry's pace, before anything registers or reads what is live. The live window stays
 	// three beats, as processes.LiveWindow is of processes.HeartbeatInterval, so a run cannot give
 	// itself a window shorter than its own heartbeat, and the wait a refused process makes
@@ -1451,9 +1456,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
-	if boot.PrivateProjects, err = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS")); err != nil {
-		return bootConfig{}, err
-	}
+	boot.PrivateProjects, boot.PrivateProjectsIgnored = privateProjectsSetting(env.get("DISPATCH_PRIVATE_PROJECTS"))
 	for _, setting := range []struct {
 		name   string
 		target *bool
@@ -2064,16 +2067,17 @@ func serverClient(extra ...bus.ConnectOption) []bus.ConnectOption {
 // or fail with Postgres, NATS or the file store. /metrics is unauthenticated like the other two,
 // so whoever reaches Dispatch's HTTP port can read it, and registry serves it.
 //
-// Each is mounted with what it reads (readclass.Handle). The probes read the process's own
-// health. /metrics reads the deployment's counters, which name no project, issue, person or
-// session (readclass's TestMetricsNameNoProject), and the router reads what each of its routes
-// declares.
+// Each is mounted with what it reads (readclass.Handle). None of the three holds a check that
+// decides what a caller may read, since each answers whoever reaches the port with no credential,
+// so each is a read of no caller's rows (readclass.None): the probes read the process's own
+// health, and /metrics the deployment's counters, which name no project, issue, person or session
+// (readclass's TestMetricsNameNoProject). The router reads what each of its routes declares.
 func dispatchHandler(handler http.Handler, registry *metrics.Registry, database *store.Store, natsClient *bus.Client, publisher *outbox.Outbox, fileStore files.Store, commit string, announcer *startup.Announcer, issuers issuers, privateState *privateProjectsState, reads *gitHubReads) http.Handler {
 	mux := http.NewServeMux()
 	none := []readclass.Class{readclass.None}
 	readclass.Handle(mux, none, "GET /healthz", healthzHandler(database, natsClient, publisher, fileStore, commit, announcer, issuers, privateState, reads))
 	readclass.Handle(mux, none, "GET /livez", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	readclass.Handle(mux, []readclass.Class{readclass.Deployment}, "GET /metrics", registry.Handler())
+	readclass.Handle(mux, none, "GET /metrics", registry.Handler())
 	readclass.Handle(mux, none, "/", handler)
 	return mux
 }
