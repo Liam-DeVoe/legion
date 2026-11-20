@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 
@@ -18,15 +20,28 @@ import (
 // the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
 // run's one retry, on a 429, a 5xx or a transport error, within the run's time. It keeps the
 // status of the last response it handed back, which is how a provider error is given the HTTP
-// status the provider answered with.
+// status the provider answered with, and it cuts a response past streamLimit bytes.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// streamLimit is the most bytes of one response's body the transport hands on, 0 for no
+	// limit (Request.StreamLimit); a read past it fails with errStreamTooLarge and sets
+	// tooLarge.
+	streamLimit int64
+	tooLarge    atomic.Bool
 	// status is the last attempt's response status where it was not a 2xx, and zero where
 	// it was, or where the attempt drew no response at all.
 	status atomic.Int32
+}
+
+// errStreamTooLarge is a read of a response past the transport's streamLimit.
+var errStreamTooLarge = errors.New("the model's response passed its stream limit")
+
+// overLimit reports whether a response of this transport was cut at streamLimit.
+func (t *modelTransport) overLimit() bool {
+	return t.tooLarge.Load()
 }
 
 // failedStatus is the status the last attempt was refused with, or zero where the last attempt
@@ -81,7 +96,7 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// and this transport reads no token for it.
 		if t.kind != AzureAnthropic {
 			var err error
-			if key, err = t.token(ctx); err != nil {
+			if key, err = t.readToken(ctx); err != nil {
 				return nil, fmt.Errorf("reading the %s token: %w", t.kind, err)
 			}
 		}
@@ -123,8 +138,49 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if err != nil {
 			return nil, err
 		}
+		if t.streamLimit > 0 {
+			resp.Body = &limitedBody{ReadCloser: resp.Body, left: t.streamLimit, over: &t.tooLarge}
+		}
 		return resp, nil
 	}
+}
+
+// readToken reads the endpoint's token for one attempt. A Token that panics is recovered and
+// answered as an error naming the panic, so the attempt fails and the process goes on: the SDK
+// makes its calls on goroutines of its own, where a panic would end the process.
+func (t *modelTransport) readToken(ctx context.Context) (key string, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("agentloop: an endpoint's token callback panicked", "panic", recovered, "stack", string(debug.Stack()))
+			key, err = "", fmt.Errorf("the token callback panicked: %v", recovered)
+		}
+	}()
+	return t.token(ctx)
+}
+
+// limitedBody is a response body cut at left bytes: a read past them fails with
+// errStreamTooLarge and sets over. A body that ends exactly at the limit ends as it would.
+type limitedBody struct {
+	io.ReadCloser
+	left int64
+	over *atomic.Bool
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.left <= 0 {
+		var one [1]byte
+		if n, err := b.ReadCloser.Read(one[:]); n == 0 && err != nil {
+			return 0, err
+		}
+		b.over.Store(true)
+		return 0, errStreamTooLarge
+	}
+	if int64(len(p)) > b.left {
+		p = p[:b.left]
+	}
+	n, err := b.ReadCloser.Read(p)
+	b.left -= int64(n)
+	return n, err
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,

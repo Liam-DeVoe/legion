@@ -101,10 +101,12 @@ func runSubcommand(ctx context.Context, args []string, env settingValues, stdout
 
 // runAgent runs `envoy-dispatch agent`, the command bar's agent process, which the server starts
 // itself (agentSupervisor): it reads the secret of agent/v1 from stdin, calls the server at the
-// socket DISPATCH_AGENT_SOCKET names, and runs the agent's loop (agent.Run) with the chat model's
-// settings, until stdin closes, when it exits 0. It exits 2 when started with no socket to call,
-// and 1 when its secret or its settings cannot be read or its loop fails, which the server answers
-// by starting it again.
+// socket DISPATCH_AGENT_SOCKET names, and runs the agent's loop (agent.Run) on the chat model its
+// settings name, paced to its share of the model's quota, with its slots, until stdin closes,
+// when it exits 0. It exits 2 when started with no socket to call, and 1 when its secret or its
+// settings cannot be read or its loop fails, which the server answers by starting it again.
+// DISPATCH_TEST_AGENT_HOOKS=1, which its server hands on only under the server's own test hooks,
+// turns the loop's test hooks on.
 func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io.Writer) int {
 	socket := strings.TrimSpace(env.get("DISPATCH_AGENT_SOCKET"))
 	if socket == "" {
@@ -121,6 +123,11 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 		fmt.Fprintf(stderr, "agent: read the chat model's settings: %v\n", err)
 		return 1
 	}
+	model, err := chatModel(chat)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent: the chat model: %v\n", err)
+		return 1
+	}
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 	// The server holds the other end of stdin for as long as it wants this process: its close,
@@ -129,10 +136,9 @@ func runAgent(ctx context.Context, env settingValues, stdin io.Reader, stderr io
 		_, _ = io.Copy(io.Discard, stdin)
 		stop()
 	}()
-	settings := agent.Settings{Place: chat.Place, Endpoint: chat.Endpoint, Model: chat.Model, APIVersion: chat.APIVersion, Scope: chat.Scope,
-		TokensPerMinute: chat.TokensPerMinute, TokenFile: chat.TokenFile, TenantID: chat.TenantID, ClientID: chat.ClientID,
-		FederatedTokenFile: chat.FederatedToken}
-	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, settings); err != nil {
+	config := agent.Config{Model: model, TokensPerMinute: chat.TokensPerMinute, Slots: agentSlots,
+		Hooks: strings.TrimSpace(env.get("DISPATCH_TEST_AGENT_HOOKS")) == "1"}
+	if err := agent.Run(ctx, agentwire.Client{Path: socket, Secret: secret}, config); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)
 		return 1
 	}

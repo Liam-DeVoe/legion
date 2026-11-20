@@ -16,9 +16,10 @@ import (
 // takes its value from that read through settingValues, which refuses a name the table does not
 // list. The libraries Dispatch links read a few variables for themselves, outside the table:
 // `HOME` (os.UserHomeDir), libpq's `PG*` (pgx), `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`
-// (net/http), `SSL_CERT_FILE` and `SSL_CERT_DIR` (crypto/x509), the AWS SDK's `AWS_*` and its
-// shared config files (the file store's region and credentials), and the Go runtime's `GO*` and
-// `TZ`. `envoy-dispatch settings` prints the table, and the docs site's configuration reference is
+// (net/http), `SSL_CERT_DIR` (crypto/x509, which reads `SSL_CERT_FILE` for itself too, beside the
+// row that hands it on to the agent process), the AWS SDK's `AWS_*` and its shared config files
+// (the file store's region and credentials), and the Go runtime's `GO*` and `TZ`.
+// `envoy-dispatch settings` prints the table, and the docs site's configuration reference is
 // generated from that output. A new setting is a new row here, never an os.Getenv;
 // TestNoReaderBypassesTheSettingsTable holds cmd/dispatch and internal/dispatch to that.
 type setting struct {
@@ -179,6 +180,8 @@ var settings = []setting{
 		Description: "The model each request names."},
 	{Name: "DISPATCH_AGENT_SOCKET", Required: "no",
 		Description: "The Unix socket `envoy-dispatch agent`, the command bar's agent process, calls its server at. The server sets it for that process, which it starts itself with an environment of the chat model's settings and this one, and nothing else sets it: the server never reads it, and `envoy-dispatch agent` refuses to start without it."},
+	{Name: "SSL_CERT_FILE", Default: "the system's certificate authorities", Required: "no",
+		Description: "File of the certificate authorities Go's TLS trusts in place of the system's, which Go reads for itself and the server hands on to its agent process (`envoy-dispatch agent`), so the agent trusts the chat model's endpoint as the server does: for a harness whose model service has a certificate of its own."},
 	{Name: "DISPATCH_DECISION_MODEL", Required: "no",
 		Description: "The System One model the command bar's one decision call is put to before it answers: which action the words ask for, whether they point at the page's item, and chart or prose. It must be a model the committed measurement holds (`packages/envoy/going/decision_models.json`), whose two fitted thresholds the server reads; a name the record does not hold is no decision model, and the server starts, logs why and decides nothing, as it does unset or with no endpoint."},
 	{Name: "DISPATCH_DECISION_MODEL_ENDPOINT", Required: "when `DISPATCH_DECISION_MODEL_TOKEN_FILE` is set",
@@ -231,6 +234,12 @@ var settings = []setting{
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_AGENT_CEILING", Default: "the ceiling the container's memory limit gives: the smaller of 4 GiB and a sixth of it", Required: "no",
 		Description: "The resident memory, in bytes, above which a test process kills its agent process (`envoy-dispatch agent`), in place of the ceiling a deployment's container gives; a positive whole number, for an end-to-end test of the kill only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_GOMEMLIMIT", Default: "75% of the agent's ceiling", Required: "no",
+		Description: "The `GOMEMLIMIT`, in bytes, a test process starts its agent process with, in place of the one its ceiling gives; a positive whole number, for an end-to-end test of the agent's claim gate, which takes no run above 70% of it, and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_AGENT_HOOKS", Required: "no",
+		Description: "Set to `1` so a test process starts its agent process with the agent's test hooks on: tools that hang, panic, and panic past every recover, and a reply whose words hang the stream, which an end-to-end test's fake chat model asks for. Set only with `DISPATCH_TEST_HOOKS=1`; the agent reads it as its server hands it on."},
+	{Name: "DISPATCH_TEST_AGENT_CALL_PANIC", Required: "no",
+		Description: "A route, as its method and path (`GET /api/v1/search`), every call of which a test process makes for its agent panics in, for an end-to-end test of the recover that answers such a call with an error while the server serves on; never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

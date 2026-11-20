@@ -171,6 +171,9 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// AgentCallPanic is for end-to-end test processes only (cmd/dispatch:
+	// DISPATCH_TEST_AGENT_CALL_PANIC); see api.Deps.AgentCallPanic.
+	AgentCallPanic string
 	// OutboxPublishes is that an outbox publishes this deployment's events (cmd/dispatch: every
 	// deployment but DISPATCH_NATS_DISABLED=1's); see api.Deps.OutboxPublishes.
 	OutboxPublishes bool
@@ -242,6 +245,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		HorizonStallAfter:      opts.HorizonStallAfter,
 		HorizonWarnEvery:       opts.HorizonWarnEvery,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		AgentCallPanic:         opts.AgentCallPanic,
 		OutboxPublishes:        opts.OutboxPublishes,
 		Metrics:                opts.Metrics,
 		DashboardEntry:         opts.DashboardEntry,

@@ -178,6 +178,22 @@ type bootConfig struct {
 	// for the ceiling its container gives (agentLimits); only DISPATCH_TEST_AGENT_CEILING, under the
 	// test hooks, sets it, since no process-level test can hold the agent at gigabytes.
 	AgentCeiling int64
+	// AgentLimit is the agent's GOMEMLIMIT, zero for the one its container gives (agentLimits);
+	// only DISPATCH_TEST_AGENT_GOMEMLIMIT, under the test hooks, sets it, so a test holds the
+	// agent above its claim gate.
+	AgentLimit int64
+	// AgentHooks hands DISPATCH_TEST_AGENT_HOOKS=1 on to the agent process, which turns its test
+	// hooks on (going/agent's hooks.go); only DISPATCH_TEST_AGENT_HOOKS=1, under the test hooks,
+	// sets it.
+	AgentHooks bool
+	// AgentCallPanic is the route, "METHOD /path", every call of which this process runs for its
+	// agent panics in (api.Deps.AgentCallPanic); only DISPATCH_TEST_AGENT_CALL_PANIC, under the
+	// test hooks, sets it.
+	AgentCallPanic string
+	// TrustFile is SSL_CERT_FILE, the file of certificate authorities crypto/x509 trusts in place
+	// of the system's, which this process hands on to its agent process, so the agent trusts the
+	// chat model's endpoint as the server does; empty for the system's.
+	TrustFile string
 	// RuntimeDir is XDG_RUNTIME_DIR, the directory the agent's socket is made in
 	// (api.Background.ListenAgent); empty, the socket is made in a directory of its own under the
 	// system's temporary directory.
@@ -293,6 +309,9 @@ func main() {
 	limits := agentLimits(containerLimit)
 	if boot.AgentCeiling > 0 {
 		limits.Ceiling = boot.AgentCeiling
+	}
+	if boot.AgentLimit > 0 {
+		limits.AgentLimit = boot.AgentLimit
 	}
 	if limits.ServerLimit > 0 && debug.SetMemoryLimit(-1) == math.MaxInt64 {
 		debug.SetMemoryLimit(limits.ServerLimit)
@@ -1186,7 +1205,8 @@ func main() {
 		slog.Error("dispatch: find this binary to start the agent process from; its runs wait for a server process that does", "error", err)
 		agent = listening
 	} else {
-		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, agentEnvironment(boot.Answerer, listening.Path(), limits), limits)
+		env := agentEnvironment(boot.Answerer, listening.Path(), limits, boot.TrustFile, boot.AgentHooks)
+		supervisor = startAgentSupervisor(listening, []string{executable, "agent"}, env, limits)
 		agent = supervisor
 	}
 	registerProcessMetrics(met, processFigures{started: started, readCacheBytes: documentService.ReadCacheBytes,
@@ -1415,6 +1435,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_CEILING", boot.TestHooksEnabled, &boot.AgentCeiling); err != nil {
 		return bootConfig{}, err
 	}
+	if err := testHookBytes(env, "DISPATCH_TEST_AGENT_GOMEMLIMIT", boot.TestHooksEnabled, &boot.AgentLimit); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.AgentCallPanic, err = agentCallPanic(env, boot.TestHooksEnabled); err != nil {
+		return bootConfig{}, err
+	}
+	boot.TrustFile = strings.TrimSpace(env.get("SSL_CERT_FILE"))
 	boot.RuntimeDir = strings.TrimSpace(env.get("XDG_RUNTIME_DIR"))
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -1427,6 +1454,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_EMBEDDER_OFF", &boot.EmbedderOff},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_AGENT_HOOKS", &boot.AgentHooks},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1860,6 +1888,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.HorizonStallAfter = boot.HorizonStallAfter
 	built.HorizonWarnEvery = boot.HorizonWarnEvery
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.AgentCallPanic = boot.AgentCallPanic
 	built.OutboxPublishes = !boot.NATSDisabled
 	built.DevSignIn = boot.DevSignIn
 	return built
@@ -2308,6 +2337,25 @@ func testHookBool(env settingValues, name string, testHooksEnabled bool, target 
 	}
 	*target = raw == "1"
 	return nil
+}
+
+// agentCallPanic reads DISPATCH_TEST_AGENT_CALL_PANIC, the route "METHOD /path" every call of which
+// the server runs for its agent panics in: empty where unset. It is refused without
+// DISPATCH_TEST_HOOKS=1, and so is a value that names no method and path.
+func agentCallPanic(env settingValues, testHooksEnabled bool) (string, error) {
+	const name = "DISPATCH_TEST_AGENT_CALL_PANIC"
+	raw := strings.TrimSpace(env.get(name))
+	if raw == "" {
+		return "", nil
+	}
+	if !testHooksEnabled {
+		return "", fmt.Errorf("DISPATCH_TEST_HOOKS=1 required with %s", name)
+	}
+	method, path, split := strings.Cut(raw, " ")
+	if !split || method == "" || method != strings.ToUpper(method) || !strings.HasPrefix(path, "/") || strings.ContainsAny(path, " ?") {
+		return "", fmt.Errorf("%s=%q (expected a method and a request path, such as GET /api/v1/search)", name, raw)
+	}
+	return raw, nil
 }
 
 // roleHolderWindows are the session windows Dispatch judges a role route's holder by, read

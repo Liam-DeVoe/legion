@@ -126,9 +126,12 @@ func newAgentSupervisor(end agentEnd, command, env []string, limits agentMemory)
 }
 
 // agentEnvironment is the agent's whole environment: the socket it calls the server at, its CPUs
-// and its memory limit, and the chat model's settings as the server read them - nothing of the
-// server's own environment, so the agent holds no secret of Dispatch.
-func agentEnvironment(chat answererConfig, socket string, limits agentMemory) []string {
+// and its memory limit, and the chat model's settings as the server read them, with the file of
+// certificate authorities the server trusts the chat model's endpoint by (trustFile,
+// SSL_CERT_FILE), where it names one - nothing of the server's own environment, so the agent
+// holds no secret of Dispatch. hooks turns the agent's test hooks on, which only a server under
+// its own test hooks asks for (DISPATCH_TEST_AGENT_HOOKS).
+func agentEnvironment(chat answererConfig, socket string, limits agentMemory, trustFile string, hooks bool) []string {
 	env := []string{
 		"DISPATCH_AGENT_SOCKET=" + socket,
 		"GOMAXPROCS=" + strconv.Itoa(min(agentMaxProcs, runtime.GOMAXPROCS(0))),
@@ -138,6 +141,10 @@ func agentEnvironment(chat answererConfig, socket string, limits agentMemory) []
 		if value != "" {
 			env = append(env, name+"="+value)
 		}
+	}
+	set("SSL_CERT_FILE", trustFile)
+	if hooks {
+		set("DISPATCH_TEST_AGENT_HOOKS", "1")
 	}
 	set("DISPATCH_ANSWERER", chat.Place)
 	switch chat.Place {

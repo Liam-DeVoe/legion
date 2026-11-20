@@ -34,6 +34,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -677,7 +678,8 @@ func (a *AgentListener) claimOne(ctx context.Context, instance string, only []st
 	return nil, tx.Commit(ctx)
 }
 
-// claimGoingRun leases run to instance in tx and reads it with its history, or fails it with
+// claimGoingRun leases run to instance in tx and reads it with its history and the turns of its
+// conversation before it (agentwire.EarlierTurns of them), or fails it with
 // goingRunHistoryTooLarge and answers nil where its last steps pass goingHistoryLimit.
 func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agentwire.ClaimedRun, error) {
 	claimed := agentwire.ClaimedRun{ID: run}
@@ -737,6 +739,29 @@ func claimGoingRun(ctx context.Context, tx pgx.Tx, run, instance string) (*agent
 	claimed.History = history
 	if claimed.History == nil {
 		claimed.History = []agentwire.SavedStep{}
+	}
+	turns, err := tx.Query(ctx, `
+		select e.id::text, e.words, array(select s.note from going_run_steps s where s.run_id = e.id order by s.step)
+		from going_runs r
+		join going_runs e on coalesce(e.conversation_id, e.id) = coalesce(r.conversation_id, r.id) and e.created_at < r.created_at
+		where r.id = $1::uuid
+		order by e.created_at desc
+		limit $2
+	`, run, agentwire.EarlierTurns)
+	if err != nil {
+		return nil, fmt.Errorf("read the turns before run %s: %w", run, err)
+	}
+	claimed.Turns, err = pgx.CollectRows(turns, func(row pgx.CollectableRow) (agentwire.Turn, error) {
+		var turn agentwire.Turn
+		err := row.Scan(&turn.Run, &turn.Words, &turn.Notes)
+		return turn, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("read the turns before run %s: %w", run, err)
+	}
+	slices.Reverse(claimed.Turns)
+	if claimed.Turns == nil {
+		claimed.Turns = []agentwire.Turn{}
 	}
 	return &claimed, nil
 }
@@ -945,20 +970,8 @@ func (a *AgentListener) step(ctx context.Context, request agentwire.StepRequest)
 	if err != nil {
 		return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
 	}
-	if tag.RowsAffected() > 0 && len(request.Frames) > 0 {
-		if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('going_run_events:' || $1, 0))`, request.Run); err != nil {
-			return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
-		}
-		names, data := make([]string, 0, len(request.Frames)), make([]string, 0, len(request.Frames))
-		for _, frame := range request.Frames {
-			names, data = append(names, frame.Name), append(data, string(frame.Data))
-		}
-		if _, err := tx.Exec(ctx, `
-			insert into going_run_events (run_id, sequence, name, data)
-			select $1::uuid, base.last + f.n, f.name, f.data::jsonb
-			from (select coalesce(max(sequence), 0) as last from going_run_events where run_id = $1::uuid) base,
-			     unnest($2::text[], $3::text[]) with ordinality as f(name, data, n)
-		`, request.Run, names, data); err != nil {
+	if tag.RowsAffected() > 0 {
+		if err := appendGoingRunFrames(ctx, tx, request.Run, request.Frames); err != nil {
 			return agentwire.StepAnswer{}, goingAgentFailed(agentwire.CallStep, err)
 		}
 	}
@@ -990,10 +1003,11 @@ func goingLeaseHeld(ctx context.Context, tx pgx.Tx, run, token string) (bool, er
 
 // end ends the run's turn: it sets the run's state and stop reason, frees its lease, and adds what
 // the turn spent to its budget, in one statement whose condition is the request's lease token and
-// the run working, so a stale owner's end changes nothing. The statement locks the run's row for
-// the update it makes, which no share lock is taken before: a share lock held while the update
-// waits behind a renew's would deadlock with it. An ended run is no suspect any more, and its
-// instance's run slot is free (runEnded).
+// the run working, so a stale owner's end changes nothing; and in the same transaction it appends
+// the run's end frame (agentwire.EndFrame), which names what the run's record offers its person
+// next. The statement locks the run's row for the update it makes, which no share lock is taken
+// before: a share lock held while the update waits behind a renew's would deadlock with it. An
+// ended run is no suspect any more, and its instance's run slot is free (runEnded).
 func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (agentwire.EndAnswer, *agentwire.Error) {
 	if refusal := goingRunID(request.Run, request.LeaseToken); refusal != nil {
 		return agentwire.EndAnswer{}, refusal
@@ -1003,7 +1017,21 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	default:
 		return agentwire.EndAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "an end leaves its run done, waiting, stopped or failed, not %q", request.State)
 	}
-	tag, err := a.s.deps.Store.Pool.Exec(ctx, `
+	for _, offer := range request.Offers {
+		if offer != agentwire.OfferContinue {
+			return agentwire.EndAnswer{}, goingAgentRefusal(agentwire.CodeBadRequest, "an end offers %q, not %q", agentwire.OfferContinue, offer)
+		}
+	}
+	frame, err := json.Marshal(agentwire.EndFrame{State: request.State, Reason: request.Reason, Offers: append([]string{}, request.Offers...)})
+	if err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
+	tx, err := a.s.deps.Store.Pool.Begin(ctx)
+	if err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx, `
 		update going_runs set state = $3, stop_reason = nullif($4, ''), lease_token = null, lease_owner = null,
 		  lease_ends_at = null, finished_at = case when $3 = 'waiting' then null else now() end,
 		  budget_used = jsonb_build_object(
@@ -1018,6 +1046,35 @@ func (a *AgentListener) end(ctx context.Context, request agentwire.EndRequest) (
 	if tag.RowsAffected() == 0 {
 		return agentwire.EndAnswer{}, goingStaleLease(request.Run)
 	}
+	if err := appendGoingRunFrames(ctx, tx, request.Run, []agentwire.Frame{{Name: agentwire.FrameEnd, Data: frame}}); err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return agentwire.EndAnswer{}, goingAgentFailed(agentwire.CallEnd, err)
+	}
 	a.runEnded(request.Run)
 	return agentwire.EndAnswer{}, nil
+}
+
+// appendGoingRunFrames appends frames to run's events in tx, in order, each the next sequence
+// after the last, under the run's events lock, so the frames of two writers never share a
+// sequence.
+func appendGoingRunFrames(ctx context.Context, tx pgx.Tx, run string, frames []agentwire.Frame) error {
+	if len(frames) == 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtextextended('going_run_events:' || $1, 0))`, run); err != nil {
+		return err
+	}
+	names, data := make([]string, 0, len(frames)), make([]string, 0, len(frames))
+	for _, frame := range frames {
+		names, data = append(names, frame.Name), append(data, string(frame.Data))
+	}
+	_, err := tx.Exec(ctx, `
+		insert into going_run_events (run_id, sequence, name, data)
+		select $1::uuid, base.last + f.n, f.name, f.data::jsonb
+		from (select coalesce(max(sequence), 0) as last from going_run_events where run_id = $1::uuid) base,
+		     unnest($2::text[], $3::text[]) with ordinality as f(name, data, n)
+	`, run, names, data)
+	return err
 }

@@ -36,6 +36,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/going/agent"
 	"github.com/sjawhar/envoy/going/agentwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
@@ -50,14 +51,6 @@ const (
 	// its first.
 	goingCallTime = 60 * time.Second
 )
-
-// goingLevelWorkingTime is the working time of each level of a run, which a grant through IAP
-// lasts (goingGrantCaller's budgetEnds): what the run has spent of it is in its budget_used.
-var goingLevelWorkingTime = map[string]time.Duration{
-	"fast":     90 * time.Second,
-	"standard": 5 * time.Minute,
-	"deep":     20 * time.Minute,
-}
 
 // goingCallKey is the idempotency key of one call of a run: the run, the step and the call's
 // number within it.
@@ -166,7 +159,9 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	if refusal != nil {
 		return goingCallResult{refusal: refusal}
 	}
-	budget := goingLevelWorkingTime[run.level] - time.Duration(run.used.WorkingMS)*time.Millisecond
+	// A grant through IAP lasts the run's working budget (goingGrantCaller's budgetEnds), the
+	// level's working time less what the run has spent of it.
+	budget := agent.Levels[run.level].Time - time.Duration(run.used.WorkingMS)*time.Millisecond
 	caller, err := a.s.goingGrantCaller(ctx, run.id, time.Now().Add(budget))
 	var ended goingGrantEnded
 	switch {
@@ -179,6 +174,9 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 	}
 	doer := a.s.goingDoer(caller, a.s.deps.ServerURL).(goingInProcess)
 	doer.limit = agentwire.CallBodyLimit
+	if route := a.s.deps.AgentCallPanic; route != "" {
+		doer.handler = goingPanickingRoute(route, doer.handler)
+	}
 	var answer agentwire.CallAnswer
 	switch request.Kind {
 	case agentwire.KindRoute:
@@ -189,6 +187,17 @@ func (a *AgentListener) runCall(ctx context.Context, request agentwire.CallReque
 		answer, refusal = a.webRead(ctx, request)
 	}
 	return goingCallResult{answer: answer, refusal: refusal}
+}
+
+// goingPanickingRoute is inner with the route the test hook names ("METHOD /path",
+// Deps.AgentCallPanic) panicking at each request of it.
+func goingPanickingRoute(route string, inner http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method+" "+r.URL.Path == route {
+			panic("the test hook DISPATCH_TEST_AGENT_CALL_PANIC panics " + route)
+		}
+		inner.ServeHTTP(w, r)
+	})
 }
 
 // callRun reads the call's run and refuses a call whose lease token is not the run's, or whose

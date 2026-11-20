@@ -206,7 +206,8 @@ type Tool struct {
 	Schema json.RawMessage
 	// Run does the tool's work and answers with what the model is told. A refusal answers
 	// isError true, with the reason as the output; a refusal goes back to the model as a
-	// tool result rather than ending the run.
+	// tool result rather than ending the run. A Run that panics is recovered and answered the
+	// same way, with an error naming the panic, and the run goes on.
 	Run func(ctx context.Context, call ToolCall) (output string, isError bool)
 }
 
@@ -236,6 +237,12 @@ type Request struct {
 	Tools []Tool
 	// Bounds are the limits of the run.
 	Bounds Bounds
+	// StreamLimit is the most bytes of one model call's response the run reads, and
+	// ReplyLimit the most bytes of the reply one call builds: its prose, its reasoning and its
+	// tool calls' arguments. A call past either is cut there, and the run ends with
+	// FaultTooLarge. Zero sets no limit.
+	StreamLimit int64
+	ReplyLimit  int
 	// FirstToolIndex is the number of tool calls an earlier run of the same work already
 	// made, so this run's first call is FirstToolIndex + 1. A fresh run leaves it zero.
 	FirstToolIndex int
@@ -244,7 +251,8 @@ type Request struct {
 	Final json.RawMessage
 	// OnText is given the reply's prose as it streams, OnPartial the Final object as it is
 	// built, and OnStep every step as it finishes. An error from any of them ends the run
-	// at that point and Run returns it with the Result so far. A nil callback is not
+	// at that point and Run returns it with the Result so far, and so does a panic in one,
+	// which the run recovers and returns as an error naming it. A nil callback is not
 	// called.
 	OnText    func(delta string) error
 	OnPartial func(snapshot json.RawMessage) error
@@ -323,4 +331,7 @@ const (
 	// FaultProviderError is the provider failing: an error status that the one retry did
 	// not clear, or a stream that broke after its first byte.
 	FaultProviderError Fault = "provider_error"
+	// FaultTooLarge is a model call whose response passed Request.StreamLimit, or whose reply
+	// passed Request.ReplyLimit, and was cut there.
+	FaultTooLarge Fault = "too_large"
 )

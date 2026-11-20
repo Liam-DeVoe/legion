@@ -255,8 +255,8 @@ type Budget struct {
 }
 
 // ClaimedRun is a run under the lease a claim took: what the person asked, the conversation it
-// belongs to and the run it continues, its level and mode, what it spent, its lease, and its
-// history.
+// belongs to and the run it continues, its level and mode, what it spent, its lease, its history,
+// and the turns of its conversation before it.
 type ClaimedRun struct {
 	ID           string          `json:"id"`
 	Conversation string          `json:"conversation"`
@@ -272,6 +272,20 @@ type ClaimedRun struct {
 	// History is the run's saved steps in order: the last 8 whole, each older one as its note
 	// alone, with no body.
 	History []SavedStep `json:"history"`
+	// Turns are the runs of the conversation before this one, oldest first, the last
+	// EarlierTurns of them: what the person asked in each and the note of each of its steps.
+	Turns []Turn `json:"turns"`
+}
+
+// EarlierTurns is how many of a conversation's runs before a run its claim answers.
+const EarlierTurns = 8
+
+// Turn is one earlier run of a conversation, as a follow-up is given it: its words and the notes
+// of its steps, in order.
+type Turn struct {
+	Run   string   `json:"run"`
+	Words string   `json:"words"`
+	Notes []string `json:"notes"`
 }
 
 // SavedStep is one step of a run's history.
@@ -380,13 +394,30 @@ type CallAnswer struct {
 }
 
 // EndRequest ends the run's turn in State, done, waiting for its person, stopped or failed, with
-// Reason, and adds what the turn spent to the run's budget.
+// Reason, adds what the turn spent to the run's budget, and names what the run's record offers
+// its person next (Offers): OfferContinue for a run a bound of its level stopped.
 type EndRequest struct {
-	Run        string `json:"run"`
-	LeaseToken string `json:"lease_token"`
-	State      string `json:"state"`
-	Reason     string `json:"reason,omitempty"`
-	Used       Budget `json:"used"`
+	Run        string   `json:"run"`
+	LeaseToken string   `json:"lease_token"`
+	State      string   `json:"state"`
+	Reason     string   `json:"reason,omitempty"`
+	Used       Budget   `json:"used"`
+	Offers     []string `json:"offers,omitempty"`
+}
+
+// OfferContinue is the offer of a run a bound of its level stopped: a follow-up run of its
+// conversation, with a new budget of the same level.
+const OfferContinue = "continue"
+
+// FrameEnd is the frame an end appends to the run's events: its state, its reason and its offers
+// (EndFrame).
+const FrameEnd = "end"
+
+// EndFrame is the data of a run's end frame.
+type EndFrame struct {
+	State  string   `json:"state"`
+	Reason string   `json:"reason,omitempty"`
+	Offers []string `json:"offers"`
 }
 
 // EndAnswer acknowledges an end.

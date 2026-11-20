@@ -79,4 +79,17 @@
 //
 // Bounds.Calls bounds model calls. A per-tool budget — how much work one tool will do before it
 // refuses — is that tool's own Run logic, which this package does not count.
+//
+// Request.StreamLimit bounds the bytes of one model call's response, read through a body the
+// transport cuts there, and Request.ReplyLimit the bytes of the reply one call builds: its prose,
+// its reasoning and its tool calls' arguments, counted as they stream. A call past either ends
+// the run with FaultTooLarge.
+//
+// # Panics
+//
+// The SDK runs the tools and calls OnStep and the endpoint's Token on goroutines of its own,
+// where a panic would end the whole process. Every callback is called under a recover: a tool
+// that panics answers the model a refusal naming the panic and the run goes on; OnText,
+// OnPartial and OnStep end the run with an error naming it, as an error they returned would; and
+// a Token that panics fails the attempt. Each panic is logged with its stack.
 package agentloop

@@ -181,6 +181,29 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the chat endpoint: %w", err)
 	}
+	model, err := chatModel(cfg)
+	if err != nil {
+		return nil, err
+	}
+	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: model, TokensPerMinute: cfg.TokensPerMinute})
+	if err != nil {
+		return nil, err
+	}
+	// The identity is "<place>:<endpoint host>/<model>", as embed.AzureClient's is: the place
+	// belongs in it, so the line says which service of which resource answers questions here.
+	// It carries no credential.
+	identity := cfg.Place + ":" + strings.ToLower(parsed.Host) + "/" + cfg.Model
+	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", identity)
+	return answerer, nil
+}
+
+// chatModel is the chat model cfg names, as the server's answerer and its agent process each call
+// it: the zero model where the deployment configured none. It reads no token file and calls
+// nothing; its endpoint's Token does, at each call.
+func chatModel(cfg answererConfig) (agentloop.Model, error) {
+	if cfg.Place == "" {
+		return agentloop.Model{}, nil
+	}
 	// Both places speak the Chat Completions shape: agentloop's openai-chat provider appends
 	// /chat/completions to the endpoint, and its transport adds the endpoint's query to every
 	// call and puts the token on every attempt.
@@ -203,7 +226,7 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 			Scope:     cfg.Scope,
 		})
 		if err != nil {
-			return nil, err
+			return agentloop.Model{}, err
 		}
 		model.Endpoint.Token = tokens.Token
 	case placeAnswererEndpoint:
@@ -212,14 +235,5 @@ func newAnswerer(cfg answererConfig) (*going.Answerer, error) {
 		// the one the next call presents.
 		model.Endpoint.Token = going.FileTokenSource{Path: cfg.TokenFile}.Token
 	}
-	answerer, err := going.NewAnswerer(going.AnswererConfig{Model: model, TokensPerMinute: cfg.TokensPerMinute})
-	if err != nil {
-		return nil, err
-	}
-	// The identity is "<place>:<endpoint host>/<model>", as embed.AzureClient's is: the place
-	// belongs in it, so the line says which service of which resource answers questions here.
-	// It carries no credential.
-	identity := cfg.Place + ":" + strings.ToLower(parsed.Host) + "/" + cfg.Model
-	slog.Info("dispatch: answers questions with a configured text model", "place", cfg.Place, "identity", identity)
-	return answerer, nil
+	return model, nil
 }
