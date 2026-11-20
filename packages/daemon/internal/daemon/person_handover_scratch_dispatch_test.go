@@ -535,10 +535,12 @@ func (r *personHandoverRig) approvalRequest(artifactID string, request map[strin
 
 // writeDocument writes content as key's document name, as a session uploads one: a new document,
 // or the next version of the document of that name, whose role Dispatch reads from the name
-// (verification.md, decisions.md). It answers the document's id. Dispatch refuses a check whose
-// `serves` names a block its block index does not hold (CheckBlockPointers), so a refusal naming
-// a block no document holds is asked again while a version written just before is indexed; any
-// other refusal fails the proof.
+// (verification.md, decisions.md). It answers the document's id. An upload that replaces a
+// document key already holds names the token of the version it replaces, as Dispatch's upload
+// route requires (PRECONDITION_REQUIRED otherwise), and a first upload names none
+// (documentToken). Dispatch refuses a check whose `serves` names a block its block index does not
+// hold (CheckBlockPointers), so a refusal naming a block no document holds is asked again while a
+// version written just before is indexed; any other refusal fails the proof.
 func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	t := r.t
 	t.Helper()
@@ -550,8 +552,11 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 	}
 	var last []byte
 	testwait.Eventually(t, "Dispatch to take "+name+" on "+key, func() bool {
-		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts",
-			withSessionActor(t, map[string]any{"name": name, "content": content}), asSession)
+		upload := map[string]any{"name": name, "content": content}
+		if token := r.documentToken(key, name); token != "" {
+			upload["precondition"] = map[string]string{"document": token}
+		}
+		status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+key+"/artifacts", withSessionActor(t, upload), asSession)
 		last = answer
 		switch {
 		case status == http.StatusOK || status == http.StatusCreated:
@@ -569,6 +574,35 @@ func (r *personHandoverRig) writeDocument(key, name, content string) string {
 		t.Fatalf("Dispatch took %s on %s as %+v (%s); want a document with an id, not the primary one", name, key, uploaded.Artifact, last)
 	}
 	return uploaded.Artifact.ID
+}
+
+// documentToken is the token of the version key's document name stands at now, which an upload
+// replacing it names, and "" where key holds no document of that name, whose upload is a first
+// one: the issue's artifact listing gives the document by its name or slug, and its text read
+// (GET /api/v1/artifacts/{id}/text, what `dispatch doc-read` prints as `Document token:`) the
+// token, as a session reads them.
+func (r *personHandoverRig) documentToken(key, name string) string {
+	r.t.Helper()
+	var listed []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	}
+	dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/issues/"+key+"/artifacts", nil, &listed, asSession)
+	for _, artifact := range listed {
+		if artifact.Name != name && artifact.Slug != name {
+			continue
+		}
+		var text struct {
+			Token string `json:"token"`
+		}
+		dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifact.ID+"/text", nil, &text, asSession)
+		if text.Token == "" {
+			r.t.Fatalf("the text read of %s's document %s (%s) names no token", key, name, artifact.ID)
+		}
+		return text.Token
+	}
+	return ""
 }
 
 // requirementsMarkdown is a primary document headed title whose requirement blocks are ids, in
