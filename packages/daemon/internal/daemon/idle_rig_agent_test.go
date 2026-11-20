@@ -92,9 +92,11 @@ type idleRigAdoption struct {
 // names it with — `subagent` for a running `task` subagent, `async-job` for any other job the
 // host's manager runs (asyncJobKinds, packages/pi-shared/src/session-activity.ts) — and none
 // while nothing runs. The process reports it as the Oh My Pi extension does
-// (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, and between
-// turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it
-// mid-run is a subagent starting or ending in a live session.
+// (packages/pi-legion/extensions/legion.ts): at every turn's end whatever it says, twice more
+// soon after a turn it takes, since its turn ends the moment it begins and the extension's report
+// comes after the daemon read the turn's start (idleRigRoleProcess.prompted), and between
+// turns whenever it changes (idleRigRoleProcess.watchActivity), so a test that changes it mid-run
+// is a subagent starting or ending in a live session.
 //
 // ExitsAsReleasedInProduction is a process that ends as a released Oh My Pi does in production:
 // it registers again every idleRigRegistrationRefresh while it runs and deletes nothing when it
@@ -1124,9 +1126,11 @@ func (p *idleRigRoleProcess) ready() error {
 
 // reportActivity is the session's report of what it is doing, sent whatever it says, as the
 // extension's turn-end report is (its `session_stop` handler): once the process is ready, and
-// after every task it is given (prompted). It names the background work the rig's plan says is
-// running (idleRigPlan.Background) and no reminder due. The idle rule reads it before it releases
-// the pod (R1), and holds the pod while it names background work running.
+// after every task it is given (prompted), and twice more after every turn it takes, at
+// idleRigTurnReportDelay and at idleRigActivityPeriod after the turn's last frame. It names the
+// background work the rig's plan says is running (idleRigPlan.Background) and no reminder due.
+// The idle rule reads it before it releases the pod (R1), and holds the pod while it names
+// background work running.
 func (p *idleRigRoleProcess) reportActivity() error {
 	p.reportMu.Lock()
 	defer p.reportMu.Unlock()
@@ -1141,6 +1145,14 @@ func (p *idleRigRoleProcess) reportActivity() error {
 // extension's managed interval, five seconds there (SESSION_ACTIVITY_PERIOD_MS), cut to one here
 // so a subagent that ends is reported within a second rather than within the rig's waits.
 const idleRigActivityPeriod = time.Second
+
+// idleRigTurnReportDelay is how long after a turn's last frame a role process sends that turn's
+// report once more (prompted), and idleRigActivityPeriod after that frame it sends it a last
+// time. The first is soon enough that a test which acts on the pod shortly after the turn finds
+// the report read since the turn's start (supervise.Claim.LastTurnStart), once the daemon has
+// stamped that start. The second is for a daemon slower than that to stamp it, as a machine's
+// handling of the turn's start and its store write can be under the race detector.
+const idleRigTurnReportDelay = 250 * time.Millisecond
 
 // watchActivity is the extension's managed interval between turns: every idleRigActivityPeriod
 // it reads the background work the rig's plan says is running and reports it when it differs
@@ -1343,6 +1355,24 @@ func (p *idleRigRoleProcess) prompted(prompt shimwire.Prompt) error {
 				return err
 			}
 		}
+		// The extension reports at the end of a run, which in Oh My Pi comes well after the
+		// daemon stamped the run's start (supervise.Claim.LastTurnStart). This turn ends the
+		// moment it begins, so the report below can be read before that stamp, and it then says
+		// nothing of the turn (claim.ReadSessionWork): an update round or a project release
+		// would hold the pod for it to its bound. The report is sent twice more, as the
+		// extension's own comes after the stamp: idleRigTurnReportDelay after the turn, which a
+		// daemon that stamps the start promptly has read by then, and idleRigActivityPeriod after
+		// it, for one that stamps it later. Each send reads the plan as it stands then.
+		go func() {
+			time.Sleep(idleRigTurnReportDelay)
+			if err := p.reportActivity(); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s after its turn: %v\n", p.session, err)
+			}
+			time.Sleep(idleRigActivityPeriod - idleRigTurnReportDelay)
+			if err := p.reportActivity(); err != nil {
+				fmt.Fprintf(os.Stderr, "idle rig role process: report the activity of %s a period after its turn: %v\n", p.session, err)
+			}
+		}()
 	}
 	// The report that follows every turn, and every task acknowledged without one: the idle rule
 	// releases no pod whose session has said nothing since its last turn, and a task

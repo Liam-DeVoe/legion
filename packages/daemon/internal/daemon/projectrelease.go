@@ -87,8 +87,9 @@ const reasonSeparator = "; "
 // projectReleaseStore is what the project release reads and writes of the daemon's store: whether
 // the project's pause refuses it, its record, the stop set a dry run reads as the release's own
 // transaction reads it, each claim it stops or holds as the store holds it, which is what decides
-// that the claim is stored suspended (awaitSettled), and every claim as the store holds it, which
-// is where each claim's line of the result is read from at the end.
+// that the claim is stored suspended (awaitSettled), every claim as the store holds it, which is
+// where each claim's line of the result is read from at the end, and the activity report of a
+// claim's launch, which is where the background hold of an issue pod is read from (background).
 type projectReleaseStore interface {
 	PauseRefusesProjectRelease(ctx context.Context, project string) error
 	StartProjectRelease(ctx context.Context, project string, startedAt, boundAt time.Time) (store.ProjectRelease, []store.TakenOverIdleRelease, []store.ProjectReleaseClaim, error)
@@ -98,6 +99,7 @@ type projectReleaseStore interface {
 	ProjectReleaseStopSet(ctx context.Context, project string) ([]store.ProjectReleaseClaim, error)
 	ClaimByToken(ctx context.Context, token claim.Token) (supervise.Claim, bool, error)
 	Claims(ctx context.Context) ([]supervise.Claim, error)
+	ClaimActivity(ctx context.Context, token claim.Token, generation uint64) (supervise.ActivityReport, bool, error)
 }
 
 // projectReleaser is the daemon's project release (dispatch://INFRA-3583 R6): the operator's
@@ -115,12 +117,14 @@ type projectReleaseStore interface {
 // classifies each issue pod from its claims: left, when a claim of it is suspended by an operator;
 // no read, when no role process runs there; read otherwise. Each pod is then taken on a goroutine
 // of its own: a read pod's workspace is read through one running role's shim, and each running
-// role of a pod whose workspace holds unpushed work, whose shim refused the read, or that has a
-// role in a turn is asked; an ask that cannot be written is written again until the bound, and a
-// pod whose ask could still not be written then, or was written only at the bound, is left. Each
-// asked pod waits until each asked role answered and no role of it is in a turn, or the bound; a
-// role counts as asked only once the ask reached a session of it, and a pod whose ask reached
-// none of its roles by the bound is left too.
+// role of a pod whose workspace holds unpushed work, whose shim refused the read, that has a role
+// in a turn, or that has a role whose activity report names running background work or that has
+// sent no report since its last turn started (background) is asked; an ask that cannot be written
+// is written again until the bound, and a pod whose ask could still not be written then, or was
+// written only at the bound, is left. Each asked pod waits until each asked role answered and no
+// role of it is in a turn or holds by its report, or the bound; a role counts as asked only once
+// the ask reached a session of it, and a pod whose ask reached none of its roles by the bound is
+// left too.
 // Then its last read, its stop and its delete (stopAndDelete). Once every issue pod ended, the
 // project's Sandboxes are listed again from the API server, tried as the first list is, and each
 // one the first list did not hold is taken as the first list's are (takeUnlisted). Then the
@@ -666,6 +670,34 @@ func inTurn(claims []supervise.ClaimView) bool {
 	return slices.ContainsFunc(claims, func(c supervise.ClaimView) bool { return c.State == supervise.StateWorking })
 }
 
+// background is the background hold over an issue pod whose claims are claims, read now by the
+// rule an update round's replacement reads its own pod's by since cybermonklabs/legion#4556
+// (backgroundHold.weigh): each claim that records a process and is not gone, whose activity
+// report names background work that runs, or that has sent no report since its last turn
+// started. The report is read from the store at the launch the claim's view holds
+// (projectReleaseStore.ClaimActivity), as roundGroup reads it: the activity route writes the
+// store alone, and a machine holds the report only as it read it at its own boot. A gone claim
+// holds nothing, so its report is not read. A report the store could not read is read as none,
+// which holds the pod as a session that has sent no report holds it.
+func (r *projectReleaser) background(ctx context.Context, claims []supervise.ClaimView) backgroundHold {
+	var hold backgroundHold
+	for _, view := range claims {
+		if view.Locator == nil || view.Gone() {
+			continue
+		}
+		c := view.Claim
+		report, _, err := r.store.ClaimActivity(ctx, c.Token, c.Generation)
+		if err != nil {
+			r.log.Warn("project release: read the activity report of a claim of the pod; it holds the pod as a claim with no report",
+				"claim", c.Token, "generation", c.Generation, "error", err)
+			report = supervise.ActivityReport{}
+		}
+		c.ActivityAt, c.ActivityBackground, c.ActivityKinds = report.At, report.Background, report.Kinds
+		hold.weigh(c)
+	}
+	return hold
+}
+
 // viewsByIssue is every claim the daemon supervises on an issue, as its machine last published
 // it, by issue and in token order: the inventory's one reading of every pod's claims.
 func (r *projectReleaser) viewsByIssue() map[string][]supervise.ClaimView {
@@ -911,7 +943,8 @@ func (run *releaseRun) snapshot() json.RawMessage {
 
 // dryRun is the release's inventory, classification and reads, with no ask, no stop and no
 // record: each Sandbox with the outcome a release would give it now, each pod a release would ask
-// with the roles it would ask, and each claim a release would stop. The stop set is read from the
+// with the roles it would ask, by the release's own decision (asks), a role whose activity report
+// holds the pod included, and each claim a release would stop. The stop set is read from the
 // store as the release's own transaction reads it (store.ProjectReleaseStopSet).
 func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.ProjectReleaseResponse, error) {
 	startedAt := r.now().UTC()
@@ -939,7 +972,7 @@ func (r *projectReleaser) dryRun(ctx context.Context, bound time.Duration) (api.
 			continue
 		}
 		views := r.issueViews(pod.sandbox.Issue)
-		if asks(reads[i], views) {
+		if asked, _ := r.asks(ctx, reads[i], views); asked {
 			for _, c := range runningClaims(views) {
 				line.Asked = append(line.Asked, api.ReleasedAsk{Role: c.Role})
 			}

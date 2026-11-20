@@ -82,16 +82,27 @@ func writeRead(line *api.ReleasedSandbox, read releaseRead) {
 }
 
 // asks is whether read, with claims as they stand, is a pod the release asks: its workspace holds
-// unpushed work, its shim refused, or a role of it is in a turn.
-func asks(read releaseRead, claims []supervise.ClaimView) bool {
-	return read.read && (read.work.Commits > 0 || read.refusal != "" || inTurn(claims))
+// unpushed work, its shim refused, a role of it is in a turn, or a role of it holds the pod by its
+// activity report (background), as an update round's replacement is held since
+// cybermonklabs/legion#4556. It answers that hold too, read only of a pod that nothing else asks,
+// so it names a role only where the hold is why the pod is asked.
+func (r *projectReleaser) asks(ctx context.Context, read releaseRead, claims []supervise.ClaimView) (bool, backgroundHold) {
+	if !read.read {
+		return false, backgroundHold{}
+	}
+	if read.work.Commits > 0 || read.refusal != "" || inTurn(claims) {
+		return true, backgroundHold{}
+	}
+	hold := r.background(ctx, claims)
+	return hold.holds(), hold
 }
 
 // takePod takes one issue pod to its end. A pod left from the start has its claims held for an
 // operator and stays. A pod with no read is deleted unread. A read pod is read first. A pod that
 // read asks for is asked and waits. One that the first read does not ask for is read again just
-// before its stop, and a turn, a commit or a refusal found then makes it asked, since a turn can
-// start after the first read without the daemon (an Envoy message, a background job's result).
+// before its stop, and a turn, a commit, a refusal or a role whose activity report holds the pod
+// found then makes it asked, since a turn can start after the first read without the daemon (an
+// Envoy message, a background job's result), and that turn can start background work.
 // Then its last read, its stop and its delete. A pod whose ask, the first or the one after the
 // last read, could not be written by the bound is left instead, its claims held for an operator:
 // nobody asked its roles to push, so the work on its disk is not given up (R6, R8). So is a pod
@@ -112,9 +123,9 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 	}
 	first := r.read(ctx, pod.sandbox.Issue)
 	r.noteRead(run, pod, first)
-	firstAsks := asks(first, r.issueViews(pod.sandbox.Issue))
+	firstAsks, hold := r.asks(ctx, first, r.issueViews(pod.sandbox.Issue))
 	if firstAsks {
-		asked, err := r.ask(ctx, run, pod)
+		asked, err := r.ask(ctx, run, pod, hold)
 		if asked {
 			err = r.wait(ctx, run, pod)
 		}
@@ -124,8 +135,12 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 		}
 	}
 	last := r.read(ctx, pod.sandbox.Issue)
-	if !firstAsks && asks(last, r.issueViews(pod.sandbox.Issue)) {
-		asked, err := r.ask(ctx, run, pod)
+	lastAsks := false
+	if !firstAsks {
+		lastAsks, hold = r.asks(ctx, last, r.issueViews(pod.sandbox.Issue))
+	}
+	if lastAsks {
+		asked, err := r.ask(ctx, run, pod, hold)
 		if asked || err != nil {
 			r.noteRead(run, pod, last)
 		}
@@ -158,11 +173,12 @@ func (r *projectReleaser) takePod(ctx context.Context, run *releaseRun, pod *rel
 // every other one is taken off the line, which takes every role of rows written at or after the
 // bound, since no session can have had those by it. releaseAskAtBound is answered then. Either
 // error is the reason the pod is left for (takePod). A release whose context ends meanwhile asks
-// none.
-func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
+// none. hold is the background hold the ask decision read (asks), which the line of a written ask
+// names (askOnce).
+func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *releasePod, hold backgroundHold) (bool, error) {
 	wait := r.retry
 	for {
-		asked, err := r.askOnce(ctx, run, pod)
+		asked, err := r.askOnce(ctx, run, pod, hold)
 		if err == nil {
 			if asked && time.Until(run.bound) <= 0 {
 				r.atBound(run, pod)
@@ -202,8 +218,10 @@ func (r *projectReleaser) ask(ctx context.Context, run *releaseRun, pod *release
 // (claim.ErrKeyOfAnotherProject), so such a pod is left at the bound rather than deleted with no
 // role asked. A role whose row was written counts as asked once the outbox's publish of it reached
 // a session of the role (reach), or once the role answered; one the ask reached no session of by
-// the bound, and that had not answered, is taken off the line then (atBound).
-func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod) (bool, error) {
+// the bound, and that had not answered, is taken off the line then (atBound). The line it logs for
+// a written ask names the roles of hold (backgroundHold.attributes), the reports that asked a pod
+// nothing else asked.
+func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *releasePod, hold backgroundHold) (bool, error) {
 	running := runningClaims(r.issueViews(pod.sandbox.Issue))
 	if len(running) == 0 {
 		return false, nil
@@ -240,17 +258,22 @@ func (r *projectReleaser) askOnce(ctx context.Context, run *releaseRun, pod *rel
 		return false, err
 	}
 	r.log.Info("project release: asked each running role of the pod to push and end its turn",
-		"release", run.id, "sandbox", pod.sandbox.Name, "roles", len(rows), "bound", run.bound.Format(time.RFC3339))
+		append([]any{"release", run.id, "sandbox", pod.sandbox.Name, "roles", len(rows), "bound", run.bound.Format(time.RFC3339)},
+			hold.attributes()...)...)
 	r.record(ctx, run)
 	return true, nil
 }
 
-// wait holds an asked pod until each asked role answered and no role of the pod is in a turn, or
-// until the bound, on a wall-clock timer, so a test whose machines run on a clock that never fires
-// still sees the bound: the pod is read again every reread and at once on an answer. A role whose
-// ask reached no session of it yet has nothing to answer, so the pod waits for it until the bound:
-// the outbox publishes that role's ask again until then, and the session may take its topic
-// meanwhile. At the bound the bound is passed on the pod's line (atBound), and wait answers
+// wait holds an asked pod until each asked role answered and no role of the pod is in a turn or
+// holds the pod by its activity report (background), or until the bound, on a wall-clock timer, so
+// a test whose machines run on a clock that never fires still sees the bound: the pod is read
+// again every reread and at once on an answer. The report is read only once every asked role
+// answered and no turn runs, so it is what holds a pod whose roles all answered and whose turns
+// all ended while a subagent or a background job of a role may still run in it, or while a role
+// has sent no report since its last turn started. A role whose ask reached no session of it yet
+// has nothing to answer, so the pod waits for it until the bound: the outbox publishes that role's
+// ask again until then, and the session may take its topic meanwhile. At the bound the bound is
+// passed on the pod's line (atBound), whatever the reports say, and wait answers
 // releaseAskUnreached when the line then keeps no role, since the ask reached none of the pod's
 // roles by then and none answered, which leaves the pod (takePod), and nil otherwise. A wait that
 // ends before the bound, on answers or on the context's end, answers nil.
@@ -260,8 +283,11 @@ func (r *projectReleaser) wait(ctx context.Context, run *releaseRun, pod *releas
 	reread := time.NewTicker(r.reread)
 	defer reread.Stop()
 	for {
-		if run.answeredAll(pod) && !inTurn(r.issueViews(pod.sandbox.Issue)) {
-			return nil
+		if run.answeredAll(pod) {
+			claims := r.issueViews(pod.sandbox.Issue)
+			if !inTurn(claims) && !r.background(ctx, claims).holds() {
+				return nil
+			}
 		}
 		select {
 		case <-ctx.Done():

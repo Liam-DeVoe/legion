@@ -6613,13 +6613,14 @@ The release does five things, in this order:
    A pod in which no role process runs has no shim to read, and the release deletes it with no read.
    A pod that holds a claim an operator suspended is left with its disk, and the release reads and asks nothing there.
 
-3. As soon as a pod's own read is done, it asks each running role of that pod when its workspace holds unpushed commits, its shim refused the read, or a role of it is in a turn.
+3. As soon as a pod's own read is done, it asks each running role of that pod when its workspace holds unpushed commits, its shim refused the read, a role of it is in a turn, or a role of it reports running background work.
    So a slow shim in one pod delays the ask of no other pod.
    A shim of an image older than the read refuses it.
+   A role reports running background work when its activity report names a running subagent or background job, or when it has sent no report since its last turn: it is asked and waited for as a role in a turn is, as an update round reads that report since cybermonklabs/legion#4556 ([The disk dies with its pod](#the-disk-dies-with-its-pod)).
    The ask reaches each role once, on the role's own Envoy topic, as an update round's ask does, so it can arrive in the middle of a turn (`supervise.ReleaseTask`).
    It gives the moment the daemon deletes the pod, and says that work not pushed by then goes with the pod.
    It asks the role to push to `legion/<KEY>`, to answer with the `legion` tool's `ready_for_update` naming the ask's round (`release:<id>`), and to end its turn.
-   Each asked pod waits until each asked role answered and no role of it is in a turn, or until the bound.
+   Each asked pod waits until each asked role answered and no role of it is in a turn or reports running background work, or until the bound.
    A role that said it is ready takes its Envoy topic only at its session's first turn, or 30 seconds after it said so, and the release holds every task that would start that turn, so the ask can find no session on the topic.
    The daemon then publishes the ask again, a second later and then up to 64 seconds apart, until a session takes the topic or the bound comes.
    A role counts as asked only once the ask reached its session before the bound, or once it answered.
@@ -6630,7 +6631,7 @@ The release does five things, in this order:
    A try that finds no role of the pod running asks nobody, and the pod goes on to step 4 with no ask.
    An ask that still cannot be written at the bound reached no role, so nobody was asked to push the pod's work: the release leaves the pod, and the pod's line names no asked role and gives the reason `the ask to its running roles could not be written: …`.
    An ask written only at the bound or after it, at any try, left its roles no time to push, so the release leaves that pod too: no session can have had the ask by the bound, so the pod's line names no asked role, and it gives the reason `the ask to its running roles was written only at the bound, which left them no time to answer`.
-   A pod that the first read did not ask is read once more just before its stop, and a commit, a refusal or a turn found then makes the release ask it and wait for it as for any other pod.
+   A pod that the first read did not ask is read once more just before its stop, and a commit, a refusal, a turn or a role reporting running background work found then makes the release ask it and wait for it as for any other pod.
    The bound is `--bound`, or the daemon's `pod_update_grace_minutes` (30 minutes by default), one moment for every pod, counted from the release's start, and at it the release cuts each turn that still runs.
 
 4. As each pod's wait ends, it reads that pod's workspace one last time and stops its role processes.
@@ -6671,6 +6672,7 @@ When the wait ends after the daemon answered with the release, between two reads
 A release that stopped short names why (`result.failure`), such as a list of the project's Sandboxes that it could not read, and still has a line for each claim of the project it was to stop.
 A pod deleted with work lost does not change the exit code.
 `--dry-run` reads the workspaces as the release would and prints each Sandbox with the outcome a release would give it now, the roles it would ask (`a release would ask …`), and the claims it would stop, each line ending `(the next boot would start it)`, or `operator (the next boot does not start it)` for a claim of a pod a release would leave.
+It names the roles a release would ask for each pod whose workspace holds unpushed commits, whose shim refused the read, that has a role in a turn, or that has a role reporting running background work, as step 3 reads them.
 It asks, stops and saves nothing, and exits 0 when the daemon answers with a dry run.
 When `--wait` ends before the daemon answers, it exits 1 and says that a dry run records and starts nothing.
 A daemon process that already ran a release answers `--dry-run` with that release instead: the command says so, and prints that release and exits on it as on a release.
