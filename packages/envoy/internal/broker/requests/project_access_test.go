@@ -519,11 +519,13 @@ func TestAnUntaggedDeploymentAsksDispatchNothing(t *testing.T) {
 }
 
 // askLog is a projectaccess.Access that writes down each question it passes on, so a test can
-// say which questions the broker asked Dispatch and not only how many.
+// say which questions the broker asked Dispatch and not only how many, and whom each access
+// question asked about.
 type askLog struct {
-	inner projectaccess.Access
-	mu    sync.Mutex
-	asked []string
+	inner   projectaccess.Access
+	mu      sync.Mutex
+	asked   []string
+	persons []string
 }
 
 func (a *askLog) note(question string) {
@@ -539,7 +541,17 @@ func (a *askLog) questions() []string {
 	return slices.Clone(a.asked)
 }
 
+// askedAbout is the person of every access question asked so far, canonical, in order.
+func (a *askLog) askedAbout() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.persons)
+}
+
 func (a *askLog) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	a.mu.Lock()
+	a.persons = append(a.persons, record.CanonicalLogin(person))
+	a.mu.Unlock()
 	a.note("access " + project)
 	return a.inner.Access(ctx, project, person)
 }

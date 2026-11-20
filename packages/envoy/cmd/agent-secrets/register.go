@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/brokerclient"
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -206,13 +207,17 @@ func registerWithPatience(sock string, req helper.Request, patience time.Duratio
 // sessionProjectsFlag is the projects a register or a helper enroll names: --projects when the
 // command line sets it, AGENT_SECRETS_PROJECTS otherwise (brokerclient.TradeProjects), read by the
 // broker's own rule for a list, so a list that is no list is refused before the helper is asked.
+// A refusal names the flag and the rule and never the value, as TradeProjects' does for the
+// variable: a value the flag cannot hold is where a credential pasted into the wrong place shows
+// up, and ParseProjects quotes the key it refuses.
 func sessionProjectsFlag(raw string, flags *flag.FlagSet) ([]string, error) {
 	if !flagGiven(flags, "projects") {
 		return brokerclient.TradeProjects(os.Getenv)
 	}
 	projects, err := oauthwire.ParseProjects(raw)
 	if err != nil {
-		return nil, fmt.Errorf("--projects: %w", err)
+		return nil, fmt.Errorf("--projects is not a list of project keys: at most %d keys, separated by white space, each named once and each %s",
+			oauthwire.MaxProjects, contracts.ProjectKeyRule)
 	}
 	return projects, nil
 }

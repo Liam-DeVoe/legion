@@ -1,6 +1,7 @@
 package requests
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/projectaccess"
 	"github.com/sjawhar/envoy/internal/broker/record"
 )
 
@@ -48,10 +50,147 @@ func TestOtherPeoplesRowsCostTheListOneBound(t *testing.T) {
 		t.Fatalf("PendingForApprover(%s) = %d rows, %v; want none: every row is another person's, who may see it", insider, len(listed), err)
 	}
 	t.Logf("the list asked Dispatch %d questions for %d other people's rows", asked.Load(), rows)
-	// Without the bound the list asks two questions per row (40 here, 12 s); with it, a 2 s bound
-	// asks at most 7. The test does not read listFallbackBound, so a bound taken away fails it.
-	if asked.Load() >= rows {
-		t.Fatalf("the list asked Dispatch %d questions for %d other people's rows; want fewer than one per row", asked.Load(), rows)
+	// Without the clock the list asks two questions per row (40 here, 12 s). With it, 300 ms
+	// questions start at 0, 300, ..., 1800 ms inside 2 s: 7, the last cut short. A slow box only
+	// lowers the count, since every question takes at least its 300 ms. The test does not read
+	// listFallbackBound, so a clock taken away, or one as long as Dispatch's 5 s wait, fails it.
+	const most = 7
+	if asked.Load() > most {
+		t.Fatalf("the list asked Dispatch %d questions for %d other people's rows; want at most %d", asked.Load(), rows, most)
+	}
+}
+
+// failForPerson answers every access question about one person with an error, as a Dispatch that
+// cannot answer for that person does, and passes every other question on.
+type failForPerson struct {
+	inner  projectaccess.Access
+	person string
+}
+
+func (f failForPerson) Access(ctx context.Context, project, person string) (projectaccess.Answer, error) {
+	if record.CanonicalLogin(person) == f.person {
+		return projectaccess.Answer{}, errors.New("dispatch did not answer for this person")
+	}
+	return f.inner.Access(ctx, project, person)
+}
+
+func (f failForPerson) MemberKind(ctx context.Context, person string) (string, error) {
+	return f.inner.MemberKind(ctx, person)
+}
+
+func (f failForPerson) States(ctx context.Context, projects []string) (map[string]projectaccess.Answer, error) {
+	return f.inner.States(ctx, projects)
+}
+
+// strandedRow is the fixture operator's request naming TEAM-7, made while TEAM is public; TEAM is
+// then private with insider alone on its list, so the operator, its responsible person, may no
+// longer see it, and the fallback lists it for insider (listedFor).
+func strandedRow(t *testing.T) (*Machine, string) {
+	t.Helper()
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	if err != nil || req.RecordID == nil || req.State != "pending" {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
+	}
+	answerFrom(t, m, dispatchRows(privateTeam(insider)))
+	return m, *req.RecordID
+}
+
+// TestTheFallbackFailsClosed: listedFor lists a row whose responsible person may not see it only
+// for a reader whose own read answered that they may, and whose read of that person answered
+// that they may not. A read that fails leaves the row off, whichever read it is:
+//   - control: the stranded row is on insider's list and off outsider's;
+//   - outsider's own read fails: the row stays off outsider's list, though the responsible
+//     person's read would answer;
+//   - the responsible person's read fails: the row stays off insider's list;
+//   - an outage: the stranded row is off, and insider's own row touching no project is listed.
+func TestTheFallbackFailsClosed(t *testing.T) {
+	t.Run("control", func(t *testing.T) {
+		m, stranded := strandedRow(t)
+		wantListed(t, m, stranded, []string{insider, outsider}, []string{insider})
+	})
+	t.Run("the reader's own read fails", func(t *testing.T) {
+		m, stranded := strandedRow(t)
+		m.Projects = failForPerson{inner: m.Projects, person: outsider}
+		wantListed(t, m, stranded, []string{outsider}, nil)
+	})
+	t.Run("the responsible person's read fails", func(t *testing.T) {
+		m, stranded := strandedRow(t)
+		m.Projects = failForPerson{inner: m.Projects, person: fixtureOperator}
+		wantListed(t, m, stranded, []string{insider}, nil)
+	})
+	t.Run("an outage", func(t *testing.T) {
+		m, stranded := strandedRow(t)
+		mine, mineKey := newEnrollment(t, m.Store, "session", "box-plain-own", new(insider), nil)
+		plain, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "no issue named", "SHARED_KEY"), "", nil)
+		if err != nil || plain.RecordID == nil {
+			t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", plain, err)
+		}
+		dispatch := answerFrom(t, m, dispatchRows(privateTeam(insider)))
+		dispatch.SetDown(true)
+		wantListed(t, m, stranded, []string{insider}, nil)
+		wantListed(t, m, *plain.RecordID, []string{insider}, []string{insider})
+		if dispatch.Calls() == 0 {
+			t.Fatal("Dispatch was never asked, so the outage was never seen")
+		}
+	})
+}
+
+// TestTheReadersOwnRowsAreNotCutByTheClock: twenty other people's rows, under a Dispatch that
+// takes 300 ms a question, spend the fallback's clock before insider's own older row is reached.
+// That row is read on the list's own context, not the clock, and is listed.
+func TestTheReadersOwnRowsAreNotCutByTheClock(t *testing.T) {
+	m, _, _, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	mine, mineKey := newEnrollment(t, m.Store, "session", "box-own-row", new(insider), nil)
+	own, err := m.Create(t.Context(), mine, signRequest(t, m, mineKey, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	if err != nil || own.RecordID == nil {
+		t.Fatalf("Create(own) = %+v, %v; want it pending", own, err)
+	}
+	var others []string
+	for i := range 20 {
+		enr, key := newEnrollment(t, m.Store, "session", fmt.Sprintf("box-other-%02d", i), new(fmt.Sprintf("op%02d@example.com", i)), nil)
+		req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+		if err != nil || req.RecordID == nil || req.State != "pending" {
+			t.Fatalf("Create = %+v, %v; want it pending", req, err)
+		}
+		others = append(others, *req.RecordID)
+	}
+	answerFrom(t, m, dispatchRows(publicTeam))
+	m.Projects = slowAccess{inner: m.Projects, takes: 300 * time.Millisecond}
+	listed, err := m.PendingForApprover(t.Context(), insider, PendingStates{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range listed {
+		ids = append(ids, p.RecordID)
+	}
+	if !slices.Equal(ids, []string{*own.RecordID}) {
+		t.Fatalf("insider's list = %v; want exactly its own row %s, read after the clock was spent (others %v)", ids, *own.RecordID, others)
+	}
+}
+
+// TestTheReadersMaySeeIsReadFirst: a row the reader may not see costs no question about its
+// responsible person. The operator's TEAM-7 request; TEAM then private with the operator alone on
+// its list. outsider's list asks about outsider and never about the operator. Control: the
+// operator's own list holds the row and asks about the operator.
+func TestTheReadersMaySeeIsReadFirst(t *testing.T) {
+	m, enr, key, _ := newProjectFixture(t, airlock.Rules{}, publicTeam)
+	req, err := m.Create(t.Context(), enr, signRequest(t, m, key, "TEAM-7: rotate the deploy key", "SHARED_KEY"), "", nil)
+	if err != nil || req.RecordID == nil || req.State != "pending" {
+		t.Fatalf("Create(SHARED_KEY) = %+v, %v; want it pending", req, err)
+	}
+	answerFrom(t, m, dispatchRows(privateTeam(fixtureOperator)))
+	asked := &askLog{inner: m.Projects}
+	m.Projects = asked
+	wantListed(t, m, *req.RecordID, []string{outsider}, nil)
+	about := asked.askedAbout()
+	if slices.Contains(about, fixtureOperator) || !slices.Contains(about, outsider) {
+		t.Fatalf("outsider's list asked Dispatch about %v; want outsider, and never %s, the responsible person, for a row outsider may not see", about, fixtureOperator)
+	}
+	wantListed(t, m, *req.RecordID, []string{fixtureOperator}, []string{fixtureOperator})
+	if !slices.Contains(asked.askedAbout()[len(about):], fixtureOperator) {
+		t.Fatalf("control: the operator's list asked nothing about the operator: %v", asked.askedAbout()[len(about):])
 	}
 }
 

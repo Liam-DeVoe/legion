@@ -1523,8 +1523,9 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	// person may not see it. A request Dispatch cannot answer for is left off too, failing closed
 	// for that row alone, and the rest of the list is answered: an outage of Dispatch hides only the
 	// rows that ask it something (logRowUnanswered). The rows that name another person as
-	// responsible share one bound, listFallbackBound, so that however many people's rows touch a
-	// project, and however slowly Dispatch answers, they cannot keep the list from its caller.
+	// responsible may start their reads only within listFallbackBound of here, so that however many
+	// people's rows touch a project, and however slowly Dispatch answers, they cannot keep the list
+	// from its caller.
 	fallback, cancel := context.WithTimeout(ctx, listFallbackBound)
 	defer cancel()
 	visible := out[:0]
@@ -1546,11 +1547,14 @@ func (m *Machine) PendingForApprover(ctx context.Context, approver string, state
 	return visible, nil
 }
 
-// listFallbackBound is how long one pending list spends, all told, on the rows that name another
-// person as responsible (listedFor's fallback). Dispatch's Inbox waits 5 seconds for the whole
-// list (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
-// project-access client's own 10, so without one bound a slow Dispatch and many other people's
-// rows could empty every Inbox. A row this bound cuts short is left off, as every such row was
+// listFallbackBound is how long after a pending list's rows are read its fallback reads, for the
+// rows that name another person as responsible (listedFor), may still start or run. It is a clock
+// from that moment, not a budget of their own: the reader's own rows, read on the list's context
+// before or between them, spend it too, so the fallback rows never take the list past it,
+// whatever the reader's own rows took. Dispatch's Inbox waits 5 seconds for the whole list
+// (agentsecrets.Client's defaultTimeout), and each read of Dispatch may take up to the
+// project-access client's own 10, so without the clock a slow Dispatch and many other people's
+// rows could empty every Inbox. A row the clock cuts short is left off, as every such row was
 // before the fallback existed.
 const listFallbackBound = 2 * time.Second
 
@@ -1561,9 +1565,9 @@ const listFallbackBound = 2 * time.Second
 // asked; either way only for a reader who may see it (MaySee), read on ctx as every list row was.
 // Where the person it names may not see the row (it belongs to a private project they are not
 // on, from when it was made or since), it is listed for every other reader who may see it, so a
-// request no longer waits where nobody sees it. Those reads run on fallback, one bound for every
-// such row of the list, the reader's first, so a row the reader may not see costs no read of
-// the other person's; a read that fails or runs out of the bound leaves the row off, as it was
+// request no longer waits where nobody sees it. Those reads run on fallback, the list's one
+// clock (listFallbackBound), the reader's first, so a row the reader may not see costs no read of
+// the other person's; a read that fails or runs out of the clock leaves the row off, as it was
 // before the fallback, and so does an outage. A row touching no project asks Dispatch nothing.
 func (m *Machine) listedFor(ctx, fallback context.Context, p PendingSummary, reader, notify string, sessionProjects []string, reason string) (bool, error) {
 	row := "record " + p.RecordID
