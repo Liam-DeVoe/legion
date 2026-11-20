@@ -7104,8 +7104,8 @@ While the daemon's project is paused, no copy is taken at all, since a pause sav
 Each copy that a turn's end, the cadence or a push asks for then logs the same line at Info with the reason `project_paused` and the open pause's id as `pause`, which is no fault and is not one of the reasons above.
 A copy already asking its shim when the pause begins runs to its end, since it read the workspace before the pause.
 A skipped copy owes a retry, because a turn that ended while the project was paused is in no copy: the cadence takes it once the project has resumed and a role of the issue is live again.
-A pod that still ends during the pause, at a park or an end from outside it, loses the work done since its last copy on an ephemeral volume, which is from before the pause: the next pod restores that copy.
-A kept volume keeps that work, and a close ends the issue's work.
+A pod that still ends during the pause loses the work done since its last copy, which is from before the pause: the next pod restores that copy.
+Only an end from outside the pod leaves a kept volume standing with that work on it; a park or a linger deletes the kept volume too, and a close ends the issue's work.
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.

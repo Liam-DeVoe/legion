@@ -87,6 +87,10 @@ func (r *copyRig) awaitStored(t *testing.T, count int) storedCopy {
 // that replaces this one reads a copy: a bare clone of the remote as it stands, which holds the
 // bundle's bases and nothing of the workspace, verifies the bundle (`git bundle verify`), fetches
 // its heads, and lists every commit they reach that the remote's branches do not.
+//
+// Its git runs no automatic maintenance. A fetch starts `git maintenance run --auto --detach`
+// (git 2.46 and later), and that process can still be writing in the clone, which is under the
+// test's TempDir, when the test ends and its cleanup removes the directory.
 func bundledCommits(t *testing.T, w *shimtest.Workspace, bundle []byte) []string {
 	t.Helper()
 	dir := t.TempDir()
@@ -95,11 +99,14 @@ func bundledCommits(t *testing.T, w *shimtest.Workspace, bundle []byte) []string
 		t.Fatal(err)
 	}
 	repo := filepath.Join(dir, "remote.git")
-	w.Run(dir, "git", "clone", "--quiet", "--bare", "--no-local", w.Remote, repo)
-	w.Run(dir, "git", "--git-dir="+repo, "bundle", "verify", "--quiet", path)
-	w.Run(dir, "git", "--git-dir="+repo, "fetch", "--quiet", path, "+refs/*:refs/bundled/*")
-	heads := strings.Fields(w.Run(dir, "git", "--git-dir="+repo, "for-each-ref", "--format=%(objectname)", "refs/bundled/"))
-	return strings.Fields(w.Run(dir, slices.Concat([]string{"git", "--git-dir=" + repo, "rev-list"}, heads, []string{"--not", "--branches"})...))
+	git := func(args ...string) string {
+		return w.Run(dir, slices.Concat([]string{"git", "-c", "maintenance.auto=false", "-c", "gc.auto=0"}, args)...)
+	}
+	git("clone", "--quiet", "--bare", "--no-local", w.Remote, repo)
+	git("--git-dir="+repo, "bundle", "verify", "--quiet", path)
+	git("--git-dir="+repo, "fetch", "--quiet", path, "+refs/*:refs/bundled/*")
+	heads := strings.Fields(git("--git-dir="+repo, "for-each-ref", "--format=%(objectname)", "refs/bundled/"))
+	return strings.Fields(git(slices.Concat([]string{"--git-dir=" + repo, "rev-list"}, heads, []string{"--not", "--branches"})...))
 }
 
 // The cadence's copies hold what the shim's bundler builds of a real workspace, not bytes a fake

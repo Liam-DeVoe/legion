@@ -147,18 +147,18 @@ const (
 	// after that. It is written at Info: it is no fault, and it is not one of the reasons above
 	// that a deployment counts.
 	runningCopyNewerStands = "newer_copy_stands"
-	// runningCopyProjectPaused: the daemon's project is paused (pause.Service.Paused), and a
-	// pause saves no workspace (docs/kubernetes.md, "Pausing a project"), so no copy starts while
-	// it stands. The pause's hold of a pod stops only the idle release and the update round: a
-	// close, a park, a teardown or an end from outside the pod still ends a held pod, and a role
-	// of it may still be in its turn. A pod that ends during the pause while its issue goes on,
-	// on an ephemeral volume, loses the work done since its last copy, which is from before the
-	// pause: the next pod restores that copy, and the turns that ended in the pause are in none (a
-	// kept volume keeps them, and a close ends the issue's work). That cost is chosen, as a pause
-	// saves no workspace. It is written at Info with the open pause's id, since nothing failed, and it
-	// owes a retry (runningCopy.retry): a turn that ended while the project was paused is in no
-	// copy, so the cadence takes it again once the project has resumed and a role of the issue is
-	// live.
+	// runningCopyProjectPaused: the daemon's project is paused (pause.Service.Paused), and a pause
+	// saves no workspace (docs/kubernetes.md, "Pausing a project"), so no copy starts while it
+	// stands. The pause's hold of a pod stops only the idle release and the update round: a close,
+	// a park, a teardown or an end from outside the pod still ends a held pod, and a role of it may
+	// still be in its turn. A pod that ends during the pause while its issue goes on loses the work
+	// done since its last copy, which is from before the pause: the next pod restores that copy,
+	// and the turns that ended in the pause are in none. Only an end from outside the pod leaves a
+	// kept volume standing with them on it, since a park or a linger deletes that volume too. That
+	// cost is chosen, as a pause saves no workspace. It is written at Info with the open pause's
+	// id, since nothing failed, and it owes a retry (runningCopy.retry): a turn that ended while
+	// the project was paused is in no copy, so the cadence takes it again once the project has
+	// resumed and a role of the issue is live.
 	runningCopyProjectPaused = "project_paused"
 )
 

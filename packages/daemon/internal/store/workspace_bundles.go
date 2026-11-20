@@ -216,12 +216,12 @@ func (s *Store) KeepRestoredWorkspaceBundle(ctx context.Context, issue, podUID s
 // A running copy the issue holds that is newer than the bundle (runtime.NewerWorkspaceCopy) stays
 // as it is, and the bundle's row goes alone: the newer work wins.
 //
-// It is the one move of a release bundle into the running copy, made by the two writes that end a
-// bundle whose work a live pod's disk holds: the confirmation of its restore, which sources the
-// work to the restoring pod (KeepRestoredWorkspaceBundle), and the cancel of the release that saved
-// it, which leaves it sourced to the pod it came off, the one the roles resume in
-// (CancelIssueRelease). The drop of a bundle that a pod's kept volume holds ends one as well, by
-// deleting it, since that volume is the copy of the work (DropHeldWorkspaceCopies).
+// It is the one move of a release bundle into the running copy. Of the three writes that end a
+// bundle whose work a live pod's disk holds, two make it: the confirmation of its restore, which
+// sources the work to the restoring pod (KeepRestoredWorkspaceBundle), and the cancel of the
+// release that saved it, which leaves it sourced to the pod it came off, the one the roles resume
+// in (CancelIssueRelease). The third, the drop of a bundle that a pod's kept volume holds, deletes
+// it, since that volume is the copy of the work (DropHeldWorkspaceCopies).
 func keepReleaseBundleAsRunningCopy(ctx context.Context, tx pgx.Tx, issue string, release int64, bundle runtime.WorkspaceCopyHeld, pod string) error {
 	running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
 	if err != nil {
