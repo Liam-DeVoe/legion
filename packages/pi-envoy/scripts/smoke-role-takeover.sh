@@ -373,9 +373,13 @@ expect_true() {
 expect_renewed_inside() {
   local what="$1" age verdict
   shift
+  # A claim the listener has not answered yet is not in the proxy's log, so the check first waits
+  # until every claim it reads has its answer (claims_answered); one that never gets one reads as
+  # unread below.
+  wait_for "$listener_wait_timeout" claims_answered "$1" "$2" "$3" "${6:-$(now_ms)}" || true
   age="$(renewal_age "$@")"
   if [[ -z "$age" ]]; then
-    verdict="unread: the proxy logs hold no such claim, or no registration of the holder before it"
+    verdict="unread: the proxy logs hold no such claim, one with no answer, or no registration of the holder before it"
   elif ((age < live_window_seconds * 1000)); then
     verdict="inside"
     note "   the holder's last answer was at most ${age} ms old when the claim was answered"
@@ -865,7 +869,7 @@ row5_claude() {
   holder="$(role_holder "$role")"
   holder_instance="$(role_instance "$role")"
   read_at="$(now_ms)"
-  wait_for "$listener_wait_timeout" claimed_since cc-b "$x" "$x" "$read_at" || true
+  # (expect_renewed_inside waits for a claim of B's still in flight at the read to be answered.)
   expect_renewed_inside "every claim B made before the role was read was weighed inside the live window of A's last answer" \
     cc-b "$x" "$x" cc-a "$x" "$read_at"
   instance_b="$(instance_id cc-b "$x")"

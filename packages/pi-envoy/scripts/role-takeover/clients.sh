@@ -5,7 +5,7 @@
 # server answers a tool: claude_answers_tools), one command answered on a client's stdout (send),
 # or written and read back later (post, answer_to), the readers of that client's proxy log — the
 # claims it made (claim_status, claim_holder, first_claim_status, first_claim_holder, made_claim,
-# claimed_since, claim_count), the registrations it sent (instance_id, registered_at,
+# claims_answered, claim_count), the registrations it sent (instance_id, registered_at,
 # first_registered_at), the requests of either kind (claim_writes), its deregistration
 # (delete_answer, deregistered_at), its hand-backs (release_status, release_instance, released)
 # and how old a holder's renewal was when a claim was weighed against it (renewal_age) — and the
@@ -38,12 +38,14 @@
 declare -A proxy_url proxy_log client_fd client_out client_pid
 next_command_id=0
 
-# start_proxy LABEL: this client's own HTTP path to the listener, recording every request.
+# start_proxy LABEL: this client's own HTTP path to the listener, recording every request as it
+# arrives (`<log>.arrived`) and again once the listener has answered it (the log itself).
 start_proxy() {
   local label="$1" port
   pick_port port
   proxy_log["$label"]="${work}/proxies/${label}.jsonl"
   : >"${proxy_log[$label]}"
+  : >"${proxy_log[$label]}.arrived"
   (exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
     bun "${drivers}/listener-proxy.ts" --port "$port" --upstream "$envoy_url" \
     --log "${proxy_log[$label]}" --label "$label") >>"${work}/logs/proxy-${label}.log" 2>&1 &
@@ -290,15 +292,20 @@ made_claim() {
   [[ -n "$(claim_status "$1" "$2" "$3")" ]]
 }
 
-# claimed_since LABEL SESSION PREVIOUS MS: that client made such a claim that reached its proxy at
-# or after MS. A claim is logged once the listener has answered it, so a row that reads every
-# claim made before MS waits first for one made after it: a claimant that asks again on every
-# heartbeat, one claim at a time, has then had each earlier claim answered and logged.
-claimed_since() {
-  jq -e -s --arg sid "$2" --arg previous "$3" --argjson since "$4" \
-    'any(.[]; .path == "/v1/roles/set" and .request.session_id == $sid
-              and (.request.previous_session_id // "") == $previous and .at >= $since)' \
-    "${proxy_log[$1]}" >/dev/null 2>&1
+# claims_answered LABEL SESSION PREVIOUS MS: every soft claim of that client for SESSION naming
+# PREVIOUS (`*`: any predecessor or none) that reached its proxy before MS has been answered: each
+# such arrival (`<log>.arrived`, which the proxy writes before it forwards a request) has an answer
+# of the same seq in the log. A claim is logged only once the listener has answered it, so a check
+# that reads every claim before a moment waits for this first (expect_renewed_inside), and a claim
+# still in flight then is read once it is answered, or read as unread if it never is.
+claims_answered() {
+  jq -n -e --slurpfile arrived "${proxy_log[$1]}.arrived" --slurpfile answered "${proxy_log[$1]}" \
+    --arg sid "$2" --arg previous "$3" --argjson before "$4" '
+    [$answered[] | .seq] as $done
+    | all($arrived[] | select(.path == "/v1/roles/set" and .request.session_id == $sid
+                              and ($previous == "*" or (.request.previous_session_id // "") == $previous)
+                              and .at < $before);
+          .seq as $seq | any($done[]; . == $seq))' >/dev/null 2>&1
 }
 
 # claim_count LABEL SESSION PREVIOUS: how many such claims that client has made, so a row that
@@ -341,9 +348,11 @@ released() {
 # before that moment, and the age is the oldest of theirs, for a row whose claimant asks again and
 # again while the holder must keep the role. PREVIOUS `*` takes a claim naming any predecessor or
 # none, for a claimant that names its predecessor only while it reads that predecessor as live,
-# and claims naming none once the holder's answer has lapsed. Empty where the claimant made no
-# such claim, or the holder registered nothing before one of them: an age nobody could read, which
-# a row reports as such rather than as inside the window.
+# and claims naming none once the holder's answer has lapsed. The claims are the proxy's arrivals
+# (`<log>.arrived`), each read with its answer of the same seq, so a claim still in flight is never
+# left out. Empty where the claimant made no such claim, where one of them has no answer yet, or
+# where the holder registered nothing before one of them: an age nobody could read, which a row
+# reports as such rather than as inside the window.
 #
 # A registration answered 200 is read as a renewal, though the listener answers 200 whatever the
 # renewal wrote (its registration route logs a renewal it could not write and goes on). A
@@ -356,17 +365,21 @@ released() {
 # write failed is recorded, and the listener then refuses the next claim under that session id
 # (its grant guard), so it can make a row pass by a refusal, never by a grant.
 renewal_age() {
-  jq -nr --slurpfile claims "${proxy_log[$1]}" --slurpfile renewals "${proxy_log[$4]}" \
+  jq -nr --slurpfile arrived "${proxy_log[$1]}.arrived" --slurpfile answered "${proxy_log[$1]}" \
+    --slurpfile renewals "${proxy_log[$4]}" \
     --arg sid "$2" --arg previous "$3" --arg holder_sid "$5" --arg before "${6:-}" '
-    [$claims[] | select(.path == "/v1/roles/set" and .request.session_id == $sid
-                        and ($previous == "*" or (.request.previous_session_id // "") == $previous))]
+    [$arrived[] | select(.path == "/v1/roles/set" and .request.session_id == $sid
+                         and ($previous == "*" or (.request.previous_session_id // "") == $previous))]
     | if $before == "" then .[:1] else map(select(.at < ($before | tonumber))) end
-    | map(. as $claim
-          | [$renewals[] | select(.path == "/v1/interests/subscribe"
-                                  and .request.session_id == $holder_sid
-                                  and .status == 200 and .at + .ms <= $claim.at) | .at]
-          | if length == 0 then null else $claim.at + $claim.ms - max end)
-    | if length == 0 or any(. == null) then "" else (max | tostring) end' 2>/dev/null
+    | map(.seq as $seq | [$answered[] | select(.seq == $seq)] | .[0])
+    | if length == 0 or any(. == null) then "" else
+        map(. as $claim
+            | [$renewals[] | select(.path == "/v1/interests/subscribe"
+                                    and .request.session_id == $holder_sid
+                                    and .status == 200 and .at + .ms <= $claim.at) | .at]
+            | if length == 0 then null else $claim.at + $claim.ms - max end)
+        | if any(. == null) then "" else (max | tostring) end
+      end' 2>/dev/null
 }
 
 # ---- making a holder answer for its claim --------------------------------------------------------

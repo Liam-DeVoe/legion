@@ -345,7 +345,7 @@ before the server's start ends and the server answers every tool "still starting
 `claude_answers_tools`), the stdin and stdout one command is sent and answered over
 (`client_fifo`, `client_ready`, `send`, or `post` and `answer_to` for a command read back later),
 the readers of each client's proxy log — the claims it made (`claim_status`, `claim_holder`,
-`first_claim_status`, `first_claim_holder`, `made_claim`, `claimed_since`, `claim_count`), the
+`first_claim_status`, `first_claim_holder`, `made_claim`, `claims_answered`, `claim_count`), the
 registrations it sent (`instance_id`, `registered_at`, `first_registered_at`), the requests of
 either kind (`claim_writes`), its deregistration (`delete_answer`, `deregistered_at`), its
 hand-backs (`release_status`, `release_instance`, `released`) and how old a holder's renewal was
