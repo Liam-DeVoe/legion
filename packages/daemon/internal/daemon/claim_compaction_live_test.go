@@ -701,8 +701,12 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	from := r.daemon.count()
 	started := time.Now()
 	answered := make(chan compactRun, 1)
+	// The command waits as long as the daemon's own bound on a compaction. At the pin Oh My Pi
+	// asks for the history summary and a split turn's prefix together, then for a short summary
+	// (compaction.ts's generateShortSummary), so a held compaction takes two holds, past the
+	// one minute `legion claims` waits for by default (--wait).
 	go func() {
-		out, err := r.legionClaimsTry("compact", "--claim", string(token))
+		out, err := r.legionClaimsTry("compact", "--claim", string(token), "--wait", runtime.CompactTimeout.String())
 		answered <- compactRun{out: out, err: err}
 	}()
 	r.awaitLogFrom("the claim to be taken for its compaction", from, time.Minute, func(record loggedRecord) bool {
