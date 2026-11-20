@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, jest, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { TRADE_ATTEMPT_MS } from "@legion/broker-client/token-client";
 import {
   FORM_LAUNCHER_CREDENTIAL,
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
@@ -3313,11 +3314,14 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // 462bc83094, where a broker that took the trade and never answered held the call for 360 s: the
   // call ends inside its bound, names the trade, and sends Dispatch nothing. The trade's own 30 s
   // bound (`TRADE_ATTEMPT_MS`) ends the first trade, which got no answer, and the broker client's
-  // retry loop trades again on its schedule while the call asks again inside its bound; or the
-  // call's share of the bound (`credentialDeadline`) ends its wait on the trade still out. Both
-  // timers run on the fake clock, whose order at their edge Bun keeps only within a row run alone,
-  // so the row holds the line of either end: each names the trade. It runs on the fake clock,
-  // moved to each next timer once no real request is out but the held trade.
+  // retry loop trades again on its schedule while the call asks again inside its bound, each ask
+  // told at once that the loop is trading again, until no round may start in the bound's last
+  // 7 s. The clock moves to that 30 s first and on only once the trade it cut has ended, so the
+  // loop has read it as a trade the broker did not answer before any later timer fires: moved to
+  // the next timer while the cut request was still out, the clock reached the call's share of the
+  // bound (`credentialDeadline`, 59 s) before the loop heard of the cut, and the row ended on that
+  // timer's line instead, in one order of the two or the other as the event loop happened to run.
+  // After that the clock moves to each next timer once no real request is out but the held trade.
   test("a broker that never answers the trade ends the call inside the real 60 s bound, naming the trade", async () => {
     const { promise: held, resolve: release } = Promise.withResolvers<void>();
     const answer = brokerAnswer;
@@ -3332,6 +3336,8 @@ describe("dispatch result --project, as a CI job writes it", () => {
           over = true;
         });
         await arrived(() => trades.length >= 1);
+        clock.advance(TRADE_ATTEMPT_MS);
+        while (requestsOut > 0 && !over) await turns(20);
         while (!over) {
           // The loop has one trade out at a time, which the broker holds for good; the clock
           // waits on any other request.
@@ -3341,26 +3347,21 @@ describe("dispatch result --project, as a CI job writes it", () => {
           jest.advanceTimersToNextTimer();
         }
       });
-      const namesTheTrade = [
-        "the secrets broker could not answer the trade, and the 60 s this command may take leave no time to ask again: the secrets broker did not answer the trade of this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) within 30 s",
-        "this command's 60 s ended while the secrets broker traded the job's token, and nothing was written: ",
-      ].some((line) => ran.stdout.startsWith(line));
       expect(
         {
           code: ran.code,
-          namesTheTrade,
-          lines: ran.stdout.split("\n").length,
+          stdout: ran.stdout,
           sentToDispatch: written.length,
-          traded: trades.length >= 1,
-          insideTheBound: ran.ms !== undefined && ran.ms >= 30_000 && ran.ms <= 60_000,
+          tradedAgain: trades.length >= 2,
+          insideTheBound: ran.ms !== undefined && ran.ms > TRADE_ATTEMPT_MS && ran.ms <= 60_000,
         },
         ran.stdout
       ).toEqual({
         code: 1,
-        namesTheTrade: true,
-        lines: 2,
+        stdout:
+          "the secrets broker could not answer the trade, and the 60 s this command may take leave no time to ask again: the secrets broker did not answer the trade of this GitHub Actions job's OIDC token (ACTIONS_ID_TOKEN_REQUEST_URL names the endpoint) within 30 s, and the trade is being retried in the background\n",
         sentToDispatch: 0,
-        traded: true,
+        tradedAgain: true,
         insideTheBound: true,
       });
     } finally {
