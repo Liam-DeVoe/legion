@@ -6,7 +6,7 @@
  *  These pages stay here because a part of each is drawn from something no recording replays -
  *  the live document's Yjs socket, or a `/ws/live` frame the stubbed layer's contract fixtures do
  *  not carry - and each entry's `realStackScan` says which. Scanned against a recording, such a
- *  page would be read without that part (packages/dispatch/AGENTS.md, "The stubbed layer"). The
+ *  page would be read without that part (packages/dispatch/README.md, "The stubbed layer"). The
  *  rows are untagged: the pull-request lane already holds its 150 real-stack rows, so `chromium`
  *  runs them on the full lane, which the merge queue and the nightly run.
  *

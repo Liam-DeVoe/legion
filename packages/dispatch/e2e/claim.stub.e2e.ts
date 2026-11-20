@@ -1,7 +1,7 @@
 /** A claim chip whose holder's name is free text of any length, drawn from one fixed answer: the
  *  chip ellipsizes the name and the issue page never grows a scrollbar, at a phone's width and
  *  at a desktop's. The row asserts a width and a layout, which a recording answers
- *  (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  (packages/dispatch/README.md, "The stubbed layer").
  *
  *  The chip also draws the claim's age. A replay that read that age against today's clock would
  *  lay out a longer text on every run after the recording, so the row pins the page's clock to

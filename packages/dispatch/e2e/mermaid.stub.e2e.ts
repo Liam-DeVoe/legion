@@ -1,7 +1,7 @@
 /** A mermaid block in a comment, drawn from one fixed answer: the Conversation's turn shows the
  *  diagram the browser's own Mermaid worker draws from the body the API returned, with its
  *  source closed behind `Mermaid source`. The row reads what the page draws and nothing the
- *  server decides, so it runs against a recording (packages/dispatch/AGENTS.md, "The stubbed
+ *  server decides, so it runs against a recording (packages/dispatch/README.md, "The stubbed
  *  layer"). The family's other rows stay in `e2e/mermaid.e2e.ts`: the document rows, which draw
  *  inside the live document editor or a past version's view; the comment row that reads an edit
  *  reaching the page after it loaded; and the comment rows of the time limit and of hostile

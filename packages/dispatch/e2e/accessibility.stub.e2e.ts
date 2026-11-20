@@ -2,7 +2,7 @@
  *  set that a recording can draw whole (`stubScannedRoutes`), read in light and in dark by the
  *  scan of `e2e/accessibility-scan.ts`, axe at WCAG 2.0 and 2.1 level A and AA. A scan reads the
  *  DOM a page draws from the answers it was given, and these pages draw from HTTP answers a
- *  recording holds, so a recording can answer them (packages/dispatch/AGENTS.md,
+ *  recording holds, so a recording can answer them (packages/dispatch/README.md,
  *  "The stubbed layer"). A page a part of which comes from the live document's Yjs socket or from
  *  a `/ws/live` frame the contract fixtures do not carry is read on the real stack by
  *  `e2e/accessibility.e2e.ts`, and its entry's `realStackScan` says which part.
