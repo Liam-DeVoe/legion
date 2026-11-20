@@ -52,8 +52,8 @@ name: CI job kind
 # burstable-and-sweep runs internal/daemon's two other live tests, which launch issue pods and a
 # project controller the same way, with small explicit reservations.
 #
-# runtime-root, runtime-roles, runtime-image-and-issues and runtime-pod-update each run one group of
-# the Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, whose checks run as subtests
+# runtime-root, runtime-roles, runtime-image, runtime-issues and runtime-pod-update each run one
+# group of the Sandbox runtime's own live test, TestStage4aSandboxRuntimeLive, whose checks run as subtests
 # of their group's (internal/runtime/sandbox/live_test.go's liveGroups), against a restricted
 # identity of the cluster's own, PostgreSQL in the cluster and this repository's own broker in the
 # test process. A part selects its group by -run alone. Each group brings up a rig of its own and
@@ -537,16 +537,16 @@ jobs:
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
 
-  runtime-image-and-issues:
+  runtime-image:
     needs: image
     # Past the image job the caller's worker-image input skipped, and never past one that failed,
     # whose own report has posted the failure.
     if: ${{ !cancelled() && needs.image.result != 'failure' }}
     runs-on: ubuntu-24.04
-    # Budget: the image-and-issues group's checks took 653 s, and the first of them to launch on
-    # the run's repository makes its repository cache, which root-ready's launch had made there,
-    # estimated at half a minute more: about 11 minutes of checks, about 23 in all. 40 minutes, as
-    # runtime-root.
+    # Budget: the image group's four checks took 191 s of the 1,008 s the image-and-issues group's
+    # test took in CI run 44766893801, whose part ran 1,463 s, past the part budget of 1,461, with
+    # the disk's clearing at 243 s; this part is that run's less the issues' 451 s of checks, about
+    # 17 minutes. 40 minutes, as runtime-root.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -582,12 +582,12 @@ jobs:
           cache: false
 
       # The group by -run alone, as runtime-root runs its own.
-      - name: Run the Sandbox runtime's image-and-issues group
+      - name: Run the Sandbox runtime's image group
         env:
           LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
           LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
           LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
-        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^image-and-issues$' ./internal/runtime/sandbox/
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^image$' ./internal/runtime/sandbox/
         working-directory: packages/daemon
 
       # A failed group's state, as runtime-root uploads its own.
@@ -595,7 +595,74 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: kind-runtime-image-and-issues-logs-${{ github.run_attempt }}
+          name: kind-runtime-image-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-logs
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: kind
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+
+  runtime-issues:
+    needs: image
+    # Past the image job the caller's worker-image input skipped, and never past one that failed,
+    # whose own report has posted the failure.
+    if: ${{ !cancelled() && needs.image.result != 'failure' }}
+    runs-on: ubuntu-24.04
+    # Budget: the issues group's four checks took 451 s in CI run 44766893801, in a part that ran
+    # 1,463 s with the image's checks; without them, about 21 minutes. 40 minutes, as runtime-root.
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The rig part's comments say what the runner image gives the rig and why its disk is
+      # cleared first.
+      - name: Free the runner's disk of toolchains the rig does not use
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - name: Download the worker image the image job built
+        if: inputs.worker-image == ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: kind-worker-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/kind-image
+
+      # Bun and Go, for what runtime-root's comments say.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # The group by -run alone, as runtime-root runs its own.
+      - name: Run the Sandbox runtime's issues group
+        env:
+          LEGION_TEST_KIND_IMAGE: ${{ inputs.worker-image }}
+          LEGION_TEST_KIND_IMAGE_ARCHIVE: ${{ inputs.worker-image == '' && format('{0}/kind-image/worker-image.tar', runner.temp) || '' }}
+          LEGION_TEST_KIND_LOG_DIR: ${{ runner.temp }}/kind-logs
+        run: go test -v -count=1 -timeout 30m -run '^TestStage4aSandboxRuntimeLive$/^issues$' ./internal/runtime/sandbox/
+        working-directory: packages/daemon
+
+      # A failed group's state, as runtime-root uploads its own.
+      - name: Upload the rig's state at the failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: kind-runtime-issues-logs-${{ github.run_attempt }}
           path: ${{ runner.temp }}/kind-logs
 
       - name: Report ci-ok when this job decides a merge-group run

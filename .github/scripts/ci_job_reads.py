@@ -1941,8 +1941,11 @@ KIND_PARTS = {
     "runtime-roles": ("Run the Sandbox runtime's roles group", "30m", {
         KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/roles"],
     }),
-    "runtime-image-and-issues": ("Run the Sandbox runtime's image-and-issues group", "30m", {
-        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/image-and-issues"],
+    "runtime-image": ("Run the Sandbox runtime's image group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/image"],
+    }),
+    "runtime-issues": ("Run the Sandbox runtime's issues group", "30m", {
+        KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/issues"],
     }),
     "runtime-pod-update": ("Run the Sandbox runtime's pod-update group", "30m", {
         KIND_STAGE4A_PACKAGE: [f"{KIND_STAGE4A}/pod-update"],

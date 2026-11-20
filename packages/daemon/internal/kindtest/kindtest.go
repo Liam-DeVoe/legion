@@ -25,6 +25,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +35,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -41,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/testprereq"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/fakegithub"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
@@ -261,6 +265,12 @@ func (r *Rig) StartPostgres(t *testing.T) Postgres {
 // leakCheckToken is the read token LeakCheck's Source presents, and the one its repository takes.
 const leakCheckToken = "ghs_kind-leak-check-not-a-secret"
 
+// LeakCheckRepository is the repository the rig's stand-in shared public leak check is published
+// from (LeakCheckSetting), as a deployment names its own (leakguard.Setting.Repository): a neutral
+// one, under an owner no other repository of the rig's has, so a whole daemon reads it with the
+// implement App's read lease on that owner's installation alone (ServeLeakCheck).
+var LeakCheckRepository = ghrepo.MustParse("example-org/deployment")
+
 // standInLeakCheck is the shared public leak check a kind test's pods install: the real check is a
 // script of a private repository no CI run reads (leakguardtest says so), so this stand-in, under
 // the real one's name, answers `--help` as the real one does, naming the two shapes a launcher's
@@ -271,20 +281,50 @@ cat >/dev/null 2>&1
 exit 0
 `
 
-// LeakCheckAPI serves GitHub's tarball route of the shared public leak check's repository
-// (leakguard.CheckSlug) on this host's loopback, over plain HTTP, until the test ends: at any tag, to
-// a request carrying token as its bearer, a tarball shaped as GitHub's
-// (leakguardtest.GitHubTarball) holding standInLeakCheck. It returns the REST root a daemon reads the
-// check at (leakguard.Source.API), for a runtime whose pods' launchers name the worker image's pin:
-// a launcher installs the check its daemon read before it starts any role of its pod, and a
-// runtime that reads none starts no role.
+// standInFiles are the stand-in's leak-check directory, each file under its name: the launcher
+// (standInLeakCheck), executable, and the three files beside it that the check's manifest digest
+// covers too (leakguard.ManifestFiles), with leakguardtest's stand-in bodies. Every pod's install
+// of the stand-in holds these bytes, and so the manifest digest LeakCheckSetting names.
+var standInFiles = map[string]leakguardtest.Member{
+	leakguardtest.CheckName:    {Body: "#!/bin/sh\n" + standInLeakCheck, Mode: 0o755},
+	leakguardtest.ProgramName:  {Body: leakguardtest.Program, Mode: 0o644},
+	leakguardtest.ReadmeName:   {Body: leakguardtest.Readme, Mode: 0o644},
+	leakguardtest.MustPassName: {Body: leakguardtest.MustPass, Mode: 0o644},
+}
+
+// LeakCheckSetting is the deployment setting that names the rig's stand-in (leakguard.Setting,
+// legion.yaml's leak_check): LeakCheckRepository, which LeakCheckAPI and ServeLeakCheck serve it
+// from, and the manifest digest of standInFiles, computed by leakguard.Manifest as the runtime and
+// every role's shim compute it of an install. A runtime under it pushes the stand-in to each pod's
+// launcher and tells every role the install as PUBLIC_LEAK_CHECK and this digest beside it, so each
+// role's `legion gh` and push run the stand-in; a runtime under the zero Setting pushes no check,
+// and its roles start without one.
+func LeakCheckSetting(t testing.TB) leakguard.Setting {
+	t.Helper()
+	digest, err := leakguard.Manifest(func(name string) ([]byte, error) {
+		member, held := standInFiles[name]
+		if !held {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(member.Body), nil
+	})
+	if err != nil {
+		t.Fatalf("the manifest digest of the stand-in leak check: %v", err)
+	}
+	return leakguard.Setting{Repository: LeakCheckRepository, ManifestSHA256: digest}
+}
+
+// LeakCheckAPI serves GitHub's tarball route of LeakCheckRepository on this host's loopback, over
+// plain HTTP, until the test ends: at any tag, to a request carrying token as its bearer, a tarball
+// shaped as GitHub's (leakguardtest.GitHubTarball) holding standInFiles. It returns the REST root a
+// daemon reads the check at (leakguard.Source.API), for a runtime under LeakCheckSetting whose pods'
+// launchers name the worker image's pin: a launcher installs the check its daemon read before it
+// starts any role of its pod, and a runtime that reads none starts no role.
 func LeakCheckAPI(t *testing.T, token string) string {
 	t.Helper()
-	tarball := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
-		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + standInLeakCheck, Mode: 0o755},
-	})
+	tarball := leakguardtest.GitHubTarball(t, standInFiles)
 	return githubtest.Server(t, githubtest.Spec{Token: token, Handle: func(w http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet || !strings.HasPrefix(request.URL.Path, "/repos/"+leakguard.CheckSlug+"/tarball/") {
+		if request.Method != http.MethodGet || !strings.HasPrefix(request.URL.Path, "/repos/"+LeakCheckRepository.String()+"/tarball/") {
 			githubtest.Unexpected(t, w, request)
 			return
 		}
@@ -294,22 +334,24 @@ func LeakCheckAPI(t *testing.T, token string) string {
 }
 
 // LeakCheck is the reader of the shared public leak check a kind test's runtime is built with
-// (sandbox.Options.LeakCheck): the daemon's own reader, leakguard.Source, over LeakCheckAPI's
-// stand-in with its token.
+// (sandbox.Options.LeakCheck), beside LeakCheckSetting (sandbox.Options.LeakCheckSetting): the
+// daemon's own reader, leakguard.Source, of LeakCheckRepository over LeakCheckAPI's stand-in with
+// its token.
 func LeakCheck(t *testing.T) *leakguard.Source {
 	t.Helper()
-	return &leakguard.Source{API: LeakCheckAPI(t, leakCheckToken), Token: func(context.Context) (string, error) { return leakCheckToken, nil }}
+	return &leakguard.Source{Repository: LeakCheckRepository, API: LeakCheckAPI(t, leakCheckToken),
+		Token: func(context.Context) (string, error) { return leakCheckToken, nil }}
 }
 
 // leakCheckTagPin is the worker image's pin of the shared public leak check's tag, as
 // packages/daemon/docker/worker.Dockerfile writes it (leakguard.TagVariable's source).
 var leakCheckTagPin = regexp.MustCompile(`(?m)^ARG LEAK_CHECK_TAG=(\S+)$`)
 
-// ServeLeakCheck serves the shared public leak check's repository (leakguard.CheckSlug) from the
-// rig's fake GitHub, private, with standInLeakCheck as the check its leak-check directory holds, at
-// the tag the worker image pins, and returns that tag: the check a whole daemon reads through its
-// GitHub REST root with the implement App's read lease on the check's owner, which that App must
-// be installed on (fakegithub.Server.AddApp), and pushes to each pod's launcher.
+// ServeLeakCheck serves LeakCheckRepository from the rig's fake GitHub, private, with standInFiles
+// as its leak-check directory, at the tag the worker image pins, and returns that tag: the check a
+// whole daemon under LeakCheckSetting reads through its GitHub REST root with the implement App's
+// read lease on LeakCheckRepository's owner, which that App must be installed on
+// (fakegithub.Server.AddApp), and pushes to each pod's launcher.
 func (r *Rig) ServeLeakCheck(t *testing.T) string {
 	t.Helper()
 	dockerfile, err := os.ReadFile(filepath.Join(RepositoryRoot(t), "packages", "daemon", "docker", "worker.Dockerfile"))
@@ -321,7 +363,7 @@ func (r *Rig) ServeLeakCheck(t *testing.T) string {
 		t.Fatal("worker.Dockerfile pins no LEAK_CHECK_TAG")
 	}
 	tag := string(pin[1])
-	repo := r.GitHub.NewRepository(t, leakguard.CheckRepository.Owner(), leakguard.CheckRepository.Name(), false)
+	repo := r.GitHub.NewRepository(t, LeakCheckRepository.Owner(), LeakCheckRepository.Name(), false)
 	git := func(stdin string, args ...string) string {
 		t.Helper()
 		command := exec.Command("git", append([]string{"--git-dir=" + repo.Bare}, args...)...)
@@ -334,10 +376,18 @@ func (r *Rig) ServeLeakCheck(t *testing.T) string {
 		}
 		return strings.TrimSpace(string(out))
 	}
-	check := git("#!/bin/sh\n"+standInLeakCheck, "hash-object", "-w", "--stdin")
-	directory := git("100755 blob "+check+"\t"+leakguardtest.CheckName+"\n", "mktree")
-	readme := git("the rest of the repository\n", "hash-object", "-w", "--stdin")
-	tree := git("100644 blob "+readme+"\tREADME.md\n040000 tree "+directory+"\tleak-check\n", "mktree")
+	var entries strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(standInFiles)) {
+		member := standInFiles[name]
+		mode := "100644"
+		if member.Mode&0o111 != 0 {
+			mode = "100755"
+		}
+		fmt.Fprintf(&entries, "%s blob %s\t%s\n", mode, git(member.Body, "hash-object", "-w", "--stdin"), name)
+	}
+	directory := git(entries.String(), "mktree")
+	rest := git("the rest of the repository\n", "hash-object", "-w", "--stdin")
+	tree := git("100644 blob "+rest+"\tCONTRIBUTING.md\n040000 tree "+directory+"\tleak-check\n", "mktree")
 	commit := git("", "commit-tree", tree, "-p", "main", "-m", "The stand-in leak check")
 	git("", "update-ref", "refs/heads/main", commit)
 	git("", "update-ref", "refs/tags/"+tag, commit)

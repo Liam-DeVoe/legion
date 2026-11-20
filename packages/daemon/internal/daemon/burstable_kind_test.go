@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/kindtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -53,6 +54,17 @@ const kindLiveCache = "    repository_cache:\n      resources: {cpu: 250m, memor
 // kind job's node has.
 const kindLiveIssue = "    resources:\n      issue: {cpu: 500m, memory: 1Gi, ephemeral_storage: 4Gi, ephemeral_storage_request: 1Gi}\n"
 
+// kindLiveLeakCheck is the top-level leak_check block every kind test's file writes: the rig's
+// stand-in shared public leak check (kindtest.LeakCheckSetting), its repository and the manifest
+// digest of its files. Under it the runtime pushes the stand-in to each pod's launcher and tells
+// every role the install as PUBLIC_LEAK_CHECK and the digest beside it, so each role's `legion gh`
+// and push run the stand-in; a file that names no check is a deployment whose pods are pushed none.
+func kindLiveLeakCheck(t *testing.T) string {
+	t.Helper()
+	setting := kindtest.LeakCheckSetting(t)
+	return fmt.Sprintf("leak_check:\n  repository: %s\n  manifest_sha256: %s\n", setting.Repository, setting.ManifestSHA256)
+}
+
 // burstableLiveCases are the two deployments the test launches, each a small explicit reservation:
 // the issue pod requesting 512Mi of memory under a 1Gi limit, which must be Burstable, and
 // kindLiveIssue's, requested in full, whose issue pod must be Guaranteed.
@@ -81,11 +93,11 @@ var burstableLiveCases = []struct {
 
 // writeBurstableLiveConfig writes the case's legion.yaml, and the token files it names, under
 // dir: the worker stream bound at streamHost, the worker image, the cluster as kubeconfig's
-// kubeContext, and extra appended to its runtime.kubernetes block (the case's `resources` and
-// `repository_cache` blocks here, the share test's `pod` block with them in
-// share_volumes_kind_test.go). Its project maps no repository in the file, which the loader
-// refuses; the repository the test launches on is the runtime's mapping (burstableLiveRuntime).
-// The hosts no stub dials are documentation placeholders.
+// kubeContext, the rig's stand-in leak check (kindLiveLeakCheck), and extra appended to its
+// runtime.kubernetes block (the case's `resources` and `repository_cache` blocks here, the share
+// test's `pod` block with them in share_volumes_kind_test.go). Its project maps no repository in
+// the file, which the loader refuses; the repository the test launches on is the runtime's mapping
+// (burstableLiveRuntime). The hosts no stub dials are documentation placeholders.
 func writeBurstableLiveConfig(t *testing.T, dir, project, streamHost, image, kubeconfig, kubeContext, extra string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -113,7 +125,7 @@ projects:
 github_apps:
   implement: { app_id: "1", private_key_command: "exit 1" }
   review: { app_id: "2", private_key_command: "exit 1" }
-runtime:
+%[8]sruntime:
   kubernetes:
     namespace: legion
     image: %[4]s
@@ -122,7 +134,7 @@ runtime:
     context: %[6]s
     session_store: postgres
     session_dsn_secret: SESSION_DSN
-%[7]s`, project, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, extra)
+%[7]s`, project, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, extra, kindLiveLeakCheck(t))
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)

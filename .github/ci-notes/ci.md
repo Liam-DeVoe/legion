@@ -1828,8 +1828,8 @@ packages/daemon/internal/fakegithub, and run the Sandbox runtime's tests on it a
 worker image of this commit. Its parts, each a job of the called file, run the tests
 .github/scripts/ci_job_reads.py's KIND_TESTS names, which both daemon-go steps skip by name:
 the rig's own measuring test in one, the share test in another, the burstable and controller
-sweep tests in a third, the Sandbox runtime's live test in four, one group of its checks each,
-each of those seven within about 24 minutes, and the whole-tree tests in four more, one each:
+sweep tests in a third, the Sandbox runtime's live test in five, one group of its checks each,
+each of those eight within about 24 minutes, and the whole-tree tests in four more, one each:
 tree-claude the Claude Code backend's, within about 24 minutes too, and tree-stage4b,
 tree-stage4b-restart and tree-stage4b-move Stage 4b's tree, whose fourteen checkpoints one rig
 runs past that budget, so three tests on rigs of their own hold them, each within it as CI run

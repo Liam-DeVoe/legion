@@ -76,6 +76,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/kindtest"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -155,14 +156,18 @@ var liveGroups = []liveGroup{
 		{"orphan-sweep", (*liveRig).checkOrphanSweep, nil},
 		{"cleanup-reaps-the-issue", (*liveRig).checkCleanupReapsTheIssue, nil},
 	}},
-	// image-and-issues: the worker image's probe and its three refusals, then issues of their own,
-	// a check each: one on another owner's repository, a role its pod's replacement displaces, a
-	// resume from the session table alone, and an issue closed and resumed.
-	{name: "image-and-issues", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
+	// image: the worker image's probe and its three refusals.
+	{name: "image", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
 		{"image-probe", (*liveRig).checkImageProbe, nil},
 		{"image-probe-negative", (*liveRig).checkImageProbeRefusal, nil},
 		{"image-probe-capability-negative", (*liveRig).checkImageProbeCapabilityRefusal, nil},
 		{"image-probe-missing-volume-negative", (*liveRig).checkImageProbeMissingVolumeRefusal, nil},
+	}},
+	// issues: issues of their own, a check each: one on another owner's repository, a role its
+	// pod's replacement displaces, a resume from the session table alone, and an issue closed and
+	// resumed. The image's checks were this group's until the two together ran past the part
+	// budget (1,463 s and 1,520 s of 1,461 in CI runs 44766893801 and 44744458379).
+	{name: "issues", setup: (*liveRig).mapRunRepository, checks: []liveCheck{
 		{"second-owner", (*liveRig).checkSecondOwner, nil},
 		{"displaced", (*liveRig).checkDisplaced, nil},
 		{"postgres-resume", (*liveRig).checkPostgresResume, nil},
@@ -915,8 +920,13 @@ type liveRig struct {
 
 	// leakCheck is the shared public leak check every runtime of the run hands its launchers
 	// (Options.LeakCheck): the rig's stand-in, read as the daemon reads the real one
-	// (kindtest.LeakCheck).
-	leakCheck LeakCheckReader
+	// (kindtest.LeakCheck). leakCheckSetting is the deployment setting that names it
+	// (Options.LeakCheckSetting, kindtest.LeakCheckSetting): its repository and the manifest
+	// digest of its files, under which the runtime pushes it to each launcher and tells every role
+	// the install as PUBLIC_LEAK_CHECK and the digest beside it, as a deployment that names its
+	// check has it done.
+	leakCheck        LeakCheckReader
+	leakCheckSetting leakguard.Setting
 
 	// secrets is the broker client, nil when the token login started in newLiveRig was refused
 	// (secretsBlocked); secretsBlockReason is empty exactly when secrets is set, and holds that
@@ -1036,7 +1046,7 @@ func newLiveRig(t *testing.T, env liveEnv) *liveRig {
 	if r.dyn, err = dynamic.NewForConfig(own); err != nil {
 		t.Fatal(err)
 	}
-	r.leakCheck = kindtest.LeakCheck(t)
+	r.leakCheck, r.leakCheckSetting = kindtest.LeakCheck(t), kindtest.LeakCheckSetting(t)
 	// The run logs in as the daemon does, with legion-daemon's token for the broker; no person
 	// approves it, and the client keeps logging in for as long as the run lasts.
 	client := &agentsecrets.Client{URL: env.agentSecretsURL, TokenFile: env.agentSecretsTokenFile, Log: r.log}
@@ -1148,8 +1158,8 @@ func sameLocator(a, b runtime.Locator) bool {
 
 // runtimeOptions are the Options every runtime of the run is built from, as a daemon boot builds
 // them: the operator's pod, the run's provider key, the stub agent, the shared setup command, the
-// shared public leak check every launcher installs before its first role (the rig's stand-in), the
-// broker, and the worker stream at address, through ln.
+// shared public leak check every launcher installs before its first role (the rig's stand-in, and
+// the setting that names it), the broker, and the worker stream at address, through ln.
 func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 	return Options{
 		Namespace: r.env.namespace, Project: r.env.project, Image: r.env.image, StorageClass: r.env.storageClass, IssueVolume: liveIssueVolume,
@@ -1182,6 +1192,7 @@ func (r *liveRig) runtimeOptions(address string, ln *stream.Listener) Options {
 		RepositoryCache:       liveRepositoryCache(),
 		Mapped:                r.mappedRepositories,
 		LeakCheck:             r.leakCheck,
+		LeakCheckSetting:      r.leakCheckSetting,
 		AgentSecrets:          &AgentSecrets{URL: r.env.agentSecretsURL, Audience: liveAgentSecretsAudience, TokenExpiry: time.Hour},
 	}
 }

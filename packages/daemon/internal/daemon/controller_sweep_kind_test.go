@@ -34,10 +34,11 @@ var controllerSweepKindStub = []string{"/bin/sh", "-c", "exec sleep infinity", "
 
 // writeControllerSweepKindConfig writes the test's legion.yaml, and the token files it names,
 // under dir: `controller: daemon` on runtime.kubernetes, the store at dsn, the worker stream bound
-// at streamHost, the worker image, the cluster as kubeconfig's kubeContext, and the controller's
-// pod a quarter of a CPU and 512Mi, requested in full, rather than the daemon's one CPU and 4Gi:
-// the kind job's node, one runner of four CPUs and 16Gi, holds it beside the cluster's own pods.
-// The hosts no stub dials are documentation placeholders.
+// at streamHost, the worker image, the cluster as kubeconfig's kubeContext, the rig's stand-in
+// leak check (kindLiveLeakCheck), and the controller's pod a quarter of a CPU and 512Mi, requested
+// in full, rather than the daemon's one CPU and 4Gi: the kind job's node, one runner of four CPUs
+// and 16Gi, holds it beside the cluster's own pods. The hosts no stub dials are documentation
+// placeholders.
 func writeControllerSweepKindConfig(t *testing.T, dir, dsn, streamHost, image, kubeconfig, kubeContext string) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -66,7 +67,7 @@ projects:
 github_apps:
   implement: { app_id: "1", private_key_command: "exit 1" }
   review: { app_id: "2", private_key_command: "exit 1" }
-runtime:
+%[8]sruntime:
   kubernetes:
     namespace: legion
     image: %[5]s
@@ -77,7 +78,7 @@ runtime:
     session_dsn_secret: SESSION_DSN
     resources:
       controller: {cpu: 250m, memory: 512Mi, ephemeral_storage: 2Gi, ephemeral_storage_request: 512Mi}
-`, controllerSweepKindProject, dsn, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext)
+`, controllerSweepKindProject, dsn, filepath.Join(dir, "state"), streamHost, image, kubeconfig, kubeContext, kindLiveLeakCheck(t))
 	path := filepath.Join(dir, "legion.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
@@ -87,10 +88,10 @@ runtime:
 
 // controllerSweepKindRuntime builds the Sandbox runtime from cfg as boot does: its cluster client
 // (kubeClient), sandboxOptions over the loaded configuration, then boot's own factory
-// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor, its
-// shared public leak check read at githubAPI ("" is GitHub's). What the test stands in for: the
-// agent is a sleep stub, the App tokens are placeholders (outboxTokens), and no repository is
-// mapped, so the controller's gh files name no owner.
+// (sandboxRuntime) on listener and st, which also registers the runtime's launcher acceptor, and
+// reads the shared public leak check cfg names (leak_check) at githubAPI ("" is GitHub's). What
+// the test stands in for: the agent is a sleep stub, the App tokens are placeholders
+// (outboxTokens), and no repository is mapped, so the controller's gh files name no owner.
 func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener *stream.Listener, st *store.Store, githubAPI string, log *slog.Logger) (runtime.Runtime, error) {
 	k := *cfg.Runtime.Kubernetes
 	project, err := claim.ProjectToken(cfg.Project)

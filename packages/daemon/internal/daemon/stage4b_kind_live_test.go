@@ -552,10 +552,11 @@ func (r *stage4bLive) viewer(pod string, role claim.Role) string {
 
 // agentGhEnv is what a role's agent hands its gh that an exec into the role's namespaces does not
 // have: the shared public leak check every `legion gh` resolves before it writes or reads
-// (leakguard.CheckVar, which the runtime sets in each role's environment and the container's own
-// exec does not carry), the real gh and the bundle it reads, and the PATH that puts the image's
+// (leakguard.CheckVar) and the deployment's manifest digest it holds that check to
+// (leakguard.CheckerVar), which the runtime sets in each role's environment and the container's own
+// exec does not carry, the real gh and the bundle it reads, and the PATH that puts the image's
 // wrapper first.
-var agentGhEnv = []string{leakguard.CheckVar, "LEGION_GH_PATH", "LEGION_GH_OWNERS_DIR", "GH_CONFIG_DIR", "PATH"}
+var agentGhEnv = []string{leakguard.CheckVar, leakguard.CheckerVar, "LEGION_GH_PATH", "LEGION_GH_OWNERS_DIR", "GH_CONFIG_DIR", "PATH"}
 
 // agentShell runs script in role's namespaces of pod with agentGhEnv as role's agent holds it
 // (agentEnviron), so a command there meets what the agent's own bash would.

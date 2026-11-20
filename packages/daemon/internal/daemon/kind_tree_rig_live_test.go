@@ -135,7 +135,8 @@ type kindTreeRig struct {
 	root   string
 	work   string
 	// repo is the run's private repository of the fake GitHub; implement and review are the two
-	// Apps, both installed on its owner, implement also on the leak check's.
+	// Apps, both installed on its owner, implement also on the leak check's
+	// (kindtest.LeakCheckRepository), whose read lease the daemon reads the check with.
 	repo              fakegithub.Repository
 	implement, review fakegithub.App
 	// natsURL, listenerURL, dispatchURL and model's url are each as a pod and this process reach
@@ -181,7 +182,7 @@ func newKindTreeRig(t *testing.T, opts kindTreeOptions) *kindTreeRig {
 
 	r.natsURL = startKindNATS(t, kind.Gateway)
 	r.repo = kind.GitHub.NewRepository(t, "legion-kind", "tree", false)
-	r.implement = kind.GitHub.AddApp(t, "legion-kind-implement", r.repo.Owner, "theorem-labs")
+	r.implement = kind.GitHub.AddApp(t, "legion-kind-implement", r.repo.Owner, kindtest.LeakCheckRepository.Owner())
 	r.review = kind.GitHub.AddApp(t, "legion-kind-review", r.repo.Owner)
 	if opts.tokenLifetime > 0 {
 		kind.GitHub.SetTokenLifetime(opts.tokenLifetime)
@@ -308,7 +309,8 @@ func (r *kindTreeRig) operatorRoute() {
 }
 
 // writeConfig writes the run's legion.yaml from the rig's addresses as they are now: the daemon
-// binds every interface and advertises the kind network's gateway, which the pods dial.
+// binds every interface and advertises the kind network's gateway, which the pods dial, and names
+// the rig's stand-in leak check (kindLiveLeakCheck), which ServeLeakCheck serves from the fake.
 func (r *kindTreeRig) writeConfig() {
 	t := r.parent
 	for name, value := range map[string]string{"operator-token": testOperatorToken, "envoy-token": kindTreeEnvoyToken, "dispatch-token": r.dispatch.token} {
@@ -375,7 +377,7 @@ worker_boot_timeout_seconds: 900
 github_apps:
   implement: {app_id: "%[11]d", token_command: %[12]q}
   review: {app_id: "%[13]d", token_command: %[14]q}
-%[15]s%[16]s%[23]sruntime:
+%[26]s%[15]s%[16]s%[23]sruntime:
   kubernetes:
     namespace: %[17]s
     image: %[18]s
@@ -388,10 +390,10 @@ github_apps:
 %[24]s
 `, r.cfg.Project, r.kind.Gateway, r.apiPort, r.streamPort, os.Getenv("LEGION_TEST_PG_DSN"), filepath.Join(r.work, "state"),
 		r.envoyURL, r.natsURL, r.dispatchURL, r.opts.admissionCap,
-		r.implement.ID, r.kind.AppTokenCommand(t, r.implement, r.repo.Owner, "theorem-labs"),
+		r.implement.ID, r.kind.AppTokenCommand(t, r.implement, r.repo.Owner, kindtest.LeakCheckRepository.Owner()),
 		r.review.ID, r.kind.AppTokenCommand(t, r.review, r.repo.Owner),
 		r.opts.topLevel, controller, kindTreeNamespace, r.kind.Image, r.kind.Kubeconfig, r.kind.Context,
-		kindTreeIssueResources, kindLiveCache, providerKeys, strings.Join(podLines, "\n"), idle)
+		kindTreeIssueResources, kindLiveCache, providerKeys, strings.Join(podLines, "\n"), idle, kindLiveLeakCheck(t))
 	r.configPath = filepath.Join(r.work, "legion.yaml")
 	if err := os.WriteFile(r.configPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
