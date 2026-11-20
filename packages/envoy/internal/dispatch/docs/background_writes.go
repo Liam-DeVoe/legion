@@ -99,19 +99,27 @@ func (s *Service) AwaitBackgroundWrites(ctx context.Context, soon time.Time) (Ba
 }
 
 // awaitNoRunningWrite waits until two looks in a row find no background write of the service
-// running now or due by soon (runningBackgroundWrite), and answers whether it waited for one.
+// running now or due by soon (runningBackgroundWrite), and answers whether it waited for one. When
+// ctx ends it fails naming the writer the last look found, whether ctx ended in the pause after
+// that look or inside the look after it, which waits on the service's locks (within): a wait that
+// ran out of time names what it was waiting for, wherever its bound fell. A bound that ends inside
+// a look after one that found nothing, or inside the first, names the look itself.
 func (s *Service) awaitNoRunningWrite(ctx context.Context, soon time.Time) (bool, error) {
 	waited := false
+	last := ""
 	for empty := 0; empty < 2; {
 		writer, err := within(ctx, func() string { return s.runningBackgroundWrite(soon) })
 		if err != nil {
+			if last != "" {
+				return waited, fmt.Errorf("%s was still running at the wait's last look, and the look after it ran past the wait's bound: %w", last, err)
+			}
 			return waited, fmt.Errorf("look for the document service's background writes: %w", err)
 		}
 		if writer == "" {
-			empty++
+			empty, last = empty+1, ""
 			continue
 		}
-		empty, waited = 0, true
+		empty, waited, last = 0, true, writer
 		if err := pause(ctx, backgroundPoll); err != nil {
 			return waited, fmt.Errorf("%s did not end: %w", writer, err)
 		}

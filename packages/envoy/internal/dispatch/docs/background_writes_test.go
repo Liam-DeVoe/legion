@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -41,7 +42,9 @@ func TestTheBackgroundWaitAnswersWhenTheCompactionCheckLetsADocumentFold(t *test
 					t.Fatal("UNKNOWN: the document's room is still resident, so this run shows nothing")
 				}
 			}
+			began := time.Now()
 			quiet, err := service.AwaitBackgroundWrites(ctx, time.Now())
+			took := time.Since(began)
 			if err != nil {
 				t.Fatalf("wait for the service's background writes: %v", err)
 			}
@@ -52,12 +55,22 @@ func TestTheBackgroundWaitAnswersWhenTheCompactionCheckLetsADocumentFold(t *test
 			if check.later == 0 || check.aged {
 				t.Fatalf("UNKNOWN: the check reads %+v, not rows after the first short of the tail, so this run shows nothing", check)
 			}
-			// The two reads take the database's clock moments apart; the rows themselves put the
-			// moment 60 s out, and the first row 30 s nearer.
-			want := time.Now().Add(check.untilAged)
-			if gap := want.Sub(quiet.At).Abs(); gap > 5*time.Second || !strings.Contains(quiet.Writer, artifactID) {
-				t.Fatalf("the wait answers %s (%s), want the compaction of %s at %s, when the check lets one fold",
-					quiet.At.Format(time.RFC3339Nano), quiet.Writer, artifactID, want.Format(time.RFC3339Nano))
+			// The moment itself, as a time the rows carry: the oldest row after the first, plus the
+			// tail. The wait reads it as its own clock's moment of asking plus what the check's
+			// statement answered was left, so it can read it early by no more than the time
+			// between its asking and that statement's start, which falls inside the wait, and late
+			// by no more than the microsecond the database rounds a time to.
+			var moment time.Time
+			if err := service.store.Pool.QueryRow(ctx, `
+				select min(created_at) + make_interval(secs => $2) from doc_updates
+				where artifact_id = $1 and version <= `+headVersion+`
+					and version > (select min(version) from doc_updates where artifact_id = $1)
+			`, artifactID, compactTail.Seconds()).Scan(&moment); err != nil {
+				t.Fatalf("read when the document's oldest row after its first leaves the tail: %v", err)
+			}
+			if quiet.At.Before(moment.Add(-took)) || quiet.At.After(moment.Add(time.Microsecond)) || !strings.Contains(quiet.Writer, artifactID) {
+				t.Fatalf("the wait answers %s (%s), want the compaction of %s at %s, less at most the %s the wait took",
+					quiet.At.Format(time.RFC3339Nano), quiet.Writer, artifactID, moment.Format(time.RFC3339Nano), took)
 			}
 		})
 	}
@@ -159,26 +172,71 @@ func TestTheBackgroundWaitSeesAWriterThatMovesBetweenItsReads(t *testing.T) {
 
 // A document socket writes on its own goroutines - its peer's updates and their parked bytes, its
 // last browser's settlement and the retirement of the room that settlement loaded - so the wait
-// waits for it to end, teardown included, and fails naming it while a test keeps it open.
+// waits for it to end, teardown included. A wait whose bound ends while the socket is open fails
+// naming it wherever the bound falls: here inside the look after one that found the socket, which
+// the test holds there until the wait has returned, as a lock of the service held past the bound
+// would (within). Every step waits for the event it checks, and backgroundWaitBound only fails a
+// wait that hangs.
 func TestTheBackgroundWaitWaitsOutADocumentSocket(t *testing.T) {
 	service, artifactID := newTestService(t)
 	seedServiceText(t, service, artifactID, "before")
+	waitForLandedAppends(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
 	t.Cleanup(httpServer.Close)
 	connection, err := dialDocument(httpServer.URL, artifactID)
 	if err != nil {
 		t.Fatalf("open the document's socket: %v", err)
 	}
-	open, cancelOpen := context.WithTimeout(context.Background(), 500*time.Millisecond)
-	defer cancelOpen()
-	if _, err := service.AwaitBackgroundWrites(open, time.Now().Add(time.Second)); err == nil || !strings.Contains(err.Error(), "a document socket") {
-		t.Fatalf("the wait beside an open document socket answered %v, want it to fail at its bound naming the socket", err)
+	// The hook runs in each look that gets past the rooms and the timers, before it reads the
+	// counts the socket is one of; it is set once, and each phase reads what it needs of it.
+	var looks atomic.Int32
+	var bounded atomic.Bool
+	ended, unended := context.WithCancel(context.Background())
+	defer unended()
+	returned := make(chan struct{})
+	service.betweenBackgroundReads = func() {
+		n := looks.Add(1)
+		if bounded.Load() && n == 2 {
+			// The look before this one found the socket; the bound ends inside this one.
+			unended()
+			<-returned
+		}
 	}
-	leaveDocument(connection)
+
+	bounded.Store(true)
+	_, err = service.AwaitBackgroundWrites(ended, time.Now().Add(time.Second))
+	close(returned)
+	bounded.Store(false)
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "a document socket") {
+		t.Fatalf("a wait whose bound ended inside a look after the open socket was found answered %v, want it to fail naming the socket", err)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), backgroundWaitBound)
 	defer cancel()
-	if _, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second)); err != nil {
-		t.Fatalf("wait for the service's background writes once the socket closed: %v", err)
+	from := looks.Load()
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second))
+		result <- err
+	}()
+	// A wait that saw no socket ends after two looks that found nothing; one that sees it looks on.
+	for looks.Load() < from+3 {
+		select {
+		case err := <-result:
+			t.Fatalf("the wait beside an open document socket returned (%v) after %d looks: it did not wait for the socket", err, looks.Load()-from)
+		case <-ctx.Done():
+			t.Fatalf("the wait beside an open document socket took fewer than 3 looks within %s", backgroundWaitBound)
+		case <-time.After(backgroundPoll):
+		}
+	}
+	leaveDocument(connection)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("wait for the service's background writes once the socket closed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("the wait did not return within %s of the socket's close", backgroundWaitBound)
 	}
 	if served := service.serving.Load(); served != 0 {
 		t.Fatalf("the wait returned while %d document sockets were still served", served)
@@ -187,7 +245,8 @@ func TestTheBackgroundWaitWaitsOutADocumentSocket(t *testing.T) {
 
 // A look for the service's background writes takes the service's locks, and a holder that stalls
 // keeps one past any bound: the wait fails at its own bound, naming the look, rather than waiting
-// for the lock.
+// for the lock. The test holds the lock until the wait has returned, so any return is one the lock
+// did not hold, and backgroundWaitBound only fails a wait that waited on the lock.
 func TestTheBackgroundWaitFailsAtItsBoundWhenALockOutlastsIt(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -205,18 +264,24 @@ func TestTheBackgroundWaitFailsAtItsBoundWhenALockOutlastsIt(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			service, artifactID := newTestService(t)
 			seedServiceText(t, service, artifactID, "held")
+			// Its appends landed, so a look reaches the lock rather than stopping at them.
+			waitForLandedAppends(t, service, artifactID)
 			release := sync.OnceFunc(test.hold(service, artifactID))
 			defer release()
-			// The lock goes after heldFor whatever the wait does, so a wait that blocks on it ends.
-			const heldFor = 3 * time.Second
-			time.AfterFunc(heldFor, release)
-			ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-			defer cancel()
-			began := time.Now()
-			_, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second))
-			took := time.Since(began)
-			if !errors.Is(err, context.DeadlineExceeded) || took >= heldFor {
-				t.Fatalf("the wait with %s held answered %v after %s, want its bound's end before the lock's %s", test.name, err, took, heldFor)
+			ctx, cancel := context.WithCancel(context.Background())
+			result := make(chan error, 1)
+			go func() {
+				_, err := service.AwaitBackgroundWrites(ctx, time.Now().Add(time.Second))
+				result <- err
+			}()
+			cancel()
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), "look for the document service's background writes") {
+					t.Fatalf("the wait with %s held answered %v, want its bound's end, naming the look", test.name, err)
+				}
+			case <-time.After(backgroundWaitBound):
+				t.Fatalf("the wait with %s held did not return within %s of its bound's end: it waited on the lock", test.name, backgroundWaitBound)
 			}
 		})
 	}
