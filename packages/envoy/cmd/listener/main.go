@@ -1694,10 +1694,17 @@ func main() {
 	// to settle the bucket's maximum age sooner is not asking for that (the two defaults say
 	// why). Each pass is judged against this listener's own live window, not counted, so the
 	// period moves when a gone holder's role is freed and nothing else.
+	//
+	// Before it frees a claim, the reaper writes the takeover record a claim from another session
+	// writes (reapedClaimRecord), naming the claim's holder as the previous one: the role messages
+	// forwarded to that holder after it stopped are on its own agent subject, unread, and the
+	// record's passes copy them to the role's kept lane, whose walk hands them to the role's next
+	// holder, as a claim made while the dead holder's claim stood does. A claim the reaper has freed
+	// names no holder, so a later claim writes no record of its own.
 	kvLoopsCtx, kvLoopsCancel := context.WithCancel(context.Background())
 	kvLoopsDone := []<-chan struct{}{
 		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
-		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
+		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive, reapedClaimRecord(deliveryConfig)),
 		// The session reaper is the one loop that deletes a session's record, and the one place
 		// the bucket's maximum age is settled while the listener runs (session.ReapSessions). It
 		// deletes the session consumer of each record it deletes, so the stream holds a consumer

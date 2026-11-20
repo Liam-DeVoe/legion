@@ -339,7 +339,16 @@ func (r *Registry) markRoleClaimHandedBack(ctx context.Context, sessionID, role 
 // that read returned, naming the holder the caller has just judged to have lost the claim, so
 // at worst a lapsed holder's claim is released a moment after the caller was told the
 // bus did not answer, and a fresh claim that landed meanwhile is never touched.
-func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string, claim RoleClaim, sessionTTL time.Duration) (ExpiredRoleClaimRelease, error) {
+//
+// Before the delete, and only for a claim no restart grace holds, it writes record for role and
+// the claim's holder (RoleClaimFreeRecord, nil for none): the takeover record a claim from
+// another session writes before its own write, so the role's next holder is handed the role
+// messages the freed holder did not read, as it would be had it taken the role from that holder
+// while the claim stood. A record that did not store reports the claim retained, its error naming
+// the release, and nothing is deleted. A record whose delete then loses - the holder claimed the
+// role again - is one a takeover pass reads as the holder holding the role again, and copies
+// nothing for.
+func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string, claim RoleClaim, sessionTTL time.Duration, record RoleClaimFreeRecord) (ExpiredRoleClaimRelease, error) {
 	if claim.Revision == 0 {
 		return ExpiredRoleClaimMissing, nil
 	}
@@ -348,6 +357,11 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	r.mu.RUnlock()
 	if restored && restoredRevision == claim.Revision && !claim.HandedBack && sessionTTL > 0 && r.now().Sub(r.openedAt) < sessionTTL {
 		return ExpiredRoleClaimRetained, nil
+	}
+	if record != nil {
+		if err := record(ctx, role, claim.HolderSessionID); err != nil {
+			return ExpiredRoleClaimRetained, fmt.Errorf("release role %s's expired claim held by %s: its takeover record did not store, so the claim stands: %w", role, claim.HolderSessionID, err)
+		}
 	}
 	epoch := r.roleViewEpoch()
 	roles := r.roles()

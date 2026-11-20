@@ -185,14 +185,14 @@ func TestARoleClaimThatNamesNoProcess(t *testing.T) {
 								t.Fatalf("the claim %s after the hand-back, registered by process %q, is %+v, want it exactly as the hand-back left it, %+v", since, instance, stood, marked)
 							}
 						}
-						if sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, noProcessLiveWindow); err != nil || sweep.Reaped != 0 {
+						if sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, noProcessLiveWindow, nil); err != nil || sweep.Reaped != 0 {
 							t.Fatalf("a reaper pass %s after the hand-back freed %+v, %v; want none inside the live window", since, sweep, err)
 						}
 						assertRoleHolder(t, reg, role, holder)
 					}
 
 					advance(noProcessLiveWindow + beat)
-					sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, noProcessLiveWindow)
+					sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, noProcessLiveWindow, nil)
 					if err != nil || sweep.Reaped != 1 {
 						t.Fatalf("the reaper pass past the live window freed %+v, %v; want the one marked claim, its session alive", sweep, err)
 					}

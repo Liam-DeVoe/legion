@@ -257,7 +257,7 @@ func (r *hourRig) reapClaim(role string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if sweep, err := first.harness.registry.ReapRoleClaims(ctx, isAlive, first.harness.sessions.TTL(), session.LiveWindow); err != nil || sweep.Reaped != 1 {
+	if sweep, err := first.harness.registry.ReapRoleClaims(ctx, isAlive, first.harness.sessions.TTL(), session.LiveWindow, nil); err != nil || sweep.Reaped != 1 {
 		r.t.Fatalf("reap the role claims = %+v, %v; want role %s's claim freed", sweep, err, role)
 	}
 }

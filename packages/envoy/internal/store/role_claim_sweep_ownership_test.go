@@ -264,7 +264,7 @@ func TestTheSweepsThatReadFromOneScanKeepAClaimTakenUnderTheirDelete(t *testing.
 		hook, takenRevision := landClaimUnderTheFirstDelete(t, rawRoles, taken)
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{beforeFirstDelete: hook})
 
-		sweep, err := reg.ReapRoleClaims(context.Background(), func(holder string) bool { return holder != expired }, 0, 0)
+		sweep, err := reg.ReapRoleClaims(context.Background(), func(holder string) bool { return holder != expired }, 0, 0, nil)
 		if err != nil {
 			t.Fatalf("a reaper pass that lost one conditional delete to a claim landing under it: %v, want the loss read as the race it is", err)
 		}

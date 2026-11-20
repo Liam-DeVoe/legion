@@ -1,19 +1,24 @@
-// The takeover copy: when a session takes a role from a different session, the role messages the
-// previous holder did not read stay on its own agent subject, where only that session reads them.
-// The listener copies them to the role's kept lane (bus.KeptRoleSubject), whose walk hands them to
-// whoever holds the role, so the role's next holder receives each at least once.
+// The takeover copy: when a session takes a role from a different session, or the role claim
+// reaper frees the claim of a holder that stopped, the role messages the previous holder did not
+// read stay on its own agent subject, where only that session reads them. The listener copies them
+// to the role's kept lane (bus.KeptRoleSubject), whose walk hands them to whoever holds the role,
+// so the role's next holder receives each at least once.
 //
 // The claim route writes a takeover record before each try of its claim write (publishTakeover,
 // bus.TakeoverSubject), and a try whose record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded), which the Legion claim boot and controller claim again after
-// (claimRoleAgainOnBusy in packages/pi-shared). A pass of a record reads the previous holder's
-// subject from the acknowledgement floor of its session consumer on and copies each role message of
-// the role under a minted dedupe key of its own (runTakeoverPasses, takenFrameDedupeKey), and writes
-// the record when it changed it or once its last write is takeoverRecordRefresh old; the claim
-// route's handover and the kept lane's sweep run the passes (handOverTakenRole). The session relay
-// copies a role message whose role another session holds instead of delivering it
-// (sessionRelays.takeOverFrame). Dispatch marks a send for a role route from its own identity alone
-// (internal/dispatch/envoy, Send), which is what lets a copy find a message Dispatch sent.
+// (claimRoleAgainOnBusy in packages/pi-shared). The role claim reaper writes the same record before
+// it frees a claim (store.Registry.ReapRoleClaims, wired in main.go), and a free whose record did
+// not store leaves the claim for its next pass: the claim it frees names no holder after it, so
+// the claim of the role's next holder writes no record of its own. A pass of a record reads the
+// previous holder's subject from the acknowledgement floor of its session consumer on and copies
+// each role message of the role under a minted dedupe key of its own (runTakeoverPasses,
+// takenFrameDedupeKey), and writes the record when it changed it or once its last write is
+// takeoverRecordRefresh old; the claim route's handover and the kept lane's sweep run the passes
+// (handOverTakenRole). The session relay copies a role message whose role another session holds
+// instead of delivering it (sessionRelays.takeOverFrame). Dispatch marks a send for a role route
+// from its own identity alone (internal/dispatch/envoy, Send), which is what lets a copy find a
+// message Dispatch sent.
 
 package main
 
@@ -263,9 +268,11 @@ func (t takeoverTries) beforeTry(ctx context.Context, read store.RoleClaim) erro
 }
 
 // publishTakeover writes the takeover record of role taken from previous, on a subject of its own
-// (bus.TakeoverSubject with a fresh attempt id), with the claim's time on the listener's clock. A
-// previous holder whose id no session consumer can be named for (bus.SessionConsumerName) has no
-// subject of its own to copy from, so it gets none.
+// (bus.TakeoverSubject with a fresh attempt id), with the claim's time on the listener's clock: the
+// time of the claim route's try, or of the role claim reaper's free of previous's claim, the two
+// writers of a record (takeoverTries.beforeTry; main.go's reaper). A previous holder whose id no
+// session consumer can be named for (bus.SessionConsumerName) has no subject of its own to copy
+// from, so it gets none.
 func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, role, previous string) error {
 	if _, ok := bus.SessionConsumerName(previous); !ok {
 		return nil
@@ -282,6 +289,20 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 		return fmt.Errorf("record role %s's takeover from %s: %w", role, previous, err)
 	}
 	return nil
+}
+
+// reapedClaimRecord is the record the role claim reaper writes before it frees a claim
+// (store.RoleClaimFreeRecord, main.go): the takeover record of the claim's role taken from its
+// holder (publishTakeover), on cfg's stream and clock. The claim it frees names no holder after
+// it, so the claim of the role's next holder writes no record of its own (takeoverTries.beforeTry
+// writes one only over a claim naming another session); without this one, the role messages
+// forwarded to the freed holder after it stopped stay unread on its subject. The record's passes
+// copy them to the role's kept lane: the kept lane's sweep runs them at its next pass, and the
+// next claim's handover runs them before it hands the lane over (handOverTakenRole).
+func reapedClaimRecord(cfg listenerDeliveryHandlerConfig) store.RoleClaimFreeRecord {
+	return func(ctx context.Context, role, holder string) error {
+		return publishTakeover(ctx, cfg, role, holder)
+	}
 }
 
 // runTakenRoleDrain is runKeptRoleDrain for a role the claim route has just granted: under the

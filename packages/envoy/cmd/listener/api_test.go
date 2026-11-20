@@ -1009,7 +1009,7 @@ func TestTheRoleReaperWhoseSessionCacheTrailsTheBucketKeepsAFreshClaim(t *testin
 	live := func(sessionID string) bool {
 		return roleHolderMayBeLive(logging.New("test"), observer.sessions, sessionID)
 	}
-	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL()); err != nil || sweep.Reaped != 1 {
+	if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), observer.sessions.TTL(), nil); err != nil || sweep.Reaped != 1 {
 		t.Fatalf("reap role claims = %+v, %v; want the one claim whose holder left the bucket", sweep, err)
 	}
 	for role, want := range map[string]string{"fresh-claim": "ses_fresh_holder", "lapsed-claim": ""} {
@@ -1233,7 +1233,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 		// A live window of zero so the claim's own renewal keeps nothing here: what must keep
 		// it is the session bucket the reaper cannot read.
-		if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), 0); err != nil || sweep.Reaped != 0 {
+		if sweep, err := observer.registry.ReapRoleClaims(context.Background(), live, observer.sessions.TTL(), 0, nil); err != nil || sweep.Reaped != 0 {
 			t.Fatalf("reap role claims while the session bucket cannot be read = %+v, %v; want none", sweep, err)
 		}
 		if holder := holderOf(t, claimant, "unread"); holder != "ses_holder" {
@@ -1521,7 +1521,7 @@ func TestRoleClaimRestoresWhileHolderIsLiveAndDropsAfterTTL(t *testing.T) {
 	}
 	sweep, err := restoredRegistry.ReapRoleClaims(context.Background(), func(id string) bool {
 		return roleHolderMayBeLive(logging.New("test"), restoredSessions, id)
-	}, live, live)
+	}, live, live, nil)
 	if err != nil || sweep.Reaped != 1 {
 		t.Fatalf("the role reaper released %+v, %v; want the one claim whose holder is gone", sweep, err)
 	}

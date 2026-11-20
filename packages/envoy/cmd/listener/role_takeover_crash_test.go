@@ -343,7 +343,7 @@ func crashReapedBeforeAnyPass(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if sweep, err := rig.harness.registry.ReapRoleClaims(ctx, isAlive, rig.harness.sessions.TTL(), session.LiveWindow); err != nil || sweep.Reaped != 1 {
+		if sweep, err := rig.harness.registry.ReapRoleClaims(ctx, isAlive, rig.harness.sessions.TTL(), session.LiveWindow, nil); err != nil || sweep.Reaped != 1 {
 			rig.t.Fatalf("reap the role claims = %+v, %v; want role %s's claim deleted", sweep, err, role)
 		}
 	})

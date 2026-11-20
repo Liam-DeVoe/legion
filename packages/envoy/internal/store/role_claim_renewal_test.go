@@ -187,7 +187,7 @@ func TestAClaimRenewedInsideTheLiveWindowIsKeptThoughItsHoldersSessionRecordIsGo
 		t.Fatalf("a claim renewed %s ago reads unrenewed within %s; want it renewed", liveWindow-time.Second, liveWindow)
 	}
 
-	sweep, err := reg.ReapRoleClaims(context.Background(), gone, 0, liveWindow)
+	sweep, err := reg.ReapRoleClaims(context.Background(), gone, 0, liveWindow, nil)
 	if err != nil || sweep.Reaped != 0 {
 		t.Fatalf("the sweep freed %+v, %v; want none: the holder still renews its claim", sweep, err)
 	}
@@ -210,7 +210,7 @@ func TestAClaimWhoseRenewalIsOlderThanTheLiveWindowIsFreed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read %s's claim to release: %v", role, err)
 		}
-		release, err := reg.releaseReadExpiredRoleClaim(context.Background(), role, claim, 0)
+		release, err := reg.releaseReadExpiredRoleClaim(context.Background(), role, claim, 0, nil)
 		if err != nil || release != ExpiredRoleClaimReleased {
 			t.Fatalf("release a claim renewed one live window ago = %v, %v; want it released", release, err)
 		}
@@ -220,7 +220,7 @@ func TestAClaimWhoseRenewalIsOlderThanTheLiveWindowIsFreed(t *testing.T) {
 		const holder = "ses_lapsed_sweep"
 		reg, advance := renewedRoleClaim(t, role, holder)
 		advance(liveWindow + time.Second)
-		sweep, err := reg.ReapRoleClaims(context.Background(), func(string) bool { return false }, 0, liveWindow)
+		sweep, err := reg.ReapRoleClaims(context.Background(), func(string) bool { return false }, 0, liveWindow, nil)
 		if err != nil || sweep.Reaped != 1 {
 			t.Fatalf("the sweep freed %+v, %v; want the one claim whose holder stopped answering", sweep, err)
 		}
@@ -563,7 +563,7 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 	// A live window past that last renewal, the claim is nobody's live hold and the sweep frees
 	// the role, though the process that handed it back is still there and still registering.
 	advance(2 * liveWindow)
-	sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, liveWindow)
+	sweep, err := reg.ReapRoleClaims(context.Background(), alive, 0, liveWindow, nil)
 	if err != nil || sweep.Reaped != 1 {
 		t.Fatalf("the sweep a live window after the hand-back freed %+v, %v; want the one claim nobody answers for", sweep, err)
 	}
@@ -649,7 +649,7 @@ func TestAHoldersRegistrationsKeepItsClaimRenewedWhileItRuns(t *testing.T) {
 			t.Fatalf("the claim %s after it was taken was renewed at %d, want %d: the holder's own registration renews it",
 				since, renewed.RenewedAt, renewed.ClaimedAt+since.Milliseconds())
 		}
-		sweep, err := reg.ReapRoleClaims(context.Background(), gone, 0, liveWindow)
+		sweep, err := reg.ReapRoleClaims(context.Background(), gone, 0, liveWindow, nil)
 		if err != nil || sweep.Reaped != 0 {
 			t.Fatalf("the sweep %s after the claim freed %+v, %v; want none: the holder answered for it this beat", since, sweep, err)
 		}

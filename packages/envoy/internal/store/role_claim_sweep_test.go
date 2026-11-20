@@ -507,7 +507,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
 
 		started := time.Now()
-		sweep, err := reg.ReapRoleClaims(context.Background(), func(holder string) bool { return !goneHolders[holder] }, 0, 0)
+		sweep, err := reg.ReapRoleClaims(context.Background(), func(holder string) bool { return !goneHolders[holder] }, 0, 0, nil)
 		elapsed := time.Since(started)
 		if err != nil {
 			t.Fatalf("a reaper pass over %d stored claims: %v", otherRoleClaims+len(gone), err)

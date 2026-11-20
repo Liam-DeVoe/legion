@@ -493,7 +493,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 	otherRecorded := rig.clock.Now()
 	rig.reg.RecordRenewalFailures(other, cause)
 	requireRenewalFailure(t, rig.reg, otherRole, other, otherRecorded, cause)
-	if _, err := rig.reg.ReapRoleClaims(ctx, alive, 0, window); err != nil {
+	if _, err := rig.reg.ReapRoleClaims(ctx, alive, 0, window, nil); err != nil {
 		t.Fatalf("the role claim reaper's pass: %v", err)
 	}
 	for _, role := range []string{both, lostRole, copyRole} {
@@ -502,7 +502,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 		}
 	}
 	rig.clock.Set(otherRecorded.Add(window - time.Millisecond))
-	if _, err := rig.reg.ReapRoleClaims(ctx, alive, 0, window); err != nil {
+	if _, err := rig.reg.ReapRoleClaims(ctx, alive, 0, window, nil); err != nil {
 		t.Fatalf("the role claim reaper's second pass: %v", err)
 	}
 	if _, kept := rig.reg.RenewalFailedWithin(otherRole, other, 2*window); !kept {
