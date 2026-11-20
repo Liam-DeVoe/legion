@@ -104,14 +104,23 @@ test("a turn the provider refused is reported refused, with the provider's own m
 test("a refused turn carries the HTTP status the provider answered it with, and nothing else does", async () => {
   const { report, posted } = rig();
   const refused = (errorStatus?: number) => ({
-    messages: [{ role: "assistant", stopReason: "error", errorMessage: "invalid_request_error", errorStatus }],
+    messages: [
+      {
+        role: "assistant",
+        stopReason: "error",
+        errorMessage: "invalid_request_error",
+        errorStatus,
+      },
+    ],
   });
 
   await report(SESSION, refused(400));
   await report(SESSION, refused(529));
   await report(SESSION, refused());
   await report(SESSION, refused(0));
-  await report(SESSION, { messages: [{ role: "assistant", stopReason: "stop", errorStatus: 400 }] });
+  await report(SESSION, {
+    messages: [{ role: "assistant", stopReason: "stop", errorStatus: 400 }],
+  });
 
   expect(posted.map((body) => [body.outcome, body.httpStatus])).toEqual([
     ["refused", 400],

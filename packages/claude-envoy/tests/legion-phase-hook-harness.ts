@@ -47,7 +47,11 @@ const QUICK_LIMITS: Record<string, string> = {
 }
 
 /** One record on disk, as the Go bridge or an earlier run of this server left it. */
-export function recorded(state: string, count: number, extra: Record<string, unknown> = {}): string {
+export function recorded(
+  state: string,
+  count: number,
+  extra: Record<string, unknown> = {},
+): string {
   return JSON.stringify({ state, count, reported: false, ...extra })
 }
 
