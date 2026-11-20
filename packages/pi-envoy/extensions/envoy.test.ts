@@ -20679,11 +20679,11 @@ console.log(JSON.stringify(args));
       const before = notifications.length;
       heartbeat.callback();
       // Its pass ends inside the queue's 30 s deadline, the trade failing at 20 s, or is abandoned
-      // there and says so: a heartbeat that says nothing a minute on has hung, and is named.
+      // there and says so: a heartbeat that says nothing has hung, and `until`, which has no
+      // deadline of its own, leaves that to the row's limit, which names the row.
       await until(
         () => notifications.length > before,
-        "the heartbeat's notice of what its pass came to",
-        60_000
+        "the heartbeat's notice of what its pass came to"
       );
       expect(notifications.slice(before)).toEqual([
         expect.stringContaining("envoy: registry heartbeat failed"),
@@ -20868,9 +20868,10 @@ console.log(JSON.stringify(args));
     for (const read of natsState.statusReaders) {
       read({ type: "error", data: "AUTHORIZATION_VIOLATION" });
     }
-    // The reader's warning is this process's own work, done within turns of the push; a bound of
-    // two-thirds of the row's time names a hang without failing a machine that stalls.
-    await until(() => refused().length > 0, "the keeper's notice", 20_000);
+    // The reader's warning is this process's own work, done within turns of the push. `until`
+    // has no deadline of its own, so a warning that never comes ends at the row's limit, which
+    // names the row, and a machine that stalls is only slower.
+    await until(() => refused().length > 0, "the keeper's notice");
     expect(refused().map(({ message }) => message)).toEqual([
       "envoy: the NATS server refused the connection's live broker token (AUTHORIZATION_VIOLATION): the auth service is away, or the token was revoked; the connection keeps redialling, and at the second refusal the token is dropped and another traded",
     ]);
@@ -20885,18 +20886,16 @@ console.log(JSON.stringify(args));
     await withEnvoyTimings({ heartbeatMs: 10_000, passDeadlineMs: 10_000 }, async () => {
       brokerPod((trade) => (trade === 1 ? "grant" : "503"));
       const started = Date.now();
-      // When the follow's trade for the new session reached the broker: the follow starts its
-      // clock just before it, which the switch's own work before the pass can put well after the
-      // row's switch. The pod's fetch is `rowFetch()`: `globalThis.fetch` reads the file's
-      // recording wrapper, which calls whatever a row installed, so a wrapper that called it would
-      // call itself forever.
+      // Whether the follow traded for the new session at the broker. The pod's fetch is
+      // `rowFetch()`: `globalThis.fetch` reads the file's recording wrapper, which calls whatever
+      // a row installed, so a wrapper that called it would call itself forever.
       const pod = rowFetch();
-      let followTradeAt: number | undefined;
+      let followTraded = false;
       globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
         if (new URL(request.url).host === "broker.test") {
           const session = new URLSearchParams(await request.clone().text()).get("session");
-          if (session === "ses_follow_to") followTradeAt ??= Date.now() - started;
+          if (session === "ses_follow_to") followTraded = true;
         }
         return await pod(input, init);
       };
@@ -20911,21 +20910,27 @@ console.log(JSON.stringify(args));
       const all = () => [...before.notifications, ...after.notifications];
       const named = () =>
         all().find(({ message }) => message.includes("could not take the new session's token"));
-      await until(() => named() !== undefined, "a notice naming the follow's trade", 45_000);
+      await until(() => named() !== undefined, "a notice naming the follow's trade");
       expect(named()?.message).toContain("HTTP 503");
       const at = named()?.at ?? Number.POSITIVE_INFINITY;
       // Not before the trade's 4 s share, which no timer ends early: counted from the switch,
       // before the follow started its clock.
       expect(at - switchedAt).toBeGreaterThanOrEqual(3_900);
-      // Inside the follow's own 8 s bound (`followBoundMs`), counted from its trade: the 4 s share
-      // and as much again for a loaded machine to say so, the share the follow would leave the
-      // connection. The pass's own 10 s deadline is the bound the queue keeps: a follow that
-      // outlasted it would be abandoned, which says so below.
-      expect(followTradeAt).toBeDefined();
-      expect(at - (followTradeAt ?? Number.NEGATIVE_INFINITY)).toBeLessThan(8_000);
+      // Inside the pass, read as an order rather than a time: the follow's own bound
+      // (`followBoundMs`, 8 s of the pass's 10 s) ends its trade before the queue's 10 s deadline
+      // ends the pass, so the pass says what the trade came to, which is the notice awaited above.
+      // Both are this process's own timers, which a loaded machine delays alike. A follow that
+      // ignores the pass's bound (the review of 2fa6fbf7cf, m3) outlives the pass, which the
+      // queue abandons with its settlement unsaid, so that notice never comes and the row's limit
+      // ends the row, naming it.
+      expect(followTraded).toBe(true);
       expect(all().some(({ message }) => message.includes("did not settle within"))).toBe(false);
       await fixture.handlers.get("session_shutdown")?.({}, after.context);
     });
+    // A hang guard, the row's discriminator for its defect: what can hang is the notice `until`
+    // waits for above, which a follow that ignores the pass's bound never gives. 60_000. Worst
+    // measured cost: 10 456.65 ms over 20 runs at 16 busy loops (the 96 rung) on the two-CPU,
+    // 8 GiB pod of 2026-11-19 18:40Z, so 60_000 is 5.7 times that.
   }, 60_000);
 
   test("after a switch whose move failed, the old session's viewer is replayed nothing of the new one", async () => {
