@@ -124,9 +124,9 @@ func removeScript(bin, name string) error {
 // while keeping every other entry verbatim.
 func Path(path, root string) string {
 	launcher := LauncherDir(root)
-	entries := make([]string, 0, len(filepath.SplitList(path))+1)
-	entries = append(entries, launcher)
-	for _, entry := range filepath.SplitList(path) {
+	parts := filepath.SplitList(path)
+	entries := []string{launcher}
+	for _, entry := range parts {
 		if entry != "" && entry != launcher {
 			entries = append(entries, entry)
 		}
