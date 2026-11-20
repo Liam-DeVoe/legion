@@ -10,6 +10,7 @@ import {
   createProject,
   listOpenIssues,
   patchIssue,
+  type RowKey,
 } from "./api";
 import { harnessPorts } from "./harness-ports";
 import { type KeyedWrite, keyedWrite, watchWrites } from "./keyed-writes";
@@ -410,7 +411,7 @@ export function agentSessions(sessionId: (logical: string) => string): AgentSess
  *  `sessions` are the two sessions, the row's own on the real stack (`agentSessions`); the
  *  fixed ones are the default. */
 export async function seedAgents(
-  project: string,
+  project: RowKey,
   { planner, reviewer }: AgentSessions = { planner: plannerSession, reviewer: reviewerSession }
 ): Promise<string> {
   await createProject({ key: project, name: "Core" });

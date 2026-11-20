@@ -10,11 +10,12 @@ import {
   createMessage,
   createProject,
   listIssueAsks,
+  type RowKey,
 } from "./api";
 import { blockId, openedThreadCard, setSheet } from "./editor";
 import { READING_PANE_WIDTH } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
-import { rowKey } from "./test";
+import { rowKey, rowKeyBehind } from "./test";
 
 /**
  * The one world every reference spec is walked across, and the surfaces it is read on.
@@ -42,11 +43,11 @@ export const ANCHOR = "The margin anchor sits here.";
  *  its world under keys of its own (`rowKey`, e2e/test.ts), and `intoWorld` rewrites a text from
  *  the one to the other. This repository is public, so the fixture names no real project. */
 export interface ReferenceProjects {
-  readonly core: string;
+  readonly core: RowKey;
   /** `core` behind an `X`, as the table's `XCORE` is `CORE` behind one, so a text that writes the
    *  one key inside the other (`See XCORE-1 here.`) still does in this world. */
-  readonly xcore: string;
-  readonly acme: string;
+  readonly xcore: RowKey;
+  readonly acme: RowKey;
 }
 
 /** `text`, written against the shared table's project keys, rewritten into the world's: `CORE`
@@ -166,7 +167,11 @@ const FILLER_PARAGRAPHS = 40;
  */
 export async function seedReferenceWorld(): Promise<ReferenceWorld> {
   const core = rowKey("CORE");
-  const projects: ReferenceProjects = { acme: rowKey("ACME"), core, xcore: `X${core}` };
+  const projects: ReferenceProjects = {
+    acme: rowKey("ACME"),
+    core,
+    xcore: rowKeyBehind("X", core),
+  };
   await createProject({ key: projects.core, name: "Core" });
   await createProject({ key: projects.xcore, name: "Cross core" });
   await createProject({ key: projects.acme, name: "Acme" });

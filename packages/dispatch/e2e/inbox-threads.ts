@@ -14,6 +14,7 @@ import {
   createProject,
   getInbox,
   patchIssue,
+  type RowKey,
   replyToMessageDelivery,
   requestApproval,
 } from "./api";
@@ -441,9 +442,9 @@ async function indexedRow(login: string, match: (row: InboxRow) => boolean): Pro
  * list from two layers. `project` is the key of the project the issues are made in: the
  * real-stack rows pass their own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording
  * made under `CORE`. `login` is the reader every row is seeded for, alice unless a real-stack
- * row names a person of its own (`rowPerson`), as `project` is CORE unless it names a key.
+ * row names a person of its own (`rowPerson`).
  */
-export async function seedTwelve(project = "CORE", login = "alice"): Promise<Twelve> {
+export async function seedTwelve(project: RowKey, login = "alice"): Promise<Twelve> {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: project, name: "Core" }, { login });
 

@@ -9,6 +9,7 @@ import {
   createIssue,
   createProject,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
@@ -25,7 +26,7 @@ export const session = {
  *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
  *  `login` is the reader the three wait on, alice unless a row names a person of its own
  *  (`rowPerson`). */
-export async function seedInbox(project = "CORE", login = "alice"): Promise<void> {
+export async function seedInbox(project: RowKey, login = "alice"): Promise<void> {
   await createProject({ key: project, name: "Core" }, { login });
   for (const title of ["First", "Second", "Third"]) {
     const issue = await createIssue({ project, title }, { login });
@@ -125,7 +126,7 @@ async function paneCard(project: string, priority: number): Promise<string> {
 /** Two questions, in the order the Inbox lists them (the issue's priority first): a request to
  *  approve a long document, and a question in no document. `project` is the key of the project
  *  they are made in, as `seedInbox` takes it; the stubbed rows' recording was made under `PANE`. */
-export async function seedPane(project = "PANE"): Promise<PaneSeed> {
+export async function seedPane(project: RowKey): Promise<PaneSeed> {
   await createProject({ key: project, name: "Pane keyboard" });
   const approvalAskId = await paneApproval(project);
   const cardAskId = await paneCard(project, 1);
@@ -137,7 +138,7 @@ export async function seedPane(project = "PANE"): Promise<PaneSeed> {
  *  P0 first, and sorts a band newest first (`grouping.ts`), so the card's issue is at P0 as well
  *  and the card is asked before the approval request: the request is then the newest row of the
  *  first band and the card the one after it, ahead of every older question an earlier row left. */
-export async function seedPaneAhead(project: string): Promise<PaneSeed> {
+export async function seedPaneAhead(project: RowKey): Promise<PaneSeed> {
   await createProject({ key: project, name: "Pane keyboard" });
   const cardAskId = await paneCard(project, 0);
   const approvalAskId = await paneApproval(project);

@@ -63,10 +63,11 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
+import { PROJECT_KEY_PATTERN, PROJECT_KEY_RULE } from "@legion/contracts";
 import { test as base } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { deleteArchitectureSource } from "./api";
+import { deleteArchitectureSource, type RowKey } from "./api";
 import {
   type DeliveryPlace,
   deleteDeliveryRowsBut,
@@ -135,16 +136,35 @@ function rowSuffix(logical: string): string {
  *  the helpers it calls agree without passing the key around. Outside a running row it throws,
  *  as `test.info()` does: a key held at module scope belongs to no row.
  *
+ *  It answers a `RowKey` (e2e/api.ts), the one type `createProject` takes for a key, so a
+ *  real-stack row that writes a literal key there fails the typecheck. A helper that makes a
+ *  project under a key its caller passes takes a `RowKey` too.
+ *
  *      const core = rowKey("CORE");
  *      await createProject({ key: core, name: "Core" });
  *      await page.goto(`/projects/${core}`); */
-export function rowKey(logical: string): string {
+export function rowKey(logical: string): RowKey {
   if (!/^[A-Z][A-Z0-9]*$/.test(logical)) {
     throw new Error(
       `rowKey: the logical key ${JSON.stringify(logical)} must start with A-Z and hold only A-Z and 0-9`
     );
   }
-  return `${logical.slice(0, 5)}${rowSuffix(logical)}`;
+  return `${logical.slice(0, 5)}${rowSuffix(logical)}` as RowKey;
+}
+
+/** `key`, a key of the running row's own (`rowKey`), behind `prefix`: a key no other row makes
+ *  either, since none makes `key`, for a row whose claim needs one of its keys written inside
+ *  another, as `XCORE` holds `CORE` (`seedReferenceWorld`, e2e/reference-surfaces.ts). It
+ *  throws where the result is no key the server takes (`PROJECT_KEY_PATTERN`, @legion/contracts):
+ *  a `rowKey` of a logical key of five letters or more is ten characters already. */
+export function rowKeyBehind(prefix: string, key: RowKey): RowKey {
+  const behind = `${prefix}${key}`;
+  if (!PROJECT_KEY_PATTERN.test(behind)) {
+    throw new Error(
+      `rowKeyBehind: ${JSON.stringify(behind)} is no project key: ${PROJECT_KEY_RULE}`
+    );
+  }
+  return behind as RowKey;
 }
 
 /** Whether `logical` is a name `rowPerson`, `own`, `rowSessionId` and `rowNumber` take: a-z,

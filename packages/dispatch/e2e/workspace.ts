@@ -13,6 +13,7 @@ import {
   getInbox,
   getIssue,
   patchIssue,
+  type RowKey,
   replyToCommentDelivery,
   replyToMessageDelivery,
   resolveAsk,
@@ -116,17 +117,18 @@ export interface SeededWorkspace {
  *  clock ends it and hides the wait's message. The abort of `signal` stops the Inbox wait.
  *
  *  `projects` are the keys of its two projects and `person` the human it acts as: a real-stack
- *  row passes its own (`rowKey` and `rowPerson`, e2e/test.ts), and the review corpus and the
- *  local instance take `CORE`, `OPS` and alice. */
+ *  row passes its own (`rowKey` and `rowPerson`, e2e/test.ts), and the review corpus, the local
+ *  instance and the docs pictures each pass `CORE` and `OPS` as `fixedKey`s naming why, and
+ *  take alice. */
 export async function seedWorkspace({
   boundMs,
   person,
-  projects = { core: "CORE", ops: "OPS" },
+  projects,
   signal,
 }: {
   readonly boundMs: number;
   readonly person?: string;
-  readonly projects?: { readonly core: string; readonly ops: string };
+  readonly projects: { readonly core: RowKey; readonly ops: RowKey };
   readonly signal?: AbortSignal;
 }): Promise<SeededWorkspace> {
   const actor = (id: string, origin: Omit<ActorOrigin, "session_title"> = {}): Actor => {

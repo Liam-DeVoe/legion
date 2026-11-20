@@ -8,12 +8,15 @@
  *  markup. */
 import { expect } from "@playwright/test";
 
-import { createComment, createIssue, createProject } from "./api";
+import { createComment, createIssue, createProject, fixedKey } from "./api";
 import { expectDrawnDiagram, flowchart, openCommentThread } from "./mermaid-helpers";
 import { stubbed } from "./stub/stub-test";
 
+/** The key this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Comment diagram" });
   const comment = await createComment(issue.key, { body: flowchart("Flow:", "Start", "Finish") });
   return { comment: comment.id, issue: issue.key };

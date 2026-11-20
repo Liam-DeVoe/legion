@@ -3,7 +3,7 @@
  *  (`search.stub.e2e.ts`). */
 import type { Page } from "@playwright/test";
 
-import { createComment, createIssue, createMessage, createProject } from "./api";
+import { createComment, createIssue, createMessage, createProject, type RowKey } from "./api";
 export const searchTerm = "astrolabe";
 
 /** `word` with the row's own project key run onto it, lower-cased, as the one word a real-stack
@@ -44,7 +44,7 @@ export interface SearchFixture {
  *  `keyedSearchWord`), and the stubbed rows replay a recording made under `CORE` and
  *  `searchTerm`. */
 export async function seedSearchFixture(
-  project = "CORE",
+  project: RowKey,
   term = searchTerm
 ): Promise<SearchFixture> {
   await createProject({ key: project, name: "Core" });

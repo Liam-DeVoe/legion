@@ -3,7 +3,7 @@
  *  recording (`keyboard.stub.e2e.ts`). */
 import { expect, type Page } from "@playwright/test";
 
-import { createAsk, createIssue, createProject, patchIssue } from "./api";
+import { createAsk, createIssue, createProject, fixedKey, patchIssue, type RowKey } from "./api";
 
 export const session = {
   actor: { kind: "session" as const, id: "e2e-keyboard" },
@@ -11,7 +11,10 @@ export const session = {
 };
 
 export async function seedInbox(): Promise<{ issueKey: string; rows: number }> {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({
+    key: fixedKey("CORE", "keyboard.stub.e2e.ts replays a recording made under it"),
+    name: "Core",
+  });
   const issue = await createIssue({ project: "CORE", title: "Keyboard decision" });
   const options = [{ label: "Ship" }, { label: "Hold" }, { label: "Wait" }];
   await createAsk(issue.key, { options, question: "Older ask" }, session);
@@ -31,7 +34,7 @@ export async function openInbox(page: Page, rows = 2): Promise<void> {
 /** Todo: Alpha, Bravo, Charlie; In progress: Delta; Retro: Echo, Foxtrot - the board seed.
  *  `project` is the key of the project the cards are made in: `keyboard.e2e.ts` passes its row's
  *  own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
-export async function seedBoard(project = "CORE") {
+export async function seedBoard(project: RowKey) {
   await createProject({ key: project, name: "Core" });
   const seed = async (title: string, status: "todo" | "in_progress" | "retro") => {
     const issue = await createIssue({ project, title });

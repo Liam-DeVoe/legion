@@ -18,7 +18,16 @@ import {
 import { documentEditor, openSpec, typeAtEnd } from "./editor";
 import { ONE_PIXEL_PNG, pastePicture } from "./sends";
 import { sessionIds } from "./session-ids";
-import { expect, type Locator, type Page, type Response, rowKey, rowPerson, test } from "./test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  rowKey,
+  rowPerson,
+  rowSessionId,
+  test,
+} from "./test";
 import { asUser } from "./users";
 
 // A picture pasted into a message, an ask's answer or a direct message is uploaded and written as
@@ -168,12 +177,16 @@ test("a picture pasted into an ask's answer shows inline in the answer", async (
 test("a picture pasted into a direct message on the Agents page shows inline and opens its page", async ({
   browser,
 }) => {
+  // A session of the row's own (`rowSessionId`, e2e/test.ts): the row uploads `shot.png` to the
+  // session's conversation, and an upload under a name that conversation already holds is that
+  // picture's next version, so where another row of the worker had uploaded to the same session
+  // this row would read version 2 where it claims version 1.
   const planner = {
     capabilities: ["aside", "btw", "steer"],
     dir: "/workspaces/planner",
     machine_id: "planner-host",
     roles: ["planner"],
-    session_id: sessionIds.planner,
+    session_id: rowSessionId("planner"),
     title: "Planner",
   };
   await setLiveSessions([planner]);

@@ -197,9 +197,11 @@ under it. Each `web/src/` and `e2e/` path below is under `packages/dispatch`.
   `*.stub.e2e.ts`, run by `bun run e2e:stub`. A real engine reads a recorded API, with no server,
   no database and no sign-in.
 
-- **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one
-  stack for each Playwright worker. A spec takes its `test` from `e2e/test.ts`, whose automatic
-  fixture resets the worker's database and signs the default context in before each row.
+- **Browser against the real stack**: `bun run e2e`, with the real Go server and Postgres, one stack for each Playwright worker.
+  A spec takes its `test` from `e2e/test.ts`, whose automatic fixture resets the worker's database and signs the default context in before each row.
+  A real-stack row makes its projects under `rowKey(...)` (`e2e/test.ts`), a key no other row makes, and `createProject` (`e2e/api.ts`) takes only the `RowKey` type that `rowKey` answers, so a row that writes a literal key fails the typecheck.
+  A helper that makes a project under a key its caller passes takes a `RowKey` too, and a key built from the row's own, as `XCORE` is `CORE` behind an `X`, is `rowKeyBehind("X", core)`.
+  A caller whose key is fixed on purpose writes it as `fixedKey(key, why)`, and `why` names the reason a fixed key is right there: the recording a stubbed row replays, the review corpus seeded once into each database a worker holds, the docs' pictures, the local instance, or a project another service names (`e2e/read-token-live.ts`).
 
 Two rules set the edges of those layers:
 

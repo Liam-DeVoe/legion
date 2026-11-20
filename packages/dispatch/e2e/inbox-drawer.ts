@@ -3,7 +3,7 @@
  *  (`inbox-drawer.stub.e2e.ts`). */
 import type { Locator, Page, TestInfo } from "@playwright/test";
 
-import { createAsk, createIssue, createProject } from "./api";
+import { createAsk, createIssue, createProject, type RowKey } from "./api";
 import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
 
 export const session = {
@@ -15,7 +15,7 @@ export const session = {
  *  row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`. */
 export async function seedAsk(
   question: string,
-  project = "CORE"
+  project: RowKey
 ): Promise<{ askId: string; issueKey: string }> {
   await createProject({ key: project, name: "Core" });
   const issue = await createIssue({ project, title: "Drawer issue" });

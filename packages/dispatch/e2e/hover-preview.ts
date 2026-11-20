@@ -3,7 +3,7 @@
  *  Two spec files share it: `hover-preview.stub.e2e.ts`, whose rows read only what the page
  *  draws, and `hover-preview.e2e.ts`, which holds the phone row the `iphone` project runs.
  */
-import { createComment, createIssue, createProject, patchIssue } from "./api";
+import { createComment, createIssue, createProject, patchIssue, type RowKey } from "./api";
 
 const agent = {
   actor: { id: "e2e-hover-agent", kind: "session" as const },
@@ -13,7 +13,7 @@ const agent = {
 /** `project` is the key of the project both issues are made in: `hover-preview.e2e.ts` passes
  *  its row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under
  *  `CORE`. */
-export async function seedReference(project = "CORE"): Promise<{ source: string; target: string }> {
+export async function seedReference(project: RowKey): Promise<{ source: string; target: string }> {
   await createProject({ key: project, name: "Core" });
   const target = await createIssue({
     project,

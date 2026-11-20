@@ -1286,7 +1286,7 @@ test("picker keeps a pick on screen: the priority on the table of an item of the
 }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
-  const item = await createPriority({ owner: "alice", title: "Ship the release" });
+  const item = await createPriority({ owner: "alice", title: `Ship the release (${core})` });
   const issue = await createIssue({ project: core, title: "Priority under a held save" });
   const other = await createIssue({ project: core, title: "Another issue of the item" });
   await Promise.all([
@@ -1386,7 +1386,7 @@ test("picker keeps a pick on screen: the assignee in the table of an item of the
 }) => {
   const core = rowKey("CORE");
   await createProject({ key: core, name: "Core" });
-  const item = await createPriority({ owner: "alice", title: "Ship the release" });
+  const item = await createPriority({ owner: "alice", title: `Ship the release (${core})` });
   const issue = await createIssue({ project: core, title: "Assignee under a held save" });
   const other = await createIssue({ project: core, title: "Another issue of the item" });
   await Promise.all([

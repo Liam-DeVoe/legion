@@ -13,6 +13,7 @@ import {
   createProject,
   mintAgentToken,
   patchIssue,
+  type RowKey,
 } from "./api";
 import { marginCard } from "./editor";
 // One agent component draws every agent the app shows (dispatch://INFRA-440): its current name,
@@ -71,7 +72,7 @@ export interface Seeded {
  *  project of the stack is a link there, named by its key and its name, so a project named
  *  `Agents` is one more link a row's `{ name: "Agents" }` finds beside the navigation's own.
  *  `agent-name.stub.e2e.ts` replays a recording made under `AGT` and `Agents`. */
-export async function seed(project = "AGT", name = "Agents"): Promise<Seeded> {
+export async function seed(project: RowKey, name = "Agents"): Promise<Seeded> {
   await createProject({ key: project, name });
   const runIssue = await createIssue({
     project,

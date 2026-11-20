@@ -18,6 +18,7 @@ import {
   editArtifact,
   getInbox,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
@@ -184,7 +185,7 @@ async function indexedRow(login: string, match: (row: InboxRow) => boolean): Pro
  * `login` is the reader every question waits on, alice unless a real-stack row names a person of
  * its own (`rowPerson`).
  */
-export async function seedInbox(project = "PANE", login = "alice"): Promise<Seed> {
+export async function seedInbox(project: RowKey, login = "alice"): Promise<Seed> {
   await createProject({ key: project, name: "Pane rollout" }, { login });
 
   // Every question is its own issue or document, and the Inbox orders them by the priorities set

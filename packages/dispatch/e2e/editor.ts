@@ -13,7 +13,14 @@ import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
-import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import {
+  createIssue,
+  createProject,
+  getArtifactBlocks,
+  getArtifactText,
+  getIssue,
+  type RowKey,
+} from "./api";
 import { settledState } from "./settled";
 import { asUser } from "./users";
 
@@ -537,7 +544,7 @@ export async function paste(page: Page, clipboard: Clipboard): Promise<void> {
 
 /** Creates an issue whose spec is `spec` in the project `project`, the row's own (`rowKey`,
  *  e2e/test.ts), and opens it as alice. */
-export async function openIssue(browser: Browser, title: string, spec: string, project: string) {
+export async function openIssue(browser: Browser, title: string, spec: string, project: RowKey) {
   await createProject({ key: project, name: "Core" });
   const issue = await createIssue({ project, spec, title });
   const alice = await asUser(browser, "alice");
@@ -590,7 +597,7 @@ export async function openWithCaret(
   spec: string,
   quote: string,
   caret: "start" | "end",
-  project: string
+  project: RowKey
 ) {
   const { alice, issue, page } = await openIssue(browser, title, spec, project);
   await selectEditorText(page, quote);

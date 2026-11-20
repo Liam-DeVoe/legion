@@ -22,6 +22,7 @@ import {
   editArtifact,
   getInbox,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
@@ -37,7 +38,7 @@ export const session = {
 
 /** The one project every row of this file seeds into, under the running row's own key (`rowKey`,
  *  e2e/test.ts). */
-function scrollProject(): { key: string; name: string } {
+function scrollProject(): { key: RowKey; name: string } {
   return { key: rowKey("SCROLL"), name: "Scroll rollout" };
 }
 

@@ -40,6 +40,7 @@ import {
   baseUrl,
   createIssue,
   createProject,
+  fixedKey,
   listComments,
   putArchitectureSource,
   syncArchitectureSource,
@@ -47,7 +48,7 @@ import {
 import { harnessPorts } from "./harness-ports";
 
 /** The example entry's project (dev-broker.sh's EXCHANGE_PROJECT): its named token writes it. */
-const project = "EXAMPLE";
+const project = fixedKey("EXAMPLE", "dev-broker.sh's example entry's token writes this project");
 /** The session the read entry fixes (dev-broker.sh's READ_SESSION). */
 const readSession = "example-reader-session";
 /** The session dev-broker.sh registered the example entry's pod under (EXCHANGE_SESSION). */

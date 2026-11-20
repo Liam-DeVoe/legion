@@ -8,6 +8,7 @@ import {
   getArtifactVersion,
   getIssue,
   patchIssue,
+  type RowKey,
   requestApproval,
   withOpenedAsk,
 } from "./api";
@@ -49,7 +50,7 @@ interface Seeded {
   key: string;
 }
 
-async function seedIssue(project: string): Promise<Seeded> {
+async function seedIssue(project: RowKey): Promise<Seeded> {
   const reader = { login: rowPerson("alice") };
   await createProject({ key: project, name: project }, reader);
   const issue = await createIssue(

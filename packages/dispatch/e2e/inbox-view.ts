@@ -16,6 +16,7 @@ import {
   createComment,
   createIssue,
   createProject,
+  fixedKey,
   getInbox,
   listMyReplies,
   markThreadRead,
@@ -86,10 +87,12 @@ export async function seedEveryField(): Promise<{
   rows: readonly ViewRow[];
 }> {
   await setLiveSessions([THREAD_SESSION]);
-  await createProject({ key: "CORE", name: "Core" });
+  // Only inbox-view.stub.e2e.ts seeds this, and its recording was made under these two keys.
+  const recorded = "inbox-view.stub.e2e.ts replays a recording made under it";
+  await createProject({ key: fixedKey("CORE", recorded), name: "Core" });
   // MIRROR names carol, which is how she is a person who has signed in and so a person an
   // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
-  await createProject({ key: "MIRROR", name: "Mirror" }, { login: "carol" });
+  await createProject({ key: fixedKey("MIRROR", recorded), name: "Mirror" }, { login: "carol" });
   const rows: ViewRow[] = [];
 
   const question = async (

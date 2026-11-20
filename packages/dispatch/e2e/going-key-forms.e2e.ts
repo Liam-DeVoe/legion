@@ -1,4 +1,4 @@
-import { createIssue, createProject } from "./api";
+import { createIssue, createProject, type RowKey } from "./api";
 import { sql } from "./psql";
 import { expect, type Page, rowKey, test } from "./test";
 import { asUser } from "./users";
@@ -17,7 +17,7 @@ const decoyTitle = "Astrolabe 1042 calibration";
 /** `<project>-1042` and the decoy beside it. The project's next number is set rather than
  *  counted up to, as `search_bar_test.go` sets it: the check names this key, and 1,041 issues
  *  to reach it would be the whole cost of the row. */
-async function seedProject(project: string): Promise<string> {
+async function seedProject(project: RowKey): Promise<string> {
   await createProject({ key: project, name: `${project} work` });
   await sql(`update projects set next_number = 1042 where key = '${project}'`);
   const target = await createIssue({ project, title: targetTitle });

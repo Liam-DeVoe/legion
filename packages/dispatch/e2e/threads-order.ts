@@ -19,6 +19,7 @@ import {
   getInbox,
   listComments,
   markThreadRead,
+  type RowKey,
 } from "./api";
 import { inboxPane } from "./inbox-pane";
 import { asSession, THREAD_SESSION } from "./inbox-threads";
@@ -68,7 +69,7 @@ export interface Seeded {
  * row's own (`rowKey`, e2e/test.ts), and the stubbed rows replay a recording made under `CORE`.
  */
 export async function seedThreads(
-  project = "CORE",
+  project: RowKey,
   replies: readonly string[] = REPLIES
 ): Promise<Seeded> {
   await setLiveSessions([THREAD_SESSION]);

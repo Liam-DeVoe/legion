@@ -18,6 +18,7 @@ import {
   createAsk,
   createIssue,
   createProject,
+  fixedKey,
   putArchitectureSource,
   syncArchitectureSource,
 } from "./api";
@@ -26,12 +27,16 @@ import { selectedRow } from "./inbox-pane";
 import { openIssue, searchPath } from "./keyboard-palette";
 import { stubbed } from "./stub/stub-test";
 
+/** The keys this file's recordings were made under. */
+const CORE = fixedKey("CORE", "this file's recordings were made under it");
+const OPS = fixedKey("OPS", "this file's recordings were made under it");
+
 /** One issue per row, so each keeps the title it was written with, and the second project the
  *  two rows that pick a project in the bar read: `g p`, and the one that also opens the
  *  Keyboard shortcuts dialog. */
 const test = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "OPS", name: "Operations" });
+  await createProject({ key: CORE, name: "Core" });
+  await createProject({ key: OPS, name: "Operations" });
   const issue = async (title: string) => (await createIssue({ project: "CORE", title })).key;
   return {
     astrolabe: await issue("Astrolabe calibration"),
@@ -50,7 +55,7 @@ const test = stubbed(async () => {
 
 /** One ask in the Inbox, for the two rows that open the palette over a row in hand. */
 const inboxTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Inbox palette" });
   const ask = await createAsk(
     issue.key,
@@ -62,14 +67,14 @@ const inboxTest = stubbed(async () => {
 
 /** One card in one project, so `j` from the board takes the card the row names. */
 const boardTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Board palette" });
   return { issue: issue.key, project: "CORE" };
 });
 
 /** One row in one project's list, so `j` from the list takes the row the row names. */
 const listTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "List palette" });
   return { issue: issue.key, project: "CORE" };
 });
@@ -77,7 +82,7 @@ const listTest = stubbed(async () => {
 /** One architecture component, whose Open row the palette offers. The sync is the seeding's own
  *  check that the component reached the project, and runs in record mode alone. */
 const architectureTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   await seedFakeGithub({
     "legion/arch": {
       contents: "read",
@@ -92,7 +97,7 @@ const architectureTest = stubbed(async () => {
 
 /** That component with a child, for the level that has somewhere to go up to. */
 const nestedArchitectureTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   await seedFakeGithub({
     "legion/arch": {
       contents: "read",
@@ -113,7 +118,7 @@ const nestedArchitectureTest = stubbed(async () => {
  *  `issue`, so the search for `issue` answers that issue alone. No project's key or name holds
  *  either query. */
 const searchAnswerTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const issue = async (title: string) => (await createIssue({ project: "CORE", title })).key;
   return {
     actions: await issue("Palette actions"),
@@ -124,7 +129,7 @@ const searchAnswerTest = stubbed(async () => {
 /** Two cards in one column, so `Move card down` from the first has somewhere to go, and no
  *  title that holds `status`, `down` or `next`, so the search for each answers no hit. */
 const boardQueryTest = stubbed(async () => {
-  await createProject({ key: "CORE", name: "Core" });
+  await createProject({ key: CORE, name: "Core" });
   const first = await createIssue({ project: "CORE", title: "Board query one" });
   const second = await createIssue({ project: "CORE", title: "Board query two" });
   return { first: first.key, project: "CORE", second: second.key };
