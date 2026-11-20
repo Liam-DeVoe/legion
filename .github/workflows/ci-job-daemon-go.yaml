@@ -73,10 +73,13 @@ jobs:
     # measured green duration plus its own -timeout: the setup before the plain step is now this
     # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
     # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
-    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
+    # 4,000 s, which 70 minutes held with the same headroom the `test` job's 80 left when it carried these
     # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
     # push runs).
-    timeout-minutes: 70
+    # The runner's pull of the service image and the installs the job runs need more than that:
+    # why: .github/ci-notes/ci-job-daemon-go.md#the-jobs-limit-held-to-the-installs-it-runs
+    # 2,302 s + 180 s + 2,190 s = 4,672 s -> 78 min.
+    timeout-minutes: 78
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)

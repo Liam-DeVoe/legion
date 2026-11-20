@@ -88,27 +88,96 @@ WRAPPERS = {
 }
 
 
+class Loop:
+    """A `for`, `while` or `until` loop that pipelines stand in: its keyword; the words a `for`
+    iterates, or None for a `for` that names no `in` (it iterates "$@") and for `while` and
+    `until`; the variable each pass sets (a `for`'s, or the first a `while read` reads); and the
+    redirection its `done` reads (`("<<<", word)` for a here-string, `("<", file)` for a file), or
+    None. A caller counts the loop's iterations from these."""
+
+    def __init__(self, keyword: str, words: list | None, variable: str = "") -> None:
+        self.keyword = keyword
+        self.words = None if words is None else tuple(words)
+        self.variable = variable
+        self.feed: tuple | None = None
+
+
+class Shell:
+    """What one scan of a `run:` or a script found: its pipelines, the loops each pipeline stands
+    in (outermost first, one tuple per pipeline), and the variables it assigns, in order, as
+    (name, value) with the value's quotes taken off and each substitution in it kept as written
+    (`here=$(cd "$(dirname "$0")" && pwd)` gives ("here", '$(cd "$(dirname "$0")" && pwd)')); the
+    files it writes (each target of a `>`, `>>` or `>|`, as written); and, for each command a
+    `PATH=…` before it sets (`PATH="$bin:$PATH" cmd`, `env PATH=… cmd`), the command word and that
+    PATH, as (command, value)."""
+
+    def __init__(self, pipelines: list, loops: list, assignments: list, writes: list, paths: list) -> None:
+        self.pipelines = pipelines
+        self.loops = loops
+        self.assignments = assignments
+        self.writes = writes
+        self.paths = paths
+
+
+# A word that is an assignment and nothing yet: what precedes the `(` of an array (`tools=(…)`).
+ARRAY_START = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=$")
+# The commands whose `NAME=value` arguments assign a variable of the script that runs them.
+DECLARERS = {"export", "readonly", "local", "declare", "typeset"}
+
+
 class Scanner:
     """One quote-aware pass over a `run:`, as bash reads it (the module's rules), collecting each
     pipeline's simple commands. Between characters it holds the word being read, the words of the
     command being read, the commands of the pipeline being read, whether the last command ended at
     a pipe (so a newline continues the pipeline), whether the next character begins a word (where
-    a `#` starts a comment), whether the next word is a redirection's target (dropped: `>/dev/null`
-    names no command) and the delimiters of the here-documents whose bodies start at the next
-    newline."""
+    a `#` starts a comment), whether the next word is a redirection's target (kept apart from the
+    words: `>/dev/null` names no command), the redirections of the command being read, the
+    delimiters of the here-documents whose bodies start at the next newline, and the loops open
+    around it.
+
+    A substitution (`$(…)`, a backtick pair, `<(…)` or `>(…)`) is part of the word it stands in, as
+    bash reads it: its own commands are scanned as pipelines of their own, and the word it stands in
+    keeps it as written (`"$(dirname "$0")/x.sh"` is the one word `$(dirname "$0")/x.sh`), so the
+    command around it is neither cut nor ended. An arithmetic `$((…))` or `((…))` and the `(…)` of
+    an array assignment (`tools=(apt-get install foo)`) hold no command."""
 
     def __init__(self, through: dict | None) -> None:
         self.through = through or {}
         self.pipelines: list[list[list[str]]] = []
+        self.loop_of: list[tuple] = []
+        self.assignments: list[tuple[str, str]] = []
+        self.writes: list[str] = []
+        self.paths: list[tuple[str, str]] = []
+        self.loops: list[Loop] = []
         self.pipeline: list[list[str]] = []
         self.piped = False
         self.words: list[str] = []
+        self.redirects: list[tuple[str, str]] = []
         self.word = ""
         self.started = False
         self.at_word_start = True
         self.redirect_target = False
+        self.operator = ""
         self.heredoc_next: bool | None = None
         self.heredocs: list[tuple[str, bool]] = []
+
+    FRAME = ("pipeline", "piped", "words", "redirects", "word", "started", "at_word_start",
+             "redirect_target", "operator", "heredoc_next")
+
+    def open_frame(self) -> dict:
+        """The state of the command a substitution interrupts, which the substitution's own
+        commands start fresh beside and which close_frame puts back."""
+        frame = {name: getattr(self, name) for name in self.FRAME}
+        self.pipeline, self.piped, self.words, self.redirects = [], False, [], []
+        self.word, self.started, self.at_word_start = "", False, True
+        self.redirect_target, self.operator, self.heredoc_next = False, "", None
+        return frame
+
+    def close_frame(self, frame: dict, written: str) -> None:
+        self.end_command()
+        for name, value in frame.items():
+            setattr(self, name, value)
+        self.add(written)
 
     def add(self, char: str) -> None:
         self.word += char
@@ -122,6 +191,8 @@ class Scanner:
             elif self.heredoc_next is not None:
                 self.heredocs.append((self.word, self.heredoc_next))
                 self.heredoc_next = None
+            else:
+                self.redirects.append((self.operator, self.word))
             self.redirect_target = False
         self.word = ""
         self.started = False
@@ -129,11 +200,16 @@ class Scanner:
 
     def end_command(self, separator: str = "list") -> None:
         """Ends the command being read at a `separator`: a `pipe` keeps its pipeline open, a
-        `newline` keeps it open right after a pipe, and anything else (`list`) ends it."""
+        `newline` keeps it open right after a pipe, and anything else (`list`) ends it. A command
+        that opens a loop (`for`, `while`, `until`) or closes one (`done`) moves the loops open
+        around the pipelines after it, and the variables a command assigns are kept."""
         self.end_word()
         self.redirect_target = False
-        if self.words:
-            self.pipeline.append(self.words)
+        words, redirects = self.words, self.redirects
+        self.redirects = []
+        if words:
+            self.note(words, redirects)
+            self.pipeline.append(words)
             self.words = []
             self.piped = separator == "pipe"
             if self.piped:
@@ -143,10 +219,40 @@ class Scanner:
         self.piped = False
         self.end_pipeline()
 
+    def note(self, words: list[str], redirects: list[tuple[str, str]]) -> None:
+        """The loops a command opens or closes, the variables it assigns, the files it writes and
+        the PATH an assignment before it sets for it."""
+        if words[0] == "for":
+            variable = words[1] if len(words) > 1 else ""
+            self.loops.append(Loop("for", words[3:] if words[2:3] == ["in"] else None, variable))
+        elif words[0] in ("while", "until"):
+            reads = [w for w in words[2:] if not w.startswith("-")] if words[1:2] == ["read"] else []
+            self.loops.append(Loop(words[0], None, reads[0] if reads else ""))
+        elif words[0] == "done" and self.loops:
+            loop = self.loops.pop()
+            feeds = [r for r in redirects if r[0] in ("<<<", "<")]
+            loop.feed = feeds[-1] if feeds else None
+        self.writes += [target for operator, target in redirects if operator in (">", ">>", ">|")]
+        if words[0] in DECLARERS or all(ASSIGNMENT.match(word) for word in words):
+            for word in words[1:] if words[0] in DECLARERS else words:
+                name, _, value = word.partition("=")
+                if ASSIGNMENT.match(word) and not name.endswith("+"):
+                    self.assignments.append((name, value))
+            return
+        prefix = words[1:] if words[0] == "env" else words
+        while prefix and prefix[0].startswith("-"):
+            prefix = prefix[1:]
+        for index, word in enumerate(prefix):
+            if not ASSIGNMENT.match(word):
+                self.paths += [(word, value.partition("=")[2]) for value in prefix[:index]
+                               if value.startswith("PATH=")]
+                break
+
     def end_pipeline(self) -> None:
         """Each command of the pipeline read, reduced by command_of. A command that reduces to one
         pipeline (a plain command, or a `-c` string of one) stands in this one; a `-c` string or an
-        `eval` of several stands apart, as its own pipelines."""
+        `eval` of several stands apart, as its own pipelines. Each pipeline is kept with the loops
+        open around it."""
         joined: list[list[str]] = []
         for words in self.pipeline:
             reduced = command_of(words, self.through)
@@ -154,8 +260,10 @@ class Scanner:
                 joined += reduced[0]
             else:
                 self.pipelines += reduced
+                self.loop_of += [tuple(self.loops)] * len(reduced)
         if joined:
             self.pipelines.append(joined)
+            self.loop_of.append(tuple(self.loops))
         self.pipeline = []
 
     def skip_heredocs(self, text: str, i: int) -> int:
@@ -172,11 +280,37 @@ class Scanner:
         self.heredocs = []
         return position - 1
 
+    @staticmethod
+    def balanced(text: str, i: int) -> int:
+        """The index of the `)` that closes the `(` at `i`, quotes read and nested brackets
+        counted, or the end of the text."""
+        depth, quote = 0, None
+        while i < len(text):
+            char = text[i]
+            if quote:
+                if char == quote:
+                    quote = None
+                elif char == "\\" and quote == '"':
+                    i += 1
+            elif char in "'\"":
+                quote = char
+            elif char == "\\":
+                i += 1
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+            i += 1
+        return len(text)
+
     def scan(self, text: str) -> list[list[list[str]]]:
         quote = None
-        # The open `$(`, `<(`, `(` and backticks, innermost last, each with the quote it interrupted:
-        # inside, an unquoted command of its own starts; at the close, the string resumes.
-        open_subs: list[tuple[str, str | None]] = []
+        # The open `$(`, `<(`, `(` and backticks, innermost last: a substitution's kind, the quote
+        # it interrupted, the frame of the command it stands in, where its own text starts and how
+        # it opened; a subshell's kind alone.
+        open_subs: list[tuple] = []
         i = 0
         while i < len(text):
             char = text[i]
@@ -187,16 +321,19 @@ class Scanner:
                 else:
                     self.add(char)
             elif char == "`":
-                self.end_command()
                 if open_subs and open_subs[-1][0] == "tick":
-                    quote = open_subs.pop()[1]
+                    _, outer, frame, start = open_subs.pop()
+                    self.close_frame(frame, "`" + text[start:i] + "`")
+                    quote = outer
                 else:
-                    open_subs.append(("tick", quote))
+                    open_subs.append(("tick", quote, self.open_frame(), i + 1))
                     quote = None
+            elif char == "$" and after == "(" and text[i + 2:i + 3] == "(":
+                end = self.balanced(text, i + 1)
+                self.add(text[i:end + 1])  # an arithmetic expansion: a word, no command
+                i = end
             elif char == "$" and after == "(":
-                self.add(char)  # the `$` and what precedes it stay with the outer word
-                self.end_command()
-                open_subs.append(("paren", quote))
+                open_subs.append(("paren", quote, self.open_frame(), i + 2, "$("))
                 quote = None
                 i += 1
             elif quote == '"':
@@ -222,15 +359,27 @@ class Scanner:
                 quote = char
                 self.started = True
                 self.at_word_start = False
-            elif char == "(" or (char in "<>" and after == "("):
-                if char != "(":
-                    i += 1
+            elif char in "<>" and after == "(":
+                open_subs.append(("paren", None, self.open_frame(), i + 2, char + "("))
+                i += 1
+            elif char == "(" and ARRAY_START.match(self.word):
+                end = self.balanced(text, i)
+                self.add(text[i:end + 1])  # an array's elements are words, no command
+                i = end
+            elif char == "(" and after == "(" and self.at_word_start and not self.words:
+                i = self.balanced(text, i)  # an arithmetic command, `((i++))`: no command
+            elif char == "(":
                 self.end_command()
-                open_subs.append(("paren", None))
+                open_subs.append(("subshell",))
             elif char == ")":
-                self.end_command()
                 if open_subs and open_subs[-1][0] == "paren":
-                    quote = open_subs.pop()[1]
+                    _, outer, frame, start, opener = open_subs.pop()
+                    self.close_frame(frame, opener + text[start:i] + ")")
+                    quote = outer
+                else:
+                    self.end_command()
+                    if open_subs and open_subs[-1][0] == "subshell":
+                        open_subs.pop()
             elif char in "<>":
                 self.end_word()
                 self.redirect_target = True
@@ -238,6 +387,7 @@ class Scanner:
                 while text[i + 1:i + 2] in ("<", ">", "&", "|"):  # `>>`, `2>&1`, `<<<`, `>|`
                     i += 1
                     operator += text[i]
+                self.operator = operator
                 if operator == "<<":  # a here-document, whose target word is its delimiter
                     self.heredoc_next = text[i + 1:i + 2] == "-"
                     if self.heredoc_next:
@@ -259,20 +409,42 @@ class Scanner:
             else:
                 self.add(char)
             i += 1
+        while open_subs:  # an unclosed substitution: the words read so far are its command's
+            entry = open_subs.pop()
+            if entry[0] in ("paren", "tick"):
+                self.close_frame(entry[2], "")
         self.end_command()
         return self.pipelines
+
+
+def read_shell(run: str, through: dict | None = None) -> Shell:
+    """One scan of a `run:` or a script (its `${{ … }}` expressions elided first): its pipelines,
+    the loops around each and the variables it assigns."""
+    scanner = Scanner(through)
+    pipelines = scanner.scan(EXPRESSION.sub("EXPR", run))
+    return Shell(pipelines, scanner.loop_of, scanner.assignments, scanner.writes, scanner.paths)
 
 
 def pipelines_of(run: str, through: dict | None = None) -> list[list[list[str]]]:
     """Each pipeline of a `run:`, as its commands in order (`curl … | sh` is one of two), each
     command as its words with the command first. `through` names the wrappers to look through
     (WRAPPERS, or none)."""
-    return Scanner(through).scan(EXPRESSION.sub("EXPR", run))
+    return read_shell(run, through).pipelines
 
 
 def commands_of(run: str, through: dict | None = None) -> list[list[str]]:
     """Each simple command of a `run:`, as its words with the command first."""
     return [command for pipeline in pipelines_of(run, through) for command in pipeline]
+
+
+def substitution(word: str) -> str | None:
+    """The text of the command substitution or process substitution a whole word is (`$(…)`, a
+    backtick pair, `<(…)` or `>(…)`, as the Scanner keeps it), or None."""
+    if word[:2] in ("$(", "<(", ">(") and word.endswith(")") and not word.startswith("$(("):
+        return word[2:-1]
+    if len(word) > 1 and word[0] == word[-1] == "`":
+        return word[1:-1]
+    return None
 
 
 def past_options(words: list[str], takes_value: set) -> list[str]:

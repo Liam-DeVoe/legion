@@ -2258,7 +2258,6 @@ EDITED_MIGRATIONS_SCRIPT = "\n".join([
     '"$RUNNER_TEMP/edited-migrations" --base "$base"',
 ])
 SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
-BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
 ACTIONLINT_STEP = "Check every workflow file with actionlint"
@@ -2550,6 +2549,7 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh's fixture function)"),
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
         (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+        (f"{SCRIPTS}/ci_network_installs.py", "rule 22, which the fixtures link in beside it"),
         (f"{SCRIPTS}/shell_commands.py", "the shell reader rule 22 imports, linked in beside it"),
         (f"{SCRIPTS}/network-install.sh", "rule 22 reads its bounds with `--bounds`, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
@@ -3643,8 +3643,8 @@ GATES = [
         (".github/scripts/disk_watch.py",
          f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
          f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
-        (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`), and "
-                                       f"{at('envoy-smoke', BASE_IMAGES_STEP)} reads its FROM lines"),
+        (f"{ENVOY}/docker/Dockerfile", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds it (its `file:`); its RUN "
+                                       "instructions that install bind-mount .github/scripts/network-install.sh"),
         (".dockerignore", f"{at('envoy-smoke', SMOKE_IMAGE_STEP)} builds with `context: .`, so the root .dockerignore "
                           "decides which of the files below reach any COPY of that Dockerfile"),
         (".bun-version", "packages/envoy/docker/Dockerfile:20 COPY .bun-version, which :21-27 holds the web stage's own Bun to"),
@@ -3759,13 +3759,20 @@ GATES = [
         (".github/scripts/ci_job_reads.py", "check-ci-filters.sh's data"),
         (".github/scripts/ci_workflow_rules.py", "check-ci-filters.sh's rules about ci.yaml's conditions and "
                                                  "ci-caches.yaml, which ci_filter_coverage.main() runs"),
-        (".github/scripts/shell_commands.py", "ci_workflow_rules.py's rule 22 finds each command a step runs with it"),
-        (".github/scripts/network-install.sh", "ci_workflow_rules.py's rule 22 runs it with `--bounds` to hold each "
-                                               "job's limits to the worst case of the installs it runs through it"),
-        (".github/actions/**", "ci_workflow_rules.py's rule 22 reads every local action a job of ci.yaml or of a "
+        (".github/scripts/ci_network_installs.py", "check-ci-filters.sh's rule 22, which ci_filter_coverage.main() runs"),
+        (".github/scripts/shell_commands.py", "ci_network_installs.py's rule 22 finds each command a step runs with it"),
+        (".github/scripts/network-install.sh", "ci_network_installs.py's rule 22 runs it with `--bounds` to hold "
+                                               "each job's limits to the worst case of the installs it runs through it"),
+        (".github/actions/**", "ci_network_installs.py's rule 22 reads every local action a job of ci.yaml or of a "
                                "workflow it calls uses, and every action those use"),
-        ("**/*.sh", "ci_workflow_rules.py's rule 22 reads each shell script of this repository a job's step, or a "
-                    "script it runs, runs, wherever it lives"),
+        ("**/*.sh", "ci_network_installs.py's rule 22 reads each shell script of this repository a job's step, or "
+                    "a script it runs, runs, wherever it lives"),
+        ("packages/envoy/docker/Dockerfile", "ci_network_installs.py's rule 22 reads the Dockerfile envoy-smoke builds"),
+        ("packages/envoy/infra/host/heldportwrapper/Dockerfile",
+         "ci_network_installs.py's rule 22 reads the Dockerfile envoy-smoke builds second"),
+        ("packages/daemon/docker/worker.Dockerfile", "ci_network_installs.py's rule 22 reads the Dockerfile worker-image builds"),
+        (".github/docker/browser.Dockerfile",
+         "ci_network_installs.py's rule 22 reads the recipe browser-image builds, and hashes it (PINNED_RECIPES)"),
         (".github/scripts/workflow_paths.py", "ci_filter_coverage.py reads filters through it, and "
                                               "check-workflow-files.sh imports its repeated-key test"),
         (BUILD_TAGS, "ci_job_reads.py runs it for each darwin vet's tag sets, and ci_filter_coverage.py imports "

@@ -10,7 +10,9 @@
 # read 13.3 MB of package lists to install nothing, and in run 44665181416 it waited on a mirror
 # from 03:05:59Z until daemon-go's 70-minute limit cancelled it. An image without tmux gets a
 # warning that the image changed, and Ubuntu's package through network-install.sh, which bounds,
-# retries and names each of the two apt commands.
+# retries and names each of the two apt commands. The update carries --error-on=any: without it,
+# apt-get update exits 0 on a mirror it could not read, and the install after it then fails on a
+# package no list holds, which reads as the change's own fault rather than the network's.
 #
 # Run from anywhere: .github/scripts/runner-tmux.sh
 set -euo pipefail
@@ -21,6 +23,6 @@ if command -v tmux > /dev/null; then
 fi
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 echo "::warning::this runner image holds no tmux, so this job installs Ubuntu's package from the network"
-"$root/.github/scripts/network-install.sh" apt -- sudo apt-get update
+"$root/.github/scripts/network-install.sh" apt -- sudo apt-get update --error-on=any
 "$root/.github/scripts/network-install.sh" apt -- sudo apt-get install -y --no-install-recommends tmux
 tmux -V

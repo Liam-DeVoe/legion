@@ -24,8 +24,8 @@ jobs:
   pi-envoy:
     runs-on: ubuntu-24.04
     # why: .github/ci-notes/ci-job-pi-envoy.md#the-jobs-limit-held-to-the-installs-it-runs-through-network-installsh
-    # 443 s + 425 s + 2 x 245 s = 1,358 s -> 23 min.
-    timeout-minutes: 23
+    # 443 s + 180 s + 425 s + 2 x 245 s = 1,538 s -> 26 min.
+    timeout-minutes: 26
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
