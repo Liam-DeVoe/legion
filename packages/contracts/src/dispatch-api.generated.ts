@@ -1077,7 +1077,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record, and any lookup by their tokens, is 403 RESTRICTED_MEMBER, naming none of its facts. */
+    /** @description Resolve a pending machine login by its typed confirmation code, returning its facts. A restricted member looks up at their browser alone, and is answered only a machine login of their own, whose approver is them and which names no service; any other record, and any lookup through their personal token or a person-scope broker token, is 403 RESTRICTED_MEMBER, naming none of its facts, and their agent's named token, which holds no scope, is 403 OAUTH_SCOPE_REQUIRED. */
     post: operations["postApiV1CredentialRequestsMachineLookup"];
     delete?: never;
     options?: never;
@@ -1094,7 +1094,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Approve a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member approves at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any through their personal token or a person-scope broker token, is 403 RESTRICTED_MEMBER, and their agent's named token, which holds no scope, is 403 OAUTH_SCOPE_REQUIRED. */
     post: operations["postApiV1CredentialRequestsByIdApprove"];
     delete?: never;
     options?: never;
@@ -1111,7 +1111,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any by their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Deny a machine login as the caller with its typed code; the broker decides whether the caller is its approver, and refuses a secret request with 403 DECIDE_ON_BROKER_PAGE naming its page on the secrets broker. A restricted member denies at their browser alone, and only a machine login of their own, the one their typed code looks up, whose approver is them and which names no service; every other decision of theirs, and any through their personal token or a person-scope broker token, is 403 RESTRICTED_MEMBER, and their agent's named token, which holds no scope, is 403 OAUTH_SCOPE_REQUIRED. */
     post: operations["postApiV1CredentialRequestsByIdDeny"];
     delete?: never;
     options?: never;
@@ -2037,7 +2037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through any token they are 403 RESTRICTED_MEMBER. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through their personal token or a person-scope broker token they are 403 RESTRICTED_MEMBER, and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2056,7 +2056,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id, and any revoke through their tokens, is 403 RESTRICTED_MEMBER. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id, and any revoke through their personal token or a person-scope broker token, is 403 RESTRICTED_MEMBER, and their agent's named token, which holds no scope, is 403 OAUTH_SCOPE_REQUIRED. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;

@@ -44,10 +44,12 @@ import (
 // browser alone (withinProjectScope for the writes, withinReadScope for the read): the lookup of a
 // machine login by the code its machine shows and that login's approve and deny, and the list of
 // their machine logins and the revoke of one. Each handler then holds the member to a machine login
-// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). A personal
-// token and a broker token acting for a restricted member are refused every one of them 403
-// RESTRICTED_MEMBER (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or ends any
-// credential, their own machine's included.
+// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). Through their
+// personal token or a person-scope broker token a restricted member is refused every one of them 403
+// RESTRICTED_MEMBER (refuseDeploymentWrite for the writes, restrictedOwnLoginRefusal for the read),
+// and through their agent's named token, which holds no scope, 403 OAUTH_SCOPE_REQUIRED
+// (gateRouteScopes, which runs first), so no agent of theirs decides, lists or ends any credential,
+// their own machine's included.
 var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
@@ -56,8 +58,9 @@ var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/machine-logins/{id}/revoke":         true,
 }
 
-// restrictedOwnLoginRefusal answers a restricted member's call of one of restrictedOwnLoginRoutes
-// through anything but their browser: 403 RESTRICTED_MEMBER, naming the row.
+// restrictedOwnLoginRefusal answers a restricted member's read of a row of restrictedOwnLoginRoutes
+// through a token rather than their browser: 403 RESTRICTED_MEMBER, naming the row. A write of one is
+// refused by withinProjectScope instead (refuseDeploymentWrite).
 func restrictedOwnLoginRefusal(w http.ResponseWriter, method, pattern string) {
 	writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
 		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", method, pattern))

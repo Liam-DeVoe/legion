@@ -252,8 +252,10 @@ var readClasses = map[string]readEntry{
 //     viewer could be held to, so a viewer that is not open - a restricted member, or a credential
 //     that lists projects - is 403 DEPLOYMENT_READ_REFUSED, naming the row. The one exception is
 //     a row of restrictedOwnLoginRoutes (the list of a member's machine logins), which a restricted
-//     member reads at their browser, its handler holding them to their own logins, and is refused
-//     through any token 403 RESTRICTED_MEMBER.
+//     member reads at their browser, its handler holding them to their own logins; through their
+//     personal token or a person-scope broker token it is 403 RESTRICTED_MEMBER
+//     (restrictedOwnLoginRefusal), and their agent's named token, which holds no scope, is refused
+//     403 OAUTH_SCOPE_REQUIRED by gateRouteScopes before this check runs.
 //   - none, caller and testHook need neither, and the handler runs as it is.
 //
 // A server with no database, a test's, reads every caller as the closed viewer, which sees no

@@ -9,7 +9,8 @@ body: |-
   their browser: the list answers their own machine logins and no service's, and the revoke ends
   only one of those.
   Every other record, a shared one included, and every decision through their personal token or a
-  broker token stays `403 RESTRICTED_MEMBER`, and the broker is asked to decide nothing. A broker
+  person-scope broker token stays `403 RESTRICTED_MEMBER`, and their agent's `named` token, which
+  holds no scope, is `403 OAUTH_SCOPE_REQUIRED`; the broker is asked to decide nothing. A broker
   token of project scope `named` that records the credential a person made, the account it was
   approved by or when it was made, is held to that account as a `person` token is; an operator
   entry's, which records neither, is held to none, as before. Taking a restricted member off a
