@@ -410,3 +410,68 @@ func TestARemovalFromAnotherProjectLeavesTheMembersLogins(t *testing.T) {
 		t.Errorf("erin's device login's refresh after carol's removal of erin from OTH: %v, want it answered", err)
 	}
 }
+
+// TestARestrictedMemberRevokesTheirOwnMachineLogin runs the member-served list and revoke on the
+// real broker. erin, a restricted member, lists at her browser her one machine login, and carol's
+// is not in her list. Her revoke of carol's login is 403 RESTRICTED_MEMBER and carol's agent's
+// token stays active. Her agent's named token lists and revokes nothing, each 403
+// OAUTH_SCOPE_REQUIRED: it holds no scope, so the scope gate refuses it first. Her browser's
+// revoke of her own login is answered by the broker, which takes her as its approver: her agent's
+// session token then introspects not active and her device login's refresh is refused, and her
+// list is empty.
+//
+// Control: answer a restricted member as every other caller (the filter removed), and erin's
+// revoke of carol's login reaches the broker, which refuses it with its own answer, not 403
+// RESTRICTED_MEMBER, and the row fails naming it.
+func TestARestrictedMemberRevokesTheirOwnMachineLogin(t *testing.T) {
+	r := newRestrictedTokenRig(t)
+	erins, erinsDevice, erinsCredential := r.approvedLogin(t, accessErin, "erin-laptop")
+	erinsToken := r.sessionToken(t, erins, erinsDevice, "erin-agent", "ACC")
+	carols, carolsDevice, carolsCredential := r.approvedLogin(t, accessCarol, "carol-laptop")
+	carolsToken := r.sessionToken(t, carols, carolsDevice, "carol-agent", "")
+	listed := func() []string {
+		t.Helper()
+		response := dispatchRequest(t, r.dispatch, http.MethodGet, "/api/v1/machine-logins", nil, accessErin)
+		if response.Code != http.StatusOK {
+			t.Fatalf("erin's browser on GET /api/v1/machine-logins = %d %s, want 200", response.Code, response.Body.String())
+		}
+		return credentialIDs(t, response)
+	}
+
+	if got := listed(); !slices.Equal(got, []string{erinsCredential}) {
+		t.Errorf("erin's list = %v, want her own login %s alone", got, erinsCredential)
+	}
+	if refused := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/machine-logins/"+carolsCredential+"/revoke", nil, accessErin); refused.Code != http.StatusForbidden ||
+		!strings.Contains(refused.Body.String(), `"code":"RESTRICTED_MEMBER"`) {
+		t.Errorf("erin's revoke of carol's login = %d %s, want 403 RESTRICTED_MEMBER", refused.Code, refused.Body.String())
+	}
+	if !r.introspect(t, carolsToken).Active {
+		t.Errorf("carol's agent's token introspects not active after erin's refused revoke of carol's login")
+	}
+	for _, call := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/machine-logins"},
+		{http.MethodPost, "/api/v1/machine-logins/" + erinsCredential + "/revoke"},
+	} {
+		if byAgent := r.presenting(t, erins, erinsToken, call.method, call.path, nil); byAgent.Code != http.StatusForbidden ||
+			!strings.Contains(byAgent.Body.String(), `"code":"OAUTH_SCOPE_REQUIRED"`) {
+			t.Errorf("%s %s with erin's agent's token = %d %s, want 403 OAUTH_SCOPE_REQUIRED", call.method, call.path, byAgent.Code, byAgent.Body.String())
+		}
+	}
+	if !r.introspect(t, erinsToken).Active {
+		t.Fatalf("erin's agent's token introspects not active before her browser's revoke")
+	}
+
+	revoked := dispatchRequest(t, r.dispatch, http.MethodPost, "/api/v1/machine-logins/"+erinsCredential+"/revoke", nil, accessErin)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("erin's browser revoke of her own login = %d %s, want 200: the broker takes her as its approver", revoked.Code, revoked.Body.String())
+	}
+	if r.introspect(t, erinsToken).Active {
+		t.Errorf("erin's agent's token introspects active after she revoked her login, want it ended")
+	}
+	if _, err := r.client.Refresh(t, erins.key, erinsDevice); err == nil {
+		t.Errorf("erin's device login refreshed after she revoked it, want it refused")
+	}
+	if got := listed(); len(got) != 0 {
+		t.Errorf("erin's list after she revoked her login = %v, want none", got)
+	}
+}

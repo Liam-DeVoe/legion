@@ -115,9 +115,10 @@ func (s *server) callerSession(r *http.Request) (string, bool) {
 // A row of the deployment (scopeDeployment) is refused to a viewer that is not open — a
 // restricted member, or a credential that lists projects — as the read of the deployment's rows
 // is (withinReadScope): what it writes belongs to no project such a viewer could be held to.
-// The one exception is a restricted member at a browser on the rows that decide a machine login
-// (restrictedDecisionRoutes), whose handlers hold that member to a login of their own: never their
-// personal token and never a broker token, so no agent of theirs decides a credential.
+// The one exception is a restricted member at a browser on the rows that decide or end a machine
+// login (restrictedOwnLoginRoutes), whose handlers hold that member to a login of their own: never
+// their personal token and never a broker token, so no agent of theirs decides or ends a
+// credential.
 // Every other row reaches its handler, whose loaders answer an object the viewer does not see as
 // missing (the file comment).
 func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) http.HandlerFunc {
@@ -125,7 +126,7 @@ func (s *server) withinProjectScope(route apiRoute, handler http.HandlerFunc) ht
 		return handler
 	}
 	deployment := route.Scope == scopeDeployment
-	ownLogin := restrictedDecisionRoutes[route.Method+" "+route.Pattern]
+	ownLogin := restrictedOwnLoginRoutes[route.Method+" "+route.Pattern]
 	return func(w http.ResponseWriter, r *http.Request) {
 		r = s.withCallerResolved(r)
 		reader, ok := s.readerOf(w, r)

@@ -23,11 +23,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"slices"
 
 	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
@@ -37,20 +40,31 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// restrictedDecisionRoutes are the three rows of the deployment a restricted member reaches, and
-// at a browser alone (withinProjectScope): the lookup of a machine login by the code its machine
-// shows, and that login's approve and deny. Each handler then holds the member to a pending machine
-// login of their own (ownMachineLogin). A personal token and a broker token acting for a restricted
-// member are refused all three as every deployment write is, so no agent of theirs decides any
+// restrictedOwnLoginRoutes are the rows of the deployment a restricted member reaches, and at a
+// browser alone (withinProjectScope for the writes, withinReadScope for the read): the lookup of a
+// machine login by the code its machine shows and that login's approve and deny, and the list of
+// their machine logins and the revoke of one. Each handler then holds the member to a machine login
+// of their own (ownMachineLogin for a pending one, ownMachineLogins for an issued one). A personal
+// token and a broker token acting for a restricted member are refused every one of them 403
+// RESTRICTED_MEMBER (restrictedOwnLoginRefusal), so no agent of theirs decides, lists or ends any
 // credential, their own machine's included.
-var restrictedDecisionRoutes = map[string]bool{
+var restrictedOwnLoginRoutes = map[string]bool{
 	"POST /api/v1/credential-requests/machine-lookup": true,
 	"POST /api/v1/credential-requests/{id}/approve":   true,
 	"POST /api/v1/credential-requests/{id}/deny":      true,
+	"GET /api/v1/machine-logins":                      true,
+	"POST /api/v1/machine-logins/{id}/revoke":         true,
 }
 
-// restrictedCaller reports whether the caller is a restricted member, read from the reader
-// withinProjectScope resolved for this request.
+// restrictedOwnLoginRefusal answers a restricted member's call of one of restrictedOwnLoginRoutes
+// through anything but their browser: 403 RESTRICTED_MEMBER, naming the row.
+func restrictedOwnLoginRefusal(w http.ResponseWriter, method, pattern string) {
+	writeError(w, codeRestrictedMember, http.StatusForbidden, fmt.Sprintf(
+		"a restricted member reaches %s %s at their browser alone, for a machine login of their own, and never through a token", method, pattern))
+}
+
+// restrictedCaller reports whether the caller is a restricted member, read from the reader the
+// route's gate (withinProjectScope, withinReadScope) resolved for this request.
 func (s *server) restrictedCaller(w http.ResponseWriter, r *http.Request) (restricted, ok bool) {
 	reader, ok := s.readerOf(w, r)
 	if !ok {
@@ -500,7 +514,8 @@ func (s *server) revokeCredentialGrant(w http.ResponseWriter, r *http.Request) {
 // listMachineLogins answers the machine logins the caller may revoke that can still reach a
 // secret: every service's login, whoever approved it, and the caller's own machines', an expired
 // one whose sessions still run among them. Dispatch names the caller, so no one lists another
-// person's machines.
+// person's machines. A restricted member, at their browser alone (restrictedOwnLoginRoutes), is
+// answered their own machine logins and no service's (ownMachineLogins).
 func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -510,14 +525,30 @@ func (s *server) listMachineLogins(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
-	relayBrokerResponse(w, body, err)
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	if !restricted {
+		body, err := client.MachineLogins(r.Context(), model.CanonicalLogin(actor.ID))
+		relayBrokerResponse(w, body, err)
+		return
+	}
+	own, err := ownMachineLogins(r.Context(), client, model.CanonicalLogin(actor.ID))
+	if err != nil {
+		relayBrokerResponse(w, nil, err)
+		return
+	}
+	WriteJSON(w, http.StatusOK, wire.LauncherCredentialsResponse{Credentials: own})
 }
 
 // revokeMachineLogin ends a machine login, expired or not, and with it every session that login
 // enrolled (a service's login: every pod it started): the broker allows it for a service's login
 // from anyone signed in, and for a person's machine login only when the caller is the person who
-// approved it. The browser's body carries nothing Dispatch reads.
+// approved it. The browser's body carries nothing Dispatch reads. A restricted member, at their
+// browser alone (restrictedOwnLoginRoutes), revokes only a machine login of their own
+// (ownMachineLogins); any other id, a service's login's among them, is 403 RESTRICTED_MEMBER and no
+// revoke reaches the broker.
 func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -528,8 +559,47 @@ func (s *server) revokeMachineLogin(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, err := client.RevokeMachineLogin(r.Context(), r.PathValue("id"), model.CanonicalLogin(actor.ID))
+	restricted, ok := s.restrictedCaller(w, r)
+	if !ok {
+		return
+	}
+	login, id := model.CanonicalLogin(actor.ID), r.PathValue("id")
+	if restricted {
+		own, err := ownMachineLogins(r.Context(), client, login)
+		if err != nil {
+			relayBrokerResponse(w, nil, err)
+			return
+		}
+		if !slices.ContainsFunc(own, func(credential wire.LauncherCredentialResp) bool { return credential.CredentialID == id }) {
+			writeError(w, codeRestrictedMember, http.StatusForbidden,
+				"a restricted member revokes only a machine login of their own, which names them as its approver and no service")
+			return
+		}
+	}
+	body, err := client.RevokeMachineLogin(r.Context(), id, login)
 	relayBrokerResponse(w, body, err)
+}
+
+// ownMachineLogins is the machine logins the broker lists for person that are person's own: a
+// login whose approver is person and which names no service. The broker's list for a person holds
+// every service's login beside the person's own machines', which a restricted member neither lists
+// nor revokes, and the revocation a removal owes ends only these (revokeMachineLoginsOf).
+func ownMachineLogins(ctx context.Context, client *agentsecrets.Client, person string) ([]wire.LauncherCredentialResp, error) {
+	listed, err := client.MachineLogins(ctx, person)
+	if err != nil {
+		return nil, err
+	}
+	var logins wire.LauncherCredentialsResponse
+	if err := json.Unmarshal(listed, &logins); err != nil {
+		return nil, fmt.Errorf("read %s's machine logins from the secrets broker: %w", person, err)
+	}
+	own := []wire.LauncherCredentialResp{}
+	for _, login := range logins.Credentials {
+		if (login.Service == nil || *login.Service == "") && model.CanonicalLogin(login.ApprovedBy) == person {
+			own = append(own, login)
+		}
+	}
+	return own, nil
 }
 
 // --- GET /api/v1/signins, POST .../{id}/revoke ---

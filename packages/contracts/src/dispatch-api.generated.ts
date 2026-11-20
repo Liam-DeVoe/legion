@@ -2037,7 +2037,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. */
+    /** @description List the machine logins the caller may revoke that can still reach a secret: the secrets broker's launcher credentials for every service's login, whoever approved it, and for the caller's own machines, unexpired or expired with a session still running, each naming who approved it. A restricted member lists at their browser alone, and is answered their own machine logins and no service's; through any token they are 403 RESTRICTED_MEMBER. */
     get: operations["getApiV1MachineLogins"];
     put?: never;
     post?: never;
@@ -2056,7 +2056,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. */
+    /** @description Revoke a machine login, expired or not, ending every session it enrolled, a service's pods included: anyone signed in revokes a service's login, and only the person who approved a person's machine login revokes that one. A restricted member revokes at their browser alone, and only a machine login of their own, whose approver is them and which names no service; any other id, and any revoke through their tokens, is 403 RESTRICTED_MEMBER. */
     post: operations["postApiV1MachineLoginsByIdRevoke"];
     delete?: never;
     options?: never;

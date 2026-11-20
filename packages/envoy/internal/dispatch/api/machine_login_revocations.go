@@ -2,14 +2,11 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/broker/wire"
 	"github.com/sjawhar/envoy/internal/dispatch/agentsecrets"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -88,27 +85,20 @@ func (s *server) revokeOwedMachineLogins(ctx context.Context) time.Time {
 }
 
 // revokeMachineLoginsOf revokes at the broker every machine login person approved for their own
-// machines that the broker still lists, and answers how many it revoked. The broker's list holds
-// every service's logins beside the person's own, which it leaves. A machine login is no project's
-// (each trade of it names its own project), so every login of the person's is revoked, and they
-// approve a new one for a project that still lists them. A revoke ends the login's refresh and
-// every token traded from it (the broker's enroll.Service.RevokeCredential ends each access token
-// naming the credential); a login the broker revoked already is not listed again, so a pass that
-// meets a failure revokes the rest next time.
+// machines that the broker still lists (ownMachineLogins), and answers how many it revoked. The
+// broker's list holds every service's logins beside the person's own, which it leaves. A machine
+// login is no project's (each trade of it names its own project), so every login of the person's
+// is revoked, and they approve a new one for a project that still lists them. A revoke ends the
+// login's refresh and every token traded from it (the broker's enroll.Service.RevokeCredential ends
+// each access token naming the credential); a login the broker revoked already is not listed
+// again, so a pass that meets a failure revokes the rest next time.
 func revokeMachineLoginsOf(ctx context.Context, client *agentsecrets.Client, person string) (int, error) {
-	listed, err := client.MachineLogins(ctx, person)
+	own, err := ownMachineLogins(ctx, client, person)
 	if err != nil {
 		return 0, fmt.Errorf("list %s's machine logins: %w", person, err)
 	}
-	var logins wire.LauncherCredentialsResponse
-	if err := json.Unmarshal(listed, &logins); err != nil {
-		return 0, fmt.Errorf("read %s's machine logins: %w", person, err)
-	}
 	revoked := 0
-	for _, login := range logins.Credentials {
-		if login.Service != nil || model.CanonicalLogin(login.ApprovedBy) != person {
-			continue
-		}
+	for _, login := range own {
 		if _, err := client.RevokeMachineLogin(ctx, login.CredentialID, person); err != nil {
 			return revoked, fmt.Errorf("revoke %s's machine login %s: %w", person, login.CredentialID, err)
 		}

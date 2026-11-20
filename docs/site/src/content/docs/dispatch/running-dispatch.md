@@ -985,11 +985,11 @@ Delivery, their projects and Settings, with no Priorities or Pipeline and no Pee
 them the pull requests whose issue they see and the deploys that shipped them, with no run's jobs,
 no setup form and no session-groups editor. The Priorities, Pipeline and broadcasts pages answer
 **Page not found**, and Settings shows no Groups and no Delivery timeline. The machine-login page
-is theirs, without its list of machine logins: there they approve, at their browser, the device
-login of their own agents, and Dispatch decides for them no other credential. The API refuses
-them, and every token they make, every read of the whole deployment,
-`403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`, but for that one
-decision at their browser. The secrets broker holds their agents' tokens to one project, which
+is theirs, listing their own machine logins alone: there they approve, at their browser, the device
+login of their own agents, and list and revoke their own machine logins, and Dispatch decides or
+ends for them no other credential. The API refuses them, and every token they make, every read of
+the whole deployment, `403 DEPLOYMENT_READ_REFUSED`, and every write of it, `403 RESTRICTED_MEMBER`,
+but for those calls at their browser. The secrets broker holds their agents' tokens to one project, which
 their agents name in `AGENT_SECRETS_PROJECTS`. Taking such a person off a project's list ends
 their tokens for it within 325 seconds, since the broker checks every trade against Dispatch, and
 Dispatch then revokes their machine logins at the broker, after the removal commits and again until

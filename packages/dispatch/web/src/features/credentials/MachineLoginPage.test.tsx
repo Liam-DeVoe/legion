@@ -50,18 +50,33 @@ function renderPage(restricted = false) {
   );
 }
 
-// A restricted member approves the device login of their own agents on this page, and Dispatch
-// refuses them the list of the deployment's machine logins (403 DEPLOYMENT_READ_REFUSED), so the
-// page asks them for none: the code form alone, which looks up and approves their own login.
-test("a restricted member's page looks up and approves their own login and lists no machine logins", async () => {
+// A restricted member approves the device login of their own agents on this page, and lists and
+// revokes them there: Dispatch answers them their own machine logins alone, and no service's, so
+// the list says so rather than offering a service's login.
+test("a restricted member's page approves their own login and lists and revokes their own machine logins", async () => {
   const user = userEvent.setup();
   const record = machineRecord({ approver: "erin@outside.example" });
   const lookupMachineCredential = spyOn(api, "lookupMachineCredential").mockResolvedValue(record);
-  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
+  const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({
+    credentials: [
+      {
+        approved_by: "erin@outside.example",
+        credential_id: "cred-erin",
+        expired: false,
+        expires_at: "2026-12-20T00:00:00Z",
+        host: "erin-laptop",
+        issued_at: "2026-11-20T00:00:00Z",
+        service: null,
+        subject: null,
+      },
+    ],
+  });
   const approveCredentialRecord = spyOn(api, "approveCredentialRecord").mockResolvedValue({
     credential_id: "cred-9",
     state: "approved",
   });
+  const revokeMachineLogin = spyOn(api, "revokeMachineLogin").mockResolvedValue(undefined);
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
 
   try {
     renderPage(true);
@@ -71,14 +86,20 @@ test("a restricted member's page looks up and approves their own login and lists
     await user.click(screen.getByRole("button", { name: "Look up" }));
     expect(await screen.findByText("worker-7.example.com")).toBeDefined();
     await user.click(screen.getByRole("button", { name: "Approve" }));
-
     await waitFor(() => expect(approveCredentialRecord).toHaveBeenCalledTimes(1));
-    expect(getMachineLogins).not.toHaveBeenCalled();
+
+    expect(await screen.findByText("erin-laptop")).toBeDefined();
+    expect(screen.queryByText(/every service's login/)).toBeNull();
+    await user.click(screen.getByRole("button", { name: /Revoke/ }));
+    await waitFor(() => expect(revokeMachineLogin).toHaveBeenCalledTimes(1));
+    expect(revokeMachineLogin.mock.calls[0]?.[0]).toBe("cred-erin");
   } finally {
     cleanup();
     lookupMachineCredential.mockRestore();
     getMachineLogins.mockRestore();
     approveCredentialRecord.mockRestore();
+    revokeMachineLogin.mockRestore();
+    confirm.mockRestore();
   }
 });
 

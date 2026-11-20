@@ -67,9 +67,8 @@ function MachineLoginDecision({
  * and after, and the broker refuses every decision of it: it shows that in one line, with no
  * buttons. Below it, the machine logins the viewer may revoke that can still reach a secret:
  * their own machines' and every service's. A restricted member, who approves here the device
- * login of their own agents, is refused that list (Dispatch's DEPLOYMENT_READ_REFUSED), so their
- * page asks for none and draws the code form alone; Dispatch decides for them only a login of
- * their own.
+ * login of their own agents, is answered their own machines' logins alone, and revokes only those
+ * (Dispatch holds them to their own), so their list says that (`ownOnly`).
  */
 export function MachineLoginPage(): ReactNode {
   const [code, setCode] = useState("");
@@ -205,7 +204,7 @@ export function MachineLoginPage(): ReactNode {
           ) : null}
         </div>
       )}
-      {restricted ? null : <MachineLoginsSection />}
+      <MachineLoginsSection ownOnly={restricted} />
     </section>
   );
 }
