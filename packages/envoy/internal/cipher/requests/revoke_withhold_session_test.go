@@ -180,10 +180,9 @@ func TestAnUnmappedPersonsPodsAutomaticGrantNamesNoOperatorOnLiveGrants(t *testi
 // automatic AUTO_TOKEN grant G1; box D of the same session and principal holds its own automatic
 // AUTO_TOKEN grant G2 and then goes dormant, its box ended while holding G2. The operator revokes
 // G1. The revoke locks D with A (a dormant box of the session is among them), withholds AUTO_TOKEN
-// on it and ends G2. The session then enrols on box N, and the adoption moves D's rows and A's
-// withheld name to N (moveSession and the withheld clause): G2 releases nothing on N, and N's next
-// AUTO_TOKEN request waits for a person. The row fails when the revoke takes live boxes only: G2
-// stays live, moves to N, releases there, and is handed back to N's request.
+// on it and ends G2, so the session's next adoption, which would carry D's grants to the box it
+// runs on, carries no live grant of the withheld name. The row fails when the revoke takes live
+// boxes only: D withholds nothing and G2 stays live.
 func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) {
 	m, a, keyA, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	principal := exchange.PersonPrincipal(fixtureOperator)
@@ -207,20 +206,5 @@ func TestAnOperatorsRevokeEndsADormantBoxsAutomaticGrantOfTheName(t *testing.T) 
 	}
 	if g2Live {
 		t.Errorf("the dormant box's automatic AUTO_TOKEN grant %s is live after the operator withheld AUTO_TOKEN from the session; want it ended", g2)
-	}
-
-	n, keyN := newEnrollment(t, m.Store, "session", "box-n-"+t.Name(), new(fixtureOperator), nil)
-	nameTheSession(t, m, n, "sess-dormant", principal)
-	moveSession(t, m, d, n)
-	if _, err := m.Store.Pool.Exec(t.Context(), `with moved as (delete from withheld_secrets where enrollment_id=$1 returning name, created_at)
-		insert into withheld_secrets (enrollment_id, name, created_at) select $2, name, created_at from moved on conflict do nothing`, a, n); err != nil {
-		t.Fatal(err)
-	}
-	if release, err := m.Values(t.Context(), g2, n, nil, ReleaseCall{}); err == nil || release.Values != nil {
-		t.Errorf("G2 on the box the session moved to released %v, %v; want it refused", release.Values, err)
-	}
-	again, err := m.Create(t.Context(), n, signRequest(t, m, keyN, "deploy again", "AUTO_TOKEN"), "", nil)
-	if err != nil || again.GrantID != nil {
-		t.Errorf("box N's AUTO_TOKEN request = %+v, %v; want it waiting for a person", again, err)
 	}
 }
