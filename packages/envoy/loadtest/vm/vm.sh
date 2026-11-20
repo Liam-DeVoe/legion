@@ -741,6 +741,15 @@ on_vm_for() {
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$vm")" "$(remote_argv "$@")"
 }
 
+# REMOTE_START_OF: the load machine's sh function `start_of PID`, which sets `now` to PID's start
+# time (field 22 of /proc/PID/stat, read after the command name, which may hold spaces), or to
+# nothing when that entry cannot be read; its caller tells an entry that has gone from one it could
+# not read. The shell alone reads it, with no awk, sed or cut, so a load machine image that lacks
+# them still records and compares starts. Each script that writes a pid file there runs it, and so
+# does remote_kill, which reads one.
+# shellcheck disable=SC2016 # expanded by the load machine's sh
+REMOTE_START_OF='start_of() { now= stat=; read -r stat <"/proc/$1/stat" 2>/dev/null || return 0; stat=${stat##*) }; set -f; set -- $stat; set +f; [ "$#" -ge 20 ] || return 0; shift 19; now=$1; }'
+
 # remote_kill WHAT FILE [started]: the process whose pid FILE holds on the load machine ended there
 # and gone from that machine's process table, and FILE removed. TERM first; KILL when the pid is
 # still there REMOTE_TERM_SECONDS later; then a wait, of up to REMOTE_GONE_SECONDS, for the pid to
@@ -758,6 +767,16 @@ on_vm_for() {
 # to NOT_GONE, and STOPPING names WHAT while the kill runs; step_interrupt reads both. The command
 # that adds WHAT to NOT_GONE also clears STOPPING, so no interrupt finds WHAT in both.
 #
+# FILE holds `PID START`, the start the script that started the process read (REMOTE_START_OF), so
+# that a pid the machine has given another process since is told apart. The kill reads the start
+# once. A start that differs is another process: the one FILE recorded has ended, so the kill
+# signals nothing, removes FILE, names the pid and the command of the process that holds it now,
+# and returns 0. A pid whose /proc entry has gone has ended too, however near the kill's read it
+# went, and the kill returns 0. An entry that is there and whose start could not be read says
+# nothing either way: the kill signals nothing, keeps FILE, and returns 1 naming the pid. FILE
+# holding a pid alone was written by a driver before these records, which a deployment it started
+# still holds: that pid is ended and waited for as before, with no start to compare.
+#
 # With `started`, the kill follows a start of WHAT whose ssh this pod has not seen return -- a start
 # a signal cut short, or an ssh this stop has just ended -- while the command it carried may still
 # run on the load machine and not yet have written FILE. A kill that read no FILE then would say
@@ -771,10 +790,10 @@ on_vm_for() {
 # directory that takes no new file -- a full disk, no free inode, no write permission -- never
 # stops a kill before it signals, and an interrupt that ends the script during one leaves no file.
 remote_kill() {
-  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' mismatch=$'\n''pid-start-mismatch=([0-9]+)'$'\n' none=$'\n''no-pid'$'\n'
+  local what=$1 file=$2 started=${3:-} out said rc=0 left=$'\n''pid=([0-9]+)'$'\n' unread=$'\n''pid-start-unread=([0-9]+)'$'\n' differs=$'\n''pid-start-differs=([0-9]+) ([^'$'\n'']*)'$'\n' none=$'\n''no-pid'$'\n'
   STOPPING=$what
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  out=$(on_vm "$LOAD_VM" sh -c '
+  out=$(on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'
     if [ -n "$4" ]; then
       end=$(($(date +%s) + $3))
       until [ -s "$1" ]; do
@@ -786,12 +805,22 @@ remote_kill() {
       done
     fi
     read -r pid start <"$1" 2>/dev/null || pid= start=
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      now=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat" 2>/dev/null)
-      if [ -z "$start" ] || [ -z "$now" ] || [ "$now" != "$start" ]; then
-        echo "pid-start-mismatch=$pid"
-        exit 5
+    if [ -n "$pid" ] && [ -n "$start" ]; then
+      start_of "$pid"
+      if [ -z "$now" ]; then
+        if [ -e "/proc/$pid" ]; then
+          echo "pid-start-unread=$pid"
+          exit 5
+        fi
+        pid=
+      elif [ "$now" != "$start" ]; then
+        rm -f "$1"
+        { read -r comm <"/proc/$pid/comm"; } 2>/dev/null || comm=
+        echo "pid-start-differs=$pid ${comm:-unknown}"
+        exit 0
       fi
+    fi
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
       kill -TERM "$pid" 2>/dev/null
       i=0
       while kill -0 "$pid" 2>/dev/null && [ "$i" -lt "$2" ]; do
@@ -813,13 +842,15 @@ remote_kill() {
     rm -f "$1"
     exit 0' sh "$file" "$REMOTE_TERM_SECONDS" "$REMOTE_GONE_SECONDS" "$started" 2>&1) || rc=$?
   if ((rc == 0)); then
+    [[ ! $'\n'$out$'\n' =~ $differs ]] ||
+      note "$file on the $LOAD_VM VM named pid ${BASH_REMATCH[1]}, which another process holds now (command ${BASH_REMATCH[2]}): it started at another time than $what did, so $what has ended; that process is not signalled, and the file is removed"
     STOPPING=""
     return 0
   fi
   if ((rc == 3)) && [[ $'\n'$out$'\n' =~ $left ]]; then
     note "$what (pid ${BASH_REMATCH[1]}) is still in the $LOAD_VM VM's process table $REMOTE_GONE_SECONDS s after its SIGKILL; $file there still names it"
-  elif ((rc == 5)) && [[ $'\n'$out$'\n' =~ $mismatch ]]; then
-    note "$file on the $LOAD_VM VM names pid ${BASH_REMATCH[1]}, whose recorded start does not match the process there, so it is not signalled and nothing shows $what gone"
+  elif ((rc == 5)) && [[ $'\n'$out$'\n' =~ $unread ]]; then
+    note "$file on the $LOAD_VM VM names pid ${BASH_REMATCH[1]}, whose /proc entry there is there and whose start could not be read, so nothing tells it from another process that took that pid: it is not signalled, and nothing shows $what gone"
   elif ((rc == 4)) && [[ $'\n'$out$'\n' =~ $none ]]; then
     note "the start of $what on the $LOAD_VM VM recorded no pid in $file there within $REMOTE_GONE_SECONDS s of its kill, so nothing shows it gone"
   else
@@ -1227,7 +1258,7 @@ stub_embed_start() {
     die "the stub embedder an earlier up started on the $LOAD_VM VM is not shown gone (the line above says why), and while it runs it holds the port this one needs"
   key_file=$(remote_secret embed-key "$(cfg .secrets.embed_key)")
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  on_vm "$LOAD_VM" sh -c 'rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & pid=$!; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat"); printf "%s %s\n" "$pid" "$start" >"$6/stub-embed.pid"' \
+  on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; rm -f "$3"; nohup setsid "$1" stub-embed -key-file "$2" -listen "$4" -cert-out "$3" -host "$5" >"$6/stub-embed.log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "$now" >"$6/stub-embed.pid"' \
     sh "$remote" "$key_file" "$work/stub-embed.pem" "0.0.0.0:$(port_of stub_embed)" "$(vm_host "$LOAD_VM")" "$work" ||
     die "starting loadgen stub-embed on the $LOAD_VM VM failed"
   local waited=0
@@ -2268,7 +2299,7 @@ tunnel_start() {
   fi
   TUNNEL_OPEN=started
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  if ! on_vm "$LOAD_VM" sh -c 'pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & pid=$!; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$pid/stat"); printf "%s %s\n" "$pid" "$start" >"$pid_file"' \
+  if ! on_vm "$LOAD_VM" sh -c "$REMOTE_START_OF"'; pid_file=$1 log=$2; shift 2; rm -f "$pid_file"; nohup "$@" >"$log" 2>&1 </dev/null & pid=$!; start_of "$pid"; printf "%s %s\n" "$pid" "$now" >"$pid_file"' \
     sh "$(pprof_tunnel_pid_file)" "$(pprof_tunnel_log)" \
     "${cmd[@]}" -i "$identity" -o StrictHostKeyChecking=accept-new \
     -o "UserKnownHostsFile=$(remote_run)/known_hosts" \
@@ -2406,7 +2437,7 @@ load_start() {
   shift 2
   ssh_cmd
   # shellcheck disable=SC2016 # expanded by the load machine's sh
-  remote_cmd=$(remote_argv sh -c 'pid_file=$1; shift; start=$(awk '"'"'{ sub(/^.*\) /, ""); print $20 }'"'"' "/proc/$$/stat"); printf "%s %s\n" "$$" "$start" >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
+  remote_cmd=$(remote_argv sh -c "$REMOTE_START_OF"'; pid_file=$1; shift; start_of "$$"; printf "%s %s\n" "$$" "$now" >"$pid_file"; exec "$@"' sh "$(load_pid_file)" "$@")
   STARTING="the step's load"
   timeout "$seconds" "${SSH[@]}" "$(vm_ssh "$LOAD_VM")" "$remote_cmd" >"$dir/loadgen.out" 2>&1 &
   LOAD_SSH_PID=$! LOAD_REMOTE=1 STARTING=""
