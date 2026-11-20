@@ -1,4 +1,4 @@
-import { legacyAgentSubject, topicForms } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, legacyAgentSubject, topicForms } from "@legion/contracts";
 import { z } from "zod";
 import {
   type DedupeIdentity,
@@ -13,6 +13,7 @@ import {
   type DeliveryAnswer,
   type DeliveryRequest,
   expandSubscriptionTopics,
+  isBusUnanswered,
   type ResumePoint,
 } from "./transport";
 
@@ -836,8 +837,22 @@ export function gapNoticeText(notice: ConsumerGapNotice): string {
  * (`transport.ts`), or it failed, so nothing reaches it until a later registration is accepted.
  * `why` is the listener's own message, which carries its machine-readable reason. Each host
  * shows it where it shows a gap notice and says once per outage.
+ *
+ * A `why` that begins with the bus-outage prefix (`BUS_UNANSWERED_PREFIX`) is a registration the
+ * listener did not record, because its message bus did not answer in time (`isBusUnanswered`).
+ * The client cannot tell which of the registration's calls failed, and the session's consumer
+ * may well exist and deliver, so that notice says the registration was not recorded and does
+ * not say the session receives nothing.
  */
 export function inboundUnavailableNoticeText(why: string): string {
+  if (why.startsWith(BUS_UNANSWERED_PREFIX)) {
+    return envoyNoticeText({
+      notice: "Envoy inbound unavailable",
+      error: why,
+      detail:
+        "The listener did not record this session's registration, because its message bus did not answer in time. Envoy messages may still reach the session, but nothing confirms it until a registration is accepted. Everything else works, and the session registers again at every heartbeat.",
+    });
+  }
   return envoyNoticeText({
     notice: "Envoy inbound unavailable",
     error: why,
@@ -886,7 +901,10 @@ export interface InboundUnavailable {
   noRelay(error: unknown): void;
   /**
    * A registration was refused or failed: tells the session at once, through the host's `tell`,
-   * unless this outage already told it.
+   * unless this outage already told it. A registration the listener answered with the bus-outage
+   * 503 (`isBusUnanswered`) is held instead, as the start race is: the first such refusal since
+   * the last accepted registration starts the bound, and only one at or after its end tells the
+   * session.
    */
   refused(error: unknown): void;
   /**
@@ -900,7 +918,10 @@ export interface InboundUnavailable {
 export interface InboundUnavailableOptions {
   /** The clock the bound is read on; `Date.now` unless a test passes its own. */
   readonly now?: () => number;
-  /** How long the start race is held (`INBOUND_FIRST_OPEN_BOUND_MS` unless a test passes one). */
+  /**
+   * How long the start race, and a run of registrations the bus-outage 503 answers, is held
+   * (`INBOUND_FIRST_OPEN_BOUND_MS` unless a test passes one).
+   */
   readonly firstOpenBoundMs?: number;
   /** Tells the session once that it receives again, after it was told that it receives nothing. */
   readonly restored?: () => void;
@@ -925,9 +946,13 @@ export interface InboundUnavailableOptions {
  * A session whose first relay open is still being tried holds no relay subject for a while at
  * its start, and it receives once the relay opens. So until the session's first accepted
  * registration, an outage with no relay subject is held: the first such call starts the bound,
- * and only a call at or after its end tells the session. A refusal is told at once, as is an
- * outage with no relay subject after the first accepted registration. A session that has begun to
- * stop (`stopping`) is told nothing at all.
+ * and only a call at or after its end tells the session. A registration the listener answered
+ * with the bus-outage 503 is held the same way, at any time: the listener did not record it,
+ * the session's consumer may still deliver, and the next heartbeat's registration is usually
+ * accepted, so the first such refusal since the last accepted registration starts the bound and
+ * an accepted registration inside it ends the hold with nothing said. Any other refusal is told
+ * at once, as is an outage with no relay subject after the first accepted registration. A session
+ * that has begun to stop (`stopping`) is told nothing at all.
  */
 export function inboundUnavailable(
   tell: (why: string) => void,
@@ -941,6 +966,7 @@ export function inboundUnavailable(
   let told = false;
   let everAccepted = false;
   let heldSince: number | undefined;
+  let unansweredSince: number | undefined;
   const say = (error: unknown) => {
     if (told || stopping()) return;
     told = true;
@@ -956,10 +982,16 @@ export function inboundUnavailable(
       say(error);
     },
     refused(error) {
+      if (isBusUnanswered(error)) {
+        const at = now();
+        unansweredSince ??= at;
+        if (at < unansweredSince + firstOpenBoundMs) return;
+      }
       say(error);
     },
     accepted() {
       everAccepted = true;
+      unansweredSince = undefined;
       if (!told || stopping()) return;
       told = false;
       restored?.();

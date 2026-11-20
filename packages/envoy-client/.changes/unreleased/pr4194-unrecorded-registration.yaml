@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  `inboundUnavailable` holds a registration the listener answered with the bus-outage 503
+  (`isBusUnanswered`) as it holds the start race: the first such refusal since the last accepted
+  registration starts the `INBOUND_FIRST_OPEN_BOUND_MS` bound, an accepted registration inside it
+  ends the hold with nothing said, and only a refusal at or after its end tells the session.
+  `inboundUnavailableNoticeText` words a `why` that begins with `BUS_UNANSWERED_PREFIX` as a
+  registration the listener did not record, which Envoy messages may still reach, not as a
+  session with no durable consumer.
+time: 2026-11-20T00:04:51Z
+custom:
+    Issue: pr4194

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A registration the listener did not record, because its message bus did not answer in time
+  (its 503 begins "envoy: the message bus did not answer"), no longer shows "Envoy inbound
+  unavailable" at once. Such refusals are held for two minutes from the first one, and a
+  registration accepted in that time ends the hold with no notice. A notice shown after the two
+  minutes says that the listener did not record the registration and that Envoy messages may
+  still reach the session, where it said the session had no durable consumer and received none.
+time: 2026-11-20T00:04:52Z
+custom:
+    Issue: pr4194
