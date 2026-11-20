@@ -9658,7 +9658,9 @@
         "kept_by_push_only": true,
         "goes_with_pod": [
           "turn",
+          "subagents",
           "background_jobs",
+          "named_services",
           "unpushed_work",
           "test_database",
           "caches"
@@ -9724,7 +9726,9 @@
         "kept_by_push_only": true,
         "goes_with_pod": [
           "turn",
+          "subagents",
           "background_jobs",
+          "named_services",
           "unpushed_work",
           "test_database",
           "caches"

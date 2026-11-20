@@ -366,7 +366,7 @@ var goldenKept = []goldenKeptOf{
 		values: func(want map[string]string) map[string]string {
 			return map[string]string{"round": want["round"], "push_to": want["push_to"], "ends_at": want["ends_at"], "answer": "ready_for_update",
 				"every_answer_brings_it_forward": "true", "no_answer_delays_it": "true", "kept_by_push_only": "true",
-				"goes_with_pod": "turn,background_jobs,unpushed_work,test_database,caches", "restart": "same_session", "next_task_held": "true"}
+				"goes_with_pod": "turn,subagents,background_jobs,named_services,unpushed_work,test_database,caches", "restart": "same_session", "next_task_held": "true"}
 		}},
 	{kind: texts.ReviewStuck, variants: []string{"undecided", "approved-other-code"}, what: "the phrase `APPROVE of head <sha>` in the reason of a round a review ends",
 		keptBy: "dispatch://INFRA-3498's R4",

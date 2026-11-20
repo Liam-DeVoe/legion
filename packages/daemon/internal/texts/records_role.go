@@ -183,8 +183,11 @@ const (
 	UpdateRestartsIn = "same_session"
 )
 
-// updateGoesWithPod is what goes with the pod when an update round ends.
-var updateGoesWithPod = []string{"turn", "background_jobs", "unpushed_work", "test_database", "caches"}
+// updateGoesWithPod is what goes with the pod when an update round ends: the turn in progress,
+// each subagent, each background job and each named service that still runs, each commit and
+// each file the role did not push, the pod's test database and its caches. The round's end waits
+// for no named service, since no activity report names one (dispatch://INFRA-4203).
+var updateGoesWithPod = []string{"turn", "subagents", "background_jobs", "named_services", "unpushed_work", "test_database", "caches"}
 
 // UpdateAskRecord is an update round's ask to one role of the issue (supervise's UpdateTask):
 // the round, the pod it was opened over, each changed image by its short digest and each changed
@@ -192,7 +195,10 @@ var updateGoesWithPod = []string{"turn", "background_jobs", "unpushed_work", "te
 // moment the round ends. The facts that dispatch://INFRA-2981's R4 keeps: the branch to push to,
 // the op that answers, that every answer brings the end forward and no answer delays it, that only
 // the role's own push keeps its work, what goes with the pod, where the process starts again, and
-// that the daemon holds the next task until it runs again. NewUpdateAsk sets them.
+// that the daemon holds the next task until it runs again. NewUpdateAsk sets them. The answers
+// bring the end forward only once no role is in a turn or reports background work
+// (dispatch://INFRA-4203 R1), a rule of every round that the readers' prompts give with the
+// steps they take on reading it.
 type UpdateAskRecord struct {
 	RoleHead
 	Round                      string    `json:"round"`

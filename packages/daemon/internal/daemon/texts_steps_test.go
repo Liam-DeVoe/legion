@@ -14,10 +14,11 @@ import (
 )
 
 // goldenStep is one step this change took out of a daemon text, for one set of its readers: the
-// kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef or
-// c7e1cbd5 for a sentence main wrote since (a format verb, %s or %d, and … stand for any text),
-// the readers, and the passage of the readers' prompt (packages/daemon/internal/prompts) that
-// gives each of them its own rule for the step, quoted word for word from one line of the file.
+// kind, main's sentence as the Go literal of its builder at b4a566cb, or at 237f31c7, 724196ef,
+// c7e1cbd5 or 3d2dddd0 for a sentence main wrote since (a format verb, %s, %[1]s or %d, and …
+// stand for any text), the readers, and the passage of the readers' prompt
+// (packages/daemon/internal/prompts) that gives each of them its own rule for the step, quoted
+// word for word from one line of the file.
 type goldenStep struct {
 	kind     texts.Kind
 	sentence string
@@ -372,17 +373,73 @@ var goldenSteps = []goldenStep{
 	{texts.MergeForwardReview, " Then tell %s what you decided.", "reviewer",
 		goPrompts + "reviewer.md", "Then tell the architect what you decided on its role topic, and in `retro` the implementer, in `merging` the merger, each on its own role topic."},
 	{texts.UpdateAsk, "2. If you need a scratch file as evidence, put it on Dispatch.", "planner, implementer, tester, reviewer, merger",
-		goPrompts + "worker-common.md", "If you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
+		goPrompts + "worker-common.md", "if you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
 	{texts.UpdateAsk, "2. If you need a scratch file as evidence, put it on Dispatch.", "architect",
-		goPrompts + "architect-common.md", "If you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
+		goPrompts + "architect-common.md", "if you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
 	{texts.UpdateAsk, "These things go with the pod when the round ends:", "planner, implementer, tester, reviewer, merger",
-		goPrompts + "worker-common.md", "When the round ends, these go with the pod, and the message's `goes_with_pod` names them: the turn in progress, the background jobs of that turn, each commit and each file that you did not push, the pod's test database and the pod's caches."},
+		goPrompts + "worker-common.md", "When the round ends, the pod goes, whatever runs in it, and these go with it, which the message's `goes_with_pod` names: the turn in progress, each subagent, each background job and each named service that still runs, each commit and each file that you did not push, the pod's test database and the pod's caches."},
 	{texts.UpdateAsk, "These things go with the pod when the round ends:", "architect",
-		goPrompts + "architect-common.md", "When the round ends, these go with the pod, and the message's `goes_with_pod` names them: the turn in progress, the background jobs of that turn, each commit and each file that you did not push, the pod's test database and the pod's caches."},
+		goPrompts + "architect-common.md", "When the round ends, the pod goes, whatever runs in it, and these go with it, which the message's `goes_with_pod` names: the turn in progress, each subagent, each background job and each named service that still runs, each commit and each file that you did not push, the pod's test database and the pod's caches."},
 	{texts.UpdateAsk, "Do not start new work now.", "planner, implementer, tester, reviewer, merger",
 		goPrompts + "worker-common.md", "Start no new work after you answer."},
 	{texts.UpdateAsk, "Do not start new work now.", "architect",
 		goPrompts + "architect-common.md", "Start no new work after you answer."},
+	{texts.UpdateAsk, "It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "It does not end early while a role is in a turn or reports background work: it ends once no role is in a turn and each role's last report names no subagent and no background job that runs."},
+	{texts.UpdateAsk, "It then ends once each role's last report names no subagent and no background job that runs, and no role is in a turn.", "architect",
+		goPrompts + "architect-common.md", "It does not end early while a role is in a turn or reports background work: it ends once no role is in a turn and each role's last report names no subagent and no background job that runs."},
+	{texts.UpdateAsk, "Your plugin sends that report at the end of each turn.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Your plugin sends that report at the end of each turn."},
+	{texts.UpdateAsk, "Your plugin sends that report at the end of each turn.", "architect",
+		goPrompts + "architect-common.md", "Your plugin sends that report at the end of each turn."},
+	{texts.UpdateAsk, "A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "When the round ends, the pod goes, whatever runs in it"},
+	{texts.UpdateAsk, "A subagent or a background job that runs does not delay it either: when the round ends, the pod goes, whatever runs in it.", "architect",
+		goPrompts + "architect-common.md", "When the round ends, the pod goes, whatever runs in it"},
+	{texts.UpdateAsk, "Do these five steps, in this order:", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Do its five steps in that turn, in this order."},
+	{texts.UpdateAsk, "Do these five steps, in this order:", "architect",
+		goPrompts + "architect-common.md", "Do its five steps in that turn, in this order."},
+	{texts.UpdateAsk, "2. Let each subagent and each background job that you started finish.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "let each subagent and each background job that you started finish."},
+	{texts.UpdateAsk, "2. Let each subagent and each background job that you started finish.", "architect",
+		goPrompts + "architect-common.md", "let each subagent and each background job that you started finish."},
+	{texts.UpdateAsk, "Stop one that cannot finish before %[2]s.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Stop one that cannot finish before the round ends."},
+	{texts.UpdateAsk, "Stop one that cannot finish before %[2]s.", "architect",
+		goPrompts + "architect-common.md", "Stop one that cannot finish before the round ends."},
+	{texts.UpdateAsk, "Then commit and push what it made.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Then commit and push what it made."},
+	{texts.UpdateAsk, "Then commit and push what it made.", "architect",
+		goPrompts + "architect-common.md", "Then commit and push what it made."},
+	{texts.UpdateAsk, "3. If you need a scratch file as evidence, put it on Dispatch.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "if you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
+	{texts.UpdateAsk, "3. If you need a scratch file as evidence, put it on Dispatch.", "architect",
+		goPrompts + "architect-common.md", "if you need a scratch file as evidence, put it on Dispatch, because the disk goes with the pod."},
+	{texts.UpdateAsk, "5. End your turn.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "end your turn. If your `legion` tool has no \"ready_for_update\" operation"},
+	{texts.UpdateAsk, "5. End your turn.", "architect",
+		goPrompts + "architect-common.md", "end your turn. If your `legion` tool has no \"ready_for_update\" operation"},
+	{texts.UpdateAsk, "If a subagent or a background job finishes after you answer, commit and push what it made.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "If a subagent or a background job finishes after you answer, commit and push what it made."},
+	{texts.UpdateAsk, "If a subagent or a background job finishes after you answer, commit and push what it made.", "architect",
+		goPrompts + "architect-common.md", "If a subagent or a background job finishes after you answer, commit and push what it made."},
+	{texts.UpdateAsk, "Then call `ready_for_update` again with round: \"%[1]s\" before you end that turn.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "Then call `ready_for_update` again with the same round before you end that turn."},
+	{texts.UpdateAsk, "Then call `ready_for_update` again with round: \"%[1]s\" before you end that turn.", "architect",
+		goPrompts + "architect-common.md", "Then call `ready_for_update` again with the same round before you end that turn."},
+	{texts.UpdateAsk, "A service that you started with a name is not in the report.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "A service that you started with a name is not in the report."},
+	{texts.UpdateAsk, "A service that you started with a name is not in the report.", "architect",
+		goPrompts + "architect-common.md", "A service that you started with a name is not in the report."},
+	{texts.UpdateAsk, "It does not delay the round, and it goes with the pod.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "It does not delay the round, and it goes with the pod."},
+	{texts.UpdateAsk, "It does not delay the round, and it goes with the pod.", "architect",
+		goPrompts + "architect-common.md", "It does not delay the round, and it goes with the pod."},
+	{texts.UpdateAsk, "If your `legion` tool has no \"ready_for_update\" operation, do steps 1, 2 and 3 now.", "planner, implementer, tester, reviewer, merger",
+		goPrompts + "worker-common.md", "If your `legion` tool has no \"ready_for_update\" operation, do steps"},
+	{texts.UpdateAsk, "If your `legion` tool has no \"ready_for_update\" operation, do steps 1, 2 and 3 now.", "architect",
+		goPrompts + "architect-common.md", "If your `legion` tool has no \"ready_for_update\" operation, do steps"},
 	{texts.MergeQueueRemoval, " Read the pull request and its removals on GitHub, as step 5 of your role says.", "merger",
 		rolePrompts + "merger.md", "Read the entries to the queue and the removals from it with this command."},
 	{texts.MergeQueueRemoval, " The daemon could not read the pull request from GitHub. So it does not know if GitHub merged it.", "merger",
@@ -517,8 +574,9 @@ func goldenSaid(t *testing.T, sample goldenSample) string {
 	return said.String()
 }
 
-// goldenVerb is a format verb or an elision of a sentence of the table.
-var goldenVerb = regexp.MustCompile(`%[sdqv]|…`)
+// goldenVerb is a format verb, with or without an argument index such as %[2]s, or an elision of
+// a sentence of the table.
+var goldenVerb = regexp.MustCompile(`%(?:\[[0-9]+\])?[sdqv]|…`)
 
 // goldenSentence is a sentence of the table as a pattern: its fixed parts word for word, trimmed
 // of the spaces at its ends, with any text where a format verb or an elision stands.

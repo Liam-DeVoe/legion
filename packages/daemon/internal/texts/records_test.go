@@ -486,7 +486,7 @@ func TestTheHelpersWriteTheReferencesInOneForm(t *testing.T) {
 	ask := NewUpdateAsk("INFRA-3686", "round-7", "pod-a", []string{"5c2b01d9e8f7"}, []string{"runtime.kubernetes.image"}, ends)
 	if ask.Kind != UpdateAsk || ask.Issue != "INFRA-3686" || ask.PushTo != claim.IssueBranch("INFRA-3686") || ask.Answer != "ready_for_update" ||
 		!ask.EveryAnswerBringsItForward || !ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || !ask.NextTaskHeld ||
-		ask.Restart != UpdateRestartsIn || len(ask.GoesWithPod) != 5 || !ask.EndsAt.Equal(ends) {
+		ask.Restart != UpdateRestartsIn || len(ask.GoesWithPod) != 7 || !ask.EndsAt.Equal(ends) {
 		t.Errorf("NewUpdateAsk gives %+v", ask)
 	}
 	ask.GoesWithPod[0] = "changed"

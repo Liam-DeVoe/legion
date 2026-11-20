@@ -1,10 +1,11 @@
 package supervise
 
-// An update round is the daemon asking a claim's role to push its work and answer
-// ready_for_update before the process holding that claim is replaced. These tests pin what the
-// machine does with the round's events: a round that opens once, records its terms once and asks
-// nothing of the machine's own — the sweep enqueues the ask to the role's Envoy topic, and the
-// outbox marks it on the claim once it reached a session (PublishUpdateAsk) — a suspended claim
+// An update round is the daemon asking a claim's role to do the steps its role prompt gives for
+// the update message (UpdateTask) and answer ready_for_update before the process holding that
+// claim is replaced. These tests pin what the machine does with the round's events: a round that
+// opens once, records its terms once and asks nothing of the machine's own — the sweep enqueues
+// the ask to the role's Envoy topic, and the outbox marks it on the claim once it reached a
+// session (PublishUpdateAsk) — a suspended claim
 // recorded in the round and not revived for it, an answer that stands through every turn after
 // it while the end of a turn answers nothing, the next task held back from the moment the worker
 // answers and confirmed by no turn after a daemon restart, and the round's end — which releases
@@ -32,6 +33,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -728,12 +731,25 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // The ask states each fact of the round as a field (dispatch://INFRA-2981 R4): the round's id, the
 // branch to push to, the op that answers it, the moment the round ends in UTC, that every answer
 // brings that moment forward and that no answer delays it, that only the role's own push keeps its
-// work, what goes with the pod then, and that the process starts again in the same session while
-// its next task waits. The drift is named by the image's short digest and by each setting's key,
-// the account among them, and never by a value: a round of a new image and 30 changed settings
-// names the digest's first 12 hexadecimal characters and the 30 keys, and its fields hold neither
-// the whole digest nor any setting's value (dispatch://INFRA-321 R5). A round an older daemon
-// opened recorded the drift as text alone, and its ask names that text as one field.
+// work, what goes with the pod then — each subagent, each background job and each named service
+// that still runs among it — and that the process starts again in the same session while its next
+// task waits. The drift is named by the image's short digest and by each setting's key, the
+// account among them, and never by a value: a round of a new image and 30 changed settings names
+// the digest's first 12 hexadecimal characters and the 30 keys, and its fields hold neither the
+// whole digest nor any setting's value (dispatch://INFRA-321 R5). A round an older daemon opened
+// recorded the drift as text alone, and its ask names that text as one field.
+//
+// The steps a role takes on reading the ask are its role prompt's (go/worker-common.md and
+// go/architect-common.md), each in one passage about the update message. That passage names the
+// five steps in their order (dispatch://INFRA-4203 R2): push every commit to keep, let each
+// subagent and each background job finish or stop it and push what it made, put a scratch file
+// needed as evidence on Dispatch, answer, and end the turn. It says the four things beside the
+// steps: the round does not end early while a role is in a turn or reports background work, a
+// service started with a name is in no report and goes with the pod, the pod goes when the round
+// ends whatever runs in it, and work that finishes after the answer is pushed and answered again
+// with the same round. A role whose tool has no ready_for_update is told to do the first three
+// steps. It does not say that the round ends early once every role answers and no role is in a
+// turn, or that only the background jobs of the turn in progress go with the pod.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
 	drift := []runtime.Drift{{
@@ -777,7 +793,7 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		!ask.NoAnswerDelaysIt || !ask.KeptByPushOnly || ask.Restart != "same_session" || !ask.NextTaskHeld {
 		t.Errorf("the ask states %+v, want the push to legion/LEGION-209, the ready_for_update op, every answer bringing the end forward, no answer delaying it, only the push keeping work, the same session and the next task held", ask)
 	}
-	if want := []string{"turn", "background_jobs", "unpushed_work", "test_database", "caches"}; !slices.Equal(ask.GoesWithPod, want) {
+	if want := []string{"turn", "subagents", "background_jobs", "named_services", "unpushed_work", "test_database", "caches"}; !slices.Equal(ask.GoesWithPod, want) {
 		t.Errorf("the ask says %q goes with the pod, want %q", ask.GoesWithPod, want)
 	}
 	encoded, err := json.Marshal(ask)
@@ -794,6 +810,69 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	if older.Reasons != `image "sha256:1"` || len(older.Images) != 0 || len(older.Settings) != 0 {
 		t.Errorf("the ask of a round an older daemon opened names images %q, settings %q and reasons %q; want its text as the reasons alone",
 			older.Images, older.Settings, older.Reasons)
+	}
+
+	// The steps, and the rule of the round's end beside them, are each reader's prompt's: the
+	// passage of each part the ask reaches (texts.UpdateAsk's readers) that opens on the update
+	// message.
+	for _, part := range []string{"worker-common.md", "architect-common.md"} {
+		body, err := os.ReadFile(filepath.Join("..", "prompts", "go", part))
+		if err != nil {
+			t.Fatalf("read the prompt part %s: %v", part, err)
+		}
+		var passage string
+		for paragraph := range strings.SplitSeq(string(body), "\n\n") {
+			if strings.HasPrefix(paragraph, "The daemon can send an update message to your role topic.") {
+				passage = paragraph
+			}
+		}
+		if passage == "" {
+			t.Fatalf("%s has no passage about the update message", part)
+		}
+		// The five steps, in this order: the push comes before the background work, so a job
+		// that outlives the bound never keeps a role from pushing its own commits, and the answer
+		// comes after that work.
+		last := -1
+		for _, step := range []string{
+			"Do its five steps in that turn, in this order.",
+			"Step 1: push every commit you want to keep to this issue's branch.",
+			"Step 2: let each subagent and each background job that you started finish. Stop one that cannot finish before the round ends. Then commit and push what it made.",
+			"Step 3: if you need a scratch file as evidence, put it on Dispatch",
+			"Step 4: call the `legion` tool with `op: \"ready_for_update\"` and `round` set to the round the message names.",
+			"Step 5: end your turn.",
+		} {
+			at := strings.Index(passage, step)
+			switch {
+			case at < 0:
+				t.Errorf("%s does not give the step %q:\n%s", part, step, passage)
+			case at < last:
+				t.Errorf("%s gives the step %q before the step that comes ahead of it:\n%s", part, step, passage)
+			default:
+				last = at
+			}
+		}
+		for _, want := range []string{
+			"If every role answers, the round can end before that moment.",
+			"It does not end early while a role is in a turn or reports background work: it ends once no role is in a turn and each role's last report names no subagent and no background job that runs.",
+			"Your plugin sends that report at the end of each turn.",
+			"When the round ends, the pod goes, whatever runs in it",
+			"each subagent, each background job and each named service that still runs",
+			"If a subagent or a background job finishes after you answer, commit and push what it made. Then call `ready_for_update` again with the same round before you end that turn.",
+			"A service that you started with a name is not in the report. It does not delay the round, and it goes with the pod.",
+			"If your `legion` tool has no \"ready_for_update\" operation, do steps 1, 2 and 3, then end your turn.",
+		} {
+			if !strings.Contains(passage, want) {
+				t.Errorf("%s does not say %q:\n%s", part, want, passage)
+			}
+		}
+		for _, gone := range []string{
+			"reads the end of this turn as your answer", "push check", "rescue",
+			"the background jobs of that turn", "If every role answers and no role is in a turn, the round ends before that moment.",
+		} {
+			if strings.Contains(passage, gone) {
+				t.Errorf("%s still says %q, which this round does not do:\n%s", part, gone, passage)
+			}
+		}
 	}
 }
 
