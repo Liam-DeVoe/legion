@@ -249,7 +249,8 @@ A credential carries a list of the projects it may use (`model.Credential.Projec
 A personal token's list is its row's `projects`, which Settings and `POST` and `PATCH /api/v1/me/agent-tokens` write:
 at most 16, each a project the caller sees (`400 TOKEN_PROJECTS_INPUT` otherwise), defaulting to the list of the caller's own credential, so a credential that lists projects gives a token only some of its own.
 A broker-issued token's list is the one project the broker scoped it to, and a broker token acting as its person carries its person's trade list too; every other credential lists none.
-While no project is private a broker token's list holds no read, and a person-scope token's no write, as before projects could be private; once one is private it holds both.
+While every project is public, a full member's broker token reads what its person reads, and a full member's person-scope token writes wherever its person may, as before projects could be private.
+A restricted member's broker token is held to its list for reads and writes whatever the deployment holds, and once a project is private every broker token is.
 
 - A person at a browser sees every project they own, that lists them or a group they are a full member of, or that is public while they are a full member.
 
