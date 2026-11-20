@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/oauth"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -135,6 +136,11 @@ type Deps struct {
 	// Its routes, every one under /approve and /signin/, are mounted only when it is set, so a
 	// broker that signs nobody in, and a test rig that wires no page, answer each of them 404.
 	Approval *approval.Page
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check), which cmd/broker builds where BROKER_PROJECT_ACCESS_URL is set, on
+	// the Dispatch client the token exchange asks. Nil is a broker with no Dispatch to ask, which
+	// holds nobody.
+	Hold *hold.Gate
 	// Draining reports whether this process has begun stopping, which GET /healthz answers 503
 	// SHUTTING_DOWN for while every other route goes on being served; nil means it never does.
 	//

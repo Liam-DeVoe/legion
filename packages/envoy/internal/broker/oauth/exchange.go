@@ -18,6 +18,7 @@ import (
 	"authelia.com/provider/oauth2/token/jwt"
 
 	"github.com/sjawhar/envoy/internal/broker/exchange"
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/oauthstore"
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/projectaccess"
@@ -219,6 +220,10 @@ type ExchangeConfig struct {
 	// trade that names one, since nothing could say the person may see it; an entry's token it
 	// mints as before, the operator's own setting having chosen its project.
 	Projects projectaccess.Access
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check), built on the Dispatch client Projects is, so the two share one
+	// cache of person answers. Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 }
 
 // validate refuses a configuration the exchange could not serve.

@@ -43,6 +43,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/answer"
+	"github.com/sjawhar/envoy/internal/broker/hold"
 	"github.com/sjawhar/envoy/internal/broker/netaddr"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -109,6 +110,9 @@ type Options struct {
 	Rules airlock.Rules
 	// Grants is the broker's own two reads, in production a *requests.Machine.
 	Grants GrantSource
+	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
+	// again (hold.Gate.Check). Nil is a broker with no Dispatch to ask, which holds nobody.
+	Hold *hold.Gate
 	// CA signs the certificate of each bound host.
 	CA *Authority
 	// Idle is BROKER_AIRLOCK_IDLE_SECONDS: how long one connection may go with no byte in
@@ -194,6 +198,7 @@ type Options struct {
 type Server struct {
 	rules  airlock.Rules
 	grants GrantSource
+	hold   *hold.Gate
 	ca     *Authority
 	idle   time.Duration
 	watch  time.Duration
@@ -303,6 +308,7 @@ func New(o Options) *Server {
 	s := &Server{
 		rules:         o.Rules,
 		grants:        o.Grants,
+		hold:          o.Hold,
 		ca:            o.CA,
 		idle:          o.Idle,
 		watch:         o.Watch,
