@@ -2420,7 +2420,40 @@ package api
 // base's own number and every open pull request again at the next merge rather than from this
 // line.)
 //
-// 176: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
+// 178: INFRA-3759 (cybermonklabs/legion) -- the project pause. Four routes: the controller's `POST
+// /legion/v1/project/pause` (`{grantId, reason}`) and `POST /legion/v1/project/resume`
+// (`{grantId}`), which take a controller grant and refuse any other with 403 `CONTROLLER_REQUIRED`,
+// and the operator's `POST /legion/v1/operator/project/pause` (`{reason}`) and `POST
+// /legion/v1/operator/project/resume` (no body), which take the operator's bearer as every operator
+// route does (`legion project pause|resume`). None names a project: the daemon pauses its own. A
+// pause answers `{pause}` (api.ProjectPauseResponse) and a resume `{pause, released}`, the ended
+// pause and how many held rows it let out (api.ProjectResumeResponse); a pause is `{id, since, by,
+// reason}` and, once ended, `endedAt` and `endedBy` beside them (api.PauseView), and `by` is
+// `{kind: controller, session}` or `{kind: operator}`. The refusals are one shape, the Failure body
+// with what it names beside the code (api.PauseFailure): 400 `PAUSE_REASON_REQUIRED` for a blank
+// reason; 409 `PAUSE_UNAVAILABLE` with the `setting` that turns the pause off (`runtime: tmux`,
+// `runtime.kubernetes.idle_release.idle_minutes: 0`, `worker_wakes_per_minute: 0`), and with no
+// setting from a daemon that runs no workflow; 409 `PROJECT_ALREADY_PAUSED` with the `pause` that
+// stands; 409 `PROJECT_NOT_PAUSED` with the `lastPause`, where one has ended. While the project is
+// paused, the controller's `compact` and `fresh_session` and the operator's `claims resume`,
+// `retry`, `compact`, `spawn` and `deliver` answer 409 `PROJECT_PAUSED`, with the `pause` that
+// stands, for every claim but the controller's, and change nothing. `GET /legion/v1/state` gains
+// `paused` (`{id, since, by, reason, waitsOn, held}`: the claims whose stop the pause still waits
+// on, each `{claim, issue, role, askedAt}`, and each row it holds, `{id, kind, issue, claim,
+// waitedSeconds}`, `claim` absent for a row that names none) while the project is paused, and
+// `lastPause` (a pause with `endedAt` and `endedBy`) while it runs after a pause has ended; a
+// caller from a pod whose claims record a contract below 178 is served the state with neither key
+// (api's stateNarrowings, withoutPause), as a caller below 141 is served it without
+// `assignments`, and the bands compose. The release records' resumes gain `pause`, the pause that
+// held the wake, absent on a wake no pause held (api.ResumeRecord). A controller grant now records
+// who minted it, the controller session or the operator's bearer (credential.Grant's Session and
+// Operator), which the pause records as who acted; that has no wire shape of its own.
+// (This entry takes 178, above main's 168: a reading of `const DaemonAPIVersion` at
+// refs/pull/<n>/head for each open pull request of cybermonklabs/legion, made on 2026-11-19
+// between 20:40:35Z and 20:45:30Z, found 169 to 177 each declared by another open pull request
+// and none declaring 178.)
+//
+// 183: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
 // own work, until a time it names, and the record shows each wait that stands. Two claim routes
 // are added, each authenticated by the registration's secret as `POST /legion/v1/claims/activity`
 // is and held to the session the claim records. `POST /legion/v1/claims/wait` (`api.WaitRequest`:
@@ -2434,7 +2467,7 @@ package api
 // `{ended: false, updateAsk: true}` for a key of the claim's own update ask, which ends nothing
 // and records nothing (record.IsUpdateAskKey). Each refuses a stale plugin's claim with the
 // stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
-// by a contract of its own: a plugin below 176 knows neither route and sends neither.
+// by a contract of its own: a plugin below 183 knows neither route and sends neither.
 // Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the
 // declaration's answer named) while its worker's wait stands (workflow.WaitStands): declared and
 // not ended, in the session, phase, generation and phase entry it was declared at, of a claim
@@ -2446,10 +2479,10 @@ package api
 // `version`) while the closed design gate holds that merger (workflow.HeldByDesignGate), so
 // `read_record` carries it, and the plain `legion state` prints one `holds:` line naming each.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 176 is served every claim view without the two keys (api's stateFor,
+// contract below 183 is served every claim view without the two keys (api's stateFor,
 // withoutWait and withoutHold), as a caller below 146, INFRA-2614's entry, is served the issues
 // without their entry times (withoutEntryTimes), and every older band as the rows of
-// stateNarrowings list it; they compose, and every reader from 176 on takes each key as optional
+// stateNarrowings list it; they compose, and every reader from 183 on takes each key as optional
 // (`packages/contracts/src/legion-api.ts`).
 // A plugin from 58 to 166 does not refuse either key, since every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
@@ -2462,17 +2495,16 @@ package api
 // are the two routes and the two keys above.
 // (This change declared 125, the lowest number above the base's 111 that no open pull request
 // declared, read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49. It took
-// 167 at the forward merge of 2026-11-19 that brought main in at 97b85d34a35d, 170 at the forward
-// merge of that same day that brought main in at 9aff682b9037, and takes 176 at the forward merge
-// of that same day that brings main in at 0ec926f5cdcb, which carries #4488's 168, the entry right
-// above and the number the base carries.
+// 167, 170 and 176 at the forward merges of 2026-11-19, and takes 183 at the forward merge of
+// 2026-11-20 that brings main in at d36289cb84b1, which carries INFRA-3759's 178, the entry right
+// above and the number the base carries. Its narrowing stands above pauseContract's, so a pod at
+// 178 is served the pause and no claim view's `wait` or `hold`.
 // .github/scripts/check-daemon-api-contract.sh, run as CI runs it on a tree declaring the base's
-// own 168 against main at 0ec926f5cdcb at 2026-11-19T17:47:34Z, refused it and named 176,
-// passing over 169 (#3831 and #4065), 170 (#2230, #4173, #4180 and #4193, beside this pull
-// request), 171 (#4115 and #4485), 172 (#3659), 173 (#4493), 174 (#3993 and #4273) and 175
-// (#3712, #4392 and #4495). Each of those is the number that head declared at that reading and no
-// head's for good. Read the base's own number and every open head again at the last push rather
-// than from this line, as
+// own 178 against main at d36289cb84b1 at 2026-11-20T01:35:51Z, refused it and named 183,
+// passing over 179 (#4392 and #4540), 180 (#4049 and #4175), 181 (#4273 and #4553) and 182
+// (#4495). Each of those is the number that head declared at that reading and no head's for good.
+// Read the base's own number and every open head again at the last push rather than from this
+// line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 176
+const DaemonAPIVersion = 183

@@ -55,7 +55,7 @@ func TestNoRowHoldsNoMergerUnderAGatedStepNobodyRegistered(t *testing.T) {
 		Status: workflow.PhaseStatus(phase.Retro), Rank: "U", HandedOver: true, LastDispatchSeq: 1},
 		claim.RoleMerger, []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec})
 	r.idleRelease()
-	r.runner.backstop = releaseBackstop
+	r.runner.backstop = testReleaseBackstop
 	// The tick names a silent worker only under the bounds the boot registers (openWorkflow), and
 	// only to a registered controller.
 	r.w.admission.UseWorkerSilence(30*time.Minute, 4*time.Hour)

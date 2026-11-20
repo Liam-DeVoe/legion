@@ -312,7 +312,7 @@ func wantGateStart(t *testing.T, pool *pgxpool.Pool, issue string, woke bool) me
 	starts := mergerStartsOf(t, pool, issue)
 	task := gateMovedTask(gatedRoot)
 	if woke {
-		task = WakeTask(pods.WakeDesignGate, task)
+		task = WakeTask(pods.WakeDesignGate, task, StoppedByRelease)
 	}
 	if len(starts) != 1 {
 		t.Fatalf("the merger starts of %s = %+v, want the gate's one start", issue, starts)
@@ -444,7 +444,7 @@ func TestAMergerWhoseQueueHoldsAStartWithATaskGetsNoSecondGateStart(t *testing.T
 		// counts is whether that start is the merger's delivery of the move.
 		counts bool
 	}{
-		{name: "a wake's start at the close", queued: record.SuperviseRequest{Task: WakeTask(pods.WakeChecks, "head1 passed every check")}, counts: true},
+		{name: "a wake's start at the close", queued: record.SuperviseRequest{Task: WakeTask(pods.WakeChecks, "head1 passed every check", StoppedByRelease)}, counts: true},
 		{name: "a start of its phase at the close", queued: record.SuperviseRequest{Phase: phase.Merging, Task: "Merge the head.", Entry: 1}},
 		{name: "a start of its phase at the opening", queued: record.SuperviseRequest{Phase: phase.Merging, Task: "Merge the head.", Entry: 1},
 			open: true, counts: true},

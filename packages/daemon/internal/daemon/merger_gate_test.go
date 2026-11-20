@@ -106,7 +106,7 @@ func newHeldMergerRig(t *testing.T) *waitDeliveryRig {
 		Status: workflow.PhaseStatus(phase.Retro), Rank: "U", HandedOver: true, LastDispatchSeq: 1},
 		claim.RoleMerger, config.DesignGateRootIssues.Steps())
 	r.idleRelease()
-	r.runner.backstop = releaseBackstop
+	r.runner.backstop = testReleaseBackstop
 	r.applies("register-spec-1", intake.GateRegistered{Issue: r.issue.Key, Step: record.DesignStepSpec, ArtifactID: heldMergerSpec,
 		Version: 1, DispatchVersion: 1, Since: record.EventMark{Seq: 2}})
 	r.applies("spec-approved-1", intake.DispatchArtifact{Key: r.issue.Key, ArtifactID: heldMergerSpec, Kind: intake.DispatchArtifactApproved,

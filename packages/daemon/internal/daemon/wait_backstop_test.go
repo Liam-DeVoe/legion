@@ -28,8 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// releaseBackstop is the backstop_minutes the releases below arm a backstop for.
-const releaseBackstop = time.Hour
+// testReleaseBackstop is the backstop_minutes the releases below arm a backstop for.
+const testReleaseBackstop = time.Hour
 
 // armedBackstop is one backstop row of an issue that has not fired, as the release armed it.
 type armedBackstop struct {
@@ -95,7 +95,7 @@ func (r *waitDeliveryRig) backstopsFired(at time.Time) []string {
 func TestAReleaseArmsNoBackstopForAWaitingWorkerAndLeavesNoneItHeld(t *testing.T) {
 	r := newWaitDeliveryRig(t)
 	r.idleRelease()
-	r.runner.backstop = releaseBackstop
+	r.runner.backstop = testReleaseBackstop
 	taken := r.working(1, "Test it.")
 	r.endTurn(taken.ID)
 
@@ -144,7 +144,7 @@ func TestAReleaseArmsNoBackstopForAWaitingWorkerAndLeavesNoneItHeld(t *testing.T
 	r.endTurn(r.takeTask().ID)
 
 	r.releasesAt(wait.WakeAt.Add(time.Minute))
-	if got, due := openBackstops(t, r.pool, r.issue.Key), wait.WakeAt.Add(time.Minute).Add(releaseBackstop); len(got) != 1 ||
+	if got, due := openBackstops(t, r.pool, r.issue.Key), wait.WakeAt.Add(time.Minute).Add(testReleaseBackstop); len(got) != 1 ||
 		got[0].role != claim.RoleTester || got[0].dueAt.Sub(due).Abs() > time.Millisecond {
 		t.Fatalf("the backstops after the release once the wait ended = %+v, want the tester's one, due a backstop after that release", got)
 	}
@@ -159,7 +159,7 @@ func TestAReleaseArmsNoBackstopForAWaitingWorkerAndLeavesNoneItHeld(t *testing.T
 func TestAPodWhoseOnlyPhaseWorkerWaitsIsReleasedAfterTheIdlePeriod(t *testing.T) {
 	r := newWaitDeliveryRig(t)
 	rt := r.idleRelease()
-	r.runner.backstop = releaseBackstop
+	r.runner.backstop = testReleaseBackstop
 	taken := r.working(1, "Test it.")
 	wait := r.declare()
 	r.endTurn(taken.ID)
@@ -256,7 +256,7 @@ func newHeldMergerIdleRig(t *testing.T, open bool) *idleRig {
 	runner := &outbox{
 		pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st,
 		notices: &outboxPublisher{}, log: quietLogger(), gatedSteps: config.DesignGateRootIssues.Steps(),
-		backstop: releaseBackstop, now: func() time.Time { return time.Now().Add(time.Minute) },
+		backstop: testReleaseBackstop, now: func() time.Time { return time.Now().Add(time.Minute) },
 	}
 	w := &workflowRuntime{pool: pool, projectID: "legion", dispatchProject: "LEGION", log: quietLogger(),
 		idleStore: st, idleRuntime: rt, idlePeriod: 10 * time.Minute}
