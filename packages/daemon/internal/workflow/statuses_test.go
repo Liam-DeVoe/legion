@@ -341,6 +341,8 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 			}
 			rig := newWakeRig(t)
 			rig.apply("settled", shape.fact)
+			// The wake brings back a session an idle release stopped (newWakeRig), which its task names.
+			got.StoppedBy = StoppedByRelease.word()
 			oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, taskText(got))
 		})
 	}
@@ -357,7 +359,8 @@ func TestTheWakeTaskNamesAFailedStatus(t *testing.T) {
 		passed := 2
 		want := texts.PodWakeRecord{TaskHead: texts.TaskHead{Kind: texts.PodWake, Issue: "LEGION-208"}, Wake: pods.WakeChecks,
 			PullRequest: "sjawhar/legion#42", Head: "head1", Phase: phase.Implementing,
-			NotPassedStatuses: []texts.StatusState{red("ci", "failure")}, Passed: &passed, ListPassed: "gh pr checks 42 --repo sjawhar/legion"}
+			NotPassedStatuses: []texts.StatusState{red("ci", "failure")}, Passed: &passed, ListPassed: "gh pr checks 42 --repo sjawhar/legion",
+			StoppedBy: StoppedByRelease.word()}
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks, taskText(want))
 	})
 	for _, today := range []struct {
