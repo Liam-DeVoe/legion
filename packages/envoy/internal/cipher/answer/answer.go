@@ -117,7 +117,8 @@ const (
 	// CallerAccount is a caller BROKER_API_ACCOUNTS lists, by the name it gives the caller.
 	CallerAccount = "account"
 	// CallerService is a service logged in with its own ServiceAccount token, by the service and
-	// the account it presented.
+	// the account it presented, and a listener calling with its own identity token, by the kind
+	// BROKER_NATS_SERVICES binds its account to and the account.
 	CallerService = "service"
 	// CallerSignIn is a person signed in to the broker's approval page, by their login.
 	CallerSignIn = "sign-in"

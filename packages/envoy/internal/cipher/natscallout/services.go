@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/natsgrant"
 )
@@ -82,6 +83,21 @@ func ParseServices(raw string) ([]ServiceEntry, error) {
 		services = append(services, entry)
 	}
 	return services, nil
+}
+
+// ServiceKinds is services as the broker's HTTP routes read them (api.ServiceKinds): each entry's
+// kind, by its account, among the Kubernetes accounts or the Google ones as the entry's account is.
+// GET /v1/project-privacy answers an account it binds to a listener.
+func ServiceKinds(services []ServiceEntry) api.ServiceKinds {
+	kinds := api.ServiceKinds{K8s: map[string]string{}, Google: map[string]string{}}
+	for _, entry := range services {
+		if entry.Google {
+			kinds.Google[entry.Account] = string(entry.Kind)
+		} else {
+			kinds.K8s[entry.Account] = string(entry.Kind)
+		}
+	}
+	return kinds
 }
 
 func parseService(text string) (ServiceEntry, error) {

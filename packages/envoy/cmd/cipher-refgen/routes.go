@@ -145,6 +145,7 @@ var credentialLabels = map[string]string{
 	"accountAuth":  "Caller ServiceAccount token",
 	"serviceAuth":  "Service login ServiceAccount token",
 	"signInAuth":   "Broker sign-in session",
+	"listenerAuth": "Listener identity token",
 }
 
 // readAuthClasses reads each adapter a route uses: its doc comment, the routeAuth constant it

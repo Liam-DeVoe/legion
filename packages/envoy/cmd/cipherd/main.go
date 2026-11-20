@@ -349,8 +349,13 @@ func main() {
 	// the two settings to both or neither. Built before the loader, which serves a tagged secret
 	// only when this broker can ask whether its project is private (policy.Loader.ProjectChecks).
 	var projectAccess projectaccess.Access
+	// The same client's fresh read of every private project, which GET /v1/project-privacy answers
+	// a listener; nil when unset, where that route answers 502. It is assigned only from a client,
+	// since an interface holding a nil *projectaccess.Client would not be nil.
+	var projectPrivacy api.FreshPrivateProjects
 	if cfg.ProjectAccessURL != "" {
-		projectAccess = projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		client := projectaccess.New(cfg.ProjectAccessURL, ciphertoken.NewAccountToken(cfg.ProjectAccessTokenFile), nil)
+		projectAccess, projectPrivacy = client, client
 	}
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -678,6 +683,7 @@ func main() {
 		APIAccounts: cfg.APIAccounts, AccountTokens: pod,
 		PodRegistrars: cfg.PodRegistrars, PodRegistrationTokens: discovered.PodRegistration,
 		GoogleAPIAccounts: cfg.GoogleAPIAccounts, GoogleAccountTokens: googleCallers,
+		ServiceKinds: natscallout.ServiceKinds(natsServices), ProjectPrivacy: projectPrivacy,
 		Enroll: enr, Machine: reqMachine, MachineLogin: mach,
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Duration(cfg.ProofSkewSeconds) * time.Second, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
