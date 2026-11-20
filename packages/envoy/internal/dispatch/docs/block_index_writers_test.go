@@ -77,14 +77,8 @@ func writeDocumentThroughTheRequestPath(t *testing.T, service *Service, database
 	if err != nil {
 		t.Fatalf("encode the created event's payload: %v", err)
 	}
-	var event int64
-	if err := tx.QueryRow(ctx, `
-		with bumped as (update issues set last_seq = last_seq + 1 where key = 'CORE-1' returning last_seq)
-		insert into events (issue_key, seq, type, actor, payload, notify)
-		select 'CORE-1', bumped.last_seq, 'artifact.created', '{"kind":"user","id":"alice"}', $1, false
-		from bumped
-		returning id
-	`, payload).Scan(&event); err != nil {
+	event, err := documentEvent(ctx, tx, "artifact.created", payload)
+	if err != nil {
 		t.Fatalf("record the document's event: %v", err)
 	}
 	if err := causeInWritePhase(joined, tx, write, event); err != nil {
@@ -603,12 +597,12 @@ var indexPasses = map[string]string{
 	// the store's own row to state what it writes into that row, never a projection to mend the
 	// store or the store to mend a projection.
 	"graphstore/write.go#queueNodes": "the nodes its caller states and the rows of them it moves",
-	// queueAppend is the second half of one write rather than a second look at it: it appends the
-	// tuples its caller states, and states the base attributes of the node rows its node write
-	// marked and moves them onto the write's cause, which it reads off those rows' marks
-	// (graphstore's nodeMarks). It reads the store's own rows its write just wrote, no
-	// projection, and mends nothing.
-	"graphstore/write.go#queueAppend": "the tuples its caller states and the node rows its own node write marked",
+	// queueAppendStatement, one statement of queueAppend's append, is the second half of one write
+	// rather than a second look at it: it appends the tuples its caller states, and states the base
+	// attributes of the node rows its node write marked and moves them onto the write's cause,
+	// which it reads off those rows' marks (graphstore's nodeMarks). It reads the store's own rows
+	// its write just wrote, no projection, and mends nothing.
+	"graphstore/write.go#queueAppendStatement": "the tuples its caller states and the node rows its own node write marked",
 	// The publisher's record of a batch splices the store's arms into its own statement
 	// (graphstore.WriteArms): the roles and sessions the batch reached, and its deliveries.
 	"outbox/publisher.go#recordBatch": "the batch of events the publisher sent and the destinations each reached",

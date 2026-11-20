@@ -62,17 +62,20 @@ func Write(ctx context.Context, tx pgx.Tx, nodes []Node, tuples []Tuple) error {
 // follow the node - holds the write for its event instead (PlanUncaused, QueueNodes,
 // QueueCaused), so that the base attributes are appended under that event rather than under the
 // sentinel.
+//
+// Its statements build their arguments when the write phase sends them (store.WriteBatch's
+// QueueBuilt), so a node or a writer that cannot be encoded fails Send rather than this call,
+// which returns nil; the error result stays for the callers that check it.
 func QueueWrite(b *store.WriteBatch, nodes []Node, tuples []Tuple) error {
 	mark := int64(0)
 	if len(nodes) > 0 {
 		mark = nextNodeMark()
 	}
-	if err := queueNodes(b, nodes, mark); err != nil {
-		return err
-	}
-	return queueAppend(b, appending{
+	queueNodes(b, nodes, mark)
+	queueAppend(b, appending{
 		tuples: len(tuples), tuple: func(index int) Tuple { return tuples[index] }, nodes: nodes, mark: mark,
 	})
+	return nil
 }
 
 // Uncaused is a write of this store whose cause did not exist while its node write was queued,
@@ -153,9 +156,11 @@ func PlanUncaused(nodes []Node, stated []Tuple) Uncaused {
 // QueueNodes queues the node write of write (PlanUncaused) on b: every node now, at the sentinel,
 // each it makes or moves left marked for the append QueueCaused queues. It appends nothing. The
 // nodes are read when the write phase sends the statements, so the writer does not change them
-// after this call.
+// after this call, and a node that cannot be encoded fails Send rather than this call, which
+// returns nil (QueueWrite).
 func QueueNodes(b *store.WriteBatch, write Uncaused) error {
-	return queueNodes(b, write.Nodes, write.mark)
+	queueNodes(b, write.Nodes, write.mark)
+	return nil
 }
 
 // Caused is QueueCaused run at once, as a batch of its own, for a writer with no write phase.
@@ -181,10 +186,11 @@ func Caused(ctx context.Context, tx pgx.Tx, write Uncaused, event int64) error {
 //
 // Each tuple is stated under event as the append binds it, read from write where it stands when
 // the write phase sends the statements, rather than copied here: a version's block index holds a
-// tuple a block. The writer does not change write after this call.
+// tuple a block. The writer does not change write after this call, and a tuple that cannot be
+// encoded fails Send rather than this call, which returns nil (QueueWrite).
 func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 	legacy := event
-	return queueAppend(b, appending{
+	queueAppend(b, appending{
 		tuples: len(write.Tuples),
 		tuple: func(index int) Tuple {
 			held := write.Tuples[index]
@@ -197,6 +203,7 @@ func QueueCaused(b *store.WriteBatch, write Uncaused, event int64) error {
 		},
 		nodes: write.Nodes, mark: write.mark, baseAt: write.baseAt, cause: &event, sentinel: write.sentinel,
 	})
+	return nil
 }
 
 // The two base attributes, as the kind of the tuple that states each spells it. graph_nodes
@@ -319,12 +326,14 @@ func markAttributes(row string) string {
 // is a nested loop that rescans one per row of the other, which measured 3,009 ms against 193 ms
 // over a 1,999-block version, so what the write did to each node rides on the node's own row
 // instead (nodeMarks).
-func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
+func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) {
 	if len(nodes) == 0 {
-		return nil
+		return
 	}
 	// Each statement builds its arguments when the write phase sends it (store.WriteBatch's
-	// QueueBuilt), so a version's nodes are held as arguments only while their statement is sent.
+	// QueueBuilt). The move compares six of the insert's arrays, which the insert's build hands it
+	// (shared): Send builds statements in the order they were queued, so the insert's comes first.
+	var shared []any
 	markParam := "$" + strconv.Itoa(len(nodeArrayTypes)+1)
 	b.QueueBuilt("write graph nodes", `
 		insert into graph_nodes (`+nodeColumns+`)
@@ -338,6 +347,7 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
 		if err != nil {
 			return nil, err
 		}
+		shared = args[:6:6]
 		return append(args, mark), nil
 	})
 	// The move reads, beside the five columns it compares, whether the write restates each node
@@ -362,17 +372,21 @@ func queueNodes(b *store.WriteBatch, nodes []Node, mark int64) error {
 		       or graph_nodes.state is distinct from `+writtenState+`
 		       or graph_nodes.attributes is distinct from incoming.attributes)
 	`, func() ([]any, error) {
-		args, err := nodeParams(nodes)
-		if err != nil {
-			return nil, err
+		compared := shared
+		shared = nil
+		if compared == nil {
+			args, err := nodeParams(nodes)
+			if err != nil {
+				return nil, err
+			}
+			compared = args[:6:6]
 		}
 		restates := make([]bool, len(nodes))
 		for index := range nodes {
 			restates[index] = nodes[index].Restates
 		}
-		return []any{args[0], args[1], args[2], args[3], args[4], args[5], restates, mark}, nil
+		return append(compared, restates, mark), nil
 	})
-	return nil
 }
 
 // writtenVisibility and writtenState are the visibility and the state the move writes a row at,
@@ -448,9 +462,9 @@ type appending struct {
 // for the arguments it already holds: one statement over a version's 150,001 block nodes and
 // their 150,001 tuples bound some 81 MB of arguments and held 377 MB of encoding at the heap's
 // peak.
-func queueAppend(b *store.WriteBatch, write appending) error {
+func queueAppend(b *store.WriteBatch, write appending) {
 	if write.tuples == 0 && write.mark == 0 && !(write.sentinel && len(write.nodes) > 0) {
-		return nil
+		return
 	}
 	order, majors, before, baseSlot := appendOrder(write.tuples, write.tuple, write.baseAt)
 	nodes := write.nodes
@@ -459,12 +473,9 @@ func queueAppend(b *store.WriteBatch, write appending) error {
 	}
 	own := statedAttributes(write.tuples, write.tuple)
 	for _, segment := range appendSegments(len(order), before, len(nodes), appendRows) {
-		if err := queueAppendStatement(b, order[segment.tuplesFrom:segment.tuplesTo], majors[segment.tuplesFrom:segment.tuplesTo],
-			nodes[segment.nodesFrom:segment.nodesTo], write, own, baseSlot); err != nil {
-			return err
-		}
+		queueAppendStatement(b, order[segment.tuplesFrom:segment.tuplesTo], majors[segment.tuplesFrom:segment.tuplesTo],
+			nodes[segment.nodesFrom:segment.nodesTo], write, own, baseSlot)
 	}
-	return nil
 }
 
 // appendRows is the most tuples and nodes one statement of an append binds together: a write
@@ -556,7 +567,7 @@ func tupleAt(at, before, nodes int) int {
 // the indexes order names, at their places (majors), and, where nodes is not empty, the base
 // attributes those nodes' write states at baseSlot and their move onto their cause. Its arguments
 // are built when the write phase sends it (store.WriteBatch's QueueBuilt).
-func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, nodes []Node, write appending, own map[baseAttribute]struct{}, baseSlot int64) error {
+func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, nodes []Node, write appending, own map[baseAttribute]struct{}, baseSlot int64) {
 	build := func() ([]any, error) {
 		params, err := tupleParamsOf(len(order), func(index int) Tuple { return write.tuple(order[index]) })
 		if err != nil {
@@ -582,7 +593,7 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 			order by major, minor
 			on conflict do nothing
 		`, build)
-		return nil
+		return
 	}
 	// The node arrays follow the tuples' ten and their places, and the mark, the base slot and the
 	// sentinel follow the node arrays (appendedNodeParams).
@@ -642,7 +653,6 @@ func queueAppendStatement(b *store.WriteBatch, order []int, majors []int64, node
 		order by major, minor
 		on conflict do nothing
 	`, build)
-	return nil
 }
 
 // appendedNodeParams are the appendedNodeArrays arrays the append reads nodes through, by

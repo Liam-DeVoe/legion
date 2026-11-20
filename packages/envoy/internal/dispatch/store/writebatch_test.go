@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 )
 
@@ -39,5 +40,23 @@ func TestPartsKeepEveryStatementInOrderWithinTheBound(t *testing.T) {
 	}
 	if len(ends) < 2 || ends[len(ends)-1] != len(sizes) {
 		t.Fatalf("the parts end at %v, want the phase cut and every one of its %d statements sent", ends, len(sizes))
+	}
+}
+
+// A statement whose arguments fail to build ends the part at itself, so Send sends the statements
+// queued before it first and their own failure comes before the build's.
+func TestAFailedBuildEndsThePartAtItsStatement(t *testing.T) {
+	failed := errors.New("encode the arguments")
+	size := func(index int) (int, error) {
+		if index == 2 {
+			return 0, failed
+		}
+		return 1, nil
+	}
+	if end, err := partEnd(0, 4, 8, size); end != 2 || !errors.Is(err, failed) {
+		t.Fatalf("the part ends at %d with %v, want it to end at the failed statement 2 with its failure", end, err)
+	}
+	if end, err := partEnd(2, 4, 8, size); end != 2 || !errors.Is(err, failed) {
+		t.Fatalf("a part starting at the failed statement ends at %d with %v, want 2 and its failure, so nothing of it is sent", end, err)
 	}
 }

@@ -56,13 +56,18 @@ func (b *WriteBatch) Queue(what, sql string, args ...any) Queued {
 }
 
 // QueueBuilt is Queue for a statement whose arguments build returns when Send reaches it, rather
-// than now: a write of thousands of rows queues its statements with the rows they read, and only
-// the batch Send is sending holds their arguments, which it drops once that batch has run. build
-// reads the rows as they stand then, so they must not change after this call. Its error stops
-// Send, as a statement's own failure would.
+// than now: a write of thousands of rows queues its statements with the rows they read, and the
+// rows are held as arguments only for the part Send is sending, and for the statement after it,
+// which Send builds to measure, and are dropped once that part has run. build reads the rows as
+// they stand then, so they must not change after this call. Its error, wrapped as what failed,
+// ends Send as a statement's own failure would: after the statements queued before it, whose
+// own failure comes first.
 func (b *WriteBatch) QueueBuilt(what, sql string, build func() ([]any, error)) Queued {
 	queued := Queued{query: b.batch.Queue(sql), what: what}
-	b.builds = append(b.builds, build)
+	b.builds = append(b.builds, func() ([]any, error) {
+		arguments, err := build()
+		return arguments, queued.failed(err)
+	})
 	queued.Exec(nil)
 	return queued
 }
@@ -152,7 +157,9 @@ func (r batchRow) Scan(dest ...any) error {
 // arguments, so a version of 150,000 blocks held some 740 MB of encoded statements at once as one
 // batch. In parts it holds one part's. A statement queued with QueueBuilt has its arguments built
 // as its part is cut, and every statement's arguments are dropped once its part has run, so a
-// write's rows are held as arguments only for the part that sends them. The round trip between
+// write's rows are held as arguments only for the part that sends them and for the statement
+// after it, which partEnd builds to measure. A build that fails sends the statements before it
+// first, so their own failure, where one fails, is the one Send returns. The round trip between
 // two parts is the one gap the order above allows, and it is taken only by a write phase whose
 // statements run for seconds on their own.
 func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
@@ -186,16 +193,18 @@ func (b *WriteBatch) Send(ctx context.Context, tx pgx.Tx) error {
 		return bytes, nil
 	}
 	for start := 0; start < len(queued); {
-		end, err := partEnd(start, len(queued), sendBound, size)
-		if err != nil {
-			return err
+		end, buildErr := partEnd(start, len(queued), sendBound, size)
+		if end > start {
+			batch := pgx.Batch{QueuedQueries: queued[start:end]}
+			if err := tx.SendBatch(ctx, &batch).Close(); err != nil {
+				return err
+			}
+			for index := start; index < end; index++ {
+				queued[index].Arguments, queued[index] = nil, nil
+			}
 		}
-		batch := pgx.Batch{QueuedQueries: queued[start:end]}
-		if err := tx.SendBatch(ctx, &batch).Close(); err != nil {
-			return err
-		}
-		for index := start; index < end; index++ {
-			queued[index].Arguments, queued[index] = nil, nil
+		if buildErr != nil {
+			return buildErr
 		}
 		start = end
 	}
@@ -210,13 +219,14 @@ const sendBound = 16 << 20
 // partEnd is the end of the batch Send sends from statement start of count: as many statements
 // as fit in bound together, and a statement past bound on its own. size gives a statement's
 // argument bytes, and is asked once for each statement in order, the one past the batch included,
-// which is the next batch's first.
+// which is the next batch's first. Where size fails, the end is that statement, so the batch is
+// the statements before it, and the failure comes back beside it.
 func partEnd(start, count, bound int, size func(index int) (int, error)) (int, error) {
 	total := 0
 	for index := start; index < count; index++ {
 		bytes, err := size(index)
 		if err != nil {
-			return 0, err
+			return index, err
 		}
 		if index > start && total+bytes > bound {
 			return index, nil
