@@ -13,16 +13,15 @@ import (
 // An issue whose only link to its pull request is GitHub's /issues/ form of the number compares
 // its checks with that pull request's head. `dispatch issue --external acme/widgets#7` stores
 // https://github.com/acme/widgets/issues/7, and GitHub serves pull request #7 at that URL as well
-// as at /pull/7 (INFRA-4671 held cybermonklabs/legion#4517 that way on 2026-11-19). #7's branch,
-// title, body and commit messages name no issue, and GitHub names no pull request for k1's commit,
-// so the link is the one thing that can tie #7 to the issue: its write must owe a read of #7, and
-// the attribution must take the link in either form.
+// as at /pull/7. #7's branch, title, body and commit messages name no issue, and GitHub names no
+// pull request for k1's commit, so the link is the one thing that can tie #7 to the issue: its
+// write must owe a read of #7, and the attribution must take the link in either form.
 //
 // The control links /pull/7 by hand, the form that always worked: it shows the harness's owed read,
 // pass and attribution can compare at all. The quiet case is an /issues/ link of a number that is
 // an issue of GitHub's (#8, no pull request): it compares with nothing. Its owed read stays owed
-// here, as #4209's rule keeps it until GitHub's own count proves the pull request absent
-// (delivery's pullRequestAbsent), a query this fake does not answer.
+// here until GitHub's own count proves the pull request absent (delivery's pullRequestAbsent), a
+// query this fake does not answer.
 func TestAnIssuesLinkOfAPullRequestsNumberComparesWithItsHead(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
