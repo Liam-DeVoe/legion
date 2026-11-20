@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -19,7 +19,7 @@ import (
 // run checkRun, which GitHub names go-checks at sha.
 func jobTokenOn(rig *ciJobRig, sha, ref string, checkRun int64) string {
 	rig.github.setCheckRun(checkRun, ciJobName, sha)
-	return rig.jobToken(func(answer *brokertoken.Introspection) {
+	return rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA = sha
 		answer.CI.Ref = ref
 		answer.CI.WorkflowRef = ciJobRepository + "/.github/workflows/ci-results.yaml@" + ref

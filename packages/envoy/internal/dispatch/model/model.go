@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/fold"
 )
@@ -73,7 +73,7 @@ type Credential struct {
 	// TokenID and TokenName name a personal token, and are empty for every other credential.
 	TokenID   string
 	TokenName string
-	// ReadOnly is a broker-issued token that holds only the scope read (brokertoken.ScopeRead):
+	// ReadOnly is a broker-issued token that holds only the scope read (ciphertoken.ScopeRead):
 	// one the secrets broker minted from a read entry, naming a service and a session and no
 	// person and no project. Dispatch serves it on the routes its read list names
 	// (readScopeRoutes) alone and answers it 403 READ_ONLY_TOKEN on every other
@@ -84,7 +84,7 @@ type Credential struct {
 	ReadOnly bool
 	// ResultsOnly is a broker-issued token that writes only the results of its CI run, of its
 	// project's spec checks and of each check CI proves whose ci_check names its check run
-	// (brokertoken.ScopeResults): one the secrets broker minted from a result entry for one CI
+	// (ciphertoken.ScopeResults): one the secrets broker minted from a result entry for one CI
 	// run, naming a person, one project and the run. The person stays inside the server: a
 	// result, an answer and the access log name the run (ResultRecorder). Dispatch serves it on
 	// the routes its results list names (resultsScopeRoutes) alone and answers it 403

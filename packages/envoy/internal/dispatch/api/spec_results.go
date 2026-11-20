@@ -2,7 +2,7 @@ package api
 
 // spec_results.go is the route a CI job writes the result of a check of the spec files with,
 // POST /api/v1/projects/{key}/results, and the read beside it (R12 of the spec). The job holds a
-// results token the secrets broker minted for its run (brokertoken.Caller.ResultsOnly), and this
+// results token the secrets broker minted for its run (ciphertoken.Caller.ResultsOnly), and this
 // route is one of the two routes that token reaches (resultsScopeRoutes), beside
 // POST /api/v1/issues/{key}/results. Dispatch takes who wrote the result and what it is for from
 // that token, from GitHub and from the spec files at the run's commit; the body says only what
@@ -22,7 +22,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
@@ -313,7 +313,7 @@ type runNumbers struct {
 }
 
 // runNumbersOf reads the run's numbers. The broker mints a results token only for a run whose
-// numbers are positive decimals and the verifier admits no other (brokertoken.shapeOf), so a
+// numbers are positive decimals and the verifier admits no other (ciphertoken.shapeOf), so a
 // number that does not read is Dispatch's own fault, a 500.
 func runNumbersOf(run oauthwire.CIRun) (runNumbers, error) {
 	checkRun, err := strconv.ParseInt(run.CheckRunID, 10, 64)
@@ -491,7 +491,7 @@ func jobAndLeg(name string) (job, leg string) {
 // rule from what the broker authenticated (oauthwire.WorkflowPath, oauthwire.ResultPrincipal):
 // workflow-results:, the repository and the path of the workflow file, which its workflow_ref
 // names before "@" and the run's ref. The verifier admits a results token only where the path
-// reads (brokertoken.wholeRun), so a run whose path does not read is Dispatch's own fault, a 500.
+// reads (ciphertoken.wholeRun), so a run whose path does not read is Dispatch's own fault, a 500.
 func resultPrincipal(run oauthwire.CIRun) (string, error) {
 	workflow, ok := oauthwire.WorkflowPath(run.WorkflowRef, run.Repository, run.Ref)
 	if !ok {

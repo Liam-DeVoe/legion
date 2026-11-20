@@ -1,6 +1,6 @@
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
-import { IDENTITY_GITHUB_ACTIONS } from "@legion/broker-client/environment";
-import { TradeRetryingError, TradeUnansweredError } from "@legion/broker-client/token-errors";
+import { IDENTITY_GITHUB_ACTIONS } from "@legion/cipher-client/environment";
+import { TradeRetryingError, TradeUnansweredError } from "@legion/cipher-client/token-errors";
 import { sleep } from "@legion/contracts";
 import {
   askgateState,
@@ -108,7 +108,7 @@ export interface ResultBound {
 
 /** How long Dispatch's check of a broker token waits for the broker before it answers
  *  `503 BROKER_UNAVAILABLE`, with no handler run: `introspectTimeout`,
- *  packages/envoy/internal/brokertoken/introspect.go, which a test holds this copy to. */
+ *  packages/envoy/internal/ciphertoken/introspect.go, which a test holds this copy to. */
 export const DISPATCH_TOKEN_CHECK_WAIT_MS = 5_000;
 
 /** The time a last attempt's answer gets beyond the slowest answer Dispatch gives before a

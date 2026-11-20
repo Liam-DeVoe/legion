@@ -7,7 +7,7 @@ import {
   FORM_LAUNCHER_CREDENTIAL_DECLINED,
   FORM_SESSION,
   SUBJECT_TOKEN_TYPE_GITHUB,
-} from "@legion/broker-client/wire";
+} from "@legion/cipher-client/wire";
 import type { ArtifactBlock } from "@legion/contracts";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -3391,7 +3391,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
   // changes the reserve with it.
   test("the reserve's copy of Dispatch's token-check wait is Go's introspectTimeout", () => {
     const go = readFileSync(
-      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "brokertoken", "introspect.go"),
+      join(import.meta.dir, "..", "..", "..", "envoy", "internal", "ciphertoken", "introspect.go"),
       "utf8"
     );
     const seconds = /^const introspectTimeout = (\d+) \* time\.Second$/m.exec(go)?.[1];
@@ -3637,7 +3637,7 @@ describe("dispatch result --project, as a CI job writes it", () => {
       ],
       [
         // The broker's description of a refusal it does not know is withheld, never printed
-        // (`REFUSAL_TEXT_WITHHELD`, broker-client's token errors), so the value is never shown.
+        // (`REFUSAL_TEXT_WITHHELD`, cipher-client's token errors), so the value is never shown.
         "the broker's refusal",
         "none",
         (value) => {

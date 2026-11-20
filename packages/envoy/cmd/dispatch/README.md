@@ -215,19 +215,19 @@ Without `DISPATCH_AGENT_SECRETS_URL` there is no such credential, and a `DPoP` p
 
 A read-only token is the token the broker mints from a read entry (`BROKER_EXCHANGE_READ_ACCOUNTS`).
 It holds the OAuth scope `read` alone and the project scope `none`, names a service and a fixed session, and names no person and no project.
-`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesReadOnly` set, so Dispatch accepts such a token and marks its credential read-only (`model.Credential.ReadOnly`), with no OAuth scope.
 Dispatch serves it on the routes its read list names (`readScopeRoutes` in `internal/dispatch/api/routes_table.go`), today `GET /api/v1/projects/{key}/architecture` alone.
 Every other route of the table, and `GET /ws/live`, answers it `403 READ_ONLY_TOKEN` (`contracts.DispatchReadOnlyToken`, generated from `packages/contracts`) with no `WWW-Authenticate` challenge (`refuseLimitedToken`).
 That refusal comes before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler, so a refused request claims no key and writes nothing but the row of its spent DPoP proof, which the token's verification records before the refusal.
 The other mounts outside the table read no broker token: `/ws/doc/{room}` answers such a token `401`, and `/auth/*`, `/api/github/rest/*`, `/healthz`, `/livez` and `/metrics` take no broker token at all.
 `/healthz`, `/livez` and `/metrics` take no credential (`dispatchHandler`), so they answer a request that carries such a token as they answer any other caller, and none of the five makes a write for it.
 The document socket's heartbeat re-checks the browser credential it was admitted with, the sign-in cookie or, under `DISPATCH_IDENTITY=iap`, the IAP assertion its upgrade carried (Identity, above), and nothing the request carries beside it (`api.signInStillResolves`), so a read-only token sent beside a cookie cannot keep that socket open once the cookie ends.
-A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `brokertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
+A service whose verifier does not set the switch, the Envoy listener among them, answers a read-only token `401`, and the NATS auth service, which reads the broker's answer through `ciphertoken.SessionCaller` with the switch off, refuses a connection that presents one as `not_a_session`.
 
 A results token is the token the broker mints from a result entry (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
 It holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
 That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and the access log names the run's session as the caller.
-`brokerTokenVerifier` builds the verifier with `brokertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
+`brokerTokenVerifier` builds the verifier with `ciphertoken.Options.ServesResults` set too, so Dispatch accepts such a token and marks its credential results-only with the run (`model.Credential.ResultsOnly`, `model.Credential.CI`), with no OAuth scope.
 Dispatch serves it on the routes its results list names (`resultsScopeRoutes` in `internal/dispatch/api/routes_table.go`):
 `POST /api/v1/projects/{key}/results`, where a CI job writes the result of a check of the spec files at its commit, and `POST /api/v1/issues/{key}/results`, where it records the result of a check whose `ci_check` names its job (`/api/v1/issues/{key}/results` below).
 Every other route of the table, and `GET /ws/live`, answers it `403 RESULTS_ONLY_TOKEN` with no `WWW-Authenticate` challenge (`refuseLimitedToken`), before the route's scopes, the sign-in check, the `Idempotency-Key` and the handler.
@@ -2293,7 +2293,7 @@ The release before it never reads the index and serves beside it unchanged, exce
 the index is left for the next release that reads it.
 
 Migration `0150_dpop_proofs` creates `dpop_proofs`, the record of every RFC 9449 DPoP proof Dispatch has accepted, and its expiry index.
-A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/brokertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
+A caller presenting an access token the secrets broker issued signs a fresh proof of that token's key for each request (`internal/ciphertoken`), and the row keyed on the proof's `jti` and normalized `htu` is what refuses the same proof presented twice;
 the maintenance pass deletes every record past its proof's acceptance window beside the idempotency-key sweep.
 It is a new table that touches no row, which the release before it neither reads nor writes; its census answers `0`.
 

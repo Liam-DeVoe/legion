@@ -57,8 +57,8 @@ A probe answered with a redirect says nothing of the keyed layer.
 The listener's client refuses a redirect the same way.
 An `EnvoyApiError` of a 3xx names the method, the URL as a text names it, the status and the origin, `(a redirect to <origin>, which this client does not follow)` (`transport.ts`).
 It names nothing of the body, which is cancelled unread.
-The pool identity of `@legion/broker-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
-The GitHub Actions identity, of `@legion/broker-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
+The pool identity of `@legion/cipher-client` names a 3xx of the security token service by its status alone, as `HTTP <status>`.
+The GitHub Actions identity, of `@legion/cipher-client` and of the Go broker client, follows no redirect of the runner's OIDC token endpoint either, since that request carries the runner's bearer, and names a 3xx by its status alone.
 
 ## A path value that names nothing
 

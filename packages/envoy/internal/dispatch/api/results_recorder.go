@@ -10,7 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/sjawhar/envoy/internal/broker/oauthwire"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -223,7 +223,7 @@ func refuseBranchOfAnotherIssue(ctx context.Context, q refs.Queryer, issueKey, b
 func (s *server) ciJobCheckRun(ctx context.Context, ci oauthwire.CIRun) (githubapp.CheckRun, error) {
 	id, err := strconv.ParseInt(ci.CheckRunID, 10, 64)
 	if err != nil {
-		// The verifier admits no other (brokertoken.shapeOf), so this is Dispatch's own fault.
+		// The verifier admits no other (ciphertoken.shapeOf), so this is Dispatch's own fault.
 		return githubapp.CheckRun{}, fmt.Errorf("read the check run of a results token: %w", err)
 	}
 	owner, name, _ := strings.Cut(ci.Repository, "/")

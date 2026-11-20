@@ -12,7 +12,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/brokertoken"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -181,7 +181,7 @@ func TestTwoChecksOfOneIssueCompareWithOneListOfHeads(t *testing.T) {
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	rig.github.setBranch(retryBranch, ciJobBranchHead{sha: ciJobOtherCommit})
 	jobRecorded(t, "the job's pass of c1 on "+ciJobBranch, rig.post(t, rig.issue, rig.jobToken(nil), jobResultOf("c1", "pass")))
-	retry := rig.jobToken(func(answer *brokertoken.Introspection) {
+	retry := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA, answer.CI.CheckRunID = ciJobOtherCommit, "98"
 		answer.CI.Ref, answer.CI.WorkflowRef = retryRef, ciJobRepository+"/.github/workflows/ci-results.yaml@"+retryRef
 	})
@@ -237,7 +237,7 @@ func TestAChildsCIResultIsNoBranchOfItsParent(t *testing.T) {
 	rig.github.setBranch(ciJobBranch, ciJobBranchHead{sha: ciJobCommit})
 	rig.github.setBranch(childBranch, ciJobBranchHead{sha: ciJobOtherCommit})
 
-	childToken := rig.jobToken(func(answer *brokertoken.Introspection) {
+	childToken := rig.jobToken(func(answer *ciphertoken.Introspection) {
 		answer.CI.SHA, answer.CI.CheckRunID = ciJobOtherCommit, "98"
 		answer.CI.Ref, answer.CI.WorkflowRef = childRef, ciJobRepository+"/.github/workflows/ci-results.yaml@"+childRef
 	})

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { newDpopKey } from "@legion/broker-client/dpop";
+import { newDpopKey } from "@legion/cipher-client/dpop";
 import {
   SPEC_CHECK_OBSERVED_CUT_NOTE,
   SPEC_CHECK_OBSERVED_END,
@@ -22,7 +22,7 @@ import { dispatchStackEnabled } from "../../test/dispatch-stack";
 import { ownIdentityDispatch } from "../dispatch-config";
 
 // The v-recorder path over its whole length: a CI job's own GitHub token, traded at the real
-// secrets broker (./cmd/broker) under a real result entry for a token that writes results only,
+// secrets broker (./cmd/cipherd) under a real result entry for a token that writes results only,
 // presented by the real `dispatch` CLI of this checkout, run as a child process, to the real
 // Dispatch server (./cmd/dispatch), which reads the job's check run and the spec files at the
 // run's commit from a stand-in of GitHub. The Go tests of each part prove its own rules; only
