@@ -171,7 +171,7 @@ func (a Answer) Decode(v any) error {
 	}
 	data := a.bytes()
 	err := json.Unmarshal(data, v)
-	if a.a != nil {
+	if a.a != nil && holdsBox(rv.Type(), map[reflect.Type]bool{}) {
 		recordBoxes(rv, a.a.carried())
 	}
 	if err != nil {
@@ -295,8 +295,14 @@ func recordBoxes(v reflect.Value, carried []string) {
 		return
 	}
 	switch v.Kind() {
-	case reflect.Pointer, reflect.Interface:
+	case reflect.Pointer:
 		if !v.IsNil() {
+			recordBoxes(v.Elem(), carried)
+		}
+	case reflect.Interface:
+		// encoding/json fills an interface value with a map, a slice or a scalar, never a box; it
+		// decodes into a box behind one only where the caller set a pointer there first.
+		if !v.IsNil() && v.Elem().Kind() == reflect.Pointer {
 			recordBoxes(v.Elem(), carried)
 		}
 	case reflect.Struct:
@@ -308,11 +314,14 @@ func recordBoxes(v reflect.Value, carried []string) {
 			return
 		}
 		for i := range v.NumField() {
-			if v.Type().Field(i).IsExported() {
+			if f := v.Type().Field(i); f.IsExported() && holdsBox(f.Type, map[reflect.Type]bool{}) {
 				recordBoxes(v.Field(i), carried)
 			}
 		}
 	case reflect.Slice, reflect.Array:
+		if !holdsBox(v.Type().Elem(), map[reflect.Type]bool{}) {
+			return
+		}
 		for i := range v.Len() {
 			recordBoxes(v.Index(i), carried)
 		}
@@ -329,7 +338,9 @@ func recordBoxes(v reflect.Value, carried []string) {
 	}
 }
 
-// holdsBox reports whether a value of t can hold a RemoteText.
+// holdsBox reports whether a value of t can hold a RemoteText encoding/json decoded: directly, or
+// through a pointer, a slice, an array, a map or a struct's exported field. An interface value is
+// no such holder, since encoding/json fills one with a map, a slice or a scalar (recordBoxes).
 func holdsBox(t reflect.Type, seen map[reflect.Type]bool) bool {
 	if t == remoteTextType {
 		return true
@@ -341,8 +352,6 @@ func holdsBox(t reflect.Type, seen map[reflect.Type]bool) bool {
 	switch t.Kind() {
 	case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Map:
 		return holdsBox(t.Elem(), seen)
-	case reflect.Interface:
-		return true
 	case reflect.Struct:
 		for i := range t.NumField() {
 			if t.Field(i).IsExported() && holdsBox(t.Field(i).Type, seen) {
