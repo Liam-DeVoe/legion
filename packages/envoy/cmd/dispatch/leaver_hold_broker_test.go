@@ -88,6 +88,9 @@ func TestLeaverHoldRelease(t *testing.T) {
 
 	ageSignInCredential(t, r, ada)
 	r.signInAgain(t, adaEmail)
+	// The broker answered ada held at her enrollment above and keeps that answer 30 seconds. It must
+	// lapse for her sign-in trade below, made at once, to ask Dispatch, which this sign-in released.
+	r.pastBrokerCache(t)
 	r.personSignIn(t, ada)
 	waitForLeaverCredentials(t, r, ada, 40*time.Second)
 	expectLeaverSnapshot(t, before, snapshotLeaverCredentials(t, r))
