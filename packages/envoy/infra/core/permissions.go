@@ -34,6 +34,14 @@ func ListenerHostPermissions(machineID string) Permissions {
 	return rules(natsgrant.ListenerHost(machineID))
 }
 
+// EdgePermissions is the grant of an edge listener's own NATS user as machine machineID
+// (natsgrant.Edge): ListenerPermissions with the agent, role and Envoy families in place of every
+// notification topic, no create or update of the stream, its own inbox prefix in place of every
+// reply inbox, every session's relay subject and the relay receipts, and no role lane.
+func EdgePermissions(machineID string) Permissions {
+	return rules(natsgrant.Edge(machineID))
+}
+
 // DispatchDurables are the fixed durable consumers of the stream that Dispatch's grant lets it
 // bind, beside the listener durable of its machine id (natsgrant.DispatchDurables).
 func DispatchDurables() []string {

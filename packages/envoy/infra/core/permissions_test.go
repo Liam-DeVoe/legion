@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/infra/core"
+	"github.com/sjawhar/envoy/natsgrant"
 )
 
 // listenerBasePublish is the publish grant every user that runs a listener holds for
@@ -155,6 +156,53 @@ func TestListenerPermissionsNameTheDurableAndQueueOfAMachineIDWithASpace(t *test
 	require.Contains(t, p.Subscribe.Allow, "notifications.role.> envoy-listener-example-host")
 }
 
+// The edge listener's set is the listener's with the edge's changes: the agent, role and Envoy
+// families in place of every notification topic, no create or update of the stream, its own inbox
+// prefix in place of every reply inbox, every session's relay subject and the relay receipts, and
+// no role lane.
+func TestEdgePermissions(t *testing.T) {
+	edgePublish := []string{"notifications.agent.>", "notifications.role.>", "notifications.envoy.>"}
+	for _, entry := range listenerPublish {
+		switch entry {
+		case "notifications.>", "$JS.API.STREAM.CREATE.ENVOY_NOTIFICATIONS", "$JS.API.STREAM.UPDATE.ENVOY_NOTIFICATIONS":
+		default:
+			edgePublish = append(edgePublish, entry)
+		}
+	}
+	require.Len(t, edgePublish, len(listenerPublish))
+	require.Equal(t, core.Permissions{
+		Publish:   core.Rules{Allow: edgePublish},
+		Subscribe: core.Rules{Allow: []string{"_INBOX_envoy_edge.>", "notifications.envoy.deliver.*", "notifications.envoy.relayreply.>"}},
+	}, core.EdgePermissions("example-host-a"))
+}
+
+// A user holding EdgePermissions subscribes to no reply inbox of another client: its replies come
+// under its own prefix, which no other client's inbox begins with. The rules are read from the
+// rendered block, as the server reads them; the listener's own set, which the same check reads,
+// subscribes to every reply inbox.
+func TestEdgePermissionsRefuseASubscribeToOtherClientsInboxes(t *testing.T) {
+	_, subscribe := renderedRules(t, core.EdgePermissions("example-host-a"))
+	require.Contains(t, subscribe, "_INBOX_envoy_edge.>")
+	for _, entry := range subscribe {
+		require.False(t, admitsInbox(entry), "the edge's subscribe entry %q admits a reply inbox", entry)
+	}
+	_, listener := renderedRules(t, core.ListenerPermissions("example-host-a"))
+	require.True(t, slices.ContainsFunc(listener, admitsInbox), "the listener's set subscribes to the inboxes")
+}
+
+// EdgePermissions is natsgrant.Edge as the rules a User takes, list for list and in order, with no
+// deny list: a rig that renders its edge users from natsgrant.Edge, as cmd/listener's live tests
+// do since that package cannot import this one, holds exactly what a hub renders from this set.
+func TestEdgePermissionsAreTheEdgeGrant(t *testing.T) {
+	for _, id := range []string{"example-host-a", "example-edge-a", "example host"} {
+		grant, rules := natsgrant.Edge(id), core.EdgePermissions(id)
+		require.Equal(t, grant.Publish, rules.Publish.Allow, "EdgePermissions(%q) publish", id)
+		require.Equal(t, grant.Subscribe, rules.Subscribe.Allow, "EdgePermissions(%q) subscribe", id)
+		require.Empty(t, rules.Publish.Deny, "EdgePermissions(%q) publish deny", id)
+		require.Empty(t, rules.Subscribe.Deny, "EdgePermissions(%q) subscribe deny", id)
+	}
+}
+
 // A session subscribes to its own relay subject and its agent stream's control subject, and to no
 // notification topic that carries a message: a notification reaches it as a relay frame of its own
 // consumer, which the listener owning the session publishes there, or not at all.
@@ -270,13 +318,14 @@ func TestDispatchPermissions(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
-// The session consumers' calls belong to the sets of a user no session shares, the listener's and
-// the listener-host: a user built on the same base grant, Dispatch's or a host's, holds none of
-// them, nor does a session's, so a listener connecting as one of those users keeps its own durable
-// alone and serves its sessions over core NATS.
+// The session consumers' calls belong to the sets of a user no session shares, the listener's, the
+// listener-host and the edge listener's: a user built on the same base grant, Dispatch's or a
+// host's, holds none of them, nor does a session's, so a listener connecting as one of those users
+// keeps its own durable alone and serves its sessions over core NATS.
 func TestOnlyTheListenersOwnSetsHoldTheSessionConsumersCalls(t *testing.T) {
 	require.Subset(t, core.ListenerPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	require.Subset(t, core.ListenerHostPermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
+	require.Subset(t, core.EdgePermissions("example-host-a").Publish.Allow, sessionConsumerPublish)
 	for name, p := range map[string]core.Permissions{
 		"host":     core.HostPermissions("example-host-a"),
 		"dispatch": core.DispatchPermissions("example-host-a"),
@@ -298,6 +347,7 @@ func TestNoSetRepeatsAnEntry(t *testing.T) {
 		"host":          core.HostPermissions("example-host-a"),
 		"daemon":        core.DaemonPermissions(),
 		"dispatch":      core.DispatchPermissions("example-host-a"),
+		"edge":          core.EdgePermissions("example-host-a"),
 	}
 	for name, p := range sets {
 		for direction, allow := range map[string][]string{"publish": p.Publish.Allow, "subscribe": p.Subscribe.Allow} {

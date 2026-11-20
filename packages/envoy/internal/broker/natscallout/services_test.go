@@ -10,6 +10,7 @@ const (
 	listenerAccount = "system:serviceaccount:example-ns:example-listener"
 	daemonAccount   = "system:serviceaccount:example-ns:example-daemon"
 	measureAccount  = "envoy-measure@example-project.iam.gserviceaccount.com"
+	edgeAccount     = "system:serviceaccount:example-ns:example-edge-listener"
 )
 
 // Each entry is read as <kind>/<machine id or ->/<* or ->=<account>, the account written as
@@ -29,6 +30,18 @@ func TestParseServicesReadsEachEntry(t *testing.T) {
 	require.Empty(t, none)
 }
 
+// An edge listener's entry names its machine id and, in place of a scope, the projects it serves,
+// comma separated: edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>. The projects are read
+// sorted, each once, and no other kind's entry carries any.
+func TestParseServicesReadsAnEdgeListenersProjects(t *testing.T) {
+	services, err := ParseServices("edge-listener/edge-a/PRIV,OTHER=" + edgeAccount + " listener/host-a/*=" + listenerAccount)
+	require.NoError(t, err)
+	require.Equal(t, []ServiceEntry{
+		{Kind: KindEdgeListener, MachineID: "edge-a", Account: edgeAccount, Projects: []string{"OTHER", "PRIV"}},
+		{Kind: KindListener, MachineID: "host-a", Account: listenerAccount, AllProjects: true},
+	}, services)
+}
+
 // The measurement job's grant holds a KV read, which no project scope can hold, and it reads no
 // project's messages, so its entry takes the whole grant and is refused at the broker's start
 // naming the entry when it asks for its exchange projects.
@@ -44,19 +57,27 @@ func TestParseServicesRefusesProjectsForMeasure(t *testing.T) {
 // Every entry the broker could not serve is refused at start, naming the entry.
 func TestParseServicesRefusals(t *testing.T) {
 	for name, raw := range map[string]string{
-		"an unknown kind":                       "relay/-/*=" + daemonAccount,
-		"a dispatch entry with no machine id":   "dispatch/-/*=" + daemonAccount,
-		"a listener entry with no machine id":   "listener/-/*=" + listenerAccount,
-		"a daemon entry with a machine id":      "daemon/host-a/-=" + daemonAccount,
-		"a machine id that is no subject token": "listener/a.b/*=" + listenerAccount,
-		"a scope that is neither":               "daemon/-/PROJ=" + daemonAccount,
-		"no account":                            "daemon/-/-",
-		"too few parts":                         "daemon/-=" + daemonAccount,
-		"an account of neither form":            "daemon/-/-=example-daemon",
-		"a namespace's default account":         "daemon/-/-=system:serviceaccount:example-ns:default",
-		"a Google default account":              "measure/-/*=google:123-compute@developer.gserviceaccount.com",
-		"a Google service agent":                "measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com",
-		"an account given twice":                "daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount,
+		"an unknown kind":                            "relay/-/*=" + daemonAccount,
+		"a dispatch entry with no machine id":        "dispatch/-/*=" + daemonAccount,
+		"a listener entry with no machine id":        "listener/-/*=" + listenerAccount,
+		"a daemon entry with a machine id":           "daemon/host-a/-=" + daemonAccount,
+		"a machine id that is no subject token":      "listener/a.b/*=" + listenerAccount,
+		"a scope that is neither":                    "daemon/-/PROJ=" + daemonAccount,
+		"no account":                                 "daemon/-/-",
+		"too few parts":                              "daemon/-=" + daemonAccount,
+		"an account of neither form":                 "daemon/-/-=example-daemon",
+		"a namespace's default account":              "daemon/-/-=system:serviceaccount:example-ns:default",
+		"a Google default account":                   "measure/-/*=google:123-compute@developer.gserviceaccount.com",
+		"a Google service agent":                     "measure/-/*=google:service-123@gcp-sa-pubsub.iam.gserviceaccount.com",
+		"an account given twice":                     "daemon/-/-=" + daemonAccount + " listener/host-a/*=" + daemonAccount,
+		"an edge listener with no machine id":        "edge-listener/-/PRIV=" + edgeAccount,
+		"an edge listener with every project":        "edge-listener/edge-a/*=" + edgeAccount,
+		"an edge listener held to exchange ones":     "edge-listener/edge-a/-=" + edgeAccount,
+		"an edge listener naming no project key":     "edge-listener/edge-a/priv=" + edgeAccount,
+		"an edge listener naming a project twice":    "edge-listener/edge-a/PRIV,PRIV=" + edgeAccount,
+		"an edge listener naming an empty project":   "edge-listener/edge-a/PRIV,=" + edgeAccount,
+		"an edge listener naming seventeen projects": "edge-listener/edge-a/AA,AB,AC,AD,AE,AF,AG,AH,AI,AJ,AK,AL,AM,AN,AO,AP,AQ=" + edgeAccount,
+		"projects for a listener":                    "listener/host-a/PRIV=" + listenerAccount,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := ParseServices(raw)
