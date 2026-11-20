@@ -553,24 +553,30 @@ func (r *podUpdateRig) endTurn(role claim.Role, delivery string) {
 func (r *podUpdateRig) startInPod(role claim.Role, pod string) {
 	r.t.Helper()
 	token := r.tokens[role]
-	m, ok := r.sup.Machine(token)
-	if !ok {
-		r.t.Fatalf("%s is not supervised", role)
-	}
+	r.launchable(role)
 	conn := fake.NewConn()
 	r.conns.Register(token, conn)
 	r.workers[role] = conn
-	// A claim the boot restored with no process of its own is launch_uncertain until its release
-	// settles it, which is what the daemon's own unfinished-launch path does before it launches
-	// (launchUnfinishedClaim).
+	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
+	r.handle(role, supervise.RequestSpawn{Claim: token})
+	r.registerInto(role, pod)
+}
+
+// launchable is role's machine, ready for a launch: a claim the boot restored with no process of
+// its own is launch_uncertain until its release settles it, which is what the daemon's own
+// unfinished-launch path does before it launches (launchUnfinishedClaim).
+func (r *podUpdateRig) launchable(role claim.Role) *supervise.Machine {
+	r.t.Helper()
+	m, ok := r.sup.Machine(r.tokens[role])
+	if !ok {
+		r.t.Fatalf("%s is not supervised", role)
+	}
 	if r.claimOf(role).State == supervise.StateLaunchUncertain {
 		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
 			r.t.Fatalf("release the %s's unfinished launch: %v", role, err)
 		}
 	}
-	r.rt.ScriptSpawn(fake.SpawnResult{Locator: *podUpdateLocator(token, podUpdateIssue, pod)})
-	r.handle(role, supervise.RequestSpawn{Claim: token})
-	r.registerInto(role, pod)
+	return m
 }
 
 // displacedInto is the role's process ending with the pod it ran in and the daemon starting the

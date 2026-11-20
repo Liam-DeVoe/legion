@@ -20,6 +20,7 @@ package daemon
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"slices"
 	"sync"
 
@@ -67,7 +68,7 @@ func newReviewerPods(rt runtime.Runtime, log *slog.Logger) *reviewerPods {
 // (no Sandbox, a suspended one, a pod that ended) is none: the launch makes a fresh pod on the
 // configured image.
 func (p *reviewerPods) onAnotherImage(c supervise.Claim) (sandbox.PodImage, bool) {
-	if p == nil || p.images == nil || c.Role != claim.RoleReviewer || c.Issue == "" {
+	if c.Role != claim.RoleReviewer || c.Issue == "" || p == nil || p.images == nil {
 		return sandbox.PodImage{}, false
 	}
 	image, live := p.images.IssuePodImage(c.Issue)
@@ -85,12 +86,14 @@ func (p *reviewerPods) behind(c supervise.Claim) bool {
 // check is the rule at a launch: a reviewer's launch into an issue pod on another image than the
 // configured one is refused with a wait, the pod is recorded as the one the issue's reviewer
 // waits for, and the line is written the first time a start is held for that pod. A reviewer's
-// launch the rule lets through drops what was recorded for its issue.
+// launch the rule lets through drops what was recorded for its issue. The wait is routine
+// (routineWaiting): the daemon opens the round itself and the round's bound ends it, so a start
+// row that retries it stays at debug however long the round runs.
 func (p *reviewerPods) check(c supervise.Claim) error {
-	image, other := p.onAnotherImage(c)
-	if p == nil || c.Role != claim.RoleReviewer {
+	if c.Role != claim.RoleReviewer || p == nil {
 		return nil
 	}
+	image, other := p.onAnotherImage(c)
 	p.mu.Lock()
 	if !other {
 		delete(p.waiting, c.Issue)
@@ -103,8 +106,8 @@ func (p *reviewerPods) check(c supervise.Claim) error {
 	if first {
 		p.log.Info(reviewerPodReplacedLine, "issue", c.Issue, "pod", image.Pod, "image", image.Image, "configured_image", image.Configured)
 	}
-	return wait.Errorf("the reviewer of %s starts only in a pod on the configured image %s, and its pod %s runs %s: the pod's update round replaces it first",
-		c.Issue, image.Configured, image.Pod, image.Image)
+	return routineWaiting{err: wait.Errorf("the reviewer of %s starts only in a pod on the configured image %s, and its pod %s runs %s: the pod's update round replaces it first",
+		c.Issue, image.Configured, image.Pod, image.Image)}
 }
 
 // waitsFor is whether a held reviewer start waits for pod, the pod issue's claims record, to be
@@ -122,19 +125,18 @@ func (p *reviewerPods) waitsFor(issue, pod string) bool {
 	return ok && held == pod
 }
 
-// keepOnly drops what is recorded for every issue but issues, the issues with a live claim: an
-// issue that has none starts no reviewer.
+// keepOnly drops what is recorded for every issue but issues, sorted, the issues with a live
+// claim: an issue that has none starts no reviewer.
 func (p *reviewerPods) keepOnly(issues []string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for issue := range p.waiting {
-		if !slices.Contains(issues, issue) {
-			delete(p.waiting, issue)
-		}
-	}
+	maps.DeleteFunc(p.waiting, func(issue, _ string) bool {
+		_, found := slices.BinarySearch(issues, issue)
+		return !found
+	})
 }
 
 // gate wraps store so that every launch's recheck (supervise.Store.CheckLaunch, which a launch

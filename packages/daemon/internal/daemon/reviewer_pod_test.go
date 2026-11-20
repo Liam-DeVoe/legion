@@ -74,29 +74,17 @@ func (r *podUpdateRig) readsPodImages(image string) *podImageScript {
 // spendTheMinutesOpenings makes the project's pod_update_rounds_per_minute spent at the next
 // sweep: one round a minute, and this daemon opened one a moment ago (beginPodUpdateSweep).
 func (r *podUpdateRig) spendTheMinutesOpenings() {
-	one := 1
-	r.s.cfg.PodUpdateRoundsPerMinute = &one
+	r.s.cfg.PodUpdateRoundsPerMinute = new(1)
 	r.s.podUpdateMu.Lock()
 	r.s.podUpdateOpenedAt = r.clock.Now()
 	r.s.podUpdateMu.Unlock()
 }
 
 // startReviewer is the daemon starting the reviewer's claim, as the outbox's start row does for a
-// queued claim (RequestSpawn), and answers what the start answered. A claim the boot restored with
-// no process is launch_uncertain until its release settles it, which the daemon's own
-// unfinished-launch path does before it launches (launchUnfinishedClaim), as startInPod does.
+// queued claim (RequestSpawn), and answers what the start answered.
 func (r *podUpdateRig) startReviewer() error {
 	r.t.Helper()
-	m, ok := r.sup.Machine(r.tokens[claim.RoleReviewer])
-	if !ok {
-		r.t.Fatal("the reviewer is not supervised")
-	}
-	if r.claimOf(claim.RoleReviewer).State == supervise.StateLaunchUncertain {
-		if _, err := m.ReleaseUncertainLaunch(r.ctx); err != nil {
-			r.t.Fatalf("release the reviewer's unfinished launch: %v", err)
-		}
-	}
-	return m.Handle(r.ctx, supervise.RequestSpawn{Claim: r.tokens[claim.RoleReviewer]})
+	return r.launchable(claim.RoleReviewer).Handle(r.ctx, supervise.RequestSpawn{Claim: r.tokens[claim.RoleReviewer]})
 }
 
 // reviewerLaunches is every process the fake started for the reviewer's claim (Spawn and

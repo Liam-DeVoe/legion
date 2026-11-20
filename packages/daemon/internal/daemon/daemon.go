@@ -2259,8 +2259,9 @@ func (s *supervision) refreshStalePlugins(claims []supervise.Claim, trigger stri
 // (reviewerPodBehind, reviewerPods.behind): a reviewer starts only in a pod on the configured
 // image, so its relaunch in place is one the launch's own check refuses, and that pod's update
 // round, which every pod on another image gets, is what replaces it. The other roles of that pod
-// are relaunched in place as before. reviewerPodBehind nil is no such reviewer, which a daemon
-// whose runtime runs no issue pods (tmux) and a source a test builds by hand read.
+// are relaunched in place as before. reviewerPodBehind nil is no such reviewer, which only a
+// source a test builds by hand reads: a tmux daemon reads a term that answers false, since its
+// runtime reads no pod's image.
 //
 // noPluginInstall nil is every launch installing a plugin, which only a source a test builds by
 // hand holds: serve gives the state's source the rule over this deployment's configuration and
@@ -2270,10 +2271,10 @@ func staleForTheLane(c supervise.Claim, noPluginInstall, reviewerPodBehind func(
 	if c.Session == "" || c.PluginContract == api.DaemonAPIVersion || !supervise.HoldsCapability(c.State) || c.InPodRound() {
 		return false
 	}
-	if reviewerPodBehind != nil && reviewerPodBehind(c) {
+	if noPluginInstall != nil && noPluginInstall(c) {
 		return false
 	}
-	return noPluginInstall == nil || !noPluginInstall(c)
+	return reviewerPodBehind == nil || !reviewerPodBehind(c)
 }
 
 // claimsToRefresh is how many of claims the stale-plugin lane still has to relaunch onto this

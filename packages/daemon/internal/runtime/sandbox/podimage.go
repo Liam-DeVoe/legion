@@ -1,6 +1,10 @@
 package sandbox
 
-import "github.com/sjawhar/legion/daemon/internal/runtime"
+import (
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime"
+)
 
 var _ runtime.IssuePodReader = (*Runtime)(nil)
 
@@ -48,21 +52,29 @@ type PodImage struct {
 // (internal/daemon's reviewerPods), because a reviewer starts only in a pod on the configured
 // image.
 //
-// live is false where the Sandbox holds no pod a launch would keep (relaunch's own reading): no
-// Sandbox, a suspended one, no pod of its own, a pod that ended or whose init container failed. A
+// live is false where the Sandbox holds no pod a launch would keep, read as relaunch reads its
+// own `live`: no Sandbox, a suspended one, no pod of its own, a pod that ended, whose init
+// container failed, or that its node has not started past the boot timeout (neverStarted). A
 // launch then makes a fresh pod on the configured image, so no pod of another image is there to
 // start a role in.
+//
+// The Sandbox is taken as the informer holds it (storedObject), as PodDrift and IssuePod take it,
+// with no decode: the stale-plugin lane and every state read ask this of each stale reviewer.
 func (r *Runtime) IssuePodImage(issue string) (PodImage, bool) {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {
 		return PodImage{}, false
 	}
-	s, err := r.storedSandbox(name)
-	if err != nil || s == nil || s.mode() == modeSuspended {
+	u, err := r.storedObject(name)
+	if err != nil || u == nil {
+		return PodImage{}, false
+	}
+	if mode, _, _ := unstructured.NestedString(u.Object, "spec", "operatingMode"); mode == modeSuspended {
 		return PodImage{}, false
 	}
 	pod := r.storedPod(name)
-	if _, initExit := failedInit(pod); !ownedBy(pod, s.UID) || terminal(pod) || initExit != nil {
+	_, initExit := failedInit(pod)
+	if _, _, stuck := neverStarted(pod, r.now(), r.bootTimeout); !ownedBy(pod, u.GetUID()) || terminal(pod) || initExit != nil || stuck {
 		return PodImage{}, false
 	}
 	image := r.image

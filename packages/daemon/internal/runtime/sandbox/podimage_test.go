@@ -34,13 +34,7 @@ func TestIssuePodImageReadsTheImageTheIssuesLivePodRuns(t *testing.T) {
 			testTree, nextImage, read, live, loc.Sandbox.PodUID, testImage)
 	}
 
-	if err := g.r.setMode(g.ctx, g.sandbox(name), modeSuspended); err != nil {
-		t.Fatalf("suspend the sandbox: %v", err)
-	}
-	g.eventually("the moved runtime to read the sandbox suspended", func() bool {
-		s, err := moved.storedSandbox(name)
-		return err == nil && s != nil && s.mode() == modeSuspended
-	})
+	suspendSandbox(t, g, moved, name)
 	if pod := g.pod(name); pod == nil || string(pod.UID) != loc.Sandbox.PodUID {
 		t.Fatalf("the pod of %s went with the suspension, so this case reads a pod that is gone rather than one on its way out", name)
 	}
