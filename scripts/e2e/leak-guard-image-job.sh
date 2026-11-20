@@ -78,9 +78,11 @@
 #
 # Exit statuses:
 #
-#   0  every check of every arm held: on the head's image the four refusable cases were refused
-#      and named their class, the clean case landed, and both shared-check failures refused under
-#      both commands; on the control's image, if one was given, all five landed.
+#   0  every check of every arm held. On the head's image the four refusable cases were refused
+#      and named their class, the clean case landed, both shared-check failures refused under
+#      both commands, and the remote commit of `jj-push-author-from-trailer` had the
+#      implementer's identity as its author. On the control's image, if one was given, all five
+#      cases landed, and that commit had as its author the identity that made it.
 #   1  the Job ran and a check did not hold. Its log, printed above the verdict, says which.
 #   2  the harness could not run: a usage error, a missing input, no Kubernetes credential or a
 #      namespace that refuses a Job, a Job that started no pod, a log that could not be read, or a
@@ -138,10 +140,11 @@ usage: scripts/e2e/leak-guard-image-job.sh --image <ref>@sha256:<64 hex>
                                            [--dry-run]
 
   --image         the worker image to prove, by digest; the first positional argument too.
-  --control       the base branch's image, driven as the negative control, which lets all five
-                  cases through; the second positional argument too. A run without it proves only
-                  the head: it says nothing about whether the cases would have been let through
-                  without the change.
+  --control       the base branch's image, driven as the negative control. It lets all five
+                  cases through, and in jj-push-author-from-trailer the remote commit's author is
+                  the identity that made the commit, not the implementer's. It is the second
+                  positional argument too. A run without it proves only the head: it says nothing
+                  about whether the cases would have been let through without the change.
   --node-selector the deployment's compute class, which the namespace's admission requires. Read
                   it from the deployment's own declaration; this public repository carries no
                   value of it. LEAK_GUARD_NODE_SELECTOR sets it too.

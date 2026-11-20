@@ -69,23 +69,21 @@ func runJJ(ctx context.Context, args []string, _, stderr io.Writer) int {
 		return 2
 	}
 	signal.Reset(os.Interrupt, syscall.SIGTERM)
-	if cause := context.Cause(ctx); cause != nil {
-		if status, ok := endedBySignal(cause); ok {
-			return status
-		}
+	if status, ok := signalled(ctx); ok {
+		return status
 	}
 	jjArgs := args[3:]
-	_, chained := os.LookupEnv(wrappedJJAt)
+	marker, chained := os.LookupEnv(wrappedJJAt)
 	next, chain := args[1], wrapperChain{ran: []string{args[1]}}
 	if args[0] == "--after" {
-		pick, err := pickAfter("jj", args[1], os.Getenv("PATH"), os.Getenv(wrappedJJAt))
+		pick, err := pickAfter("jj", args[1], os.Getenv("PATH"), marker)
 		if err != nil {
 			fmt.Fprintf(stderr, "legion jj: %v\n", err)
 			return 127
 		}
 		next, chain = pick.run, pick.chain
 	}
-	env := withWrapperChain(os.Environ(), wrappedJJAt, chain)
+	env := withVariable(os.Environ(), wrappedJJAt, chain.String())
 	push := readJJPush(jjArgs)
 	value, set := os.LookupEnv(runtime.RoleIdentitiesVariable)
 	if chained || !push.steps() || !set {
@@ -237,7 +235,7 @@ func (p jjPush) withRevisions(ids map[int]*jjFollowed) []string {
 	return words
 }
 
-// dryRun is the dry run of the push (D6): its own words with ids' commits in place, without the
+// dryRun is the dry run of the push: its own words with ids' commits in place, without the
 // words that stay on the real push alone, then --dry-run, --ignore-working-copy, --color=never,
 // and `--config ui.quiet=false` as the last configuration, so that neither a flag nor the
 // repository's configuration silences it.
@@ -255,7 +253,8 @@ func (p jjPush) dryRun(ids map[int]*jjFollowed) []string {
 // sets the author of each of those commits whose first Legion-Role trailer names a role of the
 // table, where it is not that role's identity, by one jj metaedit --update-author for each role.
 // Each of its jj commands runs next, one after another, as a child in this process's group, with
-// the caller's options of D4 and --ignore-working-copy, so it takes no snapshot.
+// the caller's repository and configuration options (jjPush.options) and --ignore-working-copy,
+// so it takes no snapshot.
 type jjStep struct {
 	push   jjPush
 	next   string   // the jj each command of the step runs, and the push after them
@@ -298,9 +297,9 @@ func (f jjStepFailure) Error() string { return fmt.Sprintf("a command of the ste
 // changes nothing more, and the push runs.
 var errJJUnreadable = errors.New("could not read what the push sends")
 
-// rewrite runs the step: the hidden-id read (D5), the dry run and the loop over a commit with no
-// author (D6, D7), and the rewrite of every other author (D8). An error is a jjStepFailure, a dry
-// run it cannot read (errJJUnreadable), or output of jj's it cannot parse.
+// rewrite runs the step: the hidden-id read (readIDs), the dry run and the loop over a commit with
+// no author (dryRunFilled), and the rewrite of every other author (setAuthors). An error is a
+// jjStepFailure, a dry run it cannot read (errJJUnreadable), or output of jj's it cannot parse.
 func (s *jjStep) rewrite() error {
 	if err := s.readIDs(); err != nil {
 		return err
@@ -312,7 +311,7 @@ func (s *jjStep) rewrite() error {
 	return s.setAuthors(run)
 }
 
-// readIDs reads each revision argument that is lower-case hex (D5): it is a commit id when the
+// readIDs reads each revision argument that is lower-case hex: it is a commit id when the
 // one commit it resolves to has an id that starts with it, and is followed from that commit. A
 // hidden commit whose change has exactly one visible commit stands for that commit, in the dry
 // run and in the real push. One whose change has none, or more than one, stands for itself.
@@ -345,9 +344,9 @@ func (s *jjStep) readIDs() error {
 	return nil
 }
 
-// dryRunFilled is what the push sends, read from its dry run (D6). A dry run that jj refuses
+// dryRunFilled is what the push sends, read from its dry run. A dry run that jj refuses
 // because a commit it sends has no author (jjNoAuthorCommit) gets that commit filled, by the
-// metaedit of the role its trailer names, and runs again (D7). The loop has a bound it can prove:
+// metaedit of the role its trailer names, and runs again. The loop has a bound it can prove:
 // a dry run that names a commit an earlier pass already named or made, or a pass beyond the
 // number of commits in `mutable() ~ ::remote_bookmarks()`, which holds every commit the step can
 // fill, ends it as a dry run the step cannot read. So does a commit whose trailer names no role
@@ -367,11 +366,10 @@ func (s *jjStep) dryRunFilled() (jjDryRun, error) {
 			}
 			return run, nil
 		}
-		id, ok := jjNoAuthorCommit(stderr)
+		id, refusal, ok := jjNoAuthorCommit(stderr)
 		if !ok {
 			return jjDryRun{}, s.unreadable(jjFirstLine(stderr, code))
 		}
-		refusal := "Error: Won't push commit " + id + " since it has no author and/or committer set"
 		if slices.Contains(named, id) || slices.ContainsFunc(made, func(commit string) bool { return strings.HasPrefix(commit, id) }) {
 			return jjDryRun{}, s.unreadable(refusal)
 		}
@@ -407,7 +405,7 @@ func (s *jjStep) dryRunFilled() (jjDryRun, error) {
 	}
 }
 
-// setAuthors rewrites the author of each commit the push sends (D8): the set
+// setAuthors rewrites the author of each commit the push sends: the set
 // `(::(<each new commit of the dry run>) ~ ::remote_bookmarks()) & mutable()`, every commit of
 // which whose role is in the table and whose author's email is not that role's. It runs one
 // metaedit for each role with such commits, in claim.Roles' order, and reads the set again before
@@ -529,7 +527,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 		}
 	}
 	args = append(args, "--config", "user.name="+tomlString(identity.Name), "--config", "user.email="+tomlString(identity.Email))
-	env := withVariable(withVariable(s.env, "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
+	env := withVariable(withVariable(slices.Clone(s.env), "JJ_USER", identity.Name), "JJ_EMAIL", identity.Email)
 	if _, err := s.jj(env, args...); err != nil {
 		return err
 	}
@@ -539,7 +537,7 @@ func (s *jjStep) metaedit(role legionclaim.Role, commits []*jjFollowed) error {
 	return s.advance(in, before)
 }
 
-// advance follows each followed commit through the metaedit that just ran over in (D9): a
+// advance follows each followed commit through the metaedit that just ran over in: a
 // commit that metaedit hid, itself or by rebasing it, stands now for the visible commit that
 // replaced it (successor). A commit that was hidden already and that the metaedit did not name
 // stays as it is. before is what s.visible read of the changes of in's hidden commits ahead of
@@ -700,8 +698,8 @@ func (s *jjStep) read(revset string) ([]jjCommitRead, error) {
 }
 
 // jj runs one jj command of the step and answers what it printed on standard output: next, with
-// the caller's options (D4), then --ignore-working-copy, then args, in env. A command that cannot
-// start or exits non-zero is a jjStepFailure, with what it printed on standard error.
+// the caller's options (jjPush.options), then --ignore-working-copy, then args, in env. A command
+// that cannot start or exits non-zero is a jjStepFailure, with what it printed on standard error.
 func (s *jjStep) jj(env []string, args ...string) (string, error) {
 	stdout, stderr, code, err := s.command(env, slices.Concat(s.push.options, []string{"--ignore-working-copy"}, args))
 	if err != nil {
@@ -785,8 +783,11 @@ func tomlString(value string) string {
 	return quoted.String()
 }
 
-// withVariable is env with name set to value, in place of any value it held.
+// withVariable is env with name set to value, in place of any value it held. It changes env's own
+// array, so a caller that keeps env gives it a copy (slices.Clone).
 func withVariable(env []string, name, value string) []string {
-	env = slices.DeleteFunc(slices.Clone(env), func(entry string) bool { return strings.HasPrefix(entry, name+"=") })
+	env = slices.DeleteFunc(env, func(entry string) bool {
+		return strings.HasPrefix(entry, name+"=")
+	})
 	return append(env, name+"="+value)
 }

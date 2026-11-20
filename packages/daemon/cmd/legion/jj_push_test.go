@@ -22,8 +22,8 @@ import (
 
 // The tests in this file are those of the step that runs before every `jj git push` and sets the
 // author of each commit the push sends from that commit's first Legion-Role trailer
-// (dispatch://INFRA-4172, the plan's "Trace"). Each runs a role's push as a process, through one of
-// the two forms of Legion's jj, on a real jj repository with a local bare remote:
+// (dispatch://INFRA-4172). Each runs a role's push as a process, through one of the two forms of
+// Legion's jj, on a real jj repository with a local bare remote:
 //
 //   - the pod's form: a copy of packages/daemon/docker/jj first on PATH, whose real=, wrapper= and,
 //     where it has one, legion= lines are repointed at the real jj (or a recording jj ahead of it),
@@ -75,6 +75,16 @@ const (
 )
 
 var rolePushForms = []rolePushForm{rolePushPod, rolePushTmux}
+
+// rolePushEachForm runs test under each form, each in a parallel subtest named for the form.
+func rolePushEachForm(t *testing.T, test func(t *testing.T, form rolePushForm)) {
+	for _, form := range rolePushForms {
+		t.Run(string(form), func(t *testing.T) {
+			t.Parallel()
+			test(t, form)
+		})
+	}
+}
 
 // rolePushRealJJ is the first jj on the test process's PATH that is a compiled program
 // (lookpath.Kind): in a Legion pod the first jj, /opt/legion/bin/jj, is the image's wrapper script,
@@ -686,11 +696,14 @@ type rolePushLines struct {
 func rolePushStepLines(stderr string) rolePushLines {
 	var lines rolePushLines
 	for line := range strings.SplitSeq(stderr, "\n") {
-		switch {
-		case !strings.HasPrefix(line, "legion jj:"):
-		case rolePushRewriteLine.MatchString(line):
-			parts := rolePushRewriteLine.FindStringSubmatch(line)
+		if !strings.HasPrefix(line, "legion jj:") {
+			continue
+		}
+		if parts := rolePushRewriteLine.FindStringSubmatch(line); parts != nil {
 			lines.rewrites = append(lines.rewrites, rolePushPrinted{role: parts[1], old: parts[2], new: parts[3]})
+			continue
+		}
+		switch {
 		case strings.HasPrefix(line, rolePushCannotReadPrefix) && strings.HasSuffix(line, rolePushCannotReadSuffix):
 			lines.cannotRead = append(lines.cannotRead, line)
 		case strings.HasPrefix(line, rolePushTablePrefix) && strings.HasSuffix(line, rolePushTableSuffix):
@@ -715,14 +728,11 @@ func rolePushRun(t *testing.T, rows []rolePushRow) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, "")
-					want := row.setup(f)
-					f.pushAndCheck(row.args, want)
-				})
-			}
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				want := row.setup(f)
+				f.pushAndCheck(row.args, want)
+			})
 		})
 	}
 }
@@ -735,13 +745,17 @@ func (f *rolePushFixture) pushAndCheck(args []string, want rolePushWant) {
 		by = rolePushImplementer
 	}
 	resolved := f.resolve(args)
-	divergent, edits := f.divergence(), f.metaedits()
+	divergent, edits := f.divergence(), 0
+	if want.metaedits != 0 {
+		edits = f.metaedits()
+	}
 	code, _, stderr := f.push(by, resolved...)
 	f.check(want, code, stderr, divergent, edits)
 }
 
-// check checks what a push that exited code and printed stderr left against want; divergent and
-// edits are divergence and metaedits before it.
+// check checks what a push that exited code and printed stderr left against want. divergent is
+// divergence before the push, and edits is metaedits before it: check reads edits only where want
+// sets metaedits, and a caller whose want sets none passes 0.
 func (f *rolePushFixture) check(want rolePushWant, code int, stderr string, divergent map[string]int, edits int) {
 	t := f.t
 	t.Helper()
@@ -943,7 +957,8 @@ func rolePushWaitingRow(form rolePushWaitingForm, rewrite bool) rolePushRow {
 	}}
 }
 
-// rolePushAuthorRows are the commit states of R1 and R2, each pushed by the implementer.
+// rolePushAuthorRows are the ways a commit comes to have another role's author, and the states of
+// the commits a push sends, each pushed by the implementer.
 func rolePushAuthorRows() []rolePushRow {
 	impl, rev := rolePushImplementer, rolePushReviewer
 	rows := []rolePushRow{
@@ -1070,8 +1085,8 @@ func rolePushAuthorRows() []rolePushRow {
 
 // Each commit that a role pushes, and that has a Legion-Role trailer naming a role of the table,
 // reaches the remote with that role's identity as its author, whatever role made the change, set
-// its author last or pushes it: R1's paths and R2's commit states. The step prints one line for
-// each commit it rewrote, and leaves no change divergent.
+// its author last or pushes it, in each state rolePushAuthorRows makes. The step prints one line
+// for each commit it rewrote, and leaves no change divergent.
 func TestThePushSetsEachCommitsAuthorFromItsRoleTrailer(t *testing.T) {
 	t.Parallel()
 	rolePushRun(t, rolePushAuthorRows())
@@ -1193,12 +1208,9 @@ func TestEveryPushFormSendsTheRewrittenCommit(t *testing.T) {
 	for _, first := range rolePushTwoRemoteFirsts {
 		t.Run("two remotes, "+first.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					rolePushTwoRemotes(t, newRolePushFixture(t, form, ""), first.args)
-				})
-			}
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				rolePushTwoRemotes(t, newRolePushFixture(t, form, ""), first.args)
+			})
 		})
 	}
 }
@@ -1290,39 +1302,36 @@ func TestARefusedPushLeavesNoBookmarkAndItsRetrySends(t *testing.T) {
 	for _, row := range rolePushRefusedRows() {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, "")
-					want := row.setup(f)
-					args := f.resolve(row.args)
-					name := strings.TrimPrefix(want.refs[0].ref, "refs/heads/")
-					hook := filepath.Join(f.bare, "hooks", "pre-receive")
-					f.script(filepath.Dir(hook), "pre-receive", "#!/bin/sh\necho 'legion test: this remote refuses every push' >&2\nexit 1\n")
-					if code, _, stderr := f.push(rolePushImplementer, args...); code == 0 {
-						t.Fatalf("the push the remote refuses exited 0:\n%s", stderr)
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				want := row.setup(f)
+				args := f.resolve(row.args)
+				name := strings.TrimPrefix(want.refs[0].ref, "refs/heads/")
+				hook := filepath.Join(f.bare, "hooks", "pre-receive")
+				f.script(filepath.Dir(hook), "pre-receive", "#!/bin/sh\necho 'legion test: this remote refuses every push' >&2\nexit 1\n")
+				if code, _, stderr := f.push(rolePushImplementer, args...); code == 0 {
+					t.Fatalf("the push the remote refuses exited 0:\n%s", stderr)
+				}
+				for line := range strings.SplitSeq(f.jj(rolePushImplementer, "bookmark", "list", "--all"), "\n") {
+					if bookmark, _, _ := strings.Cut(line, ":"); bookmark == name || strings.HasPrefix(bookmark, name+" ") {
+						t.Errorf("jj bookmark list --all names %s after the refused push: %q", name, line)
 					}
-					for line := range strings.SplitSeq(f.jj(rolePushImplementer, "bookmark", "list", "--all"), "\n") {
-						if bookmark, _, _ := strings.Cut(line, ":"); bookmark == name || strings.HasPrefix(bookmark, name+" ") {
-							t.Errorf("jj bookmark list --all names %s after the refused push: %q", name, line)
-						}
-					}
-					if err := os.Remove(hook); err != nil {
-						t.Fatal(err)
-					}
-					if want.diverges {
-						// A rewrite of the hidden commit in the second of the refused push's
-						// rewrite gives jj the same commit again, which it refuses to make: a
-						// retry is a later command.
-						rolePushNextSecond()
-					}
-					want.others = true
-					want.rewrites = nil
-					divergent, edits := f.divergence(), f.metaedits()
-					code, _, stderr := f.push(rolePushImplementer, args...)
-					f.check(want, code, stderr, divergent, edits)
-				})
-			}
+				}
+				if err := os.Remove(hook); err != nil {
+					t.Fatal(err)
+				}
+				if want.diverges {
+					// A rewrite of the hidden commit in the second of the refused push's
+					// rewrite gives jj the same commit again, which it refuses to make: a
+					// retry is a later command.
+					rolePushNextSecond()
+				}
+				want.others = true
+				want.rewrites = nil
+				divergent := f.divergence()
+				code, _, stderr := f.push(rolePushImplementer, args...)
+				f.check(want, code, stderr, divergent, 0)
+			})
 		})
 	}
 }
@@ -1443,37 +1452,34 @@ func TestThePushChangesNoCommitOutsideIt(t *testing.T) {
 func TestAConflictedBookmarkIsJJsOwnRefusal(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	for _, form := range rolePushForms {
-		t.Run(string(form), func(t *testing.T) {
-			t.Parallel()
-			f := newRolePushFixture(t, form, "")
-			a := f.commitOn(rev, impl, "main", rolePushMessage("A", "implementer"))
-			b := f.commitOn(rev, impl, "main", rolePushMessage("B", "implementer"))
-			op := f.op()
-			f.jj(impl, "--at-op", op, "bookmark", "create", "legion/K-1", "-r", a.commit)
-			f.jj(impl, "--at-op", op, "bookmark", "create", "legion/K-1", "-r", b.commit)
-			f.jj(impl, "bookmark", "list")
-			code, _, alone := f.alone(impl, rolePushBookmark...)
-			if code == 0 {
-				t.Fatalf("jj alone pushed the conflicted bookmark:\n%s", alone)
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushFixture(t, form, "")
+		a := f.commitOn(rev, impl, "main", rolePushMessage("A", "implementer"))
+		b := f.commitOn(rev, impl, "main", rolePushMessage("B", "implementer"))
+		op := f.op()
+		f.jj(impl, "--at-op", op, "bookmark", "create", "legion/K-1", "-r", a.commit)
+		f.jj(impl, "--at-op", op, "bookmark", "create", "legion/K-1", "-r", b.commit)
+		f.jj(impl, "bookmark", "list")
+		code, _, alone := f.alone(impl, rolePushBookmark...)
+		if code == 0 {
+			t.Fatalf("jj alone pushed the conflicted bookmark:\n%s", alone)
+		}
+		divergent := f.divergence()
+		got, _, stderr := f.push(impl, rolePushBookmark...)
+		f.check(rolePushWant{
+			exit: code, cannotRead: rolePushMayNotRead,
+			refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}},
+			same: map[string]rolePushIdentity{a.commit: rev, b.commit: rev},
+		}, got, stderr, divergent, 0)
+		rest := stderr
+		for line := range strings.SplitSeq(strings.TrimSpace(alone), "\n") {
+			at := strings.Index(rest, line)
+			if at < 0 {
+				t.Fatalf("the push printed\n%s\nwant jj's own refusal, %q among it, in order", stderr, line)
 			}
-			divergent, edits := f.divergence(), f.metaedits()
-			got, _, stderr := f.push(impl, rolePushBookmark...)
-			f.check(rolePushWant{
-				exit: code, cannotRead: rolePushMayNotRead,
-				refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}},
-				same: map[string]rolePushIdentity{a.commit: rev, b.commit: rev},
-			}, got, stderr, divergent, edits)
-			rest := stderr
-			for line := range strings.SplitSeq(strings.TrimSpace(alone), "\n") {
-				at := strings.Index(rest, line)
-				if at < 0 {
-					t.Fatalf("the push printed\n%s\nwant jj's own refusal, %q among it, in order", stderr, line)
-				}
-				rest = rest[at+len(line):]
-			}
-		})
-	}
+			rest = rest[at+len(line):]
+		}
+	})
 }
 
 // rolePushNoStepRows are the pushes that run no step: a dry run, help, and a push at an operation,
@@ -1503,36 +1509,33 @@ func TestADryRunHelpOrAtOperationRunsNoStep(t *testing.T) {
 	for _, row := range rolePushNoStepRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					twin := newRolePushFixture(t, form, "")
-					twinChange := setup(twin)
-					before := twin.ops()
-					aloneCode, aloneOut, _ := twin.alone(impl, twin.resolve(row.args)...)
-					aloneAdded := twin.ops() - before
-					aloneSent, _ := twin.remoteCommits(twin.bare, "refs/heads/legion/K-1")
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				twin := newRolePushFixture(t, form, "")
+				twinChange := setup(twin)
+				before := twin.ops()
+				aloneCode, aloneOut, _ := twin.alone(impl, twin.resolve(row.args)...)
+				aloneAdded := twin.ops() - before
+				aloneSent, _ := twin.remoteCommits(twin.bare, "refs/heads/legion/K-1")
 
-					f := newRolePushFixture(t, form, "")
-					c := setup(f)
-					before = f.ops()
-					code, out, stderr := f.push(impl, f.resolve(row.args)...)
-					if added := f.ops() - before; added != aloneAdded {
-						t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
-					}
-					if code != aloneCode || out != aloneOut {
-						t.Errorf("the push exited %d and printed %q, want %d and %q, as jj alone does", code, out, aloneCode, aloneOut)
-					}
-					if lines := rolePushStepLines(stderr); len(lines.rewrites)+len(lines.cannotRead)+len(lines.table)+len(lines.unknown) != 0 {
-						t.Errorf("the push printed a line of the step's, want none:\n%s", stderr)
-					}
-					f.checkSame(c.commit, rev)
-					sent, _ := f.remoteCommits(f.bare, "refs/heads/legion/K-1")
-					if len(sent) != len(aloneSent) || len(sent) == 1 && (sent[0].id != c.commit || aloneSent[0].id != twinChange.commit) {
-						t.Errorf("origin holds %v of legion/K-1, want what jj alone leaves, %v, of the commit as it was", sent, aloneSent)
-					}
-				})
-			}
+				f := newRolePushFixture(t, form, "")
+				c := setup(f)
+				before = f.ops()
+				code, out, stderr := f.push(impl, f.resolve(row.args)...)
+				if added := f.ops() - before; added != aloneAdded {
+					t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
+				}
+				if code != aloneCode || out != aloneOut {
+					t.Errorf("the push exited %d and printed %q, want %d and %q, as jj alone does", code, out, aloneCode, aloneOut)
+				}
+				if lines := rolePushStepLines(stderr); len(lines.rewrites)+len(lines.cannotRead)+len(lines.table)+len(lines.unknown) != 0 {
+					t.Errorf("the push printed a line of the step's, want none:\n%s", stderr)
+				}
+				f.checkSame(c.commit, rev)
+				sent, _ := f.remoteCommits(f.bare, "refs/heads/legion/K-1")
+				if len(sent) != len(aloneSent) || len(sent) == 1 && (sent[0].id != c.commit || aloneSent[0].id != twinChange.commit) {
+					t.Errorf("origin holds %v of legion/K-1, want what jj alone leaves, %v, of the commit as it was", sent, aloneSent)
+				}
+			})
 		})
 	}
 }
@@ -1571,8 +1574,8 @@ func rolePushCannotReadRows() []struct {
 			f.jj(impl, "config", "set", "--repo", "ui.quiet", "true")
 			return reads(f)
 		}}, ""},
-		// The architect's bound on D7's loop: a metaedit that fills nothing must not make the
-		// step read the same refusal for ever.
+		// The bound on the step's loop over jj's refusal of a commit with no author: a metaedit
+		// that fills nothing must not make the step read the same refusal for ever.
 		{rolePushRow{name: "a metaedit that fills no author", args: rolePushBookmark, setup: func(f *rolePushFixture) rolePushWant {
 			c := f.commitOn(rolePushNobody, rolePushNobody, "main", rolePushMessage("work", "implementer"))
 			f.bookmark("legion/K-1", c.commit)
@@ -1598,20 +1601,17 @@ func TestADryRunTheStepCannotReadChangesNothing(t *testing.T) {
 	for _, row := range rolePushCannotReadRows() {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, row.behaviour)
-					want := row.setup(f)
-					f.pushAndCheck(row.args, want)
-					if row.behaviour == rolePushMetaeditFillsNothing {
-						_, _, stderr := f.alone(rolePushImplementer, "git", "push", "--dry-run", "--bookmark", "legion/K-1")
-						if refusal, _, _ := strings.Cut(stderr, "\n"); !strings.Contains(refusal, "no author") {
-							t.Fatalf("jj alone printed %q, want its refusal of a commit with no author", stderr)
-						}
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, row.behaviour)
+				want := row.setup(f)
+				f.pushAndCheck(row.args, want)
+				if row.behaviour == rolePushMetaeditFillsNothing {
+					_, _, stderr := f.alone(rolePushImplementer, "git", "push", "--dry-run", "--bookmark", "legion/K-1")
+					if refusal, _, _ := strings.Cut(stderr, "\n"); !strings.Contains(refusal, "no author") {
+						t.Fatalf("jj alone printed %q, want its refusal of a commit with no author", stderr)
 					}
-				})
-			}
+				}
+			})
 		})
 	}
 }
@@ -1640,20 +1640,17 @@ func TestARoleIdentityTableThatDoesNotParseChangesNothing(t *testing.T) {
 	for _, row := range rolePushTableRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, "")
-					c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-					f.bookmark("legion/K-1", c.commit)
-					f.table = row.value
-					f.pushAndCheck(rolePushBookmark, rolePushWant{
-						refs:  []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}}},
-						same:  map[string]rolePushIdentity{c.commit: rev},
-						table: row.value != nil,
-					})
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, "")
+				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+				f.bookmark("legion/K-1", c.commit)
+				f.table = row.value
+				f.pushAndCheck(rolePushBookmark, rolePushWant{
+					refs:  []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: rev, commit: c.commit}}}},
+					same:  map[string]rolePushIdentity{c.commit: rev},
+					table: row.value != nil,
 				})
-			}
+			})
 		})
 	}
 }
@@ -1669,31 +1666,28 @@ func TestAPushWithNothingToChangeAddsNoOperation(t *testing.T) {
 		f.bookmark("legion/K-1", c.commit)
 		return c
 	}
-	for _, form := range rolePushForms {
-		t.Run(string(form), func(t *testing.T) {
-			t.Parallel()
-			twin := newRolePushFixture(t, form, "")
-			setup(twin)
-			before := twin.ops()
-			if code, _, stderr := twin.alone(impl, rolePushBookmark...); code != 0 {
-				t.Fatalf("jj alone exited %d:\n%s", code, stderr)
-			}
-			aloneAdded := twin.ops() - before
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		twin := newRolePushFixture(t, form, "")
+		setup(twin)
+		before := twin.ops()
+		if code, _, stderr := twin.alone(impl, rolePushBookmark...); code != 0 {
+			t.Fatalf("jj alone exited %d:\n%s", code, stderr)
+		}
+		aloneAdded := twin.ops() - before
 
-			f := newRolePushFixture(t, form, rolePushRecords)
-			c := setup(f)
-			before = f.ops()
-			divergent := f.divergence()
-			code, _, stderr := f.push(impl, rolePushBookmark...)
-			f.check(rolePushWant{
-				refs:       []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: impl, commit: c.commit}}}},
-				noMetaedit: true,
-			}, code, stderr, divergent, 0)
-			if added := f.ops() - before; added != aloneAdded {
-				t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
-			}
-		})
-	}
+		f := newRolePushFixture(t, form, rolePushRecords)
+		c := setup(f)
+		before = f.ops()
+		divergent := f.divergence()
+		code, _, stderr := f.push(impl, rolePushBookmark...)
+		f.check(rolePushWant{
+			refs:       []rolePushRef{{ref: "refs/heads/legion/K-1", commits: []rolePushCommit{{change: c.change, author: impl, commit: c.commit}}}},
+			noMetaedit: true,
+		}, code, stderr, divergent, 0)
+		if added := f.ops() - before; added != aloneAdded {
+			t.Errorf("the push added %d operations, want %d, as jj alone adds", added, aloneAdded)
+		}
+	})
 }
 
 // The step's jj commands run one after another, and the real push starts after the last of them
@@ -1712,35 +1706,32 @@ func TestTheStepsCommandsRunOneAfterAnother(t *testing.T) {
 		row := rolePushWaitingRow(waiting, true)
 		t.Run(waiting.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, rolePushRecords)
-					f.pushAndCheck(row.args, row.setup(f))
-					calls := f.calls()
-					pushes := slices.IndexFunc(calls, rolePushCall.realPush)
-					if pushes < 0 || slices.ContainsFunc(calls[pushes+1:], rolePushCall.realPush) {
-						t.Fatalf("the recording jj ran %v, want one real push", calls)
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushRecords)
+				f.pushAndCheck(row.args, row.setup(f))
+				calls := f.calls()
+				pushes := slices.IndexFunc(calls, rolePushCall.realPush)
+				if pushes < 0 || slices.ContainsFunc(calls[pushes+1:], rolePushCall.realPush) {
+					t.Fatalf("the recording jj ran %v, want one real push", calls)
+				}
+				push := calls[pushes]
+				steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)
+				if !slices.ContainsFunc(steps, func(c rolePushCall) bool { return c.has("metaedit") }) {
+					t.Errorf("the recording jj ran %v before the push, want the step's metaedit among them", steps)
+				}
+				slices.SortFunc(steps, func(a, b rolePushCall) int { return cmp.Compare(a.start, b.start) })
+				for i, call := range steps {
+					if !call.has("--ignore-working-copy") {
+						t.Errorf("the step ran %q with no --ignore-working-copy, which takes a snapshot", call.args)
 					}
-					push := calls[pushes]
-					steps := slices.Delete(slices.Clone(calls), pushes, pushes+1)
-					if !slices.ContainsFunc(steps, func(c rolePushCall) bool { return c.has("metaedit") }) {
-						t.Errorf("the recording jj ran %v before the push, want the step's metaedit among them", steps)
+					if i > 0 && call.start < steps[i-1].end {
+						t.Errorf("the step ran %q from %d before %q ended at %d", call.args, call.start, steps[i-1].args, steps[i-1].end)
 					}
-					slices.SortFunc(steps, func(a, b rolePushCall) int { return cmp.Compare(a.start, b.start) })
-					for i, call := range steps {
-						if !call.has("--ignore-working-copy") {
-							t.Errorf("the step ran %q with no --ignore-working-copy, which takes a snapshot", call.args)
-						}
-						if i > 0 && call.start < steps[i-1].end {
-							t.Errorf("the step ran %q from %d before %q ended at %d", call.args, call.start, steps[i-1].args, steps[i-1].end)
-						}
-						if push.start < call.end {
-							t.Errorf("the real push started at %d, before the step's %q ended at %d", push.start, call.args, call.end)
-						}
+					if push.start < call.end {
+						t.Errorf("the real push started at %d, before the step's %q ended at %d", push.start, call.args, call.end)
 					}
-				})
-			}
+				}
+			})
 		})
 	}
 }
@@ -1760,20 +1751,17 @@ func TestAFailingStepSendsNothing(t *testing.T) {
 	for _, row := range rolePushFailingRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, row.behaviour)
-					c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-					f.bookmark("legion/K-1", c.commit)
-					divergent, edits := f.divergence(), f.metaedits()
-					code, _, stderr := f.push(impl, rolePushBookmark...)
-					f.check(rolePushWant{exit: 1, refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}}}, code, stderr, divergent, edits)
-					if !strings.Contains(stderr, row.error) {
-						t.Errorf("the push printed\n%s\nwant jj's error %q", stderr, row.error)
-					}
-				})
-			}
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, row.behaviour)
+				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+				f.bookmark("legion/K-1", c.commit)
+				divergent := f.divergence()
+				code, _, stderr := f.push(impl, rolePushBookmark...)
+				f.check(rolePushWant{exit: 1, refs: []rolePushRef{{ref: "refs/heads/legion/K-1", absent: true}}}, code, stderr, divergent, 0)
+				if !strings.Contains(stderr, row.error) {
+					t.Errorf("the push printed\n%s\nwant jj's error %q", stderr, row.error)
+				}
+			})
 		})
 	}
 }
@@ -1829,32 +1817,29 @@ func TestThePanesJJNeverRunsItselfAgain(t *testing.T) {
 	for _, row := range rolePushPanesRows {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			for _, form := range rolePushForms {
-				t.Run(string(form), func(t *testing.T) {
-					t.Parallel()
-					f := newRolePushFixture(t, form, rolePushRecords)
-					c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
-					f.bookmark("legion/K-1", c.commit)
-					path := row.path(f)
-					divergent, edits := f.divergence(), f.metaedits()
-					code, _, stderr := f.pushOn(path, impl, rolePushBookmark...)
-					f.check(rolePushSends("legion/K-1", c, "implementer", impl), code, stderr, divergent, edits)
-					var dry, metaedit, push int
-					for _, call := range f.calls() {
-						switch {
-						case call.has("metaedit"):
-							metaedit++
-						case call.has("push") && call.has("--dry-run"):
-							dry++
-						case call.realPush():
-							push++
-						}
+			rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+				f := newRolePushFixture(t, form, rolePushRecords)
+				c := f.commitOn(rev, impl, "main", rolePushMessage("work", "implementer"))
+				f.bookmark("legion/K-1", c.commit)
+				path := row.path(f)
+				divergent := f.divergence()
+				code, _, stderr := f.pushOn(path, impl, rolePushBookmark...)
+				f.check(rolePushSends("legion/K-1", c, "implementer", impl), code, stderr, divergent, 0)
+				var dry, metaedit, push int
+				for _, call := range f.calls() {
+					switch {
+					case call.has("metaedit"):
+						metaedit++
+					case call.has("push") && call.has("--dry-run"):
+						dry++
+					case call.realPush():
+						push++
 					}
-					if dry != 1 || metaedit != 1 || push != 1 {
-						t.Errorf("the recording jj saw %d dry runs, %d metaedits and %d pushes, want one of each: the step runs once\n%v", dry, metaedit, push, f.calls())
-					}
-				})
-			}
+				}
+				if dry != 1 || metaedit != 1 || push != 1 {
+					t.Errorf("the recording jj saw %d dry runs, %d metaedits and %d pushes, want one of each: the step runs once\n%v", dry, metaedit, push, f.calls())
+				}
+			})
 		})
 	}
 }
@@ -1941,26 +1926,23 @@ func rolePushEveryArgument() []string {
 func TestEveryPushOptionIsDriven(t *testing.T) {
 	t.Parallel()
 	words := rolePushEveryArgument()
-	for _, form := range rolePushForms {
-		t.Run(string(form), func(t *testing.T) {
-			t.Parallel()
-			f := newRolePushWrapper(t, form, "")
-			code, help, stderr := trailerRun(t, f.root, f.env(f.path, rolePushImplementer), "", "/bin/sh", "-c", `exec jj git push --help`)
-			if code != 0 {
-				t.Fatalf("jj git push --help exited %d:\n%s", code, stderr)
+	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+		f := newRolePushWrapper(t, form, "")
+		code, help, stderr := trailerRun(t, f.root, f.env(f.path, rolePushImplementer), "", "/bin/sh", "-c", `exec jj git push --help`)
+		if code != 0 {
+			t.Fatalf("jj git push --help exited %d:\n%s", code, stderr)
+		}
+		options := rolePushHelpOptions(help)
+		if !slices.ContainsFunc(options, func(o rolePushOption) bool { return o.long == "--bookmark" }) {
+			t.Fatalf("read %v from the Options of jj git push --help, want --bookmark among them:\n%s", options, help)
+		}
+		for _, option := range options {
+			if option.sendsNoCommit() {
+				continue
 			}
-			options := rolePushHelpOptions(help)
-			if !slices.ContainsFunc(options, func(o rolePushOption) bool { return o.long == "--bookmark" }) {
-				t.Fatalf("read %v from the Options of jj git push --help, want --bookmark among them:\n%s", options, help)
+			if !slices.ContainsFunc(words, option.drivenBy) {
+				t.Errorf("jj git push %s: no row of these tests drives it, and it is not an option that sends no commit", option)
 			}
-			for _, option := range options {
-				if option.sendsNoCommit() {
-					continue
-				}
-				if !slices.ContainsFunc(words, option.drivenBy) {
-					t.Errorf("jj git push %s: no row of these tests drives it, and it is not an option that sends no commit", option)
-				}
-			}
-		})
-	}
+		}
+	})
 }

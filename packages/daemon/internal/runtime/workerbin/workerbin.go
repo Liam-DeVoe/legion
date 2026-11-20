@@ -73,34 +73,25 @@ func Install(root, legionExecutable, path string) error {
 	if err := installScript(bin, "gh", "#!/bin/sh\nexec "+legion+" gh \"$@\"\n"); err != nil {
 		return err
 	}
-	if isImage(firstGit(path, bin), imageGit) {
+	if isImage(firstOnPath(path, "git", bin), imageGit) {
 		if err := removeScript(bin, "git"); err != nil {
 			return err
 		}
 	} else if err := installScript(bin, "git", "#!/bin/sh\nexec "+legion+" git --after "+shellprefix.Literal(bin)+" -- \"$@\"\n"); err != nil {
 		return err
 	}
-	if isImage(firstJJ(path, bin), imageJJ) {
+	if isImage(firstOnPath(path, "jj", bin), imageJJ) {
 		return removeScript(bin, "jj")
 	}
 	return installScript(bin, "jj", "#!/bin/sh\nexec "+legion+" jj --after "+shellprefix.Literal(bin)+" -- \"$@\"\n")
 }
 
-// firstGit is the first executable git on path, leaving out each entry that is bin, or "" when
-// there is none. It is the first of the gits that `legion git --after <bin>` chooses among
-// (lookpath.Others), so Install reads the git that a pane's git wrapper would run.
-func firstGit(path, bin string) string {
-	if found, _ := lookpath.Others(path, "git", bin); len(found) > 0 {
-		return found[0].Path
-	}
-	return ""
-}
-
-// firstJJ is the first executable jj on path, leaving out each entry that is bin, or "" when
-// there is none. It is the first of the jj programs that `legion jj --after <bin>` chooses among
-// (lookpath.Others), so Install reads the jj that a pane's jj wrapper would run.
-func firstJJ(path, bin string) string {
-	if found, _ := lookpath.Others(path, "jj", bin); len(found) > 0 {
+// firstOnPath is the first executable program named name (git, jj) on path, leaving out each
+// entry that is bin, or "" when there is none. It is the first of the programs that
+// `legion <name> --after <bin>` chooses among (lookpath.Others), so Install reads the program
+// that a pane's wrapper of that name would run.
+func firstOnPath(path, name, bin string) string {
+	if found, _ := lookpath.Others(path, name, bin); len(found) > 0 {
 		return found[0].Path
 	}
 	return ""

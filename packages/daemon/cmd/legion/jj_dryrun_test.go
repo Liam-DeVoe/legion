@@ -53,8 +53,9 @@ func capturedNoAuthorCommit(t *testing.T, stderr string) string {
 // (packages/daemon/cmd/legion/jj_dryrun.go). Every dry run captured from jj 0.45.1-sami, 0.38.0
 // and 0.46.0 is read without an error, one ref for each line of each block, each of the block's
 // remote, naming the line's bookmark or tag and the commits the line names; a dry run that sends
-// nothing reads as Nothing. jj's refusal of a commit with no author names that commit; a
-// conflicted bookmark and 0.38's refusal of a second --remote give an error or no ref.
+// nothing reads as Nothing. jj's refusal of a commit with no author names that commit. That
+// refusal, a conflicted bookmark and 0.38's refusal of a second --remote hold neither a block nor
+// `Nothing changed.`, and the parser answers an error that says so.
 func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 	files, err := filepath.Glob(filepath.Join(capturedDryRuns, "*", "*.txt"))
 	if err != nil {
@@ -78,21 +79,18 @@ func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 			got, err := parseJJDryRun(stderr)
 			switch {
 			case form == "no-author":
-				id, ok := jjNoAuthorCommit(stderr)
+				id, _, ok := jjNoAuthorCommit(stderr)
 				if want := capturedNoAuthorCommit(t, stderr); !ok || id != want {
 					t.Errorf("jjNoAuthorCommit = %q, %v, want %q, the commit jj refused", id, ok, want)
 				}
-				if err == nil && len(got.Refs) != 0 {
-					t.Errorf("parseJJDryRun of jj's refusal = %+v, want an error or no ref", got)
-				}
-				return
+				fallthrough
 			case form == "conflicted-bookmark", form == "two-remotes" && len(blocks) == 0:
-				if err == nil && len(got.Refs) != 0 {
-					t.Errorf("parseJJDryRun of jj's error = %+v, want an error or no ref", got)
+				if err == nil || !strings.Contains(err.Error(), "neither a block of changes nor `Nothing changed.`") {
+					t.Errorf("parseJJDryRun of jj's refusal = %+v, %v, want the error that the output has neither a block nor `Nothing changed.`", got, err)
 				}
 				return
 			}
-			if _, ok := jjNoAuthorCommit(stderr); ok {
+			if _, _, ok := jjNoAuthorCommit(stderr); ok {
 				t.Errorf("jjNoAuthorCommit found a refusal in a dry run that holds none")
 			}
 			if err != nil {

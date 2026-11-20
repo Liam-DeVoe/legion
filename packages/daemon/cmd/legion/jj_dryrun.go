@@ -76,18 +76,20 @@ func parseJJDryRun(stderr string) (jjDryRun, error) {
 func parseJJRefLine(line string) (jjPushRef, bool) {
 	if parts := jjRefLine.FindStringSubmatch(line); parts != nil {
 		ref := jjPushRef{Tag: parts[1] == "tag", Name: parts[2]}
-		switch action := parts[3]; {
-		case jjRefAdd.MatchString(action):
-			ref.Action, ref.To = "add", jjRefAdd.FindStringSubmatch(action)[1]
-		case jjRefMove.MatchString(action):
-			move := jjRefMove.FindStringSubmatch(action)
-			ref.Action, ref.From, ref.To = "move "+move[1], move[2], move[3]
-		case jjRefDelete.MatchString(action):
-			ref.Action, ref.From = "delete", jjRefDelete.FindStringSubmatch(action)[1]
-		default:
-			return jjPushRef{}, false
+		action := parts[3]
+		if add := jjRefAdd.FindStringSubmatch(action); add != nil {
+			ref.Action, ref.To = "add", add[1]
+			return ref, true
 		}
-		return ref, true
+		if move := jjRefMove.FindStringSubmatch(action); move != nil {
+			ref.Action, ref.From, ref.To = "move "+move[1], move[2], move[3]
+			return ref, true
+		}
+		if deleted := jjRefDelete.FindStringSubmatch(action); deleted != nil {
+			ref.Action, ref.From = "delete", deleted[1]
+			return ref, true
+		}
+		return jjPushRef{}, false
 	}
 	if parts := jjOldRefAdd.FindStringSubmatch(line); parts != nil {
 		return jjPushRef{Tag: parts[1] == "tag", Name: parts[2], Action: "add", To: parts[3]}, true
@@ -102,12 +104,13 @@ func parseJJRefLine(line string) (jjPushRef, bool) {
 }
 
 // jjNoAuthorCommit is the commit id that jj's refusal
-// `Error: Won't push commit <id> since it has no author and/or committer set` names, if stderr holds it.
-func jjNoAuthorCommit(stderr string) (id string, ok bool) {
-	for line := range strings.SplitSeq(stderr, "\n") {
-		if parts := jjNoAuthorRefusal.FindStringSubmatch(line); parts != nil {
-			return parts[1], true
+// `Error: Won't push commit <id> since it has no author and/or committer set` names, and line, that
+// refusal's line, if stderr holds it.
+func jjNoAuthorCommit(stderr string) (id, line string, ok bool) {
+	for l := range strings.SplitSeq(stderr, "\n") {
+		if parts := jjNoAuthorRefusal.FindStringSubmatch(l); parts != nil {
+			return parts[1], l, true
 		}
 	}
-	return "", false
+	return "", "", false
 }

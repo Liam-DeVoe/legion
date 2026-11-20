@@ -18,7 +18,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"maps"
 	"slices"
 	"strings"
@@ -726,11 +725,7 @@ func ReadRoleIdentities(value string) (map[claim.Role]GitIdentity, string) {
 		return nil, "empty"
 	}
 	var read map[string]*roleIdentity
-	decoder := json.NewDecoder(strings.NewReader(value))
-	if err := decoder.Decode(&read); err != nil || read == nil {
-		return nil, "not a JSON object of each role's name and email"
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+	if err := json.Unmarshal([]byte(value), &read); err != nil || read == nil {
 		return nil, "not a JSON object of each role's name and email"
 	}
 	table := map[claim.Role]GitIdentity{}

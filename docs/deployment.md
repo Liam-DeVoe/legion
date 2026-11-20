@@ -355,8 +355,11 @@ runs one `jj metaedit` for each such role, under that role's identity, which set
 It prints one line for each commit it rewrote,
 `legion jj: <role>: <old commit id> -> <new commit id>`, and then runs the push with the role's
 own arguments.
-It changes no commit that a remote bookmark holds, no immutable commit, and no commit that has no
-`Legion-Role` trailer or whose role has no identity in the table.
+It changes no commit that a remote bookmark holds and no immutable commit.
+It sets the author of no commit that has no `Legion-Role` trailer or whose role has no identity in
+the table.
+jj rebases such a commit when it sits above a commit that the step rewrote, which gives it a new
+commit id and the step's identity as committer, and it keeps its author.
 A commit with an empty author whose trailer names a role of the table gets that role's author
 too, and `jj git push` still refuses one with no such trailer.
 The step adds no refusal: where it cannot read the dry run, it prints one line, and the push runs

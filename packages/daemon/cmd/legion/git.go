@@ -101,7 +101,7 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "legion git: %v\n", err)
 		return 127
 	}
-	env = withWrapperChain(env, wrappedGitAt, pick.chain)
+	env = withVariable(env, wrappedGitAt, pick.chain.String())
 	if !commit || pick.reentry {
 		return execWrapped("legion git", pick.run, gitArgs, env, nil, stderr)
 	}
@@ -115,7 +115,7 @@ func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if helper != pick.run {
 		readChain.ran = append(slices.Clone(readChain.ran), helper)
 	}
-	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withWrapperChain(os.Environ(), wrappedGitAt, readChain)}
+	reader := gitReader{path: helper, globals: gitArgs[:sub], env: withVariable(os.Environ(), wrappedGitAt, readChain.String())}
 	return runCommit(pick.run, stashOnStandardInput, reader, gitArgs[sub+1:], env, stderr)
 }
 
@@ -166,15 +166,6 @@ func parseWrapperChain(value string) (chain wrapperChain, listed []os.FileInfo) 
 		}
 	}
 	return chain, listed
-}
-
-// withWrapperChain is env, a copy of the process's environment, with the loop guard's variable
-// set to chain, in place of any value it held.
-func withWrapperChain(env []string, variable string, chain wrapperChain) []string {
-	env = slices.DeleteFunc(env, func(entry string) bool {
-		return strings.HasPrefix(entry, variable+"=")
-	})
-	return append(env, variable+"="+chain.String())
 }
 
 // wrapperPick is the program that `legion git --after` or `legion jj --after` runs, and what it
