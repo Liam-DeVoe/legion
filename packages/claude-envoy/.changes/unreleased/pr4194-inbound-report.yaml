@@ -5,9 +5,11 @@ body: |-
   that what the stream stored meanwhile arrives now, and one stderr line. Before this the session
   never learned that its inbound came back. A removal frame's registry write that the listener's
   message bus did not answer is reported as that outage, with the words that the registry may
-  already be without the topic, where the line said the topic could not be dropped. A session
-  whose shutdown has begun registers nothing and is told neither notice, where a heartbeat that
-  ran after the shutdown closed the relay could tell it "Envoy inbound unavailable".
+  already be without the topic, where the line said the topic could not be dropped. A removal
+  whose first attempt got that answer and whose retry got no answer or another 5xx is reported
+  the same way. A session whose shutdown has begun registers nothing and is told neither notice,
+  where a heartbeat that ran after the shutdown closed the relay could tell it "Envoy inbound
+  unavailable".
 time: 2026-11-17T03:00:17Z
 custom:
     Issue: pr4194

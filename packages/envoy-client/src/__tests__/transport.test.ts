@@ -1625,8 +1625,8 @@ describe("EnvoyClient", () => {
       ]);
     });
 
-    // Only a registration fails with an earlier attempt's 503. A send names what its last
-    // attempt got, since that is what its unconfirmed error says.
+    // Only a registration and a removal fail with an earlier attempt's 503. A send names what its
+    // last attempt got, since that is what its unconfirmed error says.
     test("a send whose retry gets no answer still names the retry's failure", async () => {
       let calls = 0;
       const client = createEnvoyClient({
@@ -1647,6 +1647,41 @@ describe("EnvoyClient", () => {
         "the listener did not answer (POST http://listener/v1/messages/send got no answer: TimeoutError"
       );
     });
+  });
+
+  // The class of finding 7, in a removal: the listener frees the claim and writes the record
+  // before it sets the consumer's filter, so its bus-outage 503 can come after the removal
+  // landed. A retry that then got no answer or another 5xx says nothing more. So the removal
+  // fails with that 503, and each caller warns that the removal may already have landed
+  // (`isBusUnanswered`), never that it did not happen.
+  test.each([
+    [
+      "times out",
+      () => {
+        // What AbortSignal.timeout raises when the listener holds the request past the deadline.
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    ],
+    ["gets another 5xx", async () => new Response("bad gateway", { status: 502 })],
+  ] as const)("an unsubscribe whose first attempt got the bus-outage 503 and whose retry %s fails with that 503", async (_name, retry) => {
+    const outage = `${BUS_UNANSWERED_PREFIX}: set the filter of ses_sender's session consumer: bus: NATS is reconnecting`;
+    let calls = 0;
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: async () => {
+        calls += 1;
+        if (calls === 1) return Response.json({ error: outage }, { status: 503 });
+        return retry();
+      },
+    });
+
+    const failure = await client
+      .unsubscribe({ sessionID: "ses_sender", topics: ["notifications.role.reviewer"] })
+      .catch((thrown: unknown) => thrown);
+
+    expect(calls).toBe(2);
+    expect(isBusUnanswered(failure)).toBe(true);
+    expect((failure as Error).message).toBe(outage);
   });
 
   test("retries one 503 response and keeps the direct-send recipient", async () => {
