@@ -459,6 +459,16 @@ test("a block no repair parses is read one key: value line at a time, a value YA
   expect(readFrontmatter("# No frontmatter\n")).toEqual({});
 });
 
+test("comments inside the block are dropped in one left-to-right pass, as Oh My Pi drops them", () => {
+  const text =
+    "---\nname: x<!-- gone -->y\ndescription: keep <!<!---->-- this\nnote: open <!-- no end\n---\nBody.\n";
+  expect(readFrontmatter(text)).toEqual({
+    name: "xy",
+    description: "keep <!-- this",
+    note: "open <!-- no end",
+  });
+});
+
 /** A stand-in `gh` that answers its first `fails` calls with a network timeout on stderr, then
  *  with `answer`; each call is counted in the file `count`. */
 function standinGh(name: string, fails: number, answer: string): { gh: string; count: string } {

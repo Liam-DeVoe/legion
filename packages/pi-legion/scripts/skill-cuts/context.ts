@@ -192,6 +192,29 @@ function yamlRecord(text: string): Record<string, unknown> | null {
 }
 
 /**
+ * `text` with each `<!--` … `-->` span dropped, as one pass of Oh My Pi's
+ * `replace(/<!--[\s\S]*?-->/g, "")` drops them in packages/utils/src/frontmatter.ts at the tag
+ * v18.18.6-sami.20261117-013345, so the runner reads the description Oh My Pi reads: a span runs
+ * from a `<!--` to the first `-->` that starts after it, and the scan goes on after that `-->`, so
+ * the text a drop joins together is not read again (`<!<!---->--` gives `<!--`, as Oh My Pi's pass
+ * does). A `<!--` with no `-->` after it stays. This is no sanitizer: its output is frontmatter
+ * text for a YAML parse and is never rendered as HTML.
+ */
+function dropComments(text: string): string {
+  let kept = "";
+  let at = 0;
+  for (;;) {
+    const open = text.indexOf("<!--", at);
+    if (open === -1) break;
+    const close = text.indexOf("-->", open + 4);
+    if (close === -1) break;
+    kept += text.slice(at, open);
+    at = close + 3;
+  }
+  return kept + text.slice(at);
+}
+
+/**
  * The frontmatter of a SKILL.md's text, read as Oh My Pi's `parseFrontmatter` reads a skill's
  * with its defaults (packages/utils/src/frontmatter.ts of cybermonklabs/oh-my-pi at the tag
  * v18.18.6-sami.20261117-013345, the pin): CRLF as LF; leading HTML comments before the opening
@@ -210,7 +233,7 @@ export function readFrontmatter(content: string): Record<string, unknown> {
   if (!text.startsWith("---")) return {};
   const end = text.indexOf("\n---", 3);
   if (end === -1) return {};
-  const block = text.slice(4, end).replace(/<!--[\s\S]*?-->/g, "");
+  const block = dropComments(text.slice(4, end));
   let read: Record<string, unknown> | null | undefined;
   try {
     read = yamlRecord(block);
