@@ -74,7 +74,7 @@ func TestAuthCalloutRendersNoAuthorizationTimeout(t *testing.T) {
 		`    auth_users: ["`+authServiceKey+`"]`+"\n"+
 		`    xkey: "`+calloutXKey+`"`+"\n"+
 		"  }\n"+
-		"}\n"+calloutPingLines, text)
+		"}\n"+calloutPingLines+privateProjectsTagLines, text)
 }
 
 // renderedCalloutBlock is the callout's lines cut from text, a Render text: what follows the users'
