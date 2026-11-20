@@ -25,8 +25,8 @@ you takes your child's notices until a later start of your role brings you back;
 failure, your child's next phase start is such a start. When your child leaves the workflow,
 your claim stops as workflow's `leave` decides. A start resumes this session, and you start in a
 new session, which has read none of your earlier work, only once supervise's `forgetSession` has
-dropped this one. Your child's planner may already be working when you start. Decide
-first whether your child needs children of its own
+dropped this one. The agent of your child's first step may already be working when you start.
+Decide first whether your child needs children of its own
 (`skill://legion-architect/references/decomposition.md`, "Creating children").
 
 You open no `dispatch ask` yourself, whatever another part of this prompt says. Send each question

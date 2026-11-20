@@ -203,6 +203,8 @@ reason for each cause. An issue whose owner gives it no plan, or a task with no 
 project's default steps, `projects.<KEY>.default_steps` in `legion.yaml`, which are the whole table
 unless the project sets others; so does an issue whose work started before its owner gave it a
 plan, until the owner stops that task with `stop_task` and gives a plan whose one task replaces it.
+Set `default_steps` only once every daemon that reads the file runs a release that knows it: an
+earlier daemon refuses the whole file (`Unknown key "projects.<KEY>.default_steps"`).
 An issue that leaves its tree, as an orphan admitted again as a root of its own does, takes no plan
 its earlier owner gave: at its first step Legion deletes that plan, logs
 `workflow: a plan of an earlier owner is not taken`, and tells the issue's architect once, in a
@@ -452,8 +454,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   in `accepting`, `retro` or `merging`; a check the base requires has no green result on the head;
   the base requires a pull request to be current with it; or the daemon could not read the base's
   rules, which it reads (rulesets and branch protection) only on a conflicting read. Otherwise it
-  records the conflict, and the tester and the reviewer go on at that head; an approval of the
-  head ends the review round, and the daemon acts once the issue enters `accepting`.
+  records the conflict, and the task's steps go on at that head; an approval of the head ends the
+  review round, and the daemon acts once the issue moves past its review, into `accepting`,
+  `retro` or `merging`.
   When it acts, the issue keeps its phase and takes no admission slot for the merge. The
   implementer is asked on its role topic to merge the base forward in the issue workspace and
   push, with no handoff and no completion for it. The tester, the reviewer or the merger holding
@@ -492,7 +495,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`
   unnoticed.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
-  opened, Legion's reviewer) accepts the reply.
+  opened, Legion's reviewer, or the implementer on a task with no reviewer step) accepts the reply.
 - One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
   posts a message on the issue and tells the architect; it stops no worker.
   It says so once for each value the cap holds, not on every round past it: a cap raised in
@@ -554,9 +557,10 @@ When a merge fails, the decision is the merger's, on GitHub's own answer: wait f
 waits for, merge again at the head it re-reads, send the issue back with `request_backward_move`
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
-base keeps the issue in `merging`: the merger merges nothing, the daemon asks the implementer to
-merge the base forward and the reviewer to approve the new head, and the merger merges that head
-once the approval is on the pull request.
+base keeps the issue in `merging`: the merger merges nothing, and the daemon asks the implementer
+to merge the base forward. Where the task has a reviewer step, it also asks the reviewer to approve
+the new head, and the merger merges that head once the approval is on the pull request; on a task
+with no reviewer step, the merger goes on at the new head.
 
 A merge queue that takes the pull request out for a conflict says which conflict it was in the
 pull request's merge state, which GitHub computes once the entry is no longer queued. A head
