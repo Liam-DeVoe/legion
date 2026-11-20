@@ -101,8 +101,6 @@ async function gone(pid: number): Promise<boolean> {
   return false;
 }
 
-
-
 describe.skipIf(skip)("record_pid_sh and recorded_pid", () => {
   test(
     "name the process the command execs into while it runs, and nothing once it has ended",
