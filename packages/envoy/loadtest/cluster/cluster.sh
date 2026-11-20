@@ -1719,18 +1719,36 @@ pg_disk_freeze() {
   return "$rc"
 }
 
-# pg_disk_kill_frozen: SIGKILL to each process PG_DISK_FROZEN records that is still the process it
-# recorded (its start the same), so that no process the stop sent SIGSTOP is left stopped, and no
-# pid that the machine has given another process since is signalled. The SIGKILL goes with no
-# redirection, so no want of a file descriptor keeps it from going out; the start just read shows
-# the process there, so only one that leaves in between makes kill say so.
+# pg_disk_kill_frozen LABEL [WATCHER]: SIGKILL to each process PG_DISK_FROZEN records that is still
+# the process it recorded (its start the same), so that no process the stop sent SIGSTOP is left
+# stopped, and no pid that the machine has given another process since is signalled. The SIGKILL
+# goes with no redirection, so no want of a file descriptor keeps it from going out; the start just
+# read shows the process there, so only one that leaves in between makes kill say so. Each process
+# below WATCHER, the watcher the caller kills itself, gets a line beginning LABEL that says what was
+# done with it: sent the SIGKILL, gone before it, held by another process now (its start differs),
+# or not signalled since its start could not be read. A stop that leaves a process of the act
+# running then says why on a line of its own, where a process skipped here was skipped in silence.
 pg_disk_kill_frozen() {
-  local frozen now
+  local label=$1 watcher=${2:-} frozen now
   for frozen in $PG_DISK_FROZEN; do
-    proc_start_into now "${frozen%:*}" || continue
-    # no-wait: each frozen process is waited for until it has ended, every thread of it, by the
-    # proc_wait_ended loop of pg_disk_watch_stop; a stop cut short names it as not shown gone.
-    [ "$now" != "${frozen#*:}" ] || kill -KILL -- "${frozen%:*}" || true
+    if ! proc_start_into now "${frozen%:*}"; then
+      [ "${frozen%:*}" = "$watcher" ] ||
+        note "$label: the start of pid ${frozen%:*}, which the freeze found below the disk watcher and stopped (start ${frozen#*:}), could not be read at its SIGKILL, so it is not signalled, and nothing shows it ended"
+      continue
+    fi
+    if [ "$now" = "${frozen#*:}" ]; then
+      # no-wait: each frozen process is waited for until it has ended, every thread of it, by the
+      # proc_wait_ended loop of pg_disk_watch_stop; a stop cut short names it as not shown gone.
+      kill -KILL -- "${frozen%:*}" || true
+      [ "${frozen%:*}" = "$watcher" ] ||
+        note "$label: sent the SIGKILL to pid ${frozen%:*} (start ${frozen#*:}), which the freeze found below the disk watcher and stopped"
+    elif [ "${frozen%:*}" != "$watcher" ]; then
+      if [ -z "$now" ]; then
+        note "$label: pid ${frozen%:*} (start ${frozen#*:}), which the freeze found below the disk watcher and stopped, had left the table before its SIGKILL"
+      else
+        note "$label: pid ${frozen%:*}, which the freeze found below the disk watcher and stopped at start ${frozen#*:}, has start $now now, another process's, so it is not signalled"
+      fi
+    fi
   done
 }
 
@@ -1777,7 +1795,7 @@ pg_disk_watch_stop() {
   local pid=$PG_DISK_WATCHER name=$PG_DISK_WATCH_STEP deadline frozen below=() rc
   if [ -n "$PG_DISK_STOPPING" ]; then
     note "the stop of $PG_DISK_STOPPING was cut short, so nothing shows it gone"
-    pg_disk_kill_frozen
+    pg_disk_kill_frozen "the cut-short stop of $PG_DISK_STOPPING"
     PG_DISK_STOPPING="" PG_DISK_FROZEN=""
   fi
   [ -n "$pid" ] || return 0
@@ -1789,7 +1807,7 @@ pg_disk_watch_stop() {
       pg_disk_freeze "$pid" "$name" || note "step $name: not every process of the disk watcher's tree was seen stopped, or read, before its SIGKILL; the lines above name each, and every process the stop read is sent the SIGKILL all the same"
       # no-wait: the watcher is this shell's child, and the wait on it below reaps it.
       [ ! -e "/proc/$pid" ] || kill -KILL -- "$pid" || true
-      pg_disk_kill_frozen
+      pg_disk_kill_frozen "step $name" "$pid"
       for frozen in $PG_DISK_FROZEN; do
         [ "${frozen%:*}" = "$pid" ] || below+=("${frozen%:*}")
       done
