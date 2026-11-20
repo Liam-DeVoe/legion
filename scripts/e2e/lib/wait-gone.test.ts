@@ -311,7 +311,8 @@ kill -CONT "$parent"`);
   // stop_label (envoy-session-delivery.sh), replace-blocks.sh's stop_instance and dev-stack.test.sh's
   // cleanup wait on before their next step meets the group's port, session or directory.
   test("a process group whose member drains for 2 s after SIGTERM is gone, every member, when the wait returns", () => {
-    const r = bash(`setsid bash -c 'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' & g=$!; started+=("$g")
+    const r =
+      bash(`setsid bash -c 'trap "sleep 2; exit 0" TERM; while :; do sleep 0.1; done' & g=$!; started+=("$g")
 until [ "$(awk '{print $5}' "/proc/$g/stat" 2>/dev/null)" = "$g" ]; do sleep 0.05; done
 start=$(now_ms)
 kill_gone TERM "$END" "-$g"; echo "rc=$?"
@@ -889,10 +890,7 @@ restart_daemon`,
       `FAIL the daemon (pid ${pid}) did not stop or its ports are still held (named above); its restart would meet its ports`
     );
     expect(stays.stderr).toMatch(
-      new RegExp(
-        `^${standIn(pid)} is still in the process table at its deadline`,
-        "m"
-      )
+      new RegExp(`^${standIn(pid)} is still in the process table at its deadline`, "m")
     );
     // The control: a daemon that leaves in time lets the restart run.
     expect(values(run(false).stdout).started).toBe("yes");
