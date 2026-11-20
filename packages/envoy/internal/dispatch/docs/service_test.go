@@ -5868,40 +5868,48 @@ func joinedWrite(service *Service, write func(ctx context.Context) error) error 
 }
 
 // replacementPrecondition is what a replacement names: the token the document stands at now,
-// which ReplaceText asks of every replacement, and none at all for a document whose live tree is
-// outside the Proof schema, which has no token and which only a replacement can repair. A test
-// whose subject is not the token reads it here.
+// which ReplaceText asks of every replacement, and none at all for a document that has no token.
+// Two documents have none: one whose live tree is outside the Proof schema, which only a
+// replacement can repair, and a converted document whose fragment of its issue room holds
+// nothing, which has no tree (readFragments) and whose read answers no token (TextWithToken), so
+// that ReplaceText takes its first text as a repair. A test whose subject is not the token reads
+// it here.
 //
 // The token comes from the write's own fork inside a joined context, from the room where one
 // holds the document, and from the store where none does: reading the live document of a room
 // nothing holds would load one, and a cold write is measured by finding none
 // (TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt).
 func replacementPrecondition(ctx context.Context, service *Service, artifactID string) (*model.EditPrecondition, error) {
-	token, err := documentTokenForReplacement(ctx, service, artifactID)
-	if errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema) {
-		return nil, nil
+	tree, err := replacedTree(ctx, service, artifactID)
+	var token string
+	if err == nil && tree != nil {
+		token, err = nodeToken(tree)
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema):
+		return nil, nil
+	case err != nil:
 		return nil, err
+	case tree == nil:
+		return nil, nil
 	}
 	return &model.EditPrecondition{Document: token}, nil
 }
 
-func documentTokenForReplacement(ctx context.Context, service *Service, artifactID string) (string, error) {
+// replacedTree is the tree of the document a replacement replaces, read where
+// replacementPrecondition reads its token: nil for a converted document whose fragment holds
+// nothing.
+func replacedTree(ctx context.Context, service *Service, artifactID string) (*pmdoc.Node, error) {
 	if _, joined := txFromContext(ctx); !joined {
 		target, err := service.targetOf(ctx, artifactID)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		if service.srv.GetDoc(target.room) == nil {
-			tree, err := service.storedTree(ctx, target)
-			if err != nil {
-				return "", err
-			}
-			return nodeToken(tree)
+			return service.storedTree(ctx, target)
 		}
 	}
-	return service.currentToken(ctx, artifactID)
+	return service.docTree(ctx, artifactID)
 }
 
 // liveDocumentToken is replacementPrecondition for a test that holds a *testing.T and reads the
