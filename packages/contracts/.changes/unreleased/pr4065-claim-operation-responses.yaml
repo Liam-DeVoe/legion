@@ -2,4 +2,4 @@ kind: Added
 body: |-
   The response schema of the controller's claim operations (`stop`, `retry`, `suspend`,
   `resume_claim`): the claim's state, and who suspended it or holds a suspension for its turn. The
-  daemon API contract moves to 184.
+  daemon API contract moves to 193.

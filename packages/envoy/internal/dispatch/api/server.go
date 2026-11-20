@@ -233,6 +233,17 @@ type DepsInput struct {
 	// EnvoyToken is the bearer the listener client sends (cmd/dispatch: ENVOY_TOKEN); empty sends
 	// none.
 	EnvoyToken string
+	// EnvoyAccountTokenFile is the file holding Dispatch's own projected service-account token for
+	// the listener's audience (cmd/dispatch: ENVOY_ACCOUNT_TOKEN_FILE), which every listener call
+	// reads and presents in EnvoyToken's place (envoy.WithAccountTokenFile); empty presents
+	// EnvoyToken. It is the one credential the listener takes a send's role mark from.
+	EnvoyAccountTokenFile string
+	// EnvoyGoogleAudience is the audience of the identity token the metadata server mints for
+	// Dispatch's Google Cloud machine (cmd/dispatch: ENVOY_ACCOUNT_GOOGLE_AUDIENCE), which every
+	// listener call presents in EnvoyToken's place (envoy.WithGoogleIdentity); empty presents none.
+	// With neither it nor EnvoyAccountTokenFile, Dispatch presents no identity and refuses every
+	// send for a role (envoy.ErrNoListenerIdentity).
+	EnvoyGoogleAudience string
 	// EnvoyTimeout replaces the listener client's window. Zero keeps the client's own default;
 	// a test exercising a receipt timeout sets a short one rather than waiting that out.
 	EnvoyTimeout time.Duration
@@ -323,6 +334,12 @@ func NewDeps(input DepsInput) (Deps, error) {
 	var envoyClient *envoy.Client
 	if envoyURL := strings.TrimSpace(input.EnvoyURL); envoyURL != "" {
 		options := []envoy.Option{envoy.WithToken(input.EnvoyToken)}
+		if input.EnvoyAccountTokenFile != "" {
+			options = append(options, envoy.WithAccountTokenFile(input.EnvoyAccountTokenFile))
+		}
+		if input.EnvoyGoogleAudience != "" {
+			options = append(options, envoy.WithGoogleIdentity(input.EnvoyGoogleAudience))
+		}
 		if input.EnvoyTimeout > 0 {
 			options = append(options, envoy.WithTimeout(input.EnvoyTimeout))
 		}
@@ -382,12 +399,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	}, nil
 }
 
-// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each repository is
-// read as a mapping's path is (refs.ParseExternalRepo: trimmed, lower-cased and one trailing
-// `.git` trimmed), and the name it reads is held to the names GitHub allows
-// (refs.SplitGitHubRepo), as the settings route holds the name it stores, so the seed stores no
-// mapping the route refuses: `acme/.git=KEY`, which reads as `acme/`, a mapping no request
-// reaches, or `acme/..=KEY`. Such an entry is refused, naming it, and the boot with it.
+// ParseRepoProjects parses DISPATCH_REPO_PROJECTS (owner/repo=PROJECT,...). Each entry is
+// trimmed, and its repository is read as a mapping's path is (refs.ParseGitHubRepo: lower-cased,
+// one trailing `.git` trimmed, and held to the names GitHub allows in that form), so the seed
+// stores no mapping the settings route refuses: `acme/.git=KEY`, which reads as `acme/`, a
+// mapping no request reaches, or `acme/..=KEY`. Nothing more is trimmed, so a space before the
+// `=` stays in the name and `acme/x =KEY` is refused. Such an entry is refused, naming it, and the
+// boot with it: one whose repository GitHub's rule refuses with that rule's own words, any other
+// with the form an entry takes.
 func ParseRepoProjects(raw string) (map[string]string, error) {
 	projects := make(map[string]string)
 	if strings.TrimSpace(raw) == "" {
@@ -400,13 +419,14 @@ func ParseRepoProjects(raw string) (map[string]string, error) {
 		if !ok || repo == "" || project == "" || strings.Contains(project, "=") || !projectKeyPattern.MatchString(project) {
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		canonical, ok := refs.ParseExternalRepo(repo)
-		if !ok {
+		owner, name, err := refs.ParseGitHubRepo(repo)
+		switch {
+		case errors.Is(err, refs.ErrNotGitHubRepo):
+			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
+		case err != nil:
 			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q (expected owner/repo=KEY)", part)
 		}
-		if _, _, err := refs.SplitGitHubRepo(canonical); err != nil {
-			return nil, fmt.Errorf("invalid DISPATCH_REPO_PROJECTS entry %q: %w", part, err)
-		}
+		canonical := owner + "/" + name
 		if _, exists := projects[canonical]; exists {
 			return nil, fmt.Errorf("duplicate DISPATCH_REPO_PROJECTS repository %q", canonical)
 		}
