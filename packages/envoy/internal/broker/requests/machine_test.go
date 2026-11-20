@@ -1000,7 +1000,7 @@ func TestAGrantEndedAfterTheEndPassIsNotHandedBack(t *testing.T) {
 			}
 			set := m.Policy.Get()
 			checked, err := m.endMatchingLiveGrants(ctx, row, names, set)
-			if err != nil || len(checked) != 1 || checked[0].grantID != *granted.GrantID || checked[0].pause != nil {
+			if pause, wasChecked := checked[*granted.GrantID]; err != nil || len(checked) != 1 || !wasChecked || pause != nil {
 				t.Fatalf("endMatchingLiveGrants = %+v, %v; want the grant %s left live with no pause", checked, err, *granted.GrantID)
 			}
 

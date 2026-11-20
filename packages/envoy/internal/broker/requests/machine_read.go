@@ -1212,22 +1212,17 @@ func (m *Machine) liveGrantPolicy(ctx context.Context, requestID string) (rulesV
 	return rulesVersion, decidedBy, granted, err
 }
 
-// liveGrantCheck is a live grant endMatchingLiveGrants left live, with the pause its current rules
-// answered. reuseLiveGrant uses that pause and does not re-check the grant.
-type liveGrantCheck struct {
-	liveGrant
-	pause error
-}
-
 // endMatchingLiveGrants checks every live grant for these exact names before Create can refuse
 // the new request. It uses each grant's own lifetime and ends every grant whose current policy has
-// a permanent cause. It answers each grant it left live with its pause, for reuseLiveGrant.
-func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, set *policy.Set) ([]liveGrantCheck, error) {
+// a permanent cause. It answers, for reuseLiveGrant, the pause of each grant it left live, keyed
+// by grant id: a grant the map does not hold was not checked, and one whose pause is nil was
+// checked and may be handed back.
+func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, sorted []string, set *policy.Set) (map[string]error, error) {
 	matches, err := m.liveGrantsWithNames(ctx, enr, sorted)
 	if err != nil {
 		return nil, err
 	}
-	checked := make([]liveGrantCheck, 0, len(matches))
+	checked := make(map[string]error, len(matches))
 	for _, match := range matches {
 		rulesVersion, decidedBy, granted, err := m.liveGrantPolicy(ctx, match.requestID)
 		if err != nil {
@@ -1238,7 +1233,7 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 			return nil, err
 		}
 		if end == nil {
-			checked = append(checked, liveGrantCheck{liveGrant: match, pause: pause})
+			checked[match.grantID] = pause
 			continue
 		}
 		if err := m.endLiveGrant(ctx, match.grantID, enr.ID, "reuse", end); !errors.Is(err, ErrGrantNotLive) {
@@ -1261,8 +1256,9 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // (personPodGrant), stillAllowed and overMaxGrant over every name under the grant's own lifetime.
 // It ended each grant those checks end. So a reuse never has an end of its own to make.
 //
-// The lookup runs again here, so a grant revoked or expired since the end pass is not handed
-// back. Every exact, reusable match that the end pass checked is a candidate, newest grant first.
+// The lookup runs again here, for each grant's request, lifetime and order, and so that a grant
+// revoked or expired since the end pass is not handed back. Every exact, reusable match whose
+// grant the end pass checked (checked holds its id) is a candidate, newest grant first.
 // A candidate whose chain fails is passed over for the next, and logged (GrantChainInvalidMessage,
 // at=reuse). A session's next enrollment adopts its earlier enrollment's live grants (enroll.go,
 // adopt), so a session that moved here from a broker of another BROKER_PUBLIC_URL sharing this
@@ -1286,17 +1282,13 @@ func (m *Machine) endMatchingLiveGrants(ctx context.Context, enr enrollmentRow, 
 // that enrolled on another box gets back the grant that moved with it instead of asking a person
 // a second time for names it already holds
 // (TestTheMovedSessionAsksAgainAndGetsTheSameGrantBack).
-func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, checked []liveGrantCheck) (Request, bool, error) {
-	pauses := make(map[string]error, len(checked))
-	for _, grant := range checked {
-		pauses[grant.grantID] = grant.pause
-	}
+func (m *Machine) reuseLiveGrant(ctx context.Context, enr enrollmentRow, sorted []string, lifetime *int, checked map[string]error) (Request, bool, error) {
 	matches, err := m.liveGrantsWithNames(ctx, enr, sorted)
 	if err != nil {
 		return Request{}, false, err
 	}
 	for _, match := range matches {
-		pause, wasChecked := pauses[match.grantID]
+		pause, wasChecked := checked[match.grantID]
 		if !wasChecked || !match.reusableFor(lifetime) {
 			continue
 		}
