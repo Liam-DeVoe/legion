@@ -6,7 +6,8 @@
 #   bash capture.sh <dir>
 #
 # The files beside this script came from git 2.47.3, the worker image's. When that pin moves, run
-# it into this directory with the new git, and write the ids it prints into parse_test.go.
+# it into this directory with the new git, and write the ids the new files hold
+# (`tr '\0' '\n' < <shape>.z`) into parse_test.go.
 #
 # It reads no configuration. Each history is built in a new repository under a temporary
 # directory, and git runs under `env -i`: none of the caller's variables reach it (a pod's git

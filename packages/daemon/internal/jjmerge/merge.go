@@ -24,8 +24,9 @@ import (
 // diff.renames", which defaults to true; merge.directoryRenames "Defaults to conflict";
 // merge.renameLimit "currently defaults to 7000"; merge.conflictStyle "The default is merge";
 // merge.renormalize is off unless a configuration sets it. So no configuration file of the
-// machine changes the merge. It is an array, so no caller can change it: the merge and the
-// reading command `legion merge --help` prints both take a copy.
+// machine changes the merge. The merge and the reading command `legion merge --help` prints both
+// read it through MergeTreeOptions, which answers a copy, so neither changes the list the other
+// gets.
 var mergeTreeOptions = [...]string{
 	"-c", "merge.renames=true",
 	"-c", "merge.directoryRenames=conflict",
@@ -183,7 +184,7 @@ func Merge(ctx context.Context, run Runner, request Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("find the git directory of the workspace %s: %w", request.Workspace, err)
 	}
-	m := &merger{run: run, dir: request.Workspace, gitDir: gitDir, request: request}
+	m := &merger{run: run, gitDir: gitDir, request: request}
 	name, err := m.workspaceName(ctx)
 	if err != nil {
 		return Result{}, err
@@ -228,7 +229,6 @@ func Merge(ctx context.Context, run Runner, request Request) (Result, error) {
 // merger is one run of Merge.
 type merger struct {
 	run     Runner
-	dir     string
 	gitDir  string
 	request Request
 	// prefix begins every bookmark of this workspace's runs, and runPrefix every bookmark of this
@@ -241,8 +241,8 @@ type merger struct {
 
 // build is the merge from git's merge-tree on, steps 4 to 10 of the plan: everything Merge undoes
 // when it fails.
-func (m *merger) build(ctx context.Context, parents [2]string, tree MergeTree) (Result, error) {
-	conflicted := tree.ConflictedPaths()
+func (m *merger) build(ctx context.Context, parents [2]string, tree gitMerge) (Result, error) {
+	conflicted := tree.conflictedPaths()
 	short := func(id string) string { return id[:min(12, len(id))] }
 	// The carriers by their role, which ends each one's bookmark: g holds git's tree; k1, k2 and
 	// k3 hold git's tree with each conflicted path at its stage 1, 2 or 3 version.
@@ -252,7 +252,7 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree MergeTree) (
 		return Result{}, err
 	}
 	if len(conflicted) > 0 {
-		stages, err := m.stageTrees(ctx, tree)
+		stages, err := m.stageTrees(ctx, tree, conflicted)
 		if err != nil {
 			return Result{}, err
 		}
@@ -280,8 +280,11 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree MergeTree) (
 	if _, err := m.git(ctx, []byte(refs.String()), nil, "update-ref", "--stdin"); err != nil {
 		return Result{}, err
 	}
-	// A colocated workspace imports git's refs at the start of a command that reads the working
-	// copy, and no other command; a workspace that is not colocated imports them only here.
+	// Every jj command of the run but its first and its last carries --ignore-working-copy, which
+	// skips the import of git's refs that a colocated workspace makes at the start of a command
+	// on its own; `jj git import` under that flag imports them all the same (`jj git import
+	// --help`). So this import is what makes the carriers visible to jj in every workspace,
+	// colocated or not.
 	if _, err := m.jj(ctx, "git", "import"); err != nil {
 		return Result{}, err
 	}
@@ -362,7 +365,7 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree MergeTree) (
 		if err != nil {
 			return Result{}, err
 		}
-		jjConflicts := fields(out)
+		jjConflicts := nulFields(out)
 		for _, path := range conflicted {
 			result.Conflicts = append(result.Conflicts, Conflict{Path: path, JJConflict: slices.Contains(jjConflicts, path)})
 		}
@@ -375,13 +378,18 @@ func (m *merger) build(ctx context.Context, parents [2]string, tree MergeTree) (
 	if err := m.remove(ctx, m.ownBookmark, ""); err != nil {
 		return Result{}, err
 	}
-	// The one command after the first that reads the working copy: it puts the working copy on
-	// an empty commit on top of the merge.
-	if _, err := m.jjLive(ctx, "new", m.merge); err != nil {
-		return Result{}, err
-	}
+	// The merge's commit id is read before the working copy moves, so nothing after the move can
+	// fail: a failure there would run the undo, which abandons the merge while the working copy is
+	// its child, so jj would rebase the working copy onto the two parents, jj's own merge of them,
+	// and the command would still say it made nothing. `jj new` does not rewrite the merge, so the
+	// id still names it once the working copy is on top of it.
 	commit, err := m.one(ctx, m.merge, "commit_id")
 	if err != nil {
+		return Result{}, err
+	}
+	// The one command after the first that reads the working copy, and the run's last: it puts
+	// the working copy on an empty commit on top of the merge.
+	if _, err := m.jjLive(ctx, "new", m.merge); err != nil {
 		return Result{}, err
 	}
 	result.CommitID, result.ChangeID = commit, m.merge
@@ -412,34 +420,37 @@ func (m *merger) removeLeftovers(ctx context.Context) error {
 	if _, err := m.jj(ctx, "git", "import"); err != nil {
 		return err
 	}
-	leftover := func(name string) bool {
-		rest, ok := strings.CutPrefix(name, m.prefix)
-		return ok && carrierBookmark.MatchString(rest)
-	}
-	if err := m.remove(ctx, leftover, ""); err != nil {
+	if err := m.remove(ctx, m.leftover, ""); err != nil {
 		return fmt.Errorf("remove what an earlier merge in this workspace left: %w", err)
 	}
 	return nil
 }
 
+// leftover is whether name is the bookmark of a carrier of a run in this workspace, this run's
+// included.
+func (m *merger) leftover(name string) bool {
+	rest, ok := strings.CutPrefix(name, m.prefix)
+	return ok && carrierBookmark.MatchString(rest)
+}
+
 // ownBookmark is whether name is the bookmark of one of this run's carriers.
 func (m *merger) ownBookmark(name string) bool {
-	rest, ok := strings.CutPrefix(name, m.runPrefix)
-	return ok && slices.Contains([]string{"g", "k1", "k2", "k3"}, rest)
+	return strings.HasPrefix(name, m.runPrefix) && m.leftover(name)
 }
 
 // remove abandons the carriers whose bookmarks ours matches, with every commit on top of them,
 // and merge when it names one; then deletes each of those bookmarks jj still holds and each git
-// ref under refs/heads that ours matches. One abandon takes the carriers and their bookmarks
-// together, so a run killed after it still finds each carrier by its bookmark. The bookmarks go
-// through jj, which exports their removal in a colocated workspace; deleting a git ref under jj
-// is only for a ref jj never imported or does not export.
+// ref under refs/heads that ours matches. ours is asked only of names under bookmarkPrefix, the
+// bookmarks and the git refs that remove lists. One abandon takes the carriers and their
+// bookmarks together, so a run killed after it still finds each carrier by its bookmark. The
+// bookmarks go through jj, which exports their removal in a colocated workspace; deleting a git
+// ref under jj is only for a ref jj never imported or does not export.
 func (m *merger) remove(ctx context.Context, ours func(name string) bool, merge string) error {
-	out, err := m.jj(ctx, "bookmark", "list", "-T", `if(!remote, name ++ "\0" ++ if(normal_target, normal_target.commit_id()) ++ "\0")`)
+	out, err := m.jj(ctx, "bookmark", "list", "-T", `if(!remote, name ++ "\0" ++ if(normal_target, normal_target.commit_id()) ++ "\0")`, "glob:"+bookmarkPrefix+"*")
 	if err != nil {
 		return err
 	}
-	listed := fields(out)
+	listed := nulFields(out)
 	if len(listed)%2 != 0 {
 		return fmt.Errorf("jj bookmark list printed %d fields, not name and target pairs: %q", len(listed), listed)
 	}
@@ -506,7 +517,7 @@ func (m *merger) remove(ctx context.Context, ours func(name string) bool, merge 
 
 // checkGit refuses a git older than minimumGit, naming its version.
 func (m *merger) checkGit(ctx context.Context) error {
-	out, err := m.run.Run(ctx, Command{Dir: m.dir, Args: []string{"git", "version"}})
+	out, err := m.run.Run(ctx, Command{Dir: m.request.Workspace, Args: []string{"git", "version"}})
 	if err != nil {
 		return err
 	}
@@ -548,33 +559,34 @@ func (m *merger) resolve(ctx context.Context, revision string) (string, error) {
 
 // mergeTree is git's merge of the two parents. git exits 0 for a clean merge and 1 for one with
 // conflicts; anything else, or output that disagrees with the exit, is a refusal.
-func (m *merger) mergeTree(ctx context.Context, parents [2]string) (MergeTree, error) {
+func (m *merger) mergeTree(ctx context.Context, parents [2]string) (gitMerge, error) {
 	args := append(MergeTreeOptions(), "merge-tree", "--write-tree", "-z", parents[0], parents[1])
 	out, err := m.git(ctx, nil, nil, args...)
 	var exit *ExitError
 	clean := err == nil
 	if !clean && !(errors.As(err, &exit) && exit.Code == 1) {
-		return MergeTree{}, err
+		return gitMerge{}, err
 	}
 	tree, parseErr := parseMergeTree(out)
 	switch {
 	case parseErr != nil:
-		return MergeTree{}, parseErr
+		return gitMerge{}, parseErr
 	case clean && len(tree.Conflicts) > 0:
-		return MergeTree{}, fmt.Errorf("git merge-tree exited 0 and named %d conflicted entries", len(tree.Conflicts))
+		return gitMerge{}, fmt.Errorf("git merge-tree exited 0 and named %d conflicted entries", len(tree.Conflicts))
 	case !clean && len(tree.Conflicts) == 0:
 		var said []string
 		for _, message := range tree.Messages {
 			said = append(said, message.Text)
 		}
-		return MergeTree{}, fmt.Errorf("git merge-tree reported conflicts and named no conflicted path: %s", strings.Join(said, "; "))
+		return gitMerge{}, fmt.Errorf("git merge-tree reported conflicts and named no conflicted path: %s", strings.Join(said, "; "))
 	}
 	return tree, nil
 }
 
-// stageTrees are T1, T2 and T3: git's tree with each conflicted path set to its stage 1, 2 or 3
-// entry, or absent where git gave none, written through a temporary index file of the run's own.
-func (m *merger) stageTrees(ctx context.Context, tree MergeTree) ([3]string, error) {
+// stageTrees are T1, T2 and T3: git's tree with each path of conflicted, tree's conflicted
+// paths, set to its stage 1, 2 or 3 entry, or absent where git gave none, written through a
+// temporary index file of the run's own.
+func (m *merger) stageTrees(ctx context.Context, tree gitMerge, conflicted []string) ([3]string, error) {
 	var trees [3]string
 	dir, err := os.MkdirTemp("", "legion-merge-")
 	if err != nil {
@@ -582,18 +594,20 @@ func (m *merger) stageTrees(ctx context.Context, tree MergeTree) ([3]string, err
 	}
 	defer os.RemoveAll(dir)
 	absent := strings.Repeat("0", len(tree.Tree))
+	entries := make(map[pathStage]entry, len(tree.Conflicts))
+	for _, e := range tree.Conflicts {
+		entries[pathStage{e.Path, e.Stage}] = e
+	}
 	for stage := 1; stage <= 3; stage++ {
 		env := []string{"GIT_INDEX_FILE=" + filepath.Join(dir, "index-"+strconv.Itoa(stage))}
 		if _, err := m.git(ctx, nil, env, "read-tree", tree.Tree); err != nil {
 			return trees, err
 		}
 		var info bytes.Buffer
-		for _, path := range tree.ConflictedPaths() {
+		for _, path := range conflicted {
 			mode, oid := "0", absent
-			for _, entry := range tree.Conflicts {
-				if entry.Path == path && entry.Stage == stage {
-					mode, oid = entry.Mode, entry.OID
-				}
+			if e, ok := entries[pathStage{path, stage}]; ok {
+				mode, oid = e.Mode, e.OID
 			}
 			fmt.Fprintf(&info, "%s %s\t%s\x00", mode, oid, path)
 		}
@@ -631,7 +645,7 @@ func (m *merger) diffPaths(ctx context.Context, from, to string) ([]string, erro
 		return nil, err
 	}
 	var paths []string
-	for _, path := range fields(out) {
+	for _, path := range nulFields(out) {
 		if !slices.Contains(paths, path) {
 			paths = append(paths, path)
 		}
@@ -663,19 +677,19 @@ func (m *merger) one(ctx context.Context, revset, keyword string) (string, error
 // jj runs a jj command that neither reads nor moves the working copy. Every jj command prints no
 // color, whatever the caller's configuration says, since the merge reads what jj prints.
 func (m *merger) jj(ctx context.Context, args ...string) ([]byte, error) {
-	return m.run.Run(ctx, Command{Dir: m.dir, Args: append([]string{"jj", "--ignore-working-copy", "--color=never"}, args...)})
+	return m.run.Run(ctx, Command{Dir: m.request.Workspace, Args: append([]string{"jj", "--ignore-working-copy", "--color=never"}, args...)})
 }
 
 // jjLive runs a jj command that reads the working copy and may move it: the first and the last of
 // the run.
 func (m *merger) jjLive(ctx context.Context, args ...string) ([]byte, error) {
-	return m.run.Run(ctx, Command{Dir: m.dir, Args: append([]string{"jj", "--color=never"}, args...)})
+	return m.run.Run(ctx, Command{Dir: m.request.Workspace, Args: append([]string{"jj", "--color=never"}, args...)})
 }
 
 // git runs a git command on the workspace's git directory, which a workspace that jj does not
 // colocate has no .git to find.
 func (m *merger) git(ctx context.Context, stdin []byte, env []string, args ...string) ([]byte, error) {
-	return m.run.Run(ctx, Command{Dir: m.dir, Args: append([]string{"git", "--git-dir=" + m.gitDir}, args...), Env: env, Stdin: stdin})
+	return m.run.Run(ctx, Command{Dir: m.request.Workspace, Args: append([]string{"git", "--git-dir=" + m.gitDir}, args...), Env: env, Stdin: stdin})
 }
 
 // withTrailer is description with line added as its last trailer: one more line of its last
@@ -709,8 +723,8 @@ func RootFile(path string) string {
 	return `root-file:"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(path) + `"`
 }
 
-// fields is out's NUL-terminated fields.
-func fields(out []byte) []string {
+// nulFields is out's NUL-terminated fields.
+func nulFields(out []byte) []string {
 	text := strings.TrimSuffix(string(out), "\x00")
 	if text == "" {
 		return nil

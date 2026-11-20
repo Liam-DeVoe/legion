@@ -27,18 +27,18 @@ const oddPath = "-odd path\twith tab\nand newline"
 func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 	for _, tc := range []struct {
 		shape string
-		want  MergeTree
+		want  gitMerge
 		paths []string
 	}{
 		{
 			shape: "clean",
-			want:  MergeTree{Tree: "245798040e3241d17c86a8b2fc7faa519b261aa8"},
+			want:  gitMerge{Tree: "245798040e3241d17c86a8b2fc7faa519b261aa8"},
 		},
 		{
 			shape: "content",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "25047204965ddac7c788bba6e118d3286698ad6d",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: blobBase, Stage: 1, Path: "f"},
 					{Mode: "100644", OID: blobOurs, Stage: 2, Path: "f"},
 					{Mode: "100644", OID: blobTheirs, Stage: 3, Path: "f"},
@@ -52,9 +52,9 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 		},
 		{
 			shape: "modify-delete",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "3004572edbfe43cf2e3e1e98ee8fc8af1ecfbf34",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: blobBase, Stage: 1, Path: "f"},
 					{Mode: "100644", OID: blobOurs, Stage: 2, Path: "f"},
 				},
@@ -68,9 +68,9 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 		},
 		{
 			shape: "rename-rename",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "9b68fcd10b9cf1922c65560f0ddb92a5d985b137",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: "4cb29ea38f70d7c61b2a3a25b02e3bdf44905402", Stage: 1, Path: "f"},
 					{Mode: "100644", OID: "4cb29ea38f70d7c61b2a3a25b02e3bdf44905402", Stage: 2, Path: "g"},
 					{Mode: "100644", OID: "4cb29ea38f70d7c61b2a3a25b02e3bdf44905402", Stage: 3, Path: "h"},
@@ -85,9 +85,9 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 		},
 		{
 			shape: "file-directory",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "236f3adc68df2e3acebdb5da6afdc683a9edaa51",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: "f73f3093ff865c514c6c51f867e35f693487d0d3", Stage: 2, Path: "d~a"},
 				},
 				Messages: []Message{{
@@ -100,9 +100,9 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 		},
 		{
 			shape: "binary",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "335a911b0d22b77e39fed7952713655bd1317205",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: "c1011510a5248dda6856ecff4139cb218b92ad0c", Stage: 1, Path: "bin"},
 					{Mode: "100644", OID: "52682ff6c8bc57a97d1b28ce8f03354bf3f463c3", Stage: 2, Path: "bin"},
 					{Mode: "100644", OID: "5bc3c30d64b10fb169a1aad5269d1104d30a298e", Stage: 3, Path: "bin"},
@@ -117,9 +117,9 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 		},
 		{
 			shape: "odd-path",
-			want: MergeTree{
+			want: gitMerge{
 				Tree: "ae2264bbf832aa3f9cdf346e770907c7a6e2aebd",
-				Conflicts: []Entry{
+				Conflicts: []entry{
 					{Mode: "100644", OID: blobBase, Stage: 1, Path: oddPath},
 					{Mode: "100644", OID: blobOurs, Stage: 2, Path: oddPath},
 					{Mode: "100644", OID: blobTheirs, Stage: 3, Path: oddPath},
@@ -151,8 +151,8 @@ func TestParseMergeTreeReadsEachCapturedShape(t *testing.T) {
 			if !reflect.DeepEqual(got.Messages, tc.want.Messages) {
 				t.Errorf("messages =\n%#v\nwant\n%#v", got.Messages, tc.want.Messages)
 			}
-			if paths := got.ConflictedPaths(); !reflect.DeepEqual(paths, tc.paths) {
-				t.Errorf("ConflictedPaths() = %q, want %q", paths, tc.paths)
+			if paths := got.conflictedPaths(); !reflect.DeepEqual(paths, tc.paths) {
+				t.Errorf("conflictedPaths() = %q, want %q", paths, tc.paths)
 			}
 		})
 	}
@@ -180,12 +180,12 @@ func TestParseMergeTreeReadsMessagesOfACleanMerge(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseMergeTree: %v", err)
 			}
-			want := MergeTree{Tree: tree, Messages: tc.want}
+			want := gitMerge{Tree: tree, Messages: tc.want}
 			if !reflect.DeepEqual(got, want) {
 				t.Errorf("parseMergeTree = %#v, want %#v", got, want)
 			}
-			if paths := got.ConflictedPaths(); len(paths) != 0 {
-				t.Errorf("ConflictedPaths() = %q, want none", paths)
+			if paths := got.conflictedPaths(); len(paths) != 0 {
+				t.Errorf("conflictedPaths() = %q, want none", paths)
 			}
 		})
 	}

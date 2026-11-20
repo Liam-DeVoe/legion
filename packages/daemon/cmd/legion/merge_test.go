@@ -150,7 +150,7 @@ func (r *mergeRepo) workOn(base string) {
 // id is the commit id revset names.
 func (r *mergeRepo) id(revset string) string {
 	r.t.Helper()
-	return r.read("log", "--no-graph", "-r", revset, "-T", "commit_id")
+	return r.template(revset, "commit_id")
 }
 
 // template is one template's value for the one commit revset names.
@@ -212,8 +212,9 @@ func (r *mergeRepo) mergeBases(first, second string) int {
 // parents: what it holds at path, and whether it holds a conflict.
 func (r *mergeRepo) plainMerge(first, second, path string) (content, conflict string) {
 	r.t.Helper()
-	r.jj("new", "--no-edit", r.id(first), r.id(second), "-m", "plain jj new")
-	plain := fmt.Sprintf(`children(%s) & children(%s) & description(substring:"plain jj new")`, r.id(first), r.id(second))
+	firstID, secondID := r.id(first), r.id(second)
+	r.jj("new", "--no-edit", firstID, secondID, "-m", "plain jj new")
+	plain := fmt.Sprintf(`children(%s) & children(%s) & description(substring:"plain jj new")`, firstID, secondID)
 	return r.show(plain, path), r.template(plain, "conflict")
 }
 
@@ -307,9 +308,7 @@ func (r *mergeRepo) renameAndEdit() {
 // and second whose path holds content with no conflict.
 func (r *mergeRepo) wantMergeHolds(first, second, path, content string) {
 	r.t.Helper()
-	if got := r.template("@", `empty ++ " " ++ parents.map(|c| c.commit_id()).join(" ")`); got != "true "+r.id("@-") {
-		r.t.Errorf("the working copy is %q, want an empty commit whose one parent is the merge", got)
-	}
+	r.wantWorkingCopyOnMerge()
 	if got, want := r.template("@-", `parents.map(|c| c.commit_id()).join(" ")`), r.id(first)+" "+r.id(second); got != want {
 		r.t.Errorf("the merge's parents are %q, want %s then %s: %q", got, first, second, want)
 	}
@@ -318,6 +317,15 @@ func (r *mergeRepo) wantMergeHolds(first, second, path, content string) {
 	}
 	if got := r.template("@-", "conflict"); got != "false" {
 		r.t.Errorf("jj log -r @- -T conflict = %q, want false", got)
+	}
+}
+
+// wantWorkingCopyOnMerge fails the row unless the working copy is an empty commit whose one
+// parent is the merge, @-.
+func (r *mergeRepo) wantWorkingCopyOnMerge() {
+	r.t.Helper()
+	if got := r.template("@", `empty ++ " " ++ parents.map(|c| c.commit_id()).join(" ")`); got != "true "+r.id("@-") {
+		r.t.Errorf("the working copy is %q, want an empty commit whose one parent is the merge", got)
 	}
 }
 
@@ -373,6 +381,13 @@ func mergeNextStep(ws, change string, paths ...string) string {
 func TestLegionMergeHoldsGitsMergeOverTwoMergeBases(t *testing.T) {
 	r := newMergeRepo(t)
 	r.minimalCase(2)
+	wantMinimalCaseMerged(t, r)
+}
+
+// wantMinimalCaseMerged runs the built binary on minimalCase's history and holds B1's result,
+// with its control: a plain jj new of the same parents holds c with no conflict.
+func wantMinimalCaseMerged(t *testing.T, r *mergeRepo) {
+	t.Helper()
 	code, stdout, stderr := r.binary(r.ws, "-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
 	if code != 0 || stderr != "" {
 		t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
@@ -387,14 +402,7 @@ func TestLegionMergeHoldsGitsMergeOverTwoMergeBases(t *testing.T) {
 func TestLegionMergeHoldsGitsMergeOverThreeMergeBases(t *testing.T) {
 	r := newMergeRepo(t)
 	r.minimalCase(3)
-	code, stdout, stderr := r.binary(r.ws, "-R", r.ws, "-m", mergeMessage, mergeFirst, mergeSecond)
-	if code != 0 || stderr != "" {
-		t.Fatalf("legion merge = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderr)
-	}
-	r.wantMergeHolds(mergeFirst, "main", "f", "b\n")
-	if content, conflict := r.plainMerge(mergeFirst, "main", "f"); content != "c\n" || conflict != "false" {
-		t.Errorf("plain jj new of the same parents holds %q with conflict %s, want c with none: %s", content, conflict, noLongerReproduces)
-	}
+	wantMinimalCaseMerged(t, r)
 }
 
 // B3: one merge base and a content conflict, through the built binary. The merge holds a jj
@@ -673,9 +681,7 @@ func TestLegionMergeLeavesNoCarrier(t *testing.T) {
 			if left := r.leftovers(); len(left) > 0 {
 				t.Errorf("the merge left %q", left)
 			}
-			if got := r.template("@", `empty ++ " " ++ parents.map(|c| c.commit_id()).join(" ")`); got != "true "+r.id("@-") {
-				t.Errorf("the working copy is %q, want an empty commit whose one parent is the merge", got)
-			}
+			r.wantWorkingCopyOnMerge()
 			want := slices.Sorted(slices.Values(append(slices.Clone(before.visible), r.id("@-"), r.id("@"))))
 			if got := r.visible(); !slices.Equal(got, want) {
 				t.Errorf("the visible commits are\n%q\nwant those before the command, the merge and the working copy\n%q", got, want)
@@ -776,8 +782,10 @@ func TestLegionMergeRefusesAndMakesNothing(t *testing.T) {
 		name   string
 		args   []string
 		oldGit bool
-		code   int
-		want   string
+		// noMessage leaves -m out of the command line, which every other row gives.
+		noMessage bool
+		code      int
+		want      string
 	}{
 		{name: "one revision", args: []string{mergeFirst}, code: 3, want: "name two revisions, the first parent and then the second: 1 given"},
 		{name: "three revisions", args: []string{mergeFirst, mergeSecond, "base"}, code: 3, want: "name two revisions, the first parent and then the second: 3 given"},
@@ -785,7 +793,7 @@ func TestLegionMergeRefusesAndMakesNothing(t *testing.T) {
 		{name: "a revset that names two", args: []string{mergeFirst, "x | y"}, code: 3, want: "x | y names 2 commits, not one"},
 		{name: "a parent that holds a jj conflict", args: []string{"conflicted", mergeSecond}, code: 3, want: "conflicted, commit "},
 		{name: "git 2.37", args: []string{mergeFirst, mergeSecond}, oldGit: true, code: 3, want: `git 2.38 or later is needed for git merge-tree --write-tree, and the git on PATH says "git version 2.37.0"`},
-		{name: "no -m", args: []string{mergeFirst, mergeSecond}, code: 2, want: "legion merge: name the description of the merge commit with -m <message>\nRun 'legion merge --help' for usage.\n"},
+		{name: "no -m", args: []string{mergeFirst, mergeSecond}, noMessage: true, code: 2, want: "legion merge: name the description of the merge commit with -m <message>\nRun 'legion merge --help' for usage.\n"},
 		{name: "an unknown flag", args: []string{"--no-such-flag", mergeFirst, mergeSecond}, code: 2, want: "legion merge: unknown flag: --no-such-flag\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -815,7 +823,7 @@ func TestLegionMergeRefusesAndMakesNothing(t *testing.T) {
 			}
 			before := r.snapshot()
 			args := append([]string{"-R", r.ws}, tc.args...)
-			if tc.code == 3 || tc.name == "an unknown flag" {
+			if !tc.noMessage {
 				args = append([]string{"-m", mergeMessage}, args...)
 			}
 			var stdout, stderr strings.Builder

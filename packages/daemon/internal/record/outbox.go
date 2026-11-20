@@ -1761,9 +1761,17 @@ func (p MergeForwardMessage) Message(issue, repo string) string {
 // the merge, and `git diff --stat` against the merge's first parent.
 func (p MergeForwardMessage) readMerge() string {
 	return fmt.Sprintf("run `git diff %s %s`."+
-		" For a merge of the base, `git diff \"$(git merge-tree --write-tree %s^1 %s^2 | head -n 1)\" %s` shows how the merge resolved the conflict, against git's own merge of its parents,"+
+		" For a merge of the base, `%s` shows how the merge resolved the conflict, against git's own merge of its parents,"+
 		" and `git diff --stat %s^1 %s` lists the files the base brought in.",
-		p.Head, p.Landed, p.Landed, p.Landed, p.Landed, p.Landed, p.Landed)
+		p.Head, p.Landed, MergeComparison(p.Landed), p.Landed, p.Landed)
+}
+
+// MergeComparison is the command that shows how merge, a merge commit, differs from git's own
+// merge of its two parents (`git merge-tree --write-tree`): how it resolved git's conflicts. The
+// landed and the review give it (readMerge), and so does the completion fence of a merge forward
+// (workflow's mergedForwardRefusal).
+func MergeComparison(merge string) string {
+	return fmt.Sprintf(`git diff "$(git merge-tree --write-tree %s^1 %s^2 | head -n 1)" %s`, merge, merge, merge)
 }
 
 // retryBackoffDoublings is how many times a row's backoff doubles before it stops at

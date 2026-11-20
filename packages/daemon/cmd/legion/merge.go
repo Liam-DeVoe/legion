@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/sjawhar/legion/daemon/internal/jjmerge"
+	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // newMergeCommand is `legion merge`, the one way a role makes the merge commit of two commits:
@@ -151,16 +152,11 @@ func reportMerge(stdout io.Writer, root string, revisions []string, result jjmer
 // description, its trailers included: a squash of the working copy alone misses a resolution a
 // later turn's `jj new` left below it.
 func squashCommand(root, change string, paths []string) string {
-	words := []string{"jj", "-R", shellQuoted(root), "squash", "--from", shellQuoted(change + "+::@"), "--into", change, "--use-destination-message"}
+	words := []string{"jj", "-R", shellprefix.Literal(root), "squash", "--from", shellprefix.Literal(change + "+::@"), "--into", change, "--use-destination-message"}
 	for _, path := range paths {
-		words = append(words, shellQuoted(jjmerge.RootFile(path)))
+		words = append(words, shellprefix.Literal(jjmerge.RootFile(path)))
 	}
 	return strings.Join(words, " ")
-}
-
-// shellQuoted is word as one POSIX shell word.
-func shellQuoted(word string) string {
-	return "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 }
 
 // shownPath is path as a line of the output shows it: as it is, or Go-quoted when it holds a
