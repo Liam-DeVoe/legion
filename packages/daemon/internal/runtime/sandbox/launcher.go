@@ -774,15 +774,19 @@ const bundleRestoreBound = 2 * time.Minute
 // own notice of what was lost (internal/launcher's restoreWorkspace). A store that does not answer
 // the ask is the one exception, and it stops the start: the attempt may still be open, and a role
 // started now would work in a workspace that a later start of the pod, or the pod after it, could
-// be sent the bundle over. While the start's own context is alive that is a store fault
-// (runtime.ErrSessionStore), which the supervisor waits out every minute and charges no launch
-// failure, since nothing of the claim is at fault; an ask the start's own deadline cut is the start
-// running out of time, and is returned as that.
+// be sent the bundle over.
 //
-// Nor does the hop take the time the start frame needs: it ends the start's reserve before the
-// start's deadline (beforeTheStart). Where no more than that is left the store is still asked,
-// under the start's own time, so this pod's attempt is taken, and nothing is sent: the work stays
-// in the database, as after a send that failed.
+// The ask runs under the start's own context with a bound of its own, apiTimeout, as every other
+// call of this runtime to something it does not run, and before every start of the pod, whatever
+// time is left. A store that answers its own error, or does not answer within that bound while the
+// start's context is alive, is a store fault (bundleStoreFault, runtime.ErrSessionStore), which
+// the supervisor waits out every minute and charges no launch failure, since nothing of the claim
+// is at fault. An ask the start's own deadline cut is the start running out of time, and is
+// returned as that.
+//
+// The start's reserve (beforeTheStart) bounds only the slices, which go after the ask: they never
+// take the time the start frame needs. Where the ask has left no more than the reserve, nothing is
+// sent, and the work stays in the database, as after a send that failed.
 //
 // One attempt per bundle, and the read is it: the store records the pod this send is for before
 // it answers the body, and answers nothing for that bundle afterwards
@@ -816,14 +820,9 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	// The ask is this pod's one attempt, made before every start of the pod whatever time is left:
 	// a start that did not ask would leave the attempt open for a later start of the pod, or for
 	// the pod after it, to be sent the bundle over the work this start's role does.
-	reserved, cancelReserve, noTime := d.beforeTheStart(ctx)
-	if noTime != nil {
-		reserved, cancelReserve = context.WithCancel(ctx)
-	}
-	defer cancelReserve()
-	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
-	defer cancel()
-	bundle, take, err := d.saved(restoring, issue, podUID, session.podCreated)
+	asking, cancelAsk := context.WithTimeout(ctx, apiTimeout)
+	bundle, take, err := d.saved(asking, issue, podUID, session.podCreated)
+	cancelAsk()
 	if err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("the start's own time ran out before the store answered the ask for the saved workspace bundle of %s, so no role of the pod starts: %w", issue, err)
@@ -843,11 +842,15 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 	if take != runtime.WorkspaceBundleSend || len(bundle.Bundle) == 0 {
 		return nil
 	}
+	reserved, cancelReserve, noTime := d.beforeTheStart(ctx)
 	if noTime != nil {
 		d.log.Warn("launcher bundle: the start has no time left to send the saved workspace bundle, and this pod has had its one restore attempt, so no pod is sent it; the work stays in the daemon's database and holds the issue's pod",
 			"issue", issue, "launcher", token, "pod", podUID, "saved", bundle.At, "head", bundle.Head, "release", bundle.Release, "error", noTime)
 		return nil
 	}
+	defer cancelReserve()
+	restoring, cancel := context.WithTimeout(reserved, bundleRestoreBound)
+	defer cancel()
 	frames, err := bundleFrames(issue, bundle)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace bundle could not be sliced, so the pod starts on what was pushed",

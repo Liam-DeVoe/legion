@@ -602,24 +602,41 @@ const testStartReserve = time.Second
 
 // bundleSeam is a store of one saved workspace bundle for any pod, counting how often it was
 // asked for it: each ask is the bundle's one restore attempt spent. err, when set, is a store
-// that does not answer the ask, and hang a store that answers nothing until the ask's own context
-// ends, as a statement the database never returns from does.
+// that does not answer the ask; hang a store that answers nothing until the ask's own context
+// ends, as a statement the database never returns from does; and delay a store that answers
+// after that long, or not at all where the ask's context ends first.
 type bundleSeam struct {
 	takes atomic.Int32
 	err   error
 	hang  bool
+	delay time.Duration
 }
 
 func (b *bundleSeam) take(ctx context.Context, issue, _ string, _ time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
 	b.takes.Add(1)
-	if b.hang {
-		<-ctx.Done()
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the workspace bundle of %s: %w", issue, ctx.Err())
-	}
-	if b.err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, b.err
+	if err := b.wait(ctx, issue); err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
 	}
 	return savedWorkspaceBundle(), runtime.WorkspaceBundleSend, nil
+}
+
+// wait is how the seam's store answers before it hands over the row: err, a hang until the ask's
+// context ends, or delay, which that context can cut.
+func (b *bundleSeam) wait(ctx context.Context, issue string) error {
+	switch {
+	case b.hang:
+		<-ctx.Done()
+		return fmt.Errorf("take the workspace bundle of %s: %w", issue, ctx.Err())
+	case b.err != nil:
+		return b.err
+	case b.delay > 0:
+		select {
+		case <-time.After(b.delay):
+		case <-ctx.Done():
+			return fmt.Errorf("take the workspace bundle of %s: %w", issue, ctx.Err())
+		}
+	}
+	return nil
 }
 
 func (b *bundleSeam) restored(context.Context, string, int64) error { return nil }
@@ -698,6 +715,39 @@ func TestAStartWithNoMoreThanItsReserveLeftSendsNeitherHop(t *testing.T) {
 	}
 	if text := logs.String(); strings.Count(text, "level=WARN") != 2 {
 		t.Fatalf("the daemon logged %q, want a warning for each hop it did not send", text)
+	}
+}
+
+// The ask for the saved bundle has a bound of its own, and the start's reserve bounds only the
+// slices sent after it: a store that answers in its own time, under a start that has only a little
+// more than its reserve left, is no store fault. The ask takes the pod's one attempt; there is then
+// no time left to send the bundle, so none of it goes, the work stays in the database, and the
+// start frame goes.
+func TestABundleAskThatOutlastsTheReserveIsNoStoreFaultAndSendsNothing(t *testing.T) {
+	var logs lockedLog
+	seam := &bundleSeam{delay: 100 * time.Millisecond}
+	d := reserveLaunchers(t, readsOf(testIndex(rigNow)), seam, &logs)
+	l := &indexLauncher{}
+	connectIndexLauncher(t, d, workerToken, "uid-pod-at-the-edge", false, l)
+	ctx, cancel := context.WithTimeout(context.Background(), testStartReserve+50*time.Millisecond)
+	defer cancel()
+
+	err := d.start(ctx, workerToken, "uid-pod-at-the-edge", shimwire.LauncherStart{ID: "start-at-the-edge", Generation: 1, Argv: []string{"true"}})
+	if errors.Is(err, runtime.ErrSessionStore) {
+		t.Fatalf("the start answered %v, a store fault; want none from a store that answered in its own time", err)
+	}
+	if err != nil {
+		t.Fatalf("the start: %v", err)
+	}
+	frames := l.frames()
+	if countOf(frames, shimwire.TypeLauncherBundle) != 0 || len(frames) != 1 || frames[0].FrameType() != shimwire.TypeLauncherStart {
+		t.Fatalf("the launcher was sent %v, want its start alone", frameTypes(frames))
+	}
+	if seam.takes.Load() != 1 {
+		t.Fatalf("the store was asked %d time(s), want once: the ask is the pod's one attempt", seam.takes.Load())
+	}
+	if text := logs.String(); !strings.Contains(text, "stays in the daemon's database") {
+		t.Fatalf("the daemon logged %q, want the unsent bundle's warning to say where the work is", text)
 	}
 }
 
